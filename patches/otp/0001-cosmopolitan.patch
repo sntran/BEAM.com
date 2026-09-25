@@ -42,6 +42,24 @@ index 3218f67..1572b43 100644
  #    define ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION 1
  #  endif
  #endif
+diff --git a/erts/emulator/sys/common/erl_poll.c b/erts/emulator/sys/common/erl_poll.c
+index eac9926..a68088e 100644
+--- a/erts/emulator/sys/common/erl_poll.c
++++ b/erts/emulator/sys/common/erl_poll.c
+@@ -2108,6 +2108,13 @@ ERTS_POLL_EXPORT(erts_poll_init)(int *concurrent_updates)
+         max_fds = 24576;
+     }
+ 
++#if defined(__COSMOPOLITAN__) && ERTS_POLL_USE_SELECT && defined(FD_SETSIZE)
++    /* sysconf(_SC_OPEN_MAX) fails with EINVAL on Windows. With select(),
++     * FD_SETSIZE is the limit anyway. */
++    if (max_fds < 0)
++        max_fds = FD_SETSIZE;
++#endif
++
+ #if ERTS_POLL_USE_SELECT && defined(FD_SETSIZE) && \
+ 	!defined(_DARWIN_UNLIMITED_SELECT)
+     if (max_fds > FD_SETSIZE)
 diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/erl_child_setup.c
 index aa5c2e9..432e7fc 100644
 --- a/erts/emulator/sys/unix/erl_child_setup.c
