@@ -5,4 +5,5 @@
 #define main erl_child_setup_main
 #define sys_sigblock beam_com_cs_sys_sigblock
 #define sys_sigrelease beam_com_cs_sys_sigrelease
+int erl_child_setup_main(int argc, char **argv);
 #include "erl_child_setup.c"

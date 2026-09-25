@@ -3,6 +3,8 @@
 # Usage: tests/run.sh DIR   (DIR holds beam.com and, if made, greeter.com)
 set -u
 dir=${1:-.}
+limit=${LIMIT:-120}
+tmp=${TMPDIR:-/tmp}/beam_com_test.$$
 fail=0
 
 check() {
@@ -11,9 +13,20 @@ check() {
     echo "==> $name"
     chmod +x "$dir/$name"
     # Run through sh, as a user without binfmt_misc would do it.
-    out=$(sh "$dir/$name" "$@" 2>&1)
+    # A watchdog stops it after $limit seconds.
+    BEAM_COM_VERBOSE=1 sh "$dir/$name" "$@" > "$tmp" 2>&1 &
+    pid=$!
+    ( sleep "$limit"; kill -9 "$pid" ) >/dev/null 2>&1 &
+    watchdog=$!
+    wait "$pid"
     rc=$?
+    kill "$watchdog" 2>/dev/null
+    out=$(cat "$tmp")
     printf '%s\n' "$out"
+    if [ $rc -eq 137 ]; then
+        echo "FAIL: $name did not stop in $limit seconds"
+        ps -ef 2>/dev/null | grep -v grep | grep -e "$name" -e beam || true
+    fi
     if [ $rc -ne 0 ]; then
         echo "FAIL: $name exited with $rc"
         fail=1

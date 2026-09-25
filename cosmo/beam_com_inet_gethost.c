@@ -4,4 +4,5 @@
  */
 #define main inet_gethost_main
 #define reap_children beam_com_ig_reap_children
+int inet_gethost_main(int argc, char **argv);
 #include "../../../etc/common/inet_gethost.c"

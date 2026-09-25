@@ -73,12 +73,14 @@ An OTP installation has more than one executable. ERTS starts
 `erl_child_setup` when it boots (it forks the port programs), and on
 Linux the kernel starts `inet_gethost` at boot to resolve the host name.
 BEAM.com links these programs into the emulator. It is a multi-call
-binary, like BusyBox: the base name of `argv[0]` selects the program
-(see [`cosmo/beam_com.c`](cosmo/beam_com.c)).
+binary, like BusyBox (see [`cosmo/beam_com.c`](cosmo/beam_com.c)).
 
 When ERTS must execute a program in `/zip/bin/`, it executes its own
-file (`GetProgramExecutableName()`) with that program name as `argv[0]`
-(see `beam_com_exec_path()` in [`cosmo/erts_cosmo.h`](cosmo/erts_cosmo.h)).
+file (`GetProgramExecutableName()`) again, with
+`BEAM_COM_PROGRAM=<program name>` in the environment
+(`beam_com_exec_helper()`). The new process removes the variable and
+runs that program. The base name of `argv[0]` is only a fallback,
+because Linux `binfmt_misc` does not keep `argv[0]`.
 
 ### The zip of the default beam.com
 

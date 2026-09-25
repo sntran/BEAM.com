@@ -247,6 +247,28 @@ load.
 **Possible direction.** Not a Cosmopolitan bug. For BEAM.com, static
 NIFs (`--enable-static-nifs`) are the better way.
 
+### C11. `argv[0]` is lost when Linux runs an APE file through `binfmt_misc`
+
+**Status:** 4.0.2 in CI (GitHub `ubuntu-latest`, APE loader registered
+with the command from the Cosmopolitan README: `:APE:M::MZqFpD::/usr/bin/ape:`).
+
+**Effect.** The kernel starts `/usr/bin/ape /path/to/prog.com args...`
+and the program gets the file path as `argv[0]`, not the `argv[0]` of
+the `execve()` call. A multi-call program that selects its mode by
+`argv[0]` (as BusyBox does) then runs the wrong mode. For BEAM.com this
+was a loop: each "erl_child_setup" was a new emulator that started one
+more "erl_child_setup". Through `sh ./prog.com`, `argv[0]` is kept, so
+the problem shows only with `binfmt_misc`.
+
+**Workaround in BEAM.com.** Select the helper program with an
+environment variable (`BEAM_COM_PROGRAM`), and use `argv[0]` only as a
+fallback.
+
+**Possible upstream fix.** Register with the `P` (preserve-argv0) flag
+and teach the APE loader the extra argument that the kernel then gives
+(`/usr/bin/ape /path/to/prog.com ORIGINAL_ARGV0 args...`). At minimum,
+document that `argv[0]` is not kept with `binfmt_misc`.
+
 ---
 
 ## Erlang/OTP

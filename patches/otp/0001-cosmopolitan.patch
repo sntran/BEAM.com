@@ -27,21 +27,22 @@ index 0d6ae8f..686f0e1 100644
  #  define ERTS_WRITE_UNLIKELY(X) X __attribute__ ((section ("__DATA,ERTS_LOW_WRITE") ))
  #else
 diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/erl_child_setup.c
-index aa5c2e9..c733803 100644
+index aa5c2e9..432e7fc 100644
 --- a/erts/emulator/sys/unix/erl_child_setup.c
 +++ b/erts/emulator/sys/unix/erl_child_setup.c
-@@ -360,7 +360,11 @@ start_new_child(int pipes[])
+@@ -360,6 +360,12 @@ start_new_child(int pipes[])
  
      if (args) {
          /* spawn_executable */
 +#ifdef __COSMOPOLITAN__
-+        execve(beam_com_exec_path(cmd), args, new_environ);
-+#else
-         execve(cmd, args, new_environ);
++        /* BEAM.com: programs in /zip/bin are linked into this executable. */
++        if (beam_com_exec_helper && beam_com_is_zip(cmd))
++            beam_com_exec_helper(cmd, args, new_environ);
++        else
 +#endif
+         execve(cmd, args, new_environ);
      } else {
          execle(SHELL, "sh", "-c", cmd, (char *) NULL, new_environ);
-     }
 diff --git a/erts/emulator/sys/unix/erl_main.c b/erts/emulator/sys/unix/erl_main.c
 index 2d1d60e..c72eb74 100644
 --- a/erts/emulator/sys/unix/erl_main.c
@@ -61,7 +62,7 @@ index 2d1d60e..c72eb74 100644
      sys_init_signal_stack();
  
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index bdd6528..925d4d9 100644
+index bdd6528..ccb2e13 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
 @@ -518,7 +518,11 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
@@ -76,18 +77,19 @@ index bdd6528..925d4d9 100644
  	    int save_errno = errno;
  	    erts_free(ERTS_ALC_T_TMP, cmd_line);
              close_pipes(ifd, ofd);
-@@ -1657,7 +1661,11 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1657,6 +1661,12 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
      (void) setsid();
  #endif
  
 +#ifdef __COSMOPOLITAN__
-+        execv(beam_com_exec_path(child_setup_prog), cs_argv);
-+#else
-         execv(child_setup_prog, cs_argv);
++        /* BEAM.com: erl_child_setup is linked into this executable. */
++        if (beam_com_exec_helper && beam_com_is_zip(child_setup_prog))
++            beam_com_exec_helper(child_setup_prog, cs_argv, NULL);
++        else
 +#endif
+         execv(child_setup_prog, cs_argv);
          _exit(1);
      }
- 
 diff --git a/erts/emulator/zstd/zstd.mk b/erts/emulator/zstd/zstd.mk
 index d3725de..cbd985d 100644
 --- a/erts/emulator/zstd/zstd.mk

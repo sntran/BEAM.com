@@ -57,16 +57,29 @@ static inline const char *beam_com_basename(const char *path)
 
 /*
  * Programs in /zip/bin are not real files. They are names for the
- * helper programs that are linked into this executable. To start one,
- * we execute ourselves and let argv[0] select the helper.
+ * helper programs that are linked into this executable.
  */
+static inline int beam_com_is_zip(const char *path)
+{
+    return path && path[0] == '/' && path[1] == 'z' && path[2] == 'i'
+        && path[3] == 'p' && path[4] == '/';
+}
+
+/* The file to check with access() for a program path. */
 static inline const char *beam_com_exec_path(const char *path)
 {
-    if (path && path[0] == '/' && path[1] == 'z' && path[2] == 'i'
-        && path[3] == 'p' && path[4] == '/')
-        return GetProgramExecutableName();
-    return path;
+    return beam_com_is_zip(path) ? GetProgramExecutableName() : path;
 }
+
+/*
+ * Defined in beam_com.c. Executes this file again as the helper program
+ * of the /zip/bin path. The helper name goes in the environment
+ * (BEAM_COM_PROGRAM), because argv[0] is not kept on all systems: the
+ * Linux binfmt_misc APE loader gives the file path as argv[0]. When envp
+ * is NULL, the current environment is used. Returns only on error.
+ */
+int beam_com_exec_helper(const char *path, char *const argv[],
+                         char *const envp[]) __attribute__((__weak__));
 
 #endif /* __COSMOPOLITAN__ */
 #endif /* BEAM_COM_ERTS_COSMO_H */

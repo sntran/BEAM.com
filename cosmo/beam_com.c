@@ -22,6 +22,7 @@
  */
 #include <cosmo.h>
 #include <errno.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -208,13 +209,36 @@ static char *home_dir(void)
     return home;
 }
 
+int beam_com_exec_helper(const char *path, char *const argv[],
+                         char *const envp[])
+{
+    extern char **environ;
+    char *const *src = envp ? envp : environ;
+    struct arglist env = {0};
+    size_t i;
+
+    for (i = 0; src[i]; i++)
+        if (strncmp(src[i], "BEAM_COM_PROGRAM=", 17) != 0)
+            push(&env, src[i]);
+    push(&env, join("BEAM_COM_PROGRAM=", beam_com_basename(path), ""));
+    return execve(GetProgramExecutableName(), argv, env.v);
+}
+
 void beam_com_main(int *argcp, char ***argvp)
 {
     int argc = *argcp;
     char **argv = *argvp;
     const char *name = beam_com_basename(argv[0]);
+    char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args;
+
+    /* Set by beam_com_exec_helper(). Remove it, so that the programs
+     * that the helper starts do not see it. */
+    if (program) {
+        name = strdup(program);
+        unsetenv("BEAM_COM_PROGRAM");
+    }
 
     if (starts_with(name, "erl_child_setup"))
         exit(erl_child_setup_main(argc, argv));

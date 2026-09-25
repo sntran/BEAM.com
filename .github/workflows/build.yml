@@ -13,6 +13,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -38,15 +39,25 @@ jobs:
       - name: Build
         run: ./build.sh otp configure make release multicall bundle
 
-      - name: Test
-        run: ./build.sh test
-
       - name: Upload beam.com
         uses: actions/upload-artifact@v4
         with:
           name: beam.com
           path: build/beam.com
           if-no-files-found: error
+
+      - name: Test
+        timeout-minutes: 5
+        run: BEAM_COM_VERBOSE=1 timeout 120 ./build.sh test
+
+      - name: Trace a failed test
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          sudo apt-get install -y strace >/dev/null || true
+          BEAM_COM_VERBOSE=1 timeout 60 strace -f -tt -s 200 -o build/strace.txt build/beam.com one two || true
+          ps -ef | grep -v grep | grep -i beam || true
+          tail -n 80 build/strace.txt || true
 
       - name: Upload logs on failure
         if: failure()
@@ -57,12 +68,14 @@ jobs:
             build/otp/erts/config.log
             build/otp/config.log
             build/otp/make/*/otp.mk
+            build/strace.txt
           if-no-files-found: ignore
 
   example-release:
     name: Add a rebar3 release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -104,6 +117,7 @@ jobs:
           - { name: macOS x86_64, os: macos-15-intel }
           - { name: Windows x86_64, os: windows-latest }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -125,6 +139,7 @@ jobs:
     name: Run on ${{ matrix.name }}
     needs: [build, example-release]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
