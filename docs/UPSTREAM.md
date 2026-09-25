@@ -269,6 +269,45 @@ and teach the APE loader the extra argument that the kernel then gives
 (`/usr/bin/ape /path/to/prog.com ORIGINAL_ARGV0 args...`). At minimum,
 document that `argv[0]` is not kept with `binfmt_misc`.
 
+### C12. Windows: `mmap(MAP_FIXED)` in a `PROT_NONE` reservation fails
+
+**Status:** 4.0.2 in CI (`windows-latest`). The cause is our best
+explanation from the ERTS code; a small reproducer is still to do.
+
+**Effect.** ERTS (64-bit) reserves a large address range with
+`mmap(NULL, size, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)`
+and later commits parts of it with
+`mmap(addr, n, PROT_READ|PROT_WRITE, ...|MAP_FIXED)`. On Windows the
+second call fails, and ERTS stops at boot with
+`erts_mmap: Failed to reserve physical memory for descriptors`. The same
+file works on Linux, macOS and FreeBSD.
+
+**Workaround in BEAM.com.** Do not define
+`ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION` for Cosmopolitan (in
+`erts/emulator/sys/common/erl_mmap.h`), so ERTS does not use this
+reserve-then-commit method.
+
+**Possible upstream fix.** On Windows, implement `MAP_FIXED` inside a
+range that was reserved with `PROT_NONE` as `VirtualAlloc(MEM_COMMIT)`
+(reserve with `MEM_RESERVE` first). This is a common pattern in
+language runtimes (garbage collectors, JITs).
+
+### C13. NetBSD and OpenBSD: `sh ./prog.com` stops at NUL bytes
+
+**Status:** 4.0.2 in CI (vmactions NetBSD and OpenBSD 7.9 VMs).
+
+**Effect.** `sh ./beam.com` prints `nul ('\0') in shell input`
+(NetBSD) or `syntax error: NUL byte unexpected` (OpenBSD ksh). FreeBSD's
+`sh` runs the same file correctly. So the "run it with sh" instruction
+does not work on these two systems.
+
+**Workaround in BEAM.com.** Run the file through the APE loader
+(`ape-x86_64.elf ./beam.com`). CI tests this.
+
+**Possible upstream fix.** Document this in the APE instructions. If
+possible, move the first NUL byte after the part of the shell script
+that these shells read before they stop.
+
 ---
 
 ## Erlang/OTP

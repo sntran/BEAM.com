@@ -46,6 +46,14 @@ jobs:
           path: build/beam.com
           if-no-files-found: error
 
+      - name: Upload the APE loader
+        # NetBSD and OpenBSD cannot run APE files through sh.
+        uses: actions/upload-artifact@v4
+        with:
+          name: ape-loader
+          path: build/cosmocc/bin/ape-x86_64.elf
+          if-no-files-found: error
+
       - name: Test
         timeout-minutes: 5
         run: BEAM_COM_VERBOSE=1 timeout 120 ./build.sh test
@@ -165,10 +173,18 @@ jobs:
         if: matrix.vm == 'netbsd'
         uses: vmactions/netbsd-vm@v1
         with:
-          run: sh tests/run.sh bin
+          run: |
+            echo "== Through sh (known to fail: NUL bytes in the APE header)"
+            LIMIT=30 sh tests/run.sh bin || true
+            echo "== Through the APE loader"
+            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin
 
       - name: Run on OpenBSD
         if: matrix.vm == 'openbsd'
         uses: vmactions/openbsd-vm@v1
         with:
-          run: sh tests/run.sh bin
+          run: |
+            echo "== Through sh (known to fail: NUL bytes in the APE header)"
+            LIMIT=30 sh tests/run.sh bin || true
+            echo "== Through the APE loader"
+            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin

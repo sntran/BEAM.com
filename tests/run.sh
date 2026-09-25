@@ -1,9 +1,14 @@
 #!/bin/sh
 # Run beam.com and greeter.com, and check what they print.
 # Usage: tests/run.sh DIR   (DIR holds beam.com and, if made, greeter.com)
+#
+# RUNNER is the command that starts an APE file (default: sh). On NetBSD
+# and OpenBSD, sh stops at the NUL bytes of the APE header, so use the
+# APE loader there: RUNNER=DIR/ape-x86_64.elf.
 set -u
 dir=${1:-.}
 limit=${LIMIT:-120}
+runner=${RUNNER:-sh}
 tmp=${TMPDIR:-/tmp}/beam_com_test.$$
 fail=0
 
@@ -12,9 +17,10 @@ check() {
     shift 2
     echo "==> $name"
     chmod +x "$dir/$name"
-    # Run through sh, as a user without binfmt_misc would do it.
-    # A watchdog stops it after $limit seconds.
-    BEAM_COM_VERBOSE=1 sh "$dir/$name" "$@" > "$tmp" 2>&1 &
+    # Run through $runner (sh, as a user without binfmt_misc would do
+    # it). A watchdog stops it after $limit seconds.
+    [ "$runner" = sh ] || chmod +x "$runner"
+    BEAM_COM_VERBOSE=1 $runner "$dir/$name" "$@" > "$tmp" 2>&1 &
     pid=$!
     ( sleep "$limit"; kill -9 "$pid" ) >/dev/null 2>&1 &
     watchdog=$!

@@ -26,6 +26,22 @@ index 0d6ae8f..686f0e1 100644
  #if (defined(__APPLE__) && defined(__MACH__)) || defined(__DARWIN__)
  #  define ERTS_WRITE_UNLIKELY(X) X __attribute__ ((section ("__DATA,ERTS_LOW_WRITE") ))
  #else
+diff --git a/erts/emulator/sys/common/erl_mmap.h b/erts/emulator/sys/common/erl_mmap.h
+index 3218f67..1572b43 100644
+--- a/erts/emulator/sys/common/erl_mmap.h
++++ b/erts/emulator/sys/common/erl_mmap.h
+@@ -55,8 +55,10 @@
+  * See the following message on how MAP_NORESERVE was treated on FreeBSD:
+  * <http://lists.llvm.org/pipermail/cfe-commits/Week-of-Mon-20150202/122958.html>
+  */
++/* Cosmopolitan: on Windows, mmap(MAP_FIXED) over a PROT_NONE reservation
++ * fails ("Failed to reserve physical memory for descriptors"). */
+ #  if (defined(MAP_FIXED) && (defined(MAP_NORESERVE) || defined(__FreeBSD__)) \
+-       && !defined(ADDRESS_SANITIZER))
++       && !defined(ADDRESS_SANITIZER) && !defined(__COSMOPOLITAN__))
+ #    define ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION 1
+ #  endif
+ #endif
 diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/erl_child_setup.c
 index aa5c2e9..432e7fc 100644
 --- a/erts/emulator/sys/unix/erl_child_setup.c
