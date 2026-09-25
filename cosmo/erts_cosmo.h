@@ -15,8 +15,10 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <string.h>
-#include <cosmo.h>
+
+/* Do not include <string.h> or <cosmo.h> here: autoconf tests that
+ * undeclared builtins such as strchr() give an error. */
+char *GetProgramExecutableName(void);
 
 /* AF_LINK is defined, but struct sockaddr_dl is not. */
 #undef AF_LINK
@@ -29,7 +31,7 @@
 /* gethostid() is declared, but not defined. erl_interface only uses it
  * as one input for a random challenge. */
 static inline long beam_com_gethostid(void) { return 0; }
-#define gethostid() beam_com_gethostid()
+#define gethostid beam_com_gethostid
 
 /* Defined in beam_com.c. Changes argc/argv, or runs a helper program. */
 void beam_com_main(int *argcp, char ***argvp) __attribute__((__weak__));
@@ -50,7 +52,8 @@ static inline const char *beam_com_basename(const char *path)
  */
 static inline const char *beam_com_exec_path(const char *path)
 {
-    if (path && strncmp(path, "/zip/", 5) == 0)
+    if (path && path[0] == '/' && path[1] == 'z' && path[2] == 'i'
+        && path[3] == 'p' && path[4] == '/')
         return GetProgramExecutableName();
     return path;
 }

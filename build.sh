@@ -102,6 +102,12 @@ step_configure() {
         --without-debugger \
         --without-observer \
         --without-et
+    # The top-level configure does not stop when a sub-configure fails.
+    if ! tail -n 1 erts/config.log | grep -q "exit 0"; then
+        grep "error:" erts/config.log | tail -n 5
+        echo "The ERTS configure failed. See $ERL_TOP/erts/config.log" >&2
+        exit 1
+    fi
 }
 
 target() {
