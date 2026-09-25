@@ -145,11 +145,25 @@ arguments and in a header that the compiler includes in each file
 2. Builds `examples/greeter` with a normal Erlang/OTP 29.1.1 and rebar3,
    and adds it to a copy of `beam.com` with `zip` (`greeter.com`).
 3. Runs both files ([`tests/run.sh`](tests/run.sh),
-   [`tests/run.ps1`](tests/run.ps1)) on:
-   Linux x86_64 and aarch64, macOS arm64 and x86_64, Windows x86_64,
-   and FreeBSD, NetBSD and OpenBSD (in VMs).
+   [`tests/run.ps1`](tests/run.ps1)) on each platform.
 
 `beam.com` and `greeter.com` are build artifacts of each run.
+
+### Platform status
+
+| Platform | How to run | beam.com | greeter.com |
+| --- | --- | --- | --- |
+| Linux x86_64 | `sh ./beam.com` (or `./beam.com` with the APE loader in binfmt_misc) | ✅ | ✅ |
+| Linux aarch64 | `sh ./beam.com` | ✅ | ✅ |
+| macOS arm64 | `sh ./beam.com` | ✅ | ✅ |
+| macOS x86_64 | `sh ./beam.com` | ✅ | ✅ |
+| FreeBSD | `sh ./beam.com` | ✅ | ✅ |
+| NetBSD | `ape-x86_64.elf ./beam.com` (its `sh` cannot read APE files) | ✅ | ✅ |
+| OpenBSD 7.3 | `ape-x86_64.elf ./beam.com` | ✅ | ✅ |
+| OpenBSD 7.9 | Not supported by Cosmopolitan (7.3 or earlier only) | ❌ | ❌ |
+| Windows x86_64 | `beam.exe` (a copy with an `.exe` name) | ❌ work in progress | ❌ |
+
+`ape-x86_64.elf` is the APE loader from cosmocc (`bin/ape-x86_64.elf`).
 
 ## Notes for upstream
 
