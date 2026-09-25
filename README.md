@@ -161,9 +161,13 @@ arguments and in a header that the compiler includes in each file
 | NetBSD | `ape-x86_64.elf ./beam.com` (its `sh` cannot read APE files) | ✅ | ✅ |
 | OpenBSD 7.3 | `ape-x86_64.elf ./beam.com` | ✅ | ✅ |
 | OpenBSD 7.9 | Not supported by Cosmopolitan (7.3 or earlier only) | ❌ | ❌ |
-| Windows x86_64 | `beam.exe` (a copy with an `.exe` name) | ❌ work in progress | ❌ |
+| Windows x86_64 | `beam.exe` (a copy with an `.exe` name) | ✅ | ✅ |
 
 `ape-x86_64.elf` is the APE loader from cosmocc (`bin/ape-x86_64.elf`).
+
+On Windows, `os:type()` is `{unix, windows}`, and port programs do not
+work: `open_port({spawn, ...})`, `os:cmd/1` and native name lookups
+fail with `enotsup` (see C16 in [`docs/UPSTREAM.md`](docs/UPSTREAM.md)).
 
 ## Notes for upstream
 
@@ -176,6 +180,7 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 - No JIT, no `socket` NIF, no crypto/ssl, no NIFs or drivers in shared
   objects (Cosmopolitan cannot make them).
 - No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
+- Windows: no port programs (no `os:cmd/1`, no `inet_gethost`).
 - `run_erl` does not work (there is no `mkfifo()`).
 - Only kernel and stdlib are in the default zip. A release brings the
   other applications that it needs (pure Erlang ones only).
