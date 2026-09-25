@@ -20,6 +20,18 @@
  * undeclared builtins such as strchr() give an error. */
 char *GetProgramExecutableName(void);
 
+/*
+ * Cosmopolitan's IsWindows() (libc/dce.h) without its headers: __hostos
+ * has the _HOSTWINDOWS bit when the program runs on Windows. Use it where
+ * the Windows emulation of Cosmopolitan differs from Unix.
+ */
+extern const int __hostos;
+#define BEAM_COM_HOSTWINDOWS 4 /* _HOSTWINDOWS in libc/dce.h */
+static inline int beam_com_is_windows(void)
+{
+    return (__hostos & BEAM_COM_HOSTWINDOWS) != 0;
+}
+
 /* AF_LINK is defined, but struct sockaddr_dl is not. */
 #undef AF_LINK
 

@@ -336,6 +336,46 @@ That is a large change.
 the size of the Cosmopolitan fd table), as POSIX requires a value or -1
 without an error for "no limit".
 
+### C16. Windows: no `SCM_RIGHTS` (fd passing) over `AF_UNIX` socket pairs
+
+**Status:** HEAD source (found by reading the code; the CI symptom fits).
+
+**Effect.** ERTS starts `erl_child_setup` (the "forker") with
+`socketpair(AF_UNIX)` + `fork()` + `execve()`, and passes the pipe fds of
+each port program to it with `sendmsg(SCM_RIGHTS)`. On Windows,
+`libc/sock/sendmsg.c` and `recvmsg.c` return `EINVAL` for any
+`msg_control`, and `socketpair(AF_UNIX)` is a named pipe
+(`libc/sock/socketpair-nt.c`). So the forker cannot work. In CI, the
+forker child also kept the stdout/stderr pipes of `beam.exe` open, so the
+test hung after the program ended.
+
+**Workaround in BEAM.com.** On Windows (run-time test of `__hostos`), do
+not start the forker, and make `open_port({spawn, ...})` fail with
+`enotsup`. So `os:cmd/1` and native name lookups (`inet_gethost`) do not
+work on Windows yet.
+
+**Possible upstream fix.** Implement fd passing between Cosmopolitan
+processes (the fd table is already serialized for `execve()` in
+`_COSMO_FDS_V2`, and `DuplicateHandle()` can copy handles into a known
+peer process). At minimum return `ENOTSUP`, not `EINVAL`.
+
+Related notes from the same code reading (not yet seen in CI):
+
+- `fork()` on Windows copies every private mapping of the parent with
+  `WriteProcessMemory` (`libc/proc/fork-nt.c`), also large untouched
+  anonymous mappings. For a runtime like ERTS (about 1 GiB of reserved
+  literal area) this is slow and doubles the memory. A fast path for
+  fork-then-exec (or a documented `posix_spawn()` recommendation) would
+  help.
+- `poll()` on Windows checks pipes every 200 ms (`POLL_INTERVAL_MS`), can
+  report a pipe readable when `PeekNamedPipe` succeeds with 0 bytes, and
+  never reports `POLLOUT` for an `O_RDWR` pipe polled with `POLLIN`
+  (`libc/calls/poll-nt.c`).
+- `uname()` gives sysname `"Windows"`, so `os:type()` is
+  `{unix, windows}` in ERTS.
+- `sched_getaffinity()` on Windows wants `size == sizeof(cpu_set_t)`
+  exactly (`libc/proc/sched_getaffinity.c`); Linux accepts a larger size.
+
 ---
 
 ## Erlang/OTP

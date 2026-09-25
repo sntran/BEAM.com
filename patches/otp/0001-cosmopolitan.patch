@@ -96,10 +96,27 @@ index 2d1d60e..c72eb74 100644
      sys_init_signal_stack();
  
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index bdd6528..ccb2e13 100644
+index bdd6528..5dc0dfb 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
-@@ -518,7 +518,11 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -481,6 +481,16 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+     char *wd, *cwd;
+     int ifd[2], ofd[2], stderrfd;
+ 
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: on Windows there is no erl_child_setup (see forker_start),
++     * so port programs cannot be started. Fail the port instead of
++     * writing to a forker that is not there (ERTS_DUMP_EXIT). */
++    if (beam_com_is_windows()) {
++        errno = ENOTSUP;
++        return ERL_DRV_ERROR_ERRNO;
++    }
++#endif
++
+     if (pipe(ifd) < 0) return ERL_DRV_ERROR_ERRNO;
+     errno = EMFILE;		/* default for next three conditions */
+     if (ifd[0] >= sys_max_files() || pipe(ofd) < 0) {
+@@ -518,7 +528,11 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
  	memcpy((void *) cmd_line,(void *) name, len);
  	cmd_line[len] = '\0';
  	len = len + 1;
@@ -111,7 +128,27 @@ index bdd6528..ccb2e13 100644
  	    int save_errno = errno;
  	    erts_free(ERTS_ALC_T_TMP, cmd_line);
              close_pipes(ifd, ofd);
-@@ -1657,6 +1661,12 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1600,6 +1614,19 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+ 
+     forker_port = erts_drvport2id(port_num);
+ 
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: Cosmopolitan on Windows cannot pass file descriptors over
++     * the AF_UNIX socketpair (sendmsg()/recvmsg() reject msg_control with
++     * EINVAL), so erl_child_setup cannot work. fork() there would also copy
++     * the whole emulator (about 1 GB with the literal area) and leave a
++     * child that holds our stdout/stderr. Keep the forker port so that the
++     * rest of the boot is unchanged, but do not start the child. */
++    if (beam_com_is_windows()) {
++        forker_fd = -1;
++        return (ErlDrvData)port_num;
++    }
++#endif
++
+     res = erts_sys_explicit_8bit_getenv("BINDIR", bindir, &bindirsz);
+     if (res == 0) {
+         erts_exit(1, "Environment variable BINDIR is not set\n");
+@@ -1657,6 +1684,12 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
      (void) setsid();
  #endif
  

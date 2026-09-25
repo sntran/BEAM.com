@@ -17,6 +17,7 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     $psi.Arguments = ($Arguments -join ' ')
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true
     $psi.UseShellExecute = $false
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
@@ -25,6 +26,8 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     $o = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $handler -MessageData $lines
     $e = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $handler -MessageData $lines
     [void]$p.Start()
+    # stdin: a pipe at EOF, the same on each runner.
+    $p.StandardInput.Close()
     $p.BeginOutputReadLine()
     $p.BeginErrorReadLine()
 
@@ -38,6 +41,12 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
             Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Seconds 1
+    $left = Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' }
+    if ($left) {
+        Write-Host "Processes still running after $Name stopped:"
+        $left | Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
+        $left | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
     Unregister-Event -SourceIdentifier $o.Name
     Unregister-Event -SourceIdentifier $e.Name
     $out = ($lines.ToArray() -join "`n")
