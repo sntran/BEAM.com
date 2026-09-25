@@ -154,7 +154,8 @@ jobs:
         include:
           - { name: FreeBSD, vm: freebsd }
           - { name: NetBSD, vm: netbsd }
-          - { name: OpenBSD, vm: openbsd }
+          # Cosmopolitan supports OpenBSD 7.3 or earlier.
+          - { name: OpenBSD 7.3, vm: openbsd }
     steps:
       - uses: actions/checkout@v4
 
@@ -183,6 +184,7 @@ jobs:
         if: matrix.vm == 'openbsd'
         uses: vmactions/openbsd-vm@v1
         with:
+          release: "7.3"
           run: |
             echo "== Through sh (known to fail: NUL bytes in the APE header)"
             LIMIT=30 sh tests/run.sh bin || true

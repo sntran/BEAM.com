@@ -308,6 +308,34 @@ does not work on these two systems.
 possible, move the first NUL byte after the part of the shell script
 that these shells read before they stop.
 
+### C14. OpenBSD 7.9: the APE loader aborts
+
+**Status:** 4.0.2 in CI (vmactions OpenBSD 7.9 VM): `ape-x86_64.elf
+./beam.com` gives `Abort trap (core dumped)` before the program starts.
+
+**Note.** This is expected: the Cosmopolitan README supports "OpenBSD 7.3
+or earlier". Newer OpenBSD versions only allow system calls from the
+system libc (pinsyscalls, 7.5 and later), and statically linked programs
+that make their own system calls stop. CI tests OpenBSD 7.3.
+
+**Possible upstream work.** OpenBSD support after 7.4 would need the
+system calls to go through `libc.so` on OpenBSD (as Go does since 1.22).
+That is a large change.
+
+### C15. Windows: `sysconf(_SC_OPEN_MAX)` fails with `EINVAL`
+
+**Status:** 4.0.2 in CI (`windows-latest`).
+
+**Effect.** ERTS stops at boot with
+`erts_poll_init(): Failed to get max number of files: einval`.
+
+**Workaround in BEAM.com.** In `erl_poll.c`, use `FD_SETSIZE` when
+`sysconf()` fails (the `select()` back-end has this limit anyway).
+
+**Possible upstream fix.** Return a fixed limit on Windows (for example
+the size of the Cosmopolitan fd table), as POSIX requires a value or -1
+without an error for "no limit".
+
 ---
 
 ## Erlang/OTP
