@@ -149,6 +149,12 @@ arguments and in a header that the compiler includes in each file
 
 `beam.com` and `greeter.com` are build artifacts of each run.
 
+## Notes for upstream
+
+[`docs/UPSTREAM.md`](docs/UPSTREAM.md) records what did not work with
+Cosmopolitan and with the OTP build, with small reproducers, the
+workaround in BEAM.com, and a possible upstream fix for each item.
+
 ## Known limits
 
 - No JIT, no `socket` NIF, no crypto/ssl, no NIFs or drivers in shared
