@@ -26,6 +26,11 @@
 #define IPPROTO_SCTP 132
 #endif
 
+/* gethostid() is declared, but not defined. erl_interface only uses it
+ * as one input for a random challenge. */
+static inline long beam_com_gethostid(void) { return 0; }
+#define gethostid() beam_com_gethostid()
+
 /* Defined in beam_com.c. Changes argc/argv, or runs a helper program. */
 void beam_com_main(int *argcp, char ***argvp) __attribute__((__weak__));
 

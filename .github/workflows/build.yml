@@ -11,7 +11,7 @@ env:
 
 jobs:
   build:
-    name: Build (cosmocc ${{ env.COSMOCC_VERSION }}, OTP ${{ env.OTP_VERSION }})
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
