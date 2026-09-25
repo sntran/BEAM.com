@@ -1,0 +1,9 @@
+# Arguments for BEAM.com, one per line (redbean style).
+# Lines that start with '+' are emulator flags, as with erl.
+# The '...' line is replaced by the command line arguments.
+-noshell
+-s
+hello
+main
+-extra
+...
