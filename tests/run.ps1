@@ -8,7 +8,9 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     # Windows runs an APE file as a PE executable. Use an .exe name.
     $exe = Join-Path $Dir ($Name -replace '\.com$', '.exe')
     Copy-Item (Join-Path $Dir $Name) $exe -Force
-    # Run with a time limit, and capture stdout and stderr.
+
+    # Run with a time limit. Read the output line by line, so that we see
+    # the output before a hang too.
     $env:BEAM_COM_VERBOSE = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Resolve-Path $exe).Path
@@ -16,17 +18,30 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $p.StandardOutput.ReadToEndAsync()
-    $stderr = $p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit(120000)) {
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    $lines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    $handler = { if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue($EventArgs.Data) } }
+    $o = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $handler -MessageData $lines
+    $e = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $handler -MessageData $lines
+    [void]$p.Start()
+    $p.BeginOutputReadLine()
+    $p.BeginErrorReadLine()
+
+    $timedOut = -not $p.WaitForExit(120000)
+    if ($timedOut) {
+        Write-Host "FAIL: $Name did not stop in 120 seconds. Processes:"
+        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
+            Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
         $p.Kill($true)
-        Write-Host "FAIL: $Name did not stop in 120 seconds"
-        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } | Format-Table -AutoSize
+        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
     }
-    $p.WaitForExit()
-    $out = $stdout.Result + $stderr.Result
-    $rc = $p.ExitCode
+    Start-Sleep -Seconds 1
+    Unregister-Event -SourceIdentifier $o.Name
+    Unregister-Event -SourceIdentifier $e.Name
+    $out = ($lines.ToArray() -join "`n")
+    $rc = if ($timedOut) { 124 } else { $p.ExitCode }
     Write-Host $out
     if ($rc -ne 0) {
         Write-Host "FAIL: $Name exited with $rc"; $script:fail = 1
