@@ -149,22 +149,36 @@ step_bundle() {
     log "Bundling $OUT"
     t=$(target)
     rm -rf "$STAGE"
-    mkdir -p "$STAGE/bin" "$STAGE/lib/hello-1.0/ebin"
+    mkdir -p "$STAGE/bin"
 
-    cp "$RELEASE"/bin/start.boot "$RELEASE"/bin/start_clean.boot \
-       "$RELEASE"/bin/no_dot_erlang.boot "$STAGE/bin/"
+    # OTP: boot scripts for tools, and the kernel and stdlib applications.
+    cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
+       "$STAGE/bin/"
     for app in kernel stdlib; do
         dir=$(cd "$RELEASE/lib" && ls -d "$app"-* | head -n 1)
         mkdir -p "$STAGE/lib/$dir"
         cp -R "$RELEASE/lib/$dir/ebin" "$STAGE/lib/$dir/"
     done
 
-    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/hello-1.0/ebin" "$ROOT/hello/hello.erl"
-    cp "$ROOT/hello/.args" "$STAGE/.args"
+    # The hello release, made like any other OTP release.
+    erts_vsn=$(cd "$RELEASE" && ls -d erts-* | sed 's/^erts-//')
+    kernel_vsn=$(cd "$STAGE/lib" && ls -d kernel-* | sed 's/^kernel-//')
+    stdlib_vsn=$(cd "$STAGE/lib" && ls -d stdlib-* | sed 's/^stdlib-//')
+    app=$STAGE/lib/hello-0.1.0
+    rel=$STAGE/releases/0.1.0
+    mkdir -p "$app/ebin" "$rel"
+    "$ERL_TOP/bin/erlc" -o "$app/ebin" \
+        "$ROOT/hello/hello.erl" "$ROOT/hello/hello_app.erl"
+    cp "$ROOT/hello/hello.app" "$app/ebin/"
+    printf '{release, {"hello", "0.1.0"}, {erts, "%s"},\n [{kernel, "%s"}, {stdlib, "%s"}, {hello, "0.1.0"}]}.\n' \
+        "$erts_vsn" "$kernel_vsn" "$stdlib_vsn" > "$rel/hello.rel"
+    "$ERL_TOP/bin/escript" "$ROOT/tools/make_boot.escript" "$rel/hello" "$STAGE"
+    cp "$ROOT/hello/sys.config" "$ROOT/hello/vm.args" "$rel/"
+    echo "$erts_vsn 0.1.0" > "$STAGE/releases/start_erl.data"
 
     cp "$ERL_TOP/bin/$t/beam.emu" "$OUT"
     chmod +x "$OUT"
-    (cd "$STAGE" && zip -q -r -9 "$OUT" .args bin lib)
+    (cd "$STAGE" && zip -q -r -9 "$OUT" bin lib releases)
     ls -l "$OUT"
 }
 

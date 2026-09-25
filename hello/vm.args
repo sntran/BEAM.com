@@ -1,0 +1,5 @@
+## Emulator flags of the hello release, as with erl.
+## hello is a command line program: no shell.
+-noshell
+## Two schedulers show that BEAM.com reads this file.
++S 2

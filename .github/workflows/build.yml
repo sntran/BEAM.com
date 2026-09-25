@@ -59,9 +59,41 @@ jobs:
             build/otp/make/*/otp.mk
           if-no-files-found: ignore
 
+  example-release:
+    name: Add a rebar3 release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: beam.com
+
+      # A normal Erlang/OTP and rebar3, as a user has them.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: "3"
+
+      - name: Build the greeter release and add it to beam.com
+        run: |
+          (cd examples/greeter && rebar3 release)
+          cp beam.com greeter.com
+          (cd examples/greeter/_build/default/rel/greeter &&
+           find releases lib -type f | sort &&
+           zip -r ../../../../../../greeter.com releases lib)
+
+      - name: Upload greeter.com
+        uses: actions/upload-artifact@v4
+        with:
+          name: greeter.com
+          path: greeter.com
+          if-no-files-found: error
+
   test:
     name: Run on ${{ matrix.name }}
-    needs: build
+    needs: [build, example-release]
     strategy:
       fail-fast: false
       matrix:
@@ -73,30 +105,25 @@ jobs:
           - { name: Windows x86_64, os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          name: beam.com
+          path: bin
+          merge-multiple: true
 
       - name: Run (Unix)
         if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          chmod +x beam.com
-          sh ./beam.com hello from "${{ matrix.name }}" | tee out.txt
-          grep -q "Hello, World!" out.txt
+        run: tests/run.sh bin
 
       - name: Run (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          Copy-Item beam.com beam.exe
-          .\beam.exe hello from Windows | Tee-Object -FilePath out.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Select-String -Path out.txt -Pattern "Hello, World!" -Quiet)) { exit 1 }
+        run: tests/run.ps1 bin
 
   test-bsd:
     name: Run on ${{ matrix.name }}
-    needs: build
+    needs: [build, example-release]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -106,33 +133,27 @@ jobs:
           - { name: NetBSD, vm: netbsd }
           - { name: OpenBSD, vm: openbsd }
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          name: beam.com
+          path: bin
+          merge-multiple: true
 
       - name: Run on FreeBSD
         if: matrix.vm == 'freebsd'
         uses: vmactions/freebsd-vm@v1
         with:
-          run: |
-            chmod +x beam.com
-            sh ./beam.com hello from FreeBSD | tee out.txt
-            grep -q "Hello, World!" out.txt
+          run: sh tests/run.sh bin
 
       - name: Run on NetBSD
         if: matrix.vm == 'netbsd'
         uses: vmactions/netbsd-vm@v1
         with:
-          run: |
-            chmod +x beam.com
-            sh ./beam.com hello from NetBSD | tee out.txt
-            grep -q "Hello, World!" out.txt
+          run: sh tests/run.sh bin
 
       - name: Run on OpenBSD
         if: matrix.vm == 'openbsd'
         uses: vmactions/openbsd-vm@v1
         with:
-          run: |
-            chmod +x beam.com
-            sh ./beam.com hello from OpenBSD | tee out.txt
-            grep -q "Hello, World!" out.txt
+          run: sh tests/run.sh bin

@@ -1,0 +1,7 @@
+{application, greeter,
+ [{description, "Example release for BEAM.com"},
+  {vsn, "1.0.0"},
+  {registered, [greeter_sup, greeter_server]},
+  {mod, {greeter_app, []}},
+  {applications, [kernel, stdlib]},
+  {env, [{name, "nobody"}, {count, 3}]}]}.

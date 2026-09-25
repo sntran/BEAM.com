@@ -9,9 +9,16 @@
  *   inet_gethost*     -> the native name resolver
  *   anything else     -> the BEAM emulator
  *
- * When the executable holds a /zip/.args file (redbean style), the
- * emulator arguments are made from that file, the same way as erlexec
- * would do it for an OTP installation in /zip.
+ * The emulator arguments are made the same way as erlexec would do it
+ * for an OTP installation in /zip, from these files in the zip:
+ *
+ *   /zip/releases/start_erl.data  An OTP release ("ERTS_VSN REL_VSN"):
+ *                                 boot releases/REL_VSN/start.boot, with
+ *                                 sys.config and vm.args when they exist.
+ *   /zip/.args                    More arguments, one on each line
+ *                                 (redbean style).
+ *
+ * When there is neither, the program is a plain beam.smp.
  */
 #include <cosmo.h>
 #include <errno.h>
@@ -25,6 +32,7 @@
 #define BEAM_COM_ROOT "/zip"
 #define BEAM_COM_BINDIR "/zip/bin"
 #define BEAM_COM_ARGS "/zip/.args"
+#define BEAM_COM_RELEASES "/zip/releases"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -109,6 +117,87 @@ static int read_zip_args(struct arglist *out)
     return 1;
 }
 
+static int file_exists(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+    fclose(f);
+    return 1;
+}
+
+static char *join(const char *a, const char *b, const char *c)
+{
+    size_t n = strlen(a) + strlen(b) + strlen(c) + 1;
+    char *s = malloc(n);
+    if (!s)
+        die("malloc");
+    snprintf(s, n, "%s%s%s", a, b, c);
+    return s;
+}
+
+/*
+ * Read a vm.args file. Arguments are separated by white space, and '#'
+ * starts a comment to the end of the line. Quotes are not supported.
+ */
+static void read_vm_args(const char *path, struct arglist *out)
+{
+    FILE *f;
+    char *line = NULL, *word, *save;
+    size_t cap = 0;
+
+    if (!(f = fopen(path, "r")))
+        return;
+    while (getline(&line, &cap, f) != -1) {
+        char *hash = strchr(line, '#');
+        if (hash)
+            *hash = '\0';
+        for (word = strtok_r(line, " \t\r\n", &save); word;
+             word = strtok_r(NULL, " \t\r\n", &save))
+            push(out, strdup(word));
+    }
+    free(line);
+    fclose(f);
+}
+
+/*
+ * Read /zip/releases/start_erl.data and add the arguments that boot
+ * that release. Returns 0 when there is no release.
+ */
+static int read_release(struct arglist *out)
+{
+    FILE *f;
+    char erts_vsn[64], rel_vsn[256];
+    char *dir, *path;
+
+    if (!(f = fopen(BEAM_COM_RELEASES "/start_erl.data", "r")))
+        return 0;
+    if (fscanf(f, "%63s %255s", erts_vsn, rel_vsn) != 2) {
+        fclose(f);
+        fprintf(stderr, "beam.com: bad " BEAM_COM_RELEASES "/start_erl.data\n");
+        exit(127);
+    }
+    fclose(f);
+
+    dir = join(BEAM_COM_RELEASES "/", rel_vsn, "/");
+    path = join(dir, "start", ".boot");
+    if (!file_exists(path)) {
+        fprintf(stderr, "beam.com: %s not found\n", path);
+        exit(127);
+    }
+    push(out, "-boot");
+    push(out, join(dir, "start", ""));
+
+    path = join(dir, "sys", ".config");
+    if (file_exists(path)) {
+        push(out, "-config");
+        push(out, join(dir, "sys", ""));
+    }
+
+    read_vm_args(join(dir, "vm", ".args"), out);
+    return 1;
+}
+
 static char *home_dir(void)
 {
     char *home = getenv("HOME");
@@ -125,15 +214,28 @@ void beam_com_main(int *argcp, char ***argvp)
     char **argv = *argvp;
     const char *name = beam_com_basename(argv[0]);
     struct arglist file = {0}, emu = {0}, init = {0}, all = {0};
-    int i, extra = 0, used_cli = 0;
+    int i, extra = 0, used_cli = 0, has_release, has_args;
 
     if (starts_with(name, "erl_child_setup"))
         exit(erl_child_setup_main(argc, argv));
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
 
-    if (!read_zip_args(&file))
+    has_release = read_release(&file);
+    has_args = read_zip_args(&file);
+    if (!has_release && !has_args)
         return; /* Not a bundle: behave like a plain beam.smp. */
+
+    /* ERL_FLAGS has more flags, as with erl. */
+    if (getenv("ERL_FLAGS")) {
+        struct arglist flags = {0};
+        char *copy = strdup(getenv("ERL_FLAGS")), *word, *save;
+        for (word = strtok_r(copy, " \t\r\n", &save); word;
+             word = strtok_r(NULL, " \t\r\n", &save))
+            push(&flags, word);
+        for (i = 0; i < flags.n; i++)
+            add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+    }
 
     for (i = 0; i < file.n; i++) {
         if (strcmp(file.v[i], "...") == 0) {
@@ -145,9 +247,14 @@ void beam_com_main(int *argcp, char ***argvp)
             add_user_arg(&emu, &init, file.v, &i, file.n, &extra);
         }
     }
-    if (!used_cli) {
+
+    /* Without "...", the command line arguments are plain arguments
+     * for the program (init:get_plain_arguments/0). */
+    if (!used_cli && argc > 1) {
+        if (!extra)
+            push(&init, "-extra");
         for (i = 1; i < argc; i++)
-            add_user_arg(&emu, &init, argv, &i, argc, &extra);
+            push(&init, argv[i]);
     }
 
     setenv("ROOTDIR", BEAM_COM_ROOT, 1);
