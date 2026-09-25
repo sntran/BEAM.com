@@ -8,7 +8,7 @@
 #   With no step, all steps run in order.
 #
 # Environment:
-#   OTP_VERSION      OTP git tag without "OTP-" (default 28.5)
+#   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
@@ -20,7 +20,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
-OTP_VERSION=${OTP_VERSION:-28.5}
+OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
@@ -117,9 +117,12 @@ target() {
 step_make() {
     log "Building OTP (small build)"
     cd "$ERL_TOP"
-    # cosmocc does not support "-MM" with many input files, so the
-    # dependency files of the emulator cannot be made.
-    ERTS_SKIP_DEPEND=true make -j"$JOBS" OTP_SMALL_BUILD=true
+    # cosmocc does not support "-MM" with many input files. depcc runs
+    # it once for each file.
+    # There are no shared objects, so noshared writes placeholder files
+    # for the NIF libraries (DED_LD).
+    DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
+        DEP_CC="$ROOT/cosmo/depcc" DED_LD="$ROOT/cosmo/noshared"
 }
 
 step_multicall() {
@@ -167,7 +170,8 @@ step_bundle() {
 
 step_test() {
     log "Running $OUT"
-    sh "$OUT" one two
+    "$OUT" one two | tee "$BUILD/test.out"
+    grep -q "Hello, World!" "$BUILD/test.out"
 }
 
 if [ $# -eq 0 ]; then

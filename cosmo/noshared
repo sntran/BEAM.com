@@ -1,0 +1,16 @@
+#!/bin/sh
+# Linker for NIF and driver shared objects (DED_LD) in the OTP build.
+#
+# Cosmopolitan Libc cannot make shared objects. This script writes a
+# placeholder file in place of the ".so", so that the OTP build can
+# continue. Loading the NIF at run time fails.
+out=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o) out=$2; shift ;;
+        -o*) out=${1#-o} ;;
+    esac
+    shift
+done
+[ -n "$out" ] || { echo "noshared: no -o argument" >&2; exit 1; }
+echo "BEAM.com: shared objects are not supported" > "$out"

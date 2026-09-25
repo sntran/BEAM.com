@@ -19,7 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "erts_cosmo.h"
+/* erts_cosmo.h is included by the compiler (-include). */
+
 
 #define BEAM_COM_ROOT "/zip"
 #define BEAM_COM_BINDIR "/zip/bin"

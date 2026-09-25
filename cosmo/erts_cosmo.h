@@ -33,6 +33,16 @@ char *GetProgramExecutableName(void);
 static inline long beam_com_gethostid(void) { return 0; }
 #define gethostid beam_com_gethostid
 
+/* There is no mkfifo(). Only run_erl uses it, and BEAM.com does not
+ * include run_erl. */
+static inline int beam_com_mkfifo(const char *path, unsigned mode)
+{
+    (void)path;
+    (void)mode;
+    return -1;
+}
+#define mkfifo beam_com_mkfifo
+
 /* Defined in beam_com.c. Changes argc/argv, or runs a helper program. */
 void beam_com_main(int *argcp, char ***argvp) __attribute__((__weak__));
 

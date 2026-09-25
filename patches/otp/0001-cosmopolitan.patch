@@ -1,5 +1,5 @@
 diff --git a/erts/emulator/beam/erl_bits.c b/erts/emulator/beam/erl_bits.c
-index f23648a..ac320a4 100644
+index 6b70a2e..8f642c3 100644
 --- a/erts/emulator/beam/erl_bits.c
 +++ b/erts/emulator/beam/erl_bits.c
 @@ -44,7 +44,7 @@
@@ -11,6 +11,21 @@ index f23648a..ac320a4 100644
  #define FP16_TO_FP64(x) ((double) x)
  #else
  typedef Uint16 erlfp16;
+diff --git a/erts/emulator/beam/sys.h b/erts/emulator/beam/sys.h
+index 0d6ae8f..686f0e1 100644
+--- a/erts/emulator/beam/sys.h
++++ b/erts/emulator/beam/sys.h
+@@ -199,7 +199,9 @@ typedef ERTS_SYS_FD_TYPE ErtsSysFdType;
+ #endif
+ 
+ /* AIX doesn't like this and claims section conflicts */
+-#if ERTS_AT_LEAST_GCC_VSN__(2, 96, 0) && !defined(_AIX)
++/* Cosmopolitan: the APE linker script does not know this section, and
++ * it breaks the alignment of the PE .data section. */
++#if ERTS_AT_LEAST_GCC_VSN__(2, 96, 0) && !defined(_AIX) && !defined(__COSMOPOLITAN__)
+ #if (defined(__APPLE__) && defined(__MACH__)) || defined(__DARWIN__)
+ #  define ERTS_WRITE_UNLIKELY(X) X __attribute__ ((section ("__DATA,ERTS_LOW_WRITE") ))
+ #else
 diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/erl_child_setup.c
 index aa5c2e9..c733803 100644
 --- a/erts/emulator/sys/unix/erl_child_setup.c
@@ -46,7 +61,7 @@ index 2d1d60e..c72eb74 100644
      sys_init_signal_stack();
  
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index c06d6b6..c7c8a30 100644
+index bdd6528..925d4d9 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
 @@ -518,7 +518,11 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
@@ -61,7 +76,7 @@ index c06d6b6..c7c8a30 100644
  	    int save_errno = errno;
  	    erts_free(ERTS_ALC_T_TMP, cmd_line);
              close_pipes(ifd, ofd);
-@@ -1655,7 +1659,11 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1657,7 +1661,11 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
      (void) setsid();
  #endif
  
@@ -74,7 +89,7 @@ index c06d6b6..c7c8a30 100644
      }
  
 diff --git a/erts/emulator/zstd/zstd.mk b/erts/emulator/zstd/zstd.mk
-index 5e81621..3f8ce21 100644
+index d3725de..cbd985d 100644
 --- a/erts/emulator/zstd/zstd.mk
 +++ b/erts/emulator/zstd/zstd.mk
 @@ -30,8 +30,10 @@ ZSTD_SRC := $(sort $(wildcard zstd/common/*.c) \
