@@ -91,7 +91,7 @@ has(Text, Part) ->
     string:find(Text, Part) =/= nomatch.
 
 commands_test_() ->
-    UnknownRun = {error, "unknown command ~ts (see beam.com help)", ["run"]},
+    UnknownRun = {error, "unknown command ~ts (see ~ts help)", ["run", "beam.com"]},
     [{"no command prints the help",
       fun() ->
               {ok, Text} = output([]),
@@ -141,7 +141,13 @@ commands_test_() ->
       end},
      {"an unknown command", ?_assertThrow(UnknownRun, beam_com:command(["run", "x"]))},
      {"version with arguments",
-      ?_assertThrow({error, "usage: beam.com version", []},
+      ?_assertThrow({error, "usage: ~ts version", ["beam.com"]},
                     beam_com:command(["version", "x"]))},
      {"help of an unknown command",
-      ?_assertThrow(UnknownRun, beam_com:command(["help", "run"]))}].
+      ?_assertThrow(UnknownRun, beam_com:command(["help", "run"]))},
+     {"the name of the file",
+      [?_assertEqual("beam.com", beam_com:name()),
+       ?_assertEqual("elixir.com", beam_com:name("/opt/bin/elixir.com")),
+       ?_assertEqual("beam.com", beam_com:name("C:/tools/beam.exe")),
+       ?_assertEqual("elixir.com", beam_com:name("C:\\tools\\elixir.exe")),
+       ?_assertEqual("beam.com", beam_com:name("beam"))]}].

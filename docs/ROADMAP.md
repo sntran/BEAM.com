@@ -102,9 +102,13 @@ can be added on WAMR, or the runtime can be replaced.
 - Done: Elixir. Evaluated first: Elixir 1.20.4 compiles with the
   Erlang/OTP 29.1.1 of this build; `elixir`, `eex`, `logger` and `mix`
   are 10 MB of beam files, 2.7 MB without debug information and docs,
-  and 1.8 MB in the zip. `beam.com build` compiles one Elixir file with
-  `main/1`, and Mix projects (read with Mix), with Hex packages in
+  and 1.8 MB in the zip. `elixir.com build` compiles one Elixir file
+  with `main/1`, and Mix projects (read with Mix), with Hex packages in
   Elixir and `mix.lock`.
+- Done: two files. `beam.com` is for Erlang, and `elixir.com` is
+  `beam.com` with Elixir (+1.8 MB). An Erlang program is the same from
+  both. The name of each file shows what it is for, as the `.com`
+  shows that it is an APE file.
 - Done: command line programs, for larger projects (for example an
   orchestration tool with a sandbox worker): the `main/1` of an application
   (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours

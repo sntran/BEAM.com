@@ -8,6 +8,19 @@ It uses the "redbean style": the executable is also a zip file. You add
 an Erlang release to the zip, and the one file runs your release on
 Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.
 
+There are two files. Both run the same runtime, and both can build
+Erlang programs:
+
+| File | For | Size |
+|---|---|---|
+| `beam.com` | Erlang | 44 MB |
+| `elixir.com` | Erlang and Elixir: `beam.com` with Elixir 1.20.4 | +1.8 MB |
+
+A program that you build gets only the applications that it uses, so an
+Erlang program from `elixir.com` is the same as one from `beam.com`.
+(`beam-emu.com` is `beam.com` with the interpreter in place of the JIT;
+see "JIT" below.)
+
 You do not need Erlang to make such a file. `beam.com` has the compiler:
 
 ```
@@ -91,7 +104,8 @@ application that the code only calls with `apply/3` or similar.
 
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
 `parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm`,
-`esqlite`, and Elixir (`elixir`, `eex`, `logger` and `mix`).
+and `esqlite`. The zip of `elixir.com` also has Elixir (`elixir`, `eex`,
+`logger` and `mix`).
 
 ### Hex packages
 
@@ -136,14 +150,18 @@ it on each platform, two times (with and without `rebar.lock`).
 
 ### Elixir
 
-`beam.com` has Elixir 1.20.4 (compiled with its Erlang/OTP 29.1.1, the
-beam files without debug information and docs: 1.8 MB in the zip), so
-`beam.com build` compiles Elixir code without an Elixir installation:
+`elixir.com` is `beam.com` with Elixir 1.20.4 (compiled with its
+Erlang/OTP 29.1.1, the beam files without debug information and docs:
+1.8 MB in the zip), so `elixir.com build` compiles Elixir code without
+an Elixir installation:
 
 ```sh
-beam.com build hello.ex             # one file; a module exports main/1
-beam.com build my_project           # a Mix project (mix.exs)
+elixir.com build hello.ex           # one file; a module exports main/1
+elixir.com build my_project         # a Mix project (mix.exs)
 ```
+
+`beam.com` has no Elixir: for Elixir code (also an Elixir package from
+Hex), it stops with "Elixir is not in beam.com: use elixir.com".
 
 - **One file** (`.ex` or `.exs`): the modules of the file, and the one
   that exports `main/1` runs; it gets the arguments as binaries (as

@@ -299,15 +299,25 @@ fi
 # Elixir: a one-file program, and a Mix project with a Hex package in
 # Elixir (jason, from hex.pm) and config/config.exs.
 greeter_ex='greeter_ex: Hello from config/config.exs (1)@@greeter_ex: Hello from config/config.exs (2)@@greeter_ex: json {.*"elixir":"1\.[0-9.]*".*}@@greeter_ex: decoded 1\.'
+# beam.com has no Elixir; elixir.com is beam.com with Elixir.
 if [ -d examples ]; then
-    check beam.com 'wrote .*elixir_check.com@@applications: .*elixir' \
+    check_status 1 beam.com 'Elixir is not in beam.com: use elixir.com' \
+        build tests/programs/elixir_check.ex -o "$dir/never.com"
+    check_status 1 beam.com 'Elixir is not in beam.com: use elixir.com' \
+        build examples/greeter_ex -o "$dir/never.com"
+    rm -f examples/greeter_ex/mix.lock
+fi
+if [ -d examples ] && [ -f "$dir/elixir.com" ]; then
+    check elixir.com 'usage: elixir.com COMMAND@@Erlang/OTP 29\.[0-9.]* and Elixir 1\.' help
+    check elixir.com "^elixir.com @@Elixir      : 1\.[0-9]*\.[0-9]*\$@@OS type     : unix/$os@@elixir-1\." version
+    check elixir.com 'wrote .*elixir_check.com@@applications: .*elixir' \
         build tests/programs/elixir_check.ex -o "$dir/elixir_check.com"
     if [ -f "$dir/elixir_check.com" ]; then
         check elixir_check.com 'elixir: 1\.[0-9]*\.[0-9]* on OTP 29@@args: \["a", "b c", "日本"\]@@sum: 5050@@upcase: BEAM.COM' a "b c" 日本
         check_status 127 elixir_check.com '\*\* (RuntimeError) boom' raise
     fi
     rm -f examples/greeter_ex/mix.lock
-    check beam.com 'wrote .*mix.lock@@wrote .*greeter_ex.com@@applications: .*jason' \
+    check elixir.com 'wrote .*mix.lock@@wrote .*greeter_ex.com@@applications: .*jason' \
         build examples/greeter_ex -o "$dir/greeter_ex.com"
     [ -f "$dir/greeter_ex.com" ] && check greeter_ex.com "$greeter_ex"
     rm -f examples/greeter_ex/mix.lock

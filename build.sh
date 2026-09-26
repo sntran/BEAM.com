@@ -20,9 +20,10 @@
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
-#   ELIXIR           0: leave out Elixir (the elixir, eex, logger and mix
-#                    applications in the zip, for "beam.com build" of
-#                    Elixir code; default 1)
+#   ELIXIR           1: also make elixir.com, a copy of beam.com with Elixir
+#                    (the elixir, eex, logger and mix applications in the
+#                    zip, for "elixir.com build" of Elixir code; default 1).
+#                    beam.com itself has no Elixir.
 #   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
@@ -73,6 +74,7 @@ ESQLITE=$BUILD/esqlite
 WAMR=$BUILD/wamr
 STAGE=$BUILD/stage
 OUT=${OUT:-$BUILD/beam.com}
+ELIXIR_OUT=${ELIXIR_OUT:-$(dirname "$OUT")/elixir.com}
 
 export ERL_TOP
 PATH=$COSMOCC/bin:$PATH
@@ -469,20 +471,6 @@ step_bundle() {
         cp "$ESQLITE/src/esqlite.app.src" "$STAGE/lib/esqlite-$vsn/ebin/esqlite.app"
     fi
 
-    # Elixir: the applications without debug information and docs (8 MB
-    # of beam files become 2.7 MB). mix reads mix.exs for "beam.com build"
-    # only; a program gets the applications that it uses.
-    if [ "$ELIXIR" = 1 ]; then
-        for app in $ELIXIR_APPS; do
-            src=$BUILD/elixir-$ELIXIR_VERSION/lib/$app/ebin
-            vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/$app.app")
-            mkdir -p "$STAGE/lib/$app-$vsn/ebin"
-            cp "$src"/*.beam "$src/$app.app" "$STAGE/lib/$app-$vsn/ebin/"
-        done
-        "$ERL_TOP/bin/erl" -noshell -eval \
-            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")]), halt()."
-    fi
-
     # WebAssembly: the wasm application (its NIF is in the emulator).
     if [ "$WASM" = 1 ]; then
         mkdir -p "$STAGE/lib/wasm-0.1.0/ebin"
@@ -527,6 +515,26 @@ step_bundle() {
      zip -q -r -9 "$OUT" bin lib -x 'lib/kernel-*/ebin/*' -x 'lib/stdlib-*/ebin/*' &&
      zip -q -r -0 "$OUT" lib/kernel-*/ebin lib/stdlib-*/ebin)
     ls -l "$OUT"
+
+    # elixir.com: beam.com with Elixir, the applications without debug
+    # information and docs (8 MB of beam files become 2.7 MB). mix reads
+    # mix.exs for "elixir.com build" only; a program gets the
+    # applications that it uses.
+    if [ "$ELIXIR" = 1 ]; then
+        log "Bundling $ELIXIR_OUT"
+        rm -rf "$STAGE.elixir"
+        for app in $ELIXIR_APPS; do
+            src=$BUILD/elixir-$ELIXIR_VERSION/lib/$app/ebin
+            vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/$app.app")
+            mkdir -p "$STAGE.elixir/lib/$app-$vsn/ebin"
+            cp "$src"/*.beam "$src/$app.app" "$STAGE.elixir/lib/$app-$vsn/ebin/"
+        done
+        "$ERL_TOP/bin/erl" -noshell -eval \
+            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE.elixir/lib/\" ++ A ++ \"-*/ebin/*.beam\")]), halt()."
+        cp "$OUT" "$ELIXIR_OUT"
+        (cd "$STAGE.elixir" && zip -q -r -9 "$ELIXIR_OUT" lib)
+        ls -l "$ELIXIR_OUT"
+    fi
 }
 
 # The unit tests of the Erlang code (tests/unit), with coverage. They
@@ -563,6 +571,22 @@ step_test() {
         "$OUT" build "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
         "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
         grep -q '^sqlite: json \["alpha","beta","gamma"\]' "$BUILD/test.out"
+    fi
+    # beam.com has no Elixir; elixir.com has it, and builds Elixir code.
+    if "$OUT" build "$ROOT/tests/programs/elixir_check.ex" -o "$BUILD/never.com" \
+            > "$BUILD/test.out" 2>&1; then
+        echo "beam.com built an Elixir program" >&2
+        exit 1
+    fi
+    grep -q 'use elixir.com' "$BUILD/test.out"
+    if [ "$ELIXIR" = 1 ]; then
+        log "Running $ELIXIR_OUT"
+        "$ELIXIR_OUT" version | tee "$BUILD/test.out"
+        grep -q "Elixir      : $ELIXIR_VERSION" "$BUILD/test.out"
+        "$ELIXIR_OUT" help | grep -q "usage: elixir.com COMMAND"
+        "$ELIXIR_OUT" build "$ROOT/tests/programs/elixir_check.ex" -o "$BUILD/elixir_check.com"
+        "$BUILD/elixir_check.com" a | tee "$BUILD/test.out"
+        grep -q '^sum: 5050' "$BUILD/test.out"
     fi
 }
 

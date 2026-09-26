@@ -7,13 +7,13 @@ time, and the speed of typical work.
 ## How to run them
 
 ```sh
-tests/bench/run.sh DIR          # Unix; DIR has beam-emu.com and beam.com
+tests/bench/run.sh DIR          # Unix; DIR has beam-emu.com, beam.com, elixir.com
 tests/bench/run.ps1 -Dir DIR    # Windows
 ```
 
 The script builds [`tests/bench/bench.erl`](../tests/bench/bench.erl)
-with each variant (`beam-emu.com build`, `beam.com build`), runs it, and
-prints one Markdown table. CI runs it on each platform after the tests,
+with each variant (`beam-emu.com build`, `beam.com build`, `elixir.com
+build`), runs it, and prints one Markdown table. CI runs it on each platform after the tests,
 and puts the table in the summary of the run.
 
 | Row | What it measures |
@@ -153,7 +153,7 @@ parts in the emulator (C code), which are in every program.
 | SQLite (esqlite) | +1.8 MB | +1.8 MB | emulator (`SQLITE=0` leaves it out) |
 | WebAssembly (WAMR) | +0.6 MB | +0.6 MB | emulator (`WASM=0` leaves it out) |
 | `kernel` and `stdlib` stored | +1.9 MB | +1.9 MB | zip; start about 50 ms faster |
-| Elixir (`elixir`, `eex`, `logger`, `mix`) | +1.8 MB | 0 for Erlang programs | zip (`ELIXIR=0` leaves it out) |
+| Elixir (`elixir`, `eex`, `logger`, `mix`) | +1.8 MB, in `elixir.com` only | 0 for Erlang programs | zip of `elixir.com` (`ELIXIR=0` does not make it) |
 | An Elixir program (`elixir` and `compiler`) | | +3.9 MB, start about 35 ms slower | zip of the program |
 
 The last row was measured locally (Linux x86_64, the fat JIT): a

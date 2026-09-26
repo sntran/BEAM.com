@@ -317,7 +317,7 @@ write_lock(Format, File, Chosen, Unpacked) ->
     Levels = levels(Chosen, Unpacked),
     Text = lock_text(Format, [P#{level => maps:get(N, Levels)} || #{name := N} = P <- Unpacked]),
     case file:write_file(File, Text) of
-        ok -> io:format("beam.com: wrote ~ts~n", [File]);
+        ok -> io:format("~ts: wrote ~ts~n", [beam_com:name(), File]);
         {error, Reason} ->
             throw({error, "~ts: ~ts", [File, file:format_error(Reason)]})
     end.
@@ -468,8 +468,8 @@ tools(Pkg, Meta) ->
 
 mix_only(Pkg, [<<"mix">>]) ->
     beam_com_elixir:available() orelse
-        throw({error, "~ts is an Elixir package (mix), and Elixir is not in "
-               "this beam.com", [Pkg]});
+        throw({error, "~ts is an Elixir package (mix), and Elixir is not in ~ts: "
+               "use elixir.com", [Pkg, beam_com:name()]});
 mix_only(_, _) ->
     true.
 

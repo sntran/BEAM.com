@@ -20,11 +20,13 @@ jobs:
       matrix:
         include:
           # beam.com has the JIT: one fat file with the x86 and the arm
-          # backend. beam-emu.com has the interpreter.
-          - { name: Build, jit: "1", out: beam.com }
-          - { name: Build the interpreter, jit: "0", out: beam-emu.com }
+          # backend. elixir.com is beam.com with Elixir. beam-emu.com has
+          # the interpreter.
+          - { name: Build, jit: "1", elixir: "1", out: beam.com }
+          - { name: Build the interpreter, jit: "0", elixir: "0", out: beam-emu.com }
     env:
       JIT: ${{ matrix.jit || '1' }}
+      ELIXIR: ${{ matrix.elixir || '1' }}
       CC: ${{ matrix.cc || 'cosmocc' }}
       AR: ${{ matrix.ar || 'cosmoar' }}
       OUT: ${{ github.workspace }}/build/${{ matrix.out }}
@@ -64,6 +66,14 @@ jobs:
         with:
           name: ${{ matrix.out }}
           path: build/${{ matrix.out }}
+          if-no-files-found: error
+
+      - name: Upload elixir.com
+        if: matrix.elixir == '1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: elixir.com
+          path: build/elixir.com
           if-no-files-found: error
 
       - uses: actions/setup-go@v7

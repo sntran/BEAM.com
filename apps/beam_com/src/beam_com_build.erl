@@ -87,10 +87,10 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
            end,
     write_file(Output, Data),
     _ = file:change_mode(Output, 8#755),
-    io:format("beam.com: wrote ~ts (~b bytes)~n"
+    io:format("~ts: wrote ~ts (~b bytes)~n"
               "  release: ~s ~s~n"
               "  applications: ~s~n",
-              [Output, iolist_size(Data), maps:get(name, App),
+              [beam_com:name(), Output, iolist_size(Data), maps:get(name, App),
                maps:get(vsn, App),
                lists:join(" ", [atom_to_list(A) || A <- Apps])]).
 
@@ -692,8 +692,8 @@ select_apps(#{name := Name, props := Props, beams := Beams}, Extra, Base) ->
     %% A call to a module that is nowhere fails at run time (undef).
     Preloaded = erlang:pre_loaded(),
     [io:format(standard_error,
-               "beam.com: warning: ~p calls ~p, which is not in beam.com~n",
-               [Mod, M])
+               "~ts: warning: ~p calls ~p, which is not in ~ts~n",
+               [beam_com:name(), Mod, M, beam_com:name()])
      || {Mod, M} <- lists:usort(Imports), not is_map_key(M, Index),
         not lists:member(M, Preloaded)],
     Roots = [kernel, stdlib] ++ deps(Props) ++ Extra ++ Called,
