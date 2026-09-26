@@ -23,6 +23,10 @@ Hello, World! from BEAM.com
 The default `beam.com` holds a small `hello` release
 ([`hello/`](hello)). Erlang/OTP version: **29.1.1**.
 
+`crypto` and `ssl` work: the `crypto` and `asn1` NIFs are linked into
+`beam.com` with a static OpenSSL 3.5.8, and TLS connections verify the
+server with the certificates of the OS (on Windows too).
+
 ## Add your release
 
 Make a normal OTP release **without ERTS**, for OTP 29, and add its
@@ -37,8 +41,14 @@ zip -r greeter.com releases lib
 sh ./greeter.com                    # on Windows: rename to greeter.exe
 ```
 
-[`examples/greeter`](examples/greeter) is a complete example with an
-application, a supervisor and a `gen_server`.
+Examples (CI builds each one with rebar3 and runs it on every platform):
+
+- [`examples/greeter`](examples/greeter): an application, a supervisor
+  and a `gen_server`.
+- [`examples/crypto_check`](examples/crypto_check): hashes, HMAC,
+  AES-GCM and random bytes with `crypto`.
+- [`examples/tls_check`](examples/tls_check): port programs, a local
+  TLS 1.3 handshake, and an HTTPS request with certificate verification.
 
 When BEAM.com starts, it reads `/zip/releases/start_erl.data`
 (`ERTS_VSN REL_VSN`, written by rebar3/relx and by `systools`), and boots
@@ -82,10 +92,25 @@ file (`GetProgramExecutableName()`) again, with
 runs that program. The base name of `argv[0]` is only a fallback,
 because Linux `binfmt_misc` does not keep `argv[0]`.
 
+### Crypto and TLS
+
+`build.sh` builds a static `libcrypto` (OpenSSL 3.5.8, no assembly, so
+the same C code compiles for x86_64 and aarch64), and OTP is configured
+with `--enable-static-nifs`. ERTS selects a static NIF by the name of the
+module that loads it, so the `crypto.beam` of a normal release uses the
+NIF inside `beam.com` (the release does not need its `crypto.so`).
+
+`public_key:cacerts_get/0` reads the certificates of the OS on Linux,
+macOS and the BSDs. On Windows, `public_key` only reads the Windows store
+for `os:type()` `{win32, _}`, so BEAM.com exports the trusted roots of
+Windows (with `crypt32`) to a PEM file at start and gives it to
+`public_key` with `-public_key cacerts_path File`.
+
 ### The zip of the default beam.com
 
 ```
 bin/start_clean.boot, bin/no_dot_erlang.boot
+bin/windows.inetrc                 resolver settings, used on Windows
 lib/kernel-11.0.4/ebin/...
 lib/stdlib-8.1/ebin/...
 lib/hello-0.1.0/ebin/...
@@ -102,15 +127,16 @@ release arguments, `ERL_FLAGS`, `.args` and the command line.
 ## Build
 
 You need Linux (x86_64), `git`, `make`, `perl`, `curl`, `zip` and
-`unzip`. The script downloads cosmocc (4.0.2) and the OTP source,
-applies the patches, builds a small OTP and makes `build/beam.com`:
+`unzip`. The script downloads cosmocc (4.0.2), OpenSSL (3.5.8) and the
+OTP source, applies the patches, builds a small OTP and makes
+`build/beam.com`:
 
 ```sh
 ./build.sh
 ```
 
-The steps are `toolchain otp configure make release multicall bundle
-test`. You can run one step or more, for example `./build.sh bundle test`.
+The steps are `toolchain openssl otp configure make release multicall
+bundle test`. You can run one step or more, for example `./build.sh bundle test`.
 See the top of [`build.sh`](build.sh) for the environment variables.
 
 The OTP build runs the APE tools that it builds. If Linux cannot run
@@ -133,8 +159,13 @@ arguments and in a header that the compiler includes in each file
 | `ac_cv_func_sendfile=no` | `inet_drv` only knows the Linux, BSD and Solaris `sendfile()`. |
 | `-DZSTD_DISABLE_ASM` | cosmocc does not compile the zstd `.S` file for two CPUs. |
 | `DEP_CC=cosmo/depcc` | cosmocc does not support `-MM` with many input files. |
-| `DED_LD=cosmo/noshared` | There are no shared objects. NIF `.so` files become placeholders. |
+| `DED_LD=cosmo/noshared` (at configure time) | There are no shared objects. NIF `.so` files become placeholders, and the NIF configure tests link normal programs, not `-shared` ones. |
+| `--enable-static-nifs`, `--with-ssl`, `--disable-dynamic-ssl-lib` | The `crypto` and `asn1` NIFs and `libcrypto` are linked into the emulator. |
 | No `ERTS_LOW_WRITE` section | The APE linker script does not know this section. It made the PE `.data` section end after the file data, and `apelink` stopped with "PE SizeOfRawData overlaps end of image". |
+| No reserve-then-commit `mmap` | On Windows, `mmap(MAP_FIXED)` in a `PROT_NONE` reservation fails, and ERTS stopped at boot. |
+| `FD_SETSIZE` when `sysconf(_SC_OPEN_MAX)` fails | It fails with `EINVAL` on Windows. |
+| Native `cmsghdr` layout in `sys_uds.c` | Cosmopolitan does not convert control messages for BSD and XNU, so no port program could start on macOS and the BSDs. |
+| No forker on Windows | Cosmopolitan cannot pass fds on Windows, so port programs fail with `enotsup` there. |
 | [`patches/otp/0001-cosmopolitan.patch`](patches/otp/0001-cosmopolitan.patch) | The items above that need source changes, the multi-call hooks, the `_Float16` conversion, and `gethostbyname_r` in `erl_interface`. |
 
 ## Continuous integration
@@ -142,28 +173,33 @@ arguments and in a header that the compiler includes in each file
 [The workflow](.github/workflows/build.yml):
 
 1. Builds `beam.com` on Ubuntu with cosmocc.
-2. Builds `examples/greeter` with a normal Erlang/OTP 29.1.1 and rebar3,
-   and adds it to a copy of `beam.com` with `zip` (`greeter.com`).
-3. Runs both files ([`tests/run.sh`](tests/run.sh),
+2. Builds the examples with a normal Erlang/OTP 29.1.1 and rebar3, and
+   adds each one to a copy of `beam.com` with `zip`.
+3. Runs `beam.com` and the examples ([`tests/run.sh`](tests/run.sh),
    [`tests/run.ps1`](tests/run.ps1)) on each platform.
 
-`beam.com` and `greeter.com` are build artifacts of each run.
+`beam.com`, the example executables and the APE loader are build
+artifacts of each run.
 
 ### Platform status
 
-| Platform | How to run | beam.com | greeter.com |
-| --- | --- | --- | --- |
-| Linux x86_64 | `sh ./beam.com` (or `./beam.com` with the APE loader in binfmt_misc) | ✅ | ✅ |
-| Linux aarch64 | `sh ./beam.com` | ✅ | ✅ |
-| macOS arm64 | `sh ./beam.com` | ✅ | ✅ |
-| macOS x86_64 | `sh ./beam.com` | ✅ | ✅ |
-| FreeBSD | `sh ./beam.com` | ✅ | ✅ |
-| NetBSD | `ape-x86_64.elf ./beam.com` (its `sh` cannot read APE files) | ✅ | ✅ |
-| OpenBSD 7.3 | `ape-x86_64.elf ./beam.com` | ✅ | ✅ |
-| OpenBSD 7.9 | Not supported by Cosmopolitan (7.3 or earlier only) | ❌ | ❌ |
-| Windows x86_64 | `beam.exe` (a copy with an `.exe` name) | ✅ | ✅ |
+| Platform | How to run | beam.com, greeter | crypto | TLS | Port programs |
+| --- | --- | --- | --- | --- | --- |
+| Linux x86_64 | `sh ./beam.com` (or `./beam.com` with the APE loader in binfmt_misc) | ✅ | ✅ | ✅ | ✅ |
+| Linux aarch64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| macOS arm64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| macOS x86_64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| FreeBSD | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| NetBSD | `ape-x86_64.elf ./beam.com` (its `sh` cannot read APE files) | ✅ | ✅ | ✅ | ✅ |
+| OpenBSD 7.3 | `ape-x86_64.elf ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| OpenBSD 7.9 | Not supported by Cosmopolitan (7.3 or earlier only) | ❌ | ❌ | ❌ | ❌ |
+| Windows x86_64 | `beam.exe` (a copy with an `.exe` name) | ✅ | ✅ | ✅ | ❌ |
 
 `ape-x86_64.elf` is the APE loader from cosmocc (`bin/ape-x86_64.elf`).
+On NetBSD and OpenBSD, also install it where Cosmopolitan's `execve()`
+looks for it (`/usr/bin/ape` or `~/.ape-1.10`): BEAM.com starts its
+helper programs by executing itself, and without a loader Cosmopolitan
+falls back to `sh`.
 
 On Windows, `os:type()` is `{unix, windows}`, and port programs do not
 work: `open_port({spawn, ...})`, `os:cmd/1` and native name lookups
@@ -185,11 +221,19 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 ## Known limits
 
-- No JIT, no `socket` NIF, no crypto/ssl, no NIFs or drivers in shared
-  objects (Cosmopolitan cannot make them).
+- No JIT, no `socket` NIF, no NIFs or drivers in shared objects
+  (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
+  work (`crypto`, `asn1`).
 - No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
 - `run_erl` does not work (there is no `mkfifo()`).
 - Only kernel and stdlib are in the default zip. A release brings the
   other applications that it needs (pure Erlang ones only).
+- A release must be for the same OTP as `beam.com` (29.1.1).
+
+## Roadmap
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md): `beam.com build` (no Erlang
+installation needed), a SQLite probe, WebAssembly (WAMR, WASI) and a
+JIT probe.
