@@ -133,10 +133,12 @@ can be added on WAMR, or the runtime can be replaced.
   without compression (the rest stays compressed): 2 MB more, and the
   start is about 50 ms (27%) faster. A zip with no compression at all
   is about 21 MB larger, so only the modules of the boot are stored.
-- Done: `beam.com build --native TARGET` writes a native ELF (Linux,
+- Done: `beam.com build --target TARGET` writes a native ELF (Linux,
   FreeBSD) or Mach-O (macOS x86_64) file, with the same bytes as
   `assimilate`. There is no native form for Apple Silicon (APE files run
-  there only with the APE loader).
+  there only with the APE loader). The flag was `--native` first; it is
+  `--target` now, with the target triples of Rust and `deno compile`
+  (and the short names of Zig), as other compilers name it.
 - Used already: the zip file system (`/zip`), the fat x86_64 and
   aarch64 file, `.args`, the `--strace` and `--ftrace` flags, and
   `GetProgramExecutableName()` for the helper programs.

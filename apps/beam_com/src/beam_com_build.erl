@@ -11,7 +11,7 @@
 %% of beam.com.
 -module(beam_com_build).
 
--export([run/1, check_promises/1, check_unveil/1, check_native/1]).
+-export([run/1, check_promises/1, check_unveil/1, check_target/1]).
 
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
@@ -80,7 +80,7 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
     New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)),
     Keep = keep([A || A <- Apps, is_map_key(A, Base0)], Base0),
     Data = case Opts of
-               #{native := Target} ->
+               #{target := Target} ->
                    native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
                _ ->
                    beam_com_zip:write(Bin, Keep, New)
@@ -140,28 +140,38 @@ bad_unveil(Rule) ->
     throw({error, "--unveil needs \"PERMISSIONS PATH\", with PERMISSIONS of "
            "r, w, x and c: ~ts", [Rule]}).
 
-%% --native TARGET: a file for one system, as Cosmopolitan's assimilate
+%% --target TARGET: a file for one system, as Cosmopolitan's assimilate
 %% makes it. The APE file starts with a shell script, which has the
 %% headers of the native formats: printf '...' writes the 64-byte ELF
 %% header of each CPU, and a dd command copies the Mach-O header of
 %% x86_64 from inside the file. The new file starts with that header; the
 %% rest does not change, so the offsets of the zip stay correct. Apple
 %% Silicon runs APE files only through the APE loader (no arm64 Mach-O).
--define(NATIVE, [{"linux-x86_64", {elf, 16#3e, sysv}},
-                 {"linux-aarch64", {elf, 16#b7, sysv}},
-                 {"freebsd-x86_64", {elf, 16#3e, freebsd}},
-                 {"macos-x86_64", {macho, 16#01000007}}]).
+%%
+%% The names are the target triples of Rust (as deno compile uses them),
+%% and the shorter ones of Zig: {Triple, Aliases, Header}.
+-define(TARGETS,
+        [{"x86_64-unknown-linux-gnu", ["x86_64-linux"], {elf, 16#3e, sysv}},
+         {"aarch64-unknown-linux-gnu", ["aarch64-linux"], {elf, 16#b7, sysv}},
+         {"x86_64-unknown-freebsd", ["x86_64-freebsd"], {elf, 16#3e, freebsd}},
+         {"x86_64-apple-darwin", ["x86_64-macos"], {macho, 16#01000007}}]).
 
-check_native(Target) ->
-    case lists:keymember(Target, 1, ?NATIVE) of
-        true -> Target;
-        false ->
-            throw({error, "unknown native target ~ts (one of: ~ts)",
-                   [Target, lists:join(", ", [T || {T, _} <- ?NATIVE])]})
+%% The triple of a target name (or of an alias).
+check_target(Name) ->
+    case [T || {T, Aliases, _} <- ?TARGETS, Name =:= T orelse lists:member(Name, Aliases)] of
+        [Triple] -> Triple;
+        [] when Name =:= "aarch64-apple-darwin"; Name =:= "aarch64-macos" ->
+            throw({error, "~ts: Apple Silicon has no native form; the APE file "
+                   "runs there with the APE loader (build without --target)", [Name]});
+        [] ->
+            throw({error, "unknown target ~ts (one of: ~ts)",
+                   [Name, lists:join(", ", [[T, " (", lists:join(", ", A), ")"]
+                                            || {T, A, _} <- ?TARGETS])]})
     end.
 
 native(Target, Bin) ->
-    Head = case proplists:get_value(Target, ?NATIVE) of
+    {_, _, Header} = lists:keyfind(Target, 1, ?TARGETS),
+    Head = case Header of
                {elf, Machine, Abi} -> elf_header(Bin, Machine, Abi);
                {macho, Cpu} -> macho_header(Bin, Cpu)
            end,

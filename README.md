@@ -56,7 +56,7 @@ server with the certificates of the OS (on Windows too).
 
 ```sh
 beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
-               [--unveil "PERMISSIONS PATH"]... [--native TARGET]
+               [--unveil "PERMISSIONS PATH"]... [--target TARGET]
                [--main MODULE] [--tool rebar|mix] [--extract-priv APP]...
 ```
 
@@ -230,16 +230,25 @@ of the file as `argv[0]`.)
 comes from `rebar.config`, it runs a shell script from `priv`, and it
 starts itself again as `erl`.
 
-### A native file for one system (`--native`)
+### A native file for one system (`--target`)
 
-`--native TARGET` writes a file for one system instead of an APE file,
-as Cosmopolitan's `assimilate` does. `TARGET` is `linux-x86_64`,
-`linux-aarch64`, `freebsd-x86_64` or `macos-x86_64`:
+`--target TARGET` writes a file for one system instead of an APE file,
+as Cosmopolitan's `assimilate` does. `TARGET` is a target triple, as for
+`deno compile --target` and Rust (or the shorter name of Zig):
+
+| `TARGET` | Short name | System |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | `x86_64-linux` | Linux, x86_64 |
+| `aarch64-unknown-linux-gnu` | `aarch64-linux` | Linux, aarch64 |
+| `x86_64-unknown-freebsd` | `x86_64-freebsd` | FreeBSD, x86_64 |
+| `x86_64-apple-darwin` | `x86_64-macos` | macOS, Intel |
 
 ```sh
-beam.com build hello.erl --native linux-x86_64 -o hello
+beam.com build hello.erl --target x86_64-linux -o hello
 ./hello
 ```
+
+Without `--target`, the file is an APE file for all the systems.
 
 The kernel starts the native file directly: no shell script at the
 start, no APE loader in `$TMPDIR` or `$HOME`, and on macOS a Mach-O file
