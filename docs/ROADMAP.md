@@ -9,7 +9,7 @@ platforms.
 - ERTS (OTP 29.1.1) as one Actually Portable Executable, with a release
   in its zip. Tested on Linux, macOS, Windows, FreeBSD, NetBSD and
   OpenBSD 7.3, on x86_64 and aarch64.
-- Static `crypto` and `asn1` NIFs with OpenSSL 3.5.8.
+- Static `crypto` and `asn1` NIFs with OpenSSL 4.0.2.
 - TLS (`ssl`) with verification against the certificates of the OS,
   also on Windows (exported from the Windows store at start).
 - Port programs on macOS and the BSDs (fd passing in the native
@@ -27,7 +27,7 @@ platforms.
 
 ### SQLite (build flag `SQLITE=1`)
 
-- The `esqlite` NIF (Apache-2.0) with the SQLite 3.50.4 amalgamation is
+- The `esqlite` NIF (Apache-2.0) with the SQLite 3.53.4 amalgamation is
   linked into the emulator as a static NIF, the same way as `crypto`.
   The `esqlite` application is in the zip, and `beam.com build` selects
   it when the code calls `esqlite3`.
