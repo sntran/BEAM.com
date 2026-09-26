@@ -39,28 +39,32 @@ platforms.
   program (an in-memory database and a database file) on each platform.
 - Default: not decided yet. `beam.com` stays without SQLite until then.
 
+### WebAssembly (default on, `WASM=0` to leave it out)
+
+- WAMR 2.4.5, the fast interpreter with WASI preview 1, is linked into
+  the emulator as a static NIF. It adds about 0.6 MB for the two CPUs.
+- The Erlang API is ours (`wasm:load/1`, `instantiate/2`, `call/3`,
+  `run/3`, memory access), and it does not show WAMR types.
+- Tested on each platform: calls with i32 and f64, traps, memory, a
+  hand-made WASI module, and a Go program (`GOOS=wasip1`: arguments,
+  environment, files).
+- Problems found: see W1 to W3 in `docs/UPSTREAM.md` (the GS base, the
+  generic trampoline, the fat build) and C19, C20.
+- Next for WebAssembly: host functions (Erlang functions that a module
+  can import), a time limit for calls, stdout/stderr to Erlang, SIMD
+  (SIMDe), and later the component model and WASI preview 2 (see the
+  notes below).
+
+Notes on WASI preview 2: WAMR has no component model or WASI preview 2
+yet (checked on WAMR HEAD of 2026-09-21, release 2.4.5). To not be stuck
+on preview 1: the Erlang API is ours and hides the runtime. The
+component model is designed so that a host can build it on a core
+WebAssembly engine (as `jco` does in JavaScript), so a component layer
+can be added on WAMR, or the runtime can be replaced.
+
 ## Next, in this order
 
-### 1. WebAssembly (and WASI)
-
-A static NIF with a WebAssembly runtime, so that users can put portable
-native code (`.wasm`, from Rust, Go, Zig, C...) in the zip.
-
-- Runtime: WAMR (Bytecode Alliance, C, Apache-2.0), interpreter first.
-  Its WASI layer uses POSIX, which Cosmopolitan gives on every platform.
-- WASI preview 1 first (`wasm32-wasip1`, `GOOS=wasip1`, Zig, TinyGo).
-  WAMR has no component model or WASI preview 2 yet (checked on WAMR
-  HEAD of 2026-09-21, release 2.4.5).
-- To not be stuck on preview 1: the Erlang API (`wasm:load/1`,
-  `instantiate/2`, `call/3`, memory access) is ours and hides the
-  runtime. The component model is designed so that a host can build it
-  on a core WebAssembly engine (as `jco` does in JavaScript), so a
-  component layer can be added on WAMR, or the runtime can be replaced.
-- Steps: WAMR with cosmocc; pure function calls from a release; a WASI
-  program (arguments, environment, stdout); memory and binaries, dirty
-  schedulers and limits.
-
-### 2. JIT (BeamAsm) probe
+### 1. JIT (BeamAsm) probe
 
 - The two CPU backends (x86_64 and aarch64) must be selected per CPU in
   the fat build (wrapper files and the generated files for both).

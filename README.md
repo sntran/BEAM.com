@@ -66,7 +66,34 @@ and all the applications that these need. Use `-a APP` for an
 application that the code only calls with `apply/3` or similar.
 
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
-`crypto`, `asn1`, `public_key`, `ssl` and `inets`.
+`crypto`, `asn1`, `public_key`, `ssl`, `inets` and `wasm`.
+
+### WebAssembly
+
+`beam.com` runs WebAssembly modules and WASI preview 1 programs with
+[WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) (the
+interpreter, linked into `beam.com`). The `wasm` application is in the
+zip, and `beam.com build` selects it when the code calls `wasm`:
+
+```erlang
+{ok, Mod} = wasm:load(Bytes),                    % the bytes of a .wasm file
+{ok, Inst} = wasm:instantiate(Mod),
+{ok, [42]} = wasm:call(Inst, "add", [40, 2]),    % i32/i64: integers, f32/f64: floats
+{ok, Bin} = wasm:memory_read(Inst, Offset, Len),
+
+%% A WASI program (from Rust, Go, Zig, C, ...): argv, env and directories.
+{ok, ExitCode} = wasm:run(Bytes, ["prog", "arg"],
+                          #{env => [{"KEY", "value"}], dirs => [{"/", "."}]}).
+```
+
+[`examples/wasm_check.erl`](examples/wasm_check.erl) tests calls, traps,
+memory and a WASI program, and runs a `.wasm` file that you give it. CI
+runs it on each platform with a Go program
+([`examples/wasm/hello_go`](examples/wasm/hello_go), `GOOS=wasip1`).
+WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
+
+Go resolves relative paths from `/`, so give the directory of a Go
+program as `"/"` in `dirs`.
 
 ### SQLite (probe)
 
@@ -99,6 +126,8 @@ and also builds each one with `beam.com build` on every platform):
 
 - [`examples/hashsum.erl`](examples/hashsum.erl): a one-file program
   (only for `beam.com build`).
+- [`examples/wasm_check.erl`](examples/wasm_check.erl): WebAssembly and
+  WASI, in a one-file program.
 - [`examples/sqlite_check.erl`](examples/sqlite_check.erl): a one-file
   program with SQLite (for `beam-sqlite.com build`).
 - [`examples/greeter`](examples/greeter): an application, a supervisor
@@ -212,8 +241,9 @@ OTP source, applies the patches, builds a small OTP and makes
 ./build.sh
 ```
 
-The steps are `toolchain openssl otp configure sqlite make release
-multicall bundle test` (`sqlite` does nothing without `SQLITE=1`). You can run one step or more, for example `./build.sh bundle test`.
+The steps are `toolchain openssl otp configure sqlite wasm make release
+multicall bundle test` (`sqlite` does nothing without `SQLITE=1`, and
+`wasm` does nothing with `WASM=0`). You can run one step or more, for example `./build.sh bundle test`.
 See the top of [`build.sh`](build.sh) for the environment variables.
 
 The OTP build runs the APE tools that it builds. If Linux cannot run
@@ -301,7 +331,9 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 - No JIT, no `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
-  work (`crypto`, `asn1`).
+  work (`crypto`, `asn1`, `wasm`, and `esqlite` with `SQLITE=1`).
+- WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
+  SIMD, no threads, and no component model yet.
 - No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
