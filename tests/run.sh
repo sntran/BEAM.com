@@ -15,6 +15,35 @@ tmp=${TMPDIR:-/tmp}/beam_com_test.$$
 fail=0
 failed=
 
+# The processes of the tests that still run (for diagnostics).
+our_processes() {
+    ps -A -o pid,ppid,stat,command 2>/dev/null | grep -v -e grep -e '\.sh' |
+        grep -e "$dir/" -e '\.ape-' || true
+}
+
+# Called by the watchdog before it kills a program: the processes, and
+# the stack traces where the system has a tool for it.
+diagnose() {
+    echo "--- processes"
+    our_processes
+    for q in "$1" $(pgrep -P "$1" 2>/dev/null); do
+        if command -v sample >/dev/null 2>&1; then
+            echo "--- sample $q (macOS)"
+            sample "$q" 1 2>&1 | head -200
+        elif command -v procstat >/dev/null 2>&1; then
+            echo "--- procstat -kk $q (FreeBSD)"
+            procstat -kk "$q" 2>&1 | head -100
+        elif [ -d "/proc/$q/task" ]; then
+            echo "--- threads of $q (Linux: name, state, wait channel)"
+            for t in /proc/$q/task/*; do
+                printf '%s %s %s\n' "$(cat $t/comm 2>/dev/null)" \
+                    "$(awk '{print $3}' $t/stat 2>/dev/null)" \
+                    "$(cat $t/wchan 2>/dev/null)"
+            done | sort | uniq -c
+        fi
+    done
+}
+
 check() {
     name=$1 pattern=$2
     shift 2
@@ -25,17 +54,27 @@ check() {
     [ "$runner" = sh ] || chmod +x "$runner"
     BEAM_COM_VERBOSE=1 $runner "$dir/$name" "$@" > "$tmp" 2>&1 &
     pid=$!
-    ( sleep "$limit"; kill -9 "$pid" ) >/dev/null 2>&1 &
+    rm -f "$tmp.diag"
+    ( sleep "$limit"; diagnose "$pid" > "$tmp.diag" 2>&1; kill -9 "$pid" ) \
+        >/dev/null 2>&1 &
     watchdog=$!
     wait "$pid"
     rc=$?
     kill "$watchdog" 2>/dev/null
     # The output stays in the file: in a shell variable, a large output is
-    # too long for an external printf (OpenBSD ksh).
-    cat "$tmp"
+    # too long for an external printf (OpenBSD ksh). A long output is
+    # shortened in the log; the checks read the whole file.
+    lines=$(wc -l < "$tmp")
+    if [ "$lines" -gt 200 ]; then
+        head -n 40 "$tmp"
+        echo "... ($lines lines) ..."
+        tail -n 40 "$tmp"
+    else
+        cat "$tmp"
+    fi
     if [ $rc -eq 137 ]; then
         echo "FAIL: $name did not stop in $limit seconds"
-        ps -ef 2>/dev/null | grep -v grep | grep -e "$name" -e beam || true
+        cat "$tmp.diag" 2>/dev/null
     fi
     if [ $rc -ne "$expect" ]; then
         echo "FAIL: $name exited with $rc (expected $expect)"
@@ -189,7 +228,14 @@ if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
         check sqlite_check.b.com "${sqlite}$dir/test.db" "$dir/test.db"
     fi
 fi
-rm -f "$tmp"
+rm -f "$tmp" "$tmp.diag"
+# Processes that a test left behind (helper programs must stop with the
+# emulator).
+left=$(our_processes)
+if [ -n "$left" ]; then
+    echo "==> Processes still running after the tests:"
+    printf '%s\n' "$left"
+fi
 if [ $fail -ne 0 ]; then
     echo "==> Failed checks:$failed"
 else
