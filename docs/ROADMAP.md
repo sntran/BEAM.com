@@ -89,9 +89,11 @@ can be added on WAMR, or the runtime can be replaced.
 
 - The fat JIT as the default `beam.com`, when it is green on every
   platform, with the interpreter as `beam-emu.com` or as a build option.
-- Dual mapping (W^X) in asmjit under Cosmopolitan: memfd on Linux, a
-  file elsewhere (today it falls back to RWX memory, except on macOS
-  arm64, which uses `MAP_JIT`).
+- Done: W^X. Measured in CI (`tests/programs/jit_maps.erl`): asmjit
+  already uses dual mapping (`shm_open()`) under Cosmopolitan, with no
+  writable and executable page, on Linux, FreeBSD, NetBSD and macOS
+  x86_64; macOS arm64 uses `MAP_JIT`; the OpenBSD kernel enforces W^X
+  itself. See `docs/JIT.md`.
 
 ### Later: more for `beam.com build`
 

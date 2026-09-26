@@ -142,7 +142,9 @@ program as `"/"` in `dirs`.
 `JIT=1 ./build.sh` builds `beam.com` with BeamAsm, the JIT of OTP, in one
 fat file: the x86 backend in the x86_64 half and the arm backend in the
 aarch64 half. CI makes it as `beam-jit.com` (42 MB) and tests it on
-every platform ([`docs/JIT.md`](docs/JIT.md)).
+every platform ([`docs/JIT.md`](docs/JIT.md)). No memory page of the JIT
+code is writable and executable at the same time (W^X): the JIT writes
+the code through a second mapping.
 
 ### SQLite
 
