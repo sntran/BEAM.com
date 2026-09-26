@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
 
@@ -78,6 +79,24 @@ int __wrap_close(int fd)
     __fds_lock();
     rc = __real_close(fd);
     __fds_unlock();
+    return rc;
+}
+
+/* mkdir() of a directory that exists (UPSTREAM.md C27). The emulator is
+ * linked with -Wl,--wrap=mkdir (build.sh). On Windows, Cosmopolitan's
+ * mkdir() of a drive root ("/C") gives EACCES (CreateDirectory() is
+ * denied), not EEXIST. Elixir's File.mkdir_p/1 makes each parent from
+ * the root and accepts only EEXIST for one that exists, so it failed
+ * for each absolute path. POSIX gives EEXIST when the path exists. */
+int __real_mkdir(const char *path, mode_t mode);
+
+int __wrap_mkdir(const char *path, mode_t mode)
+{
+    struct stat st;
+    int rc = __real_mkdir(path, mode), e = errno;
+
+    if (rc == -1 && e == EACCES && beam_com_is_windows())
+        errno = stat(path, &st) == 0 ? EEXIST : e;
     return rc;
 }
 
