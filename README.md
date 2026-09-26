@@ -68,6 +68,18 @@ application that the code only calls with `apply/3` or similar.
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
 `crypto`, `asn1`, `public_key`, `ssl` and `inets`.
 
+### SQLite (probe)
+
+Build with `SQLITE=1 ./build.sh` to link SQLite 3.50.4 (the
+[esqlite](https://github.com/mmzeeman/esqlite) NIF) into `beam.com` and
+to put the `esqlite` application in its zip. CI makes this variant as
+`beam-sqlite.com`. It adds about 1.8 MB to each program.
+
+```sh
+beam-sqlite.com build examples/sqlite_check.erl
+./sqlite_check.com my.db
+```
+
 ## Add your release
 
 Make a normal OTP release **without ERTS**, for OTP 29, and add its
@@ -87,6 +99,8 @@ and also builds each one with `beam.com build` on every platform):
 
 - [`examples/hashsum.erl`](examples/hashsum.erl): a one-file program
   (only for `beam.com build`).
+- [`examples/sqlite_check.erl`](examples/sqlite_check.erl): a one-file
+  program with SQLite (for `beam-sqlite.com build`).
 - [`examples/greeter`](examples/greeter): an application, a supervisor
   and a `gen_server`.
 - [`examples/crypto_check`](examples/crypto_check): hashes, HMAC,
@@ -198,8 +212,8 @@ OTP source, applies the patches, builds a small OTP and makes
 ./build.sh
 ```
 
-The steps are `toolchain openssl otp configure make release multicall
-bundle test`. You can run one step or more, for example `./build.sh bundle test`.
+The steps are `toolchain openssl otp configure sqlite make release
+multicall bundle test` (`sqlite` does nothing without `SQLITE=1`). You can run one step or more, for example `./build.sh bundle test`.
 See the top of [`build.sh`](build.sh) for the environment variables.
 
 The OTP build runs the APE tools that it builds. If Linux cannot run

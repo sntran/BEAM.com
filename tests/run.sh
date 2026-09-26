@@ -82,4 +82,16 @@ if [ -d examples ]; then
         fi
     done
 fi
+
+# The SQLite probe: beam-sqlite.com (built with SQLITE=1).
+sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
+if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
+    check beam-sqlite.com 'wrote .*sqlite_check.b.com' \
+        build examples/sqlite_check.erl -o "$dir/sqlite_check.b.com"
+    if [ -f "$dir/sqlite_check.b.com" ]; then
+        check sqlite_check.b.com "$sqlite:memory:"
+        rm -f "$dir/test.db"
+        check sqlite_check.b.com "${sqlite}$dir/test.db" "$dir/test.db"
+    fi
+fi
 exit $fail

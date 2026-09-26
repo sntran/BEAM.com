@@ -4,13 +4,16 @@
 # release in its zip (redbean style).
 #
 # Usage: ./build.sh [step...]
-#   Steps: toolchain openssl otp configure make release multicall bundle test
+#   Steps: toolchain openssl otp configure sqlite make release multicall
+#          bundle test
 #   With no step, all steps run in order.
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
 #   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 3.5.8)
+#   SQLITE           1: link SQLite (the esqlite NIF) into beam.com, and put
+#                    the esqlite application in the zip (default 0)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
@@ -24,6 +27,9 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
 OPENSSL_VERSION=${OPENSSL_VERSION:-3.5.8}
+SQLITE=${SQLITE:-0}
+# esqlite (Apache-2.0) with the SQLite 3.50.4 amalgamation (public domain).
+ESQLITE_COMMIT=${ESQLITE_COMMIT:-5c8d590d8eb70de17dd2c64dfc7502f4fd2fcba8}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
@@ -39,6 +45,7 @@ EXTRA_APPS="crypto asn1 public_key ssl"
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
 OPENSSL=$BUILD/openssl
+ESQLITE=$BUILD/esqlite
 STAGE=$BUILD/stage
 OUT=${OUT:-$BUILD/beam.com}
 
@@ -161,13 +168,59 @@ target() {
     "$ERL_TOP/make/autoconf/config.guess"
 }
 
+step_sqlite() {
+    [ "$SQLITE" = 1 ] || return 0
+    if [ ! -d "$ESQLITE/.git" ]; then
+        log "Fetching esqlite $ESQLITE_COMMIT"
+        mkdir -p "$ESQLITE"
+        git -C "$ESQLITE" init -q
+        git -C "$ESQLITE" fetch -q --depth 1 \
+            https://github.com/mmzeeman/esqlite.git "$ESQLITE_COMMIT"
+        git -C "$ESQLITE" checkout -q FETCH_HEAD
+    fi
+    log "Building the esqlite NIF (SQLite) as a static NIF"
+    t=$(target)
+    cd "$ESQLITE"
+    # The SQLite options of esqlite (rebar.config.script). The NIF is
+    # static: its init function is esqlite3_nif_nif_init, which ERTS
+    # finds by the name of the module (esqlite3_nif).
+    flags="-Os -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0
+        -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS
+        -DSQLITE_MAX_EXPR_DEPTH=0 -DSQLITE_OMIT_DEPRECATED
+        -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_USE_ALLOCA
+        -DSQLITE_OMIT_AUTOINIT -DSQLITE_USE_URI -DSQLITE_ENABLE_FTS3
+        -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4
+        -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS
+        -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY
+        -DSTATIC_ERLANG_NIF_LIBNAME=esqlite3_nif -Ic_src/sqlite3
+        -I$ERL_TOP/erts/emulator/beam -I$ERL_TOP/erts/include
+        -I$ERL_TOP/erts/include/$t"
+    # shellcheck disable=SC2086
+    "$CC" $flags -c c_src/esqlite3_nif.c -o esqlite3_nif.o
+    # shellcheck disable=SC2086
+    "$CC" $flags -c c_src/sqlite3/sqlite3.c -o sqlite3.o
+    rm -f esqlite3_nif.a .aarch64/esqlite3_nif.a
+    "$AR" rcs esqlite3_nif.a esqlite3_nif.o sqlite3.o
+}
+
+# The STATIC_NIFS value for the emulator Makefile. Empty: the configured
+# static NIFs (crypto and asn1).
+static_nifs() {
+    [ "$SQLITE" = 1 ] || return 0
+    t=$(target)
+    printf '%s' "$ERL_TOP/lib/asn1/priv/lib/$t/asn1rt_nif.a" \
+        " $ERL_TOP/lib/crypto/priv/lib/$t/crypto.a" \
+        " $ESQLITE/esqlite3_nif.a"
+}
+
 step_make() {
     log "Building OTP (small build)"
     cd "$ERL_TOP"
     # cosmocc does not support "-MM" with many input files. depcc runs
     # it once for each file.
+    nifs=$(static_nifs)
     DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
-        DEP_CC="$ROOT/cosmo/depcc"
+        DEP_CC="$ROOT/cosmo/depcc" ${nifs:+"STATIC_NIFS=$nifs"}
     for app in $EXTRA_APPS; do
         log "Building $app"
         PATH=$ERL_TOP/bootstrap/bin:$PATH DEPCC_CC=$CC \
@@ -183,8 +236,9 @@ step_multicall() {
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=emu $objs
     rm -f "$ERL_TOP/bin/$t/beam.emu"
+    nifs=$(static_nifs)
     make -f "$t/Makefile" TYPE=opt FLAVOR=emu EMU_LDFLAGS="$objs" \
-        "$ERL_TOP/bin/$t/beam.emu"
+        ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.emu"
 }
 
 step_release() {
@@ -217,6 +271,14 @@ step_bundle() {
             cp "$src"/include/*.hrl "$STAGE/lib/$app-$vsn/include/"
         fi
     done
+
+    # SQLite: the Erlang code of esqlite (its NIF is in the emulator).
+    if [ "$SQLITE" = 1 ]; then
+        vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$ESQLITE/src/esqlite.app.src")
+        mkdir -p "$STAGE/lib/esqlite-$vsn/ebin"
+        "$ERL_TOP/bin/erlc" -o "$STAGE/lib/esqlite-$vsn/ebin" "$ESQLITE"/src/*.erl
+        cp "$ESQLITE/src/esqlite.app.src" "$STAGE/lib/esqlite-$vsn/ebin/esqlite.app"
+    fi
 
     # The commands of beam.com (lib/beam_com has no version, so that
     # beam_com.c can find it), and the runner of one-file programs.
@@ -260,10 +322,16 @@ step_test() {
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
     grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
         "$BUILD/test.out"
+    if [ "$SQLITE" = 1 ]; then
+        "$OUT" build "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
+        "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
+        grep -q '^sqlite: json \["alpha","beta","gamma"\]' "$BUILD/test.out"
+    fi
 }
 
 if [ $# -eq 0 ]; then
-    set -- toolchain openssl otp configure make release multicall bundle test
+    set -- toolchain openssl otp configure sqlite make release multicall \
+        bundle test
 fi
 mkdir -p "$BUILD"
 for s in "$@"; do
