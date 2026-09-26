@@ -1,0 +1,4 @@
+% Resolver settings in a sandbox without port programs (pledge
+% without "proc exec"): kernel uses its own DNS client and the hosts
+% file, not the native resolver (a port program).
+{lookup, [file, dns]}.

@@ -44,7 +44,13 @@ build_options(["-o", Output | Rest], Opts) ->
     build_options(Rest, Opts#{output => Output});
 build_options(["-a", App | Rest], #{apps := Apps} = Opts) ->
     build_options(Rest, Opts#{apps := Apps ++ [list_to_atom(App)]});
-build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a" ->
+build_options(["--pledge", Promises | Rest], Opts) ->
+    build_options(Rest, Opts#{pledge => beam_com_build:check_promises(Promises)});
+build_options(["--unveil", Rule | Rest], Opts) ->
+    Rules = maps:get(unveil, Opts, []),
+    build_options(Rest, Opts#{unveil => Rules ++ [beam_com_build:check_unveil(Rule)]});
+build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a";
+                                    Option =:= "--pledge"; Option =:= "--unveil" ->
     throw({error, "option ~ts needs a value", [Option]});
 build_options([[$- | _] = Option | _], _Opts) ->
     throw({error, "unknown option ~ts", [Option]});
@@ -57,11 +63,18 @@ usage() ->
     throw({error, "usage: " ++ build_usage(), []}).
 
 build_usage() ->
-    "beam.com build INPUT [-o OUTPUT] [-a APP]...~n"
-    "  INPUT   a .erl file with main/1, or an application directory~n"
-    "  OUTPUT  the new executable (default: the name of INPUT.com)~n"
-    "  APP     an OTP application to add (for calls that the~n"
-    "          builder cannot see, such as apply/3)".
+    "beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]~n"
+    "               [--unveil \"PERMISSIONS PATH\"]...~n"
+    "  INPUT     a .erl file with main/1, or an application directory~n"
+    "  OUTPUT    the new executable (default: the name of INPUT.com)~n"
+    "  APP       an OTP application to add (for calls that the~n"
+    "            builder cannot see, such as apply/3)~n"
+    "  PROMISES  the system calls that the program keeps (Linux and~n"
+    "            OpenBSD), such as \"inet dns\"; \"stdio rpath\" are always~n"
+    "            added~n"
+    "  PATH      a file or directory that the program can use (Linux and~n"
+    "            OpenBSD), with PERMISSIONS of r, w, x and c; other paths~n"
+    "            are hidden".
 
 %% The text of "beam.com help [COMMAND]".
 help([]) ->
@@ -83,7 +96,12 @@ help(["build"]) ->
     ["usage: ", io_lib:format(build_usage(), []), "\n"
      "\n"
      "The new executable has the compiled code, an OTP release with the\n"
-     "applications that the code needs, and the runtime of beam.com.\n"];
+     "applications that the code needs, and the runtime of beam.com.\n"
+     "\n"
+     "Promises: stdio rpath wpath cpath dpath flock fattr inet anet unix\n"
+     "dns tty recvfd sendfd proc exec id unveil settime prot_exec vminfo\n"
+     "tmppath chown. A forbidden system call returns an error (EPERM) on\n"
+     "Linux; OpenBSD stops the program. The other systems ignore them.\n"];
 help(["version"]) ->
     "usage: beam.com version\n"
     "\n"

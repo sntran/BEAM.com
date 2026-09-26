@@ -425,7 +425,7 @@ step_bundle() {
     # include for "beam.com build").
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
-    cp "$ROOT/cosmo/windows.inetrc" "$STAGE/bin/"
+    cp "$ROOT/cosmo/windows.inetrc" "$ROOT/cosmo/sandbox.inetrc" "$STAGE/bin/"
     for app in $BUNDLE_APPS; do
         src=$ERL_TOP/lib/$app
         vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/ebin/$app.app")

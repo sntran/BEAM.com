@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include "ape/ape.h"                            /* APE_VERSION_STR */
+#include "libc/calls/pledge.h"                  /* __pledge_mode */
 
 /* Cosmopolitan internals used for the Windows setup (see below). */
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
@@ -49,6 +51,8 @@
 #define BEAM_COM_ARGS "/zip/.args"
 #define BEAM_COM_RELEASES "/zip/releases"
 #define BEAM_COM_TOOL "/zip/lib/beam_com/ebin/beam_com.app"
+#define BEAM_COM_PLEDGE "/zip/.pledge"
+#define BEAM_COM_UNVEIL "/zip/.unveil"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -140,14 +144,14 @@ static void add_user_arg(struct arglist *emu, struct arglist *init,
  * Read /zip/.args. Each line is one argument. Blank lines and lines
  * that start with '#' are ignored. Returns 0 when there is no file.
  */
-static int read_zip_args(struct arglist *out)
+static int read_lines(const char *path, struct arglist *out)
 {
     FILE *f;
     char *line = NULL;
     size_t cap = 0;
     ssize_t len;
 
-    if (!(f = fopen(BEAM_COM_ARGS, "r")))
+    if (!(f = fopen(path, "r")))
         return 0;
     while ((len = getline(&line, &cap, f)) != -1) {
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
@@ -159,6 +163,185 @@ static int read_zip_args(struct arglist *out)
     free(line);
     fclose(f);
     return 1;
+}
+
+static int read_zip_args(struct arglist *out)
+{
+    return read_lines(BEAM_COM_ARGS, out);
+}
+
+/*
+ * --- Sandbox: pledge() and unveil() -------------------------------------
+ *
+ * A program can give up what it does not need, as OpenBSD programs do.
+ * The rules come from the zip (beam.com build --pledge, --unveil) and from
+ * the environment (to try a sandbox without a new build):
+ *
+ *   /zip/.unveil, BEAM_COM_UNVEIL  paths: "PERMISSIONS PATH" on each line
+ *                                  (BEAM_COM_UNVEIL: separated by ";"),
+ *                                  PERMISSIONS of r, w, x and c
+ *   /zip/.pledge, BEAM_COM_PLEDGE  promises, such as "inet dns" ("stdio
+ *                                  rpath" are always added)
+ *
+ * The environment can only restrict more: its rules are applied after the
+ * rules of the zip, and a second pledge() or unveil() cannot give back
+ * what the first one took.
+ *
+ * The rules must be applied here, before ERTS starts its threads: on
+ * Linux, seccomp (pledge) and Landlock (unveil) apply to the calling
+ * thread and to the threads that it starts later. On OpenBSD they apply
+ * to the process. On the other systems, pledge() and unveil() do nothing.
+ *
+ * A forbidden system call returns EPERM (Linux), so Erlang code gets an
+ * error such as {error, eperm}. OpenBSD always kills the process.
+ *
+ * The helper programs (erl_child_setup, inet_gethost) are this file,
+ * executed again. On Linux they keep the rules of their parent (and the
+ * seccomp filter of unveil() forbids a second Landlock ruleset), so they
+ * do not apply them again. On OpenBSD the rules end at exec, so the
+ * helpers apply them; errors are not fatal there: a helper cannot get
+ * more than its parent has.
+ */
+static char *join(const char *a, const char *b, const char *c);
+
+static void sandbox_error(int helper, const char *what, const char *arg)
+{
+    if (helper)
+        return;
+    fprintf(stderr, "beam.com: %s %s: %s\n", what, arg, strerror(errno));
+    beam_com_exit(127, 1);
+}
+
+static void sandbox_unveil(int helper, char *rule)
+{
+    char *path = strchr(rule, ' ');
+
+    if (!path)
+        sandbox_error(helper, "unveil: expected \"PERMISSIONS PATH\":", rule);
+    *path++ = '\0';
+    while (*path == ' ')
+        path++;
+    if (unveil(path, rule) == -1)
+        sandbox_error(helper, "unveil", path);
+}
+
+/* A path that may not exist (unveil() fails with ENOENT for it). */
+static void sandbox_unveil_optional(int helper, const char *path,
+                                    const char *permissions)
+{
+    if (path && unveil(path, permissions) == -1 && errno != ENOENT)
+        sandbox_error(helper, "unveil", path);
+}
+
+/* The APE loader that Cosmopolitan's execve() uses to start an APE file
+ * on Linux, when the kernel cannot (see libc/proc/execve-sysv.c). */
+static void sandbox_unveil_loader(int helper)
+{
+    const char *home = getenv("HOME");
+
+    sandbox_unveil_optional(helper, "/usr/bin/ape", "rx");
+    sandbox_unveil_optional(helper,
+                            join(__get_tmpdir(), "/.ape-", APE_VERSION_STR), "rx");
+    if (home)
+        sandbox_unveil_optional(helper, join(home, "/.ape-", APE_VERSION_STR), "rx");
+}
+
+/* ERTS needs "stdio rpath" to start: without them, it waits forever
+ * (seen on Linux). Threads are part of "stdio". unveil limits which files
+ * "rpath" can read. The JIT needs "prot_exec" for the memory of its
+ * code. */
+#ifdef BEAMASM
+#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec "
+#else
+#define BEAM_COM_BASE_PROMISES "stdio rpath "
+#endif
+
+static void sandbox_pledge(int helper, const char *promises)
+{
+    char *all = join(BEAM_COM_BASE_PROMISES, promises, "");
+
+    if (pledge(all, NULL) == -1)
+        sandbox_error(helper, "pledge", all);
+}
+
+static int has_word(const char *words, const char *word)
+{
+    size_t n = strlen(word);
+    const char *p;
+
+    for (p = words; (p = strstr(p, word)); p += n)
+        if ((p == words || p[-1] == ' ' || p[-1] == '\t') &&
+            (p[n] == '\0' || p[n] == ' ' || p[n] == '\t'))
+            return 1;
+    return 0;
+}
+
+static char *join_words(struct arglist *l)
+{
+    size_t n = 1;
+    char *s;
+    int i;
+
+    for (i = 0; i < l->n; i++)
+        n += strlen(l->v[i]) + 1;
+    if (!(s = calloc(1, n)))
+        die("calloc");
+    for (i = 0; i < l->n; i++) {
+        if (i)
+            strcat(s, " ");
+        strcat(s, l->v[i]);
+    }
+    return s;
+}
+
+static void apply_sandbox(int helper)
+{
+    struct arglist rules = {0}, promises = {0};
+    char *env, *copy, *rule, *save;
+    int i, no_ports = 0;
+
+    if (helper && IsLinux())
+        return;
+    __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
+
+    read_lines(BEAM_COM_UNVEIL, &rules);
+    if ((env = getenv("BEAM_COM_UNVEIL")) && *env) {
+        copy = strdup(env);
+        for (rule = strtok_r(copy, ";\n", &save); rule;
+             rule = strtok_r(NULL, ";\n", &save))
+            push(&rules, rule);
+    }
+    if (rules.n) {
+        /* BEAM.com executes its own file again for the helper programs,
+         * and ERTS opens /dev/null at start. */
+        if (unveil(GetProgramExecutableName(), "rx") == -1)
+            sandbox_error(helper, "unveil", GetProgramExecutableName());
+        if (unveil("/dev/null", "rw") == -1)
+            sandbox_error(helper, "unveil", "/dev/null");
+        if (unveil("/dev/urandom", "r") == -1)
+            sandbox_error(helper, "unveil", "/dev/urandom");
+        sandbox_unveil_loader(helper);
+        for (i = 0; i < rules.n; i++)
+            sandbox_unveil(helper, rules.v[i]);
+        if (unveil(NULL, NULL) == -1)
+            sandbox_error(helper, "unveil", "(commit)");
+    }
+
+    if (read_lines(BEAM_COM_PLEDGE, &promises)) {
+        char *words = join_words(&promises);
+        sandbox_pledge(helper, words);
+        no_ports |= !has_word(words, "proc") || !has_word(words, "exec");
+    }
+    if ((env = getenv("BEAM_COM_PLEDGE"))) {
+        sandbox_pledge(helper, env);
+        no_ports |= !has_word(env, "proc") || !has_word(env, "exec");
+    }
+
+    /* Without "proc exec", ERTS cannot start its port programs, and the
+     * native name resolver is one: kernel halts when it cannot start it.
+     * Kernel uses its own DNS client instead (as on Windows). */
+    if (no_ports && !getenv("ERL_INETRC"))
+        setenv("ERL_INETRC", BEAM_COM_BINDIR "/sandbox.inetrc", 1);
 }
 
 static int file_exists(const char *path)
@@ -536,6 +719,9 @@ void beam_com_main(int *argcp, char ***argvp)
         name = strdup(program);
         unsetenv("BEAM_COM_PROGRAM");
     }
+
+    apply_sandbox(starts_with(name, "erl_child_setup") ||
+                  starts_with(name, "inet_gethost"));
 
     if (starts_with(name, "erl_child_setup"))
         exit(erl_child_setup_main(argc, argv));

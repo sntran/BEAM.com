@@ -148,6 +148,17 @@ if (Test-Path "examples") {
     Check "beam.com" 'the application nosuch is not in beam.com' @("build", "examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
 }
 
+# The sandbox (--pledge, --unveil): Windows ignores both, so each action
+# works; the options must still be accepted and checked.
+if (Test-Path "examples") {
+    Check "beam.com" 'unknown promise bogus' @("build", "tests/programs/sandbox_check.erl", "--pledge", "bogus", "-o", "$Dir/never.com") 1
+    Check "beam.com" 'wrote .*sandbox_pledge.com' @("build", "tests/programs/sandbox_check.erl", "--pledge", "inet", "--unveil", "r /etc", "-o", "$Dir/sandbox_pledge.com")
+    if (Test-Path (Join-Path $Dir "sandbox_pledge.com")) {
+        Remove-Item (Join-Path $Dir "sandbox.tmp") -ErrorAction SilentlyContinue
+        Check "sandbox_pledge.com" 'read: ok@@write: ok@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
+    }
+}
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
