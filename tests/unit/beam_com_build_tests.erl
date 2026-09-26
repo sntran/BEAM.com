@@ -480,8 +480,7 @@ fake_exe(Dir, Root) ->
                                 {"releases/start_erl.data", <<"old">>},
                                 {"releases/0.1.0/start.boot", <<"old">>},
                                 {".args", <<"-x">>},
-                                {".pledge", <<"old">>},
-                                {".unveil", <<"r /old">>} | LibFiles])),
+                                {".allow", <<"all">>} | LibFiles])),
     File = filename:join(Dir, "beam.com"),
     ok = file:write_file(File, Exe),
     File.
@@ -520,7 +519,7 @@ run(Dir) ->
                               "bin/start_clean.boot", "usr/share/zoneinfo/UTC",
                               ".symtab.amd64"]],
     [?assertNot(Has(P)) || P <- ["lib/beam_com/", "lib/sasl-", Crypto ++ "include/",
-                                 ".args", ".pledge", ".unveil"]],
+                                 ".args", ".allow"]],
     %% The old release was replaced, and stdlib reads the new file.
     {ok, Files} = zip:unzip(Bin, [memory]),
     ?assertEqual(<<(list_to_binary(erlang:system_info(version)))/binary, " 0.1.0\n">>,
@@ -531,8 +530,8 @@ run(Dir) ->
     %% No temporary directory is left.
     ?assertEqual([], filelib:wildcard(filename:join(Dir, ".*.tmp"))).
 
-%% --pledge and --unveil write /zip/.pledge and /zip/.unveil, which
-%% beam_com.c reads at start.
+%% The --allow-* flags write /zip/.allow, which beam_com.c reads at
+%% start.
 run_sandbox(Dir) ->
     Root = fake_root(Dir),
     write(filename:join([Root, "lib", "beam_com_script-0.1.0", "ebin"]),
@@ -542,50 +541,41 @@ run_sandbox(Dir) ->
     Exe = fake_exe(Dir, Root),
     F = write(Dir, "boxed.erl", "-module(boxed).\n-export([main/1]).\nmain(_) -> ok.\n"),
     Out = filename:join(Dir, "boxed.com"),
+    Build = fun(Allow) ->
+                    ok = silent(fun() ->
+                                        beam_com_build:run(#{input => F, apps => [], output => Out,
+                                                             root => Root, exe => Exe,
+                                                             allow => Allow})
+                                end),
+                    {ok, Files} = zip:unzip(element(2, file:read_file(Out)), [memory]),
+                    proplists:get_value(".allow", Files)
+            end,
+    ?assertEqual(<<"read=/etc,/srv\nwrite\nnet\nrun=git\n">>,
+                 Build(#{run => ["git"], net => true, write => all, read => ["/etc", "/srv"]})),
+    ?assertEqual(<<"net\n">>, Build(#{net => true})),
+    %% --allow-all wins over the others.
+    ?assertEqual(<<"all\n">>, Build(#{all => true, net => true})),
+    %% Without flags, no file (no sandbox).
     ok = silent(fun() ->
                         beam_com_build:run(#{input => F, apps => [], output => Out,
-                                             root => Root, exe => Exe,
-                                             pledge => "inet dns",
-                                             unveil => ["r /etc", "rwc /tmp/x"]})
-                end),
-    {ok, Bin} = file:read_file(Out),
-    {ok, Files} = zip:unzip(Bin, [memory]),
-    ?assertEqual(<<"inet dns\n">>, proplists:get_value(".pledge", Files)),
-    ?assertEqual(<<"r /etc\nrwc /tmp/x\n">>, proplists:get_value(".unveil", Files)),
-    %% An empty pledge is a pledge ("stdio rpath" only).
-    ok = silent(fun() ->
-                        beam_com_build:run(#{input => F, apps => [], output => Out,
-                                             root => Root, exe => Exe, pledge => ""})
+                                             root => Root, exe => Exe})
                 end),
     {ok, Files2} = zip:unzip(element(2, file:read_file(Out)), [memory]),
-    ?assertEqual(<<"\n">>, proplists:get_value(".pledge", Files2)),
-    ?assertEqual(undefined, proplists:get_value(".unveil", Files2)).
+    ?assertEqual(undefined, proplists:get_value(".allow", Files2)).
 
-sandbox_options_test_() ->
-    Unknown = fun(W) -> {error, "unknown promise ~ts (see beam.com help build)", [W]} end,
-    Bad = fun(R) -> {error, "--unveil needs \"PERMISSIONS PATH\", with PERMISSIONS of "
-                     "r, w, x and c: ~ts", [R]} end,
-    UnknownBogus = Unknown("bogus"),
-    UnknownThread = Unknown("thread"),
-    BadQ = Bad("q /etc"),
-    BadNoPath = Bad("r"),
-    BadEmpty = Bad(""),
-    [?_assertEqual("inet dns", beam_com_build:check_promises("inet   dns")),
-     ?_assertEqual("", beam_com_build:check_promises("")),
-     ?_assertEqual("stdio rpath wpath cpath dpath flock fattr inet anet unix dns tty "
-                   "recvfd sendfd proc exec id unveil settime prot_exec vminfo tmppath chown",
-                   beam_com_build:check_promises(
-                     "stdio rpath wpath cpath dpath flock fattr inet anet unix dns tty "
-                     "recvfd sendfd proc exec id unveil settime prot_exec vminfo tmppath chown")),
-     {"an unknown promise", ?_assertThrow(UnknownBogus, beam_com_build:check_promises("inet bogus"))},
-     {"not a promise of Cosmopolitan",
-      ?_assertThrow(UnknownThread, beam_com_build:check_promises("thread"))},
-     ?_assertEqual("r /etc", beam_com_build:check_unveil("r /etc")),
-     ?_assertEqual("rwxc /a b", beam_com_build:check_unveil("  rwxc /a b ")),
-     {"a path with spaces", ?_assertEqual("r /a b", beam_com_build:check_unveil("r /a b"))},
-     {"a wrong permission", ?_assertThrow(BadQ, beam_com_build:check_unveil("q /etc"))},
-     {"no path", ?_assertThrow(BadNoPath, beam_com_build:check_unveil("r"))},
-     {"nothing", ?_assertThrow(BadEmpty, beam_com_build:check_unveil(""))}].
+allow_test_() ->
+    A = fun(Flags) -> lists:foldl(fun beam_com_build:allow/2, #{}, Flags) end,
+    [?_assertEqual(#{read => all}, A(["--allow-read"])),
+     ?_assertEqual(#{read => all}, A(["-R"])),
+     {"a list, then all", ?_assertEqual(#{read => all}, A(["--allow-read=/a", "-R"]))},
+     {"all, then a list", ?_assertEqual(#{read => all}, A(["-R", "--allow-read=/a"]))},
+     {"lists add up, without duplicates",
+      ?_assertEqual(#{write => ["/a", "/b"]}, A(["--allow-write=/a", "--allow-write=/b,/a"]))},
+     ?_assertEqual(#{net => true}, A(["-N"])),
+     ?_assertEqual(#{run => ["git", "/bin/sh"]}, A(["--allow-run=git,/bin/sh"])),
+     ?_assertEqual(#{all => true}, A(["-A"])),
+     {"--allow-all= is unknown",
+      ?_assertThrow({error, "unknown option ~ts", ["--allow-all=x"]}, A(["--allow-all=x"]))}].
 
 run_app_dir(Dir) ->
     Root = filename:join(Dir, "root"),

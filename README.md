@@ -59,9 +59,10 @@ server with the certificates of the OS (on Windows too).
 ## Build a program with `beam.com build`
 
 ```sh
-beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
-               [--unveil "PERMISSIONS PATH"]... [--target TARGET]
-               [--main MODULE] [--tool rebar|mix] [--extract-priv APP]...
+beam.com build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]
+               [--allow-write[=PATH,...]] [--allow-net] [--allow-run[=PROGRAM,...]]
+               [--allow-all] [--target TARGET] [--main MODULE]
+               [--tool rebar|mix] [--extract-priv APP]...
 ```
 
 `INPUT` is one of these:
@@ -389,46 +390,72 @@ SQLite adds about 1.8 MB (two CPUs) to `beam.com` and to each program
 that it makes, also when the program does not use SQLite, because the
 NIF is in the emulator. Build with `SQLITE=0` to leave it out.
 
-### Sandbox: `--pledge` and `--unveil`
+### Sandbox: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`
 
-A program can give up what it does not need, with the `pledge()` and
-`unveil()` of Cosmopolitan (as OpenBSD programs do):
+A program can give up what it does not need. The flags are the
+permission flags of [Deno](https://docs.deno.com/runtime/fundamentals/security/),
+and as with `deno compile`, they are stored in the program when you
+build it:
 
 ```sh
-beam.com build server.erl --pledge "inet dns" --unveil "r /etc/ssl" --unveil "rwc /var/lib/server"
+beam.com build server.erl --allow-net --allow-read=/etc/myapp --allow-write=/var/lib/myapp
 ```
 
-- `--pledge PROMISES`: the groups of system calls that the program
-  keeps, for example `inet` (sockets), `dns`, `wpath` and `cpath` (write
-  and create files), `proc exec` (port programs). `stdio rpath` are
-  always added: ERTS needs them to start. `beam.com` (the JIT)
-  also adds `prot_exec`: without it, the JIT cannot allocate memory for
-  its code and ERTS stops at the start ("Cannot allocate executable
-  memory"). `beam-emu.com` does not need it.
-  `beam.com help build` lists the promises.
-- `--unveil "PERMISSIONS PATH"` (more than one): the files and
-  directories that the program can see, with the permissions `r`, `w`,
-  `x` and `c` (create). All other paths are hidden. BEAM.com adds its own
-  file, `/dev/null`, `/dev/urandom` and the APE loader.
+Without `--allow-*` flags, there is no sandbox: the program can do all
+that its user can. With one or more of them, the program can do only
+what they allow:
 
-A forbidden system call returns an error: Erlang code gets `{error,
-eperm}` (pledge) or `{error, eacces}` (unveil). Without `proc exec`,
-port programs fail (`open_port/2` returns an error), and kernel uses its
-own DNS client, because the native resolver is a port program.
-
-| System | `--pledge` | `--unveil` |
+| Flag | Short | The program can |
 |---|---|---|
-| Linux | yes (seccomp) | yes (Landlock, Linux 5.13 and later) |
-| OpenBSD | the kernel stops the program on a forbidden call | yes |
-| macOS, Windows, FreeBSD, NetBSD | ignored | ignored |
+| `--allow-read[=PATH,...]` | `-R` | read these files and directories (all, without a list) |
+| `--allow-write[=PATH,...]` | `-W` | write and create these files and directories (all, without a list) |
+| `--allow-net` | `-N` | use sockets and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS) |
+| `--allow-run[=PROGRAM,...]` | | start these programs as ports (all, without a list); a name without `/` is found in `PATH` |
+| `--allow-all` | `-A` | do everything: no sandbox |
 
-The rules are applied when the program starts, before ERTS starts its
-threads, so that they apply to all the threads of the VM (on Linux, a
-rule applies to the thread that sets it and the threads that it starts
-later). For the same reason there is no `pledge()` for Erlang code.
-`BEAM_COM_PLEDGE` and `BEAM_COM_UNVEIL` (rules separated by `;`) add
-rules at run time, to try a sandbox without a new build; they can only
-take more away.
+- The flags add up: `--allow-read=/a --allow-read=/b` allows both, and a
+  flag without a list allows all.
+- A directory includes all that is in it. A path that does not exist
+  when the program starts is left out (the system can only allow paths
+  that exist), so to create files, allow their directory:
+  `--allow-write=/var/lib/myapp`, not `/var/lib/myapp/new.db`.
+- A program always can read its own file (with the code), `/dev/null`
+  and `/dev/urandom`, and the JIT keeps the directory of its code maps
+  (`/dev/shm` on Linux, else `/tmp`).
+- A program that runs other programs (`--allow-run=PROGRAM`) also gets
+  the dynamic loader and the libraries (`/lib`, `/usr/lib`, ...). A
+  shell script needs its shell too: `--allow-run=sh,./script.sh`.
+  `--allow-run` without a list gives execute and read access to all
+  files, so it is almost no sandbox (as in Deno).
+- Not supported, because the sandbox cannot enforce them:
+  `--allow-net=HOST` (no filter by host), `--allow-env`,
+  `--allow-sys`, `--allow-ffi` and the `--deny-*` flags. `beam.com
+  build` stops with an error for them.
+
+A forbidden action gives an error: reading or writing a hidden file
+gives `{error, eacces}`, and a socket or a port without its flag
+`{error, eperm}`. Without `--allow-run`, kernel uses its own DNS
+client, because the native resolver is a port program.
+
+| System | The sandbox |
+|---|---|
+| Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
+| OpenBSD | yes: `pledge()` and `unveil()`; the kernel stops the program on a forbidden system call (a socket without `--allow-net`), instead of an error |
+| macOS, Windows, FreeBSD, NetBSD | no: the flags are ignored |
+
+`BEAM_COM_ALLOW` gives permissions to a program that has none in its
+file, to try a sandbox without a new build: the flags without
+`--allow-`, separated by `;`, for example
+`BEAM_COM_ALLOW='read=/etc;net' ./server.com`. A program with
+permissions in its file (also `--allow-all`) ignores it, so the
+environment cannot give a program more than its file allows.
+
+The flags become Cosmopolitan's `pledge()` (system calls) and
+`unveil()` (paths), which the program applies when it starts, before
+ERTS starts its threads, so that they apply to all the threads of the
+VM (on Linux, a rule applies to the thread that sets it and the threads
+that it starts later). For the same reason there is no sandbox call for
+Erlang code.
 
 ## Add your release
 
