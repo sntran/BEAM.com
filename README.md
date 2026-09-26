@@ -243,6 +243,37 @@ mix test
 On Windows, copy `beam.com` to `mix.exe`, `iex.exe`, `elixir.exe` or
 `elixirc.exe`, or make hard links with `mklink /H mix.exe beam.com`.
 
+### Phoenix from source
+
+With the tools, a Phoenix project runs from its source, as with an
+Elixir installation, but without Erlang or Elixir on the computer:
+
+```sh
+mix.com local.hex --force
+mix.com archive.install hex phx_new
+mix.com phx.new hello --no-ecto
+cd hello
+mix.com deps.get
+iex.com -S mix phx.server        # http://localhost:4000
+```
+
+- `beam.com` has the OTP applications that a new Phoenix app needs
+  beyond Elixir: `xmerl` (for `swoosh`) and `runtime_tools`.
+- The esbuild and tailwind watchers download their programs and run
+  them as ports, as they do with Elixir (not on Windows, which has no
+  port programs here).
+- Live reload needs `inotify-tools` on Linux, as with Elixir; without
+  it the server runs, and the browser does not reload by itself.
+- **Not yet:** a database with a NIF. `--database sqlite3` (exqlite) and
+  `phx.gen.auth` (bcrypt) load C libraries at run time, which BEAM.com
+  cannot do; linking their NIFs into `beam.com` is the next step (see
+  the ROADMAP). PostgreSQL (`--database postgres`, the default) uses
+  Postgrex, which is Elixir only.
+
+CI runs these steps on Linux: `phx.new` without Ecto, `deps.get`,
+`compile`, and `iex.com -S mix phx.server`, which must serve the start
+page.
+
 ### Command line programs: `--main`, `priv` files and erl mode
 
 An application directory can be a command line program, as an escript
