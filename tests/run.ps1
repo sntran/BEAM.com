@@ -174,6 +174,17 @@ if ((Test-Path (Join-Path $Dir "beam-jit.com")) -and ($env:PROCESSOR_ARCHITECTUR
         if (Test-Path (Join-Path $Dir "greeter.jit.com")) {
             Check "greeter.jit.com" $patterns["greeter"] @()
         }
+        Check "beam-jit.com" 'wrote .*wasm_tests.jit.com' @("build", "tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.jit.com")
+        if (Test-Path (Join-Path $Dir "wasm_tests.jit.com")) {
+            Check "wasm_tests.jit.com" 'wasm_tests: all [0-9]+ passed' @()
+        }
+        Check "beam-jit.com" 'wrote .*script_check.jit.com' @("build", "tests/programs/script_check.erl", "-o", "$Dir/script_check.jit.com")
+        if (Test-Path (Join-Path $Dir "script_check.jit.com")) {
+            Check "script_check.jit.com" '(?m)argc 2@@(?m)^arg b c$@@(?m)^arg 日本$' @("args", "b c", "日本")
+            Check "script_check.jit.com" 'exception error: \{boom,42\}' @("raise") 127
+            Check "script_check.jit.com" 'halting 3' @("halt", "3") 3
+            Check "script_check.jit.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
+        }
     }
 }
 

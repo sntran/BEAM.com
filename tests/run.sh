@@ -164,6 +164,17 @@ if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
         check beam-jit.com 'wrote .*greeter.jit.com' \
             build examples/greeter -o "$dir/greeter.jit.com"
         [ -f "$dir/greeter.jit.com" ] && check greeter.jit.com "$greeter"
+        check beam-jit.com 'wrote .*wasm_tests.jit.com' \
+            build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.jit.com"
+        [ -f "$dir/wasm_tests.jit.com" ] && check wasm_tests.jit.com 'wasm_tests: all [0-9]* passed'
+        check beam-jit.com 'wrote .*script_check.jit.com' \
+            build tests/programs/script_check.erl -o "$dir/script_check.jit.com"
+        if [ -f "$dir/script_check.jit.com" ]; then
+            check script_check.jit.com 'argc 2@@arg b c$@@arg 日本$' args "b c" 日本
+            check_status 127 script_check.jit.com 'exception error: {boom,42}' raise
+            check_status 3 script_check.jit.com 'halting 3' halt 3
+            check script_check.jit.com '^line 100000$@@^last line$' big
+        fi
     fi
 fi
 
