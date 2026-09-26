@@ -343,7 +343,9 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 ## Known limits
 
-- No JIT, no `socket` NIF, no NIFs or drivers in shared objects
+- The default `beam.com` has no JIT (the JIT is an x86_64-only probe,
+  `beam-jit.com`).
+- No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
   work (`crypto`, `asn1`, `wasm`, and `esqlite` with `SQLITE=1`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
