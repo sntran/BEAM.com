@@ -20,12 +20,8 @@ jobs:
       matrix:
         include:
           - { name: Build, out: beam.com }
-          # The JIT probe: x86_64 only for now (see docs/ROADMAP.md).
-          - name: Build with JIT (x86_64)
-            jit: "1"
-            out: beam-jit.com
-            cc: x86_64-unknown-cosmo-cc
-            ar: x86_64-linux-cosmo-ar
+          # The JIT: one fat file with the x86 and the arm backend.
+          - { name: Build with JIT, jit: "1", out: beam-jit.com }
     env:
       JIT: ${{ matrix.jit || '0' }}
       CC: ${{ matrix.cc || 'cosmocc' }}

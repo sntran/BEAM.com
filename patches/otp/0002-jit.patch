@@ -1,8 +1,38 @@
 diff --git a/erts/configure b/erts/configure
-index afa96f2..08207b5 100755
+index afa96f2..0940d30 100755
 --- a/erts/configure
 +++ b/erts/configure
-@@ -26631,7 +26631,9 @@ then :
+@@ -15127,6 +15127,16 @@ printf "%s\n" "$ethr_cv_arm_ic_ivau_instr" >&6; }
+      ;;
+ esac
+ 
++# BEAM.com: a fat JIT (BEAM_COM_FAT_JIT=yes) has the arm backend in its
++# aarch64 half, which clears the instruction cache with these
++# instructions. They are valid on every aarch64 OS. The values are used
++# only in code for ARM, so the x86_64 half does not change.
++if test "x$BEAM_COM_FAT_JIT" = xyes; then
++    ethr_arm_isb_sy_instr_val=1
++    ethr_arm_dc_cvau_instr_val=1
++    ethr_arm_ic_ivau_instr_val=1
++fi
++
+ 
+ printf "%s\n" "#define ETHR_HAVE_GCC_ASM_ARM_DMB_INSTRUCTION $ethr_arm_dbm_sy_instr_val" >>confdefs.h
+ 
+@@ -26467,6 +26477,12 @@ printf "%s\n" "$as_me: WARNING: JIT disabled due to lack to support on $ARCH-$OP
+ 
+ fi
+ 
++# BEAM.com: one fat file with the x86 and the arm backend, selected by
++# the compiler pass (see beam/jit/fat).
++if test "x$JIT_ARCH" = xx86 && test "x$BEAM_COM_FAT_JIT" = xyes; then
++    JIT_ARCH=fat
++fi
++
+ 
+ if test ${enable_jit} != no -o "$builtin_ryu" = "no"
+ then :
+@@ -26631,7 +26647,9 @@ then :
        #
        # On other platforms we'll wrangle sigaltstack(2) to let signals execute
        # on an alternate stack.
@@ -14,10 +44,23 @@ index afa96f2..08207b5 100755
  esac
  
 diff --git a/erts/configure.ac b/erts/configure.ac
-index c5113a5..ffb7dc5 100644
+index c5113a5..485b3be 100644
 --- a/erts/configure.ac
 +++ b/erts/configure.ac
-@@ -3210,7 +3210,9 @@ AS_IF([test ${enable_jit} != no],
+@@ -3108,6 +3108,12 @@ AS_IF([test ${enable_jit} != no],
+    esac
+   ])
+ 
++# BEAM.com: one fat file with the x86 and the arm backend, selected by
++# the compiler pass (see beam/jit/fat).
++if test "x$JIT_ARCH" = xx86 && test "x$BEAM_COM_FAT_JIT" = xyes; then
++    JIT_ARCH=fat
++fi
++
+ dnl Test for C++17
+ AS_IF([test ${enable_jit} != no -o "$builtin_ryu" = "no"],
+   [
+@@ -3210,7 +3216,9 @@ AS_IF([test ${enable_jit} != no],
        #
        # On other platforms we'll wrangle sigaltstack(2) to let signals execute
        # on an alternate stack.
@@ -29,10 +72,91 @@ index c5113a5..ffb7dc5 100644
  
    case "$JIT_ARCH" in
 diff --git a/erts/emulator/Makefile.in b/erts/emulator/Makefile.in
-index 3920b99..9ca7134 100644
+index 3920b99..db7f943 100644
 --- a/erts/emulator/Makefile.in
 +++ b/erts/emulator/Makefile.in
-@@ -1020,7 +1020,9 @@ ASMJIT_FLAGS=-DASMJIT_EMBED=1 \
+@@ -70,10 +70,18 @@ endif
+ 
+ ifeq ($(FLAVOR),jit)
+ OMIT_OMIT_FP=yes
++ifeq ($(JIT_ARCH),fat)
++# BEAM.com: one fat file with both backends. The tables of each backend
++# are made into $(TTF_DIR)/jit-x86 and jit-arm (see beam/jit/fat).
++JIT_BACKEND_TABLES = ops.tab predicates.tab generators.tab
++OPCODE_TABLES_X86 = $(OPCODE_TABLES) $(addprefix beam/jit/x86/,$(JIT_BACKEND_TABLES))
++OPCODE_TABLES_ARM = $(OPCODE_TABLES) $(addprefix beam/jit/arm/,$(JIT_BACKEND_TABLES))
++else
+ OPCODE_TABLES += \
+     beam/jit/$(JIT_ARCH)/ops.tab \
+     beam/jit/$(JIT_ARCH)/predicates.tab \
+     beam/jit/$(JIT_ARCH)/generators.tab
++endif
+ else
+ OMIT_OMIT_FP=no
+ OPCODE_TABLES += \
+@@ -653,6 +661,25 @@ $(TTF_DIR)/beam_hot.h \
+ $(TTF_DIR)/beam_opcodes.c \
+ $(TTF_DIR)/beam_opcodes.h \
+ 	: $(TTF_DIR)/OPCODES-GENERATED
++ifeq ($(FLAVOR)-$(JIT_ARCH),jit-fat)
++FAT_JIT_TTF = beam_opcodes.c beam_opcodes.h beamasm_emit.h beamasm_protos.h
++$(TTF_DIR)/OPCODES-GENERATED: $(OPCODE_TABLES_X86) $(OPCODE_TABLES_ARM) utils/beam_makeops \
++		$(addprefix beam/jit/fat/ttf/,$(FAT_JIT_TTF))
++	$(gen_verbose)mkdir -p $(TTF_DIR)/jit-x86 $(TTF_DIR)/jit-arm && \
++	for arch in x86 arm; do \
++	  if [ $$arch = x86 ]; then tables="$(OPCODE_TABLES_X86)"; \
++	  else tables="$(OPCODE_TABLES_ARM)"; fi; \
++	  LANG=C $(PERL) utils/beam_makeops \
++		-wordsize @EXTERNAL_WORD_SIZE@ \
++		-code-model @CODE_MODEL@ \
++		-outdir $(TTF_DIR)/jit-$$arch \
++		-jit yes \
++		-DUSE_VM_PROBES=$(if $(USE_VM_PROBES),1,0) \
++		-emulator $$tables || exit 1; \
++	done && \
++	cp $(addprefix beam/jit/fat/ttf/,$(FAT_JIT_TTF)) $(TTF_DIR)/ && \
++	echo 0 >$(TTF_DIR)/OPCODES-GENERATED
++else
+ $(TTF_DIR)/OPCODES-GENERATED: $(OPCODE_TABLES) utils/beam_makeops
+ 	$(gen_verbose)LANG=C $(PERL) utils/beam_makeops \
+ 		-wordsize @EXTERNAL_WORD_SIZE@ \
+@@ -661,11 +688,21 @@ $(TTF_DIR)/OPCODES-GENERATED: $(OPCODE_TABLES) utils/beam_makeops
+ 		-jit $(if $(filter jit,$(FLAVOR)),yes,no) \
+ 		-DUSE_VM_PROBES=$(if $(USE_VM_PROBES),1,0) \
+ 		-emulator $(OPCODE_TABLES) && echo $? >$(TTF_DIR)/OPCODES-GENERATED
++endif
+ GENERATE += $(TTF_DIR)/OPCODES-GENERATED
+ 
+ ifeq ($(FLAVOR),jit)
++ifeq ($(JIT_ARCH),fat)
++$(TTF_DIR)/beam_asm_global.hpp: beam/jit/x86/beam_asm_global.hpp.pl \
++		beam/jit/arm/beam_asm_global.hpp.pl beam/jit/fat/ttf/beam_asm_global.hpp
++	$(gen_verbose)mkdir -p $(TTF_DIR)/jit-x86 $(TTF_DIR)/jit-arm && \
++	LANG=C $(PERL) beam/jit/x86/beam_asm_global.hpp.pl > $(TTF_DIR)/jit-x86/beam_asm_global.hpp && \
++	LANG=C $(PERL) beam/jit/arm/beam_asm_global.hpp.pl > $(TTF_DIR)/jit-arm/beam_asm_global.hpp && \
++	cp beam/jit/fat/ttf/beam_asm_global.hpp $@
++else
+ $(TTF_DIR)/beam_asm_global.hpp: beam/jit/$(JIT_ARCH)/beam_asm_global.hpp.pl
+ 	$(gen_verbose)LANG=C $(PERL) $<  > $@
++endif
+ GENERATE += $(TTF_DIR)/beam_asm_global.hpp
+ endif
+ 
+@@ -782,9 +819,12 @@ GENERATE += $(DB_INSERT_LIST_OUTPUT) $(MAPS_YCF_OUTPUT) $(UTILS_YCF_OUTPUT)
+ 
+ ## ASMJIT source files and headers. Note that ARM and x86 are both included,
+ ## unconditionally, since `core` sometimes references them.
++# BEAM.com: the fat JIT has both backends of asmjit. With
++# ASMJIT_NO_FOREIGN, the files of the other CPU compile to nothing.
++ASMJIT_ARCH_DIRS = $(if $(filter fat,$(JIT_ARCH)),x86 arm,$(JIT_ARCH))
+ ASMJIT_CPP = $(wildcard asmjit/core/*.cpp) \
+ 	$(wildcard asmjit/support/*.cpp) \
+-	$(wildcard asmjit/$(JIT_ARCH)/*.cpp)
++	$(foreach dir,$(ASMJIT_ARCH_DIRS),$(wildcard asmjit/$(dir)/*.cpp))
+ ASMJIT_H = $(wildcard asmjit/*.h) \
+ 	$(wildcard asmjit/core/*.h) \
+ 	$(wildcard asmjit/arm/*.h) \
+@@ -1020,7 +1060,9 @@ ASMJIT_FLAGS=-DASMJIT_EMBED=1 \
  	-DASMJIT_STATIC=1 \
  	-DASMJIT_NO_FOREIGN=1
  ASMJIT_CXXFLAGS=$(filter-out -Wformat -Wformat=2, $(CXXFLAGS)) @NO_MAYBE_UNINITIALIZED@
@@ -43,7 +167,7 @@ index 3920b99..9ca7134 100644
  ASMJIT_PCH_SRC=$(TTF_DIR)/asmjit/core.h
  
  ifeq ($(JIT_ENABLED),yes)
-@@ -1045,9 +1047,7 @@ $(OBJDIR)/asmjit/%.o: asmjit/%.cpp $(ASMJIT_PCH_OBJ) $(dir $@)
+@@ -1045,9 +1087,7 @@ $(OBJDIR)/asmjit/%.o: asmjit/%.cpp $(ASMJIT_PCH_OBJ) $(dir $@)
  ## The dependency on erl_bif_info.c is in order to trigger a rebuild when
  ## the git sha define on the command line argument changes
  $(ASMJIT_PCH_OBJ): $(ASMJIT_PCH_SRC) $(ASMJIT_TTF_H) beam/erl_bif_info.c
@@ -54,3 +178,571 @@ index 3920b99..9ca7134 100644
  
  ## We copy all asmjit headers into TTF_DIR in order for cross-compilation
  ## with pre-compiled header to work.
+diff --git a/erts/emulator/asmjit/core/virtmem.cpp b/erts/emulator/asmjit/core/virtmem.cpp
+index 37c7824..6de646e 100644
+--- a/erts/emulator/asmjit/core/virtmem.cpp
++++ b/erts/emulator/asmjit/core/virtmem.cpp
+@@ -11,6 +11,17 @@
+ #include <asmjit/core/virtmem.h>
+ #include <asmjit/support/support.h>
+ 
++#if defined(__COSMOPOLITAN__)
++  // BEAM.com: one binary for all OSes. The OS is known only at run time
++  // (IsXnuSilicon()), and __APPLE__ is not defined on macOS.
++  #include <cosmo.h>
++  // pthread_jit_write_protect_np() on macOS arm64, nothing elsewhere
++  // (libc/runtime/runtime.h declares them only for _COSMO_SOURCE).
++  extern "C" void __jit_begin(void);
++  extern "C" void __jit_end(void);
++  #define ASMJIT_COSMO_XNU_SILICON (ASMJIT_ARCH_ARM >= 64 && IsXnuSilicon())
++#endif
++
+ #if !defined(_WIN32)
+   #include <errno.h>
+   #include <fcntl.h>
+@@ -755,6 +766,12 @@ static bool has_hardened_runtime() noexcept {
+   // OSX on AArch64 has always hardened runtime enabled.
+   return true;
+ #else
++  #if defined(__COSMOPOLITAN__)
++  // BEAM.com: as above, for macOS on AArch64.
++  if (ASMJIT_COSMO_XNU_SILICON) {
++    return true;
++  }
++  #endif
+   static std::atomic<uint32_t> cached_hardened_flag;
+ 
+   constexpr uint32_t hf_unknown  = 0;
+@@ -799,6 +816,9 @@ static inline bool has_mapjit_support() noexcept {
+   }
+ 
+   return val == 2u;
++#elif defined(__COSMOPOLITAN__)
++  // BEAM.com: as above, for macOS on AArch64.
++  return ASMJIT_COSMO_XNU_SILICON;
+ #else
+   // MAP_JIT is not available (it's only available on OSX).
+   return false;
+@@ -822,6 +842,12 @@ static inline int mm_mapjit_from_memory_flags(MemoryFlags memory_flags) noexcept
+   else {
+     return 0;
+   }
++#elif defined(__COSMOPOLITAN__)
++  // BEAM.com: as above, for macOS on AArch64 (MAP_JIT is 0 on the other OSes).
++  if (ASMJIT_COSMO_XNU_SILICON && !Support::test(memory_flags, MemoryFlags::kMapShared)) {
++    return MAP_JIT;
++  }
++  return 0;
+ #else
+   Support::maybe_unused(memory_flags);
+   return 0;
+@@ -831,6 +857,9 @@ static inline int mm_mapjit_from_memory_flags(MemoryFlags memory_flags) noexcept
+ static inline bool has_dual_mapping_support() noexcept {
+ #if defined(ASMJIT_NO_DUAL_MAPPING)
+   return false;
++#elif defined(__COSMOPOLITAN__)
++  // BEAM.com: macOS on AArch64 uses MAP_JIT (ASMJIT_NO_DUAL_MAPPING upstream).
++  return !ASMJIT_COSMO_XNU_SILICON;
+ #else
+   return true;
+ #endif
+@@ -1218,6 +1247,15 @@ HardenedRuntimeInfo hardened_runtime_info() noexcept {
+ void protect_jit_memory(ProtectJitAccess access) noexcept {
+ #if defined(ASMJIT_HAS_PTHREAD_JIT_WRITE_PROTECT_NP)
+   pthread_jit_write_protect_np(static_cast<int>(access));
++#elif defined(__COSMOPOLITAN__)
++  // BEAM.com: pthread_jit_write_protect_np() on macOS arm64, nothing on the
++  // other OSes.
++  if (access == ProtectJitAccess::kReadWrite) {
++    __jit_begin();
++  }
++  else {
++    __jit_end();
++  }
+ #else
+   Support::maybe_unused(access);
+ #endif
+diff --git a/erts/emulator/beam/jit/arm/beam_asm.hpp b/erts/emulator/beam/jit/arm/beam_asm.hpp
+index efc9ad6..8a5f4c7 100644
+--- a/erts/emulator/beam/jit/arm/beam_asm.hpp
++++ b/erts/emulator/beam/jit/arm/beam_asm.hpp
+@@ -95,7 +95,10 @@ protected:
+     const a64::Gp active_code_ix = a64::x24;
+ 
+     /* X registers */
+-#if defined(DEBUG)
++#if defined(DEBUG) || defined(__COSMOPOLITAN__)
++    /* BEAM.com: Cosmopolitan keeps the thread pointer in x28 (cosmocc
++     * compiles with -ffixed-x28), so the C code that the JIT calls, and
++     * signal handlers, need it there. The layout without x28 is used. */
+     /*
+      * To ensure that we thoroughly test flushing of caller-save X
+      * registers, define more caller-save X registers in a DEBUG
+diff --git a/erts/emulator/beam/jit/beam_jit_main.cpp b/erts/emulator/beam/jit/beam_jit_main.cpp
+index 73bc507..b0c0664 100644
+--- a/erts/emulator/beam/jit/beam_jit_main.cpp
++++ b/erts/emulator/beam/jit/beam_jit_main.cpp
+@@ -37,6 +37,11 @@ extern "C"
+ #endif
+ }
+ 
++#ifdef __COSMOPOLITAN__
++/* BEAM.com: the OS is known only at run time (IsXnuSilicon()). */
++#    include <cosmo.h>
++#endif
++
+ #ifdef ERLANG_FRAME_POINTERS
+ ErtsFrameLayout ERTS_WRITE_UNLIKELY(erts_frame_layout);
+ #endif
+@@ -96,6 +101,14 @@ static void init_cache_info() {
+ #if defined(__aarch64__) && defined(BEAMASM_MANUAL_ICACHE_FLUSHING)
+     UWord ctr_el0;
+ 
++#    ifdef __COSMOPOLITAN__
++    /* BEAM.com: macOS clears the caches with sys_icache_invalidate(), see
++     * beamasm_flush_icache(). */
++    if (IsXnuSilicon()) {
++        return;
++    }
++#    endif
++
+     /* DC/IC operate on a cache line basis, so we need to step according to the
+      * _smallest_ data and instruction cache line size.
+      *
+@@ -195,6 +208,14 @@ static JitAllocator *pick_allocator() {
+     erts_jit_single_map = 1;
+ #endif
+ 
++#if defined(__COSMOPOLITAN__) && defined(__aarch64__)
++    /* BEAM.com: the same on macOS arm64, which is known only at run time.
++     * asmjit uses MAP_JIT and the per-thread permissions there. */
++    if (IsXnuSilicon()) {
++        erts_jit_single_map = 1;
++    }
++#endif
++
+ #if defined(HAVE_LINUX_PERF_SUPPORT)
+     /* `perf` has a hard time showing symbols for dual-mapped memory, so we'll
+      * use single-mapped memory when enabled. */
+@@ -459,6 +480,14 @@ extern "C"
+         /* Issues full memory/instruction barriers on all threads for us. */
+         sys_icache_invalidate((char *)address, size);
+ #elif defined(__aarch64__) && defined(BEAMASM_MANUAL_ICACHE_FLUSHING)
++#    ifdef __COSMOPOLITAN__
++        /* BEAM.com: on macOS, Cosmopolitan's __clear_cache() calls
++         * sys_icache_invalidate(), as the __APPLE__ branch above. */
++        if (IsXnuSilicon()) {
++            __builtin___clear_cache((char *)address, (char *)address + size);
++            return;
++        }
++#    endif
+         /* Note that we do not issue an instruction synchronization barrier
+          * here. This is on purpose as we must issue those on all schedulers
+          * and not just the calling thread, and the chances of us forgetting to
+@@ -499,6 +528,11 @@ extern "C"
+          * visible. */
+         (void)address;
+         (void)size;
++#elif defined(__COSMOPOLITAN__) && !defined(__x86_64__) &&                    \
++        !defined(__aarch64__)
++        /* BEAM.com: the dependency pass of cosmocc (-MM) defines no CPU. */
++        (void)address;
++        (void)size;
+ #else
+ #    error "Platform lacks implementation for clearing instruction cache." \
+                 "Please report this bug."
+diff --git a/erts/emulator/beam/jit/fat/beam_asm.hpp b/erts/emulator/beam/jit/fat/beam_asm.hpp
+new file mode 100644
+index 0000000..67465dd
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/beam_asm.hpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/beam_asm.hpp"
++#elif defined(__aarch64__)
++#    include "../arm/beam_asm.hpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/beam_asm.hpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/beam_asm_global.cpp b/erts/emulator/beam/jit/fat/beam_asm_global.cpp
+new file mode 100644
+index 0000000..53ffcda
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/beam_asm_global.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/beam_asm_global.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/beam_asm_global.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/beam_asm_global.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/beam_asm_module.cpp b/erts/emulator/beam/jit/fat/beam_asm_module.cpp
+new file mode 100644
+index 0000000..636398c
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/beam_asm_module.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/beam_asm_module.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/beam_asm_module.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/beam_asm_module.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_arith.cpp b/erts/emulator/beam/jit/fat/instr_arith.cpp
+new file mode 100644
+index 0000000..752aa93
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_arith.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_arith.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_arith.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_arith.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_bif.cpp b/erts/emulator/beam/jit/fat/instr_bif.cpp
+new file mode 100644
+index 0000000..e47df65
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_bif.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_bif.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_bif.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_bif.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_bs.cpp b/erts/emulator/beam/jit/fat/instr_bs.cpp
+new file mode 100644
+index 0000000..11c86a9
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_bs.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_bs.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_bs.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_bs.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_call.cpp b/erts/emulator/beam/jit/fat/instr_call.cpp
+new file mode 100644
+index 0000000..0212c4c
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_call.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_call.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_call.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_call.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_common.cpp b/erts/emulator/beam/jit/fat/instr_common.cpp
+new file mode 100644
+index 0000000..18685f6
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_common.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_common.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_common.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_common.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_float.cpp b/erts/emulator/beam/jit/fat/instr_float.cpp
+new file mode 100644
+index 0000000..504cd1a
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_float.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_float.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_float.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_float.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_fun.cpp b/erts/emulator/beam/jit/fat/instr_fun.cpp
+new file mode 100644
+index 0000000..04dfff6
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_fun.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_fun.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_fun.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_fun.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_guard_bifs.cpp b/erts/emulator/beam/jit/fat/instr_guard_bifs.cpp
+new file mode 100644
+index 0000000..8f1d57a
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_guard_bifs.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_guard_bifs.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_guard_bifs.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_guard_bifs.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_map.cpp b/erts/emulator/beam/jit/fat/instr_map.cpp
+new file mode 100644
+index 0000000..68ca2fb
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_map.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_map.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_map.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_map.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_msg.cpp b/erts/emulator/beam/jit/fat/instr_msg.cpp
+new file mode 100644
+index 0000000..e7203aa
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_msg.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_msg.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_msg.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_msg.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_records.cpp b/erts/emulator/beam/jit/fat/instr_records.cpp
+new file mode 100644
+index 0000000..5dba11b
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_records.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_records.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_records.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_records.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_select.cpp b/erts/emulator/beam/jit/fat/instr_select.cpp
+new file mode 100644
+index 0000000..015e127
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_select.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_select.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_select.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_select.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/instr_trace.cpp b/erts/emulator/beam/jit/fat/instr_trace.cpp
+new file mode 100644
+index 0000000..6314723
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/instr_trace.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/instr_trace.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/instr_trace.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/instr_trace.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/process_main.cpp b/erts/emulator/beam/jit/fat/process_main.cpp
+new file mode 100644
+index 0000000..4d1437d
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/process_main.cpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. Cosmopolitan compiles
++ * each file once for x86_64 and once for aarch64; this file takes the
++ * backend of the pass. */
++#if defined(__x86_64__)
++#    include "../x86/process_main.cpp"
++#elif defined(__aarch64__)
++#    include "../arm/process_main.cpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "../x86/process_main.cpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/ttf/beam_asm_global.hpp b/erts/emulator/beam/jit/fat/ttf/beam_asm_global.hpp
+new file mode 100644
+index 0000000..3d6f28a
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/ttf/beam_asm_global.hpp
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. The Makefile generates
++ * this file for each backend (jit-x86/, jit-arm/) and copies this
++ * wrapper next to them. It takes the backend of the compiler pass. */
++#if defined(__x86_64__)
++#    include "jit-x86/beam_asm_global.hpp"
++#elif defined(__aarch64__)
++#    include "jit-arm/beam_asm_global.hpp"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "jit-x86/beam_asm_global.hpp"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/ttf/beam_opcodes.c b/erts/emulator/beam/jit/fat/ttf/beam_opcodes.c
+new file mode 100644
+index 0000000..caba404
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/ttf/beam_opcodes.c
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. The Makefile generates
++ * this file for each backend (jit-x86/, jit-arm/) and copies this
++ * wrapper next to them. It takes the backend of the compiler pass. */
++#if defined(__x86_64__)
++#    include "jit-x86/beam_opcodes.c"
++#elif defined(__aarch64__)
++#    include "jit-arm/beam_opcodes.c"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "jit-x86/beam_opcodes.c"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/ttf/beam_opcodes.h b/erts/emulator/beam/jit/fat/ttf/beam_opcodes.h
+new file mode 100644
+index 0000000..96499e9
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/ttf/beam_opcodes.h
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. The Makefile generates
++ * this file for each backend (jit-x86/, jit-arm/) and copies this
++ * wrapper next to them. It takes the backend of the compiler pass. */
++#if defined(__x86_64__)
++#    include "jit-x86/beam_opcodes.h"
++#elif defined(__aarch64__)
++#    include "jit-arm/beam_opcodes.h"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "jit-x86/beam_opcodes.h"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/ttf/beamasm_emit.h b/erts/emulator/beam/jit/fat/ttf/beamasm_emit.h
+new file mode 100644
+index 0000000..9be70ad
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/ttf/beamasm_emit.h
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. The Makefile generates
++ * this file for each backend (jit-x86/, jit-arm/) and copies this
++ * wrapper next to them. It takes the backend of the compiler pass. */
++#if defined(__x86_64__)
++#    include "jit-x86/beamasm_emit.h"
++#elif defined(__aarch64__)
++#    include "jit-arm/beamasm_emit.h"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "jit-x86/beamasm_emit.h"
++#endif
+diff --git a/erts/emulator/beam/jit/fat/ttf/beamasm_protos.h b/erts/emulator/beam/jit/fat/ttf/beamasm_protos.h
+new file mode 100644
+index 0000000..ffe214c
+--- /dev/null
++++ b/erts/emulator/beam/jit/fat/ttf/beamasm_protos.h
+@@ -0,0 +1,11 @@
++/* BEAM.com: one fat file with both JIT backends. The Makefile generates
++ * this file for each backend (jit-x86/, jit-arm/) and copies this
++ * wrapper next to them. It takes the backend of the compiler pass. */
++#if defined(__x86_64__)
++#    include "jit-x86/beamasm_protos.h"
++#elif defined(__aarch64__)
++#    include "jit-arm/beamasm_protos.h"
++#else
++/* The dependency pass (-MM) defines neither CPU. */
++#    include "jit-x86/beamasm_protos.h"
++#endif
+diff --git a/make/autoconf/otp.m4 b/make/autoconf/otp.m4
+index f449c53..2559004 100644
+--- a/make/autoconf/otp.m4
++++ b/make/autoconf/otp.m4
+@@ -1555,6 +1555,16 @@ AC_DEFUN(ETHR_CHK_GCC_ATOMIC_OPS,
+ 	    fi
+       ])
+ 
++    # BEAM.com: a fat JIT (BEAM_COM_FAT_JIT=yes) has the arm backend in its
++    # aarch64 half, which clears the instruction cache with these
++    # instructions. They are valid on every aarch64 OS. The values are used
++    # only in code for ARM, so the x86_64 half does not change.
++    if test "x$BEAM_COM_FAT_JIT" = xyes; then
++        ethr_arm_isb_sy_instr_val=1
++        ethr_arm_dc_cvau_instr_val=1
++        ethr_arm_ic_ivau_instr_val=1
++    fi
++
+     AC_DEFINE_UNQUOTED([ETHR_HAVE_GCC_ASM_ARM_DMB_INSTRUCTION], [$ethr_arm_dbm_sy_instr_val], [Define as a boolean indicating whether you have a gcc compatible compiler capable of generating the ARM 'dmb sy' instruction, and are compiling for an ARM processor with ARM DMB instruction support, or not])
+     AC_DEFINE_UNQUOTED([ETHR_HAVE_GCC_ASM_ARM_DMB_ST_INSTRUCTION], [$ethr_arm_dbm_st_instr_val], [Define as a boolean indicating whether you have a gcc compatible compiler capable of generating the ARM 'dmb st' instruction, and are compiling for an ARM processor with ARM DMB instruction support, or not])
+     AC_DEFINE_UNQUOTED([ETHR_HAVE_GCC_ASM_ARM_DMB_LD_INSTRUCTION], [$ethr_arm_dbm_ld_instr_val], [Define as a boolean indicating whether you have a gcc compatible compiler capable of generating the ARM 'dmb ld' instruction, and are compiling for an ARM processor with ARM DMB instruction support, or not])

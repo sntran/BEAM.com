@@ -27,7 +27,7 @@
 #                    with x86_64-unknown-cosmo-cc)
 #   CXX              C++ compiler, for the JIT (default: CC with c++ for cc)
 #   JIT              1: build the JIT (BeamAsm) instead of the interpreter
-#                    (the JIT probe; default 0)
+#                    (default 0). With cosmocc, the file has both backends.
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
 set -eu
@@ -151,10 +151,16 @@ step_configure() {
     # The JIT: the Erlang code does not use the native stack. That needs
     # signal handlers on an alternate stack, and OpenBSD does not allow it
     # (see patches/otp/0002-jit.patch).
+    # With the fat compiler (cosmocc), the JIT has both backends: x86 in
+    # the x86_64 half and arm in the aarch64 half (beam/jit/fat).
     if [ "$JIT" = 1 ]; then
         jit=--enable-jit
         enable_native_stack=no
         export enable_native_stack
+        if [ "$(basename "$CC")" = cosmocc ]; then
+            BEAM_COM_FAT_JIT=yes
+            export BEAM_COM_FAT_JIT
+        fi
     else
         jit=--disable-jit
     fi

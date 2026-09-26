@@ -69,30 +69,24 @@ component model is designed so that a host can build it on a core
 WebAssembly engine (as `jco` does in JavaScript), so a component layer
 can be added on WAMR, or the runtime can be replaced.
 
-### JIT (build flag `JIT=1`, x86_64 only)
+### JIT (build flag `JIT=1`)
 
-- BeamAsm works in an x86_64-only `beam-jit.com`, built with
-  `x86_64-unknown-cosmo-cc`, on Linux, macOS x86_64, Windows, FreeBSD,
-  NetBSD and OpenBSD 7.3 (tested in CI).
-- 28.7 MB for `beam-jit.com`, about 20 MB for its programs.
+- BeamAsm in one fat file: the x86 backend in the x86_64 half and the
+  arm backend in the aarch64 half (`beam-jit.com`, 42 MB). See
+  `docs/JIT.md`.
 - The native stack for Erlang code is off, and asmjit has no
-  precompiled header. See `docs/JIT.md`.
+  precompiled header. On macOS arm64, `MAP_JIT` and the per-thread write
+  permission are selected at run time.
 
 ## Next, in this order
 
-### 1. JIT (BeamAsm): the aarch64 half and one fat file
+### 1. JIT (BeamAsm): the default, and W^X
 
-The x86_64 probe works on every x86_64 platform (see "Probe results"
-and [`docs/JIT.md`](JIT.md)). Next, from the design in `docs/JIT.md`:
-
-- (c) the aarch64 JIT alone: the ARM cache-instruction checks of
-  configure, `MAP_JIT` or dual mapping on Apple Silicon (the biggest
-  risk), Linux aarch64.
-- (d) one fat file with both backends: both sets of generated files, and
-  wrapper files that select the backend with `#if`.
-- (e) the fallback: `beam.com` (JIT) and `beam-emu.com` (interpreter).
+- The fat JIT as the default `beam.com`, when it is green on every
+  platform, with the interpreter as `beam-emu.com` or as a build option.
 - Dual mapping (W^X) in asmjit under Cosmopolitan: memfd on Linux, a
-  file elsewhere (today it falls back to RWX memory).
+  file elsewhere (today it falls back to RWX memory, except on macOS
+  arm64, which uses `MAP_JIT`).
 
 ### 2. pledge() and unveil()
 

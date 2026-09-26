@@ -109,13 +109,12 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `dirs`.
 
-### JIT (probe)
+### JIT
 
-`JIT=1 CC=x86_64-unknown-cosmo-cc AR=x86_64-linux-cosmo-ar ./build.sh`
-builds `beam.com` with BeamAsm, the JIT of OTP, for x86_64 only. CI makes
-it as `beam-jit.com` and tests it on every x86_64 platform. The aarch64
-half and one fat file with both are the next steps
-([`docs/JIT.md`](docs/JIT.md)).
+`JIT=1 ./build.sh` builds `beam.com` with BeamAsm, the JIT of OTP, in one
+fat file: the x86 backend in the x86_64 half and the arm backend in the
+aarch64 half. CI makes it as `beam-jit.com` (42 MB) and tests it on
+every platform ([`docs/JIT.md`](docs/JIT.md)).
 
 ### SQLite
 
@@ -325,7 +324,7 @@ arguments and in a header that the compiler includes in each file
 
 | Change | Why |
 | --- | --- |
-| `--disable-jit` | The BEAM interpreter is used. The JIT is a possible next step. |
+| `--disable-jit` | The BEAM interpreter is used in `beam.com`. `JIT=1` gives `--enable-jit` with both backends (`docs/JIT.md`). |
 | `--disable-kernel-poll`, `ac_cv_header_poll_h=no` | The `select()` back-end is used. The `POLL*` values of Cosmopolitan are not compile-time constants, and epoll/kqueue are not on all systems. |
 | `--disable-esock` | The `socket` NIF needs BSD types that Cosmopolitan does not have. `gen_tcp` and `gen_udp` use `inet_drv`. |
 | `erts_cv_linux_thp=no` | The 2 MiB page alignment for Linux breaks the APE layout. |
@@ -402,8 +401,7 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 ## Known limits
 
-- The default `beam.com` has no JIT (the JIT is an x86_64-only probe,
-  `beam-jit.com`).
+- The default `beam.com` has no JIT yet (`beam-jit.com` has it).
 - No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
   work (`crypto`, `asn1`, `wasm` and `esqlite`).
