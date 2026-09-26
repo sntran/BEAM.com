@@ -162,6 +162,21 @@ if (Test-Path "examples") {
     }
 }
 
+# The JIT probe: beam-jit.com is x86_64 only.
+if ((Test-Path (Join-Path $Dir "beam-jit.com")) -and ($env:PROCESSOR_ARCHITECTURE -eq "AMD64")) {
+    Check "beam-jit.com" 'Emulator    : jit@@Arguments   : \["hello","world"\]' @("hello", "world")
+    if (Test-Path "examples") {
+        Check "beam-jit.com" 'wrote .*hashsum.jit.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.jit.com")
+        if (Test-Path (Join-Path $Dir "hashsum.jit.com")) {
+            Check "hashsum.jit.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
+        }
+        Check "beam-jit.com" 'wrote .*greeter.jit.com' @("build", "examples/greeter", "-o", "$Dir/greeter.jit.com")
+        if (Test-Path (Join-Path $Dir "greeter.jit.com")) {
+            Check "greeter.jit.com" $patterns["greeter"] @()
+        }
+    }
+}
+
 # The SQLite probe: beam-sqlite.com (built with SQLITE=1).
 $sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "beam-sqlite.com"))) {

@@ -150,6 +150,23 @@ if [ -d examples ]; then
     [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
+# The JIT probe: beam-jit.com is x86_64 only.
+case $(uname -m) in
+    x86_64|amd64) jit_cpu=1 ;;
+    *) jit_cpu=0 ;;
+esac
+if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
+    check beam-jit.com 'Emulator    : jit@@Arguments   : \["hello","world"\]' hello world
+    if [ -d examples ]; then
+        check beam-jit.com 'wrote .*hashsum.jit.com' \
+            build examples/hashsum.erl -o "$dir/hashsum.jit.com"
+        [ -f "$dir/hashsum.jit.com" ] && check hashsum.jit.com "$hashsum" abc
+        check beam-jit.com 'wrote .*greeter.jit.com' \
+            build examples/greeter -o "$dir/greeter.jit.com"
+        [ -f "$dir/greeter.jit.com" ] && check greeter.jit.com "$greeter"
+    fi
+fi
+
 # The SQLite probe: beam-sqlite.com (built with SQLITE=1).
 sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
