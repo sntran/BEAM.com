@@ -19,6 +19,10 @@
  *                                 (redbean style).
  *
  * When there is neither, the program is a plain beam.smp.
+ *
+ * When the first argument is a command of beam.com ("build") and the
+ * zip has the beam_com application, the command runs instead of the
+ * release (see apps/beam_com).
  */
 #include <cosmo.h>
 #include <errno.h>
@@ -36,12 +40,14 @@
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
 
 /* erts_cosmo.h is included by the compiler (-include). */
+#include "erl_version.h"                    /* ERLANG_VERSION */
 
 
 #define BEAM_COM_ROOT "/zip"
 #define BEAM_COM_BINDIR "/zip/bin"
 #define BEAM_COM_ARGS "/zip/.args"
 #define BEAM_COM_RELEASES "/zip/releases"
+#define BEAM_COM_TOOL "/zip/lib/beam_com/ebin/beam_com.app"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -187,6 +193,11 @@ static int read_release(struct arglist *out)
         exit(127);
     }
     fclose(f);
+
+    /* A release made for another ERTS can fail in unexpected ways. */
+    if (strcmp(erts_vsn, ERLANG_VERSION) != 0)
+        fprintf(stderr, "beam.com: warning: the release is for ERTS %s, "
+                "and this is ERTS " ERLANG_VERSION "\n", erts_vsn);
 
     dir = join(BEAM_COM_RELEASES "/", rel_vsn, "/");
     path = join(dir, "start", ".boot");
@@ -502,8 +513,23 @@ void beam_com_main(int *argcp, char ***argvp)
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
 
-    has_release = read_release(&file);
-    has_args = read_zip_args(&file);
+    if (argc > 1 && strcmp(argv[1], "build") == 0 && file_exists(BEAM_COM_TOOL)) {
+        /* A command of beam.com. It gets the arguments with
+         * init:get_plain_arguments() (after "-extra", below). */
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/start_clean");
+        push(&file, "-noshell");
+        push(&file, "-beam_com_exe");
+        push(&file, GetProgramExecutableName());
+        push(&file, "-run");
+        push(&file, "beam_com");
+        push(&file, "main");
+        has_release = 1;
+        has_args = 0;
+    } else {
+        has_release = read_release(&file);
+        has_args = read_zip_args(&file);
+    }
     if (!has_release && !has_args)
         return; /* Not a bundle: behave like a plain beam.smp. */
 

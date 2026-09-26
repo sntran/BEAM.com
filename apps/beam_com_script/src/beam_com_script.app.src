@@ -1,0 +1,6 @@
+{application, beam_com_script,
+ [{description, "Runs a program made from one .erl file"},
+  {vsn, "0.1.0"},
+  {modules, [beam_com_script]},
+  {registered, []},
+  {applications, [kernel, stdlib]}]}.

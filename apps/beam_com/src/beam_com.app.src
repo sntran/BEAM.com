@@ -1,0 +1,6 @@
+{application, beam_com,
+ [{description, "The commands of beam.com"},
+  {vsn, "0.1.0"},
+  {modules, [beam_com, beam_com_build, beam_com_zip]},
+  {registered, []},
+  {applications, [kernel, stdlib, compiler, sasl]}]}.

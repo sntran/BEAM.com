@@ -1,4 +1,6 @@
-# Run beam.com and greeter.com on Windows, and check what they print.
+# Run beam.com and the example programs on Windows, and check what they
+# print. Run it from the top of the repository to also test
+# "beam.com build".
 # Usage: tests/run.ps1 DIR
 param([string]$Dir = ".")
 $fail = 0
@@ -72,17 +74,36 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     }
 }
 
-Check "beam.com" 'Arguments   : \["hello","world"\]' @("hello", "world")
-if (Test-Path (Join-Path $Dir "greeter.com")) {
-    Check "greeter.com" 'said hello 3 times' @()
-}
-if (Test-Path (Join-Path $Dir "crypto_check.com")) {
-    Check "crypto_check.com" ('sha256\(abc\) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' +
+$patterns = @{
+    "greeter" = 'said hello 3 times'
+    "crypto_check" = ('sha256\(abc\) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' +
         '@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0' +
-        '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello') @()
-}
-if (Test-Path (Join-Path $Dir "tls_check.com")) {
+        '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello')
     # "verify peer, N OS certificates": the roots of Windows were exported.
-    Check "tls_check.com" 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)' @()
+    "tls_check" = 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
+}
+$apps = @("greeter", "crypto_check", "tls_check")
+
+Check "beam.com" 'Arguments   : \["hello","world"\]' @("hello", "world")
+
+# Releases made with rebar3 and added with zip (by CI).
+foreach ($app in $apps) {
+    if (Test-Path (Join-Path $Dir "$app.com")) {
+        Check "$app.com" $patterns[$app] @()
+    }
+}
+
+# beam.com build, on this system: the examples of the repository.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*hashsum.b.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.b.com")
+    if (Test-Path (Join-Path $Dir "hashsum.b.com")) {
+        Check "hashsum.b.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
+    }
+    foreach ($app in $apps) {
+        Check "beam.com" "wrote .*$app.b.com" @("build", "examples/$app", "-o", "$Dir/$app.b.com")
+        if (Test-Path (Join-Path $Dir "$app.b.com")) {
+            Check "$app.b.com" $patterns[$app] @()
+        }
+    }
 }
 exit $fail

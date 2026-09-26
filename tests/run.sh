@@ -1,6 +1,8 @@
 #!/bin/sh
-# Run beam.com and greeter.com, and check what they print.
-# Usage: tests/run.sh DIR   (DIR holds beam.com and, if made, greeter.com)
+# Run beam.com and the example programs, and check what they print.
+# Usage: tests/run.sh DIR   (DIR holds beam.com and, if made, the example
+#                            releases). Run it from the top of the
+#                            repository to also test "beam.com build".
 #
 # RUNNER is the command that starts an APE file (default: sh). On NetBSD
 # and OpenBSD, sh stops at the NUL bytes of the APE header, so use the
@@ -53,15 +55,31 @@ check() {
     fi
 }
 
+greeter='said hello 3 times'
+crypto_check='sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello'
+tls_check='ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
+hashsum='^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
+
 check beam.com 'Arguments   : \["hello","world"\]' hello world
-if [ -f "$dir/greeter.com" ]; then
-    check greeter.com 'said hello 3 times'
-fi
-if [ -f "$dir/crypto_check.com" ]; then
-    check crypto_check.com \
-        'sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello'
-fi
-if [ -f "$dir/tls_check.com" ]; then
-    check tls_check.com 'ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
+
+# Releases made with rebar3 and added with zip (by CI).
+for app in greeter crypto_check tls_check; do
+    if [ -f "$dir/$app.com" ]; then
+        eval "check $app.com \"\$$app\""
+    fi
+done
+
+# beam.com build, on this system: the examples of the repository.
+if [ -d examples ]; then
+    check beam.com 'wrote .*hashsum.b.com' \
+        build examples/hashsum.erl -o "$dir/hashsum.b.com"
+    [ -f "$dir/hashsum.b.com" ] && check hashsum.b.com "$hashsum" abc
+    for app in greeter crypto_check tls_check; do
+        check beam.com "wrote .*$app.b.com" \
+            build "examples/$app" -o "$dir/$app.b.com"
+        if [ -f "$dir/$app.b.com" ]; then
+            eval "check $app.b.com \"\$$app\""
+        fi
+    done
 fi
 exit $fail

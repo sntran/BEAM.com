@@ -14,40 +14,25 @@ platforms.
   also on Windows (exported from the Windows store at start).
 - Port programs on macOS and the BSDs (fd passing in the native
   `cmsghdr` layout).
+- `beam.com build`: no Erlang installation needed. It compiles one
+  `.erl` file with `main/1`, or an application directory, selects the
+  OTP applications that the code needs (from the `.app` file and the
+  imports of the compiled code), makes the release with `systools`, and
+  writes a new executable with the release in its zip. `beam.com`
+  carries `compiler`, `sasl`, `crypto`, `asn1`, `public_key`, `ssl` and
+  `inets` for this. BEAM.com warns when `start_erl.data` names another
+  ERTS version.
 
 ## Next, in this order
 
-### 1. `beam.com build`: no Erlang installation needed
-
-The user gives source code, and `beam.com` makes the release and a new
-executable:
-
-```sh
-./beam.com build myapp/ -o myapp.com
-```
-
-- `beam.com` carries the `compiler` application and the common OTP
-  applications. The output carries only the applications that the
-  program needs (from the `applications` lists).
-- The new executable is a copy of `beam.com` with more files in its zip.
-  PKZIP keeps its index at the end, so the builder copies the bytes up
-  to the old central directory, appends the new entries, and writes a
-  new central directory with offsets from the start of the file.
-- Steps: one `.erl` file; an application directory; the zip writer; the
-  selection of applications. Later: Hex packages (source), fetched with
-  the `httpc` and TLS support that `beam.com` already has.
-- Not planned at first: NIF dependencies, rebar3 plugins, Elixir sources.
-- A version check for `releases/start_erl.data` (a release must be for
-  the same OTP as `beam.com`).
-
-### 2. SQLite probe
+### 1. SQLite probe
 
 Build SQLite as a static NIF (for example the one of `exqlite` or
 `esqlite`) behind a build flag, and measure the size. Estimate: about
 3 MB for the two CPUs. Node.js and Bun include SQLite too. The default
 is decided after the measurement.
 
-### 3. WebAssembly (and WASI)
+### 2. WebAssembly (and WASI)
 
 A static NIF with a WebAssembly runtime, so that users can put portable
 native code (`.wasm`, from Rust, Go, Zig, C...) in the zip.
@@ -66,7 +51,7 @@ native code (`.wasm`, from Rust, Go, Zig, C...) in the zip.
   program (arguments, environment, stdout); memory and binaries, dirty
   schedulers and limits.
 
-### 4. JIT (BeamAsm) probe
+### 3. JIT (BeamAsm) probe
 
 - The two CPU backends (x86_64 and aarch64) must be selected per CPU in
   the fat build (wrapper files and the generated files for both).
@@ -79,6 +64,13 @@ native code (`.wasm`, from Rust, Go, Zig, C...) in the zip.
 - Fallback: two files, `beam.com` (JIT) and `beam-emu.com` (interpreter).
 - Steps: x86_64 JIT on Linux; the other x86_64 platforms; the aarch64
   half; the fallback.
+
+### Later: more for `beam.com build`
+
+- Hex packages (source), fetched with the `httpc` and TLS support that
+  `beam.com` already has, and a lock file.
+- `.yrl`/`.xrl` (`parsetools`) and `.asn1` files; Elixir sources.
+- Not planned: NIF dependencies, rebar3 plugins.
 
 ## Decided against
 
