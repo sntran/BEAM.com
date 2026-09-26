@@ -93,6 +93,7 @@ $patterns = @{
     # "verify peer, N OS certificates": the roots of Windows were exported.
     "tls_check" = 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
 }
+$patterns["calc"] = '(?m)calc: 1 \+ 2 \* \(3 - 1\) - 8 / 4 = 3\r?$@@(?m)calc: asn1 ber 300980044245414d810103\r?$@@(?m)calc: asn1 decoded BEAM 3\r?$'
 $apps = @("greeter", "crypto_check", "tls_check")
 
 # The commands of the default beam.com.
@@ -117,7 +118,8 @@ if (Test-Path "examples") {
     if (Test-Path (Join-Path $Dir "hashsum.b.com")) {
         Check "hashsum.b.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
     }
-    foreach ($app in $apps) {
+    # calc is only for beam.com build (it has .xrl, .yrl and ASN.1 files).
+    foreach ($app in ($apps + @("calc"))) {
         Check "beam.com" "wrote .*$app.b.com" @("build", "examples/$app", "-o", "$Dir/$app.b.com")
         if (Test-Path (Join-Path $Dir "$app.b.com")) {
             Check "$app.b.com" $patterns[$app] @()

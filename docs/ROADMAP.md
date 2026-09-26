@@ -17,6 +17,8 @@ platforms.
 - A sandbox for programs: `beam.com build --pledge ... --unveil ...`
   (Cosmopolitan's `pledge()` and `unveil()`; Linux and OpenBSD). The
   launcher applies the rules before ERTS starts its threads.
+- `beam.com build` of `.yrl`, `.xrl` and ASN.1 files (with `parsetools`
+  and `asn1ct` in the zip).
 - `beam.com build`: no Erlang installation needed. It compiles one
   `.erl` file with `main/1`, or an application directory, selects the
   OTP applications that the code needs (from the `.app` file and the
@@ -95,7 +97,7 @@ can be added on WAMR, or the runtime can be replaced.
 
 - Hex packages (source), fetched with the `httpc` and TLS support that
   `beam.com` already has, and a lock file.
-- `.yrl`/`.xrl` (`parsetools`) and `.asn1` files; Elixir sources.
+- Elixir sources.
 - Not planned: NIF dependencies, rebar3 plugins.
 
 ### Later: more from Cosmopolitan

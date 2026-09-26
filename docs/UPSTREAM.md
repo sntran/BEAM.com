@@ -851,3 +851,36 @@ halts when it cannot start it.
 
 **Possible upstream fix.** Check the result of `fork()`, and let the
 emulator run without port programs.
+
+### O17. asn1ct: the file names and the include name do not match
+
+**Status:** OTP 29.1.1 (`lib/asn1`, `asn1ct:compile/2`).
+
+**Symptom.** `pair.asn1` with the ASN.1 module `Pair` gives `pair.erl`
+and `pair.hrl`, but `pair.erl` has `-module('Pair')` and
+`-include("Pair.hrl")`. On a file system that is case-sensitive (Linux,
+the BSDs), the include is not found, and the compiler rejects the module
+name, which is not the file name.
+
+**Cause.** The output files are named after the input file, and the
+code after the ASN.1 module.
+
+**Workaround in BEAM.com.** `beam.com build` renames the `.erl` and
+`.hrl` files after the module.
+
+**Possible upstream fix.** Name the output files after the ASN.1 module,
+or write the include with the name of the file.
+
+### O18. asn1ct hangs when the output directory does not exist
+
+**Status:** OTP 29.1.1 (`lib/asn1/src/asn1_db.erl`).
+
+**Symptom.** `asn1ct:compile(File, [{outdir, "out"}])` without a
+directory `out` does not return. An error report shows
+`{badmatch,{error,{file_error,"out/pair.asn1db...#temp",enoent}}}` in the
+`asn1_db` process, and the caller waits for it forever.
+
+**Workaround in BEAM.com.** The builder makes the directory first.
+
+**Possible upstream fix.** Return an error to the caller when the
+database process fails.

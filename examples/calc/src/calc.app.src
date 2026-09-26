@@ -1,0 +1,7 @@
+{application, calc,
+ [{description, "A calculator: a leex scanner, a yecc parser and ASN.1"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {mod, {calc_app, []}},
+  {applications, [kernel, stdlib]},
+  {env, []}]}.

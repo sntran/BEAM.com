@@ -116,6 +116,87 @@ slashes_test_() ->
      {"other systems: no change",
       ?_assertEqual("a\\b", beam_com_build:slashes("a\\b", {unix, linux}))}].
 
+%% .yrl, .xrl and ASN.1 files: the builder makes the .erl files.
+generate_test_() ->
+    {setup, fun tmp/0, fun rm/1,
+     fun(Dir) ->
+             [{"a parser, a scanner and an ASN.1 module", fun() -> generated(Dir) end},
+              {"an .erl file next to the .yrl or .xrl file is used",
+               fun() -> made_before(Dir) end},
+              {"an application with generated code", fun() -> generated_app(Dir) end},
+              {"errors", fun() -> generate_errors(Dir) end}]
+     end}.
+
+-define(YRL, "Nonterminals list elems.\nTerminals '[' ']' int.\nRootsymbol list.\n"
+             "list -> '[' ']' : [].\nlist -> '[' elems ']' : '$2'.\n"
+             "elems -> int : [v('$1')].\nelems -> int elems : [v('$1') | '$2'].\n"
+             "Erlang code.\nv({int, _, V}) -> V.\n").
+-define(XRL, "Definitions.\nD = [0-9]\nRules.\n{D}+ : {token, {int, TokenLine, "
+             "list_to_integer(TokenChars)}}.\n[\\[\\]] : {token, {list_to_atom(TokenChars), "
+             "TokenLine}}.\n[\\s]+ : skip_token.\nErlang code.\n").
+-define(ASN1, "Pair DEFINITIONS AUTOMATIC TAGS ::= BEGIN\n"
+              "P ::= SEQUENCE { a INTEGER, b INTEGER }\nEND\n").
+
+generated(Dir) ->
+    D = filename:join(Dir, "gen1"),
+    write(filename:join(D, "src"), "lp.yrl", ?YRL),
+    write(filename:join(D, "src"), "ls.xrl", ?XRL),
+    write(filename:join(D, "asn1"), "pair.asn1", ?ASN1),
+    Gen = filename:join(Dir, "gen1out"),
+    Files = beam_com_build:generate(D, Gen),
+    ?assertEqual(["Pair.erl", "lp.erl", "ls.erl"], lists:sort([filename:basename(F) || F <- Files])),
+    ?assert(filelib:is_regular(filename:join(Gen, "Pair.hrl"))),
+    [{ok, _} = compile:file(F, [{outdir, Gen}, {i, Gen}, report]) || F <- Files],
+    true = code:add_patha(Gen),
+    {ok, Tokens, _} = ls:string("[1 2 3]"),
+    ?assertEqual({ok, [1, 2, 3]}, lp:parse(Tokens)),
+    {ok, Ber} = 'Pair':encode('P', {'P', 1, 2}),
+    ?assertEqual({ok, {'P', 1, 2}}, 'Pair':decode('P', Ber)),
+    code:del_path(Gen).
+
+made_before(Dir) ->
+    D = filename:join(Dir, "gen2"),
+    write(filename:join(D, "src"), "made.yrl", ?YRL),
+    write(filename:join(D, "src"), "made.erl", "-module(made).\n"),
+    write(filename:join(D, "src"), "scan.xrl", ?XRL),
+    write(filename:join(D, "src"), "scan.erl", "-module(scan).\n"),
+    ?assertEqual([], beam_com_build:generate(D, filename:join(Dir, "gen2out"))).
+
+generated_app(Dir) ->
+    D = filename:join(Dir, "genapp"),
+    write(filename:join(D, "src"), "genapp.app.src",
+          "{application, genapp, [{vsn, \"1.0\"}, {modules, []}]}.\n"),
+    write(filename:join(D, "src"), "lp.yrl", ?YRL),
+    write(filename:join(D, "src"), "ls.xrl", ?XRL),
+    write(filename:join(D, "src"), "pair.asn", ?ASN1),
+    write(filename:join(D, "src"), "genapp.erl",
+          "-module(genapp).\n-export([f/0]).\n-include(\"Pair.hrl\").\n"
+          "f() -> #'P'{a = 1, b = 2}.\n"),
+    Before = temp_dirs(),
+    #{beams := Beams, props := Props} = beam_com_build:app_dir(D),
+    Mods = lists:sort([M || {M, _} <- Beams]),
+    ?assertEqual(['Pair', genapp, lp, ls], Mods),
+    ?assertEqual(Mods, lists:sort(proplists:get_value(modules, Props))),
+    %% The temporary directory is removed.
+    ?assertEqual(Before, temp_dirs()).
+
+temp_dirs() ->
+    Base = hd([T || V <- ["TMPDIR", "TMP", "TEMP"], T <- [os:getenv(V)],
+                    T =/= false, T =/= ""] ++ ["/tmp"]),
+    lists:sort(filelib:wildcard(filename:join(Base, "beam_com_gen_*"))).
+
+generate_errors(Dir) ->
+    Bad = fun(Name, File, Content, Error) ->
+                  D = filename:join(Dir, Name),
+                  Path = write(filename:join(D, "src"), File, Content),
+                  ?assertThrow({error, Error, [Path]},
+                               silent(fun() -> beam_com_build:generate(D, filename:join(D, "out")) end))
+          end,
+    Bad("bady", "bad.yrl", "Nonterminals x.\nRootsymbol y.\n", "~ts: yecc failed"),
+    Bad("badx", "bad.xrl", "Rules.\n[ : nothing.\n", "~ts: leex failed"),
+    Bad("bada", "bad.asn1", "Bad DEFINITIONS ::= BEGIN\nX ::= NOTHING\nEND\n",
+        "~ts: the ASN.1 compiler failed").
+
 app_dir_test_() ->
     {setup, fun tmp/0, fun rm/1,
      fun(Dir) ->
