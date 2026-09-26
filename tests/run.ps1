@@ -161,6 +161,16 @@ if (Test-Path "examples") {
     }
 }
 
+# Hex packages (from hex.pm, so this needs the network): see tests/run.sh.
+if (Test-Path "examples") {
+    Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
+    Check "beam.com" 'wrote .*rebar.lock@@wrote .*hexweb.com' @("build", "examples/hexweb", "-o", "$Dir/hexweb.com")
+    if (Test-Path (Join-Path $Dir "hexweb.com")) {
+        Check "hexweb.com" 'hexweb: content-type application/json@@hexweb: hello BEAM.com; cowboy-[0-9.]+ cowlib-[0-9.]+ jsx-[0-9.]+ ranch-[0-9.]+' @()
+    }
+    Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
+}
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'

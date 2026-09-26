@@ -400,6 +400,7 @@ release_test_() ->
                   {"run/1 from end to end", {timeout, 120, fun() -> run(Dir) end}},
                   {"run/1 with an application directory",
                    {timeout, 120, fun() -> run_app_dir(Dir) end}},
+                  {"run/1 with Hex packages", {timeout, 120, fun() -> run_hex(Dir) end}},
                   {"run/1 with an error", fun() -> run_error(Dir) end},
                   {"run/1 with a sandbox", {timeout, 120, fun() -> run_sandbox(Dir) end}},
                   {"run/1 errors and warnings", {timeout, 120, fun() -> run_edges(Dir) end}}]
@@ -605,6 +606,73 @@ run_app_dir(Dir) ->
     ?assertEqual(<<"-noshell\n">>, proplists:get_value("releases/1.2.0/vm.args", Files)),
     ?assertNot(lists:keymember("lib/crypto-" ++ app_vsn(crypto) ++ "/ebin/crypto.app",
                                1, Files)).
+
+%% An application with deps of rebar.config, from a server in place of
+%% hex.pm (beam_com_hex_tests): alpha needs beta, and the application
+%% uses a header of alpha with include_lib.
+run_hex(Dir) ->
+    Root = filename:join(Dir, "root"),
+    Exe = filename:join(Dir, "beam.com"),
+    App = fun(N, V, Deps) ->
+                  io_lib:format("{application, ~s, [{description, \"\"}, {vsn, ~p},"
+                                " {registered, []}, {applications, [kernel, stdlib~s]}]}.~n",
+                                [N, V, [", " ++ D || D <- Deps]])
+          end,
+    Beta = beam_com_hex_tests:package(
+             <<"beta">>, "0.2.0",
+             [{"src/beta.app.src", App("beta", "0.2.0", [])},
+              {"src/beta.erl", "-module(beta).\n-export([f/0]).\nf() -> beta.\n"}],
+             [], [<<"rebar3">>]),
+    Alpha = beam_com_hex_tests:package(
+              <<"alpha">>, "1.1.0",
+              [{"src/alpha.app.src", App("alpha", "1.1.0", ["beta"])},
+               {"src/alpha.erl", "-module(alpha).\n-export([f/0]).\nf() -> beta:f().\n"},
+               {"include/alpha.hrl", "-define(ALPHA, alpha_macro).\n"},
+               %% rebar3 options of the package: warnings are not errors.
+               {"rebar.config", "{erl_opts, [warnings_as_errors]}.\n"},
+               {"src/alpha_warn.erl", "-module(alpha_warn).\nf() -> ok.\n"}],
+              [{<<"beta">>, "~> 0.2.0"}], [<<"rebar3">>]),
+    {Pid, Port} = beam_com_hex_tests:serve(
+                    beam_com_hex_tests:routes([{<<"alpha">>, "1.1.0", [{<<"beta">>, "~> 0.2.0"}], Alpha},
+                                               {<<"beta">>, "0.2.0", [], Beta}])),
+    Url = "http://127.0.0.1:" ++ integer_to_list(Port),
+    Env = [{"HEX_API_URL", Url ++ "/api"}, {"HEX_MIRROR", Url ++ "/repo"},
+           {"BEAM_COM_CACHE", filename:join(Dir, "hexcache")}],
+    [os:putenv(K, V) || {K, V} <- Env],
+    try
+        D = filename:join(Dir, "web"),
+        write(D, "rebar.config", "{deps, [{alpha, \"~> 1.0\"}]}.\n"),
+        write(filename:join(D, "src"), "web.app.src", App("web", "1.0.0", ["alpha"])),
+        write(filename:join(D, "src"), "web.erl",
+              "-module(web).\n-export([f/0]).\n-include_lib(\"alpha/include/alpha.hrl\").\n"
+              "f() -> {?ALPHA, alpha:f()}.\n"),
+        Out = filename:join(Dir, "web.com"),
+        ok = silent(fun() -> beam_com_build:run(#{input => D, apps => [], output => Out,
+                                                  root => Root, exe => Exe}) end),
+        {ok, Files} = zip:unzip(element(2, file:read_file(Out)), [memory]),
+        Beam = fun(P) -> proplists:get_value(P, Files) end,
+        [?assert(is_binary(Beam(P)))
+         || P <- ["lib/alpha-1.1.0/ebin/alpha.beam", "lib/alpha-1.1.0/ebin/alpha.app",
+                  "lib/alpha-1.1.0/ebin/alpha_warn.beam", "lib/beta-0.2.0/ebin/beta.beam",
+                  "lib/web-1.0.0/ebin/web.beam"]],
+        {ok, [{release, _, _, Rel}], _} =
+            erl_scan_parse(proplists:get_value("releases/1.0.0/web.rel", Files)),
+        ?assertEqual({alpha, "1.1.0"}, lists:keyfind(alpha, 1, Rel)),
+        ?assertEqual({beta, "0.2.0"}, lists:keyfind(beta, 1, Rel)),
+        %% The code works: web uses the macro of alpha, and alpha calls beta.
+        [{module, M} = code:load_binary(M, atom_to_list(M) ++ ".beam", Beam(P))
+         || {M, P} <- [{beta, "lib/beta-0.2.0/ebin/beta.beam"},
+                       {alpha, "lib/alpha-1.1.0/ebin/alpha.beam"},
+                       {web, "lib/web-1.0.0/ebin/web.beam"}]],
+        ?assertEqual({alpha_macro, beta}, web:f()),
+        ?assert(filelib:is_regular(filename:join(D, "rebar.lock"))),
+        %% No package is left in the code path.
+        ?assertEqual([], [P || P <- code:get_path(), string:find(P, "beam_com_deps_") =/= nomatch])
+    after
+        [code:purge(M) andalso code:delete(M) || M <- [web, alpha, beta]],
+        [os:unsetenv(K) || {K, _} <- Env],
+        beam_com_hex_tests:stop(Pid)
+    end.
 
 run_error(Dir) ->
     Root = filename:join(Dir, "root"),
