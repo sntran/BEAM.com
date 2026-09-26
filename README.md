@@ -290,9 +290,15 @@ beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
 
 - On Linux it uses inotify; on the BSDs it compares the files every half
   second (a move is then `DELETE` and `CREATE`).
+- On macOS, `file_system` uses `mac_listener` (with FSEvents) in place of
+  `inotifywait`. The file is also `mac_listener`, with the same command
+  line and output, and it compares the files as on the BSDs:
+  `beam.com mac_listener --latency=0.5 -F /absolute/dir`.
 - The tools of Elixir set `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` to a link
-  named `inotifywait` to the file, in the cache of BEAM.com
-  (`BEAM_COM_CACHE`, else the user cache), unless you set it.
+  named `inotifywait` to the file (on macOS,
+  `FILESYSTEM_FSMAC_EXECUTABLE_FILE` to a script `mac_listener` that runs
+  the file), in the cache of BEAM.com (`BEAM_COM_CACHE`, else the user
+  cache), unless you set it. There is no watcher for Windows yet.
 - The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
   (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
   `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).

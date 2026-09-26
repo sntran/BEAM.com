@@ -27,6 +27,7 @@
 #include <cosmo.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,6 +139,7 @@ extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
 extern int epmd_main(int argc, char **argv);
 extern int beam_com_inotifywait_main(int argc, char **argv);
+extern int beam_com_mac_listener_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -569,23 +571,31 @@ static void make_dirs(char *path)
 
 /*
  * file_system (and so phoenix_live_reload) watches files with inotifywait
- * of inotify-tools, found in FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE or PATH.
- * For the tools of Elixir, FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE is a link
- * named inotifywait to this file, in the cache of BEAM.com (BEAM_COM_CACHE,
- * else the user cache, as beam_com_script), so that the watcher of the
- * file runs (cosmo/beam_com_watch.c). Not when the variable is set, on
- * Linux and the BSDs only (file_system has other watchers on macOS and
- * Windows).
+ * of inotify-tools (FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE, else PATH), and
+ * on macOS with mac_listener (FILESYSTEM_FSMAC_EXECUTABLE_FILE). For the
+ * tools of Elixir, the variable names a file in the cache of BEAM.com
+ * (BEAM_COM_CACHE, else the user cache, as beam_com_script), so that the
+ * watcher of this file runs (cosmo/beam_com_watch.c):
+ *
+ *   - Linux and the BSDs: a link named inotifywait to this file.
+ *   - macOS: a script mac_listener that runs this file with
+ *     BEAM_COM_PROGRAM=mac_listener (the name of a link can be lost when
+ *     the APE loader starts the file).
+ *
+ * Not when the variable is set, and not on Windows (file_system has its
+ * own watcher there).
  */
 static void watch_link(void)
 {
     const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
                *home = getenv("HOME"), *exe = GetProgramExecutableName();
-    char *dir, *link, *tmp, target[4096];
+    const char *var = IsXnu() ? "FILESYSTEM_FSMAC_EXECUTABLE_FILE"
+                              : "FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE";
+    char *dir, *link, *tmp, *script, target[4096];
     ssize_t n;
+    int fd, ok;
 
-    if (getenv("FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE") || IsXnu() ||
-        beam_com_is_windows() || !exe || *exe != '/')
+    if (getenv(var) || beam_com_is_windows() || !exe || *exe != '/' || strchr(exe, '\''))
         return;
     if (cache && *cache)
         dir = join(cache, "/bin", "");
@@ -596,20 +606,39 @@ static void watch_link(void)
     else
         return;
     make_dirs(dir);
-    link = join(dir, "/inotifywait", "");
-    n = readlink(link, target, sizeof(target) - 1);
-    if (n < 0 || (target[n] = '\0', strcmp(target, exe) != 0)) {
-        /* A new link, then rename(): two tools that start at the same
-         * time do not see a missing link. */
-        snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
-        tmp = strdup(target);
-        unlink(tmp);
-        if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
+    link = join(dir, IsXnu() ? "/mac_listener" : "/inotifywait", "");
+    /* A new file, then rename(): two tools that start at the same time
+     * do not see a missing file. */
+    snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
+    tmp = strdup(target);
+    if (IsXnu()) {
+        script = join("#!/bin/sh\nBEAM_COM_PROGRAM=mac_listener exec '", exe, "' \"$@\"\n");
+        fd = open(link, O_RDONLY);
+        n = fd >= 0 ? read(fd, target, sizeof(target) - 1) : -1;
+        if (fd >= 0)
+            close(fd);
+        if (n < 0 || (target[n] = '\0', strcmp(target, script) != 0)) {
             unlink(tmp);
-            return;
+            fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+            ok = fd >= 0 && write(fd, script, strlen(script)) == (ssize_t)strlen(script);
+            if (fd >= 0)
+                close(fd);
+            if (!ok || rename(tmp, link) != 0) {
+                unlink(tmp);
+                return;
+            }
+        }
+    } else {
+        n = readlink(link, target, sizeof(target) - 1);
+        if (n < 0 || (target[n] = '\0', strcmp(target, exe) != 0)) {
+            unlink(tmp);
+            if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
+                unlink(tmp);
+                return;
+            }
         }
     }
-    setenv("FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE", link, 1);
+    setenv(var, link, 1);
 }
 
 /* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
@@ -1063,6 +1092,14 @@ void beam_com_main(int *argcp, char ***argvp)
     if (argc > 1 && strcmp(argv[1], "inotifywait") == 0 && file_exists(BEAM_COM_TOOL) &&
         !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
         exit(beam_com_inotifywait_main(argc - 1, argv + 1));
+    /* mac_listener: the same watcher, as the watcher of file_system on
+     * macOS (the script that watch_link() makes), or "beam.com
+     * mac_listener". */
+    if (starts_with(name, "mac_listener"))
+        exit(beam_com_mac_listener_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "mac_listener") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        exit(beam_com_mac_listener_main(argc - 1, argv + 1));
 
     /* erl mode: the program behaves as erl (the runtime of its zip, with
      * /zip as the root and all its applications in the code path), not

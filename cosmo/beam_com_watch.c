@@ -17,10 +17,23 @@
  * systems it compares the files every half second (stat()): events come
  * later, and there is no MOVED_FROM or MOVED_TO (a move is DELETE and
  * CREATE).
+ *
+ * As mac_listener (the watcher of file_system on macOS, with FSEvents),
+ * it takes the same command line and writes the same lines:
+ *
+ *   mac_listener [--latency=SECONDS] [--no-defer] [--watch-root] [-F] PATH...
+ *
+ *   ID<TAB>0xFLAGS=[created,isfile]<TAB>/absolute/path
+ *
+ * The files are compared as on the other systems (the events are created,
+ * removed, modified and inodemetamod, with isfile or isdir), every
+ * SECONDS (0.5 when not given), and it exits when its input closes, as
+ * mac_listener does.
  */
 #include <cosmo.h>
 #include <dirent.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,6 +73,8 @@ static int nwatches, capwatches;
 static unsigned wanted;
 static int recursive, monitor;
 static const char *format = "%w %e %f";
+static int mac_mode;
+static unsigned long long mac_id;
 
 static void print_event(const char *dir, unsigned mask, const char *name)
 {
@@ -263,11 +278,46 @@ static struct entry *find_entry(const char *path)
     return NULL;
 }
 
+/* The flags of FSEvents (kFSEventStreamEventFlagItem*), with the names
+ * that mac_listener gives them. */
+static void report_mac(const char *path, unsigned mask)
+{
+    static const struct {
+        unsigned w, flag;
+        const char *name;
+    } flags[] = {
+        {W_CREATE, 0x100, "created"},     {W_DELETE, 0x200, "removed"},
+        {W_ATTRIB, 0x400, "inodemetamod"}, {W_MODIFY, 0x1000, "modified"},
+    };
+    char names[128] = "";
+    unsigned flag = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+        if (mask & flags[i].w) {
+            flag |= flags[i].flag;
+            if (*names)
+                strcat(names, ",");
+            strcat(names, flags[i].name);
+        }
+    }
+    if (!flag)
+        return;
+    flag |= (mask & W_ISDIR) ? 0x20000 : 0x10000;
+    strcat(names, (mask & W_ISDIR) ? ",isdir" : ",isfile");
+    printf("%llu\t%#.8x=[%s]\t%s\n", ++mac_id, flag, names, path);
+    fflush(stdout);
+}
+
 static void report(const char *path, unsigned mask)
 {
     const char *slash = strrchr(path, '/');
     char *dir;
 
+    if (mac_mode) {
+        report_mac(path, mask);
+        return;
+    }
     if (!(mask & wanted))
         return;
     dir = strndup(path, slash ? (size_t)(slash - path + 1) : 0);
@@ -326,9 +376,24 @@ static void scan(const char *path, int depth, int report_changes)
     closedir(d);
 }
 
-static void run_poll(char **paths, int npaths)
+/* mac_listener: exit when the input closes (the port of file_system).
+ * Wait for it, or for the next scan. */
+static void wait_scan(int ms)
 {
-    struct timespec half = {0, 500000000};
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    struct pollfd pfd = {0, POLLIN, 0};
+    char buf[256];
+
+    if (!mac_mode) {
+        nanosleep(&ts, NULL);
+        return;
+    }
+    if (poll(&pfd, 1, ms) > 0 && read(0, buf, sizeof(buf)) <= 0)
+        exit(1);
+}
+
+static void run_poll(char **paths, int npaths, int ms)
+{
     int i, first = 1;
 
     for (;;) {
@@ -346,7 +411,7 @@ static void run_poll(char **paths, int npaths)
             }
         }
         first = 0;
-        nanosleep(&half, NULL);
+        wait_scan(ms);
     }
 }
 
@@ -389,6 +454,37 @@ int beam_com_inotifywait_main(int argc, char **argv)
             wanted |= watch_events[k].mask;
     if (IsLinux() && run_inotify(paths, npaths) >= 0)
         return 0;
-    run_poll(paths, npaths);
+    run_poll(paths, npaths, 500);
+    return 0;
+}
+
+int beam_com_mac_listener_main(int argc, char **argv);
+
+int beam_com_mac_listener_main(int argc, char **argv)
+{
+    char **paths = calloc(argc, sizeof(char *));
+    int i, npaths = 0, ms = 500;
+    double latency;
+
+    mac_mode = recursive = monitor = 1;
+    for (i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--latency=", 10) == 0) {
+            latency = atof(argv[i] + 10);
+            ms = latency < 0.1 ? 100 : latency > 5 ? 5000 : (int)(latency * 1000);
+        } else if (strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
+            latency = atof(argv[++i]);
+            ms = latency < 0.1 ? 100 : latency > 5 ? 5000 : (int)(latency * 1000);
+        } else if (argv[i][0] == '-') {
+            /* --no-defer, --watch-root, -F (--file-events) and the others
+             * change nothing here. */
+        } else {
+            paths[npaths++] = argv[i];
+        }
+    }
+    if (!npaths) {
+        fprintf(stderr, "usage: mac_listener [--latency=SECONDS] [-F] PATH...\n");
+        return 1;
+    }
+    run_poll(paths, npaths, ms);
     return 0;
 }

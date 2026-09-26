@@ -371,6 +371,14 @@ if [ -f "$dir/beam.com" ]; then
     for t in mix iex elixir escript; do ln -sf beam.com "$dir/$t"; done
     cd "$work"
     check elixir.com '^55$@@^\["x", "y"\]$' -e 'IO.puts(Enum.sum(1..10)); IO.inspect(System.argv())' x y
+    # The tools name the watcher of the file for file_system: a link
+    # inotifywait (a script mac_listener on macOS) in the cache. Without a
+    # path, the watcher shows its usage. Not on NetBSD, whose kernel does
+    # not start an APE file by a link.
+    if [ "$os" != netbsd ]; then
+        case $os in darwin) watcher=mac_listener var=FSMAC ;; *) watcher=inotifywait var=FSINOTIFY ;; esac
+        check elixir.com "^usage: $watcher " -e "{out, 1} = System.cmd(System.fetch_env!(\"FILESYSTEM_${var}_EXECUTABLE_FILE\"), [], stderr_to_stdout: true); IO.write(out)"
+    fi
     printf 'defmodule ToolsC do\n  def f, do: :ok\nend\n' > tools_c.ex
     check elixirc.com '' tools_c.ex -o out
     [ -f out/Elixir.ToolsC.beam ] || { echo "FAIL: elixirc wrote no beam file"; fail=1; failed="$failed
@@ -510,6 +518,45 @@ if [ -f "$dir/beam.com" ]; then
         fail=1
         failed="$failed
   beam.com inotifywait: missing events"
+    fi
+    rm -rf "$wdir"
+fi
+
+# The same watcher as mac_listener (the watcher of file_system on macOS):
+# its command line and its lines ("ID<TAB>0xFLAGS=[created,isfile]<TAB>
+# PATH"). It exits when its input closes, as file_system expects.
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    echo "==> beam.com mac_listener"
+    (sleep 5) | $runner "$dir/beam.com" mac_listener --latency=0.2 -F "$wdir" \
+        > "$tmp.watch" 2>&1 &
+    watcher=$!
+    sleep 2
+    echo a > "$wdir/a.txt"
+    mkdir "$wdir/new"
+    sleep 1
+    rm "$wdir/a.txt"
+    # The input closes after 5 seconds: the watcher must exit by itself.
+    sleep 4
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        exited=no
+    else
+        exited=yes
+    fi
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    tab=$(printf '\t')
+    if grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00020100=\[created,isdir\]${tab}$wdir/new$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00010200=\[removed,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
+       [ "$exited" = yes ]; then
+        echo "PASS: beam.com mac_listener"
+    else
+        echo "FAIL: beam.com mac_listener"
+        fail=1
+        failed="$failed
+  beam.com mac_listener: missing events, or it did not exit ($exited)"
     fi
     rm -rf "$wdir"
 fi
