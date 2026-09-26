@@ -190,6 +190,10 @@ jobs:
             echo "== Through sh (known to fail: NUL bytes in the APE header)"
             LIMIT=30 sh tests/run.sh bin || true
             echo "== Through the APE loader"
+            # Where Cosmopolitan's execve() looks for the loader, for the
+            # helper programs that beam.com starts (it executes itself).
+            cp bin/ape-x86_64.elf "$HOME/.ape-1.10"
+            chmod +x "$HOME/.ape-1.10"
             RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin
 
       - name: Run on OpenBSD
@@ -201,4 +205,8 @@ jobs:
             echo "== Through sh (known to fail: NUL bytes in the APE header)"
             LIMIT=30 sh tests/run.sh bin || true
             echo "== Through the APE loader"
+            # Where Cosmopolitan's execve() looks for the loader, for the
+            # helper programs that beam.com starts (it executes itself).
+            cp bin/ape-x86_64.elf "$HOME/.ape-1.10"
+            chmod +x "$HOME/.ape-1.10"
             RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin

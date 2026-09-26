@@ -62,6 +62,6 @@ if [ -f "$dir/crypto_check.com" ]; then
         'sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello'
 fi
 if [ -f "$dir/tls_check.com" ]; then
-    check tls_check.com 'ports: \(ok\|not supported on windows\)@@tls: local handshake ok@@tls: remote [^ ]* ok'
+    check tls_check.com 'ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
 fi
 exit $fail

@@ -85,7 +85,12 @@ remote_request() ->
                        Status]);
         {error, Reason} ->
             io:format("tls: remote ~s failed (verify ~s): ~p~n",
-                      [Host, Mode, Reason])
+                      [Host, Mode, Reason]),
+            io:format("tls: dns lookup ~p, nameservers ~p~n",
+                      [inet_db:res_option(lookup),
+                       inet_db:res_option(nameservers)]),
+            io:format("tls: inet_res:resolve ~p~n",
+                      [inet_res:resolve(Host, in, a, [], 5000)])
     end.
 
 %% Resolve names with the DNS client of Erlang. The native resolver
