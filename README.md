@@ -209,7 +209,9 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - Packages: `mix local.hex` installs Hex, and `mix deps.get` then
   fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
   rebar3, which Mix runs as an escript: put a link named `escript` in
-  `PATH`. `beam.com build` does not need Hex or rebar3 (see "Hex
+  `PATH`. On NetBSD, where `sh` stops at the first NUL byte of an APE
+  file, make `escript` a small script instead:
+  `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`. `beam.com build` does not need Hex or rebar3 (see "Hex
   packages").
 - `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
 - To build an Elixir project into one file, use `beam.com build` (see

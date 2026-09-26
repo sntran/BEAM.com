@@ -112,7 +112,11 @@ script_test_() ->
 slashes_test_() ->
     [{"Windows: backslashes are separators",
       ?_assertEqual("bin/x.com", beam_com_build:slashes("bin\\x.com", {unix, windows}))},
-     ?_assertEqual("C:/a/b/c", beam_com_build:slashes("C:\\a\\b/c", {unix, windows})),
+     {"Windows: a drive becomes /C/",
+      [?_assertEqual("/C/a/b/c", beam_com_build:slashes("C:\\a\\b/c", {unix, windows})),
+       ?_assertEqual("/d/x.com", beam_com_build:slashes("d:/x.com", {unix, windows})),
+       ?_assertEqual("/D", beam_com_build:slashes("D:", {unix, windows})),
+       ?_assertEqual("D:x", beam_com_build:slashes("D:x", {unix, windows}))]},
      {"other systems: no change",
       ?_assertEqual("a\\b", beam_com_build:slashes("a\\b", {unix, linux}))}].
 

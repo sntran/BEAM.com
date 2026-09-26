@@ -361,7 +361,15 @@ if [ -f "$dir/beam.com" ]; then
     check escript '^cli: \["p", "q"\]$' hello p q
     if [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ]; then
         # Hex and rebar3 (for the Erlang packages), installed by Mix into
-        # ~/.mix; Mix runs rebar3 with the escript in PATH.
+        # ~/.mix; Mix runs rebar3 with the escript in PATH. Where the kernel
+        # cannot start an APE file and sh stops at its first NUL byte
+        # (NetBSD), escript is a small script that starts the file with the
+        # APE loader.
+        if [ "$os" = netbsd ]; then
+            rm -f "$dir/escript"
+            printf '#!/bin/sh\nexec %s %s/beam.com escript "$@"\n' "$runner" "$dir" > "$dir/escript"
+            chmod +x "$dir/escript"
+        fi
         PATH=$dir:$PATH
         export PATH
         check mix '' local.hex --force

@@ -100,8 +100,16 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
 %% ERTS in BEAM.com is the Unix build also on Windows (os:type() is
 %% {unix, windows}), so the filename module does not take "\\" as a
 %% separator, but Windows does: "bin\\x.com" would be one file name in the
-%% directory ".". Paths from the command line get "/" instead.
-slashes(Path, {_, windows}) -> lists:flatten(string:replace(Path, "\\", "/", all));
+%% directory ".". Paths from the command line get "/" instead. A drive
+%% ("C:\\x") becomes the form of Cosmopolitan ("/C/x"): for the filename
+%% module, "C:/x" is a relative path, and filename:absname/1 would put
+%% the working directory in front of it.
+slashes(Path, {_, windows}) ->
+    case lists:flatten(string:replace(Path, "\\", "/", all)) of
+        [L, $:, $/ | Rest] when L >= $A, L =< $Z; L >= $a, L =< $z -> [$/, L, $/ | Rest];
+        [L, $:] when L >= $A, L =< $Z; L >= $a, L =< $z -> [$/, L];
+        P -> P
+    end;
 slashes(Path, _) -> Path.
 
 %% The sandbox of the program (see beam_com.c): /zip/.pledge has the

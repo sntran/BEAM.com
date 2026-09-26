@@ -19,6 +19,9 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     $env:BEAM_COM_VERBOSE = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Resolve-Path $exe).Path
+    # The directory of Push-Location and Set-Location (the process keeps
+    # its own working directory).
+    $psi.WorkingDirectory = (Get-Location).ProviderPath
     # Quote the arguments with spaces or quotes (the rules of
     # CommandLineToArgvW).
     $psi.Arguments = ($Arguments | ForEach-Object {
