@@ -13,11 +13,14 @@ body:
       options:
         - The runtime (ERTS, the JIT, the start of a program)
         - beam.com build
-        - Hex packages or Elixir
+        - Elixir, the tools (mix.com, iex.com, ...) or Hex packages
+        - Phoenix
+        - Distributed Erlang or remote shells
+        - The file watcher
         - A platform (for example a new system or CPU)
         - Crypto, TLS or the network
         - SQLite or WebAssembly
-        - The sandbox (--pledge, --unveil)
+        - The sandbox (--allow-read, --allow-write, --allow-net, --allow-run)
         - Size or speed
         - The docs
         - Other
@@ -34,7 +37,7 @@ body:
     id: solution
     attributes:
       label: The solution that you propose
-      description: For example a new option, and what it does. If other tools do it (Burrito, rebar3, Mix, escript, redbean), say how.
+      description: For example a new option, and what it does. If other tools do it (Burrito, rebar3, Mix, escript, redbean, Deno), say how.
     validations:
       required: true
   - type: textarea

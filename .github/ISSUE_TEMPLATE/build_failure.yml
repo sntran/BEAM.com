@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for the report. Please read "Build a program with `beam.com build`" and "Known limits" in the README first: for example, git dependencies, NIF dependencies, rebar3 plugins, umbrella projects and `config/runtime.exs` are not supported yet.
+        Thank you for the report. Please read "Build a program with `beam.com build`" and "Known limits" in the README first: for example, git dependencies, NIF dependencies (other than the NIFs in beam.com), rebar3 plugins, umbrella projects and `config/runtime.exs` are not supported yet.
   - type: dropdown
     id: input
     attributes:
@@ -29,9 +29,10 @@ body:
         - A main module (--main, or the escript of rebar.config or mix.exs)
         - priv files (--extract-priv, or executables in priv)
         - Parsers, scanners or ASN.1 (.yrl, .xrl, .asn1)
-        - --pledge or --unveil
-        - --native
+        - The sandbox (--allow-read, --allow-write, --allow-net, --allow-run, --allow-all)
+        - --target TARGET
         - -a APP
+        - --tool rebar or --tool mix
         - HEX_API_URL, HEX_MIRROR, HTTPS_PROXY or BEAM_COM_CACHE
         - None of these
   - type: dropdown
@@ -56,14 +57,13 @@ body:
       label: Which file builds it?
       options:
         - beam.com
-        - elixir.com
         - beam-emu.com
     validations:
       required: true
   - type: textarea
     id: version
     attributes:
-      label: Output of "beam.com version" (or "elixir.com version")
+      label: Output of "beam.com version"
       render: text
     validations:
       required: true

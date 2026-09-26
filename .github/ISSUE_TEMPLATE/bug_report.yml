@@ -7,7 +7,7 @@ body:
       value: |
         Thank you for the report. For a problem when you **build** a program, use the "beam.com build fails" form.
 
-        Before you send it, please try the latest release, and read "Known limits" in the README (for example: no port programs on Windows, no NIFs from shared objects, no distribution).
+        Before you send it, please try the latest release, and read "Known limits" in the README (for example: no port programs on Windows, and no NIFs from shared objects).
   - type: dropdown
     id: platform
     attributes:
@@ -40,7 +40,7 @@ body:
         - sh ./beam.com (the shell script of the APE file)
         - ./beam.com (APE loader in binfmt_misc, or the kernel)
         - With the APE loader (ape-x86_64.elf ./beam.com)
-        - A native file (beam.com build --native)
+        - A native file (beam.com build --target TARGET)
         - As an .exe file on Windows
         - Other (write it below)
     validations:
@@ -49,19 +49,36 @@ body:
     id: file
     attributes:
       label: Which file?
+      description: mix.com, iex.com, elixir.com and elixirc.com are beam.com under another name (a copy or a link).
       options:
-        - beam.com (Erlang, the JIT)
-        - elixir.com (beam.com with Elixir)
+        - beam.com (the JIT)
         - beam-emu.com (the interpreter)
+        - A tool (mix.com, iex.com, elixir.com, elixirc.com, or "beam.com mix ...")
         - A program made with "beam.com build"
         - A release added with zip
     validations:
       required: true
+  - type: dropdown
+    id: features
+    attributes:
+      label: What does it use?
+      multiple: true
+      options:
+        - Mix, IEx or Hex packages (the tools)
+        - Phoenix
+        - Distributed Erlang (-sname, -name, -remsh, "remote")
+        - The file watcher (inotifywait, mac_listener, live reload)
+        - The sandbox (--allow-read, --allow-write, --allow-net, --allow-run)
+        - Crypto, TLS or the network
+        - SQLite
+        - WebAssembly
+        - Ports or os:cmd/1
+        - None of these
   - type: textarea
     id: version
     attributes:
-      label: Output of "beam.com version" (or "elixir.com version")
-      description: Run it with the same file. For a program that you built, give the output for the beam.com or elixir.com that built it.
+      label: Output of "beam.com version"
+      description: For a tool (mix.com, iex.com, ...), run "beam.com version" with the beam.com that you copied or linked. For a program that you built, give the output for the beam.com that built it.
       render: text
     validations:
       required: true
