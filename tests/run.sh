@@ -132,7 +132,7 @@ os=$(uname -s | tr '[:upper:]' '[:lower:]')
 check beam.com 'usage: beam.com COMMAND@@build INPUT@@version'
 check beam.com 'usage: beam.com COMMAND' help
 check beam.com 'usage: beam.com build INPUT' help build
-check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : emu@@stdlib-" version
+check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : emu@@stdlib-@@esqlite-@@wasm-" version
 check_status 1 beam.com 'unknown command nosuch (see beam.com help)' nosuch
 
 # Releases made with rebar3 and added with zip (by CI).
@@ -235,10 +235,10 @@ if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
     fi
 fi
 
-# The SQLite probe: beam-sqlite.com (built with SQLITE=1).
+# SQLite (in beam.com).
 sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
-if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
-    check beam-sqlite.com 'wrote .*sqlite_check.b.com' \
+if [ -d examples ]; then
+    check beam.com 'wrote .*sqlite_check.b.com' \
         build examples/sqlite_check.erl -o "$dir/sqlite_check.b.com"
     if [ -f "$dir/sqlite_check.b.com" ]; then
         check sqlite_check.b.com "$sqlite:memory:"

@@ -117,17 +117,23 @@ it as `beam-jit.com` and tests it on every x86_64 platform. The aarch64
 half and one fat file with both are the next steps
 ([`docs/JIT.md`](docs/JIT.md)).
 
-### SQLite (probe)
+### SQLite
 
-Build with `SQLITE=1 ./build.sh` to link SQLite 3.53.4 (the
-[esqlite](https://github.com/mmzeeman/esqlite) NIF) into `beam.com` and
-to put the `esqlite` application in its zip. CI makes this variant as
-`beam-sqlite.com`. It adds about 1.8 MB to each program.
+`beam.com` has SQLite 3.53.4, with the
+[esqlite](https://github.com/mmzeeman/esqlite) NIF. SQLite itself is
+compiled from its amalgamation with `cosmocc`; esqlite is the small NIF
+that gives Erlang code the SQLite API (`esqlite3:open/1`, `exec/2`,
+`q/2`, ...). `beam.com build` selects the `esqlite` application when the
+code calls `esqlite3`:
 
 ```sh
-beam-sqlite.com build examples/sqlite_check.erl
+beam.com build examples/sqlite_check.erl
 ./sqlite_check.com my.db
 ```
+
+SQLite adds about 1.8 MB (two CPUs) to `beam.com` and to each program
+that it makes, also when the program does not use SQLite, because the
+NIF is in the emulator. Build with `SQLITE=0` to leave it out.
 
 ## Add your release
 
@@ -151,7 +157,7 @@ and also builds each one with `beam.com build` on every platform):
 - [`examples/wasm_check.erl`](examples/wasm_check.erl): WebAssembly and
   WASI, in a one-file program.
 - [`examples/sqlite_check.erl`](examples/sqlite_check.erl): a one-file
-  program with SQLite (for `beam-sqlite.com build`).
+  program with SQLite (only for `beam.com build`).
 - [`examples/greeter`](examples/greeter): an application, a supervisor
   and a `gen_server`.
 - [`examples/crypto_check`](examples/crypto_check): hashes, HMAC,
@@ -263,7 +269,7 @@ OTP source, applies the patches, builds a small OTP and makes
 ```
 
 The steps are `toolchain openssl otp configure sqlite wasm make release
-multicall bundle test` (`sqlite` does nothing without `SQLITE=1`, and
+multicall bundle test` (`sqlite` does nothing with `SQLITE=0`, and
 `wasm` does nothing with `WASM=0`). You can run one step or more, for example `./build.sh bundle test`.
 See the top of [`build.sh`](build.sh) for the environment variables.
 
@@ -360,7 +366,7 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   `beam-jit.com`).
 - No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
-  work (`crypto`, `asn1`, `wasm`, and `esqlite` with `SQLITE=1`).
+  work (`crypto`, `asn1`, `wasm` and `esqlite`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
   SIMD, no threads, and no component model yet.
 - No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
@@ -378,5 +384,5 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 ## Roadmap
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md): `beam.com build` (no Erlang
-installation needed), a SQLite probe, WebAssembly (WAMR, WASI) and a
-JIT probe.
+installation needed), SQLite, WebAssembly (WAMR, WASI) and a JIT
+probe.

@@ -12,8 +12,9 @@
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
 #   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.2)
-#   SQLITE           1: link SQLite (the esqlite NIF) into beam.com, and put
-#                    the esqlite application in the zip (default 0)
+#   SQLITE           0: leave out SQLite (the esqlite NIF, linked into
+#                    beam.com, and the esqlite application in the zip;
+#                    default 1)
 #   SQLITE_VERSION   SQLite version (default 3.53.4), and SQLITE_YEAR, the
 #                    year directory of its download on sqlite.org (2026)
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
@@ -35,7 +36,7 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
-SQLITE=${SQLITE:-0}
+SQLITE=${SQLITE:-1}
 # esqlite (Apache-2.0), with the SQLite amalgamation (public domain) of
 # sqlite.org instead of the older copy in esqlite.
 ESQLITE_COMMIT=${ESQLITE_COMMIT:-5c8d590d8eb70de17dd2c64dfc7502f4fd2fcba8}
