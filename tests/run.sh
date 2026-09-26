@@ -319,6 +319,33 @@ if [ -f "$dir/beam-jit.com" ]; then
         check beam-jit.com 'wrote .*crypto_check.jit.com' \
             build examples/crypto_check -o "$dir/crypto_check.jit.com"
         [ -f "$dir/crypto_check.jit.com" ] && check crypto_check.jit.com "$crypto_check"
+        # W^X: the JIT maps its code two times (executable, and writable),
+        # so no page is writable and executable. On Linux, +JMsingle (one
+        # mapping) shows that the check sees RWX pages. macOS arm64 uses
+        # one MAP_JIT mapping (RWX, with a write permission for each
+        # thread). OpenBSD has no memory map for the program to read; its
+        # kernel does not allow RWX pages at all.
+        check beam-jit.com 'wrote .*jit_maps.jit.com' \
+            build tests/programs/jit_maps.erl -o "$dir/jit_maps.jit.com"
+        if [ -f "$dir/jit_maps.jit.com" ]; then
+            case $os in
+                linux)
+                    check jit_maps.jit.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes'
+                    ERL_FLAGS='+JMsingle true'
+                    export ERL_FLAGS
+                    check jit_maps.jit.com 'wx pages: [1-9]@@dual mapped: no'
+                    unset ERL_FLAGS ;;
+                freebsd|netbsd)
+                    check jit_maps.jit.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
+                darwin)
+                    case $(uname -m) in
+                        arm64) check jit_maps.jit.com 'emulator: jit@@wx pages: [1-9]' ;;
+                        *) check jit_maps.jit.com 'emulator: jit@@wx pages: 0$' ;;
+                    esac ;;
+                *)
+                    probe jit_maps.jit.com ;;
+            esac
+        fi
         # The sandbox with the JIT: the launcher adds "prot_exec" for the
         # memory of the JIT code.
         if [ -n "$pledged" ]; then
