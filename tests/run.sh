@@ -240,40 +240,70 @@ if [ -d examples ]; then
     fi
 fi
 
-# The sandbox (beam.com build --pledge, --unveil). Linux applies both
-# rules, OpenBSD applies unveil (a pledge violation kills the process
-# there), and the other systems ignore them.
+# The sandbox (beam.com build --allow-*). Linux applies it with seccomp
+# and Landlock, OpenBSD only the paths (unveil), and the other systems
+# ignore it.
 if [ -d examples ]; then
-    check_status 1 beam.com 'unknown promise bogus' \
-        build tests/programs/sandbox_check.erl --pledge bogus -o "$dir/never.com"
-    check_status 1 beam.com '--unveil needs' \
-        build tests/programs/sandbox_check.erl --unveil "q /etc" -o "$dir/never.com"
-    check beam.com 'wrote .*sandbox_pledge.com' \
-        build tests/programs/sandbox_check.erl --pledge inet -o "$dir/sandbox_pledge.com"
-    check beam.com 'wrote .*sandbox_unveil.com' \
-        build tests/programs/sandbox_check.erl --unveil "r /etc" -o "$dir/sandbox_unveil.com"
+    check_status 1 beam.com '--allow-net takes no hosts' \
+        build tests/programs/sandbox_check.erl --allow-net=example.com -o "$dir/never.com"
+    check_status 1 beam.com '--allow-env is not supported' \
+        build tests/programs/sandbox_check.erl --allow-env -o "$dir/never.com"
+    check_status 1 beam.com 'unknown option --allow-bogus' \
+        build tests/programs/sandbox_check.erl --allow-bogus -o "$dir/never.com"
+    check beam.com 'wrote .*sandbox_net.com' \
+        build tests/programs/sandbox_check.erl -N -o "$dir/sandbox_net.com"
+    check beam.com 'wrote .*sandbox_rw.com' \
+        build tests/programs/sandbox_check.erl --allow-read=/etc \
+        --allow-write="$dir/sandbox-w" -o "$dir/sandbox_rw.com"
+    check beam.com 'wrote .*sandbox_run.com' \
+        build tests/programs/sandbox_check.erl --allow-run=true -o "$dir/sandbox_run.com"
+    check beam.com 'wrote .*sandbox_none.com' \
+        build tests/programs/sandbox_check.erl -o "$dir/sandbox_none.com"
     rm -f "$dir/sandbox.tmp"
+    net_extra= rw_extra=
     case $os in
         linux)
-            pledged='read: ok@@write: error eperm@@listen: ok@@done'
-            unveiled='read: ok@@read: error eacces@@write: error eacces@@listen: ok@@done' ;;
+            net_extra='write '$dir/sandbox.tmp rw_extra=listen
+            net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@done'
+            rw='read: ok@@read: error eacces@@write: ok@@listen: error eperm@@done'
+            runs='run: ok@@run: error@@done'
+            env='read: ok@@read: error eacces@@done' ;;
         openbsd)
-            pledged=
-            unveiled='read: ok@@read: error e[a-z]*@@write: error e[a-z]*@@listen: ok@@done' ;;
+            net_extra='write '$dir/sandbox.tmp rw_extra=listen
+            net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@done'
+            rw='read: ok@@read: error e[a-z]*@@write: ok@@listen: ok@@done'
+            runs=
+            env='read: ok@@read: error e[a-z]*@@done' ;;
         *)
-            pledged='read: ok@@write: ok@@listen: ok@@done'
-            unveiled='read: ok@@read: ok@@write: ok@@listen: ok@@done' ;;
+            net_extra='write '$dir/sandbox.tmp rw_extra=listen
+            net='read: ok@@read: ok@@listen: ok@@write: ok@@done'
+            rw='read: ok@@read: ok@@write: ok@@listen: ok@@done'
+            runs='run: ok@@run: ok@@done'
+            env='read: ok@@read: ok@@done' ;;
     esac
-    if [ -n "$pledged" ]; then
-        check sandbox_pledge.com "$pledged" \
-            read /etc/hosts write "$dir/sandbox.tmp" listen
-    else
-        # Shows what OpenBSD does with this pledge (not checked yet).
-        probe sandbox_pledge.com read /etc/hosts write "$dir/sandbox.tmp" listen
-    fi
+    # -N: the network, and the files that it needs (/etc/hosts), not
+    # other files.
+    check sandbox_net.com "$net" read /etc/hosts read "$dir/beam.com" listen $net_extra
     rm -f "$dir/sandbox.tmp"
-    check sandbox_unveil.com "$unveiled" \
-        read /etc/hosts read "$dir/sandbox_pledge.com" write "$dir/sandbox.tmp" listen
+    # A new file in a directory of --allow-write.
+    rm -rf "$dir/sandbox-w"
+    mkdir "$dir/sandbox-w"
+    check sandbox_rw.com "$rw" \
+        read /etc/hosts read "$dir/beam.com" write "$dir/sandbox-w/new.txt" $rw_extra
+    rm -rf "$dir/sandbox-w"
+    if [ -n "$runs" ]; then
+        check sandbox_run.com "$runs" run true run sh
+    else
+        probe sandbox_run.com run true run sh
+    fi
+    # BEAM_COM_ALLOW: permissions for a program without them; a program
+    # with permissions in its file ignores it.
+    BEAM_COM_ALLOW='read=/etc;net'
+    export BEAM_COM_ALLOW
+    check sandbox_none.com "$env" read /etc/hosts read "$dir/beam.com"
+    BEAM_COM_ALLOW=read
+    check sandbox_net.com "$env" read /etc/hosts read "$dir/beam.com"
+    unset BEAM_COM_ALLOW
 fi
 
 # Hex packages (from hex.pm, so this needs the network): hexweb needs
@@ -460,10 +490,10 @@ if [ -d examples ]; then
                 export ERL_FLAGS
                 check jit_maps.b.com 'wx pages: [1-9]@@dual mapped: no'
                 unset ERL_FLAGS
-                # With unveil rules, the launcher unveils the directory of
+                # With the sandbox, the launcher unveils the directory of
                 # shm_open() (/dev/shm), so the JIT keeps its two views.
                 check beam.com 'wrote .*jit_maps_unveil.b.com' \
-                    build tests/programs/jit_maps.erl --unveil "r /proc" \
+                    build tests/programs/jit_maps.erl --allow-read=/proc \
                     -o "$dir/jit_maps_unveil.b.com"
                 [ -f "$dir/jit_maps_unveil.b.com" ] &&
                     check jit_maps_unveil.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
@@ -506,15 +536,12 @@ if [ -f "$dir/beam-emu.com" ]; then
         [ -f "$dir/crypto_check.emu.com" ] && check crypto_check.emu.com "$crypto_check"
         # The sandbox with the interpreter (the sandbox checks above use
         # beam.com, the JIT, for which the launcher adds "prot_exec").
-        if [ -n "$pledged" ]; then
-            check beam-emu.com 'wrote .*sandbox_pledge.emu.com' \
-                build tests/programs/sandbox_check.erl --pledge inet \
-                -o "$dir/sandbox_pledge.emu.com"
-            rm -f "$dir/sandbox.tmp"
-            [ -f "$dir/sandbox_pledge.emu.com" ] && check sandbox_pledge.emu.com "$pledged" \
-                read /etc/hosts write "$dir/sandbox.tmp" listen
-            rm -f "$dir/sandbox.tmp"
-        fi
+        check beam-emu.com 'wrote .*sandbox_net.emu.com' \
+            build tests/programs/sandbox_check.erl -N -o "$dir/sandbox_net.emu.com"
+        rm -f "$dir/sandbox.tmp"
+        [ -f "$dir/sandbox_net.emu.com" ] && check sandbox_net.emu.com "$net" \
+            read /etc/hosts read "$dir/beam.com" listen $net_extra
+        rm -f "$dir/sandbox.tmp"
     fi
 fi
 

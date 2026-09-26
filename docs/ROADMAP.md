@@ -14,9 +14,11 @@ platforms.
   also on Windows (exported from the Windows store at start).
 - Port programs on macOS and the BSDs (fd passing in the native
   `cmsghdr` layout).
-- A sandbox for programs: `beam.com build --pledge ... --unveil ...`
-  (Cosmopolitan's `pledge()` and `unveil()`; Linux and OpenBSD). The
-  launcher applies the rules before ERTS starts its threads.
+- A sandbox for programs: `beam.com build --allow-read ... --allow-net`,
+  the permission flags of Deno (with Cosmopolitan's `pledge()` and
+  `unveil()`; Linux and OpenBSD). The launcher applies them before ERTS
+  starts its threads. They replace the first flags, `--pledge` and
+  `--unveil`: the names of OpenBSD were foreign to most users.
 - `beam.com build` of `.yrl`, `.xrl` and ASN.1 files (with `parsetools`
   and `asn1ct` in the zip).
 - `beam.com build`: no Erlang installation needed. It compiles one
@@ -197,8 +199,8 @@ WAMR 2.4.5).
   and Landlock apply to the calling thread and the threads that it
   starts later, and the threads of the VM exist before any Erlang code
   runs. A call from Erlang would restrict one scheduler thread only. The
-  rules come from the build (`--pledge`, `--unveil`) and the launcher
-  applies them.
+  rules come from the build (`--allow-*`) and the launcher applies
+  them.
 
 - Loading native per-platform NIF libraries (`cosmo_dlopen`): it breaks
   "build once", and the calling conventions and exported symbols make

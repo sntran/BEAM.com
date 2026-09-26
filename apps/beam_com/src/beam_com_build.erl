@@ -11,7 +11,7 @@
 %% of beam.com.
 -module(beam_com_build).
 
--export([run/1, check_promises/1, check_unveil/1, check_target/1]).
+-export([run/1, allow/2, check_target/1]).
 
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
@@ -112,44 +112,70 @@ slashes(Path, {_, windows}) ->
     end;
 slashes(Path, _) -> Path.
 
-%% The sandbox of the program (see beam_com.c): /zip/.pledge has the
-%% promises, /zip/.unveil one "PERMISSIONS PATH" rule on each line.
-sandbox_files(Opts) ->
-    [{".pledge", [P, "\n"]} || #{pledge := P} <- [Opts]]
-        ++ [{".unveil", [[R, "\n"] || R <- Rules]}
-            || #{unveil := Rules} <- [Opts], Rules =/= []].
+%% The sandbox of the program (see beam_com.c): /zip/.allow has one
+%% permission on each line, as the --allow-* flags without "--allow-":
+%% "read", "read=/etc,/srv", "write=/tmp", "net", "run=git", or "all".
+sandbox_files(#{allow := Allow}) ->
+    [{".allow", allow_lines(Allow)}];
+sandbox_files(_) ->
+    [].
 
--define(PROMISES, ["stdio", "rpath", "wpath", "cpath", "dpath", "flock",
-                   "fattr", "inet", "anet", "unix", "dns", "tty", "recvfd",
-                   "sendfd", "proc", "exec", "id", "unveil", "settime",
-                   "prot_exec", "vminfo", "tmppath", "chown"]).
+allow_lines(#{all := true}) ->
+    "all\n";
+allow_lines(Allow) ->
+    [[allow_line(K, V), "\n"] || K <- [read, write, net, run],
+                                 V <- [maps:get(K, Allow, none)], V =/= none].
 
-%% The promises of --pledge, checked (the names of Cosmopolitan's
-%% pledge()), separated by one space.
-check_promises(Promises) ->
-    Words = string:lexemes(Promises, " \t"),
-    case [W || W <- Words, not lists:member(W, ?PROMISES)] of
-        [] -> lists:flatten(lists:join(" ", Words));
-        [Bad | _] -> throw({error, "unknown promise ~ts (see beam.com help build)", [Bad]})
-    end.
+allow_line(K, all) -> atom_to_list(K);
+allow_line(net, true) -> "net";
+allow_line(K, List) -> [atom_to_list(K), "=", lists:join(",", List)].
 
-%% An --unveil rule, checked: "PERMISSIONS PATH".
-check_unveil(Rule) ->
-    case string:split(string:trim(Rule), " ") of
-        [Perms, Path0] ->
-            Path = string:trim(Path0),
-            case Perms =/= "" andalso Path =/= ""
-                andalso lists:all(fun(C) -> lists:member(C, "rwxc") end, Perms) of
-                true -> Perms ++ " " ++ Path;
-                false -> bad_unveil(Rule)
+%% One --allow-* flag (or -R, -W, -N, -A), as the permission flags of
+%% Deno, added to the permissions so far. A flag without a list allows
+%% all; lists add up.
+allow(Flag, Allow) ->
+    case allow_flag(Flag) of
+        {all, _} -> Allow#{all => true};
+        {net, none} -> Allow#{net => true};
+        {net, _} ->
+            throw({error, "--allow-net takes no hosts: the sandbox cannot "
+                   "filter the network by host", []});
+        {K, none} when K =:= read; K =:= write; K =:= run -> Allow#{K => all};
+        {K, Value} when K =:= read; K =:= write; K =:= run ->
+            case {maps:get(K, Allow, []), string:lexemes(Value, ",")} of
+                {_, []} -> throw({error, "~ts needs a list after \"=\"", [Flag]});
+                {all, _} -> Allow;
+                {Old, New} -> Allow#{K => Old ++ [N || N <- New, not lists:member(N, Old)]}
             end;
-        _ ->
-            bad_unveil(Rule)
+        unsupported ->
+            throw({error, "~ts is not supported: the sandbox cannot enforce it "
+                   "(see beam.com help build)", [Flag]});
+        unknown ->
+            throw({error, "unknown option ~ts", [Flag]})
     end.
 
-bad_unveil(Rule) ->
-    throw({error, "--unveil needs \"PERMISSIONS PATH\", with PERMISSIONS of "
-           "r, w, x and c: ~ts", [Rule]}).
+allow_flag("-R") -> {read, none};
+allow_flag("-W") -> {write, none};
+allow_flag("-N") -> {net, none};
+allow_flag("-A") -> {all, none};
+allow_flag("--deny-" ++ _) -> unsupported;
+allow_flag("--allow-" ++ Rest) ->
+    {Name, Value} = case string:split(Rest, "=") of
+                        [N] -> {N, none};
+                        [N, V] -> {N, V}
+                    end,
+    case Name of
+        "read" -> {read, Value};
+        "write" -> {write, Value};
+        "net" -> {net, Value};
+        "run" -> {run, Value};
+        "all" when Value =:= none -> {all, none};
+        _ when Name =:= "env"; Name =:= "sys"; Name =:= "ffi";
+               Name =:= "import"; Name =:= "hrtime" -> unsupported;
+        _ -> unknown
+    end;
+allow_flag(_) ->
+    unknown.
 
 %% --target TARGET: a file for one system, as Cosmopolitan's assimilate
 %% makes it. The APE file starts with a shell script, which has the
@@ -864,8 +890,7 @@ keep(Apps, Base) ->
             lists:any(fun(Dir) -> keep_app_file(Dir, Name) end, Dirs);
        ("releases/" ++ _) -> false;
        (".args") -> false;
-       (".pledge") -> false;
-       (".unveil") -> false;
+       (".allow") -> false;
        (_) -> true
     end.
 

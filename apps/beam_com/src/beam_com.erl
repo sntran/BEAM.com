@@ -62,11 +62,12 @@ build_options(["-o", Output | Rest], Opts) ->
     build_options(Rest, Opts#{output => Output});
 build_options(["-a", App | Rest], #{apps := Apps} = Opts) ->
     build_options(Rest, Opts#{apps := Apps ++ [list_to_atom(App)]});
-build_options(["--pledge", Promises | Rest], Opts) ->
-    build_options(Rest, Opts#{pledge => beam_com_build:check_promises(Promises)});
-build_options(["--unveil", Rule | Rest], Opts) ->
-    Rules = maps:get(unveil, Opts, []),
-    build_options(Rest, Opts#{unveil => Rules ++ [beam_com_build:check_unveil(Rule)]});
+build_options([[$-, C] = Flag | Rest], Opts) when C =:= $R; C =:= $W; C =:= $N; C =:= $A ->
+    build_options(Rest, Opts#{allow => beam_com_build:allow(Flag, maps:get(allow, Opts, #{}))});
+build_options(["--allow-" ++ _ = Flag | Rest], Opts) ->
+    build_options(Rest, Opts#{allow => beam_com_build:allow(Flag, maps:get(allow, Opts, #{}))});
+build_options(["--deny-" ++ _ = Flag | _], _Opts) ->
+    beam_com_build:allow(Flag, #{});
 build_options(["--main", Module | Rest], Opts) ->
     build_options(Rest, Opts#{main => list_to_atom(Module)});
 build_options(["--tool", Tool | Rest], Opts) when Tool =:= "rebar"; Tool =:= "mix" ->
@@ -78,7 +79,6 @@ build_options(["--extract-priv", App | Rest], Opts) ->
 build_options(["--target", Target | Rest], Opts) ->
     build_options(Rest, Opts#{target => beam_com_build:check_target(Target)});
 build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a";
-                                    Option =:= "--pledge"; Option =:= "--unveil";
                                     Option =:= "--target"; Option =:= "--main";
                                     Option =:= "--tool"; Option =:= "--extract-priv" ->
     throw({error, "option ~ts needs a value", [Option]});
@@ -95,20 +95,23 @@ usage() ->
 build_usage() ->
     Name = name(),
     Pad = lists:duplicate(length(Name) + 7, $\s),
-    Name ++ " build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]~n" ++
-    Pad ++ "[--unveil \"PERMISSIONS PATH\"]... [--target TARGET]~n" ++
-    Pad ++ "[--main MODULE] [--tool rebar|mix] [--extract-priv APP]...~n"
+    Name ++ " build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]~n" ++
+    Pad ++ "[--allow-write[=PATH,...]] [--allow-net] [--allow-run[=PROGRAM,...]]~n" ++
+    Pad ++ "[--allow-all] [--target TARGET] [--main MODULE]~n" ++
+    Pad ++ "[--tool rebar|mix] [--extract-priv APP]...~n"
     "  INPUT     a .erl, .ex or .exs file with main/1, or an application~n"
     "            directory (rebar3 or Mix)~n"
     "  OUTPUT    the new executable (default: the name of INPUT.com)~n"
     "  APP       an OTP application to add (for calls that the~n"
     "            builder cannot see, such as apply/3)~n"
-    "  PROMISES  the system calls that the program keeps (Linux and~n"
-    "            OpenBSD), such as \"inet dns\"; \"stdio rpath\" are always~n"
-    "            added~n"
-    "  PATH      a file or directory that the program can use (Linux and~n"
-    "            OpenBSD), with PERMISSIONS of r, w, x and c; other paths~n"
-    "            are hidden~n"
+    "  --allow-*  the sandbox, as the permissions of Deno (Linux and~n"
+    "            OpenBSD): with one of them, the program can do only what~n"
+    "            they allow. -R, -W, -N and -A are short for --allow-read,~n"
+    "            --allow-write, --allow-net and --allow-all~n"
+    "  PATH      a file or directory that the program can read (and~n"
+    "            write); without paths, all~n"
+    "  PROGRAM   a program that the program can run (a port), by path~n"
+    "            or by name (found in PATH); without programs, all~n"
     "  TARGET    a native file for one system, not an APE file:~n"
     "            x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,~n"
     "            x86_64-unknown-freebsd or x86_64-apple-darwin (also~n"
@@ -162,10 +165,15 @@ help(["build"]) ->
      "The new executable has the compiled code, an OTP release with the\n"
      "applications that the code needs, and the runtime of beam.com.\n"
      "\n"
-     "Promises: stdio rpath wpath cpath dpath flock fattr inet anet unix\n"
-     "dns tty recvfd sendfd proc exec id unveil settime prot_exec vminfo\n"
-     "tmppath chown. A forbidden system call returns an error (EPERM) on\n"
-     "Linux; OpenBSD stops the program. The other systems ignore them.\n"];
+     "The sandbox: without --allow-* flags, the program can do all that\n"
+     "its user can. With them, it can read, write, use the network and run\n"
+     "programs only as they allow; --allow-all turns the sandbox off.\n"
+     "Reading or writing another file gives {error, eacces}, and a socket\n"
+     "or a port without the flag {error, eperm}. Linux applies all the\n"
+     "flags, OpenBSD only the paths, and the other systems ignore them.\n"
+     "BEAM_COM_ALLOW (flags\n"
+     "without --allow-, separated by \";\": \"read=/etc;net\") gives\n"
+     "permissions to a program that has none in its file.\n"];
 help(["version"]) ->
     ["usage: ", name(), " version\n"
      "\n"

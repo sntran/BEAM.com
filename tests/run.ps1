@@ -166,14 +166,14 @@ if (Test-Path "examples") {
     Check "beam.com" 'the application nosuch is not in beam.com' @("build", "examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
 }
 
-# The sandbox (--pledge, --unveil): Windows ignores both, so each action
-# works; the options must still be accepted and checked.
+# The sandbox (--allow-*): Windows ignores it, so each action works; the
+# flags must still be accepted and checked.
 if (Test-Path "examples") {
-    Check "beam.com" 'unknown promise bogus' @("build", "tests/programs/sandbox_check.erl", "--pledge", "bogus", "-o", "$Dir/never.com") 1
-    Check "beam.com" 'wrote .*sandbox_pledge.com' @("build", "tests/programs/sandbox_check.erl", "--pledge", "inet", "--unveil", "r /etc", "-o", "$Dir/sandbox_pledge.com")
-    if (Test-Path (Join-Path $Dir "sandbox_pledge.com")) {
+    Check "beam.com" '--allow-net takes no hosts' @("build", "tests/programs/sandbox_check.erl", "--allow-net=example.com", "-o", "$Dir/never.com") 1
+    Check "beam.com" 'wrote .*sandbox_net.com' @("build", "tests/programs/sandbox_check.erl", "-N", "--allow-read=/etc", "-o", "$Dir/sandbox_net.com")
+    if (Test-Path (Join-Path $Dir "sandbox_net.com")) {
         Remove-Item (Join-Path $Dir "sandbox.tmp") -ErrorAction SilentlyContinue
-        Check "sandbox_pledge.com" 'read: ok@@write: ok@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
+        Check "sandbox_net.com" 'read: ok@@write: ok@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
     }
 }
 

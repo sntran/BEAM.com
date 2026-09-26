@@ -54,8 +54,7 @@
 #define BEAM_COM_ARGS "/zip/.args"
 #define BEAM_COM_RELEASES "/zip/releases"
 #define BEAM_COM_TOOL "/zip/lib/beam_com/ebin/beam_com.app"
-#define BEAM_COM_PLEDGE "/zip/.pledge"
-#define BEAM_COM_UNVEIL "/zip/.unveil"
+#define BEAM_COM_ALLOW "/zip/.allow"
 
 /* close() with the lock of the file descriptor table (UPSTREAM.md C25
  * and C26). The emulator is linked with -Wl,--wrap=close (build.sh), so
@@ -269,29 +268,32 @@ static int read_zip_args(struct arglist *out)
 }
 
 /*
- * --- Sandbox: pledge() and unveil() -------------------------------------
+ * --- Sandbox: the permissions of --allow-* -----------------------------
  *
- * A program can give up what it does not need, as OpenBSD programs do.
- * The rules come from the zip (beam.com build --pledge, --unveil) and from
- * the environment (to try a sandbox without a new build):
+ * A program can give up what it does not need. The permissions are those
+ * of Deno (beam.com build --allow-read, --allow-write, --allow-net,
+ * --allow-run, --allow-all), one on each line of /zip/.allow:
  *
- *   /zip/.unveil, BEAM_COM_UNVEIL  paths: "PERMISSIONS PATH" on each line
- *                                  (BEAM_COM_UNVEIL: separated by ";"),
- *                                  PERMISSIONS of r, w, x and c
- *   /zip/.pledge, BEAM_COM_PLEDGE  promises, such as "inet dns" ("stdio
- *                                  rpath" are always added)
+ *   read, read=PATH,...     read all files, or only these
+ *   write, write=PATH,...   write (and create) all files, or only these
+ *   net                     sockets and DNS
+ *   run, run=PROGRAM,...    start all programs (ports), or only these
+ *   all                     no sandbox
  *
- * The environment can only restrict more: its rules are applied after the
- * rules of the zip, and a second pledge() or unveil() cannot give back
- * what the first one took.
+ * With permissions, the program can do only what they allow. BEAM_COM_ALLOW
+ * (the same words, separated by ";") gives permissions to a program that
+ * has none in its file, to try a sandbox without a new build; the
+ * environment never changes the permissions of the file.
  *
- * The rules must be applied here, before ERTS starts its threads: on
- * Linux, seccomp (pledge) and Landlock (unveil) apply to the calling
- * thread and to the threads that it starts later. On OpenBSD they apply
- * to the process. On the other systems, pledge() and unveil() do nothing.
+ * They are applied with the pledge() (system calls) and unveil() (paths)
+ * of Cosmopolitan, here, before ERTS starts its threads: on Linux,
+ * seccomp (pledge) and Landlock (unveil) apply to the calling thread and
+ * to the threads that it starts later. On OpenBSD they apply to the
+ * process. On the other systems, pledge() and unveil() do nothing.
  *
  * A forbidden system call returns EPERM (Linux), so Erlang code gets an
- * error such as {error, eperm}. OpenBSD always kills the process.
+ * error such as {error, eperm}; a hidden path gives EACCES. OpenBSD kills
+ * the process on a forbidden system call.
  *
  * The helper programs (erl_child_setup, inet_gethost) are this file,
  * executed again. On Linux they keep the rules of their parent (and the
@@ -302,6 +304,12 @@ static int read_zip_args(struct arglist *out)
  */
 static char *join(const char *a, const char *b, const char *c);
 
+struct allow {
+    int all, net, run;
+    int read_all, write_all, run_all;
+    struct arglist read, write, programs;
+};
+
 static void sandbox_error(int helper, const char *what, const char *arg)
 {
     if (helper)
@@ -310,20 +318,16 @@ static void sandbox_error(int helper, const char *what, const char *arg)
     beam_com_exit(127, 1);
 }
 
-static void sandbox_unveil(int helper, char *rule)
+static void sandbox_unveil(int helper, const char *path,
+                           const char *permissions)
 {
-    char *path = strchr(rule, ' ');
-
-    if (!path)
-        sandbox_error(helper, "unveil: expected \"PERMISSIONS PATH\":", rule);
-    *path++ = '\0';
-    while (*path == ' ')
-        path++;
-    if (unveil(path, rule) == -1)
+    if (unveil(path, permissions) == -1)
         sandbox_error(helper, "unveil", path);
 }
 
-/* A path that may not exist (unveil() fails with ENOENT for it). */
+/* A path that may not exist (unveil() fails with ENOENT for it): it is
+ * left out. unveil() needs a path that exists; to create files, the
+ * program needs their directory. */
 static void sandbox_unveil_optional(int helper, const char *path,
                                     const char *permissions)
 {
@@ -344,112 +348,170 @@ static void sandbox_unveil_loader(int helper)
         sandbox_unveil_optional(helper, join(home, "/.ape-", APE_VERSION_STR), "rx");
 }
 
+/* A program of --allow-run, by path, or by name in PATH (as a port
+ * finds it with os:find_executable/1). NULL when it is nowhere. */
+static char *find_program(const char *name)
+{
+    const char *path = getenv("PATH");
+    char *copy, *dir, *save, *file;
+
+    if (strchr(name, '/'))
+        return strdup(name);
+    if (!path)
+        return NULL;
+    copy = strdup(path);
+    for (dir = strtok_r(copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+        file = join(*dir ? dir : ".", "/", name);
+        if (access(file, X_OK) == 0)
+            return file;
+        free(file);
+    }
+    return NULL;
+}
+
+static void allow_list(char *value, struct arglist *out)
+{
+    char *item, *save;
+
+    for (item = strtok_r(value, ",", &save); item; item = strtok_r(NULL, ",", &save))
+        push(out, strdup(item));
+}
+
+/* One permission: "read", "read=/etc,/srv", "net", ... */
+static void allow_parse(int helper, struct allow *a, char *word)
+{
+    char *value = strchr(word, '=');
+
+    while (*word == ' ' || *word == '\t')
+        word++;
+    if (value)
+        *value++ = '\0';
+    if (strcmp(word, "all") == 0 && !value)
+        a->all = 1;
+    else if (strcmp(word, "net") == 0 && !value)
+        a->net = 1;
+    else if (strcmp(word, "read") == 0)
+        value ? allow_list(value, &a->read) : (void)(a->read_all = 1);
+    else if (strcmp(word, "write") == 0)
+        value ? allow_list(value, &a->write) : (void)(a->write_all = 1);
+    else if (strcmp(word, "run") == 0) {
+        a->run = 1;
+        value ? allow_list(value, &a->programs) : (void)(a->run_all = 1);
+    } else if (!helper) {
+        fprintf(stderr, "beam.com: unknown permission %s (read, write, net, "
+                        "run or all)\n", word);
+        beam_com_exit(127, 1);
+    }
+}
+
 /* ERTS needs "stdio rpath" to start: without them, it waits forever
  * (seen on Linux). Threads are part of "stdio". unveil limits which files
  * "rpath" can read. The JIT needs "prot_exec" for the memory of its
- * code. */
+ * code, and "cpath wpath" for shm_open(), which makes the file of its two
+ * views (W^X): without them, asmjit maps its code writable and executable
+ * (seen in the jit_maps check). unveil limits writes to the directory of
+ * shm_open() and the paths of --allow-write. */
 #ifdef BEAMASM
-#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec "
+#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec cpath wpath "
 #else
 #define BEAM_COM_BASE_PROMISES "stdio rpath "
 #endif
 
-static void sandbox_pledge(int helper, const char *promises)
+static void apply_allow(int helper, struct allow *a)
 {
-    char *all = join(BEAM_COM_BASE_PROMISES, promises, "");
-
-    if (pledge(all, NULL) == -1)
-        sandbox_error(helper, "pledge", all);
-}
-
-static int has_word(const char *words, const char *word)
-{
-    size_t n = strlen(word);
-    const char *p;
-
-    for (p = words; (p = strstr(p, word)); p += n)
-        if ((p == words || p[-1] == ' ' || p[-1] == '\t') &&
-            (p[n] == '\0' || p[n] == ' ' || p[n] == '\t'))
-            return 1;
-    return 0;
-}
-
-static char *join_words(struct arglist *l)
-{
-    size_t n = 1;
-    char *s;
+    static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
+                                 "/usr/local/lib", "/usr/libexec"};
+    static const char *net_files[] = {
+        "/etc/resolv.conf", "/etc/hosts", "/etc/services", "/etc/protocols",
+        /* The certificates of the OS, for public_key:cacerts_get(). */
+        "/etc/ssl", "/etc/pki", "/usr/local/share/certs", "/usr/share/ca-certificates"};
+    char promises[256];
+    size_t k;
     int i;
 
-    for (i = 0; i < l->n; i++)
-        n += strlen(l->v[i]) + 1;
-    if (!(s = calloc(1, n)))
-        die("calloc");
-    for (i = 0; i < l->n; i++) {
-        if (i)
-            strcat(s, " ");
-        strcat(s, l->v[i]);
+    /* BEAM.com executes its own file again for the helper programs,
+     * and ERTS opens /dev/null at start. */
+    sandbox_unveil(helper, GetProgramExecutableName(), "rx");
+    sandbox_unveil(helper, "/dev/null", "rw");
+    sandbox_unveil(helper, "/dev/urandom", "r");
+    sandbox_unveil_loader(helper);
+#ifdef BEAMASM
+    /* The JIT maps its code two times (W^X) with shm_open(), whose
+     * file Cosmopolitan makes in /dev/shm on Linux, else in /tmp
+     * (libc/calls/shm_path_np.c). Without it, asmjit maps the code
+     * writable and executable, which OpenBSD refuses: "Cannot
+     * allocate executable memory". */
+    sandbox_unveil(helper, IsLinux() && access("/dev/shm", F_OK) == 0 ? "/dev/shm" : "/tmp",
+                   "rwc");
+#endif
+    if (a->read_all)
+        sandbox_unveil(helper, "/", "r");
+    for (i = 0; i < a->read.n; i++)
+        sandbox_unveil_optional(helper, a->read.v[i], "r");
+    if (a->write_all)
+        sandbox_unveil(helper, "/", "rwc");
+    for (i = 0; i < a->write.n; i++)
+        sandbox_unveil_optional(helper, a->write.v[i], "rwc");
+    if (a->net)
+        for (k = 0; k < sizeof(net_files) / sizeof(net_files[0]); k++)
+            sandbox_unveil_optional(helper, net_files[k], "r");
+    if (a->run_all)
+        sandbox_unveil(helper, "/", "rx");
+    if (a->programs.n) {
+        /* The dynamic loader and the libraries of the programs. */
+        for (k = 0; k < sizeof(libs) / sizeof(libs[0]); k++)
+            sandbox_unveil_optional(helper, libs[k], "rx");
+        sandbox_unveil_optional(helper, "/etc/ld.so.cache", "r");
+        for (i = 0; i < a->programs.n; i++)
+            sandbox_unveil_optional(helper, find_program(a->programs.v[i]), "rx");
     }
-    return s;
+    if (unveil(NULL, NULL) == -1)
+        sandbox_error(helper, "unveil", "(commit)");
+
+    /* OpenBSD stops ERTS under any pledge() that BEAM.com has tried
+     * (SIGABRT at the start, also for the interpreter), and it stops the
+     * process on a forbidden system call instead of returning an error.
+     * There the sandbox is unveil() only (the paths). */
+    if (IsOpenbsd())
+        return;
+    snprintf(promises, sizeof(promises), "%s%s%s%s", BEAM_COM_BASE_PROMISES,
+             a->write_all || a->write.n ? "wpath cpath fattr flock " : "",
+             a->net ? "inet dns " : "",
+             /* erl_child_setup gets the descriptors of a port over a
+              * socket (SCM_RIGHTS). */
+             a->run ? "proc exec sendfd recvfd " : "");
+    if (pledge(promises, NULL) == -1)
+        sandbox_error(helper, "pledge", promises);
+
+    /* Without "proc exec", ERTS cannot start its port programs, and the
+     * native name resolver is one: kernel halts when it cannot start it.
+     * Kernel uses its own DNS client instead (as on Windows). */
+    if (!a->run && !getenv("ERL_INETRC"))
+        setenv("ERL_INETRC", BEAM_COM_BINDIR "/sandbox.inetrc", 1);
 }
 
 static void apply_sandbox(int helper)
 {
-    struct arglist rules = {0}, promises = {0};
-    char *env, *copy, *rule, *save;
-    int i, no_ports = 0;
+    struct allow a = {0};
+    struct arglist words = {0};
+    char *env, *copy, *word, *save;
+    int i;
 
     if (helper && IsLinux())
         return;
     __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
 
-    read_lines(BEAM_COM_UNVEIL, &rules);
-    if ((env = getenv("BEAM_COM_UNVEIL")) && *env) {
+    if (!read_lines(BEAM_COM_ALLOW, &words) && (env = getenv("BEAM_COM_ALLOW")) && *env) {
         copy = strdup(env);
-        for (rule = strtok_r(copy, ";\n", &save); rule;
-             rule = strtok_r(NULL, ";\n", &save))
-            push(&rules, rule);
+        for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
+            push(&words, word);
     }
-    if (rules.n) {
-        /* BEAM.com executes its own file again for the helper programs,
-         * and ERTS opens /dev/null at start. */
-        if (unveil(GetProgramExecutableName(), "rx") == -1)
-            sandbox_error(helper, "unveil", GetProgramExecutableName());
-        if (unveil("/dev/null", "rw") == -1)
-            sandbox_error(helper, "unveil", "/dev/null");
-        if (unveil("/dev/urandom", "r") == -1)
-            sandbox_error(helper, "unveil", "/dev/urandom");
-        sandbox_unveil_loader(helper);
-#ifdef BEAMASM
-        /* The JIT maps its code two times (W^X) with shm_open(), whose
-         * file Cosmopolitan makes in /dev/shm on Linux, else in /tmp
-         * (libc/calls/shm_path_np.c). Without it, asmjit maps the code
-         * writable and executable, which OpenBSD refuses: "Cannot
-         * allocate executable memory". */
-        if (unveil(IsLinux() && access("/dev/shm", F_OK) == 0 ? "/dev/shm" : "/tmp",
-                   "rwc") == -1)
-            sandbox_error(helper, "unveil", "(the directory of shm_open)");
-#endif
-        for (i = 0; i < rules.n; i++)
-            sandbox_unveil(helper, rules.v[i]);
-        if (unveil(NULL, NULL) == -1)
-            sandbox_error(helper, "unveil", "(commit)");
-    }
-
-    if (read_lines(BEAM_COM_PLEDGE, &promises)) {
-        char *words = join_words(&promises);
-        sandbox_pledge(helper, words);
-        no_ports |= !has_word(words, "proc") || !has_word(words, "exec");
-    }
-    if ((env = getenv("BEAM_COM_PLEDGE"))) {
-        sandbox_pledge(helper, env);
-        no_ports |= !has_word(env, "proc") || !has_word(env, "exec");
-    }
-
-    /* Without "proc exec", ERTS cannot start its port programs, and the
-     * native name resolver is one: kernel halts when it cannot start it.
-     * Kernel uses its own DNS client instead (as on Windows). */
-    if (no_ports && !getenv("ERL_INETRC"))
-        setenv("ERL_INETRC", BEAM_COM_BINDIR "/sandbox.inetrc", 1);
+    if (!words.n)
+        return;
+    for (i = 0; i < words.n; i++)
+        allow_parse(helper, &a, words.v[i]);
+    if (!a.all)
+        apply_allow(helper, &a);
 }
 
 static int file_exists(const char *path)
