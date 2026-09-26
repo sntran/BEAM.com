@@ -12,9 +12,19 @@ env:
 
 jobs:
   build:
-    name: Build
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Build, sqlite: "0", out: beam.com }
+          # The SQLite probe (see docs/ROADMAP.md).
+          - { name: Build with SQLite, sqlite: "1", out: beam-sqlite.com }
+    env:
+      SQLITE: ${{ matrix.sqlite }}
+      OUT: ${{ github.workspace }}/build/${{ matrix.out }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,16 +54,17 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Build
-        run: ./build.sh openssl otp configure make release multicall bundle
+        run: ./build.sh openssl otp configure sqlite make release multicall bundle
 
-      - name: Upload beam.com
+      - name: Upload ${{ matrix.out }}
         uses: actions/upload-artifact@v4
         with:
-          name: beam.com
-          path: build/beam.com
+          name: ${{ matrix.out }}
+          path: build/${{ matrix.out }}
           if-no-files-found: error
 
       - name: Upload the APE loader
+        if: matrix.sqlite == '0'
         # NetBSD and OpenBSD cannot run APE files through sh.
         uses: actions/upload-artifact@v4
         with:
@@ -70,7 +81,7 @@ jobs:
         timeout-minutes: 5
         run: |
           sudo apt-get install -y strace >/dev/null || true
-          BEAM_COM_VERBOSE=1 timeout 60 strace -f -tt -s 200 -o build/strace.txt build/beam.com one two || true
+          BEAM_COM_VERBOSE=1 timeout 60 strace -f -tt -s 200 -o build/strace.txt "$OUT" one two || true
           ps -ef | grep -v grep | grep -i beam || true
           tail -n 80 build/strace.txt || true
 
@@ -78,7 +89,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-logs-${{ matrix.out }}
           path: |
             build/otp/erts/config.log
             build/otp/config.log

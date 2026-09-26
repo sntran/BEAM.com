@@ -106,4 +106,14 @@ if (Test-Path "examples") {
         }
     }
 }
+# The SQLite probe: beam-sqlite.com (built with SQLITE=1).
+$sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
+if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "beam-sqlite.com"))) {
+    Check "beam-sqlite.com" 'wrote .*sqlite_check.b.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
+    if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
+        Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
+        Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
+        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
+    }
+}
 exit $fail
