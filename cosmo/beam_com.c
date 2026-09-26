@@ -588,33 +588,26 @@ static void make_dirs(char *path)
 }
 
 /*
- * file_system (and so phoenix_live_reload) watches files with inotifywait
- * of inotify-tools (FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE, else PATH), and
- * on macOS with mac_listener (FILESYSTEM_FSMAC_EXECUTABLE_FILE). For the
- * tools of Elixir, the variable names a file in the cache of BEAM.com
- * (BEAM_COM_CACHE, else the user cache, as beam_com_script), so that the
- * watcher of this file runs (cosmo/beam_com_watch.c):
+ * A program of this file in the cache of BEAM.com (BEAM_COM_CACHE, else
+ * the user cache, as beam_com_script), in its directory bin:
  *
- *   - Linux and the BSDs: a link named inotifywait to this file.
- *   - macOS: a script mac_listener that runs this file with
- *     BEAM_COM_PROGRAM=mac_listener (the name of a link can be lost when
- *     the APE loader starts the file).
+ *   - Linux and the BSDs: a link NAME to this file.
+ *   - macOS: a script NAME that runs this file with BEAM_COM_PROGRAM=NAME
+ *     (the name of a link can be lost when the APE loader starts the
+ *     file).
  *
- * Not when the variable is set, and not on Windows (file_system has its
- * own watcher there).
+ * Returns the path of the program, or NULL (also on Windows).
  */
-static void watch_link(void)
+static char *cache_program(const char *name)
 {
     const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
                *home = getenv("HOME"), *exe = GetProgramExecutableName();
-    const char *var = IsXnu() ? "FILESYSTEM_FSMAC_EXECUTABLE_FILE"
-                              : "FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE";
     char *dir, *link, *tmp, *script, target[4096];
     ssize_t n;
     int fd, ok;
 
-    if (getenv(var) || beam_com_is_windows() || !exe || *exe != '/' || strchr(exe, '\''))
-        return;
+    if (beam_com_is_windows() || !exe || *exe != '/' || strchr(exe, '\''))
+        return NULL;
     if (cache && *cache)
         dir = join(cache, "/bin", "");
     else if (xdg && *xdg)
@@ -622,15 +615,17 @@ static void watch_link(void)
     else if (home)
         dir = join(home, "/.cache/beam.com/bin", "");
     else
-        return;
+        return NULL;
     make_dirs(dir);
-    link = join(dir, IsXnu() ? "/mac_listener" : "/inotifywait", "");
+    link = join(dir, "/", name);
     /* A new file, then rename(): two tools that start at the same time
      * do not see a missing file. */
     snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
     tmp = strdup(target);
     if (IsXnu()) {
-        script = join("#!/bin/sh\nBEAM_COM_PROGRAM=mac_listener exec '", exe, "' \"$@\"\n");
+        script = join("#!/bin/sh\nBEAM_COM_PROGRAM=", name, "");
+        script = join(script, " exec '", exe);
+        script = join(script, "' \"$@\"\n", "");
         fd = open(link, O_RDONLY);
         n = fd >= 0 ? read(fd, target, sizeof(target) - 1) : -1;
         if (fd >= 0)
@@ -643,7 +638,7 @@ static void watch_link(void)
                 close(fd);
             if (!ok || rename(tmp, link) != 0) {
                 unlink(tmp);
-                return;
+                return NULL;
             }
         }
     } else {
@@ -652,11 +647,65 @@ static void watch_link(void)
             unlink(tmp);
             if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
                 unlink(tmp);
-                return;
+                return NULL;
             }
         }
     }
-    setenv(var, link, 1);
+    return link;
+}
+
+/*
+ * file_system (and so phoenix_live_reload) watches files with inotifywait
+ * of inotify-tools (FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE, else PATH), and
+ * on macOS with mac_listener (FILESYSTEM_FSMAC_EXECUTABLE_FILE). For the
+ * tools of Elixir, the variable names the program inotifywait or
+ * mac_listener in the cache of BEAM.com (cache_program()), so that the
+ * watcher of this file runs (cosmo/beam_com_watch.c).
+ *
+ * Not when the variable is set, and not on Windows (file_system has its
+ * own watcher there).
+ */
+static void watch_link(void)
+{
+    const char *var = IsXnu() ? "FILESYSTEM_FSMAC_EXECUTABLE_FILE"
+                              : "FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE";
+    char *link;
+
+    if (!getenv(var) && (link = cache_program(IsXnu() ? "mac_listener" : "inotifywait")))
+        setenv(var, link, 1);
+}
+
+/*
+ * elixir_make runs make (the MAKE variable, else make) in a package that
+ * has C code, a NIF. The NIFs of some packages are linked into this file
+ * (exqlite and bcrypt_elixir, see build.sh), so these packages need no
+ * make and no C compiler. For the tools of Elixir, MAKE names the program
+ * make in the cache of BEAM.com (cache_program()): this file, which then
+ * runs apps/beam_com/src/beam_com_make.erl. It does nothing for these
+ * packages, and runs the make of PATH for the other ones.
+ *
+ * exqlite first downloads a compiled NIF (with cc_precompiler), unless
+ * EXQLITE_USE_SYSTEM is set: then it runs make. The SQLite of this file
+ * is the "system" SQLite of exqlite, so the variable is set too.
+ *
+ * Not when MAKE is set, and not on Windows.
+ */
+static void make_link(void)
+{
+    char *link;
+
+    if (getenv("MAKE") || !(link = cache_program("make")))
+        return;
+    setenv("MAKE", link, 1);
+    if (!getenv("EXQLITE_USE_SYSTEM"))
+        setenv("EXQLITE_USE_SYSTEM", "1", 1);
+}
+
+/* make: the name of the program that make_link() makes. */
+static int is_make(const char *name)
+{
+    return strcmp(name, "make") == 0 || strcmp(name, "make.com") == 0 ||
+           strcmp(name, "make.exe") == 0;
 }
 
 /* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
@@ -1069,7 +1118,7 @@ void beam_com_main(int *argcp, char ***argvp)
     const char *name = beam_com_basename(argv[0]);
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
-    int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode;
+    int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode, make_mode;
     const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
@@ -1119,6 +1168,11 @@ void beam_com_main(int *argcp, char ***argvp)
         !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
         exit(beam_com_mac_listener_main(argc - 1, argv + 1));
 
+    /* make: the program that make_link() makes, for elixir_make. It runs
+     * beam_com_make (the commands of beam.com, below). */
+    make_mode = is_make(name) && file_exists(BEAM_COM_TOOL) &&
+                !file_exists(BEAM_COM_RELEASES "/start_erl.data");
+
     /* erl mode: the program behaves as erl (the runtime of its zip, with
      * /zip as the root and all its applications in the code path), not
      * as its release. For code that starts another Erlang node of the
@@ -1132,7 +1186,7 @@ void beam_com_main(int *argcp, char ***argvp)
      * "beam.com +S 1 -eval ..."): erl mode too, in a file without a
      * release (whose arguments are its own). -h, --help and --version are
      * commands of beam.com. Not for a tool (elixir.com -e ...). */
-    if (!erl_mode && argc > 1 && (argv[1][0] == '-' || argv[1][0] == '+') &&
+    if (!erl_mode && !make_mode && argc > 1 && (argv[1][0] == '-' || argv[1][0] == '+') &&
         !elixir_tool(name) &&
         strcmp(argv[1], "-h") != 0 && strcmp(argv[1], "--help") != 0 &&
         strcmp(argv[1], "--version") != 0 && file_exists(BEAM_COM_TOOL) &&
@@ -1179,8 +1233,8 @@ void beam_com_main(int *argcp, char ***argvp)
      * iex.com, elixir.com, elixirc.com or escript, with or without .com
      * or .exe), or the first argument of the file ("beam.com mix test").
      * They run with all the applications of the zip in the code path. */
-    tool = erl_mode ? NULL : elixir_tool(name);
-    if (!erl_mode && !tool && argc > 1 && file_exists(BEAM_COM_TOOL) &&
+    tool = erl_mode || make_mode ? NULL : elixir_tool(name);
+    if (!erl_mode && !make_mode && !tool && argc > 1 && file_exists(BEAM_COM_TOOL) &&
         (tool = elixir_tool(argv[1])) && strchr(argv[1], '.') == NULL) {
         /* "beam.com mix test": mix gets "test". */
         argv[1] = argv[0];
@@ -1225,6 +1279,7 @@ void beam_com_main(int *argcp, char ***argvp)
         has_args = 0;
     } else if (tool) {
         watch_link();
+        make_link();
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
@@ -1262,7 +1317,7 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
         push(&file, "-run");
-        push(&file, "beam_com");
+        push(&file, make_mode ? "beam_com_make" : "beam_com");
         push(&file, "main");
         has_release = 1;
         has_args = 0;
