@@ -544,3 +544,32 @@ does not exist and never existed (`Finfo =:= undefined`), keep the
 current content instead of replacing it with the parse of `<<>>`; or
 only clear when a file that was read earlier disappears. Documenting
 `{resolv_conf, ""}` as the way to turn the monitor off would also help.
+
+### O11. The static NIF libraries are made two times at the same time with `make -j`
+
+**Status:** OTP 29.1.1, `erts/emulator/Makefile.in`. Seen in CI with
+`--enable-static-nifs` (crypto and asn1) and `make -j4`. It does not
+occur on each build.
+
+**Symptom.**
+
+```
+ CC	../priv/obj/x86_64-pc-linux-gnu/aead_static.o
+ CC	../priv/obj/x86_64-pc-linux-gnu/aead_static.o
+...
+../priv/obj/x86_64-pc-linux-gnu/algorithms_static.o: open failed with No such file or directory
+make[8]: *** [x86_64-pc-linux-gnu/Makefile:235: ...algorithms_static.o] Error 1
+```
+
+**Cause.** The rule `$(STATIC_NIF_LIBS) $(STATIC_DRIVER_LIBS):` has
+more than one target and no prerequisites. For make, this is one rule
+for each target, so with `-j` it runs the recipe (`make -C lib
+static_lib`, which makes all the libraries) once for each library at
+the same time. The two runs write the same object files.
+
+**Fix in BEAM.com.** A grouped target (`&:`, GNU make 4.3 and later):
+the recipe runs once and makes all the targets.
+
+**Possible upstream fix.** The same grouped target, or one stamp file
+as the target of the recipe, with the libraries depending on it (this
+also works with older make).

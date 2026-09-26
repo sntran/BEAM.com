@@ -1,3 +1,18 @@
+diff --git a/erts/emulator/Makefile.in b/erts/emulator/Makefile.in
+index 028e2bc..3920b99 100644
+--- a/erts/emulator/Makefile.in
++++ b/erts/emulator/Makefile.in
+@@ -1295,7 +1295,9 @@ endif
+ 
+ ifeq ($(COMPILE_STATIC_LIBS),yes)
+ 
+-$(STATIC_NIF_LIBS) $(STATIC_DRIVER_LIBS):
++# One run of the recipe makes all the libraries (a grouped target). With
++# a normal rule, "make -j" runs it once for each library at the same time.
++$(STATIC_NIF_LIBS) $(STATIC_DRIVER_LIBS) &:
+ 	echo "=== Entering lib to make static libs"
+ 	(cd $(ERL_TOP)/lib/ && $(MAKE) BUILD_STATIC_LIBS=1 TYPE=$(TYPE) static_lib)
+ 	echo "=== Leaving lib after making static libs"
 diff --git a/erts/emulator/beam/erl_bits.c b/erts/emulator/beam/erl_bits.c
 index 6b70a2e..8f642c3 100644
 --- a/erts/emulator/beam/erl_bits.c
