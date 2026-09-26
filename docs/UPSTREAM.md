@@ -593,10 +593,13 @@ release, as `close()` already does for `/zip` descriptors.
 **Status:** cosmocc 4.0.2 (`libc/runtime/zipos-close.c`,
 `libc/calls/close.c`, `libc/calls/fstat.c`).
 
-**Symptom.** `beam.com mix format` (many files at the same time)
-sometimes dies with `SIGSEGV` in `__zipos_fstat()`, called by `fstat()`
-in `efile_open()` of `read_file_nif` on a dirty I/O thread: 5 of 200
-runs, with 4 runs at the same time.
+**Symptom.** A build of an Elixir project (`beam.com build
+examples/greeter_ex`, which reads many files of the zip at the same
+time) sometimes dies with `SIGSEGV` (seen in CI on NetBSD, exit 139).
+`beam.com mix format` (many files at the same time)
+dies the same way in `__zipos_fstat()`, called by `fstat()` in
+`efile_open()` of `read_file_nif` on a dirty I/O thread: 5 of 200 runs,
+with 4 runs at the same time.
 
 **Cause.** `__zipos_close()` calls the `close` system call first, then
 frees the handle (`munmap()`), and `close()` clears the entry in `g_fds`

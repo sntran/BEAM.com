@@ -389,8 +389,7 @@ static void allow_parse(int helper, struct allow *a, char *word)
 /* ERTS needs "stdio rpath" to start: without them, it waits forever
  * (seen on Linux). Threads are part of "stdio". unveil limits which files
  * "rpath" can read. The JIT needs "prot_exec" for the memory of its
- * code, and on OpenBSD "cpath wpath" for shm_open() (see below): unveil
- * limits them to the directory of shm_open(). */
+ * code. */
 #ifdef BEAMASM
 #define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec "
 #else
@@ -448,12 +447,13 @@ static void apply_allow(int helper, struct allow *a)
     if (unveil(NULL, NULL) == -1)
         sandbox_error(helper, "unveil", "(commit)");
 
-    snprintf(promises, sizeof(promises), "%s%s%s%s%s", BEAM_COM_BASE_PROMISES,
-#ifdef BEAMASM
-             IsOpenbsd() ? "cpath wpath " : "",
-#else
-             "",
-#endif
+    /* OpenBSD stops ERTS under any pledge() that BEAM.com has tried
+     * (SIGABRT at the start, also for the interpreter), and it stops the
+     * process on a forbidden system call instead of returning an error.
+     * There the sandbox is unveil() only (the paths). */
+    if (IsOpenbsd())
+        return;
+    snprintf(promises, sizeof(promises), "%s%s%s%s", BEAM_COM_BASE_PROMISES,
              a->write_all || a->write.n ? "wpath cpath fattr flock " : "",
              a->net ? "inet dns " : "",
              /* erl_child_setup gets the descriptors of a port over a

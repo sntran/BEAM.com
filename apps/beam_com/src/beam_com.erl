@@ -169,8 +169,9 @@ help(["build"]) ->
      "its user can. With them, it can read, write, use the network and run\n"
      "programs only as they allow; --allow-all turns the sandbox off.\n"
      "Reading or writing another file gives {error, eacces}, and a socket\n"
-     "or a port without the flag {error, eperm} on Linux; OpenBSD stops the\n"
-     "program. The other systems ignore the flags. BEAM_COM_ALLOW (flags\n"
+     "or a port without the flag {error, eperm}. Linux applies all the\n"
+     "flags, OpenBSD only the paths, and the other systems ignore them.\n"
+     "BEAM_COM_ALLOW (flags\n"
      "without --allow-, separated by \";\": \"read=/etc;net\") gives\n"
      "permissions to a program that has none in its file.\n"];
 help(["version"]) ->

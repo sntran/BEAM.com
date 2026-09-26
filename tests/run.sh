@@ -241,9 +241,8 @@ if [ -d examples ]; then
 fi
 
 # The sandbox (beam.com build --allow-*). Linux applies it with seccomp
-# and Landlock, OpenBSD with pledge and unveil, and the other systems
-# ignore it. OpenBSD kills the process on a forbidden system call, so
-# there the checks leave out the actions without their permission.
+# and Landlock, OpenBSD only the paths (unveil), and the other systems
+# ignore it.
 if [ -d examples ]; then
     check_status 1 beam.com '--allow-net takes no hosts' \
         build tests/programs/sandbox_check.erl --allow-net=example.com -o "$dir/never.com"
@@ -270,8 +269,9 @@ if [ -d examples ]; then
             runs='run: ok@@run: error@@done'
             env='read: ok@@read: error eacces@@done' ;;
         openbsd)
-            net='read: ok@@read: error e[a-z]*@@listen: ok@@done'
-            rw='read: ok@@read: error e[a-z]*@@write: ok@@done'
+            net_extra='write '$dir/sandbox.tmp rw_extra=listen
+            net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@done'
+            rw='read: ok@@read: error e[a-z]*@@write: ok@@listen: ok@@done'
             runs=
             env='read: ok@@read: error e[a-z]*@@done' ;;
         *)
@@ -391,7 +391,15 @@ if [ -f "$dir/beam.com" ]; then
     check escript '^cli: \["p", "q"\]$' hello p q
     if [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ]; then
         # Hex and rebar3 (for the Erlang packages), installed by Mix into
-        # ~/.mix; Mix runs rebar3 with the escript in PATH.
+        # ~/.mix; Mix runs rebar3 with the escript in PATH. Where the kernel
+        # cannot start an APE file and sh stops at its first NUL byte
+        # (NetBSD), escript is a small script that starts the file with the
+        # APE loader.
+        if [ "$os" = netbsd ]; then
+            rm -f "$dir/escript"
+            printf '#!/bin/sh\nexec %s %s/beam.com escript "$@"\n' "$runner" "$dir" > "$dir/escript"
+            chmod +x "$dir/escript"
+        fi
         PATH=$dir:$PATH
         export PATH
         check mix '' local.hex --force
@@ -481,7 +489,14 @@ if [ -d examples ]; then
                 ERL_FLAGS='+JMsingle true'
                 export ERL_FLAGS
                 check jit_maps.b.com 'wx pages: [1-9]@@dual mapped: no'
-                unset ERL_FLAGS ;;
+                unset ERL_FLAGS
+                # With unveil rules, the launcher unveils the directory of
+                # shm_open() (/dev/shm), so the JIT keeps its two views.
+                check beam.com 'wrote .*jit_maps_unveil.b.com' \
+                    build tests/programs/jit_maps.erl --unveil "r /proc" \
+                    -o "$dir/jit_maps_unveil.b.com"
+                [ -f "$dir/jit_maps_unveil.b.com" ] &&
+                    check jit_maps_unveil.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
             freebsd|netbsd)
                 check jit_maps.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
             darwin)

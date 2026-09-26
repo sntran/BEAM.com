@@ -210,7 +210,9 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - Packages: `mix local.hex` installs Hex, and `mix deps.get` then
   fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
   rebar3, which Mix runs as an escript: put a link named `escript` in
-  `PATH`. `beam.com build` does not need Hex or rebar3 (see "Hex
+  `PATH`. On NetBSD, where `sh` stops at the first NUL byte of an APE
+  file, make `escript` a small script instead:
+  `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`. `beam.com build` does not need Hex or rebar3 (see "Hex
   packages").
 - `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
 - To build an Elixir project into one file, use `beam.com build` (see
@@ -440,7 +442,7 @@ client, because the native resolver is a port program.
 | System | The sandbox |
 |---|---|
 | Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
-| OpenBSD | yes: `pledge()` and `unveil()`; the kernel stops the program on a forbidden system call (a socket without `--allow-net`), instead of an error |
+| OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
 | macOS, Windows, FreeBSD, NetBSD | no: the flags are ignored |
 
 `BEAM_COM_ALLOW` gives permissions to a program that has none in its
