@@ -17,8 +17,9 @@ failed=
 
 # The processes of the tests that still run (for diagnostics).
 our_processes() {
+    # Zombies are left out: in a container, PID 1 may not collect them.
     ps -A -o pid,ppid,stat,command 2>/dev/null | grep -v -e grep -e '\.sh' |
-        grep -e "$dir/" -e '\.ape-' || true
+        awk '$3 !~ /^Z/' | grep -e "$dir/[^ ]*\.com" -e '\.ape-' || true
 }
 
 # Called by the watchdog before it kills a program: the processes, and
@@ -246,6 +247,16 @@ left=$(our_processes)
 if [ -n "$left" ]; then
     echo "==> Processes still running after the tests:"
     printf '%s\n' "$left"
+    # The open files and the stack of the first one.
+    first=$(printf '%s\n' "$left" | awk 'NR == 1 {print $1}')
+    if command -v lsof >/dev/null 2>&1; then
+        echo "--- lsof -p $first"
+        lsof -p "$first" 2>&1 | head -40
+    fi
+    if command -v sample >/dev/null 2>&1; then
+        echo "--- sample $first (macOS)"
+        sample "$first" 1 2>&1 | head -80
+    fi
 fi
 if [ $fail -ne 0 ]; then
     echo "==> Failed checks:$failed"
