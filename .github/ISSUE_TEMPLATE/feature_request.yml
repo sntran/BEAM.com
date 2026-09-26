@@ -1,0 +1,51 @@
+name: A feature or an improvement
+description: Something that BEAM.com does not do yet.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read the [roadmap](https://github.com/sntran/BEAM.com/blob/main/docs/ROADMAP.md) first: the feature may be planned, or "not planned" with a reason.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - The runtime (ERTS, the JIT, the start of a program)
+        - beam.com build
+        - Elixir, the tools (mix.com, iex.com, ...) or Hex packages
+        - Phoenix
+        - Distributed Erlang or remote shells
+        - The file watcher
+        - A platform (for example a new system or CPU)
+        - Crypto, TLS or the network
+        - SQLite or WebAssembly
+        - The sandbox (--allow-read, --allow-write, --allow-net, --allow-run)
+        - Size or speed
+        - The docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What do you want to do, and why can you not do it now?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: The solution that you propose
+      description: For example a new option, and what it does. If other tools do it (Burrito, rebar3, Mix, escript, redbean, Deno), say how.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other solutions that you tried
+  - type: textarea
+    id: cost
+    attributes:
+      label: Size and speed
+      description: If you know it, how much the feature adds to the size of beam.com or to the start time. See docs/BENCHMARKS.md.
