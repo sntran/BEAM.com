@@ -1,5 +1,6 @@
-%% Checks TLS in two ways, prints the results, then stops the node:
+%% Checks port programs and TLS, prints the results, then stops the node:
 %%
+%%  0. Port programs: os:cmd/1 and the native resolver (not on Windows).
 %%  1. A handshake between a server and a client in this node, with test
 %%     certificates. This needs no network.
 %%  2. An HTTPS request to a public host. The server certificate is
@@ -9,9 +10,25 @@
 
 main() ->
     io:format("tls: ssl ~s, os ~p~n", [app_vsn(ssl), os:type()]),
+    port_programs(),
+    use_erlang_dns(),
     local_handshake(),
     remote_request(),
     init:stop().
+
+%% --- 0. Port programs -----------------------------------------------------
+
+%% os:cmd/1 and the native resolver (inet_gethost) are port programs.
+%% BEAM.com has no port programs on Windows.
+port_programs() ->
+    case os:type() of
+        {_, windows} ->
+            io:format("ports: not supported on windows~n");
+        _ ->
+            "port-ok" ++ _ = os:cmd("echo port-ok"),
+            {ok, _} = inet_gethost_native:gethostbyname("localhost"),
+            io:format("ports: ok (os:cmd and inet_gethost)~n")
+    end.
 
 %% --- 1. Local handshake -------------------------------------------------
 
@@ -33,7 +50,7 @@ local_handshake() ->
                        ok = ssl:send(S, <<"pong">>),
                        Parent ! server_done
                end),
-    {ok, C} = ssl:connect("localhost", Port,
+    {ok, C} = ssl:connect({127, 0, 0, 1}, Port,
                           [binary, {active, false}, {verify, verify_peer},
                            {server_name_indication, disable}
                            | ClientOpts], 10000),
@@ -51,7 +68,6 @@ local_handshake() ->
 remote_request() ->
     {ok, Host} = application:get_env(tls_check, host),
     {ok, Port} = application:get_env(tls_check, port),
-    use_erlang_dns(),
     {Verify, Mode} = verify_options(),
     Opts = [{active, false}, {server_name_indication, Host} | Verify],
     case ssl:connect(Host, Port, Opts, 15000) of

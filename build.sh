@@ -193,6 +193,7 @@ step_bundle() {
     # OTP: boot scripts for tools, and the kernel and stdlib applications.
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
+    cp "$ROOT/cosmo/windows.inetrc" "$STAGE/bin/"
     for app in kernel stdlib; do
         dir=$(cd "$RELEASE/lib" && ls -d "$app"-* | head -n 1)
         mkdir -p "$STAGE/lib/$dir"

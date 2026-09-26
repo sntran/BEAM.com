@@ -1,0 +1,8 @@
+%% inetrc of BEAM.com on Windows (ERL_INETRC points here when not set).
+%%
+%% There are no port programs on Windows, so the native resolver
+%% (inet_gethost) cannot run. Resolve names with the hosts file support
+%% and the DNS client of Erlang. Windows has no /etc/resolv.conf: add
+%% name servers with {nameserver, IP} in your own inetrc (set ERL_INETRC),
+%% or with inet_db:add_ns/1 in your application.
+{lookup, [file, dns]}.

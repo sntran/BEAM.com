@@ -375,6 +375,30 @@ Related notes from the same code reading (not yet seen in CI):
 - `sched_getaffinity()` on Windows wants `size == sizeof(cpu_set_t)`
   exactly (`libc/proc/sched_getaffinity.c`); Linux accepts a larger size.
 
+### C17. BSD and XNU: `sendmsg`/`recvmsg` do not convert `struct cmsghdr`
+
+**Status:** 4.0.2 in CI (macOS arm64 and x86_64, FreeBSD, NetBSD, OpenBSD
+7.3). HEAD source: `libc/sock/sendmsg.c` and `recvmsg.c` give the
+`msghdr` to the kernel unchanged (only `msg_name` is converted).
+
+**Effect.** Cosmopolitan's `struct cmsghdr` has the Linux layout (64-bit
+`cmsg_len`, data at offset 16). The BSD and XNU kernels use a 32-bit
+`cmsg_len`, so they read the high half of `cmsg_len` as the level, and
+`sendmsg(SCM_RIGHTS)` fails with `EINVAL`. The data offset is also
+different (12 on XNU, 16 on the BSDs). For `recvmsg`, the kernel writes
+`msg_flags` at offset 44, which is the upper half of the 64-bit
+`msg_controllen`, so `MSG_CTRUNC` is lost. In ERTS every port program
+(`os:cmd/1`, `inet_gethost`) failed with
+`Failed to write to erl_child_setup: 22` on macOS and the BSDs. It works
+on Linux, where the layouts are the same.
+
+**Workaround in BEAM.com.** `sys_uds.c` writes and reads the control
+message in the native layout when `__hostos` is a BSD or XNU.
+
+**Possible upstream fix.** In `sendmsg()`/`recvmsg()` on BSD and XNU,
+convert each `cmsghdr` (length, level, type and data offset) and
+`msg_flags`, in the same way as `msg_name` is already converted.
+
 ---
 
 ## Erlang/OTP

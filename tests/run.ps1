@@ -77,6 +77,6 @@ if (Test-Path (Join-Path $Dir "crypto_check.com")) {
         '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello') @()
 }
 if (Test-Path (Join-Path $Dir "tls_check.com")) {
-    Check "tls_check.com" 'tls: local handshake ok@@tls: remote [^ ]* ok' @()
+    Check "tls_check.com" 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok' @()
 }
 exit $fail

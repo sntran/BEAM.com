@@ -281,6 +281,13 @@ void beam_com_main(int *argcp, char ***argvp)
             push(&init, argv[i]);
     }
 
+    /* On Windows there are no port programs, and the native resolver
+     * (inet_gethost) is one: kernel halts the node when it cannot start
+     * it. Use the DNS client of Erlang instead, unless the user gave an
+     * inetrc file. */
+    if (beam_com_is_windows() && !getenv("ERL_INETRC"))
+        setenv("ERL_INETRC", BEAM_COM_BINDIR "/windows.inetrc", 1);
+
     setenv("ROOTDIR", BEAM_COM_ROOT, 1);
     setenv("BINDIR", BEAM_COM_BINDIR, 1);
     setenv("EMU", "beam", 1);
