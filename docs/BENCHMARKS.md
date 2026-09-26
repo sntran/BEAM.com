@@ -91,11 +91,11 @@ interpreter → JIT, in milliseconds (less is better).
 | macOS x86_64 | 297 → 485 | 230 → 393 | 133 → 59 | 802 → 333 | 671 → 310 | 219 → 191 | 223 → 238 | 237 → 308 |
 | Windows x86_64 | 239 → 318 | 238 → 317 | 68 → 27 | 258 → 167 | 276 → 155 | 101 → 82 | 104 → 103 | 98 → 102 |
 | FreeBSD x86_64 | 147 → 232 | 120 → 187 | 72 → 31 | 267 → 151 | 261 → 152 | 86 → 71 | 75 → 70 | 114 → 118 |
-| NetBSD x86_64 | (1) | (1) | 70 → 32 | 303 → 215 | 285 → 168 | 101 → 81 | 94 → 100 | 114 → 123 |
-| OpenBSD 7.3 x86_64 | (1) | (1) | 41 → 20 | 313 → 259 | 270 → 214 | 83 → 74 | 84 → 81 | 98 → 106 |
+| NetBSD x86_64 | 151 → 221 (1) | 130 → 191 (1) | 70 → 32 | 303 → 215 | 285 → 168 | 101 → 81 | 94 → 100 | 114 → 123 |
+| OpenBSD 7.3 x86_64 | 256 → 447 (1) | 222 → 384 (1) | 41 → 20 | 313 → 259 | 270 → 214 | 83 → 74 | 84 → 81 | 98 → 106 |
 
-(1) Not measured in this run: the benchmark did not find the APE
-loader from its relative path (fixed in `bench.erl`).
+(1) From the next CI run: in the first run, the benchmark did not find
+the APE loader from its relative path (fixed in `bench.erl`).
 
 The code in C does not change with the JIT (crypto, SQLite, WebAssembly;
 the full tables are in the summary of each CI run): the differences are
@@ -113,7 +113,7 @@ What this says, for all platforms:
   does not change much.
 - **Messages** do not become faster (the time is in the scheduler).
 - **The start** is 40 to 90 ms slower on every platform (+35% to
-  +65%; macOS x86_64 +190 ms on a slow machine), because the JIT compiles the
+  +65%; macOS x86_64 and OpenBSD about +190 ms, on slow machines), because the JIT compiles the
   modules that the boot loads.
 
 So the JIT is worth it for long-running Erlang code, most of all on
