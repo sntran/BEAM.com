@@ -46,6 +46,18 @@ build_errors_test_() ->
      {"the last --pledge wins",
       ?_assertEqual(#{input => "a", apps => [], pledge => "dns"},
                     opts(["--pledge", "inet", "a", "--pledge", "dns"]))},
+     {"--main, --tool and --extract-priv",
+      ?_assertEqual(#{input => "d", apps => [], main => m, tool => mix,
+                      extract_priv => [a, b]},
+                    opts(["d", "--main", "m", "--tool", "mix", "--extract-priv", "a",
+                          "--extract-priv", "b"]))},
+     {"--tool rebar", ?_assertMatch(#{tool := rebar}, opts(["d", "--tool", "rebar"]))},
+     {"an unknown tool",
+      ?_assertThrow({error, "--tool is rebar or mix, not ~ts", ["make"]},
+                    opts(["d", "--tool", "make"]))},
+     [{Option ++ " without a value",
+       ?_assertThrow({error, "option ~ts needs a value", [Option]}, opts(["d", Option]))}
+      || Option <- ["--main", "--tool", "--extract-priv"]],
      {"build with no input", ?_assertThrow(Usage, beam_com:command(["build"]))}].
 
 %% The output of a command, and its result. A small I/O server collects

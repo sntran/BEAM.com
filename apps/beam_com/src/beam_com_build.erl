@@ -16,8 +16,12 @@
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
-         parents/1, keep/2, executable/0, slashes/2, generate/2, native/2]).
+         parents/1, keep/2, executable/0, slashes/2, generate/2, native/2,
+         tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
+         with_extract/2, compile_all/2, first_names/1]).
 -endif.
+
+-include_lib("kernel/include/file.hrl").
 
 -define(ROOT, "/zip").
 -define(DEFAULT_VSN, "0.1.0").
@@ -36,16 +40,29 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
         file:del_dir_r(DepsLib)
     end.
 
-build(Input, Output, Opts, ExtraApps, Base0, Root, DepsLib) ->
-    {App, Deps} = case filelib:is_dir(Input) of
-                      true ->
-                          Ds = deps(Input, DepsLib),
-                          {app_dir(Input), Ds};
-                      false ->
-                          {script(Input), []}
-                  end,
+build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
+    {App0, Deps} = case filelib:is_dir(Input) of
+                       true ->
+                           Tool = tool(Input, Opts),
+                           Ds = deps(Input, DepsLib, Tool),
+                           {app_dir(Input, #{tool => Tool}), Ds};
+                       false ->
+                           {script(Input), []}
+                   end,
+    {App, ExtraApps} = case main(Input, Opts, App0) of
+                           none -> {App0, ExtraApps0};
+                           Main -> {with_main(App0, Main), ExtraApps0 ++ [beam_com_script]}
+                       end,
     Base = maps:merge(Base0, maps:from_list([{N, D} || #{name := N} = D <- Deps])),
-    Apps = select_apps(App, ExtraApps, Base),
+    Apps0 = select_apps(App, ExtraApps, Base),
+    %% The priv directories that must be real files (beam_com_script).
+    Extract = extract(App, [D || #{name := N} = D <- Deps, lists:member(N, Apps0)],
+                      maps:get(extract_priv, Opts, [])),
+    Apps = case Extract =/= [] andalso not lists:member(beam_com_script, Apps0) of
+               true -> select_apps(App, ExtraApps ++ [beam_com_script], Base);
+               false -> Apps0
+           end,
+    AppX = with_extract(App, Extract),
     DepFiles = lists:append([app_files(D) || #{name := N} = D <- Deps,
                                              lists:member(N, Apps)]),
     Exe = case Opts of
@@ -57,7 +74,7 @@ build(Input, Output, Opts, ExtraApps, Base0, Root, DepsLib) ->
                                          "." ++ filename:basename(Output)
                                          ++ ".tmp")),
     _ = file:del_dir_r(Tmp),
-    Release = try release(App, Apps, Base, Tmp, Root)
+    Release = try release(AppX, Apps, Base, Tmp, Root)
               after file:del_dir_r(Tmp)
               end,
     New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)),
@@ -211,6 +228,109 @@ macho_header(Bin, Cpu) ->
         [] -> throw({error, "no Mach-O header for this CPU in the APE file", []})
     end.
 
+%% The layout of an application directory: rebar3 (src/*.app.src) or
+%% Mix (mix.exs). A directory with both is a rebar3 one, unless
+%% --tool mix.
+tool(Dir, Opts) ->
+    case Opts of
+        #{tool := Tool} -> Tool;
+        _ ->
+            Rebar = filelib:is_regular(filename:join(Dir, "rebar.config"))
+                orelse filelib:wildcard(filename:join([Dir, "src", "*.app.src"])) =/= [],
+            case {Rebar, beam_com_elixir:is_mix(Dir)} of
+                {false, true} -> mix;
+                _ -> rebar
+            end
+    end.
+
+%% The module whose main/1 runs after the start of an application
+%% program: --main, or the escript of rebar.config ("-escript main M" in
+%% escript_emu_args, or escript_main_app) or of mix.exs
+%% (escript: [main_module: M]). One-file programs have their own.
+main(Input, Opts, #{script := true}) ->
+    maps:get(main, Opts, none) =:= none orelse
+        throw({error, "~ts: --main is for application directories", [Input]}),
+    none;
+main(Input, Opts, #{beams := Beams}) ->
+    Main = case Opts of
+               #{main := M} -> M;
+               _ -> escript_main(Input, tool(Input, Opts))
+           end,
+    case Main =:= none orelse lists:keyfind(Main, 1, Beams) of
+        true -> none;
+        false -> throw({error, "the main module ~p is not in ~ts", [Main, Input]});
+        {Main, Beam} ->
+            lists:member({main, 1}, exports(Beam)) orelse
+                throw({error, "~p does not export main/1", [Main]}),
+            Main
+    end.
+
+escript_main(Dir, rebar) ->
+    Terms = case file:consult(filename:join(Dir, "rebar.config")) of
+                {ok, T} -> T;
+                _ -> []
+            end,
+    Emu = proplists:get_value(escript_emu_args, Terms, ""),
+    case re:run(Emu, "-escript\\s+main\\s+([A-Za-z0-9_@.]+)", [{capture, all_but_first, list}]) of
+        {match, [M]} -> list_to_atom(M);
+        nomatch -> proplists:get_value(escript_main_app, Terms, none)
+    end;
+escript_main(Dir, mix) ->
+    #{escript := Escript} = beam_com_elixir:mix_project(Dir),
+    proplists:get_value(main_module, Escript, none).
+
+%% The program runs Main:main/1 after the start: vm.args gets
+%% "-s beam_com_script main Main" (see beam_com_script:main/1).
+with_main(#{config := Config} = App, Main) ->
+    VmArgs = proplists:get_value("vm.args", Config, <<"-noshell\n">>),
+    Line = ["-s beam_com_script main ", atom_to_list(Main), "\n"],
+    New = iolist_to_binary([string:trim(VmArgs, trailing), "\n", Line]),
+    App#{config := lists:keystore("vm.args", 1, Config, {"vm.args", New})}.
+
+%% The files of a priv directory, and the ones that are executable.
+priv_files(PrivDir) ->
+    Files = [F || F <- filelib:wildcard("**", PrivDir),
+                  filelib:is_regular(filename:join(PrivDir, F))],
+    Priv = [{F, element(2, {ok, _} = file:read_file(filename:join(PrivDir, F)))} || F <- Files],
+    Exec = [F || F <- Files,
+                 {ok, #file_info{mode = Mode}} <- [file:read_file_info(filename:join(PrivDir, F))],
+                 Mode band 8#111 =/= 0],
+    {Priv, Exec}.
+
+%% The priv directories that the program copies to real files at start
+%% (beam_com_script:extract/2): the ones with an executable file, and
+%% the ones of --extract-priv. [{App, Vsn, Hash, Executables}]; the hash
+%% of the files names the directory in the cache.
+extract(App, Deps, Named) ->
+    All = [App | Deps],
+    HasPriv = fun(Name) ->
+                      lists:any(fun(#{name := N, priv := P}) -> N =:= Name andalso P =/= [] end, All)
+              end,
+    [throw({error, "--extract-priv ~p: the program has no application ~p with a "
+            "priv directory", [Name, Name]}) || Name <- Named, not HasPriv(Name)],
+    [{N, V, hash(Priv), Exec}
+     || #{name := N, vsn := V, priv := Priv, priv_exec := Exec} <- All,
+        Priv =/= [], Exec =/= [] orelse lists:member(N, Named)].
+
+hash(Priv) ->
+    Data = [[F, 0, integer_to_list(byte_size(D)), 0, D] || {F, D} <- lists:sort(Priv)],
+    string:lowercase(binary_to_list(binary:part(binary:encode_hex(crypto:hash(sha256, Data)), 0, 16))).
+
+%% sys.config with the list for beam_com_script.
+with_extract(App, []) ->
+    App;
+with_extract(#{config := Config} = App, Extract) ->
+    Terms = case proplists:get_value("sys.config", Config) of
+                undefined -> [];
+                Data ->
+                    {ok, Tokens, _} = erl_scan:string(unicode:characters_to_list(Data)),
+                    {ok, T} = erl_parse:parse_term(Tokens),
+                    T
+            end,
+    New = Terms ++ [{beam_com_script, [{extract, Extract}]}],
+    App#{config := lists:keystore("sys.config", 1, Config,
+                                  {"sys.config", io_lib:format("~tp.~n", [New])})}.
+
 default_output(Input) ->
     filename:rootname(filename:basename(Input), filename:extension(Input)) ++ ".com".
 
@@ -261,7 +381,7 @@ elixir_script(File) ->
              {applications, [kernel, stdlib, elixir, beam_com_script]},
              {mod, {beam_com_script, Main}}],
     #{name => Name, vsn => ?DEFAULT_VSN, props => Props, beams => Beams,
-      priv => [], config => [], script => true}.
+      priv => [], priv_exec => [], config => [], script => true}.
 
 erl_script(File) ->
     filelib:is_regular(File)
@@ -276,7 +396,7 @@ erl_script(File) ->
              {applications, [kernel, stdlib, beam_com_script]},
              {mod, {beam_com_script, Mod}}],
     #{name => Mod, vsn => ?DEFAULT_VSN, props => Props,
-      beams => [{Mod, Beam}], priv => [], config => [],
+      beams => [{Mod, Beam}], priv => [], priv_exec => [], config => [],
       script => true}.
 
 %% An application directory.
@@ -286,9 +406,9 @@ app_dir(Dir) ->
 %% Options: vsn (the version of a Hex package, which wins over the one
 %% of the .app file) and dep (a dependency: warnings are not errors).
 app_dir(Dir, Options) ->
-    case beam_com_elixir:is_mix(Dir) of
-        true -> mix_dir(Dir, Options);
-        false -> rebar_dir(Dir, Options)
+    case maps:get(tool, Options, tool(Dir, #{})) of
+        mix -> mix_dir(Dir, Options);
+        rebar -> rebar_dir(Dir, Options)
     end.
 
 rebar_dir(Dir, Options) ->
@@ -310,7 +430,7 @@ rebar_dir(Dir, Options) ->
                              #{dep := true} -> [];
                              _ -> [report_warnings]
                          end,
-                [compile(Src, Report ++ Includes ++ ErlOpts) || Src <- Sources]
+                compile_all(Sources, Report ++ Includes ++ ErlOpts)
             after
                 file:del_dir_r(Gen)
             end,
@@ -329,22 +449,19 @@ rebar_dir(Dir, Options) ->
                                           {modules, [M || {M, _} <- Beams]}),
                            {vsn, Vsn}),
     PrivDir = filename:join(Dir, "priv"),
-    Priv = [{File, element(2, {ok, _} = file:read_file(
-                                          filename:join(PrivDir, File)))}
-            || File <- filelib:wildcard("**", PrivDir),
-               filelib:is_regular(filename:join(PrivDir, File))],
+    {Priv, PrivExec} = priv_files(PrivDir),
     Config = [{File, Data}
               || File <- ["sys.config", "vm.args"],
                  {ok, Data} <- [file:read_file(
                                   filename:join([Dir, "config", File]))]],
     #{name => Name, vsn => Vsn, props => Props, beams => Beams,
-      priv => Priv, config => Config, script => false}.
+      priv => Priv, priv_exec => PrivExec, config => Config, script => false}.
 
 %% The Hex packages of rebar.config (beam_com_hex), compiled in order.
 %% Each one is written to its directory (ebin/ with the .app file), and
 %% its ebin/ goes into the code path, for the parse transforms and the
 %% include_lib of the packages and of the program that come after it.
-deps(Dir, LibDir) ->
+deps(Dir, LibDir, Tool) ->
     [begin
          App = app_dir(PkgDir, #{vsn => Vsn, dep => true}),
          Ebin = filename:join(PkgDir, "ebin"),
@@ -356,10 +473,10 @@ deps(Dir, LibDir) ->
           || {M, B} <- Beams],
          true = code:add_patha(Ebin),
          App#{dir => PkgDir}
-     end || #{name := Name, vsn := Vsn, dir := PkgDir} <- fetch(Dir, LibDir)].
+     end || #{name := Name, vsn := Vsn, dir := PkgDir} <- fetch(Dir, LibDir, Tool)].
 
-fetch(Dir, LibDir) ->
-    case beam_com_elixir:is_mix(Dir) of
+fetch(Dir, LibDir, Tool) ->
+    case Tool =:= mix of
         true ->
             #{deps := Deps} = beam_com_elixir:mix_project(Dir),
             beam_com_hex:fetch(Dir, LibDir, Deps, mix);
@@ -389,7 +506,7 @@ mix_dir(Dir, Options) ->
                     ++ [{i, filename:join(Dir, P)} || P <- ErlPaths],
                 ErlFiles = lists:append([filelib:wildcard(filename:join([Dir, P, "**", "*.erl"]))
                                          || P <- ErlPaths]),
-                ErlBeams = [compile(F, Report ++ Includes ++ ErlcOpts) || F <- ErlFiles],
+                ErlBeams = compile_all(ErlFiles, Report ++ Includes ++ ErlcOpts),
                 [write_file(filename:join(Out, atom_to_list(M) ++ ".beam"), B)
                  || {M, B} <- ErlBeams],
                 ExFiles = lists:append([filelib:wildcard(filename:join([Dir, P, "**", "*.ex"]))
@@ -413,15 +530,13 @@ mix_dir(Dir, Options) ->
              {env, Get(env, [])}]
         ++ [{mod, M} || M <- [Get(mod, undefined)], M =/= undefined],
     PrivDir = filename:join(Dir, "priv"),
-    Priv = [{File, element(2, {ok, _} = file:read_file(filename:join(PrivDir, File)))}
-            || File <- filelib:wildcard("**", PrivDir),
-               filelib:is_regular(filename:join(PrivDir, File))],
+    {Priv, PrivExec} = priv_files(PrivDir),
     Config = case maps:get(dep, Options, false) of
                  true -> [];
                  false -> [{"sys.config", C} || C <- [beam_com_elixir:sys_config(Dir)], C =/= none]
              end,
     #{name => Name, vsn => Vsn, props => Props, beams => Beams,
-      priv => Priv, config => Config, script => false}.
+      priv => Priv, priv_exec => PrivExec, config => Config, script => false}.
 
 app_file(Dir) ->
     Files = filelib:wildcard(filename:join([Dir, "src", "*.app.src"]))
@@ -506,6 +621,47 @@ temp_dir(What) ->
     filename:join(Base, lists:concat(["beam_com_", What, "_", os:getpid(), "_",
                                       erlang:unique_integer([positive])])).
 
+%% Compile the files of one application. The modules that other files
+%% of it name as a behaviour or a parse transform are compiled first and
+%% put in the code path, as rebar3 does, so that the compiler checks the
+%% callbacks and can run the parse transforms.
+compile_all(Files, Opts) ->
+    Needed = lists:usort(lists:append([first_names(F) || F <- Files])),
+    {First, Rest} = lists:partition(
+                      fun(F) -> lists:member(filename:basename(F, ".erl"), Needed) end, Files),
+    case First of
+        [] ->
+            [compile(F, Opts) || F <- Files];
+        _ ->
+            Ebin = temp_dir("first"),
+            ok = filelib:ensure_path(Ebin),
+            true = code:add_patha(Ebin),
+            try
+                FirstBeams = [compile(F, Opts) || F <- First],
+                [write_file(filename:join(Ebin, atom_to_list(M) ++ ".beam"), B)
+                 || {M, B} <- FirstBeams],
+                FirstBeams ++ [compile(F, Opts) || F <- Rest]
+            after
+                %% The compiler loads the behaviours (for the callbacks)
+                %% and the parse transforms; they must not stay loaded.
+                [begin code:purge(M), code:delete(M), code:purge(M) end
+                 || {M, File} <- code:all_loaded(), is_list(File),
+                    lists:prefix(Ebin, File)],
+                code:del_path(Ebin),
+                file:del_dir_r(Ebin)
+            end
+    end.
+
+%% The modules that a file names in -behaviour, -behavior or
+%% {parse_transform, M}.
+first_names(File) ->
+    {ok, Text} = file:read_file(File),
+    Re = "(?:^-behaviou?r\\(\\s*'?([A-Za-z0-9_@]+)'?\\s*\\)|parse_transform\\s*,\\s*'?([A-Za-z0-9_@]+))",
+    case re:run(Text, Re, [global, multiline, {capture, all_but_first, list}]) of
+        {match, Ms} -> [N || M <- Ms, N <- M, N =/= ""];
+        nomatch -> []
+    end.
+
 compile(File, Opts) ->
     case compile:file(File, [binary, report_errors | Opts]) of
         {ok, Mod, Beam} -> {Mod, Beam};
@@ -586,8 +742,11 @@ release(#{name := Name0, vsn := Vsn, props := Props, beams := Beams,
     [write_file(filename:join(Ebin, atom_to_list(M) ++ ".beam"), Beam)
      || {M, Beam} <- Beams],
     ErtsVsn = erlang:system_info(version),
+    %% beam_com_script starts first: it makes the priv directories that
+    %% other applications use when they start.
+    First = [A || A <- [kernel, stdlib, beam_com_script], lists:member(A, Apps)],
     Rel = {release, {Name, Vsn}, {erts, ErtsVsn},
-           [{A, maps:get(vsn, maps:get(A, Base))} || A <- Apps]
+           [{A, maps:get(vsn, maps:get(A, Base))} || A <- First ++ (Apps -- First)]
            ++ [{Name0, Vsn}]},
     RelText = io_lib:format("~tp.~n", [Rel]),
     RelFile = filename:join(Tmp, Name),

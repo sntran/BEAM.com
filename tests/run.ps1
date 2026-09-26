@@ -197,6 +197,23 @@ if (Test-Path "examples") {
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
 }
 
+# An application with an entry (toolbox): see tests/run.sh. The priv and
+# peer commands run a shell script and a port program; they are tested
+# on the other systems.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' @("build", "examples/toolbox", "-o", "$Dir/toolbox.com")
+    if (Test-Path (Join-Path $Dir "toolbox.com")) {
+        Check "toolbox.com" '(?m)^toolbox: Hello, Ana\r?$' @("greet", "Ana")
+        Check "toolbox.com" 'toolbox: usage: ' @("nosuch") 2
+        # erl mode (BEAM_COM_ERL=1): the arguments are for erl.
+        $env:BEAM_COM_ERL = "1"
+        Check "toolbox.com" '(?m)^1\r?$' @("+S", "1", "-noinput", "-eval", "erlang:display(erlang:system_info(schedulers)), halt().")
+        Remove-Item Env:BEAM_COM_ERL
+    }
+    Check "beam.com" 'wrote .*toolbox2.com' @("build", "examples/toolbox", "--main", "toolbox_cli", "-o", "$Dir/toolbox2.com")
+    Check "beam.com" 'toolbox_english does not export main/1' @("build", "examples/toolbox", "--main", "toolbox_english", "-o", "$Dir/never.com") 1
+}
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
