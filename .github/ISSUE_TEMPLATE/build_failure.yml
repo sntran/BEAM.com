@@ -1,0 +1,99 @@
+name: beam.com build fails
+description: The "beam.com build" command gives an error, or makes a program that is not correct.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Please read "Build a program with `beam.com build`" and "Known limits" in the README first: for example, git dependencies, NIF dependencies, rebar3 plugins, umbrella projects and `config/runtime.exs` are not supported yet.
+  - type: dropdown
+    id: input
+    attributes:
+      label: Input
+      options:
+        - One .erl file
+        - One Elixir file (.ex or .exs)
+        - A rebar3 application directory
+        - A Mix project
+        - A directory with both rebar.config and mix.exs
+    validations:
+      required: true
+  - type: dropdown
+    id: features
+    attributes:
+      label: What does the build use?
+      multiple: true
+      options:
+        - Hex packages (deps)
+        - A lock file (rebar.lock or mix.lock)
+        - A main module (--main, or the escript of rebar.config or mix.exs)
+        - priv files (--extract-priv, or executables in priv)
+        - Parsers, scanners or ASN.1 (.yrl, .xrl, .asn1)
+        - --pledge or --unveil
+        - --native
+        - -a APP
+        - HEX_API_URL, HEX_MIRROR, HTTPS_PROXY or BEAM_COM_CACHE
+        - None of these
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform where you build
+      options:
+        - Linux x86_64
+        - Linux aarch64
+        - macOS arm64 (Apple Silicon)
+        - macOS x86_64
+        - Windows x86_64
+        - FreeBSD
+        - NetBSD
+        - OpenBSD
+        - Other (write it below)
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Output of "beam.com version"
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command
+      placeholder: beam.com build my_app -o my_app.com
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: All the output of the build
+      description: Run it with `BEAM_COM_VERBOSE=1`, and give all of the output.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: project
+    attributes:
+      label: The project
+      description: |
+        A link to the project, or the files that are necessary to show the problem: `rebar.config` or `mix.exs`, the `.app.src` file, and the lock file. Please make the project as small as possible.
+    validations:
+      required: true
+  - type: dropdown
+    id: upstream-tool
+    attributes:
+      label: Does the project build with rebar3 or Mix?
+      options:
+        - "Yes: rebar3 or Mix builds it with Erlang/OTP 29"
+        - "No: it also fails with rebar3 or Mix"
+        - I did not try
+    validations:
+      required: true
+  - type: textarea
+    id: run
+    attributes:
+      label: When the program was built but does not run correctly
+      description: The command, the output, and the output with `BEAM_COM_VERBOSE=1`.
+      render: text
