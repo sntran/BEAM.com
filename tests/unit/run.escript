@@ -6,7 +6,8 @@
 %% It compiles the modules of apps/*/src with -DTEST under cover, runs
 %% the EUnit tests in tests/unit, and prints the line coverage of each
 %% module. The exit status is 1 when a test fails. Modules with NIFs
-%% (wasm) are tested in beam.com itself (tests/programs).
+%% (wasm) are tested in beam.com itself (tests/programs). ELIXIR_LIB (the
+%% lib directory of an Elixir build) adds Elixir for the Elixir tests.
 -mode(compile).
 
 main([OutDir]) ->
@@ -19,6 +20,11 @@ main([OutDir]) ->
     Opts = [debug_info, {d, 'TEST'}, {outdir, Ebin}, report, return_errors],
     [compile_or_halt(F, Opts) || F <- Sources ++ Tests],
     true = code:add_patha(Ebin),
+    case os:getenv("ELIXIR_LIB") of
+        Lib when is_list(Lib), Lib =/= "" ->
+            [code:add_pathz(D) || D <- filelib:wildcard(filename:join(Lib, "*/ebin"))];
+        _ -> ok
+    end,
     cover:start(),
     Modules = [list_to_atom(filename:basename(F, ".erl")) || F <- Sources],
     [{ok, _} = cover:compile_beam(filename:join(Ebin, atom_to_list(M) ++ ".beam"))

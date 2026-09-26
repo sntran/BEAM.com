@@ -71,7 +71,7 @@ script_test_() ->
     {setup, fun tmp/0, fun rm/1,
      fun(Dir) ->
              [{"not a .erl file",
-               ?_assertThrow({error, "~ts: not a .erl file or a directory", _},
+               ?_assertThrow({error, "~ts: not a .erl, .ex or .exs file, or a directory", _},
                              beam_com_build:script(filename:join(Dir, "x.txt")))},
               {"missing file",
                ?_assertThrow({error, "~ts: no such file", _},

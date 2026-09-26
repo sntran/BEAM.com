@@ -59,19 +59,30 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     }
     Unregister-Event -SourceIdentifier $o.Name
     Unregister-Event -SourceIdentifier $e.Name
-    $out = ($lines.ToArray() -join "`n")
+    $all = $lines.ToArray()
+    $out = ($all -join "`n")
     $rc = if ($timedOut) { 124 } else { $p.ExitCode }
-    Write-Host $out
+    # A long output is shortened in the log (the log of CI keeps only its
+    # end); the checks read the whole output.
+    if ($all.Count -gt 200) {
+        Write-Host (($all | Select-Object -First 40) -join "`n")
+        Write-Host "... ($($all.Count) lines) ..."
+        Write-Host (($all | Select-Object -Last 40) -join "`n")
+    } else {
+        Write-Host $out
+    }
+    # The end of the output of a failed check, for the summary.
+    $tail = (($all | Select-Object -Last 15) | ForEach-Object { "      | $_" }) -join "`n"
     if ($rc -ne $Expect) {
         Write-Host "FAIL: $Name exited with $rc (expected $Expect)"; $script:fail = 1
-        $script:failures.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)")
+        $script:failures.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)`n$tail")
     } else {
         # The patterns are separated by "@@". Each one must be found.
         $ok = $true
         foreach ($pat in ($Pattern -split '@@')) {
             if ($out -notmatch $pat) {
                 Write-Host "FAIL: $Name did not print `"$pat`""
-                $script:failures.Add("$Name $($Arguments -join ' '): did not print `"$pat`"")
+                $script:failures.Add("$Name $($Arguments -join ' '): did not print `"$pat`"`n$tail")
                 $ok = $false; $script:fail = 1
             }
         }
@@ -169,6 +180,21 @@ if (Test-Path "examples") {
         Check "hexweb.com" 'hexweb: content-type application/json@@hexweb: hello BEAM.com; cowboy-[0-9.]+ cowlib-[0-9.]+ jsx-[0-9.]+ ranch-[0-9.]+' @()
     }
     Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
+}
+
+# Elixir: see tests/run.sh.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*elixir_check.com' @("build", "tests/programs/elixir_check.ex", "-o", "$Dir/elixir_check.com")
+    if (Test-Path (Join-Path $Dir "elixir_check.com")) {
+        Check "elixir_check.com" 'elixir: 1\.[0-9]+\.[0-9]+ on OTP 29@@args: \["a", "b c"\]@@sum: 5050@@upcase: BEAM.COM' @("a", "b c")
+        Check "elixir_check.com" '\*\* \(RuntimeError\) boom' @("raise") 127
+    }
+    Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+    Check "beam.com" 'wrote .*greeter_ex.com' @("build", "examples/greeter_ex", "-o", "$Dir/greeter_ex.com")
+    if (Test-Path (Join-Path $Dir "greeter_ex.com")) {
+        Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
+    }
+    Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
 }
 
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).

@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
 
@@ -54,30 +56,80 @@
 #define BEAM_COM_PLEDGE "/zip/.pledge"
 #define BEAM_COM_UNVEIL "/zip/.unveil"
 
-/* close() with the lock of the file descriptor table (UPSTREAM.md C25).
- * The emulator is linked with -Wl,--wrap=close (build.sh), so each call
- * of close() comes here. Cosmopolitan's close() of a kernel descriptor
- * calls the close system call, and then clears the entry of the
- * descriptor in its table, without the lock. In that gap, another thread
- * can open a /zip file, get the same number from the kernel (zipos
- * reserves it with dup()), and write its entry, which close() then
- * clears: the /zip descriptor becomes the kernel descriptor (a copy of
- * stderr), and read() fails with EBADF. The lock is recursive, so the
- * close() of a /zip file, which takes it again, works. */
+/* close() with the lock of the file descriptor table (UPSTREAM.md C25
+ * and C26). The emulator is linked with -Wl,--wrap=close (build.sh), so
+ * each call of close() comes here.
+ *
+ * C25: Cosmopolitan's close() of a kernel descriptor calls the close
+ * system call, and then clears the entry of the descriptor in its table,
+ * without the lock. In that gap, another thread can open a /zip file, get
+ * the same number from the kernel (zipos reserves it with dup()), and
+ * write its entry, which close() then clears. The lock prevents it: the
+ * /zip open takes it too. The lock is recursive.
+ *
+ * C26: the close() of a /zip descriptor calls the close system call, and
+ * only then frees the zipos handle and clears the entry. In that gap,
+ * another thread can open a real file (which does not take the lock) and
+ * get the same number from the kernel; its fstat() or read() then sees
+ * the old /zip entry, and uses the freed handle (SIGSEGV in
+ * __zipos_fstat). Here the entry is cleared first, then the kernel
+ * descriptor is closed, then the handle is freed. Only in the process
+ * itself: in a child of vfork(), which shares the memory, Cosmopolitan
+ * only closes the kernel descriptor (the real close() does that).
+ * Windows has no kernel descriptor for /zip files. */
+struct ZiposHandle;
 int __real_close(int fd);
 /* From libc/calls/state.internal.h, which cannot be included here: it
  * includes libc/thread/tls.h, which stops with #error in the dependency
  * pass of cosmocc, where no CPU is defined (UPSTREAM.md C23). */
 void __fds_lock(void);
 void __fds_unlock(void);
+extern struct Fds g_fds;
+void __releasefd(int fd);
+void __zipos_drop(struct ZiposHandle *h);
+int sys_close(int fd);
+
+static int close_pid;
+
+__attribute__((__constructor__)) static void close_init(void)
+{
+    close_pid = getpid();
+}
 
 int __wrap_close(int fd)
 {
+    struct ZiposHandle *h;
     int rc;
 
     __fds_lock();
-    rc = __real_close(fd);
+    if (fd >= 0 && (size_t)fd < g_fds.n && g_fds.p[fd].kind == kFdZip &&
+        !beam_com_is_windows() && getpid() == close_pid) {
+        h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;
+        __releasefd(fd);
+        rc = sys_close(fd);
+        __zipos_drop(h);
+    } else {
+        rc = __real_close(fd);
+    }
     __fds_unlock();
+    return rc;
+}
+
+/* mkdir() of a directory that exists (UPSTREAM.md C27). The emulator is
+ * linked with -Wl,--wrap=mkdir (build.sh). On Windows, Cosmopolitan's
+ * mkdir() of a drive root ("/C") gives EACCES (CreateDirectory() is
+ * denied), not EEXIST. Elixir's File.mkdir_p/1 makes each parent from
+ * the root and accepts only EEXIST for one that exists, so it failed
+ * for each absolute path. POSIX gives EEXIST when the path exists. */
+int __real_mkdir(const char *path, mode_t mode);
+
+int __wrap_mkdir(const char *path, mode_t mode)
+{
+    struct stat st;
+    int rc = __real_mkdir(path, mode), e = errno;
+
+    if (rc == -1 && e == EACCES && beam_com_is_windows())
+        errno = stat(path, &st) == 0 ? EEXIST : e;
     return rc;
 }
 

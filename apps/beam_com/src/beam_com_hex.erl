@@ -21,11 +21,12 @@
 %%   inner checksum (the CHECKSUM file, and pkg_hash in rebar.lock).
 -module(beam_com_hex).
 
--export([fetch/2]).
+-export([fetch/2, fetch/4]).
 
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
-         rebar_deps/1, read_lock/1, lock_text/1, unpack/3, resolve/3,
+         rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
+         unpack/3, resolve/3,
          registry/0]).
 -endif.
 
@@ -37,21 +38,28 @@
 %% them (a package after the packages that it needs), as
 %% #{name := atom(), vsn := string(), dir := string()}.
 fetch(Dir, LibDir) ->
-    case rebar_deps(rebar_config(Dir)) of
-        [] -> [];
-        Deps -> fetch(Dir, LibDir, Deps, registry())
-    end.
+    fetch(Dir, LibDir, rebar_deps(rebar_config(Dir)), rebar).
 
-fetch(Dir, LibDir, Deps, Registry) ->
-    LockFile = filename:join(Dir, "rebar.lock"),
-    Lock = read_lock(LockFile),
+%% The same with the deps of a Mix project (Format mix: mix.lock) or of
+%% rebar.config (rebar: rebar.lock).
+fetch(_Dir, _LibDir, [], _Format) ->
+    [];
+fetch(Dir, LibDir, Deps, Format) ->
+    fetch(Dir, LibDir, Deps, Format, registry()).
+
+fetch(Dir, LibDir, Deps, Format, Registry) ->
+    LockFile = filename:join(Dir, case Format of
+                                      rebar -> "rebar.lock";
+                                      mix -> "mix.lock"
+                                  end),
+    Lock = read_lock(Format, LockFile),
     Locked = [N || {N, _, _} <- Deps, is_map_key(N, Lock)],
     {Chosen, Resolved} = case length(Locked) =:= length(Deps) of
                              true -> {from_lock(Lock), false};
                              false -> {resolve(Deps, Lock, Registry), true}
                          end,
     Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
-    Resolved andalso write_lock(LockFile, Chosen, Unpacked),
+    Resolved andalso write_lock(Format, LockFile, Chosen, Unpacked),
     order(Unpacked).
 
 rebar_config(Dir) ->
@@ -219,6 +227,27 @@ match_clause(V, {'<', W}) -> compare(V, W) =:= lt.
 %%% rebar.lock: #{Name => #{pkg, vsn, inner, outer}}, Name an atom.
 
 read_lock(File) ->
+    read_lock(rebar, File).
+
+%% mix.lock: %{"name" => {:hex, :package, "vsn", "inner", managers, deps,
+%% "hexpm", "outer"}}, read with the Elixir parser.
+read_lock(mix, File) ->
+    case filelib:is_regular(File) of
+        false -> #{};
+        true ->
+            {Map, _} = 'Elixir.Code':eval_file(unicode:characters_to_binary(File)),
+            maps:from_list(
+              [case Entry of
+                   {hex, Pkg, Vsn, Inner, _Managers, _Deps, _Repo, Outer} ->
+                       {binary_to_atom(Name),
+                        #{pkg => atom_to_binary(Pkg), vsn => binary_to_list(Vsn),
+                          inner => Inner, outer => Outer}};
+                   _ ->
+                       throw({error, "mix.lock: ~ts is not a Hex package (only Hex "
+                              "packages are supported)", [Name]})
+               end || Name := Entry <- Map])
+    end;
+read_lock(rebar, File) ->
     case file:consult(File) of
         {ok, [{_LockVsn, Entries} | Rest]} -> lock_map(Entries, Rest);
         {ok, [Entries | Rest]} when is_list(Entries) -> lock_map(Entries, Rest);
@@ -265,9 +294,28 @@ lock_text(Packages) ->
               {pkg_hash_ext, [{Name, iolist_to_binary(O)} || {Name, #{outer := O}} <- Sorted]}],
     io_lib:format("~tp.~n~tp.~n", [{<<"1.2.0">>, Entries}, Hashes]).
 
-write_lock(File, Chosen, Unpacked) ->
+%% The text of mix.lock, in the format of Mix (Kernel.inspect/2 of the
+%% map). The deps of an entry are the requirements of the package.
+lock_text(mix, Packages) ->
+    Map = maps:from_list(
+            [{atom_to_binary(N),
+              {hex, binary_to_atom(Pkg), list_to_binary(Vsn),
+               string:lowercase(iolist_to_binary(I)),
+               [binary_to_atom(T) || T <- Tools],
+               [{DN, list_to_binary(DR), [{hex, binary_to_atom(DP)}, {repo, <<"hexpm">>},
+                                          {optional, false}]}
+                || {DN, DP, DR} <- Reqs],
+               <<"hexpm">>, string:lowercase(iolist_to_binary(O))}}
+             || #{name := N, pkg := Pkg, vsn := Vsn, inner := I, outer := O,
+                  tools := Tools, reqs := Reqs} <- Packages]),
+    ['Elixir.Kernel':inspect(Map, [{pretty, true}, {limit, infinity},
+                                   {printable_limit, infinity}]), "\n"];
+lock_text(rebar, Packages) ->
+    lock_text(Packages).
+
+write_lock(Format, File, Chosen, Unpacked) ->
     Levels = levels(Chosen, Unpacked),
-    Text = lock_text([P#{level => maps:get(N, Levels)} || #{name := N} = P <- Unpacked]),
+    Text = lock_text(Format, [P#{level => maps:get(N, Levels)} || #{name := N} = P <- Unpacked]),
     case file:write_file(File, Text) of
         ok -> io:format("beam.com: wrote ~ts~n", [File]);
         {error, Reason} ->
@@ -351,8 +399,10 @@ unpack_package(#{name := Name, pkg := Pkg, vsn := Vsn} = P, LibDir, Registry) ->
     Dir = filename:join(LibDir, atom_to_list(Name) ++ "-" ++ Vsn),
     #{inner := Inner, metadata := Meta} = unpack(Tar, maps:get(inner, P, undefined), Dir),
     tools(Pkg, Meta),
-    Requires = [N || {N, _, _} <- meta_requirements(Meta)],
-    P#{dir => Dir, inner => Inner, outer => sha256(Tar), requires => Requires}.
+    Reqs = meta_requirements(Meta),
+    P#{dir => Dir, inner => Inner, outer => sha256(Tar),
+       requires => [N || {N, _, _} <- Reqs], reqs => Reqs,
+       tools => proplists:get_value(<<"build_tools">>, Meta, [])}.
 
 %% The tarball of a release: from the cache, or downloaded. Expected is
 %% the outer checksum (hex), when it is known.
@@ -412,13 +462,16 @@ unpack(Tar, Inner, Dir) ->
 to_list(B) when is_binary(B) -> binary_to_list(B);
 to_list(L) -> L.
 
-%% Only packages for rebar3 or make (Erlang) can be built.
+%% A package for Mix only (Elixir) needs the Elixir compiler.
 tools(Pkg, Meta) ->
-    case proplists:get_value(<<"build_tools">>, Meta, []) of
-        [<<"mix">>] ->
-            throw({error, "~ts is an Elixir package (mix): not supported", [Pkg]});
-        _ -> ok
-    end.
+    mix_only(Pkg, proplists:get_value(<<"build_tools">>, Meta, [])).
+
+mix_only(Pkg, [<<"mix">>]) ->
+    beam_com_elixir:available() orelse
+        throw({error, "~ts is an Elixir package (mix), and Elixir is not in "
+               "this beam.com", [Pkg]});
+mix_only(_, _) ->
+    true.
 
 %% The requirements in metadata.config: [{AppName, Package, Requirement}]
 %% of the deps that are not optional.
@@ -490,8 +543,7 @@ api_versions(Pkg) ->
 api_release(Pkg, Vsn) ->
     Info = json:decode(http_get(api_url(["packages", Pkg, "releases", Vsn]))),
     case Info of
-        #{<<"meta">> := #{<<"build_tools">> := [<<"mix">>]}} ->
-            throw({error, "~ts is an Elixir package (mix): not supported", [Pkg]});
+        #{<<"meta">> := #{<<"build_tools">> := Tools}} -> mix_only(Pkg, Tools);
         _ -> ok
     end,
     Reqs = maps:get(<<"requirements">>, Info, #{}),
