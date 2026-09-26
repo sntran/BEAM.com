@@ -581,10 +581,11 @@ if [ -d examples ] && [ -f "$dir/beam.com" ]; then
         done
         check beam.com 'name counter at port' epmd -names
         # The end of the input ends the remote shell; halt() there would
-        # stop the counter node.
-        printf 'counter:incr(), counter:incr(), io:format("value ~p on ~p~n", [counter:value(), node()]).\n' > "$tmp.remsh"
+        # stop the counter node. The node name is printed with ~s: with ~p,
+        # a host name with "-" (macOS runners) is a quoted atom.
+        printf 'counter:incr(), counter:incr(), io:format("value ~p on ~s~n", [counter:value(), node()]).\n' > "$tmp.remsh"
         echo "==> counter.com remote"
-        if $runner "$dir/counter.com" remote < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep -q '^.*value 2 on counter@'; then
+        if $runner "$dir/counter.com" remote < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep 'value 2 on counter@' >/dev/null; then
             echo "PASS: counter.com remote"
         else
             cat "$tmp.out"
@@ -595,7 +596,7 @@ if [ -d examples ] && [ -f "$dir/beam.com" ]; then
         fi
         printf 'io:format("remsh ~p~n", [counter:value()]).\n' > "$tmp.remsh"
         echo "==> beam.com -remsh counter"
-        if $runner "$dir/beam.com" -sname probe -setcookie beamcom -remsh counter < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep -q 'remsh 2'; then
+        if $runner "$dir/beam.com" -sname probe -setcookie beamcom -remsh counter < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep 'remsh 2' >/dev/null; then
             echo "PASS: beam.com -remsh counter"
         else
             cat "$tmp.out"
