@@ -152,18 +152,18 @@ wasm_calls() ->
 
 wasm_add(_, 0) -> ok;
 wasm_add(Inst, N) ->
-    {ok, [_]} = wasm:call(Inst, "add", [N, 1]),
+    {ok, [_]} = wasm:call_function(Inst, "add", [N, 1]),
     wasm_add(Inst, N - 1).
 
 %% A loop in WebAssembly: the sum of 64 KB, 200 times (the interpreter
 %% of WAMR).
 wasm_loop() ->
     Inst = wasm_instance(),
-    [{ok, [_]} = wasm:call(Inst, "sum", [0, 65535]) || _ <- lists:seq(1, 200)],
+    [{ok, [_]} = wasm:call_function(Inst, "sum", [0, 65535]) || _ <- lists:seq(1, 200)],
     ok.
 
 wasm_instance() ->
-    {ok, Mod} = wasm:load(math_module()),
+    {ok, Mod} = wasm:compile(math_module()),
     {ok, Inst} = wasm:instantiate(Mod),
     Inst.
 

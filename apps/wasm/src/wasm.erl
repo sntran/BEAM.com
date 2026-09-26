@@ -1,22 +1,28 @@
 %% WebAssembly for Erlang, in beam.com.
 %%
 %% The runtime is linked into beam.com (a static NIF). The API does not
-%% show the runtime, so that it can change later.
+%% show the runtime, so that it can change later. The names are those of
+%% the WebAssembly JavaScript API (compile, instantiate), of wasmex
+%% (call_function, function_exists, read_binary, write_binary) and of
+%% node:wasi (args, env, preopens, start):
 %%
-%%   {ok, Mod} = wasm:load(Bytes),
+%%   {ok, Mod} = wasm:compile(Bytes),
 %%   {ok, Inst} = wasm:instantiate(Mod),
-%%   {ok, [3]} = wasm:call(Inst, "add", [1, 2]).
+%%   {ok, [3]} = wasm:call_function(Inst, "add", [1, 2]).
 %%
-%% WASI preview 1 programs (a "_start" function) run with run/2,3:
+%% WASI preview 1 programs (a "_start" function) run with run/2, or with
+%% start/1 on an instance:
 %%
-%%   {ok, 0} = wasm:run(Bytes, ["hello", "arg"]).
+%%   {ok, 0} = wasm:run(Bytes, #{args => ["hello", "arg"]}).
 -module(wasm).
 
--export([load/1, instantiate/1, instantiate/2, call/3, run/2, run/3,
-         memory_size/1, memory_read/3, memory_write/3]).
+-export([compile/1, instantiate/1, instantiate/2, instantiate/3,
+         call_function/3, function_exists/2, start/1, run/2,
+         memory_size/1, memory_grow/2, read_binary/3, write_binary/3]).
 
--nifs([load_nif/1, instantiate_nif/2, call_nif/3, memory_size/1,
-       memory_read/3, memory_write/3]).
+-nifs([compile_nif/1, instantiate_nif/2, call_function_nif/3,
+       function_exists_nif/2, memory_size/1, memory_grow/2,
+       read_binary/3, write_binary/3]).
 
 -on_load(init/0).
 
@@ -24,15 +30,20 @@
 -opaque instance() :: reference().
 %% NaN and the infinities (not Erlang floats) are atoms.
 -type value() :: integer() | float() | nan | infinity | '-infinity'.
+%% The imports of the module, by module name and field name. Host
+%% functions are not supported yet: only #{} is accepted.
+-type imports() :: #{}.
 %% Text is unicode:chardata() (as the arguments of a program), and the
-%% program gets it in UTF-8.
+%% program gets it in UTF-8. env and preopens are maps (or lists of
+%% pairs): the name of a variable to its value, and the directory that
+%% the program sees to the directory of the host.
+-type text() :: unicode:chardata().
 -type options() :: #{stack_size => pos_integer(),
                      heap_size => non_neg_integer(),
-                     args => [unicode:chardata()],
-                     env => [{unicode:chardata(), unicode:chardata()}],
-                     dirs => [{Guest :: unicode:chardata(),
-                               Host :: unicode:chardata()}]}.
--export_type([wasm_module/0, instance/0, value/0, options/0]).
+                     args => [text()],
+                     env => #{text() => text()} | [{text(), text()}],
+                     preopens => #{text() => text()} | [{text(), text()}]}.
+-export_type([wasm_module/0, instance/0, value/0, imports/0, options/0]).
 
 init() ->
     %% The NIF is static: ERTS finds it by the name of this module, and
@@ -43,28 +54,45 @@ init() ->
           end,
     erlang:load_nif(filename:join([Dir, "priv", "wasm"]), 0).
 
-%% Load and validate a WebAssembly module (the bytes of a .wasm file).
--spec load(binary()) -> {ok, wasm_module()} | {error, binary()}.
-load(Bytes) when is_binary(Bytes) ->
-    load_nif(Bytes).
+%% Compile and validate a WebAssembly module (the bytes of a .wasm
+%% file), as WebAssembly.compile().
+-spec compile(binary()) -> {ok, wasm_module()} | {error, binary()}.
+compile(Bytes) when is_binary(Bytes) ->
+    compile_nif(Bytes).
 
--spec instantiate(wasm_module()) -> {ok, instance()} | {error, term()}.
+-spec instantiate(wasm_module() | binary()) -> {ok, instance()} | {error, term()}.
 instantiate(Module) ->
-    instantiate(Module, #{}).
+    instantiate(Module, #{}, #{}).
 
-%% Make an instance. The WASI options: args (argv, with the program
-%% name first), env, and dirs: host directories that the program can
-%% use, with the name that the program sees.
--spec instantiate(wasm_module(), options()) ->
+-spec instantiate(wasm_module() | binary(), imports()) ->
           {ok, instance()} | {error, term()}.
-instantiate(Module, Opts) when is_map(Opts) ->
+instantiate(Module, Imports) ->
+    instantiate(Module, Imports, #{}).
+
+%% Make an instance of a module, or of the bytes of a module, as
+%% WebAssembly.instantiate(). The WASI options, as those of node:wasi:
+%% args (argv, with the program name first), env, and preopens: the
+%% directories of the host that the program can use, by the name that
+%% the program sees.
+-spec instantiate(wasm_module() | binary(), imports(), options()) ->
+          {ok, instance()} | {error, term()}.
+instantiate(Bytes, Imports, Opts) when is_binary(Bytes) ->
+    case compile(Bytes) of
+        {ok, Module} -> instantiate(Module, Imports, Opts);
+        Error -> Error
+    end;
+instantiate(Module, Imports, Opts) when is_map(Imports), is_map(Opts) ->
+    map_size(Imports) =:= 0 orelse error({badarg, host_functions_not_supported}),
     Args = [utf8(A) || A <- list(maps:get(args, Opts, []))],
-    Env = [pair(E, "=") || E <- list(maps:get(env, Opts, []))],
-    Dirs = [pair(D, "::") || D <- list(maps:get(dirs, Opts, []))],
-    instantiate_nif(Module, Opts#{args => Args, env => Env, dirs => Dirs}).
+    Env = [pair(E, "=") || E <- pairs(maps:get(env, Opts, []))],
+    Preopens = [pair(D, "::") || D <- pairs(maps:get(preopens, Opts, []))],
+    instantiate_nif(Module, Opts#{args => Args, env => Env, preopens => Preopens}).
 
 pair({A, B}, Sep) -> utf8([A, Sep, B]);
 pair(_, _) -> error(badarg).
+
+pairs(M) when is_map(M) -> lists:sort(maps:to_list(M));
+pairs(L) -> list(L).
 
 list(L) when is_list(L) -> L;
 list(_) -> error(badarg).
@@ -79,50 +107,58 @@ utf8(Chars) ->
 %% come from the function type: i32 and i64 are integers, f32 and f64
 %% are floats. {exit, Code} is returned when the code calls WASI
 %% proc_exit.
--spec call(instance(), unicode:chardata(), [value()]) ->
+-spec call_function(instance(), text(), [value()]) ->
           {ok, [value()]} | {exit, non_neg_integer()}
               | {error, not_found | badarg | {trap, binary()}}.
-call(Instance, Name, Args) when is_list(Args) ->
-    call_nif(Instance, utf8(Name), Args).
+call_function(Instance, Name, Args) when is_list(Args) ->
+    call_function_nif(Instance, utf8(Name), Args).
 
--spec run(binary() | wasm_module(), [unicode:chardata()]) ->
-          {ok, non_neg_integer()} | {error, term()}.
-run(Program, Args) ->
-    run(Program, Args, #{}).
+%% Whether the instance exports a function with this name.
+-spec function_exists(instance(), text()) -> boolean().
+function_exists(Instance, Name) ->
+    function_exists_nif(Instance, utf8(Name)).
 
-%% Run a WASI program: call its "_start" function, and give the exit
-%% code. Args are argv (the program name first).
--spec run(binary() | wasm_module(), [unicode:chardata()], options()) ->
-          {ok, non_neg_integer()} | {error, term()}.
-run(Bytes, Args, Opts) when is_binary(Bytes) ->
-    case load(Bytes) of
-        {ok, Module} -> run(Module, Args, Opts);
+%% Start a WASI program, as start() of node:wasi: call its "_start"
+%% function, and give the exit code.
+-spec start(instance()) -> {ok, non_neg_integer()} | {error, term()}.
+start(Instance) ->
+    case call_function(Instance, "_start", []) of
+        {ok, _} -> {ok, 0};
+        {exit, Code} -> {ok, Code};
         Error -> Error
-    end;
-run(Module, Args, Opts) ->
-    case instantiate(Module, Opts#{args => Args}) of
-        {ok, Instance} ->
-            case call(Instance, "_start", []) of
-                {ok, _} -> {ok, 0};
-                {exit, Code} -> {ok, Code};
-                Error -> Error
-            end;
-        Error ->
-            Error
     end.
 
-load_nif(_Bytes) -> erlang:nif_error(not_loaded).
+%% Run a WASI program (a module, or the bytes of a module) with the
+%% options of instantiate/3, as "wasmtime run": instantiate, then start.
+-spec run(wasm_module() | binary(), options()) ->
+          {ok, non_neg_integer()} | {error, term()}.
+run(Program, Opts) when is_map(Opts) ->
+    case instantiate(Program, #{}, Opts) of
+        {ok, Instance} -> start(Instance);
+        Error -> Error
+    end.
+
+compile_nif(_Bytes) -> erlang:nif_error(not_loaded).
 instantiate_nif(_Module, _Opts) -> erlang:nif_error(not_loaded).
-call_nif(_Instance, _Name, _Args) -> erlang:nif_error(not_loaded).
+call_function_nif(_Instance, _Name, _Args) -> erlang:nif_error(not_loaded).
+function_exists_nif(_Instance, _Name) -> erlang:nif_error(not_loaded).
 
 %% The size of the default memory, in bytes.
 -spec memory_size(instance()) -> {ok, non_neg_integer()} | {error, not_found}.
 memory_size(_Instance) -> erlang:nif_error(not_loaded).
 
--spec memory_read(instance(), non_neg_integer(), non_neg_integer()) ->
-          {ok, binary()} | {error, not_found | out_of_bounds}.
-memory_read(_Instance, _Offset, _Length) -> erlang:nif_error(not_loaded).
+%% Grow the default memory by a number of pages (64 KiB each), and give
+%% the size before, in pages, as WebAssembly.Memory.grow().
+-spec memory_grow(instance(), non_neg_integer()) ->
+          {ok, non_neg_integer()} | {error, not_found | out_of_bounds}.
+memory_grow(_Instance, _Pages) -> erlang:nif_error(not_loaded).
 
--spec memory_write(instance(), non_neg_integer(), iodata()) ->
+%% Read bytes of the default memory.
+-spec read_binary(instance(), non_neg_integer(), non_neg_integer()) ->
+          {ok, binary()} | {error, not_found | out_of_bounds}.
+read_binary(_Instance, _Offset, _Length) -> erlang:nif_error(not_loaded).
+
+%% Write bytes into the default memory.
+-spec write_binary(instance(), non_neg_integer(), iodata()) ->
           ok | {error, not_found | out_of_bounds}.
-memory_write(_Instance, _Offset, _Data) -> erlang:nif_error(not_loaded).
+write_binary(_Instance, _Offset, _Data) -> erlang:nif_error(not_loaded).
