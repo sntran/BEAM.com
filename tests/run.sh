@@ -371,6 +371,14 @@ if [ -f "$dir/beam.com" ]; then
     for t in mix iex elixir escript; do ln -sf beam.com "$dir/$t"; done
     cd "$work"
     check elixir.com '^55$@@^\["x", "y"\]$' -e 'IO.puts(Enum.sum(1..10)); IO.inspect(System.argv())' x y
+    # The tools name the watcher of the file for file_system: a link
+    # inotifywait (a script mac_listener on macOS) in the cache. Without a
+    # path, the watcher shows its usage. Not on NetBSD, whose kernel does
+    # not start an APE file by a link.
+    if [ "$os" != netbsd ]; then
+        case $os in darwin) watcher=mac_listener var=FSMAC ;; *) watcher=inotifywait var=FSINOTIFY ;; esac
+        check elixir.com "^usage: $watcher " -e "{out, 1} = System.cmd(System.fetch_env!(\"FILESYSTEM_${var}_EXECUTABLE_FILE\"), [], stderr_to_stdout: true); IO.write(out)"
+    fi
     printf 'defmodule ToolsC do\n  def f, do: :ok\nend\n' > tools_c.ex
     check elixirc.com '' tools_c.ex -o out
     [ -f out/Elixir.ToolsC.beam ] || { echo "FAIL: elixirc wrote no beam file"; fail=1; failed="$failed
@@ -476,6 +484,132 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     rm -f "$dir/mix" "$dir/escript" "$dir/mix.com" "$dir/iex.com"
     rm -rf "$work"
     dir=$dir_rel runner=$runner_rel limit=$limit_saved PATH=$path_saved
+fi
+
+# The file watcher (inotifywait of the file, for file_system and so
+# phoenix_live_reload): the command line and the output of file_system.
+# Linux has inotify; the other systems compare the files (moves are
+# DELETE and CREATE there). Not on Windows.
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    mkdir "$wdir/sub"
+    echo "==> beam.com inotifywait"
+    $runner "$dir/beam.com" inotifywait -e modify -e close_write -e moved_to \
+        -e moved_from -e create -e delete -e attrib --format '%w|%e|%f' \
+        --quiet -m -r "$wdir" > "$tmp.watch" 2>&1 &
+    watcher=$!
+    sleep 2
+    echo a > "$wdir/a.txt"
+    mkdir "$wdir/new"
+    sleep 1
+    echo b > "$wdir/new/b.txt"
+    rm "$wdir/a.txt"
+    sleep 2
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    if grep -q "^$wdir/|CREATE|a.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/|CREATE,ISDIR|new$" "$tmp.watch" &&
+       grep -q "^$wdir/new/|CREATE|b.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/|DELETE|a.txt$" "$tmp.watch"; then
+        echo "PASS: beam.com inotifywait"
+    else
+        echo "FAIL: beam.com inotifywait"
+        fail=1
+        failed="$failed
+  beam.com inotifywait: missing events"
+    fi
+    rm -rf "$wdir"
+fi
+
+# The same watcher as mac_listener (the watcher of file_system on macOS):
+# its command line and its lines ("ID<TAB>0xFLAGS=[created,isfile]<TAB>
+# PATH"). It exits when its input closes, as file_system expects.
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    echo "==> beam.com mac_listener"
+    (sleep 5) | $runner "$dir/beam.com" mac_listener --latency=0.2 -F "$wdir" \
+        > "$tmp.watch" 2>&1 &
+    watcher=$!
+    sleep 2
+    echo a > "$wdir/a.txt"
+    mkdir "$wdir/new"
+    sleep 1
+    rm "$wdir/a.txt"
+    # The input closes after 5 seconds: the watcher must exit by itself.
+    sleep 4
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        exited=no
+    else
+        exited=yes
+    fi
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    tab=$(printf '\t')
+    if grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00020100=\[created,isdir\]${tab}$wdir/new$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00010200=\[removed,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
+       [ "$exited" = yes ]; then
+        echo "PASS: beam.com mac_listener"
+    else
+        echo "FAIL: beam.com mac_listener"
+        fail=1
+        failed="$failed
+  beam.com mac_listener: missing events, or it did not exit ($exited)"
+    fi
+    rm -rf "$wdir"
+fi
+
+# Distributed Erlang and remote shells (not on Windows). epmd is in the
+# file, and starts only for -sname, -name or -remsh. examples/counter has
+# -sname counter in its vm.args: "counter.com remote" is a shell in the
+# running node, and so is "beam.com -remsh counter".
+if [ -d examples ] && [ -f "$dir/beam.com" ]; then
+    $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
+    check beam.com 'Erlang/OTP' version
+    check_status 1 beam.com 'Cannot connect to local epmd' epmd -names
+    check beam.com 'wrote .*counter.com@@applications: kernel stdlib' \
+        build examples/counter -o "$dir/counter.com"
+    if [ -f "$dir/counter.com" ]; then
+        $runner "$dir/counter.com" > "$tmp.counter" 2>&1 &
+        counter=$!
+        i=0
+        while [ $i -lt 30 ] && ! $runner "$dir/beam.com" epmd -names 2>/dev/null | grep -q 'name counter'; do
+            sleep 1
+            i=$((i + 1))
+        done
+        check beam.com 'name counter at port' epmd -names
+        # The end of the input ends the remote shell; halt() there would
+        # stop the counter node. The node name is printed with ~s: with ~p,
+        # a host name with "-" (macOS runners) is a quoted atom.
+        printf 'counter:incr(), counter:incr(), io:format("value ~p on ~s~n", [counter:value(), node()]).\n' > "$tmp.remsh"
+        echo "==> counter.com remote"
+        if $runner "$dir/counter.com" remote < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep 'value 2 on counter@' >/dev/null; then
+            echo "PASS: counter.com remote"
+        else
+            cat "$tmp.out"
+            echo "FAIL: counter.com remote"
+            fail=1
+            failed="$failed
+  counter.com remote: no shell in the counter node"
+        fi
+        printf 'io:format("remsh ~p~n", [counter:value()]).\n' > "$tmp.remsh"
+        echo "==> beam.com -remsh counter"
+        if $runner "$dir/beam.com" -sname probe -setcookie beamcom -remsh counter < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep 'remsh 2' >/dev/null; then
+            echo "PASS: beam.com -remsh counter"
+        else
+            cat "$tmp.out"
+            echo "FAIL: beam.com -remsh counter"
+            fail=1
+            failed="$failed
+  beam.com -sname probe -remsh counter: no shell in the counter node"
+        fi
+        kill "$counter" 2>/dev/null
+        pkill -f "$dir/counter.com" 2>/dev/null
+        wait "$counter" 2>/dev/null
+    fi
+    $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
 fi
 
 # An application with an entry (toolbox): the main module comes from

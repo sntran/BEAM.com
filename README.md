@@ -220,7 +220,8 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - **Not supported:** `mix release` (it copies ERTS from disk, and there
   is none: `beam.com build` makes the program instead); the options of
   the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
-  `--name`, `--cookie`, `--pipe-to`; there is no distribution). On
+  `--name`, `--cookie`, `--pipe-to`; give the flags of `erl` in
+  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`). On
   Windows, there are no port programs: Mix tasks that start other
   programs (rebar3, git) do not work.
 
@@ -262,8 +263,11 @@ iex.com -S mix phx.server        # http://localhost:4000
 - The esbuild and tailwind watchers download their programs and run
   them as ports, as they do with Elixir (not on Windows, which has no
   port programs here).
-- Live reload needs `inotify-tools` on Linux, as with Elixir; without
-  it the server runs, and the browser does not reload by itself.
+- Live reload works without `inotify-tools`: the tools set
+  `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
+  file watcher of the file (see "The file watcher"), on Linux and the
+  BSDs. On macOS, `file_system` compiles its own watcher, which needs the
+  command line tools of Xcode.
 - **Not yet:** a database with a NIF. `--database sqlite3` (exqlite) and
   `phx.gen.auth` (bcrypt) load C libraries at run time, which BEAM.com
   cannot do; linking their NIFs into `beam.com` is the next step (see
@@ -273,6 +277,65 @@ iex.com -S mix phx.server        # http://localhost:4000
 CI runs these steps on Linux: `phx.new` without Ecto, `deps.get`,
 `compile`, and `iex.com -S mix phx.server`, which must serve the start
 page.
+
+### The file watcher
+
+The file has a file watcher with the command line and the output of
+`inotifywait` (of inotify-tools), for the programs that use it, such as
+`file_system` and so `phoenix_live_reload`:
+
+```sh
+beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
+```
+
+- On Linux it uses inotify; on the BSDs it compares the files every half
+  second (a move is then `DELETE` and `CREATE`).
+- On macOS, `file_system` uses `mac_listener` (with FSEvents) in place of
+  `inotifywait`. The file is also `mac_listener`, with the same command
+  line and output, and it compares the files as on the BSDs:
+  `beam.com mac_listener --latency=0.5 -F /absolute/dir`.
+- The tools of Elixir set `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` to a link
+  named `inotifywait` to the file (on macOS,
+  `FILESYSTEM_FSMAC_EXECUTABLE_FILE` to a script `mac_listener` that runs
+  the file), in the cache of BEAM.com (`BEAM_COM_CACHE`, else the user
+  cache), unless you set it. There is no watcher for Windows yet.
+- The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
+  (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
+  `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).
+
+### Distributed Erlang and remote shells
+
+Distributed Erlang works as with `erl`: the flags `-sname`, `-name` and
+`-remsh` turn it on, and only then the file starts `epmd` (it is in the
+file too, as `erlexec` starts it: `epmd -daemon`, unless `-start_epmd
+false`). Without these flags, no `epmd` starts and no port is opened.
+
+`beam.com` takes the flags of `erl`, so it is also the client:
+
+```sh
+beam.com -sname dev                              # a shell in a new node
+beam.com -sname me -setcookie SECRET -remsh app  # a shell in the node app
+beam.com epmd -names                             # the nodes on this computer
+```
+
+A program whose release has a node name (`-sname` or `-name` in
+`config/vm.args`) has the `remote` command of the scripts of rebar3 and
+`mix release`: a shell in the running node, with the cookie of the same
+`vm.args`. There you can inspect the node and load new code into it (for
+example `c:l(Module)`, or `code:load_binary/3`):
+
+```sh
+beam.com build examples/counter        # config/vm.args: -sname counter
+./counter.com &
+./counter.com remote
+(counter@host)1> counter:incr().
+```
+
+As in every remote shell, `halt()` there stops the node of the program;
+leave the shell with Ctrl-G then `q`, or with Ctrl-C two times.
+
+The graphical `observer` needs `wx`, which is not in `beam.com`; start
+it in an Erlang installation and connect to the node, or use the shell.
 
 ### Command line programs: `--main`, `priv` files and erl mode
 
@@ -813,7 +876,8 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   work (`crypto`, `asn1`, `wasm` and `esqlite`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
   SIMD, no threads, and no component model yet.
-- No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
+- Distributed Erlang is tested on Linux, macOS and the BSDs, not on
+  Windows yet.
 - Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)
   as a relative path, because its Unix VFS runs there; give a relative
   path, or the form of Cosmopolitan (`/C/db/x.db`).

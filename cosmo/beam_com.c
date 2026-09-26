@@ -27,12 +27,14 @@
 #include <cosmo.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
@@ -153,6 +155,9 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
+extern int epmd_main(int argc, char **argv);
+extern int beam_com_inotifywait_main(int argc, char **argv);
+extern int beam_com_mac_listener_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -567,6 +572,93 @@ static void escript_flags(const char *path, struct arglist *out)
     fclose(f);
 }
 
+/* mkdir -p */
+static void make_dirs(char *path)
+{
+    char *p;
+
+    for (p = path + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(path, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(path, 0755);
+}
+
+/*
+ * file_system (and so phoenix_live_reload) watches files with inotifywait
+ * of inotify-tools (FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE, else PATH), and
+ * on macOS with mac_listener (FILESYSTEM_FSMAC_EXECUTABLE_FILE). For the
+ * tools of Elixir, the variable names a file in the cache of BEAM.com
+ * (BEAM_COM_CACHE, else the user cache, as beam_com_script), so that the
+ * watcher of this file runs (cosmo/beam_com_watch.c):
+ *
+ *   - Linux and the BSDs: a link named inotifywait to this file.
+ *   - macOS: a script mac_listener that runs this file with
+ *     BEAM_COM_PROGRAM=mac_listener (the name of a link can be lost when
+ *     the APE loader starts the file).
+ *
+ * Not when the variable is set, and not on Windows (file_system has its
+ * own watcher there).
+ */
+static void watch_link(void)
+{
+    const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
+               *home = getenv("HOME"), *exe = GetProgramExecutableName();
+    const char *var = IsXnu() ? "FILESYSTEM_FSMAC_EXECUTABLE_FILE"
+                              : "FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE";
+    char *dir, *link, *tmp, *script, target[4096];
+    ssize_t n;
+    int fd, ok;
+
+    if (getenv(var) || beam_com_is_windows() || !exe || *exe != '/' || strchr(exe, '\''))
+        return;
+    if (cache && *cache)
+        dir = join(cache, "/bin", "");
+    else if (xdg && *xdg)
+        dir = join(xdg, "/beam.com/bin", "");
+    else if (home)
+        dir = join(home, "/.cache/beam.com/bin", "");
+    else
+        return;
+    make_dirs(dir);
+    link = join(dir, IsXnu() ? "/mac_listener" : "/inotifywait", "");
+    /* A new file, then rename(): two tools that start at the same time
+     * do not see a missing file. */
+    snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
+    tmp = strdup(target);
+    if (IsXnu()) {
+        script = join("#!/bin/sh\nBEAM_COM_PROGRAM=mac_listener exec '", exe, "' \"$@\"\n");
+        fd = open(link, O_RDONLY);
+        n = fd >= 0 ? read(fd, target, sizeof(target) - 1) : -1;
+        if (fd >= 0)
+            close(fd);
+        if (n < 0 || (target[n] = '\0', strcmp(target, script) != 0)) {
+            unlink(tmp);
+            fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+            ok = fd >= 0 && write(fd, script, strlen(script)) == (ssize_t)strlen(script);
+            if (fd >= 0)
+                close(fd);
+            if (!ok || rename(tmp, link) != 0) {
+                unlink(tmp);
+                return;
+            }
+        }
+    } else {
+        n = readlink(link, target, sizeof(target) - 1);
+        if (n < 0 || (target[n] = '\0', strcmp(target, exe) != 0)) {
+            unlink(tmp);
+            if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
+                unlink(tmp);
+                return;
+            }
+        }
+    }
+    setenv(var, link, 1);
+}
+
 /* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
 static int zip_has_elixir(void)
 {
@@ -933,6 +1025,43 @@ int beam_com_exec_helper(const char *path, char *const argv[],
     return execve(GetProgramExecutableName(), argv, env.v);
 }
 
+/*
+ * Distributed Erlang needs epmd. It starts only for -sname, -name (the
+ * long form) or -remsh, never otherwise, as erlexec starts "epmd -daemon"
+ * before the emulator (unless -start_epmd false). epmd is this file: the
+ * child runs as epmd (BEAM_COM_PROGRAM), and "-daemon" returns at once
+ * when an epmd already runs, or after the daemon has started.
+ */
+static void start_epmd(struct arglist *all)
+{
+    extern char **environ;
+    struct arglist env = {0};
+    char *args[] = {"epmd", "-daemon", NULL};
+    int i, named = 0, status;
+    pid_t pid;
+
+    for (i = 0; i < all->n; i++) {
+        if (strcmp(all->v[i], "-sname") == 0 || strcmp(all->v[i], "-name") == 0 ||
+            strcmp(all->v[i], "-remsh") == 0)
+            named = 1;
+        if (strcmp(all->v[i], "-start_epmd") == 0 && i + 1 < all->n &&
+            strcmp(all->v[i + 1], "false") == 0)
+            return;
+    }
+    if (!named)
+        return;
+    for (i = 0; environ[i]; i++)
+        if (strncmp(environ[i], "BEAM_COM_PROGRAM=", 17) != 0)
+            push(&env, environ[i]);
+    push(&env, "BEAM_COM_PROGRAM=epmd");
+    if ((pid = fork()) == 0) {
+        execve(GetProgramExecutableName(), args, env.v);
+        _exit(127);
+    }
+    if (pid > 0)
+        waitpid(pid, &status, 0);
+}
+
 void beam_com_main(int *argcp, char ***argvp)
 {
     int argc = *argcp;
@@ -959,12 +1088,36 @@ void beam_com_main(int *argcp, char ***argvp)
         ShowCrashReports();
 
     apply_sandbox(starts_with(name, "erl_child_setup") ||
-                  starts_with(name, "inet_gethost"));
+                  starts_with(name, "inet_gethost") || starts_with(name, "epmd"));
 
     if (starts_with(name, "erl_child_setup"))
         exit(erl_child_setup_main(argc, argv));
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
+    /* epmd: started by start_epmd() below, or by the user ("epmd
+     * -names", with a link named epmd, or "beam.com epmd -names"). */
+    if (starts_with(name, "epmd"))
+        exit(epmd_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "epmd") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data")) {
+        argv[1] = "epmd";
+        exit(epmd_main(argc - 1, argv + 1));
+    }
+    /* inotifywait: the file watcher (cosmo/beam_com_watch.c), by name
+     * (the link that watch_link() makes) or as "beam.com inotifywait". */
+    if (starts_with(name, "inotifywait"))
+        exit(beam_com_inotifywait_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "inotifywait") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        exit(beam_com_inotifywait_main(argc - 1, argv + 1));
+    /* mac_listener: the same watcher, as the watcher of file_system on
+     * macOS (the script that watch_link() makes), or "beam.com
+     * mac_listener". */
+    if (starts_with(name, "mac_listener"))
+        exit(beam_com_mac_listener_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "mac_listener") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        exit(beam_com_mac_listener_main(argc - 1, argv + 1));
 
     /* erl mode: the program behaves as erl (the runtime of its zip, with
      * /zip as the root and all its applications in the code path), not
@@ -975,6 +1128,52 @@ void beam_com_main(int *argcp, char ***argvp)
     erl_mode = strcmp(name, "erl") == 0 || strcmp(name, "erl.exe") == 0 ||
                strcmp(name, "erl.com") == 0 ||
                (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
+    /* beam.com with the flags of erl ("beam.com -sname me -remsh app",
+     * "beam.com +S 1 -eval ..."): erl mode too, in a file without a
+     * release (whose arguments are its own). -h, --help and --version are
+     * commands of beam.com. Not for a tool (elixir.com -e ...). */
+    if (!erl_mode && argc > 1 && (argv[1][0] == '-' || argv[1][0] == '+') &&
+        !elixir_tool(name) &&
+        strcmp(argv[1], "-h") != 0 && strcmp(argv[1], "--help") != 0 &&
+        strcmp(argv[1], "--version") != 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        erl_mode = 1;
+    /* "app.com remote": a shell in the running node of the release in
+     * the zip, as "bin/app remote" of rebar3 and mix release: erl mode
+     * with -remsh and the node name (-sname or -name) and -setcookie of
+     * the vm.args of the release. The new node is hidden, and gets a
+     * random name (-remsh does that since OTP 25). */
+    if (!erl_mode && argc > 1 && strcmp(argv[1], "remote") == 0 &&
+        file_exists(BEAM_COM_RELEASES "/start_erl.data")) {
+        struct arglist rel = {0}, args = {0};
+        const char *node = NULL, *cookie = NULL;
+
+        read_release(&rel);
+        for (i = 0; i + 1 < rel.n; i++) {
+            if (strcmp(rel.v[i], "-sname") == 0 || strcmp(rel.v[i], "-name") == 0)
+                node = rel.v[i + 1];
+            else if (strcmp(rel.v[i], "-setcookie") == 0)
+                cookie = rel.v[i + 1];
+        }
+        if (!node) {
+            fprintf(stderr, "%s: remote: the release has no -sname or -name "
+                            "(in its vm.args)\n", name);
+            exit(1);
+        }
+        push(&args, argv[0]);
+        push(&args, "-remsh");
+        push(&args, (char *)node);
+        push(&args, "-hidden");
+        if (cookie) {
+            push(&args, "-setcookie");
+            push(&args, (char *)cookie);
+        }
+        for (i = 2; i < argc; i++)
+            push(&args, argv[i]);
+        argc = args.n;
+        argv = args.v;
+        erl_mode = 1;
+    }
     /* The tools: escript, and the Elixir tools as the scripts of Elixir
      * start them. The name of the file (a copy or a link named mix.com,
      * iex.com, elixir.com, elixirc.com or escript, with or without .com
@@ -1025,6 +1224,7 @@ void beam_com_main(int *argcp, char ***argvp)
         has_release = 1;
         has_args = 0;
     } else if (tool) {
+        watch_link();
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
@@ -1145,6 +1345,8 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&all, windows.v[i]);
     for (i = 0; i < init.n; i++)
         push(&all, init.v[i]);
+
+    start_epmd(&all);
 
     if (getenv("BEAM_COM_VERBOSE")) {
         fprintf(stderr, "beam.com: executing:");
