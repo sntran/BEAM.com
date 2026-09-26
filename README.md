@@ -168,6 +168,14 @@ arguments and in a header that the compiler includes in each file
 On Windows, `os:type()` is `{unix, windows}`, and port programs do not
 work: `open_port({spawn, ...})`, `os:cmd/1` and native name lookups
 fail with `enotsup` (see C16 in [`docs/UPSTREAM.md`](docs/UPSTREAM.md)).
+At start, BEAM.com therefore gives kernel an inetrc with the name servers
+and the hosts file of Windows, so that names are resolved with Erlang's
+own DNS client (`ERL_INETRC` points at it; set `ERL_INETRC` yourself to
+use your own file), and it exports the trusted root certificates of
+Windows to a PEM file that `public_key:cacerts_get/0` reads
+(`-public_key cacerts_path File`; give that parameter yourself to use
+your own file). Both files are in the temp directory of the user and
+are removed when the node stops.
 
 ## Notes for upstream
 
@@ -180,7 +188,8 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 - No JIT, no `socket` NIF, no crypto/ssl, no NIFs or drivers in shared
   objects (Cosmopolitan cannot make them).
 - No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
-- Windows: no port programs (no `os:cmd/1`, no `inet_gethost`).
+- Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
+  are resolved with Erlang's DNS client, IPv4 name servers only).
 - `run_erl` does not work (there is no `mkfifo()`).
 - Only kernel and stdlib are in the default zip. A release brings the
   other applications that it needs (pure Erlang ones only).

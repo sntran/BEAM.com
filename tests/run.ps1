@@ -77,6 +77,7 @@ if (Test-Path (Join-Path $Dir "crypto_check.com")) {
         '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello') @()
 }
 if (Test-Path (Join-Path $Dir "tls_check.com")) {
-    Check "tls_check.com" 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok' @()
+    # "verify peer, N OS certificates": the roots of Windows were exported.
+    Check "tls_check.com" 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)' @()
 }
 exit $fail

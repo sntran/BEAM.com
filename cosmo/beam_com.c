@@ -26,6 +26,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+
+/* Cosmopolitan internals used for the Windows setup (see below). */
+#include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
+#include "libc/nt/dll.h"                    /* LoadLibrary(), GetProcAddress() */
+#include "libc/runtime/runtime.h"           /* __get_tmpdir() */
+#include "net/http/escape.h"                /* EncodeBase64() */
+#include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
 
 /* erts_cosmo.h is included by the compiler (-include). */
 
@@ -209,6 +217,241 @@ static char *home_dir(void)
     return home;
 }
 
+/*
+ * --- Windows ----------------------------------------------------------
+ *
+ * Under Cosmopolitan, ERTS is the Unix build: os:type() is
+ * {unix, windows}, so kernel and public_key take their Unix code paths.
+ * Two of them do not work on Windows without help:
+ *
+ * 1. Names. The native resolver (inet_gethost) is a port program, and
+ *    there are no port programs on Windows. Kernel must use its own DNS
+ *    client (inet_res), which needs name servers. Kernel would read them
+ *    from /etc/resolv.conf, which does not exist. Worse, inet_db watches
+ *    that file and *replaces* the name server list with the (empty)
+ *    content of the missing file before every lookup, so name servers
+ *    added with inet_db:add_ns/1 are lost and every lookup is nxdomain.
+ *
+ *    BEAM.com writes an inetrc file at start with {resolv_conf, ""} (stop
+ *    watching the file), the Windows hosts file, and the name servers of
+ *    Windows (from the registry, as Cosmopolitan's own resolver reads
+ *    them), and points ERL_INETRC at it.
+ *
+ * 2. Certificates. public_key:cacerts_get/0 only reads the Windows
+ *    certificate store for os:type() {win32, _}, with a Windows-only NIF.
+ *    BEAM.com exports the trusted roots of Windows (crypt32) to a PEM
+ *    file at start and gives it to public_key with the application
+ *    parameter cacerts_path (-public_key cacerts_path "File"), which the
+ *    stock public_key honours.
+ *
+ * Both files are in the temp directory of the user and are removed at
+ * exit. The user's own settings win: ERL_INETRC and -public_key
+ * cacerts_path are left alone when they are given.
+ */
+
+static char *windows_tmp_files[2];
+
+static void windows_remove_tmp_files(void)
+{
+    size_t i;
+    for (i = 0; i < sizeof(windows_tmp_files) / sizeof(*windows_tmp_files); i++)
+        if (windows_tmp_files[i])
+            unlink(windows_tmp_files[i]);
+}
+
+/* Windows paths for Erlang strings: forward slashes, no quotes. */
+static void erlang_path(char *s)
+{
+    for (; *s; s++)
+        if (*s == '\\')
+            *s = '/';
+        else if (*s == '"')
+            *s = '_';
+}
+
+/* Open a new file in the temp directory: <tmp>/beam_com.<pid>.<suffix> */
+static FILE *windows_tmp_file(int slot, const char *suffix, char **pathp)
+{
+    char name[64];
+    char *path;
+    FILE *f;
+
+    snprintf(name, sizeof(name), "beam_com.%d.%s", (int)getpid(), suffix);
+    path = join(__get_tmpdir(), name, ""); /* __get_tmpdir() ends with '/' */
+    erlang_path(path);
+    if (!(f = fopen(path, "w"))) {
+        free(path);
+        return NULL;
+    }
+    if (!windows_tmp_files[0] && !windows_tmp_files[1])
+        atexit(windows_remove_tmp_files);
+    windows_tmp_files[slot] = path;
+    *pathp = path;
+    return f;
+}
+
+/*
+ * Write an inetrc for Windows. The name servers come from the registry
+ * (Tcpip\Parameters\Interfaces\*\{Dhcp,}NameServer) through the function
+ * that Cosmopolitan's resolver uses. IPv4 only, at most MAXNS (3).
+ * Returns the file name, or NULL when the file cannot be made.
+ */
+static char *windows_write_inetrc(void)
+{
+    struct resolvconf rc;
+    char buf[512], hosts[512];
+    const char *hosts_path;
+    char *path;
+    FILE *f;
+    unsigned i;
+
+    if (!(f = windows_tmp_file(0, "inetrc", &path)))
+        return NULL;
+    fprintf(f, "%%%% Made by BEAM.com at start; see /zip/bin/windows.inetrc.\n"
+               "%%%% Set ERL_INETRC to use your own file.\n"
+               "{lookup, [file, dns]}.\n"
+               "{resolv_conf, \"\"}.\n");
+    /* C:\Windows\System32\drivers\etc\hosts */
+    if ((hosts_path = GetHostsTxtPath(buf, sizeof(buf)))) {
+        snprintf(hosts, sizeof(hosts), "%s", hosts_path);
+        erlang_path(hosts);
+        fprintf(f, "{hosts_file, \"%s\"}.\n", hosts);
+    }
+    memset(&rc, 0, sizeof(rc));
+    if (__get_resolv_conf(&rc, NULL, 0) == 0) {
+        for (i = 0; i < rc.nns && i < MAXNS; i++) {
+            const unsigned char *a = rc.ns[i].addr;
+            if (rc.ns[i].family == AF_INET)
+                fprintf(f, "{nameserver, {%u,%u,%u,%u}}.\n",
+                        a[0], a[1], a[2], a[3]);
+        }
+    }
+    if (ferror(f) | fclose(f))
+        return NULL;
+    return path;
+}
+
+#ifdef __x86_64__
+/*
+ * The trusted root certificates of Windows, as PEM. crypt32.dll is not
+ * among the DLLs that Cosmopolitan imports, so it is loaded here. The
+ * functions have the Microsoft x64 calling convention (__ms_abi__).
+ * This is what lib/public_key/c_src/public_key.c does on a Windows
+ * build of OTP (current user "ROOT" store, X509_ASN_ENCODING).
+ */
+struct nt_cert_context {
+    uint32_t dwCertEncodingType;
+    uint8_t *pbCertEncoded;
+    uint32_t cbCertEncoded;
+    void *pCertInfo;
+    void *hCertStore;
+};
+#define NT_X509_ASN_ENCODING 1u
+
+typedef void *(__attribute__((__ms_abi__)) *nt_CertOpenSystemStoreW)(
+    uintptr_t hProv, const char16_t *szSubsystemProtocol);
+typedef const struct nt_cert_context *(__attribute__((__ms_abi__))
+                                       *nt_CertEnumCertificatesInStore)(
+    void *hCertStore, const struct nt_cert_context *pPrevCertContext);
+typedef int (__attribute__((__ms_abi__)) *nt_CertCloseStore)(
+    void *hCertStore, uint32_t dwFlags);
+
+static void write_pem_certificate(FILE *f, const uint8_t *der, size_t len)
+{
+    size_t n, i;
+    char *b64 = EncodeBase64((const char *)der, len, &n);
+    if (!b64)
+        return;
+    fputs("-----BEGIN CERTIFICATE-----\n", f);
+    for (i = 0; i < n; i += 64)
+        fprintf(f, "%.64s\n", b64 + i);
+    fputs("-----END CERTIFICATE-----\n", f);
+    free(b64);
+}
+
+/* Returns the number of certificates written, or -1. */
+static int windows_export_cacerts(FILE *f)
+{
+    int64_t crypt32;
+    nt_CertOpenSystemStoreW open_store;
+    nt_CertEnumCertificatesInStore enum_certs;
+    nt_CertCloseStore close_store;
+    const struct nt_cert_context *c = NULL;
+    void *store;
+    int count = 0;
+
+    if (!(crypt32 = LoadLibrary(u"crypt32.dll")))
+        return -1;
+    open_store = (nt_CertOpenSystemStoreW)
+        GetProcAddress(crypt32, "CertOpenSystemStoreW");
+    enum_certs = (nt_CertEnumCertificatesInStore)
+        GetProcAddress(crypt32, "CertEnumCertificatesInStore");
+    close_store = (nt_CertCloseStore)
+        GetProcAddress(crypt32, "CertCloseStore");
+    if (!open_store || !enum_certs || !close_store)
+        return -1;
+    if (!(store = open_store(0, u"ROOT")))
+        return -1;
+    while ((c = enum_certs(store, c))) {
+        if (c->dwCertEncodingType & NT_X509_ASN_ENCODING) {
+            write_pem_certificate(f, c->pbCertEncoded, c->cbCertEncoded);
+            count++;
+        }
+    }
+    close_store(store, 0);
+    return count;
+}
+#else
+static int windows_export_cacerts(FILE *f)
+{
+    (void)f;
+    return -1;
+}
+#endif
+
+/* Returns the PEM file name, or NULL when there are no certificates. */
+static char *windows_write_cacerts(void)
+{
+    char *path;
+    FILE *f;
+    int count;
+
+    if (!(f = windows_tmp_file(1, "cacerts.pem", &path)))
+        return NULL;
+    fputs("# Trusted root certificates of Windows, exported by BEAM.com.\n", f);
+    count = windows_export_cacerts(f);
+    if ((ferror(f) | fclose(f)) || count <= 0) {
+        unlink(path);
+        windows_tmp_files[1] = NULL;
+        return NULL;
+    }
+    return path;
+}
+
+static int has_arg(const struct arglist *l, const char *arg)
+{
+    int i;
+    for (i = 0; i < l->n; i++)
+        if (strcmp(l->v[i], arg) == 0)
+            return 1;
+    return 0;
+}
+
+static void windows_setup(struct arglist *init)
+{
+    char *path;
+
+    if (!getenv("ERL_INETRC")) {
+        path = windows_write_inetrc();
+        setenv("ERL_INETRC", path ? path : BEAM_COM_BINDIR "/windows.inetrc", 1);
+    }
+    if (!has_arg(init, "-public_key") && (path = windows_write_cacerts())) {
+        push(init, "-public_key");
+        push(init, "cacerts_path");
+        push(init, join("\"", path, "\""));
+    }
+}
+
 int beam_com_exec_helper(const char *path, char *const argv[],
                          char *const envp[])
 {
@@ -283,10 +526,10 @@ void beam_com_main(int *argcp, char ***argvp)
 
     /* On Windows there are no port programs, and the native resolver
      * (inet_gethost) is one: kernel halts the node when it cannot start
-     * it. Use the DNS client of Erlang instead, unless the user gave an
-     * inetrc file. */
-    if (beam_com_is_windows() && !getenv("ERL_INETRC"))
-        setenv("ERL_INETRC", BEAM_COM_BINDIR "/windows.inetrc", 1);
+     * it. Give kernel the name servers of Windows and public_key the
+     * certificates of Windows (see windows_setup()). */
+    if (beam_com_is_windows())
+        windows_setup(&init);
 
     setenv("ROOTDIR", BEAM_COM_ROOT, 1);
     setenv("BINDIR", BEAM_COM_BINDIR, 1);
