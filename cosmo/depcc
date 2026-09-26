@@ -1,0 +1,25 @@
+#!/bin/sh
+# Dependency generator for the OTP build (DEP_CC).
+#
+# cosmocc does not accept "-MM" with more than one input file. This
+# script runs the compiler once for each source file, with all the
+# other arguments. The compiler is $DEPCC_CC (default: cosmocc).
+cc=${DEPCC_CC:-cosmocc}
+rc=0
+for src in "$@"; do
+    case $src in
+        *.c|*.cc|*.cpp) ;;
+        *) continue ;;
+    esac
+    (
+        for a in "$@"; do
+            shift
+            case $a in
+                *.c|*.cc|*.cpp) ;;
+                *) set -- "$@" "$a" ;;
+            esac
+        done
+        exec "$cc" "$@" "$src"
+    ) || rc=$?
+done
+exit $rc
