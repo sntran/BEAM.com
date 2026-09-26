@@ -49,8 +49,11 @@ build_options(["--pledge", Promises | Rest], Opts) ->
 build_options(["--unveil", Rule | Rest], Opts) ->
     Rules = maps:get(unveil, Opts, []),
     build_options(Rest, Opts#{unveil => Rules ++ [beam_com_build:check_unveil(Rule)]});
+build_options(["--native", Target | Rest], Opts) ->
+    build_options(Rest, Opts#{native => beam_com_build:check_native(Target)});
 build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a";
-                                    Option =:= "--pledge"; Option =:= "--unveil" ->
+                                    Option =:= "--pledge"; Option =:= "--unveil";
+                                    Option =:= "--native" ->
     throw({error, "option ~ts needs a value", [Option]});
 build_options([[$- | _] = Option | _], _Opts) ->
     throw({error, "unknown option ~ts", [Option]});
@@ -64,7 +67,7 @@ usage() ->
 
 build_usage() ->
     "beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]~n"
-    "               [--unveil \"PERMISSIONS PATH\"]...~n"
+    "               [--unveil \"PERMISSIONS PATH\"]... [--native TARGET]~n"
     "  INPUT     a .erl file with main/1, or an application directory~n"
     "  OUTPUT    the new executable (default: the name of INPUT.com)~n"
     "  APP       an OTP application to add (for calls that the~n"
@@ -74,7 +77,10 @@ build_usage() ->
     "            added~n"
     "  PATH      a file or directory that the program can use (Linux and~n"
     "            OpenBSD), with PERMISSIONS of r, w, x and c; other paths~n"
-    "            are hidden".
+    "            are hidden~n"
+    "  TARGET    a native file for one system, not an APE file:~n"
+    "            linux-x86_64, linux-aarch64, freebsd-x86_64 or~n"
+    "            macos-x86_64".
 
 %% The text of "beam.com help [COMMAND]".
 help([]) ->

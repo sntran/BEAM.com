@@ -14,6 +14,8 @@ build_options_test_() ->
                    opts(["-o", "b.com", "a.erl"])),
      ?_assertEqual(#{input => "dir", apps => [crypto, ssl]},
                    opts(["-a", "crypto", "dir", "-a", "ssl"])),
+     ?_assertEqual(#{input => "a.erl", native => "linux-x86_64", apps => []},
+                   opts(["a.erl", "--native", "linux-x86_64"])),
      {"the last -o wins",
       ?_assertEqual(#{input => "a", output => "2", apps => []},
                     opts(["-o", "1", "a", "-o", "2"]))}].
@@ -27,6 +29,9 @@ build_errors_test_() ->
       ?_assertThrow({error, "option ~ts needs a value", ["-o"]}, opts(["a.erl", "-o"]))},
      {"-a without a value",
       ?_assertThrow({error, "option ~ts needs a value", ["-a"]}, opts(["a.erl", "-a"]))},
+     {"--native without a value",
+      ?_assertThrow({error, "option ~ts needs a value", ["--native"]},
+                    opts(["a.erl", "--native"]))},
      {"an unknown option",
       ?_assertThrow({error, "unknown option ~ts", ["-z"]}, opts(["a.erl", "-z"]))},
      {"--pledge without a value",

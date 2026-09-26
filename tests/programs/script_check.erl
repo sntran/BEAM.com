@@ -11,6 +11,8 @@
 %%   big           100000 lines, then return: all lines are written
 %%   spawn         a linked process crashes after main/1 returns
 %%   info          print the number of schedulers (for ERL_FLAGS)
+%%   abort         erlang:halt(abort): the runtime aborts (SIGABRT), and
+%%                 BEAM.com prints a crash report
 -module(script_check).
 -export([main/1]).
 
@@ -37,6 +39,9 @@ main(["big"]) ->
 main(["spawn"]) ->
     spawn(fun() -> receive after 100 -> exit(crash) end end),
     io:format("returned~n");
+main(["abort"]) ->
+    io:format("aborting~n"),
+    erlang:halt(abort);
 main(["info"]) ->
     io:format("schedulers ~b~n", [erlang:system_info(schedulers)]);
 main(Other) ->

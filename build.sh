@@ -403,7 +403,9 @@ step_multicall() {
     # know it.
     rm -f "$t/opt/$FLAVOR/driver_tab.c"
     nifs=$(static_nifs)
-    make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR EMU_LDFLAGS="$objs" \
+    # --wrap=close: see __wrap_close() in cosmo/beam_com.c.
+    make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -481,7 +483,14 @@ step_bundle() {
         cp "$emu" "$OUT"
     fi
     chmod +x "$OUT"
-    (cd "$STAGE" && zip -q -r -9 "$OUT" bin lib)
+    # The code of kernel and stdlib is stored, not compressed: the boot
+    # loads most of it, and stored entries need no inflating. It costs
+    # about 2 MB, and a program starts about 50 ms faster (a quarter of
+    # its start time; see docs/BENCHMARKS.md). beam.com build keeps the
+    # entries as they are, so the programs get the same.
+    (cd "$STAGE" &&
+     zip -q -r -9 "$OUT" bin lib -x 'lib/kernel-*/ebin/*' -x 'lib/stdlib-*/ebin/*' &&
+     zip -q -r -0 "$OUT" lib/kernel-*/ebin lib/stdlib-*/ebin)
     ls -l "$OUT"
 }
 
@@ -506,6 +515,9 @@ step_test() {
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
     grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
         "$BUILD/test.out"
+    # The program keeps the code of kernel and stdlib stored (step_bundle).
+    unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/kernel-[^/]*/ebin/code.beam$'
+    unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/stdlib-[^/]*/ebin/lists.beam$'
     if [ "$WASM" = 1 ]; then
         "$OUT" build "$ROOT/examples/wasm_check.erl" -o "$BUILD/wasm_check.com"
         "$BUILD/wasm_check.com" | tee "$BUILD/test.out"

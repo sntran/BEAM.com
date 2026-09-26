@@ -11,12 +11,12 @@
 %% of beam.com.
 -module(beam_com_build).
 
--export([run/1, check_promises/1, check_unveil/1]).
+-export([run/1, check_promises/1, check_unveil/1, check_native/1]).
 
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
-         parents/1, keep/2, executable/0, slashes/2, generate/2]).
+         parents/1, keep/2, executable/0, slashes/2, generate/2, native/2]).
 -endif.
 
 -define(ROOT, "/zip").
@@ -48,7 +48,12 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
               end,
     New = with_dirs(app_files(App) ++ Release ++ sandbox_files(Opts)),
     Keep = keep(Apps, Base),
-    Data = beam_com_zip:write(Bin, Keep, New),
+    Data = case Opts of
+               #{native := Target} ->
+                   native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
+               _ ->
+                   beam_com_zip:write(Bin, Keep, New)
+           end,
     write_file(Output, Data),
     _ = file:change_mode(Output, 8#755),
     io:format("beam.com: wrote ~ts (~b bytes)~n"
@@ -103,6 +108,94 @@ check_unveil(Rule) ->
 bad_unveil(Rule) ->
     throw({error, "--unveil needs \"PERMISSIONS PATH\", with PERMISSIONS of "
            "r, w, x and c: ~ts", [Rule]}).
+
+%% --native TARGET: a file for one system, as Cosmopolitan's assimilate
+%% makes it. The APE file starts with a shell script, which has the
+%% headers of the native formats: printf '...' writes the 64-byte ELF
+%% header of each CPU, and a dd command copies the Mach-O header of
+%% x86_64 from inside the file. The new file starts with that header; the
+%% rest does not change, so the offsets of the zip stay correct. Apple
+%% Silicon runs APE files only through the APE loader (no arm64 Mach-O).
+-define(NATIVE, [{"linux-x86_64", {elf, 16#3e, sysv}},
+                 {"linux-aarch64", {elf, 16#b7, sysv}},
+                 {"freebsd-x86_64", {elf, 16#3e, freebsd}},
+                 {"macos-x86_64", {macho, 16#01000007}}]).
+
+check_native(Target) ->
+    case lists:keymember(Target, 1, ?NATIVE) of
+        true -> Target;
+        false ->
+            throw({error, "unknown native target ~ts (one of: ~ts)",
+                   [Target, lists:join(", ", [T || {T, _} <- ?NATIVE])]})
+    end.
+
+native(Target, Bin) ->
+    Head = case proplists:get_value(Target, ?NATIVE) of
+               {elf, Machine, Abi} -> elf_header(Bin, Machine, Abi);
+               {macho, Cpu} -> macho_header(Bin, Cpu)
+           end,
+    <<Head/binary, (binary:part(Bin, byte_size(Head), byte_size(Bin) - byte_size(Head)))/binary>>.
+
+%% The ELF header in a printf '...' of the first 8 KB, for the CPU.
+elf_header(Bin, Machine, Abi) ->
+    Script = binary:part(Bin, 0, min(8192, byte_size(Bin))),
+    Headers = [H || {Pos, Len} <- binary:matches(Script, <<"printf '">>),
+                    H <- [printf_bytes(binary:part(Script, Pos + Len,
+                                                   byte_size(Script) - Pos - Len), <<>>)],
+                    byte_size(H) =:= 64,
+                    match_elf(H, Machine)],
+    case Headers of
+        [<<Ident:7/binary, OsAbi, Rest/binary>> | _] ->
+            %% The kernels other than FreeBSD do not look at the OS ABI;
+            %% assimilate sets it to System V (0) for them.
+            NewAbi = case {Abi, OsAbi} of
+                         {sysv, 9} -> 0;
+                         _ -> OsAbi
+                     end,
+            <<Ident/binary, NewAbi, Rest/binary>>;
+        [] ->
+            throw({error, "no ELF header for this CPU in the APE file", []})
+    end.
+
+match_elf(<<127, "ELF", 2, _:11/binary, _Type:16/little, M:16/little, _/binary>>, M) -> true;
+match_elf(_, _) -> false.
+
+%% The bytes of a printf format: \NNN is an octal byte, ' ends it.
+printf_bytes(<<$', _/binary>>, Acc) -> Acc;
+printf_bytes(<<$\\, A, B, C, Rest/binary>>, Acc)
+  when A >= $0, A =< $7, B >= $0, B =< $7, C >= $0, C =< $7 ->
+    printf_bytes(Rest, <<Acc/binary, ((A - $0) * 64 + (B - $0) * 8 + C - $0)>>);
+printf_bytes(<<$\\, A, B, Rest/binary>>, Acc)
+  when A >= $0, A =< $7, B >= $0, B =< $7 ->
+    printf_bytes(Rest, <<Acc/binary, ((A - $0) * 8 + B - $0)>>);
+printf_bytes(<<$\\, A, Rest/binary>>, Acc) when A >= $0, A =< $7 ->
+    printf_bytes(Rest, <<Acc/binary, (A - $0)>>);
+printf_bytes(<<C, Rest/binary>>, Acc) ->
+    printf_bytes(Rest, <<Acc/binary, C>>);
+printf_bytes(<<>>, _) ->
+    <<>>.
+
+%% The Mach-O header that a dd command of the script copies: bs, skip
+%% and count give its place and size in the file.
+macho_header(Bin, Cpu) ->
+    Script = binary:part(Bin, 0, min(8192, byte_size(Bin))),
+    Re = "bs=(['\"] *)?(\\$\\(\\( *)?([0-9]+)( *\\)\\))?( *['\"])? +"
+         "skip=(['\"] *)?(\\$\\(\\( *)?([0-9]+)( *\\)\\))?( *['\"])? +"
+         "count=(['\"] *)?(\\$\\(\\( *)?([0-9]+)",
+    Matches = case re:run(Script, Re, [global, {capture, [3, 8, 13], list}]) of
+                  {match, M} -> M;
+                  nomatch -> []
+              end,
+    Headers = [binary:part(Bin, Offset, Size)
+               || [Bs, Skip, Count] <- Matches,
+                  Offset <- [list_to_integer(Skip) * list_to_integer(Bs)],
+                  Size <- [list_to_integer(Count) * list_to_integer(Bs)],
+                  Offset >= 64, Size >= 32, Offset + Size =< byte_size(Bin),
+                  binary:part(Bin, Offset, 8) =:= <<16#feedfacf:32/little, Cpu:32/little>>],
+    case Headers of
+        [H | _] -> H;
+        [] -> throw({error, "no Mach-O header for this CPU in the APE file", []})
+    end.
 
 default_output(Input) ->
     filename:basename(Input, ".erl") ++ ".com".

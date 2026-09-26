@@ -55,7 +55,8 @@ server with the certificates of the OS (on Windows too).
 ## Build a program with `beam.com build`
 
 ```sh
-beam.com build INPUT [-o OUTPUT] [-a APP]...
+beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
+               [--unveil "PERMISSIONS PATH"]... [--native TARGET]
 ```
 
 `INPUT` is one of these:
@@ -85,6 +86,29 @@ application that the code only calls with `apply/3` or similar.
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
 `parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm` and
 `esqlite`.
+
+### A native file for one system (`--native`)
+
+`--native TARGET` writes a file for one system instead of an APE file,
+as Cosmopolitan's `assimilate` does. `TARGET` is `linux-x86_64`,
+`linux-aarch64`, `freebsd-x86_64` or `macos-x86_64`:
+
+```sh
+beam.com build hello.erl --native linux-x86_64 -o hello
+./hello
+```
+
+The kernel starts the native file directly: no shell script at the
+start, no APE loader in `$TMPDIR` or `$HOME`, and on macOS a Mach-O file
+that can be signed. The file is the APE file with the ELF or Mach-O
+header of the target at its start (the shell script of the APE file
+has these headers). The size and the zip do not change, and the file
+still runs its release from `/zip`. The builder gives the same bytes as
+`assimilate` (tested with the fat `beam.com`).
+
+The file runs only on its target. Apple Silicon has no native form:
+there, APE files run with the APE loader. On Windows, the APE file is
+already a native PE file.
 
 ### WebAssembly
 
@@ -314,6 +338,13 @@ lib/wasm-0.1.0/ebin/...
 
 There is no `releases/` directory: a release that you add brings its own.
 
+The code of `kernel` and `stdlib` is stored in the zip without
+compression. The boot loads these modules first, and a stored entry is
+read without inflating it: this makes the start about 50 ms (about 27%)
+faster, for 2 MB more (measured on Linux x86_64). `beam.com build`
+keeps these entries as they are, so the programs that it makes start
+faster too.
+
 BEAM.com does the work of `erlexec`. It gives ERTS
 `-root /zip -bindir /zip/bin -progname beam.com -home $HOME`, then the
 release arguments, `ERL_FLAGS`, `.args` and the command line.
@@ -341,6 +372,13 @@ central directory with the new offsets.
   every platform: `beam.com --strace version` logs each system call
   (also on Windows and macOS), and `--ftrace` logs each C function
   call. The log goes to standard error.
+- Crash reports: when the emulator dies on a fatal signal (for
+  example `SIGSEGV`, or `SIGABRT` from `erlang:halt(abort)`), the
+  Cosmopolitan runtime prints the signal, the registers and a backtrace
+  with function names (from the symbol tables in the zip) to standard
+  error, and the exit status is 128 + the signal number.
+  `BEAM_COM_CRASH_REPORTS=0` turns this off. Signals that ERTS handles
+  itself (`SIGINT`, `SIGUSR1`, `SIGTERM`, ...) do not change.
 
 ## Build
 
