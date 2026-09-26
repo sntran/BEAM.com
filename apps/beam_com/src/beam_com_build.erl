@@ -29,11 +29,25 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
-    App = case filelib:is_dir(Input) of
-              true -> app_dir(Input);
-              false -> script(Input)
-          end,
+    DepsLib = temp_dir("deps"),
+    try build(Input, Output, Opts, ExtraApps, Base, Root, DepsLib)
+    after
+        [code:del_path(P) || P <- code:get_path(), lists:prefix(DepsLib, P)],
+        file:del_dir_r(DepsLib)
+    end.
+
+build(Input, Output, Opts, ExtraApps, Base0, Root, DepsLib) ->
+    {App, Deps} = case filelib:is_dir(Input) of
+                      true ->
+                          Ds = deps(Input, DepsLib),
+                          {app_dir(Input), Ds};
+                      false ->
+                          {script(Input), []}
+                  end,
+    Base = maps:merge(Base0, maps:from_list([{N, D} || #{name := N} = D <- Deps])),
     Apps = select_apps(App, ExtraApps, Base),
+    DepFiles = lists:append([app_files(D) || #{name := N} = D <- Deps,
+                                             lists:member(N, Apps)]),
     Exe = case Opts of
               #{exe := E} -> E;
               _ -> executable()
@@ -46,8 +60,8 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Release = try release(App, Apps, Base, Tmp, Root)
               after file:del_dir_r(Tmp)
               end,
-    New = with_dirs(app_files(App) ++ Release ++ sandbox_files(Opts)),
-    Keep = keep(Apps, Base),
+    New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)),
+    Keep = keep([A || A <- Apps, is_map_key(A, Base0)], Base0),
     Data = case Opts of
                #{native := Target} ->
                    native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
@@ -232,7 +246,7 @@ script(File) ->
         orelse throw({error, "~ts: not a .erl file or a directory", [File]}),
     filelib:is_regular(File)
         orelse throw({error, "~ts: no such file", [File]}),
-    {Mod, Beam} = compile(File, []),
+    {Mod, Beam} = compile(File, [report_warnings]),
     lists:member({main, 1}, exports(Beam))
         orelse throw({error, "~ts: main/1 is not exported", [File]}),
     Props = [{description, atom_to_list(Mod)},
@@ -247,8 +261,16 @@ script(File) ->
 
 %% An application directory.
 app_dir(Dir) ->
+    app_dir(Dir, #{}).
+
+%% Options: vsn (the version of a Hex package, which wins over the one
+%% of the .app file) and dep (a dependency: warnings are not errors).
+app_dir(Dir, Options) ->
     {Name, Props0} = app_file(Dir),
-    ErlOpts = erl_opts(Dir),
+    ErlOpts = case Options of
+                  #{dep := true} -> erl_opts(Dir) -- [warnings_as_errors];
+                  _ -> erl_opts(Dir)
+              end,
     Gen = temp_dir("gen"),
     Beams = try
                 Generated = generate(Dir, Gen),
@@ -257,12 +279,18 @@ app_dir(Dir) ->
                             {i, Gen}],
                 Sources = filelib:wildcard(filename:join([Dir, "src", "**", "*.erl"]))
                     ++ Generated,
-                [compile(Src, Includes ++ ErlOpts) || Src <- Sources]
+                %% The warnings of a dependency are not shown (as rebar3).
+                Report = case Options of
+                             #{dep := true} -> [];
+                             _ -> [report_warnings]
+                         end,
+                [compile(Src, Report ++ Includes ++ ErlOpts) || Src <- Sources]
             after
                 file:del_dir_r(Gen)
             end,
-    Vsn = case proplists:get_value(vsn, Props0) of
-              V when is_list(V) -> V;
+    Vsn = case {Options, proplists:get_value(vsn, Props0)} of
+              {#{vsn := PkgVsn}, _} -> PkgVsn;
+              {_, V} when is_list(V) -> V;
               _ -> ?DEFAULT_VSN
           end,
     %% systools needs these keys. A minimal .app.src may not have them.
@@ -285,6 +313,24 @@ app_dir(Dir) ->
                                   filename:join([Dir, "config", File]))]],
     #{name => Name, vsn => Vsn, props => Props, beams => Beams,
       priv => Priv, config => Config, script => false}.
+
+%% The Hex packages of rebar.config (beam_com_hex), compiled in order.
+%% Each one is written to its directory (ebin/ with the .app file), and
+%% its ebin/ goes into the code path, for the parse transforms and the
+%% include_lib of the packages and of the program that come after it.
+deps(Dir, LibDir) ->
+    [begin
+         App = app_dir(PkgDir, #{vsn => Vsn, dep => true}),
+         Ebin = filename:join(PkgDir, "ebin"),
+         ok = filelib:ensure_path(Ebin),
+         #{props := Props, beams := Beams} = App,
+         write_file(filename:join(Ebin, atom_to_list(Name) ++ ".app"),
+                    io_lib:format("~tp.~n", [{application, Name, Props}])),
+         [write_file(filename:join(Ebin, atom_to_list(M) ++ ".beam"), B)
+          || {M, B} <- Beams],
+         true = code:add_patha(Ebin),
+         App#{dir => PkgDir}
+     end || #{name := Name, vsn := Vsn, dir := PkgDir} <- beam_com_hex:fetch(Dir, LibDir)].
 
 app_file(Dir) ->
     Files = filelib:wildcard(filename:join([Dir, "src", "*.app.src"]))
@@ -370,8 +416,7 @@ temp_dir(What) ->
                                       erlang:unique_integer([positive])])).
 
 compile(File, Opts) ->
-    case compile:file(File, [binary, report_errors, report_warnings
-                             | Opts]) of
+    case compile:file(File, [binary, report_errors | Opts]) of
         {ok, Mod, Beam} -> {Mod, Beam};
         {ok, Mod, Beam, _Warnings} -> {Mod, Beam};
         _ -> throw({error, "~ts: compilation failed", [File]})

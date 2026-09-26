@@ -69,8 +69,8 @@ beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
   `priv/`, `config/sys.config`, `config/vm.args` (the rebar3 layout) and
   the `erl_opts` of `rebar.config`. Parsers (`src/*.yrl`, yecc),
   scanners (`src/*.xrl`, leex) and ASN.1 modules (`asn1/*.asn1` or
-  `src/*.asn1`, `.asn` too; BER) are made into Erlang code first.
-  Dependencies are not fetched yet.
+  `src/*.asn1`, `.asn` too; BER) are made into Erlang code first. The
+  `deps` of `rebar.config` are Hex packages (see below).
 
 The builder compiles the code, selects the OTP applications that the
 program needs, makes an OTP release with `systools`, and writes a copy of
@@ -86,6 +86,47 @@ application that the code only calls with `apply/3` or similar.
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
 `parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm` and
 `esqlite`.
+
+### Hex packages
+
+The `deps` of `rebar.config` are fetched from [hex.pm](https://hex.pm)
+and compiled into the program, as rebar3 does, without rebar3:
+
+```erlang
+{deps, [{cowboy, "~> 2.13"},       % a Hex requirement
+        {jsx, "3.1.0"},            % this version only
+        recon,                     % the highest version
+        {mylib, "~> 1.0", {pkg, my_lib}}]}.  % another package name
+```
+
+- **Versions.** When `rebar.lock` has all the deps, its versions are
+  used, and nothing is resolved. Otherwise `beam.com build` takes the
+  highest version of each package that matches all the requirements (of
+  `rebar.config` and of the packages), the locked version first when it
+  matches, and writes `rebar.lock` (the format of rebar3). A conflict
+  is an error that names both requirements; a version in `rebar.config`
+  solves it. Pre-releases are used only when a requirement names one.
+- **Checks.** Each tarball is checked with the outer checksum (SHA-256
+  of the file: `pkg_hash_ext` of `rebar.lock`, or the checksum of the
+  Hex API) and the inner checksum (`pkg_hash`, and the `CHECKSUM` file).
+- **Cache.** The tarballs are kept in the cache of the user
+  (`~/.cache/beam.com` on Linux; `BEAM_COM_CACHE` changes it). With
+  `rebar.lock` and a full cache, a build does not use the network.
+- **Network.** HTTPS with `httpc`, verified with the certificates of
+  the OS. `HTTPS_PROXY` and `NO_PROXY` are used. `HEX_API_URL` (default
+  `https://hex.pm/api`) and `HEX_MIRROR` (default `https://repo.hex.pm`)
+  select other servers.
+- **Build.** The packages are compiled in order (a package after the
+  packages that it needs), with their `erl_opts` (without
+  `warnings_as_errors`), and their warnings are not shown. A package
+  can use the parse transforms and the headers (`include_lib`) of the
+  packages that it needs.
+- **Not supported:** git and other sources, Elixir packages (mix), NIFs
+  (C code) and rebar3 plugins or hooks.
+
+[`examples/hexweb`](examples/hexweb) uses cowboy (with cowlib and
+ranch) and jsx: it starts a web server and gets JSON from it. CI builds
+it on each platform, two times (with and without `rebar.lock`).
 
 ### A native file for one system (`--native`)
 
@@ -513,8 +554,8 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   only).
 - A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
   writes a warning when `start_erl.data` names another ERTS version.
-- `beam.com build` does not fetch dependencies (Hex packages) yet, and
-  it does not compile Elixir.
+- `beam.com build` takes only Hex packages (no git dependencies), and it
+  does not compile Elixir.
 
 ## Roadmap
 

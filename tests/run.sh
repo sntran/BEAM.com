@@ -274,6 +274,28 @@ if [ -d examples ]; then
         read /etc/hosts read "$dir/sandbox_pledge.com" write "$dir/sandbox.tmp" listen
 fi
 
+# Hex packages (from hex.pm, so this needs the network): hexweb needs
+# cowboy (with cowlib and ranch) and jsx. The first build resolves the
+# versions and writes rebar.lock; the second one uses rebar.lock and the
+# cache, and does not write it again.
+hexweb='hexweb: content-type application/json@@hexweb: hello BEAM.com; cowboy-[0-9.]* cowlib-[0-9.]* jsx-[0-9.]* ranch-[0-9.]*$'
+if [ -d examples ]; then
+    rm -f examples/hexweb/rebar.lock
+    check beam.com 'wrote .*rebar.lock@@wrote .*hexweb.com@@applications: .*cowboy.*cowlib.*ranch.*jsx' \
+        build examples/hexweb -o "$dir/hexweb.com"
+    [ -f "$dir/hexweb.com" ] && check hexweb.com "$hexweb"
+    if [ -f examples/hexweb/rebar.lock ]; then
+        check beam.com 'wrote .*hexweb2.com' build examples/hexweb -o "$dir/hexweb2.com"
+        if grep -q 'rebar.lock' "$tmp"; then
+            echo "FAIL: the second build of hexweb wrote rebar.lock again"
+            failed="$failed
+  beam.com build examples/hexweb: wrote rebar.lock again"
+            fail=1
+        fi
+        rm -f examples/hexweb/rebar.lock
+    fi
+fi
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'

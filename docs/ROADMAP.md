@@ -97,8 +97,8 @@ can be added on WAMR, or the runtime can be replaced.
 
 ### Later: more for `beam.com build`
 
-- Hex packages (source), fetched with the `httpc` and TLS support that
-  `beam.com` already has, and a lock file.
+- Done: Hex packages (the `deps` of `rebar.config`, `rebar.lock`,
+  checksums, a cache), with `httpc` and TLS in `beam.com`.
 - Elixir sources.
 - Not planned: NIF dependencies, rebar3 plugins.
 
