@@ -588,6 +588,81 @@ it: 0 of 600 starts fail.
 another thread); or hold the lock around the system call and the
 release, as `close()` already does for `/zip` descriptors.
 
+### C26. close() of a /zip file and the open of a real file: a race
+
+**Status:** cosmocc 4.0.2 (`libc/runtime/zipos-close.c`,
+`libc/calls/close.c`, `libc/calls/fstat.c`).
+
+**Symptom.** A build of an Elixir project (`beam.com build
+examples/greeter_ex`, which reads many files of the zip at the same
+time) sometimes dies with `SIGSEGV` (seen in CI on NetBSD, exit 139).
+`beam.com mix format` (many files at the same time)
+dies the same way in `__zipos_fstat()`, called by `fstat()` in
+`efile_open()` of `read_file_nif` on a dirty I/O thread: 5 of 200 runs,
+with 4 runs at the same time.
+
+**Cause.** `__zipos_close()` calls the `close` system call first, then
+frees the handle (`munmap()`), and `close()` clears the entry in `g_fds`
+after that. The lock of the table is held, but the open of a real file
+does not take it: in the gap, another thread opens a real file, gets the
+number that the kernel has just freed, and calls `fstat()` on it.
+`fstat()` (and `read()` and the others) sees the old `kFdZip` entry, and
+uses the freed handle.
+
+**Workaround in BEAM.com.** `__wrap_close()` in `cosmo/beam_com.c`
+(the wrapper of C25) closes a `/zip` descriptor in the safe order: it
+clears the entry (`__releasefd()`), then calls the `close` system call,
+then frees the handle (`__zipos_drop()`), all under the lock. It does
+this only in the process itself, not in a child of `vfork()` (which
+shares the memory, and where Cosmopolitan only closes the kernel
+descriptor), and not on Windows (no kernel descriptor for `/zip` files).
+With it: 0 of 400 runs fail.
+
+**Possible upstream fix.** In `close()` of a `kFdZip` descriptor, clear
+the entry before the `close` system call, and free the handle after it.
+
+### C27. mkdir() of a drive root gives EACCES on Windows
+
+**Status:** cosmocc 4.0.2 (`libc/calls/mkdirat-nt.c`).
+
+**Symptom.** On Windows, `beam.com build` of Elixir code failed:
+`File.Error ... reason: eacces, action: "make directory (with -p)"` for
+the temporary directory, which existed.
+
+**Cause.** Elixir's `File.mkdir_p/1` makes each parent directory from
+the root (`/C`, `/C/Users`, ...), and accepts only `eexist` for one that
+exists. Cosmopolitan's `mkdir()` on Windows calls `CreateDirectory()`,
+which is denied for a drive root (`C:\`), and gives `EACCES`. POSIX
+says that `mkdir()` of an existing path gives `EEXIST`.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=mkdir`, and `__wrap_mkdir()` in `cosmo/beam_com.c` gives
+`EEXIST` in place of `EACCES` on Windows when the path exists.
+
+**Possible upstream fix.** In `sys_mkdirat_nt()`, give `EEXIST` when
+`CreateDirectory()` fails and the path exists.
+
+### C28. chown() gives ENOSYS on Windows, also with -1 and -1
+
+**Status:** cosmocc 4.0.2 (`libc/calls/chown.c`, `fchownat.c`).
+
+**Symptom.** On Windows, `mix test` stopped at the start: `File.Error
+could not touch ".../mix_user_check_...": function not implemented`, in
+`Mix.Utils.detect_user_id!/0`.
+
+**Cause.** `prim_file:write_file_info/3` (which `File.touch/1` of Elixir
+calls) always sets the owner, with `-1` and `-1` when the owner does
+not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
+gives `ENOSYS` on Windows for all values.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `cosmo/beam_com.c` gives, on
+Windows, for `-1` and `-1`: 0 when the path exists, else the error of
+`stat()` (`ENOENT`, on which `File.touch/1` makes the file).
+
+**Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
+return 0 for `-1` and `-1` when the path exists.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

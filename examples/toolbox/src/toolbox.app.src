@@ -1,0 +1,6 @@
+{application, toolbox,
+ [{description, "An example command line program: main/1, a behaviour, priv programs, erl mode"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {applications, [kernel, stdlib]},
+  {env, []}]}.

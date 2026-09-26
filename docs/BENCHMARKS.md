@@ -140,3 +140,25 @@ median of 11 runs of `beam.com version`, two runs:
 The programs that `beam.com build` makes keep these entries stored, so
 they start faster too. A zip with no compression at all is about 21 MB
 larger, so only these two applications are stored.
+
+## What each feature costs
+
+The size that each part adds to `beam.com` (fat, both CPUs), and to the
+programs that it builds. The programs get only what they use, except the
+parts in the emulator (C code), which are in every program.
+
+| Part | `beam.com` | A program | Where it is |
+|---|---:|---:|---|
+| JIT (BeamAsm) | +2.8 MB | +2.8 MB | emulator; start 40 to 90 ms slower |
+| SQLite (esqlite) | +1.8 MB | +1.8 MB | emulator (`SQLITE=0` leaves it out) |
+| WebAssembly (WAMR) | +0.6 MB | +0.6 MB | emulator (`WASM=0` leaves it out) |
+| `kernel` and `stdlib` stored | +1.9 MB | +1.8 MB | zip; start about 50 ms faster |
+| Code without docs and debug information | | −7.7 MB | zip of the program (as `mix release` strips it); start the same |
+| Elixir (`elixir`, `eex`, `ex_unit`, `iex`, `logger`, `mix`, with docs) | +2.8 MB | 0 for Erlang programs | zip (`ELIXIR=0` leaves it out) |
+| An Elixir program (`elixir` and `compiler`) | | +1.9 MB, start about 40 ms slower | zip of the program |
+
+The last two rows were measured locally (Linux x86_64, the fat JIT): a
+one-file program that prints one line, in Erlang (27.2 MB, 182 ms) and
+in Elixir (29.1 MB, 223 ms), the median of 7 starts. Before the code of
+the programs was stripped, the same programs were 34.9 MB (188 ms) and
+39.0 MB (225 ms).

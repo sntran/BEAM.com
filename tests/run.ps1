@@ -3,6 +3,8 @@
 # "beam.com build".
 # Usage: tests/run.ps1 DIR
 param([string]$Dir = ".")
+# An absolute path: some checks run in another directory.
+$Dir = (Resolve-Path $Dir).Path
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -17,6 +19,9 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     $env:BEAM_COM_VERBOSE = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Resolve-Path $exe).Path
+    # The directory of Push-Location and Set-Location (the process keeps
+    # its own working directory).
+    $psi.WorkingDirectory = (Get-Location).ProviderPath
     # Quote the arguments with spaces or quotes (the rules of
     # CommandLineToArgvW).
     $psi.Arguments = ($Arguments | ForEach-Object {
@@ -59,19 +64,30 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     }
     Unregister-Event -SourceIdentifier $o.Name
     Unregister-Event -SourceIdentifier $e.Name
-    $out = ($lines.ToArray() -join "`n")
+    $all = $lines.ToArray()
+    $out = ($all -join "`n")
     $rc = if ($timedOut) { 124 } else { $p.ExitCode }
-    Write-Host $out
+    # A long output is shortened in the log (the log of CI keeps only its
+    # end); the checks read the whole output.
+    if ($all.Count -gt 200) {
+        Write-Host (($all | Select-Object -First 40) -join "`n")
+        Write-Host "... ($($all.Count) lines) ..."
+        Write-Host (($all | Select-Object -Last 40) -join "`n")
+    } else {
+        Write-Host $out
+    }
+    # The end of the output of a failed check, for the summary.
+    $tail = (($all | Select-Object -Last 15) | ForEach-Object { "      | $_" }) -join "`n"
     if ($rc -ne $Expect) {
         Write-Host "FAIL: $Name exited with $rc (expected $Expect)"; $script:fail = 1
-        $script:failures.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)")
+        $script:failures.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)`n$tail")
     } else {
         # The patterns are separated by "@@". Each one must be found.
         $ok = $true
         foreach ($pat in ($Pattern -split '@@')) {
             if ($out -notmatch $pat) {
                 Write-Host "FAIL: $Name did not print `"$pat`""
-                $script:failures.Add("$Name $($Arguments -join ' '): did not print `"$pat`"")
+                $script:failures.Add("$Name $($Arguments -join ' '): did not print `"$pat`"`n$tail")
                 $ok = $false; $script:fail = 1
             }
         }
@@ -171,6 +187,66 @@ if (Test-Path "examples") {
     Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
 }
 
+# Elixir: see tests/run.sh.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*elixir_check.com' @("build", "tests/programs/elixir_check.ex", "-o", "$Dir/elixir_check.com")
+    if (Test-Path (Join-Path $Dir "elixir_check.com")) {
+        Check "elixir_check.com" 'elixir: 1\.[0-9]+\.[0-9]+ on OTP 29@@args: \["a", "b c"\]@@sum: 5050@@upcase: BEAM.COM' @("a", "b c")
+        Check "elixir_check.com" '\*\* \(RuntimeError\) boom' @("raise") 127
+    }
+    Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+    Check "beam.com" 'wrote .*greeter_ex.com' @("build", "examples/greeter_ex", "-o", "$Dir/greeter_ex.com")
+    if (Test-Path (Join-Path $Dir "greeter_ex.com")) {
+        Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
+    }
+    Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+}
+
+# The tools (see tests/run.sh), as the first argument of beam.com, and
+# by the name of the file (mix.com, elixir.com: hard links to beam.com,
+# as a copy). No port programs here (so no Hex or rebar3).
+$escript = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_tools.escript"
+Set-Content -Path $escript -Encoding ascii -Value @(
+    '#!/usr/bin/env escript',
+    '%%! +S 1 -escript main tools_escript',
+    '-module(tools_escript).',
+    '-export([main/1]).',
+    'main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).')
+Check "beam.com" 'escript: \["a","b c"\] 1' @("escript", $escript, "a", "b c")
+Check "beam.com" '(?m)^55\r?$' @("elixir", "-e", "IO.puts(Enum.sum(1..10))")
+foreach ($t in @("mix", "elixir")) {
+    New-Item -ItemType HardLink -Path (Join-Path $Dir "$t.com") -Target (Join-Path $Dir "beam.com") -Force | Out-Null
+}
+if (Test-Path (Join-Path $Dir "elixir.com")) {
+    Check "elixir.com" '(?m)^55\r?$' @("-e", "IO.puts(Enum.sum(1..10))")
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_mix_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    Push-Location $work
+    Check "mix.com" 'creating mix.exs' @("new", "hello")
+    Set-Location hello
+    Check "mix.com" '2 passed' @("test")
+    Pop-Location
+    Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $Dir "mix.com"), (Join-Path $Dir "elixir.com") -ErrorAction SilentlyContinue
+}
+
+# An application with an entry (toolbox): see tests/run.sh. The priv and
+# peer commands run a shell script and a port program; they are tested
+# on the other systems.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' @("build", "examples/toolbox", "-o", "$Dir/toolbox.com")
+    if (Test-Path (Join-Path $Dir "toolbox.com")) {
+        Check "toolbox.com" '(?m)^toolbox: Hello, Ana\r?$' @("greet", "Ana")
+        Check "toolbox.com" 'toolbox: usage: ' @("nosuch") 2
+        # erl mode (BEAM_COM_ERL=1): the arguments are for erl.
+        $env:BEAM_COM_ERL = "1"
+        Check "toolbox.com" '(?m)^1\r?$' @("+S", "1", "-noinput", "-eval", "erlang:display(erlang:system_info(schedulers)), halt().")
+        Remove-Item Env:BEAM_COM_ERL
+    }
+    Check "beam.com" 'wrote .*toolbox2.com' @("build", "examples/toolbox", "--main", "toolbox_cli", "-o", "$Dir/toolbox2.com")
+    Check "beam.com" 'toolbox_english does not export main/1' @("build", "examples/toolbox", "--main", "toolbox_english", "-o", "$Dir/never.com") 1
+}
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
@@ -229,7 +305,10 @@ if (Test-Path "examples") {
     if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
-        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
+        # A relative path: the Unix VFS of SQLite takes a path with a drive
+        # (D:\...) as a relative path (README, "Known limits").
+        $db = (Resolve-Path -Relative $Dir) + "/test.db"
+        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape($db)) @($db)
     }
     if (Test-Path (Join-Path $Dir "beam-emu.com")) {
         Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")

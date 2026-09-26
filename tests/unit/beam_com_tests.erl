@@ -14,8 +14,10 @@ build_options_test_() ->
                    opts(["-o", "b.com", "a.erl"])),
      ?_assertEqual(#{input => "dir", apps => [crypto, ssl]},
                    opts(["-a", "crypto", "dir", "-a", "ssl"])),
-     ?_assertEqual(#{input => "a.erl", native => "linux-x86_64", apps => []},
-                   opts(["a.erl", "--native", "linux-x86_64"])),
+     ?_assertEqual(#{input => "a.erl", target => "x86_64-unknown-linux-gnu", apps => []},
+                   opts(["a.erl", "--target", "x86_64-unknown-linux-gnu"])),
+     ?_assertEqual(#{input => "a.erl", target => "aarch64-unknown-linux-gnu", apps => []},
+                   opts(["a.erl", "--target", "aarch64-linux"])),
      {"the last -o wins",
       ?_assertEqual(#{input => "a", output => "2", apps => []},
                     opts(["-o", "1", "a", "-o", "2"]))}].
@@ -29,9 +31,12 @@ build_errors_test_() ->
       ?_assertThrow({error, "option ~ts needs a value", ["-o"]}, opts(["a.erl", "-o"]))},
      {"-a without a value",
       ?_assertThrow({error, "option ~ts needs a value", ["-a"]}, opts(["a.erl", "-a"]))},
-     {"--native without a value",
-      ?_assertThrow({error, "option ~ts needs a value", ["--native"]},
-                    opts(["a.erl", "--native"]))},
+     {"--target without a value",
+      ?_assertThrow({error, "option ~ts needs a value", ["--target"]},
+                    opts(["a.erl", "--target"]))},
+     {"--native is --target now",
+      ?_assertThrow({error, "unknown option ~ts", ["--native"]},
+                    opts(["a.erl", "--native", "x86_64-linux"]))},
      {"an unknown option",
       ?_assertThrow({error, "unknown option ~ts", ["-z"]}, opts(["a.erl", "-z"]))},
      {"--pledge without a value",
@@ -46,6 +51,18 @@ build_errors_test_() ->
      {"the last --pledge wins",
       ?_assertEqual(#{input => "a", apps => [], pledge => "dns"},
                     opts(["--pledge", "inet", "a", "--pledge", "dns"]))},
+     {"--main, --tool and --extract-priv",
+      ?_assertEqual(#{input => "d", apps => [], main => m, tool => mix,
+                      extract_priv => [a, b]},
+                    opts(["d", "--main", "m", "--tool", "mix", "--extract-priv", "a",
+                          "--extract-priv", "b"]))},
+     {"--tool rebar", ?_assertMatch(#{tool := rebar}, opts(["d", "--tool", "rebar"]))},
+     {"an unknown tool",
+      ?_assertThrow({error, "--tool is rebar or mix, not ~ts", ["make"]},
+                    opts(["d", "--tool", "make"]))},
+     [{Option ++ " without a value",
+       ?_assertThrow({error, "option ~ts needs a value", [Option]}, opts(["d", Option]))}
+      || Option <- ["--main", "--tool", "--extract-priv"]],
      {"build with no input", ?_assertThrow(Usage, beam_com:command(["build"]))}].
 
 %% The output of a command, and its result. A small I/O server collects
@@ -79,7 +96,7 @@ has(Text, Part) ->
     string:find(Text, Part) =/= nomatch.
 
 commands_test_() ->
-    UnknownRun = {error, "unknown command ~ts (see beam.com help)", ["run"]},
+    UnknownRun = {error, "unknown command ~ts (see ~ts help)", ["run", "beam.com"]},
     [{"no command prints the help",
       fun() ->
               {ok, Text} = output([]),
@@ -129,7 +146,13 @@ commands_test_() ->
       end},
      {"an unknown command", ?_assertThrow(UnknownRun, beam_com:command(["run", "x"]))},
      {"version with arguments",
-      ?_assertThrow({error, "usage: beam.com version", []},
+      ?_assertThrow({error, "usage: ~ts version", ["beam.com"]},
                     beam_com:command(["version", "x"]))},
      {"help of an unknown command",
-      ?_assertThrow(UnknownRun, beam_com:command(["help", "run"]))}].
+      ?_assertThrow(UnknownRun, beam_com:command(["help", "run"]))},
+     {"the name of the file",
+      [?_assertEqual("beam.com", beam_com:name()),
+       ?_assertEqual("beam-emu.com", beam_com:name("/opt/bin/beam-emu.com")),
+       ?_assertEqual("beam.com", beam_com:name("C:/tools/beam.exe")),
+       ?_assertEqual("tool.com", beam_com:name("C:\\tools\\tool.exe")),
+       ?_assertEqual("beam.com", beam_com:name("beam"))]}].

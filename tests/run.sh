@@ -214,21 +214,23 @@ if [ -d examples ]; then
     check_status 1 beam.com 'option -o needs a value' build x.erl -o
     check_status 1 beam.com 'the application nosuch is not in beam.com' \
         build examples/hashsum.erl -a nosuch -o "$dir/never.com"
-    check_status 1 beam.com 'unknown native target macos-arm64' \
-        build examples/hashsum.erl --native macos-arm64
+    check_status 1 beam.com 'aarch64-apple-darwin: Apple Silicon has no native form' \
+        build examples/hashsum.erl --target aarch64-apple-darwin
+    check_status 1 beam.com 'unknown target linux-x86_64' \
+        build examples/hashsum.erl --target linux-x86_64
 
-    # --native: a file for this system only, which the kernel starts
+    # --target: a file for this system only, which the kernel starts
     # directly (no shell, no APE loader).
     case $os-$(uname -m) in
-        linux-x86_64) native=linux-x86_64 ;;
-        linux-aarch64) native=linux-aarch64 ;;
-        freebsd-amd64) native=freebsd-x86_64 ;;
-        darwin-x86_64) native=macos-x86_64 ;;
+        linux-x86_64) native=x86_64-unknown-linux-gnu ;;
+        linux-aarch64) native=aarch64-linux ;;
+        freebsd-amd64) native=x86_64-unknown-freebsd ;;
+        darwin-x86_64) native=x86_64-macos ;;
         *) native= ;;
     esac
     if [ -n "$native" ]; then
         check beam.com 'wrote .*hashsum.native' \
-            build examples/hashsum.erl --native "$native" -o "$dir/hashsum.native"
+            build examples/hashsum.erl --target "$native" -o "$dir/hashsum.native"
         if [ -f "$dir/hashsum.native" ]; then
             saved_runner=$runner
             runner=
@@ -294,6 +296,130 @@ if [ -d examples ]; then
         fi
         rm -f examples/hexweb/rebar.lock
     fi
+fi
+
+# Elixir: a one-file program, and a Mix project with a Hex package in
+# Elixir (jason, from hex.pm) and config/config.exs.
+greeter_ex='greeter_ex: Hello from config/config.exs (1)@@greeter_ex: Hello from config/config.exs (2)@@greeter_ex: json {.*"elixir":"1\.[0-9.]*".*}@@greeter_ex: decoded 1\.'
+if [ -d examples ]; then
+    check beam.com 'wrote .*elixir_check.com@@applications: .*elixir' \
+        build tests/programs/elixir_check.ex -o "$dir/elixir_check.com"
+    if [ -f "$dir/elixir_check.com" ]; then
+        check elixir_check.com 'elixir: 1\.[0-9]*\.[0-9]* on OTP 29@@args: \["a", "b c", "日本"\]@@sum: 5050@@upcase: BEAM.COM' a "b c" 日本
+        check_status 127 elixir_check.com '\*\* (RuntimeError) boom' raise
+    fi
+    rm -f examples/greeter_ex/mix.lock
+    check beam.com 'wrote .*mix.lock@@wrote .*greeter_ex.com@@applications: .*jason' \
+        build examples/greeter_ex -o "$dir/greeter_ex.com"
+    [ -f "$dir/greeter_ex.com" ] && check greeter_ex.com "$greeter_ex"
+    rm -f examples/greeter_ex/mix.lock
+fi
+
+# The tools: escript, and mix, iex, elixir and elixirc, as a first
+# argument of beam.com or by the name of the file: mix.com, iex.com,
+# elixir.com and elixirc.com are beam.com under other names (here hard
+# links, as a copy), and mix, iex, elixir and escript are symbolic links.
+# The Mix checks run in a new directory. BEAM_COM_TEST_OFFLINE=1 leaves
+# out the checks that need hex.pm and builds.hex.pm.
+cat > "$tmp.escript" <<'ESCRIPT'
+#!/usr/bin/env escript
+%%! +S 1 -escript main tools_escript
+-module(tools_escript).
+-export([main/1]).
+main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).
+ESCRIPT
+check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
+check beam.com '^55$' elixir -e 'IO.puts(Enum.sum(1..10))'
+check beam.com '^Mix 1\.' mix --version
+if [ -f "$dir/beam.com" ]; then
+    here=$(pwd)
+    work=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_mix.XXXXXX")
+    dir_rel=$dir runner_rel=$runner
+    dir=$(cd "$dir" && pwd)
+    case $runner in */*) runner=$here/$runner ;; esac
+    for t in mix iex elixir elixirc; do ln -f "$dir/beam.com" "$dir/$t.com"; done
+    for t in mix iex elixir escript; do ln -sf beam.com "$dir/$t"; done
+    cd "$work"
+    check elixir.com '^55$@@^\["x", "y"\]$' -e 'IO.puts(Enum.sum(1..10)); IO.inspect(System.argv())' x y
+    printf 'defmodule ToolsC do\n  def f, do: :ok\nend\n' > tools_c.ex
+    check elixirc.com '' tools_c.ex -o out
+    [ -f out/Elixir.ToolsC.beam ] || { echo "FAIL: elixirc wrote no beam file"; fail=1; failed="$failed
+  elixirc.com: no out/Elixir.ToolsC.beam"; }
+    check mix.com 'creating mix.exs' new hello
+    cd hello
+    check mix.com '2 passed' test
+    check mix '' format --check-formatted
+    check elixir '^world$' -S mix run -e 'IO.puts(Hello.hello())'
+    # iex evaluates .iex.exs after the start of the shell (and of mix).
+    printf 'IO.puts("iex: #{Hello.hello()}")\nSystem.halt()\n' > tools.iex.exs
+    check iex.com '^iex: world$' --dot-iex tools.iex.exs -S mix
+    # An escript from Mix: its "%%!" line names the main module.
+    sed 's/deps: deps()/deps: deps(), escript: [main_module: Hello.CLI]/' mix.exs > mix.exs.new
+    mv mix.exs.new mix.exs
+    printf 'defmodule Hello.CLI do\n  def main(args), do: IO.puts("cli: #{inspect(args)}")\nend\n' > lib/cli.ex
+    check mix 'Generated escript hello' escript.build
+    check escript '^cli: \["p", "q"\]$' hello p q
+    if [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ]; then
+        # Hex and rebar3 (for the Erlang packages), installed by Mix into
+        # ~/.mix; Mix runs rebar3 with the escript in PATH. Where the kernel
+        # cannot start an APE file and sh stops at its first NUL byte
+        # (NetBSD), escript is a small script that starts the file with the
+        # APE loader.
+        if [ "$os" = netbsd ]; then
+            rm -f "$dir/escript"
+            printf '#!/bin/sh\nexec %s %s/beam.com escript "$@"\n' "$runner" "$dir" > "$dir/escript"
+            chmod +x "$dir/escript"
+        fi
+        PATH=$dir:$PATH
+        export PATH
+        check mix '' local.hex --force
+        check mix '' local.rebar --force
+        sed 's/# {:dep_from_hexpm, "~> 0.3.0"},/{:jason, "~> 1.4"}, {:telemetry, "~> 1.3"},/' mix.exs > mix.exs.new
+        mv mix.exs.new mix.exs
+        check mix 'jason@@telemetry' deps.get
+        check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
+    fi
+    cd "$here"
+    rm -f "$dir/mix" "$dir/iex" "$dir/elixir" "$dir/escript" \
+        "$dir/mix.com" "$dir/iex.com" "$dir/elixir.com" "$dir/elixirc.com"
+    rm -rf "$work"
+    dir=$dir_rel runner=$runner_rel
+fi
+
+# An application with an entry (toolbox): the main module comes from
+# escript_emu_args of rebar.config, a behaviour is compiled before the
+# module that uses it, priv has an executable file (so it is copied to
+# the cache at start), and the program starts itself again as erl.
+toolbox_cache=$dir/toolbox-cache
+if [ -d examples ]; then
+    check beam.com 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' \
+        build examples/toolbox -o "$dir/toolbox.com"
+    if [ -f "$dir/toolbox.com" ]; then
+        rm -rf "$toolbox_cache"
+        BEAM_COM_CACHE=$toolbox_cache; export BEAM_COM_CACHE
+        check toolbox.com 'toolbox: Hello, Ana$' greet Ana
+        check_status 2 toolbox.com 'toolbox: usage: ' nosuch
+        check toolbox.com 'priv in /zip: false@@hello.sh says from-priv (a real file: .*toolbox-cache/priv/[0-9a-f]*/toolbox-1\.0\.0/priv/hello\.sh)' priv
+        # The second start uses the files of the first.
+        check toolbox.com 'hello.sh says from-priv' priv
+        check toolbox.com '^peer: true [a-z]*$' peer
+        unset BEAM_COM_CACHE
+        # erl mode: a link named erl, or BEAM_COM_ERL=1.
+        ln -sf toolbox.com "$dir/erl"
+        check erl '^erl mode: true$' -noinput -eval \
+            'io:format("erl mode: ~p~n", [code:which(toolbox_cli) =/= non_existing]), halt().'
+        rm -f "$dir/erl"
+        BEAM_COM_ERL=1; export BEAM_COM_ERL
+        check toolbox.com '^schedulers: 1$' +S 1 -noinput -eval \
+            'io:format("schedulers: ~p~n", [erlang:system_info(schedulers)]), halt().'
+        unset BEAM_COM_ERL
+    fi
+    # --main names the module; it must export main/1.
+    check beam.com 'wrote .*toolbox2.com' \
+        build examples/toolbox --main toolbox_cli -o "$dir/toolbox2.com"
+    [ -f "$dir/toolbox2.com" ] && check toolbox2.com 'toolbox: Hello, Bo$' greet Bo
+    check_status 1 beam.com 'toolbox_english does not export main/1' \
+        build examples/toolbox --main toolbox_english -o "$dir/never.com"
 fi
 
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
