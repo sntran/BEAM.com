@@ -134,6 +134,8 @@ check beam.com 'usage: beam.com COMMAND' help
 check beam.com 'usage: beam.com build INPUT' help build
 check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : emu@@stdlib-@@esqlite-@@wasm-" version
 check_status 1 beam.com 'unknown command nosuch (see beam.com help)' nosuch
+# The --strace flag of the Cosmopolitan runtime (README, "Debugging").
+check beam.com 'SYS @@Erlang/OTP  : ' --strace version
 
 # Releases made with rebar3 and added with zip (by CI).
 for app in greeter crypto_check tls_check; do

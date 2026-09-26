@@ -117,6 +117,24 @@ what it does not need after its start, as OpenBSD daemons do.
 - `.yrl`/`.xrl` (`parsetools`) and `.asn1` files; Elixir sources.
 - Not planned: NIF dependencies, rebar3 plugins.
 
+### Later: more from Cosmopolitan
+
+- Crash reports: `ShowCrashReports()` prints a backtrace (and the
+  `cosmoaddr2line` command for a better one) when the emulator dies on
+  a fatal signal. To check first: that it does not change how ERTS
+  handles its own signals.
+- A faster start: entries that are stored (not compressed) in the zip
+  can be read without inflating them. Measured on Linux x86_64 with a
+  zip without compression: `beam.com version` starts in about 100 ms
+  instead of about 145 ms, but the file grows from 27.5 MB to 49 MB.
+  To try: store only the modules that the boot loads.
+- A native file for one platform, made with `assimilate` (a Mach-O file
+  for macOS, an ELF file for Linux): no APE loader in `$TMPDIR`, and a
+  macOS file that can be signed. As an option of `beam.com build`.
+- Used already: the zip file system (`/zip`), the fat x86_64 and
+  aarch64 file, `.args`, the `--strace` and `--ftrace` flags, and
+  `GetProgramExecutableName()` for the helper programs.
+
 ## Decided against
 
 - Loading native per-platform NIF libraries (`cosmo_dlopen`): it breaks
