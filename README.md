@@ -71,6 +71,8 @@ beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
   scanners (`src/*.xrl`, leex) and ASN.1 modules (`asn1/*.asn1` or
   `src/*.asn1`, `.asn` too; BER) are made into Erlang code first. The
   `deps` of `rebar.config` are Hex packages (see below).
+- **One Elixir file** (`.ex` or `.exs`) in which one module exports
+  `main/1`, or **a Mix project** (`mix.exs`): see "Elixir" below.
 
 The builder compiles the code, selects the OTP applications that the
 program needs, makes an OTP release with `systools`, and writes a copy of
@@ -84,8 +86,8 @@ and all the applications that these need. Use `-a APP` for an
 application that the code only calls with `apply/3` or similar.
 
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
-`parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm` and
-`esqlite`.
+`parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm`,
+`esqlite`, and Elixir (`elixir`, `eex`, `logger` and `mix`).
 
 ### Hex packages
 
@@ -121,12 +123,52 @@ and compiled into the program, as rebar3 does, without rebar3:
   `warnings_as_errors`), and their warnings are not shown. A package
   can use the parse transforms and the headers (`include_lib`) of the
   packages that it needs.
-- **Not supported:** git and other sources, Elixir packages (mix), NIFs
-  (C code) and rebar3 plugins or hooks.
+- **Not supported:** git and other sources, NIFs (C code) and rebar3
+  plugins or hooks. Elixir packages (Mix) are supported: see below.
 
 [`examples/hexweb`](examples/hexweb) uses cowboy (with cowlib and
 ranch) and jsx: it starts a web server and gets JSON from it. CI builds
 it on each platform, two times (with and without `rebar.lock`).
+
+### Elixir
+
+`beam.com` has Elixir 1.20.4 (compiled with its Erlang/OTP 29.1.1, the
+beam files without debug information and docs: 1.8 MB in the zip), so
+`beam.com build` compiles Elixir code without an Elixir installation:
+
+```sh
+beam.com build hello.ex             # one file; a module exports main/1
+beam.com build my_project           # a Mix project (mix.exs)
+```
+
+- **One file** (`.ex` or `.exs`): the modules of the file, and the one
+  that exports `main/1` runs; it gets the arguments as binaries (as
+  `System.argv/0`). An exception is printed in the format of Elixir, and
+  the status is 127.
+- **A Mix project**: `mix.exs` is read with Mix, in the `:prod`
+  environment (the Mix tool is not used): `:app`, `:version`, `:deps`,
+  `:elixirc_paths` (`lib`) and `:erlc_paths` (`src`) of `project/0`,
+  and `:mod`, `:extra_applications`, `:applications`, `:env` and
+  `:registered` of `application/0`. The Erlang files are compiled
+  first, then the Elixir files. `config/config.exs` becomes the
+  `sys.config` of the release (with `Config.Reader`, env `:prod`).
+- **Deps** are Hex packages, in Erlang (rebar3, make) or in Elixir (Mix),
+  as for rebar3 projects (see "Hex packages"), with `mix.lock` (in the
+  format of Mix) in place of `rebar.lock`. Deps `only: :dev` or
+  `:test` and `optional: true` are left out; `runtime: false` deps are
+  compiled, but they are not in the applications of the program.
+- A program gets only the Elixir applications that it uses: `elixir`,
+  with `compiler` (which Elixir needs at run time), makes a program
+  3.9 MB larger than the same program in Erlang, and its start about
+  35 ms slower (`docs/BENCHMARKS.md`).
+- **Not supported:** umbrella projects, `config/runtime.exs`, protocol
+  consolidation (protocols work, but their dispatch is not optimized),
+  and Mix tasks or aliases.
+
+[`examples/greeter_ex`](examples/greeter_ex) is a Mix project with jason
+(a Hex package in Elixir) and `config/config.exs`;
+[`tests/programs/elixir_check.ex`](tests/programs/elixir_check.ex) is a
+one-file program. CI builds and runs both on each platform.
 
 ### A native file for one system (`--native`)
 
@@ -554,8 +596,9 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   only).
 - A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
   writes a warning when `start_erl.data` names another ERTS version.
-- `beam.com build` takes only Hex packages (no git dependencies), and it
-  does not compile Elixir.
+- `beam.com build` takes only Hex packages (no git dependencies). For
+  Elixir: no umbrella projects, no `config/runtime.exs`, no protocol
+  consolidation.
 
 ## Roadmap
 

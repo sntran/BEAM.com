@@ -212,7 +212,7 @@ macho_header(Bin, Cpu) ->
     end.
 
 default_output(Input) ->
-    filename:basename(Input, ".erl") ++ ".com".
+    filename:rootname(filename:basename(Input), filename:extension(Input)) ++ ".com".
 
 %% The executable that runs, from beam_com.c.
 executable() ->
@@ -242,8 +242,28 @@ split_dir(Dir) ->
 
 %% One .erl file with main/1.
 script(File) ->
-    filename:extension(File) =:= ".erl"
-        orelse throw({error, "~ts: not a .erl file or a directory", [File]}),
+    case filename:extension(File) of
+        ".erl" -> erl_script(File);
+        Ext when Ext =:= ".ex"; Ext =:= ".exs" -> elixir_script(File);
+        _ -> throw({error, "~ts: not a .erl, .ex or .exs file, or a directory", [File]})
+    end.
+
+%% One Elixir file (beam_com_elixir): the modules of the file, and the
+%% one that exports main/1 runs. The application takes the name of the
+%% file.
+elixir_script(File) ->
+    #{beams := Beams, main := Main} = beam_com_elixir:script(File),
+    Name = list_to_atom(filename:rootname(filename:basename(File))),
+    Props = [{description, atom_to_list(Name)},
+             {vsn, ?DEFAULT_VSN},
+             {modules, [M || {M, _} <- Beams]},
+             {registered, []},
+             {applications, [kernel, stdlib, elixir, beam_com_script]},
+             {mod, {beam_com_script, Main}}],
+    #{name => Name, vsn => ?DEFAULT_VSN, props => Props, beams => Beams,
+      priv => [], config => [], script => true}.
+
+erl_script(File) ->
     filelib:is_regular(File)
         orelse throw({error, "~ts: no such file", [File]}),
     {Mod, Beam} = compile(File, [report_warnings]),
@@ -266,6 +286,12 @@ app_dir(Dir) ->
 %% Options: vsn (the version of a Hex package, which wins over the one
 %% of the .app file) and dep (a dependency: warnings are not errors).
 app_dir(Dir, Options) ->
+    case beam_com_elixir:is_mix(Dir) of
+        true -> mix_dir(Dir, Options);
+        false -> rebar_dir(Dir, Options)
+    end.
+
+rebar_dir(Dir, Options) ->
     {Name, Props0} = app_file(Dir),
     ErlOpts = case Options of
                   #{dep := true} -> erl_opts(Dir) -- [warnings_as_errors];
@@ -330,7 +356,72 @@ deps(Dir, LibDir) ->
           || {M, B} <- Beams],
          true = code:add_patha(Ebin),
          App#{dir => PkgDir}
-     end || #{name := Name, vsn := Vsn, dir := PkgDir} <- beam_com_hex:fetch(Dir, LibDir)].
+     end || #{name := Name, vsn := Vsn, dir := PkgDir} <- fetch(Dir, LibDir)].
+
+fetch(Dir, LibDir) ->
+    case beam_com_elixir:is_mix(Dir) of
+        true ->
+            #{deps := Deps} = beam_com_elixir:mix_project(Dir),
+            beam_com_hex:fetch(Dir, LibDir, Deps, mix);
+        false ->
+            beam_com_hex:fetch(Dir, LibDir)
+    end.
+
+%% A Mix project (beam_com_elixir): the Erlang files of erlc_paths, then
+%% the Elixir files of elixirc_paths, which can call them. The .app file
+%% is made as Mix makes it: the applications are kernel, stdlib, elixir,
+%% the extra_applications and the deps (or :applications of
+%% application/0), with the :mod, :env and :registered of application/0.
+mix_dir(Dir, Options) ->
+    #{app := Name, version := Vsn0, runtime_deps := DepApps, elixirc_paths := ExPaths,
+      erlc_paths := ErlPaths, erlc_options := ErlcOpts, application := AppConf}
+        = beam_com_elixir:mix_project(Dir),
+    Vsn = maps:get(vsn, Options, Vsn0),
+    Out = temp_dir("mix"),
+    ok = filelib:ensure_path(Out),
+    true = code:add_patha(Out),
+    Beams = try
+                Report = case Options of
+                             #{dep := true} -> [];
+                             _ -> [report_warnings]
+                         end,
+                Includes = [{i, filename:join(Dir, "include")}]
+                    ++ [{i, filename:join(Dir, P)} || P <- ErlPaths],
+                ErlFiles = lists:append([filelib:wildcard(filename:join([Dir, P, "**", "*.erl"]))
+                                         || P <- ErlPaths]),
+                ErlBeams = [compile(F, Report ++ Includes ++ ErlcOpts) || F <- ErlFiles],
+                [write_file(filename:join(Out, atom_to_list(M) ++ ".beam"), B)
+                 || {M, B} <- ErlBeams],
+                ExFiles = lists:append([filelib:wildcard(filename:join([Dir, P, "**", "*.ex"]))
+                                        || P <- ExPaths]),
+                ErlBeams ++ beam_com_elixir:compile(ExFiles, Out, Dir)
+            after
+                code:del_path(Out),
+                file:del_dir_r(Out)
+            end,
+    Get = fun(K, D) -> proplists:get_value(K, AppConf, D) end,
+    Apps = case Get(applications, undefined) of
+               undefined -> [kernel, stdlib, elixir] ++ Get(extra_applications, []) ++ DepApps;
+               Explicit -> [kernel, stdlib, elixir] ++ Explicit
+           end,
+    Props = [{description, atom_to_list(Name)},
+             {vsn, Vsn},
+             {modules, [M || {M, _} <- Beams]},
+             {registered, Get(registered, [])},
+             {applications, lists:usort(Apps)},
+             {included_applications, Get(included_applications, [])},
+             {env, Get(env, [])}]
+        ++ [{mod, M} || M <- [Get(mod, undefined)], M =/= undefined],
+    PrivDir = filename:join(Dir, "priv"),
+    Priv = [{File, element(2, {ok, _} = file:read_file(filename:join(PrivDir, File)))}
+            || File <- filelib:wildcard("**", PrivDir),
+               filelib:is_regular(filename:join(PrivDir, File))],
+    Config = case maps:get(dep, Options, false) of
+                 true -> [];
+                 false -> [{"sys.config", C} || C <- [beam_com_elixir:sys_config(Dir)], C =/= none]
+             end,
+    #{name => Name, vsn => Vsn, props => Props, beams => Beams,
+      priv => Priv, config => Config, script => false}.
 
 app_file(Dir) ->
     Files = filelib:wildcard(filename:join([Dir, "src", "*.app.src"]))

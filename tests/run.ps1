@@ -171,6 +171,21 @@ if (Test-Path "examples") {
     Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
 }
 
+# Elixir: see tests/run.sh.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*elixir_check.com' @("build", "tests/programs/elixir_check.ex", "-o", "$Dir/elixir_check.com")
+    if (Test-Path (Join-Path $Dir "elixir_check.com")) {
+        Check "elixir_check.com" 'elixir: 1\.[0-9]+\.[0-9]+ on OTP 29@@args: \["a", "b c"\]@@sum: 5050@@upcase: BEAM.COM' @("a", "b c")
+        Check "elixir_check.com" '\*\* \(RuntimeError\) boom' @("raise") 127
+    }
+    Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+    Check "beam.com" 'wrote .*greeter_ex.com' @("build", "examples/greeter_ex", "-o", "$Dir/greeter_ex.com")
+    if (Test-Path (Join-Path $Dir "greeter_ex.com")) {
+        Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
+    }
+    Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+}
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'

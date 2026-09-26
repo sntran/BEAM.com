@@ -1,4 +1,5 @@
-%% Runs a program that "beam.com build" made from one .erl file.
+%% Runs a program that "beam.com build" made from one .erl file (or one
+%% Elixir file).
 %%
 %% The application of the program has {mod, {beam_com_script, Module}}.
 %% When the release has started, Module:main/1 gets the command line
@@ -17,16 +18,26 @@ stop(_State) ->
 
 run(Module) ->
     wait_for_boot(),
-    Status = try Module:main(init:get_plain_arguments()) of
+    Elixir = lists:prefix("Elixir.", atom_to_list(Module)),
+    Args = case Elixir of
+               %% Elixir programs get binaries, as from System.argv/0.
+               true -> [unicode:characters_to_binary(A) || A <- init:get_plain_arguments()];
+               false -> init:get_plain_arguments()
+           end,
+    Status = try Module:main(Args) of
                  _ -> 0
              catch
                  Class:Reason:Stack ->
-                     Error = erl_error:format_exception(Class, Reason, Stack),
                      io:put_chars(standard_error,
-                                  ["beam.com: ", Error, "\n"]),
+                                  ["beam.com: ", format(Elixir, Class, Reason, Stack), "\n"]),
                      127
              end,
     erlang:halt(Status).
+
+format(true, Class, Reason, Stack) ->
+    'Elixir.Exception':format(Class, Reason, Stack);
+format(false, Class, Reason, Stack) ->
+    erl_error:format_exception(Class, Reason, Stack).
 
 wait_for_boot() ->
     case init:get_status() of

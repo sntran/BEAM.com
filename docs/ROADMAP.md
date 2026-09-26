@@ -99,7 +99,12 @@ can be added on WAMR, or the runtime can be replaced.
 
 - Done: Hex packages (the `deps` of `rebar.config`, `rebar.lock`,
   checksums, a cache), with `httpc` and TLS in `beam.com`.
-- Elixir sources.
+- Done: Elixir. Evaluated first: Elixir 1.20.4 compiles with the
+  Erlang/OTP 29.1.1 of this build; `elixir`, `eex`, `logger` and `mix`
+  are 10 MB of beam files, 2.7 MB without debug information and docs,
+  and 1.8 MB in the zip. `beam.com build` compiles one Elixir file with
+  `main/1`, and Mix projects (read with Mix), with Hex packages in
+  Elixir and `mix.lock`.
 - Not planned: NIF dependencies, rebar3 plugins.
 
 ### More from Cosmopolitan
