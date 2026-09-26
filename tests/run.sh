@@ -313,6 +313,42 @@ if [ -d examples ]; then
     rm -f examples/greeter_ex/mix.lock
 fi
 
+# An application with an entry (toolbox): the main module comes from
+# escript_emu_args of rebar.config, a behaviour is compiled before the
+# module that uses it, priv has an executable file (so it is copied to
+# the cache at start), and the program starts itself again as erl.
+toolbox_cache=$dir/toolbox-cache
+if [ -d examples ]; then
+    check beam.com 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' \
+        build examples/toolbox -o "$dir/toolbox.com"
+    if [ -f "$dir/toolbox.com" ]; then
+        rm -rf "$toolbox_cache"
+        BEAM_COM_CACHE=$toolbox_cache; export BEAM_COM_CACHE
+        check toolbox.com 'toolbox: Hello, Ana$' greet Ana
+        check_status 2 toolbox.com 'toolbox: usage: ' nosuch
+        check toolbox.com 'priv in /zip: false@@hello.sh says from-priv (a real file: .*toolbox-cache/priv/[0-9a-f]*/toolbox-1\.0\.0/priv/hello\.sh)' priv
+        # The second start uses the files of the first.
+        check toolbox.com 'hello.sh says from-priv' priv
+        check toolbox.com '^peer: true [a-z]*$' peer
+        unset BEAM_COM_CACHE
+        # erl mode: a link named erl, or BEAM_COM_ERL=1.
+        ln -sf toolbox.com "$dir/erl"
+        check erl '^erl mode: true$' -noinput -eval \
+            'io:format("erl mode: ~p~n", [code:which(toolbox_cli) =/= non_existing]), halt().'
+        rm -f "$dir/erl"
+        BEAM_COM_ERL=1; export BEAM_COM_ERL
+        check toolbox.com '^schedulers: 1$' +S 1 -noinput -eval \
+            'io:format("schedulers: ~p~n", [erlang:system_info(schedulers)]), halt().'
+        unset BEAM_COM_ERL
+    fi
+    # --main names the module; it must export main/1.
+    check beam.com 'wrote .*toolbox2.com' \
+        build examples/toolbox --main toolbox_cli -o "$dir/toolbox2.com"
+    [ -f "$dir/toolbox2.com" ] && check toolbox2.com 'toolbox: Hello, Bo$' greet Bo
+    check_status 1 beam.com 'toolbox_english does not export main/1' \
+        build examples/toolbox --main toolbox_english -o "$dir/never.com"
+fi
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'

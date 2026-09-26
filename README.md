@@ -57,6 +57,7 @@ server with the certificates of the OS (on Windows too).
 ```sh
 beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
                [--unveil "PERMISSIONS PATH"]... [--native TARGET]
+               [--main MODULE] [--tool rebar|mix] [--extract-priv APP]...
 ```
 
 `INPUT` is one of these:
@@ -70,7 +71,10 @@ beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
   the `erl_opts` of `rebar.config`. Parsers (`src/*.yrl`, yecc),
   scanners (`src/*.xrl`, leex) and ASN.1 modules (`asn1/*.asn1` or
   `src/*.asn1`, `.asn` too; BER) are made into Erlang code first. The
-  `deps` of `rebar.config` are Hex packages (see below).
+  modules that other files name in `-behaviour` or as a
+  `parse_transform` are compiled first, as rebar3 does. The `deps` of
+  `rebar.config` are Hex packages (see below). An application can also
+  have an entry, as an escript: see "Command line programs" below.
 - **One Elixir file** (`.ex` or `.exs`) in which one module exports
   `main/1`, or **a Mix project** (`mix.exs`): see "Elixir" below.
 
@@ -169,6 +173,58 @@ beam.com build my_project           # a Mix project (mix.exs)
 (a Hex package in Elixir) and `config/config.exs`;
 [`tests/programs/elixir_check.ex`](tests/programs/elixir_check.ex) is a
 one-file program. CI builds and runs both on each platform.
+
+### Command line programs: `--main`, `priv` files and erl mode
+
+An application directory can be a command line program, as an escript
+made with `rebar3 escriptize` or `mix escript.build`. The builder takes
+the module whose `main/1` runs:
+
+- `--main MODULE`, or
+- `rebar.config`: `-escript main MODULE` in `escript_emu_args`, else
+  `escript_main_app` (the module with the name of the application), or
+- `mix.exs`: `escript: [main_module: MODULE]`.
+
+The release starts all the applications first; then `MODULE:main/1`
+gets the command line arguments (as strings; as binaries for an Elixir
+module), and the program halts with status 0 when `main/1` returns (127
+on an exception), as for one `.erl` file. `vm.args` gets
+`-s beam_com_script main MODULE`. A directory with both `rebar.config`
+and `mix.exs` is built as a rebar3 project; `--tool mix` selects Mix.
+
+**`priv` files as real files.** Code reads `priv` from the zip
+(`code:priv_dir/1` is in `/zip`), which works for `file:read_file/1`,
+but other programs (`sh`, a port program, a tool that gets a path)
+cannot read `/zip`. When the `priv` directory of an application has an
+executable file, or `--extract-priv APP` names the application, the
+program copies that `priv` directory at its first start to
+`CACHE/priv/HASH/APP-VSN/priv` (read-only files; the executables stay
+executable), and `code:priv_dir(APP)` is then that directory. The code
+stays in the zip. `HASH` is from the files, so a new build gets a new
+directory, and the next starts use the copy. `CACHE` is
+`$BEAM_COM_CACHE`, else the user cache directory
+(`filename:basedir(user_cache, "beam.com")`: `~/Library/Caches/beam.com`
+on macOS, `$XDG_CACHE_HOME/beam.com` or `~/.cache/beam.com` on the other
+systems, Windows too).
+
+**erl mode.** A program that starts a new Erlang VM (a peer node, a
+worker in a sandbox) can start its own file: each program has
+`-beam_com_exe PATH` (`init:get_argument(beam_com_exe)`), the path of
+its file. When the file is started with the name `erl` (a link, or
+`{arg0, "erl"}` of `open_port/2`) or with `BEAM_COM_ERL=1` in the
+environment, all the arguments are for `erl`, and the VM starts with
+the `start_clean` boot and the applications of the zip in the code
+path, not with the release:
+
+```erlang
+{ok, [[Exe]]} = init:get_argument(beam_com_exe),
+Port = open_port({spawn_executable, Exe},
+                 [{arg0, "erl"}, {args, ["-noinput", "-eval", "worker:start()"]}]).
+```
+
+[`examples/toolbox`](examples/toolbox) shows the three: its `main/1`
+comes from `rebar.config`, it runs a shell script from `priv`, and it
+starts itself again as `erl`.
 
 ### A native file for one system (`--native`)
 
@@ -359,7 +415,7 @@ Other rules:
 BEAM.com runs the code where it is: in the zip of its own file. ERTS
 reads the `.beam` files, the boot script and the configuration from
 `/zip/...`, the zip file system of Cosmopolitan, as from a directory.
-There is no install step and no cache directory.
+There is no install step, and no cache directory for the code.
 
 Tools such as [Burrito](https://github.com/burrito-elixir/burrito) and
 Bakeware work in a different way: they unpack ERTS and the release to a
@@ -372,7 +428,7 @@ files from there.
 | Files left on disk | none (see below) | the unpacked release, until you remove it |
 | One file for | all the platforms and CPUs | one platform and CPU |
 | NIFs | only the static NIFs in `beam.com` | any NIF of the release |
-| Files in `priv/` | read from the zip; executables in `priv/` cannot run | normal files |
+| Files in `priv/` | read from the zip; copied to a cache directory only when they must be real files (see "Command line programs") | normal files |
 | The zip | read-only at run time | normal files |
 
 What BEAM.com writes, and removes:
@@ -382,6 +438,9 @@ What BEAM.com writes, and removes:
   macOS and the BSDs, not Windows). It stays there, for all APE files
   of that version. A Linux system with the loader registered in
   `binfmt_misc` does not need this.
+- A program whose `priv` has an executable file (or with
+  `--extract-priv`) copies that `priv` directory to the user cache at
+  its first start (see "Command line programs"). It stays there.
 - On Windows, the resolver settings and the certificates of Windows go
   to two files in the temp directory at start, which are removed at
   exit (see "Crypto and TLS").

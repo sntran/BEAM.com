@@ -114,6 +114,7 @@ mix_project(Dir) ->
           elixirc_paths => [unicode:characters_to_list(P) || P <- Get(elixirc_paths, [<<"lib">>])],
           erlc_paths => [unicode:characters_to_list(P) || P <- Get(erlc_paths, [<<"src">>])],
           erlc_options => Get(erlc_options, []),
+          escript => Get(escript, []),
           application => App}
     after
         %% The project module of mix.exs, and the project stack of Mix.

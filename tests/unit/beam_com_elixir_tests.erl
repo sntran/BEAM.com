@@ -50,6 +50,7 @@ mix_project(Dir) ->
           "defmodule Proj.MixProject do\n  use Mix.Project\n"
           "  def project, do: [app: :proj, version: \"2.1.0\", deps: deps(),\n"
           "                    elixirc_paths: [\"lib\", \"more\"],\n"
+          "                    escript: [main_module: Proj.CLI],\n"
           "                    start_permanent: Mix.env() == :prod]\n"
           "  def application, do: [mod: {Proj.App, []}, extra_applications: [:logger]]\n"
           "  defp deps, do: [{:jason, \"~> 1.4\"}, {:ex_doc, \">= 0.0.0\", only: :dev}]\n"
@@ -59,7 +60,7 @@ mix_project(Dir) ->
     P = beam_com_elixir:mix_project(D),
     ?assertMatch(#{app := proj, version := "2.1.0", elixirc_paths := ["lib", "more"],
                    erlc_paths := ["src"], deps := [{jason, <<"jason">>, "~> 1.4"}],
-                   runtime_deps := [jason]}, P),
+                   runtime_deps := [jason], escript := [{main_module, 'Elixir.Proj.CLI'}]}, P),
     #{application := App} = P,
     ?assertEqual({'Elixir.Proj.App', []}, proplists:get_value(mod, App)),
     %% The module of mix.exs is not left loaded; a second read works.

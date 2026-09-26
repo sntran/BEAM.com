@@ -738,7 +738,7 @@ void beam_com_main(int *argcp, char ***argvp)
     const char *name = beam_com_basename(argv[0]);
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
-    int i, extra = 0, used_cli = 0, has_release, has_args;
+    int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
      * that the helper starts do not see it. */
@@ -763,9 +763,27 @@ void beam_com_main(int *argcp, char ***argvp)
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
 
-    has_release = read_release(&file);
-    has_args = read_zip_args(&file);
-    if (file_exists(BEAM_COM_TOOL) &&
+    /* erl mode: the program behaves as erl (the runtime of its zip, with
+     * /zip as the root and all its applications in the code path), not
+     * as its release. For code that starts another Erlang node of the
+     * program (peer, or a worker in a sandbox): run the program file with
+     * the name "erl" (a link), or with BEAM_COM_ERL=1. All the arguments
+     * are erl arguments. */
+    erl_mode = strcmp(name, "erl") == 0 || strcmp(name, "erl.exe") == 0 ||
+               strcmp(name, "erl.com") == 0 ||
+               (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
+    if (erl_mode) {
+        unsetenv("BEAM_COM_ERL");
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/start_clean");
+        push(&file, "...");
+        has_release = 1;
+        has_args = 0;
+    } else {
+        has_release = read_release(&file);
+        has_args = read_zip_args(&file);
+    }
+    if (!erl_mode && file_exists(BEAM_COM_TOOL) &&
         ((!has_release && !has_args) ||
          (argc > 1 && strcmp(argv[1], "build") == 0))) {
         /* The commands of beam.com: when the zip has no release (the
@@ -776,8 +794,6 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
-        push(&file, "-beam_com_exe");
-        push(&file, GetProgramExecutableName());
         push(&file, "-run");
         push(&file, "beam_com");
         push(&file, "main");
@@ -843,6 +859,10 @@ void beam_com_main(int *argcp, char ***argvp)
     push(&all, "--");
     push(&all, "-home");
     push(&all, home_dir());
+    /* The path of this file, for the program: init:get_argument(
+     * beam_com_exe) (for example to start it again in erl mode). */
+    push(&all, "-beam_com_exe");
+    push(&all, GetProgramExecutableName());
     push(&all, "--");
     for (i = 0; i < windows.n; i++)
         push(&all, windows.v[i]);

@@ -765,6 +765,166 @@ native_test_() ->
       ?_assertThrow({error, "unknown native target ~ts (one of: ~ts)", ["macos-arm64", _]},
                     beam_com_build:check_native("macos-arm64"))}].
 
+%% The entry of an application program (--main, rebar.config, mix.exs),
+%% the priv directories that are copied at start, and the order of
+%% compilation.
+entry_test_() ->
+    {setup, fun tmp/0, fun rm/1,
+     fun(Dir) ->
+             [{"the tool of a directory", fun() -> tool(Dir) end},
+              {"the escript of rebar.config", fun() -> escript_main(Dir) end},
+              {"the main module", fun main_module/0},
+              {"vm.args runs main/1", fun with_main/0},
+              {"priv files and executables", fun() -> priv_files(Dir) end},
+              {"the priv directories to copy", fun extract/0},
+              {"sys.config for beam_com_script", fun with_extract/0},
+              {"behaviours and parse transforms first",
+               {timeout, 60, fun() -> compile_all(Dir) end}}]
+     end}.
+
+tool(Dir) ->
+    Rebar = filename:join(Dir, "t_rebar"),
+    write(Rebar, "rebar.config", "{erl_opts, []}.\n"),
+    ?assertEqual(rebar, beam_com_build:tool(Rebar, #{})),
+    Src = filename:join(Dir, "t_src"),
+    write(filename:join(Src, "src"), "t.app.src", "{application, t, []}.\n"),
+    ?assertEqual(rebar, beam_com_build:tool(Src, #{})),
+    Mix = filename:join(Dir, "t_mix"),
+    write(Mix, "mix.exs", "defmodule T.MixProject do\nend\n"),
+    ?assertEqual(mix, beam_com_build:tool(Mix, #{})),
+    %% Both: rebar, unless --tool mix.
+    write(Rebar, "mix.exs", "defmodule T.MixProject do\nend\n"),
+    ?assertEqual(rebar, beam_com_build:tool(Rebar, #{})),
+    ?assertEqual(mix, beam_com_build:tool(Rebar, #{tool => mix})),
+    ?assertEqual(rebar, beam_com_build:tool(filename:join(Dir, "none"), #{})).
+
+escript_main(Dir) ->
+    Main = fun(Config) ->
+                   D = filename:join(Dir, "e" ++ integer_to_list(erlang:unique_integer([positive]))),
+                   write(D, "rebar.config", Config),
+                   beam_com_build:main(D, #{}, #{beams => [{m, beam(m, true)}, {app, beam(app, true)}]})
+           end,
+    ?assertEqual(m, Main("{escript_emu_args, \"%%! +sbtu -escript main m\\n\"}.\n")),
+    ?assertEqual(app, Main("{escript_main_app, app}.\n")),
+    %% escript_emu_args wins over escript_main_app, as in rebar3.
+    ?assertEqual(m, Main("{escript_main_app, app}.\n{escript_emu_args, \"-escript main m\"}.\n")),
+    ?assertEqual(none, Main("{erl_opts, []}.\n")),
+    ?assertThrow({error, "the main module ~p is not in ~ts", [other, _]},
+                 Main("{escript_main_app, other}.\n")).
+
+main_module() ->
+    Beams = #{beams => [{m, beam(m, true)}, {n, beam(n, false)}]},
+    ?assertEqual(m, beam_com_build:main("d", #{main => m}, Beams)),
+    ?assertThrow({error, "~p does not export main/1", [n]},
+                 beam_com_build:main("d", #{main => n}, Beams)),
+    ?assertThrow({error, "the main module ~p is not in ~ts", [o, "d"]},
+                 beam_com_build:main("d", #{main => o}, Beams)),
+    ?assertEqual(none, beam_com_build:main("a.erl", #{}, #{script => true})),
+    ?assertThrow({error, "~ts: --main is for application directories", ["a.erl"]},
+                 beam_com_build:main("a.erl", #{main => m}, #{script => true})).
+
+with_main() ->
+    VmArgs = fun(App) -> proplists:get_value("vm.args", maps:get(config, App)) end,
+    ?assertEqual(<<"-noshell\n-s beam_com_script main m\n">>,
+                 VmArgs(beam_com_build:with_main(#{config => []}, m))),
+    ?assertEqual(<<"+S 1\n-noshell\n-s beam_com_script main m\n">>,
+                 VmArgs(beam_com_build:with_main(
+                          #{config => [{"vm.args", <<"+S 1\n-noshell\n\n">>}]}, m))).
+
+priv_files(Dir) ->
+    Priv = filename:join(Dir, "priv"),
+    write(Priv, "data.txt", "data"),
+    Run = write(filename:join(Priv, "bin"), "run.sh", "#!/bin/sh\n"),
+    ok = file:change_mode(Run, 8#755),
+    {Files, Exec} = beam_com_build:priv_files(Priv),
+    ?assertEqual([{"bin/run.sh", <<"#!/bin/sh\n">>}, {"data.txt", <<"data">>}], lists:sort(Files)),
+    case os:type() of
+        {win32, _} -> ok;
+        _ -> ?assertEqual(["bin/run.sh"], Exec)
+    end,
+    ?assertEqual({[], []}, beam_com_build:priv_files(filename:join(Dir, "nopriv"))).
+
+extract() ->
+    P1 = [{"run.sh", <<"x">>}],
+    P2 = [{"data.txt", <<"y">>}],
+    App = #{name => a, vsn => "1.0", priv => P1, priv_exec => ["run.sh"]},
+    Deps = [#{name => b, vsn => "2.0", priv => P2, priv_exec => []},
+            #{name => c, vsn => "3.0", priv => [], priv_exec => []}],
+    H1 = beam_com_build:hash(P1),
+    H2 = beam_com_build:hash(P2),
+    ?assertEqual([{a, "1.0", H1, ["run.sh"]}], beam_com_build:extract(App, Deps, [])),
+    ?assertEqual([{a, "1.0", H1, ["run.sh"]}, {b, "2.0", H2, []}],
+                 beam_com_build:extract(App, Deps, [b])),
+    ?assertThrow({error, "--extract-priv ~p: the program has no application ~p with a "
+                  "priv directory", [c, c]},
+                 beam_com_build:extract(App, Deps, [c])),
+    ?assertThrow({error, _, [z, z]}, beam_com_build:extract(App, Deps, [z])),
+    %% The hash: 16 hex digits; it changes with a name or the content.
+    ?assertMatch({match, _}, re:run(H1, "^[0-9a-f]{16}$")),
+    ?assertEqual(H1, beam_com_build:hash([{"run.sh", <<"x">>}])),
+    ?assertNotEqual(H1, beam_com_build:hash([{"run.sh", <<"z">>}])),
+    ?assertNotEqual(H1, beam_com_build:hash([{"run2.sh", <<"x">>}])),
+    ?assertEqual(beam_com_build:hash([{"a", <<"1">>}, {"b", <<"2">>}]),
+                 beam_com_build:hash([{"b", <<"2">>}, {"a", <<"1">>}])).
+
+with_extract() ->
+    X = [{a, "1.0", "0123456789abcdef", ["run.sh"]}],
+    Config = fun(App) ->
+                     Text = proplists:get_value("sys.config", maps:get(config, App)),
+                     {ok, [Terms], _} = erl_scan_parse(iolist_to_binary(Text)),
+                     Terms
+             end,
+    ?assertEqual(#{config => []}, beam_com_build:with_extract(#{config => []}, [])),
+    ?assertEqual([{beam_com_script, [{extract, X}]}],
+                 Config(beam_com_build:with_extract(#{config => []}, X))),
+    ?assertEqual([{app, [{k, v}]}, {beam_com_script, [{extract, X}]}],
+                 Config(beam_com_build:with_extract(
+                          #{config => [{"sys.config", <<"[{app, [{k, v}]}].\n">>}]}, X))).
+
+%% A module that uses a behaviour and a parse transform of the same
+%% application: with warnings_as_errors, the build fails when the
+%% behaviour is compiled after it, and the parse transform must exist.
+compile_all(Dir) ->
+    Src = filename:join(Dir, "order"),
+    User = write(Src, "aa_user.erl",
+                 "-module(aa_user).\n-behaviour(zz_beh).\n"
+                 "-compile({parse_transform, zz_pt}).\n-export([cb/0, f/0]).\n"
+                 "cb() -> ok.\nf() -> replaced_by_pt.\n"),
+    Beh = write(Src, "zz_beh.erl", "-module(zz_beh).\n-callback cb() -> ok.\n"),
+    Pt = write(Src, "zz_pt.erl",
+               "-module(zz_pt).\n-export([parse_transform/2]).\n"
+               "parse_transform(Forms, _) ->\n"
+               "    [case F of {function, L, f, 0, _} ->\n"
+               "         {function, L, f, 0, [{clause, L, [], [], [{atom, L, transformed}]}]};\n"
+               "     _ -> F end || F <- Forms].\n"),
+    ?assertEqual(["zz_beh", "zz_pt"], lists:sort(beam_com_build:first_names(User))),
+    ?assertEqual([], beam_com_build:first_names(Beh)),
+    Beams = beam_com_build:compile_all([User, Beh, Pt], [warnings_as_errors]),
+    ?assertEqual([aa_user, zz_beh, zz_pt], lists:sort([M || {M, _} <- Beams])),
+    {aa_user, B} = lists:keyfind(aa_user, 1, Beams),
+    {module, aa_user} = code:load_binary(aa_user, "aa_user.beam", B),
+    ?assertEqual(transformed, aa_user:f()),
+    code:purge(aa_user), code:delete(aa_user),
+    %% The temporary directory is not left in the code path.
+    ?assertEqual(non_existing, code:which(zz_beh)),
+    ?assertEqual(["mod_a"], beam_com_build:first_names(
+                              write(Src, "q.erl", "-module(q).\n-behavior('mod_a').\n"))).
+
+beam(Module, Main) ->
+    Exports = case Main of true -> "-export([main/1]).\nmain(_) -> ok.\n";
+                  false -> "-export([f/0]).\nf() -> ok.\n"
+              end,
+    {ok, Tokens, _} = erl_scan:string("-module(" ++ atom_to_list(Module) ++ ").\n" ++ Exports),
+    Forms = split_forms(Tokens, [], []),
+    {ok, Module, Beam} = compile:forms(Forms, [binary]),
+    Beam.
+
+split_forms([], [], Acc) -> lists:reverse(Acc);
+split_forms([{dot, _} = Dot | Rest], Cur, Acc) ->
+    {ok, Form} = erl_parse:parse_form(lists:reverse([Dot | Cur])),
+    split_forms(Rest, [], [Form | Acc]);
+split_forms([T | Rest], Cur, Acc) -> split_forms(Rest, [T | Cur], Acc).
+
 %%% Helpers
 
 tmp() ->

@@ -105,6 +105,17 @@ can be added on WAMR, or the runtime can be replaced.
   and 1.8 MB in the zip. `beam.com build` compiles one Elixir file with
   `main/1`, and Mix projects (read with Mix), with Hex packages in
   Elixir and `mix.lock`.
+- Done: command line programs, for larger projects (for example an
+  orchestration tool with a sandbox worker): the `main/1` of an application
+  (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours
+  and parse transforms compiled first; `priv` directories copied to a
+  cache when other programs must read them (an executable in `priv`, or
+  `--extract-priv`); erl mode (a link named `erl`, or `BEAM_COM_ERL=1`)
+  and `-beam_com_exe`, so that a program can start a new VM from its
+  own file.
+- Next: git dependencies (`{git, URL, {ref, R}}` in `rebar.config`,
+  `git:`/`github:` in `mix.exs`), with the lock entries of rebar3 and
+  Mix.
 - Not planned: NIF dependencies, rebar3 plugins.
 
 ### More from Cosmopolitan
