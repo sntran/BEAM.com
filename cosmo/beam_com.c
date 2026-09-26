@@ -311,12 +311,6 @@ static char *windows_write_inetrc(void)
                "%%%% Set ERL_INETRC to use your own file.\n"
                "{lookup, [file, dns]}.\n"
                "{resolv_conf, \"\"}.\n");
-    /* C:\Windows\System32\drivers\etc\hosts */
-    if ((hosts_path = GetHostsTxtPath(buf, sizeof(buf)))) {
-        snprintf(hosts, sizeof(hosts), "%s", hosts_path);
-        erlang_path(hosts);
-        fprintf(f, "{hosts_file, \"%s\"}.\n", hosts);
-    }
     memset(&rc, 0, sizeof(rc));
     if (__get_resolv_conf(&rc, NULL, 0) == 0) {
         for (i = 0; i < rc.nns && i < MAXNS; i++) {
@@ -325,6 +319,21 @@ static char *windows_write_inetrc(void)
                 fprintf(f, "{nameserver, {%u,%u,%u,%u}}.\n",
                         a[0], a[1], a[2], a[3]);
         }
+    }
+    /* C:\Windows\System32\drivers\etc\hosts. inet_db only accepts an
+     * absolute name (filename:pathtype/1), and for the Unix build of ERTS
+     * "C:/..." is relative: write the Cosmopolitan form "/C/...". An
+     * entry that kernel does not accept stops the rest of the file, so
+     * this line comes last. */
+    if ((hosts_path = GetHostsTxtPath(buf, sizeof(buf)))) {
+        snprintf(hosts, sizeof(hosts), "%s", hosts_path);
+        erlang_path(hosts);
+        if (hosts[0] && hosts[1] == ':' && hosts[2] == '/') {
+            hosts[1] = hosts[0];
+            hosts[0] = '/';
+        }
+        if (hosts[0] == '/')
+            fprintf(f, "{hosts_file, \"%s\"}.\n", hosts);
     }
     if (ferror(f) | fclose(f))
         return NULL;
@@ -437,7 +446,12 @@ static int has_arg(const struct arglist *l, const char *arg)
     return 0;
 }
 
-static void windows_setup(struct arglist *init)
+/*
+ * The arguments go to *out, which comes before the arguments of the user
+ * (after "-extra", every argument is a plain argument). *init holds the
+ * arguments of the user, to see if they give -public_key themselves.
+ */
+static void windows_setup(const struct arglist *init, struct arglist *out)
 {
     char *path;
 
@@ -446,9 +460,9 @@ static void windows_setup(struct arglist *init)
         setenv("ERL_INETRC", path ? path : BEAM_COM_BINDIR "/windows.inetrc", 1);
     }
     if (!has_arg(init, "-public_key") && (path = windows_write_cacerts())) {
-        push(init, "-public_key");
-        push(init, "cacerts_path");
-        push(init, join("\"", path, "\""));
+        push(out, "-public_key");
+        push(out, "cacerts_path");
+        push(out, join("\"", path, "\""));
     }
 }
 
@@ -473,7 +487,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char **argv = *argvp;
     const char *name = beam_com_basename(argv[0]);
     char *program = getenv("BEAM_COM_PROGRAM");
-    struct arglist file = {0}, emu = {0}, init = {0}, all = {0};
+    struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
@@ -529,7 +543,7 @@ void beam_com_main(int *argcp, char ***argvp)
      * it. Give kernel the name servers of Windows and public_key the
      * certificates of Windows (see windows_setup()). */
     if (beam_com_is_windows())
-        windows_setup(&init);
+        windows_setup(&init, &windows);
 
     setenv("ROOTDIR", BEAM_COM_ROOT, 1);
     setenv("BINDIR", BEAM_COM_BINDIR, 1);
@@ -550,6 +564,8 @@ void beam_com_main(int *argcp, char ***argvp)
     push(&all, "-home");
     push(&all, home_dir());
     push(&all, "--");
+    for (i = 0; i < windows.n; i++)
+        push(&all, windows.v[i]);
     for (i = 0; i < init.n; i++)
         push(&all, init.v[i]);
 
