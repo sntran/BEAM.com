@@ -478,6 +478,42 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     dir=$dir_rel runner=$runner_rel limit=$limit_saved PATH=$path_saved
 fi
 
+# The file watcher (inotifywait of the file, for file_system and so
+# phoenix_live_reload): the command line and the output of file_system.
+# Linux has inotify; the other systems compare the files (moves are
+# DELETE and CREATE there). Not on Windows.
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    mkdir "$wdir/sub"
+    echo "==> beam.com inotifywait"
+    $runner "$dir/beam.com" inotifywait -e modify -e close_write -e moved_to \
+        -e moved_from -e create -e delete -e attrib --format '%w|%e|%f' \
+        --quiet -m -r "$wdir" > "$tmp.watch" 2>&1 &
+    watcher=$!
+    sleep 2
+    echo a > "$wdir/a.txt"
+    mkdir "$wdir/new"
+    sleep 1
+    echo b > "$wdir/new/b.txt"
+    rm "$wdir/a.txt"
+    sleep 2
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    if grep -q "^$wdir/|CREATE|a.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/|CREATE,ISDIR|new$" "$tmp.watch" &&
+       grep -q "^$wdir/new/|CREATE|b.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/|DELETE|a.txt$" "$tmp.watch"; then
+        echo "PASS: beam.com inotifywait"
+    else
+        echo "FAIL: beam.com inotifywait"
+        fail=1
+        failed="$failed
+  beam.com inotifywait: missing events"
+    fi
+    rm -rf "$wdir"
+fi
+
 # Distributed Erlang and remote shells (not on Windows). epmd is in the
 # file, and starts only for -sname, -name or -remsh. examples/counter has
 # -sname counter in its vm.args: "counter.com remote" is a shell in the

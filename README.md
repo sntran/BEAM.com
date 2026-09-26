@@ -263,8 +263,11 @@ iex.com -S mix phx.server        # http://localhost:4000
 - The esbuild and tailwind watchers download their programs and run
   them as ports, as they do with Elixir (not on Windows, which has no
   port programs here).
-- Live reload needs `inotify-tools` on Linux, as with Elixir; without
-  it the server runs, and the browser does not reload by itself.
+- Live reload works without `inotify-tools`: the tools set
+  `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
+  file watcher of the file (see "The file watcher"), on Linux and the
+  BSDs. On macOS, `file_system` compiles its own watcher, which needs the
+  command line tools of Xcode.
 - **Not yet:** a database with a NIF. `--database sqlite3` (exqlite) and
   `phx.gen.auth` (bcrypt) load C libraries at run time, which BEAM.com
   cannot do; linking their NIFs into `beam.com` is the next step (see
@@ -274,6 +277,25 @@ iex.com -S mix phx.server        # http://localhost:4000
 CI runs these steps on Linux: `phx.new` without Ecto, `deps.get`,
 `compile`, and `iex.com -S mix phx.server`, which must serve the start
 page.
+
+### The file watcher
+
+The file has a file watcher with the command line and the output of
+`inotifywait` (of inotify-tools), for the programs that use it, such as
+`file_system` and so `phoenix_live_reload`:
+
+```sh
+beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
+```
+
+- On Linux it uses inotify; on the BSDs it compares the files every half
+  second (a move is then `DELETE` and `CREATE`).
+- The tools of Elixir set `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` to a link
+  named `inotifywait` to the file, in the cache of BEAM.com
+  (`BEAM_COM_CACHE`, else the user cache), unless you set it.
+- The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
+  (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
+  `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).
 
 ### Distributed Erlang and remote shells
 

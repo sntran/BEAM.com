@@ -137,6 +137,7 @@ int __wrap_mkdir(const char *path, mode_t mode)
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
 extern int epmd_main(int argc, char **argv);
+extern int beam_com_inotifywait_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -549,6 +550,66 @@ static void escript_flags(const char *path, struct arglist *out)
         }
     }
     fclose(f);
+}
+
+/* mkdir -p */
+static void make_dirs(char *path)
+{
+    char *p;
+
+    for (p = path + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(path, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(path, 0755);
+}
+
+/*
+ * file_system (and so phoenix_live_reload) watches files with inotifywait
+ * of inotify-tools, found in FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE or PATH.
+ * For the tools of Elixir, FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE is a link
+ * named inotifywait to this file, in the cache of BEAM.com (BEAM_COM_CACHE,
+ * else the user cache, as beam_com_script), so that the watcher of the
+ * file runs (cosmo/beam_com_watch.c). Not when the variable is set, on
+ * Linux and the BSDs only (file_system has other watchers on macOS and
+ * Windows).
+ */
+static void watch_link(void)
+{
+    const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
+               *home = getenv("HOME"), *exe = GetProgramExecutableName();
+    char *dir, *link, *tmp, target[4096];
+    ssize_t n;
+
+    if (getenv("FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE") || IsXnu() ||
+        beam_com_is_windows() || !exe || *exe != '/')
+        return;
+    if (cache && *cache)
+        dir = join(cache, "/bin", "");
+    else if (xdg && *xdg)
+        dir = join(xdg, "/beam.com/bin", "");
+    else if (home)
+        dir = join(home, "/.cache/beam.com/bin", "");
+    else
+        return;
+    make_dirs(dir);
+    link = join(dir, "/inotifywait", "");
+    n = readlink(link, target, sizeof(target) - 1);
+    if (n < 0 || (target[n] = '\0', strcmp(target, exe) != 0)) {
+        /* A new link, then rename(): two tools that start at the same
+         * time do not see a missing link. */
+        snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
+        tmp = strdup(target);
+        unlink(tmp);
+        if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
+            unlink(tmp);
+            return;
+        }
+    }
+    setenv("FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE", link, 1);
 }
 
 /* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
@@ -995,6 +1056,13 @@ void beam_com_main(int *argcp, char ***argvp)
         argv[1] = "epmd";
         exit(epmd_main(argc - 1, argv + 1));
     }
+    /* inotifywait: the file watcher (cosmo/beam_com_watch.c), by name
+     * (the link that watch_link() makes) or as "beam.com inotifywait". */
+    if (starts_with(name, "inotifywait"))
+        exit(beam_com_inotifywait_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "inotifywait") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        exit(beam_com_inotifywait_main(argc - 1, argv + 1));
 
     /* erl mode: the program behaves as erl (the runtime of its zip, with
      * /zip as the root and all its applications in the code path), not
@@ -1101,6 +1169,7 @@ void beam_com_main(int *argcp, char ***argvp)
         has_release = 1;
         has_args = 0;
     } else if (tool) {
+        watch_link();
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
