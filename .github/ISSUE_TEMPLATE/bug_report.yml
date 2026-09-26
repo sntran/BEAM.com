@@ -50,7 +50,8 @@ body:
     attributes:
       label: Which file?
       options:
-        - beam.com (the JIT)
+        - beam.com (Erlang, the JIT)
+        - elixir.com (beam.com with Elixir)
         - beam-emu.com (the interpreter)
         - A program made with "beam.com build"
         - A release added with zip
@@ -59,8 +60,8 @@ body:
   - type: textarea
     id: version
     attributes:
-      label: Output of "beam.com version"
-      description: Run it with the same beam.com. For a program that you built, give the output for the beam.com that built it.
+      label: Output of "beam.com version" (or "elixir.com version")
+      description: Run it with the same file. For a program that you built, give the output for the beam.com or elixir.com that built it.
       render: text
     validations:
       required: true

@@ -50,10 +50,20 @@ body:
         - Other (write it below)
     validations:
       required: true
+  - type: dropdown
+    id: file
+    attributes:
+      label: Which file builds it?
+      options:
+        - beam.com
+        - elixir.com
+        - beam-emu.com
+    validations:
+      required: true
   - type: textarea
     id: version
     attributes:
-      label: Output of "beam.com version"
+      label: Output of "beam.com version" (or "elixir.com version")
       render: text
     validations:
       required: true
