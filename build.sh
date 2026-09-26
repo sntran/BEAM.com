@@ -558,7 +558,8 @@ step_test() {
     "$OUT" version | tee "$BUILD/test.out"
     grep -q "Erlang/OTP  : $OTP_VERSION" "$BUILD/test.out"
     "$OUT" help > "$BUILD/test.out"
-    grep -q "usage: beam.com COMMAND" "$BUILD/test.out"
+    # The commands use the name of their file (beam.com, beam-emu.com).
+    grep -q "usage: $(basename "$OUT") COMMAND" "$BUILD/test.out"
     log "Building a program with $OUT build"
     "$OUT" build "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
