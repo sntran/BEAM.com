@@ -180,7 +180,7 @@ beam.com build my_project           # a Mix project (mix.exs)
 [`tests/programs/elixir_check.ex`](tests/programs/elixir_check.ex) is a
 one-file program. CI builds and runs both on each platform.
 
-### The tools: `mix`, `iex`, `elixir`, `elixirc` and `escript`
+### The tools: `mix`, `iex`, `elixir`, `elixirc`, `escript` and `rebar3`
 
 `beam.com` is also an Elixir installation in one file. Give the file
 the name of a tool, and it is that tool. The names `mix.com`, `iex.com`,
@@ -207,13 +207,17 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - `escript FILE` runs an escript, as the `escript` program of OTP, with
   the flags of its `%%!` line. Escripts from `mix escript.build` run
   with it.
-- Packages: `mix local.hex` installs Hex, and `mix deps.get` then
-  fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
-  rebar3, which Mix runs as an escript: put a link named `escript` in
-  `PATH`. On NetBSD, where `sh` stops at the first NUL byte of an APE
-  file, make `escript` a small script instead:
-  `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`. `beam.com build` does not need Hex or rebar3 (see "Hex
-  packages").
+- Packages: Hex 2.5.1 and rebar3 3.25.1 are in the zip, so `mix
+  deps.get` fetches from hex.pm without `mix local.hex` or `mix
+  local.rebar`. Mix runs rebar3 (for the Erlang packages) through
+  `MIX_REBAR3`, which the tools set to a link named `rebar3` to the file,
+  in the cache of BEAM.com (`BEAM_COM_CACHE`, else the user cache). A
+  `MIX_REBAR3` that you set wins. On NetBSD, where `sh` stops at the
+  first NUL byte of an APE file, set `MIX_REBAR3` to a small script:
+  `exec /path/to/ape-x86_64.elf /path/to/beam.com rebar3 "$@"`.
+  `beam.com build` does not need Hex or rebar3 (see "Hex packages").
+- `rebar3` is a tool too: `rebar3.com compile`, or `beam.com rebar3
+  compile`, for Erlang users.
 - `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
 - To build an Elixir project into one file, use `beam.com build` (see
   "Elixir" above): the tools do not have the `build` command.
@@ -236,7 +240,7 @@ cp beam.com ~/bin/mix.com
 ln ~/bin/mix.com ~/bin/iex.com      # a hard link: no second copy on disk
 
 # All the tools, as with an installation (Linux, macOS and the BSDs):
-for tool in mix iex elixir elixirc escript; do ln -s beam.com ~/bin/$tool; done
+for tool in mix iex elixir elixirc escript rebar3; do ln -s beam.com ~/bin/$tool; done
 mix test
 ```
 
@@ -249,7 +253,6 @@ With the tools, a Phoenix project runs from its source, as with an
 Elixir installation, but without Erlang or Elixir on the computer:
 
 ```sh
-mix.com local.hex --force
 mix.com archive.install hex phx_new
 mix.com phx.new hello --no-ecto
 cd hello
