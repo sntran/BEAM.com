@@ -109,7 +109,7 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
     Content = iolist_to_binary(Data0),
     USize = byte_size(Content),
     Dir = binary:last(Name) =:= $/,
-    {Method, Stored} = compress(Dir, Content),
+    {Method, Stored} = compress(Dir orelse stored(Name), Content),
     Flags = case is_ascii(Name) of
                 true -> 0;
                 false -> ?UTF8
@@ -136,8 +136,14 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
                extra = <<>>, comment = <<>>},
     add(Rest, Pos + iolist_size(Local), [Local | Data], [E | Entries]).
 
-compress(true, _Content) ->
-    {?STORED, <<>>};
+%% The code of kernel and stdlib is stored, not compressed: the boot
+%% loads it, and a stored entry needs no inflating (see build.sh).
+stored(<<"lib/kernel-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
+stored(<<"lib/stdlib-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
+stored(_) -> false.
+
+compress(true, Content) ->
+    {?STORED, Content};
 compress(false, Content) ->
     Deflated = zlib:zip(Content),
     case byte_size(Deflated) < byte_size(Content) of

@@ -588,6 +588,36 @@ it: 0 of 600 starts fail.
 another thread); or hold the lock around the system call and the
 release, as `close()` already does for `/zip` descriptors.
 
+### C26. close() of a /zip file and the open of a real file: a race
+
+**Status:** cosmocc 4.0.2 (`libc/runtime/zipos-close.c`,
+`libc/calls/close.c`, `libc/calls/fstat.c`).
+
+**Symptom.** `beam.com mix format` (many files at the same time)
+sometimes dies with `SIGSEGV` in `__zipos_fstat()`, called by `fstat()`
+in `efile_open()` of `read_file_nif` on a dirty I/O thread: 5 of 200
+runs, with 4 runs at the same time.
+
+**Cause.** `__zipos_close()` calls the `close` system call first, then
+frees the handle (`munmap()`), and `close()` clears the entry in `g_fds`
+after that. The lock of the table is held, but the open of a real file
+does not take it: in the gap, another thread opens a real file, gets the
+number that the kernel has just freed, and calls `fstat()` on it.
+`fstat()` (and `read()` and the others) sees the old `kFdZip` entry, and
+uses the freed handle.
+
+**Workaround in BEAM.com.** `__wrap_close()` in `cosmo/beam_com.c`
+(the wrapper of C25) closes a `/zip` descriptor in the safe order: it
+clears the entry (`__releasefd()`), then calls the `close` system call,
+then frees the handle (`__zipos_drop()`), all under the lock. It does
+this only in the process itself, not in a child of `vfork()` (which
+shares the memory, and where Cosmopolitan only closes the kernel
+descriptor), and not on Windows (no kernel descriptor for `/zip` files).
+With it: 0 of 400 runs fail.
+
+**Possible upstream fix.** In `close()` of a `kFdZip` descriptor, clear
+the entry before the `close` system call, and free the handle after it.
+
 ### C27. mkdir() of a drive root gives EACCES on Windows
 
 **Status:** cosmocc 4.0.2 (`libc/calls/mkdirat-nt.c`).

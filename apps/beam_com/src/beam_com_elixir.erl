@@ -23,7 +23,7 @@ available() ->
 
 start(Apps) ->
     available() orelse
-        throw({error, "Elixir is not in this beam.com (built with ELIXIR=0)", []}),
+        throw({error, "Elixir is not in this ~ts (built with ELIXIR=0)", [beam_com:name()]}),
     case application:ensure_all_started(Apps) of
         {ok, _} -> ok;
         {error, Reason} -> throw({error, "Elixir: ~p", [Reason]})

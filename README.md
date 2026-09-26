@@ -8,6 +8,10 @@ It uses the "redbean style": the executable is also a zip file. You add
 an Erlang release to the zip, and the one file runs your release on
 Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.
 
+`beam.com` also has Elixir 1.20.4 and its tools. The same file under
+another name is a tool: `mix.com`, `iex.com`, `elixir.com` and
+`elixirc.com` (see "The tools" below).
+
 You do not need Erlang to make such a file. `beam.com` has the compiler:
 
 ```
@@ -137,8 +141,9 @@ it on each platform, two times (with and without `rebar.lock`).
 ### Elixir
 
 `beam.com` has Elixir 1.20.4 (compiled with its Erlang/OTP 29.1.1, the
-beam files without debug information and docs: 1.8 MB in the zip), so
-`beam.com build` compiles Elixir code without an Elixir installation:
+beam files without debug information: 2.8 MB in the zip, with the docs
+for `h/1` in `iex`), so `beam.com build` compiles Elixir code without an
+Elixir installation:
 
 ```sh
 beam.com build hello.ex             # one file; a module exports main/1
@@ -163,8 +168,8 @@ beam.com build my_project           # a Mix project (mix.exs)
   compiled, but they are not in the applications of the program.
 - A program gets only the Elixir applications that it uses: `elixir`,
   with `compiler` (which Elixir needs at run time), makes a program
-  3.9 MB larger than the same program in Erlang, and its start about
-  35 ms slower (`docs/BENCHMARKS.md`).
+  1.9 MB larger than the same program in Erlang, and its start about
+  40 ms slower (`docs/BENCHMARKS.md`).
 - **Not supported:** umbrella projects, `config/runtime.exs`, protocol
   consolidation (protocols work, but their dispatch is not optimized),
   and Mix tasks or aliases.
@@ -173,6 +178,67 @@ beam.com build my_project           # a Mix project (mix.exs)
 (a Hex package in Elixir) and `config/config.exs`;
 [`tests/programs/elixir_check.ex`](tests/programs/elixir_check.ex) is a
 one-file program. CI builds and runs both on each platform.
+
+### The tools: `mix`, `iex`, `elixir`, `elixirc` and `escript`
+
+`beam.com` is also an Elixir installation in one file. Give the file
+the name of a tool, and it is that tool. The names `mix.com`, `iex.com`,
+`elixir.com` and `elixirc.com` are the same file as `beam.com`:
+
+```sh
+cp beam.com mix.com                 # or a link: ln beam.com mix.com
+./mix.com new hello && cd hello
+../mix.com test
+../iex.com -S mix                   # iex.com: another copy or link
+../elixir.com -e 'IO.puts(1 + 2)'
+../elixirc.com lib/hello.ex -o ebin
+```
+
+The name can also be without `.com` (`mix`), or with `.exe` on Windows
+(`mix.exe`). The tool can also be the first argument of `beam.com`:
+`beam.com mix test`, `beam.com iex -S mix`.
+
+- They run as the scripts of Elixir run them (`-s elixir start_cli`,
+  `+iex`, `+elixirc`), with the applications of the zip: `elixir`,
+  `eex`, `ex_unit`, `iex`, `logger` and `mix`, with their docs (`h/1` in
+  `iex`). `iex -S mix` and `elixir -S mix` use the `mix` script of the
+  zip.
+- `escript FILE` runs an escript, as the `escript` program of OTP, with
+  the flags of its `%%!` line. Escripts from `mix escript.build` run
+  with it.
+- Packages: `mix local.hex` installs Hex, and `mix deps.get` then
+  fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
+  rebar3, which Mix runs as an escript: put a link named `escript` in
+  `PATH`. `beam.com build` does not need Hex or rebar3 (see "Hex
+  packages").
+- `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
+- To build an Elixir project into one file, use `beam.com build` (see
+  "Elixir" above): the tools do not have the `build` command.
+- **Not supported:** `mix release` (it copies ERTS from disk, and there
+  is none: `beam.com build` makes the program instead); the options of
+  the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
+  `--name`, `--cookie`, `--pipe-to`; there is no distribution). On
+  Windows, there are no port programs: Mix tasks that start other
+  programs (rebar3, git) do not work.
+
+#### Make your own tools
+
+You make the tool files yourself from `beam.com`, and only the tools
+that you need. A tool file is `beam.com` under the name of the tool, so
+a copy, a hard link or a symbolic link is enough:
+
+```sh
+# Only mix and iex, in ~/bin:
+cp beam.com ~/bin/mix.com
+ln ~/bin/mix.com ~/bin/iex.com      # a hard link: no second copy on disk
+
+# All the tools, as with an installation (Linux, macOS and the BSDs):
+for tool in mix iex elixir elixirc escript; do ln -s beam.com ~/bin/$tool; done
+mix test
+```
+
+On Windows, copy `beam.com` to `mix.exe`, `iex.exe`, `elixir.exe` or
+`elixirc.exe`, or make hard links with `mklink /H mix.exe beam.com`.
 
 ### Command line programs: `--main`, `priv` files and erl mode
 
@@ -529,6 +595,13 @@ builder ([`apps/beam_com/src/beam_com_zip.erl`](apps/beam_com/src/beam_com_zip.e
 keeps the bytes up to the first entry that it removes, moves the entries
 after that point that it keeps, adds the new entries, and writes a new
 central directory with the new offsets.
+
+The code of OTP 29 and of Elixir has its docs and its debug information
+(for `h/1`, the debugger and `cover`). A program does not need them: the
+builder strips them from the beam files of the program, as `mix release`
+does (`strip_beams`). It keeps the chunks that the loader uses, the line
+numbers (for stack traces) and the attributes. A program is about 7.7 MB
+smaller, and it starts as fast as before (`docs/BENCHMARKS.md`).
 
 ## Debugging
 
