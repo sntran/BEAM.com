@@ -8,6 +8,17 @@ It uses the "redbean style": the executable is also a zip file. You add
 an Erlang release to the zip, and the one file runs your release on
 Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.
 
+You do not need Erlang to make such a file. `beam.com` has the compiler:
+
+```
+$ sh ./beam.com build examples/hashsum.erl
+beam.com: wrote hashsum.com (25304313 bytes)
+  release: hashsum 0.1.0
+  applications: beam_com_script kernel stdlib crypto
+$ sh ./hashsum.com abc
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc
+```
+
 ```
 $ sh ./beam.com hello world
 Hello, World! from BEAM.com
@@ -27,6 +38,36 @@ The default `beam.com` holds a small `hello` release
 `beam.com` with a static OpenSSL 3.5.8, and TLS connections verify the
 server with the certificates of the OS (on Windows too).
 
+## Build a program with `beam.com build`
+
+```sh
+beam.com build INPUT [-o OUTPUT] [-a APP]...
+```
+
+`INPUT` is one of these:
+
+- **One `.erl` file** that exports `main/1`, as for `escript`. The
+  program gets the command line arguments, and halts with status 0 when
+  `main/1` returns (127 on an exception).
+- **An application directory**: `src/*.erl` (subdirectories too),
+  `src/NAME.app.src` or `ebin/NAME.app`, and optionally `include/`,
+  `priv/`, `config/sys.config`, `config/vm.args` (the rebar3 layout) and
+  the `erl_opts` of `rebar.config`. Dependencies are not fetched yet.
+
+The builder compiles the code, selects the OTP applications that the
+program needs, makes an OTP release with `systools`, and writes a copy of
+`beam.com` with the release in its zip (`OUTPUT`, by default the name of
+`INPUT` with `.com`). The new file does not have the compiler or the
+`build` command, only what the program needs.
+
+The applications are the ones that the `.app` file names, the ones of
+the modules that the code calls (from the imports of the compiled code),
+and all the applications that these need. Use `-a APP` for an
+application that the code only calls with `apply/3` or similar.
+
+The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
+`crypto`, `asn1`, `public_key`, `ssl` and `inets`.
+
 ## Add your release
 
 Make a normal OTP release **without ERTS**, for OTP 29, and add its
@@ -41,8 +82,11 @@ zip -r greeter.com releases lib
 sh ./greeter.com                    # on Windows: rename to greeter.exe
 ```
 
-Examples (CI builds each one with rebar3 and runs it on every platform):
+Examples (CI builds each one with rebar3 and runs it on every platform,
+and also builds each one with `beam.com build` on every platform):
 
+- [`examples/hashsum.erl`](examples/hashsum.erl): a one-file program
+  (only for `beam.com build`).
 - [`examples/greeter`](examples/greeter): an application, a supervisor
   and a `gen_server`.
 - [`examples/crypto_check`](examples/crypto_check): hashes, HMAC,
@@ -111,8 +155,12 @@ Windows (with `crypt32`) to a PEM file at start and gives it to
 ```
 bin/start_clean.boot, bin/no_dot_erlang.boot
 bin/windows.inetrc                 resolver settings, used on Windows
-lib/kernel-11.0.4/ebin/...
-lib/stdlib-8.1/ebin/...
+lib/kernel-11.0.4/{ebin,include}/...
+lib/stdlib-8.1/{ebin,include}/...
+lib/.../                           sasl, compiler, crypto, asn1,
+                                   public_key, ssl, inets
+lib/beam_com/ebin/...              the "build" command (apps/beam_com)
+lib/beam_com_script-0.1.0/ebin/... runs one-file programs
 lib/hello-0.1.0/ebin/...
 releases/start_erl.data            "17.1 0.1.0"
 releases/0.1.0/start.boot          made with systools (tools/make_boot.escript)
@@ -123,6 +171,21 @@ releases/0.1.0/vm.args
 BEAM.com does the work of `erlexec`. It gives ERTS
 `-root /zip -bindir /zip/bin -progname beam.com -home $HOME`, then the
 release arguments, `ERL_FLAGS`, `.args` and the command line.
+
+When the first argument is `build` and the zip has `lib/beam_com`,
+BEAM.com boots `start_clean` and runs `beam_com:main/0` instead of the
+release.
+
+### How `beam.com build` writes the new file
+
+PKZIP keeps its index (the central directory) at the end of the file,
+and in an APE file the offsets count from the start of the file. The
+emulator also has zip entries of its own inside its image (symbol
+tables, time zones, `.cosmo`), which must stay where they are. The
+builder ([`apps/beam_com/src/beam_com_zip.erl`](apps/beam_com/src/beam_com_zip.erl))
+keeps the bytes up to the first entry that it removes, moves the entries
+after that point that it keeps, adds the new entries, and writes a new
+central directory with the new offsets.
 
 ## Build
 
@@ -176,7 +239,8 @@ arguments and in a header that the compiler includes in each file
 2. Builds the examples with a normal Erlang/OTP 29.1.1 and rebar3, and
    adds each one to a copy of `beam.com` with `zip`.
 3. Runs `beam.com` and the examples ([`tests/run.sh`](tests/run.sh),
-   [`tests/run.ps1`](tests/run.ps1)) on each platform.
+   [`tests/run.ps1`](tests/run.ps1)) on each platform. On each platform,
+   it also builds the examples with `beam.com build` and runs the results.
 
 `beam.com`, the example executables and the APE loader are build
 artifacts of each run.
@@ -228,9 +292,13 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
 - `run_erl` does not work (there is no `mkfifo()`).
-- Only kernel and stdlib are in the default zip. A release brings the
-  other applications that it needs (pure Erlang ones only).
-- A release must be for the same OTP as `beam.com` (29.1.1).
+- A release that you add with `zip` brings the applications that it
+  needs, when they are not in the zip of `beam.com` (pure Erlang ones
+  only).
+- A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
+  writes a warning when `start_erl.data` names another ERTS version.
+- `beam.com build` does not fetch dependencies (Hex packages) yet, and
+  it does not compile Elixir, `.yrl`/`.xrl` or `.asn1` files.
 
 ## Roadmap
 
