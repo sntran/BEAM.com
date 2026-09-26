@@ -45,9 +45,11 @@ benchmarks() ->
 %% The start time of a program: the median of 10 runs, from the start of
 %% the process to its end (as a port program, so not on Windows).
 start_time(Exe, Args) ->
-    Path = case filename:pathtype(Exe) of
-               absolute -> Exe;
-               _ -> os:find_executable(Exe)
+    %% A name with a directory (bin/ape-x86_64.elf) is from the current
+    %% directory; os:find_executable/1 finds only names in PATH.
+    Path = case lists:member($/, Exe) of
+               true -> filename:absname(Exe);
+               false -> os:find_executable(Exe)
            end,
     Times = lists:sort([run_once(Path, Args) || _ <- lists:seq(1, 10)]),
     io:format("start ~b~n", [lists:nth(5, Times)]).

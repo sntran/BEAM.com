@@ -32,7 +32,11 @@ for v in $variants; do
         $runner "$prog" start "$runner_path" "$dir/$v" version | sed 's/^start/start_version/'
         $runner "$prog" start "$runner_path" "$prog" none | sed 's/^start/start_program/'
         $runner "$prog" | sed 's/^bench //'
-    } > "$out/$v" 2>&1
+    } > "$out/$v.log" 2>&1
+    # Only the lines "NAME NUMBER" go into the table; the log of an
+    # error goes to standard error.
+    grep -E '^[a-z_]+ [0-9.]+$' "$out/$v.log" > "$out/$v"
+    grep -v -E '^[a-z_]+ [0-9.]+$' "$out/$v.log" >&2
 done
 
 # The table: one row for each measure, one column for each variant.
