@@ -106,7 +106,7 @@ jobs:
 
       - name: Build the example releases and add them to beam.com
         run: |
-          for app in greeter crypto_check; do
+          for app in greeter crypto_check tls_check; do
             (cd examples/$app && rebar3 release)
             cp beam.com $app.com
             (cd examples/$app/_build/default/rel/$app &&
@@ -121,6 +121,7 @@ jobs:
           path: |
             greeter.com
             crypto_check.com
+            tls_check.com
           if-no-files-found: error
 
   test:

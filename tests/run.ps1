@@ -76,4 +76,7 @@ if (Test-Path (Join-Path $Dir "crypto_check.com")) {
         '@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0' +
         '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello') @()
 }
+if (Test-Path (Join-Path $Dir "tls_check.com")) {
+    Check "tls_check.com" 'tls: local handshake ok@@tls: remote [^ ]* ok' @()
+}
 exit $fail

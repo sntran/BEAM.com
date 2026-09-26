@@ -1,0 +1,7 @@
+{application, tls_check,
+ [{description, "Checks TLS (ssl) in BEAM.com"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {mod, {tls_check_app, []}},
+  {applications, [kernel, stdlib, crypto, asn1, public_key, ssl]},
+  {env, [{host, "www.erlang.org"}, {port, 443}]}]}.
