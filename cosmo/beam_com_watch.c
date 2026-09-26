@@ -14,9 +14,13 @@
  *
  * On Linux it uses inotify. Cosmopolitan has no wrappers for inotify, so
  * the system calls are made here (x86_64 and aarch64). On the other
- * systems it compares the files every half second (stat()): events come
- * later, and there is no MOVED_FROM or MOVED_TO (a move is DELETE and
- * CREATE).
+ * systems it compares the files (stat()), and there is no MOVED_FROM or
+ * MOVED_TO (a move is DELETE and CREATE). On macOS and the BSDs, kqueue
+ * starts the comparison when a watched directory or file changes (all
+ * directories first, then the files, up to half of RLIMIT_NOFILE
+ * descriptors and at most 4096). The files are also compared every half
+ * second, for the changes that kqueue does not see. When kqueue fails,
+ * only this interval is used.
  *
  * As mac_listener (the watcher of file_system on macOS, with FSEvents),
  * it takes the same command line and writes the same lines:
@@ -26,17 +30,21 @@
  *   ID<TAB>0xFLAGS=[created,isfile]<TAB>/absolute/path
  *
  * The files are compared as on the other systems (the events are created,
- * removed, modified and inodemetamod, with isfile or isdir), every
- * SECONDS (0.5 when not given), and it exits when its input closes, as
- * mac_listener does.
+ * removed, modified and inodemetamod, with isfile or isdir): when kqueue
+ * sees a change, and every SECONDS (0.5 when not given, at most 5). It
+ * exits when its input closes, as mac_listener does.
  */
 #include <cosmo.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -260,9 +268,12 @@ static int run_inotify(char **paths, int npaths)
 
 struct entry {
     char *path;
-    int isdir;
+    int isdir, isreg;
     struct timespec mtime, ctime;
     off_t size;
+    dev_t dev;
+    ino_t ino;
+    int fd; /* watched with kqueue, or -1 */
     int seen;
 };
 
@@ -276,6 +287,217 @@ static struct entry *find_entry(const char *path)
         if (strcmp(entries[i].path, path) == 0)
             return &entries[i];
     return NULL;
+}
+
+/* --- macOS and the BSDs: kqueue wakes the comparison ------------------- */
+
+/* Cosmopolitan has no kqueue() and kevent() wrappers, but its libc has
+ * the system calls (with the numbers of each system, -1 and errno on an
+ * error, ENOSYS on Linux). On NetBSD, sys_kevent is __kevent50 (435),
+ * which takes the struct kevent of NetBSD 10 and earlier (NetBSD 11
+ * keeps it in compat_100). See C29 in docs/UPSTREAM.md. */
+int sys_kqueue(void);
+int sys_kevent(int, const void *, int, void *, int, const struct timespec *);
+
+/* struct kevent of macOS (with #pragma pack(4), which changes nothing on
+ * 64-bit systems) and OpenBSD. FreeBSD 12 and later add ext[4]. */
+struct kev {
+    uintptr_t ident;
+    int16_t filter;
+    uint16_t flags;
+    uint32_t fflags;
+    int64_t data;
+    void *udata;
+};
+
+struct kev_freebsd {
+    struct kev k;
+    uint64_t ext[4];
+};
+
+/* NetBSD: the filter and the flags are 32 bits. */
+struct kev_netbsd {
+    uintptr_t ident;
+    uint32_t filter;
+    uint32_t flags;
+    uint32_t fflags;
+    int64_t data;
+    void *udata;
+};
+
+_Static_assert(sizeof(struct kev) == 32, "struct kevent (macOS, OpenBSD)");
+_Static_assert(sizeof(struct kev_freebsd) == 64, "struct kevent (FreeBSD)");
+_Static_assert(sizeof(struct kev_netbsd) == 40, "struct kevent (NetBSD)");
+_Static_assert(offsetof(struct kev_netbsd, data) == 24, "NetBSD kevent data");
+
+/* The same values on the four systems, except the filters of NetBSD. */
+#define KQ_EV_ADD 0x0001
+#define KQ_EV_CLEAR 0x0020
+#define KQ_NOTE_DELETE 0x0001
+#define KQ_NOTE_WRITE 0x0002
+#define KQ_NOTE_EXTEND 0x0004
+#define KQ_NOTE_ATTRIB 0x0008
+#define KQ_NOTE_LINK 0x0010
+#define KQ_NOTE_RENAME 0x0020
+#define KQ_NOTES (KQ_NOTE_DELETE | KQ_NOTE_WRITE | KQ_NOTE_EXTEND | \
+                  KQ_NOTE_ATTRIB | KQ_NOTE_LINK | KQ_NOTE_RENAME)
+#define KQ_FILTER_READ (IsNetbsd() ? 0 : -1)
+#define KQ_FILTER_VNODE (IsNetbsd() ? 3 : -4)
+#define KQ_MAX_EVENTS 64
+#define KQ_MAX_FILES 4096
+
+static int kq = -1, kq_files, kq_max_files, kq_stdin;
+
+static size_t kev_size(void)
+{
+    return IsNetbsd() ? sizeof(struct kev_netbsd)
+         : IsFreebsd() ? sizeof(struct kev_freebsd) : sizeof(struct kev);
+}
+
+static void kev_set(void *p, int ident, int filter, unsigned flags, unsigned fflags)
+{
+    memset(p, 0, kev_size());
+    if (IsNetbsd()) {
+        struct kev_netbsd *k = p;
+        k->ident = ident;
+        k->filter = filter;
+        k->flags = flags;
+        k->fflags = fflags;
+    } else {
+        struct kev *k = p;
+        k->ident = ident;
+        k->filter = filter;
+        k->flags = flags;
+        k->fflags = fflags;
+    }
+}
+
+static void kev_get(const void *p, uintptr_t *ident, int *filter)
+{
+    if (IsNetbsd()) {
+        const struct kev_netbsd *k = p;
+        *ident = k->ident;
+        *filter = (int)k->filter;
+    } else {
+        const struct kev *k = p;
+        *ident = k->ident;
+        *filter = k->filter;
+    }
+}
+
+/* Add one event to the kqueue. Without room for events, kevent() gives
+ * -1 and errno when the change fails. */
+static int kq_add(int fd, int filter, unsigned flags, unsigned fflags)
+{
+    struct kev_freebsd ev; /* the largest */
+
+    kev_set(&ev, fd, filter, KQ_EV_ADD | flags, fflags);
+    return sys_kevent(kq, &ev, 1, NULL, 0, NULL);
+}
+
+static void kq_unwatch(struct entry *e)
+{
+    if (e->fd < 0)
+        return;
+    close(e->fd); /* this also removes it from the kqueue */
+    e->fd = -1;
+    kq_files--;
+}
+
+static void kq_start(void)
+{
+    struct rlimit rl;
+
+    if (!(IsXnu() || IsFreebsd() || IsNetbsd() || IsOpenbsd()) ||
+        (kq = sys_kqueue()) < 0)
+        return;
+    kq_max_files = KQ_MAX_FILES;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur / 2 < (rlim_t)kq_max_files)
+        kq_max_files = rl.rlim_cur / 2;
+    /* mac_listener: a closed input wakes the wait (else wait_scan()
+     * checks it after each wait). Without EV_CLEAR, the event comes
+     * again while there is data to read before the end of the input. */
+    if (mac_mode)
+        kq_stdin = kq_add(0, KQ_FILTER_READ, 0, 0) == 0;
+}
+
+/* Back to the comparison at each interval only. */
+static void kq_stop(void)
+{
+    int i;
+
+    for (i = 0; i < nentries; i++)
+        kq_unwatch(&entries[i]);
+    close(kq);
+    kq = -1;
+    kq_stdin = 0;
+}
+
+/* After each comparison: watch the new directories, then the new files,
+ * while there are descriptors for them. Only directories and regular
+ * files are opened (the open of a FIFO can wait). On macOS, O_EVTONLY
+ * is better, but open() of Cosmopolitan cannot give it (C30 in
+ * docs/UPSTREAM.md). Gives 1 when a descriptor was added. */
+static int kq_sync(void)
+{
+    int i, pass, fd, added = 0;
+    struct entry *e;
+
+    for (pass = 0; pass < 2; pass++) {
+        for (i = 0; i < nentries && kq_files < kq_max_files; i++) {
+            e = &entries[i];
+            if (e->fd >= 0 || (pass == 0 ? !e->isdir : !e->isreg))
+                continue;
+            if ((fd = open(e->path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)) < 0)
+                continue;
+            if (kq_add(fd, KQ_FILTER_VNODE, KQ_EV_CLEAR, KQ_NOTES) != 0) {
+                close(fd);
+                continue;
+            }
+            e->fd = fd;
+            kq_files++;
+            added = 1;
+        }
+    }
+    return added;
+}
+
+/* Handle the events that came: a closed input stops mac_listener. */
+static void kq_events(const char *evs, int n)
+{
+    uintptr_t ident;
+    int i, filter;
+    char buf[256];
+
+    for (i = 0; i < n; i++) {
+        kev_get(evs + i * kev_size(), &ident, &filter);
+        if (ident == 0 && filter == KQ_FILTER_READ && read(0, buf, sizeof(buf)) <= 0)
+            exit(1);
+    }
+}
+
+/* Wait for an event or for the end of the interval. After an event, wait
+ * until there are no more events for 50 ms (at most 0.5 s): a program
+ * often writes a file in more than one step. Gives -1 when kevent()
+ * fails. */
+static int kq_wait(int ms)
+{
+    char evs[KQ_MAX_EVENTS * sizeof(struct kev_freebsd)];
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    struct timespec settle = {0, 50000000L};
+    int n, i;
+
+    n = sys_kevent(kq, NULL, 0, evs, KQ_MAX_EVENTS, &ts);
+    if (n < 0)
+        return errno == EINTR ? 0 : -1;
+    kq_events(evs, n);
+    for (i = 0; n > 0 && i < 10; i++) {
+        n = sys_kevent(kq, NULL, 0, evs, KQ_MAX_EVENTS, &settle);
+        if (n < 0)
+            return errno == EINTR ? 0 : -1;
+        kq_events(evs, n);
+    }
+    return 0;
 }
 
 /* The flags of FSEvents (kFSEventStreamEventFlagItem*), with the names
@@ -336,6 +558,14 @@ static void scan(const char *path, int depth, int report_changes)
     if (stat(path, &st) != 0)
         return;
     e = find_entry(path);
+    if (e && (st.st_dev != e->dev || st.st_ino != e->ino)) {
+        /* An other file has this name now (a move, or the save of an
+         * editor). Its descriptor for kqueue is for the old file. */
+        kq_unwatch(e);
+        e->dev = st.st_dev;
+        e->ino = st.st_ino;
+        e->isreg = S_ISREG(st.st_mode);
+    }
     if (!e) {
         if (nentries == capentries) {
             capentries = capentries ? capentries * 2 : 256;
@@ -344,9 +574,13 @@ static void scan(const char *path, int depth, int report_changes)
         e = &entries[nentries++];
         e->path = strdup(path);
         e->isdir = S_ISDIR(st.st_mode);
+        e->isreg = S_ISREG(st.st_mode);
         e->mtime = st.st_mtim;
         e->ctime = st.st_ctim;
         e->size = st.st_size;
+        e->dev = st.st_dev;
+        e->ino = st.st_ino;
+        e->fd = -1;
         if (report_changes && depth > 0)
             report(path, W_CREATE | (e->isdir ? W_ISDIR : 0));
     } else if (!e->isdir &&
@@ -376,14 +610,22 @@ static void scan(const char *path, int depth, int report_changes)
     closedir(d);
 }
 
-/* mac_listener: exit when the input closes (the port of file_system).
- * Wait for it, or for the next scan. */
+/* Wait for the next comparison. mac_listener exits when its input
+ * closes (the port of file_system). */
 static void wait_scan(int ms)
 {
     struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
     struct pollfd pfd = {0, POLLIN, 0};
     char buf[256];
 
+    if (kq >= 0) {
+        if (kq_wait(ms) != 0)
+            kq_stop();
+        else if (!mac_mode || kq_stdin)
+            return;
+        else
+            ms = 0; /* the input is not in the kqueue: check it now */
+    }
     if (!mac_mode) {
         nanosleep(&ts, NULL);
         return;
@@ -394,8 +636,9 @@ static void wait_scan(int ms)
 
 static void run_poll(char **paths, int npaths, int ms)
 {
-    int i, first = 1;
+    int i, first = 1, added = 0;
 
+    kq_start();
     for (;;) {
         for (i = 0; i < nentries; i++)
             entries[i].seen = 0;
@@ -404,6 +647,7 @@ static void run_poll(char **paths, int npaths, int ms)
         for (i = 0; i < nentries;) {
             if (!entries[i].seen) {
                 report(entries[i].path, W_DELETE | (entries[i].isdir ? W_ISDIR : 0));
+                kq_unwatch(&entries[i]);
                 free(entries[i].path);
                 entries[i] = entries[--nentries];
             } else {
@@ -411,7 +655,11 @@ static void run_poll(char **paths, int npaths, int ms)
             }
         }
         first = 0;
-        wait_scan(ms);
+        if (kq >= 0)
+            added = kq_sync();
+        /* A change between the comparison and the open of a new file
+         * gives no event: compare again soon. */
+        wait_scan(added && ms > 100 ? 100 : ms);
     }
 }
 

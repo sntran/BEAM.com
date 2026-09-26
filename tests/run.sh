@@ -493,6 +493,7 @@ fi
 if [ -f "$dir/beam.com" ]; then
     wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
     mkdir "$wdir/sub"
+    echo old > "$wdir/sub/old.txt"
     echo "==> beam.com inotifywait"
     $runner "$dir/beam.com" inotifywait -e modify -e close_write -e moved_to \
         -e moved_from -e create -e delete -e attrib --format '%w|%e|%f' \
@@ -504,6 +505,7 @@ if [ -f "$dir/beam.com" ]; then
     sleep 1
     echo b > "$wdir/new/b.txt"
     rm "$wdir/a.txt"
+    echo more >> "$wdir/sub/old.txt"
     sleep 2
     kill "$watcher" 2>/dev/null
     wait "$watcher" 2>/dev/null
@@ -511,7 +513,8 @@ if [ -f "$dir/beam.com" ]; then
     if grep -q "^$wdir/|CREATE|a.txt$" "$tmp.watch" &&
        grep -q "^$wdir/|CREATE,ISDIR|new$" "$tmp.watch" &&
        grep -q "^$wdir/new/|CREATE|b.txt$" "$tmp.watch" &&
-       grep -q "^$wdir/|DELETE|a.txt$" "$tmp.watch"; then
+       grep -q "^$wdir/|DELETE|a.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/sub/|MODIFY|old.txt$" "$tmp.watch"; then
         echo "PASS: beam.com inotifywait"
     else
         echo "FAIL: beam.com inotifywait"
@@ -527,6 +530,7 @@ fi
 # PATH"). It exits when its input closes, as file_system expects.
 if [ -f "$dir/beam.com" ]; then
     wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    echo old > "$wdir/old.txt"
     echo "==> beam.com mac_listener"
     (sleep 5) | $runner "$dir/beam.com" mac_listener --latency=0.2 -F "$wdir" \
         > "$tmp.watch" 2>&1 &
@@ -536,6 +540,7 @@ if [ -f "$dir/beam.com" ]; then
     mkdir "$wdir/new"
     sleep 1
     rm "$wdir/a.txt"
+    echo more >> "$wdir/old.txt"
     # The input closes after 5 seconds: the watcher must exit by itself.
     sleep 4
     if kill -0 "$watcher" 2>/dev/null; then
@@ -550,6 +555,7 @@ if [ -f "$dir/beam.com" ]; then
     if grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
        grep -q "^[0-9]*${tab}0x00020100=\[created,isdir\]${tab}$wdir/new$" "$tmp.watch" &&
        grep -q "^[0-9]*${tab}0x00010200=\[removed,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00011000=\[modified,isfile\]${tab}$wdir/old.txt$" "$tmp.watch" &&
        [ "$exited" = yes ]; then
         echo "PASS: beam.com mac_listener"
     else
@@ -559,6 +565,56 @@ if [ -f "$dir/beam.com" ]; then
   beam.com mac_listener: missing events, or it did not exit ($exited)"
     fi
     rm -rf "$wdir"
+fi
+
+# kqueue (macOS and the BSDs): a change starts the comparison at once.
+# The interval is 5 seconds, so a change seen in 2 seconds comes from
+# kqueue. The watcher first reports probe files, so that it surely runs
+# (a slow system can take some seconds to start it); the next comparison
+# of the interval is then 4 seconds or more later. On Linux, mac_listener
+# does not use inotify, so the check is not made there.
+case $(uname -s) in Darwin|FreeBSD|NetBSD|OpenBSD) kqueue=yes ;; *) kqueue=no ;; esac
+if [ -f "$dir/beam.com" ] && [ "$kqueue" = yes ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    echo old > "$wdir/old.txt"
+    echo "==> beam.com mac_listener (kqueue)"
+    (sleep 25) | $runner "$dir/beam.com" mac_listener --latency=5 "$wdir" \
+        > "$tmp.watch" 2>&1 &
+    watcher=$!
+    i=0
+    while [ $i -lt 20 ] && ! grep -q probe "$tmp.watch"; do
+        echo "$i" > "$wdir/probe$i"
+        sleep 1
+        i=$((i + 1))
+    done
+    echo more >> "$wdir/old.txt"
+    sleep 2
+    cp "$tmp.watch" "$tmp.watch2"
+    # The input closes after 25 seconds: the watcher must exit by itself.
+    i=0
+    while [ $i -lt 40 ] && kill -0 "$watcher" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        exited=no
+    else
+        exited=yes
+    fi
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    tab=$(printf '\t')
+    if grep -q "^[0-9]*${tab}0x00011000=\[modified,isfile\]${tab}$wdir/old.txt$" "$tmp.watch2" &&
+       [ "$exited" = yes ]; then
+        echo "PASS: beam.com mac_listener (kqueue)"
+    else
+        echo "FAIL: beam.com mac_listener (kqueue)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (kqueue): no change in 2 seconds, or it did not exit ($exited)"
+    fi
+    rm -rf "$wdir" "$tmp.watch2"
 fi
 
 # Distributed Erlang and remote shells (not on Windows). epmd is in the

@@ -266,8 +266,9 @@ iex.com -S mix phx.server        # http://localhost:4000
 - Live reload works without `inotify-tools`: the tools set
   `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
   file watcher of the file (see "The file watcher"), on Linux and the
-  BSDs. On macOS, `file_system` compiles its own watcher, which needs the
-  command line tools of Xcode.
+  BSDs. On macOS, they set `FILESYSTEM_FSMAC_EXECUTABLE_FILE`, so that
+  `file_system` does not compile its own watcher (which needs the
+  command line tools of Xcode).
 - **Not yet:** a database with a NIF. `--database sqlite3` (exqlite) and
   `phx.gen.auth` (bcrypt) load C libraries at run time, which BEAM.com
   cannot do; linking their NIFs into `beam.com` is the next step (see
@@ -288,11 +289,16 @@ The file has a file watcher with the command line and the output of
 beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
 ```
 
-- On Linux it uses inotify; on the BSDs it compares the files every half
-  second (a move is then `DELETE` and `CREATE`).
+- On Linux it uses inotify. On the BSDs it compares the files (a move is
+  then `DELETE` and `CREATE`): at once when kqueue sees a change in a
+  watched directory or file, and every half second. When there are too
+  many files for the descriptors (half of the open file limit, at most
+  4096), the directories are watched first, and the interval finds the
+  other changes. When kqueue fails, only the interval is used.
 - On macOS, `file_system` uses `mac_listener` (with FSEvents) in place of
   `inotifywait`. The file is also `mac_listener`, with the same command
-  line and output, and it compares the files as on the BSDs:
+  line and output, and it compares the files as on the BSDs (with
+  kqueue, and every `--latency` seconds, at most 5):
   `beam.com mac_listener --latency=0.5 -F /absolute/dir`.
 - The tools of Elixir set `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` to a link
   named `inotifywait` to the file (on macOS,
