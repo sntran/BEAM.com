@@ -48,10 +48,6 @@ name() ->
 name(Exe) ->
     filename:rootname(lists:last(string:lexemes(Exe, "/\\"))) ++ ".com".
 
-%% rebar3 is in the zip with Elixir (bin/rebar3).
-zip_has_rebar3() ->
-    filelib:is_regular(filename:join([code:root_dir(), "bin", "rebar3"])).
-
 elixir_version() ->
     case lists:keyfind("elixir", 1, zip_apps()) of
         {_, Vsn} -> Vsn;
@@ -154,16 +150,11 @@ help([]) ->
      "                  make an executable from ", Inputs,
      "  escript FILE [ARGUMENTS]\n"
      "                  run an escript\n",
-     case zip_has_rebar3() of
-         true -> "  rebar3 [ARGUMENTS]\n"
-                 "                  rebar3, the build tool of Erlang\n";
-         false -> ""
-     end,
      Tools,
      "  version         show the versions, the emulator and the platform\n"
      "  help [COMMAND]  show this text, or the help of a command\n"
      "\n"
-     "A copy of this file or a link to it with the name of a tool (escript, rebar3",
+     "A copy of this file or a link to it with the name of a tool (escript",
      case Tools of [] -> ""; _ -> ",\nmix, iex, elixir, elixirc; also mix.com, iex.com, ..." end,
      ") runs that tool.\n"
      "To run an OTP release, add it to the zip of a copy of ", Name, ".\n"

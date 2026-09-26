@@ -506,15 +506,13 @@ static int file_exists(const char *path)
 }
 
 /*
- * The tools: "escript", "rebar3" (the escript in the zip), and the tools
- * of Elixir: "mix", "iex", "elixir" and "elixirc", also with .com or .exe
- * (mix.com is this file under the name of the tool). NULL for another
- * name.
+ * The tools: "escript", and the tools of Elixir: "mix", "iex", "elixir"
+ * and "elixirc", also with .com or .exe (mix.com is this file under the
+ * name of the tool). NULL for another name.
  */
 static const char *elixir_tool(const char *name)
 {
-    static const char *tools[] = {"mix", "iex", "elixir", "elixirc", "escript",
-                                  "rebar3"};
+    static const char *tools[] = {"mix", "iex", "elixir", "elixirc", "escript"};
     size_t i, n;
 
     for (i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
@@ -549,66 +547,6 @@ static void escript_flags(const char *path, struct arglist *out)
         }
     }
     fclose(f);
-}
-
-/* mkdir -p */
-static void make_dirs(char *path)
-{
-    char *p;
-
-    for (p = path + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(path, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(path, 0755);
-}
-
-/*
- * Mix runs rebar3 (for the Erlang packages) as a file: MIX_REBAR3, else
- * ~/.mix/elixir/VSN/rebar3 of "mix local.rebar". For the tools of Elixir,
- * MIX_REBAR3 is a link named rebar3 to this file, in the cache of
- * BEAM.com (BEAM_COM_CACHE, else the user cache, as beam_com_script), so
- * that it starts the rebar3 of the zip. Not when MIX_REBAR3 is set, and
- * not on Windows (no links; Mix starts escript.exe there).
- */
-static void mix_rebar3(void)
-{
-    const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
-               *home = getenv("HOME"), *exe = GetProgramExecutableName();
-    char *dir, *link, *tmp, target[4096];
-    ssize_t n;
-
-    if (getenv("MIX_REBAR3") || beam_com_is_windows() || !exe || *exe != '/' ||
-        !file_exists(BEAM_COM_BINDIR "/rebar3"))
-        return;
-    if (cache && *cache)
-        dir = join(cache, "/bin", "");
-    else if (IsXnu() && home)
-        dir = join(home, "/Library/Caches/beam.com/bin", "");
-    else if (xdg && *xdg)
-        dir = join(xdg, "/beam.com/bin", "");
-    else if (home)
-        dir = join(home, "/.cache/beam.com/bin", "");
-    else
-        return;
-    make_dirs(dir);
-    link = join(dir, "/rebar3", "");
-    n = readlink(link, target, sizeof(target) - 1);
-    if (n < 0 || (target[n] = '\0', strcmp(target, exe) != 0)) {
-        /* A new link, then rename(): two tools that start at the same
-         * time do not see a missing link. */
-        snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
-        tmp = strdup(target);
-        unlink(tmp);
-        if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
-            unlink(tmp);
-            return;
-        }
-    }
-    setenv("MIX_REBAR3", link, 1);
 }
 
 /* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
@@ -1043,12 +981,7 @@ void beam_com_main(int *argcp, char ***argvp)
             }
         }
     }
-    if (tool && strcmp(tool, "rebar3") == 0 && !file_exists(BEAM_COM_BINDIR "/rebar3")) {
-        fprintf(stderr, "beam.com: rebar3 is not in this file\n");
-        exit(1);
-    }
-    if (tool && strcmp(tool, "escript") != 0 && strcmp(tool, "rebar3") != 0 &&
-        !zip_has_elixir()) {
+    if (tool && strcmp(tool, "escript") != 0 && !zip_has_elixir()) {
         fprintf(stderr, "beam.com: %s: Elixir is not in this file "
                         "(built with ELIXIR=0)\n", tool);
         exit(1);
@@ -1060,26 +993,20 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "...");
         has_release = 1;
         has_args = 0;
-    } else if (tool && (strcmp(tool, "escript") == 0 || strcmp(tool, "rebar3") == 0)) {
-        /* As the escript program of OTP: "escript FILE ARGS". rebar3 is
-         * the escript in the zip: "escript /zip/bin/rebar3 ARGS". */
-        const char *script = strcmp(tool, "rebar3") == 0 ? BEAM_COM_BINDIR "/rebar3"
-                             : argc > 1 ? argv[1] : NULL;
+    } else if (tool && strcmp(tool, "escript") == 0) {
+        /* As the escript program of OTP: "escript FILE ARGS". */
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/no_dot_erlang");
         push(&file, "-noshell");
-        if (script)
-            escript_flags(script, &file);
+        if (argc > 1)
+            escript_flags(argv[1], &file);
         push(&file, "-run");
         push(&file, "escript");
         push(&file, "start");
         push(&file, "-extra");
-        if (strcmp(tool, "rebar3") == 0)
-            push(&file, BEAM_COM_BINDIR "/rebar3");
         has_release = 1;
         has_args = 0;
     } else if (tool) {
-        mix_rebar3();
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");

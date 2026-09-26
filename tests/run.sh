@@ -367,7 +367,7 @@ if [ -f "$dir/beam.com" ]; then
     dir_rel=$dir runner_rel=$runner
     dir=$(cd "$dir" && pwd)
     case $runner in */*) runner=$here/$runner ;; esac
-    for t in mix iex elixir elixirc rebar3; do ln -f "$dir/beam.com" "$dir/$t.com"; done
+    for t in mix iex elixir elixirc; do ln -f "$dir/beam.com" "$dir/$t.com"; done
     for t in mix iex elixir escript; do ln -sf beam.com "$dir/$t"; done
     cd "$work"
     check elixir.com '^55$@@^\["x", "y"\]$' -e 'IO.puts(Enum.sum(1..10)); IO.inspect(System.argv())' x y
@@ -390,29 +390,28 @@ if [ -f "$dir/beam.com" ]; then
     check mix 'Generated escript hello' escript.build
     check escript '^cli: \["p", "q"\]$' hello p q
     if [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ]; then
-        # Hex and rebar3 (for the Erlang packages) are in the zip: no "mix
-        # local.hex" or "mix local.rebar". Mix runs rebar3 through
-        # MIX_REBAR3, a link that the launcher makes in the cache. Where the
-        # kernel cannot start an APE file and sh stops at its first NUL
-        # byte (NetBSD), MIX_REBAR3 is a small script that starts the file
-        # with the APE loader.
+        # Hex and rebar3 (for the Erlang packages), installed by Mix into
+        # ~/.mix; Mix runs rebar3 with the escript in PATH. Where the kernel
+        # cannot start an APE file and sh stops at its first NUL byte
+        # (NetBSD), escript is a small script that starts the file with the
+        # APE loader.
         if [ "$os" = netbsd ]; then
-            printf '#!/bin/sh\nexec %s %s/beam.com rebar3 "$@"\n' "$runner" "$dir" > "$work/rebar3"
-            chmod +x "$work/rebar3"
-            MIX_REBAR3=$work/rebar3
-            export MIX_REBAR3
+            rm -f "$dir/escript"
+            printf '#!/bin/sh\nexec %s %s/beam.com escript "$@"\n' "$runner" "$dir" > "$dir/escript"
+            chmod +x "$dir/escript"
         fi
-        check mix.com '^Hex: *2\.' hex.info
-        check rebar3.com '^rebar 3\.' version
+        PATH=$dir:$PATH
+        export PATH
+        check mix '' local.hex --force
+        check mix '' local.rebar --force
         sed 's/# {:dep_from_hexpm, "~> 0.3.0"},/{:jason, "~> 1.4"}, {:telemetry, "~> 1.3"},/' mix.exs > mix.exs.new
         mv mix.exs.new mix.exs
         check mix 'jason@@telemetry' deps.get
         check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
     fi
     cd "$here"
-    unset MIX_REBAR3
     rm -f "$dir/mix" "$dir/iex" "$dir/elixir" "$dir/escript" \
-        "$dir/mix.com" "$dir/iex.com" "$dir/elixir.com" "$dir/elixirc.com" "$dir/rebar3.com"
+        "$dir/mix.com" "$dir/iex.com" "$dir/elixir.com" "$dir/elixirc.com"
     rm -rf "$work"
     dir=$dir_rel runner=$runner_rel
 fi
@@ -431,9 +430,11 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     case $runner in */*) runner=$here/$runner ;; esac
     limit=600
     for t in mix iex; do ln -f "$dir/beam.com" "$dir/$t.com"; done
+    for t in mix escript; do ln -sf beam.com "$dir/$t"; done
     PATH=$dir:$PATH
     export PATH
     cd "$work"
+    check mix.com '' local.hex --force
     check mix.com 'phx_new' archive.install hex phx_new --force
     check mix.com 'creating hello/mix.exs' phx.new hello --no-ecto --no-install
     if [ -d hello ]; then
@@ -472,7 +473,7 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
         wait "$phx" 2>/dev/null
     fi
     cd "$here"
-    rm -f "$dir/mix.com" "$dir/iex.com"
+    rm -f "$dir/mix" "$dir/escript" "$dir/mix.com" "$dir/iex.com"
     rm -rf "$work"
     dir=$dir_rel runner=$runner_rel limit=$limit_saved PATH=$path_saved
 fi

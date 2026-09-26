@@ -25,9 +25,6 @@
 #                    for "beam.com build" of Elixir code and the tools
 #                    mix, iex, elixir and elixirc; default 1)
 #   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
-#   HEX_VERSION      Hex for the tools of Elixir, from builds.hex.pm
-#                    (default 2.5.1; HEX_SHA512 is its checksum)
-#   REBAR3_VERSION   rebar3 for the tools (default 3.25.1; REBAR3_SHA512)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
@@ -54,15 +51,6 @@ WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 ELIXIR=${ELIXIR:-1}
 ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
-# Hex and rebar3 in the zip, so that the tools of Elixir need no "mix
-# local.hex" and "mix local.rebar": the builds of builds.hex.pm, as those
-# commands fetch them, with the SHA-512 of hex.csv and rebar.csv there.
-HEX_VERSION=${HEX_VERSION:-2.5.1}
-HEX_URL=${HEX_URL:-https://builds.hex.pm/installs/1.20.0/hex-$HEX_VERSION-otp-29.ez}
-HEX_SHA512=${HEX_SHA512:-6629f4b4bb2e040326151ebb853aad065e342c65ad3a0f2a2674dcf7164eb4328d6c929513d7230309ad75042024e72bef0e0a51ebff373b4173d2746b1772b7}
-REBAR3_VERSION=${REBAR3_VERSION:-3.25.1}
-REBAR3_URL=${REBAR3_URL:-https://builds.hex.pm/installs/1.18.4/rebar3-$REBAR3_VERSION-otp-28}
-REBAR3_SHA512=${REBAR3_SHA512:-992fd755b7926fae455e5e07d9d195f4d3e7f181609eed1b9cabfe548624df10d148cd4b59bda40bebb185d3d68f9a9fd68a70b294101c8ad9cf0fadcc683d24}
 ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
@@ -452,19 +440,6 @@ step_elixir() {
         tar -xzf "$BUILD/elixir.tar.gz" -C "$BUILD"
     fi
     (cd "$src" && PATH="$ERL_TOP/bin:$PATH" make compile)
-    fetch_checked "$HEX_URL" "$HEX_SHA512" "$BUILD/hex-$HEX_VERSION.ez"
-    fetch_checked "$REBAR3_URL" "$REBAR3_SHA512" "$BUILD/rebar3-$REBAR3_VERSION"
-}
-
-# fetch_checked URL SHA512 FILE: download FILE once, and check it.
-fetch_checked() {
-    if [ ! -f "$3" ]; then
-        log "Downloading $1"
-        curl -fsSL -o "$3.tmp" "$1"
-        mv "$3.tmp" "$3"
-    fi
-    sum=$( (sha512sum "$3" 2>/dev/null || shasum -a 512 "$3") | cut -d' ' -f1)
-    [ "$sum" = "$2" ] || { echo "Wrong SHA-512 for $3: $sum" >&2; rm -f "$3"; exit 1; }
 }
 
 step_release() {
@@ -522,10 +497,6 @@ step_bundle() {
             "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")], [\"Attr\", \"Docs\"]), halt()."
         mkdir -p "$STAGE/bin"
         cp "$BUILD/elixir-$ELIXIR_VERSION/bin/mix" "$STAGE/bin/mix"
-        # Hex (lib/hex-VSN, in the code path of the tools, where Mix finds
-        # it) and rebar3 (bin/rebar3, an escript: the rebar3 tool).
-        (cd "$STAGE/lib" && unzip -q "$BUILD/hex-$HEX_VERSION.ez")
-        cp "$BUILD/rebar3-$REBAR3_VERSION" "$STAGE/bin/rebar3"
     fi
 
     # WebAssembly: the wasm application (its NIF is in the emulator).

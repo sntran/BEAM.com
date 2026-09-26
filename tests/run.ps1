@@ -214,11 +214,9 @@ Set-Content -Path $escript -Encoding ascii -Value @(
     'main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).')
 Check "beam.com" 'escript: \["a","b c"\] 1' @("escript", $escript, "a", "b c")
 Check "beam.com" '(?m)^55\r?$' @("elixir", "-e", "IO.puts(Enum.sum(1..10))")
-foreach ($t in @("mix", "elixir", "rebar3")) {
+foreach ($t in @("mix", "elixir")) {
     New-Item -ItemType HardLink -Path (Join-Path $Dir "$t.com") -Target (Join-Path $Dir "beam.com") -Force | Out-Null
 }
-# rebar3 is in the zip (an escript).
-Check "rebar3.com" '(?m)^rebar 3\.' @("version")
 if (Test-Path (Join-Path $Dir "elixir.com")) {
     Check "elixir.com" '(?m)^55\r?$' @("-e", "IO.puts(Enum.sum(1..10))")
     $work = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_mix_" + [System.Guid]::NewGuid().ToString("N"))
@@ -229,7 +227,7 @@ if (Test-Path (Join-Path $Dir "elixir.com")) {
     Check "mix.com" '2 passed' @("test")
     Pop-Location
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $Dir "mix.com"), (Join-Path $Dir "elixir.com"), (Join-Path $Dir "rebar3.com") -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $Dir "mix.com"), (Join-Path $Dir "elixir.com") -ErrorAction SilentlyContinue
 }
 
 # An application with an entry (toolbox): see tests/run.sh. The priv and
