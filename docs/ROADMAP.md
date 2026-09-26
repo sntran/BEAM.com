@@ -55,8 +55,12 @@ platforms.
 
 - WAMR 2.4.5, the fast interpreter with WASI preview 1, is linked into
   the emulator as a static NIF. It adds about 0.6 MB for the two CPUs.
-- The Erlang API is ours (`wasm:load/1`, `instantiate/2`, `call/3`,
-  `run/3`, memory access), and it does not show WAMR types.
+- The Erlang API does not show WAMR types. Its names come from APIs
+  that users know: the WebAssembly JavaScript API (`compile/1`,
+  `instantiate/1,2,3`), wasmex (`call_function/3`, `function_exists/2`,
+  `read_binary/3`, `write_binary/3`), `WebAssembly.Memory`
+  (`memory_size/1`, `memory_grow/2`) and `node:wasi` (the options
+  `args`, `env`, `preopens`, and `start/1`); `run/2` as `wasmtime run`.
 - Tested on each platform: calls with i32 and f64, traps, memory, a
   hand-made WASI module, and a Go program (`GOOS=wasip1`: arguments,
   environment, files).

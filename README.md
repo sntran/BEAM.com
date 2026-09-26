@@ -159,15 +159,36 @@ interpreter, linked into `beam.com`). The `wasm` application is in the
 zip, and `beam.com build` selects it when the code calls `wasm`:
 
 ```erlang
-{ok, Mod} = wasm:load(Bytes),                    % the bytes of a .wasm file
-{ok, Inst} = wasm:instantiate(Mod),
-{ok, [42]} = wasm:call(Inst, "add", [40, 2]),    % i32/i64: integers, f32/f64: floats
-{ok, Bin} = wasm:memory_read(Inst, Offset, Len),
+{ok, Mod} = wasm:compile(Bytes),                 % the bytes of a .wasm file
+{ok, Inst} = wasm:instantiate(Mod),              % or wasm:instantiate(Bytes)
+true = wasm:function_exists(Inst, "add"),
+{ok, [42]} = wasm:call_function(Inst, "add", [40, 2]),  % i32/i64: integers, f32/f64: floats
+{ok, Bin} = wasm:read_binary(Inst, Offset, Len), % the default memory
+ok = wasm:write_binary(Inst, Offset, Bin),
+{ok, Bytes} = wasm:memory_size(Inst),
+{ok, OldPages} = wasm:memory_grow(Inst, 1),      % 64 KiB pages
 
 %% A WASI program (from Rust, Go, Zig, C, ...): argv, env and directories.
-{ok, ExitCode} = wasm:run(Bytes, ["prog", "arg"],
-                          #{env => [{"KEY", "value"}], dirs => [{"/", "."}]}).
+{ok, ExitCode} = wasm:run(Bytes, #{args => ["prog", "arg"],
+                                   env => #{"KEY" => "value"},
+                                   preopens => #{"/" => "."}}),
+%% The same in two steps: instantiate with the WASI options, then start.
+{ok, Inst2} = wasm:instantiate(Bytes, #{}, #{args => ["prog"]}),
+{ok, ExitCode2} = wasm:start(Inst2).
 ```
+
+The names come from APIs that you may know already:
+
+| `wasm` | From |
+|---|---|
+| `compile/1`, `instantiate/1,2,3` (a module or its bytes, the imports, the options) | the WebAssembly JavaScript API (`WebAssembly.compile`, `WebAssembly.instantiate`) |
+| `call_function/3`, `function_exists/2`, `read_binary/3`, `write_binary/3` | [wasmex](https://hexdocs.pm/wasmex) (Elixir) |
+| `memory_size/1` (bytes), `memory_grow/2` (pages; gives the old size) | `WebAssembly.Memory` |
+| the options `args`, `env` and `preopens`, and `start/1` | [`node:wasi`](https://nodejs.org/api/wasi.html) |
+| `run/2` | `wasmtime run` |
+
+The imports must be `#{}` for now: host functions (Erlang functions
+that the module calls) are not supported yet.
 
 [`examples/wasm_check.erl`](examples/wasm_check.erl) tests calls, traps,
 memory and a WASI program, and runs a `.wasm` file that you give it. CI
@@ -176,7 +197,7 @@ runs it on each platform with a Go program
 WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 
 Go resolves relative paths from `/`, so give the directory of a Go
-program as `"/"` in `dirs`.
+program as `"/"` in `preopens`.
 
 ### JIT, and the interpreter (`beam-emu.com`)
 
