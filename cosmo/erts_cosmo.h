@@ -55,6 +55,16 @@ static inline int beam_com_mkfifo(const char *path, unsigned mode)
 }
 #define mkfifo beam_com_mkfifo
 
+/*
+ * Defined in beam_com.c. Ends the process with an exit status. On
+ * Windows, Cosmopolitan's _Exit() gives the POSIX wait status (status
+ * << 8) to Windows, so a Windows program sees 256 for 1; this gives the
+ * status itself. flush: run the exit handlers first (exit()), or not
+ * (_exit()).
+ */
+void beam_com_exit(int status, int flush)
+    __attribute__((__weak__, __noreturn__));
+
 /* Defined in beam_com.c. Changes argc/argv, or runs a helper program. */
 void beam_com_main(int *argcp, char ***argvp) __attribute__((__weak__));
 

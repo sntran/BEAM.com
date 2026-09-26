@@ -468,6 +468,31 @@ and it uses its own implementation.
 **Possible upstream fix.** Export `mremap()` with the Linux signature
 (`cosmo_mremap()` already exists), or document the name.
 
+### C21. Windows: the exit code is the POSIX wait status
+
+**Status:** HEAD (`libc/intrin/exit.c`, `_Exit()`).
+
+**Symptom.** On Windows, a Cosmopolitan program that calls `exit(1)`
+has the exit code 256 for cmd.exe, PowerShell and other Windows
+programs (`exit(3)` gives 768, `exit(127)` gives 32512). Exit code 0 is
+not changed, so the problem is easy to miss.
+
+**Cause.** `_Exit()` gives Windows `status << 8` (the POSIX wait status),
+so that a Cosmopolitan parent can decode it with `WEXITSTATUS()`
+(`libc/proc/wait4-nt.c` returns the Windows exit code as the wait
+status). A native Windows parent sees the shifted value.
+
+**Workaround in BEAM.com.** `beam_com_exit()` (called from
+`erts_exit_epilogue()` and for the errors of `beam_com.c`): on Windows it
+calls `ExitProcess(status)` after the exit handlers (in a destructor of
+priority 101, the last one), or at once for `_exit()`. A Cosmopolitan
+parent now reads status 3 as "killed by signal 3"; BEAM.com is mostly
+started by native programs on Windows, so the Windows convention wins.
+
+**Possible upstream fix.** An option to give Windows the plain status
+(for programs that are started by native Windows programs), or a way for
+`wait4-nt.c` to tell a plain status from a wait status.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

@@ -26,6 +26,28 @@ index 6b70a2e..8f642c3 100644
  #define FP16_TO_FP64(x) ((double) x)
  #else
  typedef Uint16 erlfp16;
+diff --git a/erts/emulator/beam/erl_init.c b/erts/emulator/beam/erl_init.c
+index 3d24646..efff3cc 100644
+--- a/erts/emulator/beam/erl_init.c
++++ b/erts/emulator/beam/erl_init.c
+@@ -2733,6 +2733,17 @@ __decl_noreturn void __noreturn erts_exit_epilogue(int flush)
+     flush = !0; /* otherwise we get no results... */
+ #endif
+ 
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: on Windows, give the exit status itself (beam_com.c). */
++    if (beam_com_exit) {
++        if (n == ERTS_INTR_EXIT)
++            beam_com_exit(0, flush);
++        else if (n == ERTS_DUMP_EXIT)
++            beam_com_exit(1, 0);
++        else if (n != ERTS_ERROR_EXIT && n != ERTS_ABORT_EXIT)
++            beam_com_exit(n, flush);
++    }
++#endif
+     if (n == ERTS_INTR_EXIT)
+ 	(void) (flush ? exit(0) : _exit(0));
+     else if (n == ERTS_DUMP_EXIT)
 diff --git a/erts/emulator/beam/sys.h b/erts/emulator/beam/sys.h
 index 0d6ae8f..686f0e1 100644
 --- a/erts/emulator/beam/sys.h

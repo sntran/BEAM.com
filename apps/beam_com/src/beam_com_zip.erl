@@ -47,7 +47,7 @@ entries(Bin) ->
 -spec write(binary(), fun((string()) -> boolean()),
             [{string(), binary()}]) -> iodata().
 write(Bin, Keep, New) ->
-    NewNames = [iolist_to_binary(N) || {N, _} <- New],
+    NewNames = [unicode:characters_to_binary(N) || {N, _} <- New],
     Entries = lists:keysort(#entry.offset, central_directory(Bin)),
     IsKept = fun(#entry{name = Name}) ->
                      not lists:member(Name, NewNames)
@@ -162,27 +162,35 @@ central(#entry{} = E) ->
      E#entry.name, E#entry.extra, E#entry.comment].
 
 %% The end of central directory record is at the end of the file, before
-%% a comment of at most 65535 bytes.
+%% a comment of at most 65535 bytes. The comment can have the bytes of a
+%% record too, so a record counts only when its comment ends the file
+%% and the central directory ends where the record starts.
 end_record(Bin) ->
     Size = byte_size(Bin),
     Start = max(0, Size - 22 - 16#ffff),
     Tail = binary:part(Bin, Start, Size - Start),
     Matches = binary:matches(Tail, <<?END:32/little>>),
-    find_end(Tail, lists:reverse(Matches)).
+    find_end(Tail, Start, lists:reverse(Matches)).
 
-find_end(_Tail, []) ->
+find_end(_Tail, _Start, []) ->
     error(no_zip);
-find_end(Tail, [{Pos, _} | Rest]) ->
+find_end(Tail, Start, [{Pos, _} | Rest]) ->
     case Tail of
+        <<_:Pos/binary, ?END:32/little, _Disk:16, _CdDisk:16,
+          _N:16/little, 16#ffff:16, _/binary>> ->
+            error(zip64_not_supported);
+        <<_:Pos/binary, ?END:32/little, _Disk:16, _CdDisk:16,
+          _N:16/little, _Count:16/little, _CdSize:32/little,
+          16#ffffffff:32, _/binary>> ->
+            error(zip64_not_supported);
         <<_:Pos/binary, ?END:32/little, _Disk:16, _CdDisk:16,
           _N:16/little, Count:16/little, CdSize:32/little,
           CdOffset:32/little, CommentLen:16/little, Comment/binary>>
-          when byte_size(Comment) =:= CommentLen ->
-            (Count =/= 16#ffff andalso CdOffset =/= 16#ffffffff)
-                orelse error(zip64_not_supported),
+          when byte_size(Comment) =:= CommentLen,
+               CdOffset + CdSize =:= Start + Pos ->
             {Count, CdSize, CdOffset};
         _ ->
-            find_end(Tail, Rest)
+            find_end(Tail, Start, Rest)
     end.
 
 cd_offset(Bin) ->

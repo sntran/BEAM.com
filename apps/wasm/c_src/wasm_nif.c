@@ -9,6 +9,7 @@
  * a mutex serializes the calls into it. The calls run on dirty CPU
  * schedulers.
  */
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -39,7 +40,8 @@ static ErlNifResourceType *instance_type;
 
 static ERL_NIF_TERM am_ok, am_error, am_exit, am_trap, am_i32, am_i64,
     am_f32, am_f64, am_stack_size, am_heap_size, am_args, am_env, am_dirs,
-    am_not_found, am_badarg, am_no_memory, am_out_of_bounds;
+    am_not_found, am_badarg, am_no_memory, am_out_of_bounds, am_nan,
+    am_infinity, am_neg_infinity;
 
 static void module_dtor(ErlNifEnv *env, void *obj)
 {
@@ -84,6 +86,8 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
     args.mem_alloc_type = Alloc_With_System_Allocator;
     if (!wasm_runtime_full_init(&args))
         return 1;
+    /* WAMR writes warnings (for example a missing import) to stdout. */
+    wasm_runtime_set_log_level(WASM_LOG_LEVEL_ERROR);
 
     am_ok = enif_make_atom(env, "ok");
     am_error = enif_make_atom(env, "error");
@@ -102,6 +106,9 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
     am_badarg = enif_make_atom(env, "badarg");
     am_no_memory = enif_make_atom(env, "no_memory");
     am_out_of_bounds = enif_make_atom(env, "out_of_bounds");
+    am_nan = enif_make_atom(env, "nan");
+    am_infinity = enif_make_atom(env, "infinity");
+    am_neg_infinity = enif_make_atom(env, "-infinity");
     return 0;
 }
 
@@ -315,10 +322,17 @@ static int get_value(ErlNifEnv *env, ERL_NIF_TERM term, wasm_valkind_t kind,
         return 0;
     case WASM_F32:
     case WASM_F64:
+        /* Erlang floats are finite: NaN and the infinities are atoms. */
         if (enif_get_double(env, term, &d))
             ;
         else if (enif_get_int64(env, term, &s))
             d = (double)s;
+        else if (enif_is_identical(term, am_nan))
+            d = NAN;
+        else if (enif_is_identical(term, am_infinity))
+            d = INFINITY;
+        else if (enif_is_identical(term, am_neg_infinity))
+            d = -INFINITY;
         else
             return 0;
         if (kind == WASM_F32)
@@ -331,6 +345,15 @@ static int get_value(ErlNifEnv *env, ERL_NIF_TERM term, wasm_valkind_t kind,
     }
 }
 
+static ERL_NIF_TERM make_float(ErlNifEnv *env, double d)
+{
+    if (isnan(d))
+        return am_nan;
+    if (isinf(d))
+        return d > 0 ? am_infinity : am_neg_infinity;
+    return enif_make_double(env, d);
+}
+
 static ERL_NIF_TERM make_value(ErlNifEnv *env, const wasm_val_t *v)
 {
     switch (v->kind) {
@@ -339,9 +362,9 @@ static ERL_NIF_TERM make_value(ErlNifEnv *env, const wasm_val_t *v)
     case WASM_I64:
         return enif_make_int64(env, v->of.i64);
     case WASM_F32:
-        return enif_make_double(env, (double)v->of.f32);
+        return make_float(env, (double)v->of.f32);
     case WASM_F64:
-        return enif_make_double(env, v->of.f64);
+        return make_float(env, v->of.f64);
     default:
         return am_error;
     }

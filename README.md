@@ -321,6 +321,12 @@ Windows to a PEM file that `public_key:cacerts_get/0` reads
 your own file). Both files are in the temp directory of the user and
 are removed when the node stops.
 
+## Tests
+
+Unit tests with coverage (`./build.sh unit`), behavior tests that run in
+`beam.com` on each platform (`tests/run.sh`, `tests/run.ps1`), and how
+to test without CI: see [`docs/TESTING.md`](docs/TESTING.md).
+
 ## Notes for upstream
 
 [`docs/UPSTREAM.md`](docs/UPSTREAM.md) records what did not work with
