@@ -19,11 +19,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Build, out: beam.com }
-          # The JIT: one fat file with the x86 and the arm backend.
-          - { name: Build with JIT, jit: "1", out: beam-jit.com }
+          # beam.com has the JIT: one fat file with the x86 and the arm
+          # backend. beam-emu.com has the interpreter.
+          - { name: Build, jit: "1", out: beam.com }
+          - { name: Build the interpreter, jit: "0", out: beam-emu.com }
     env:
-      JIT: ${{ matrix.jit || '0' }}
+      JIT: ${{ matrix.jit || '1' }}
       CC: ${{ matrix.cc || 'cosmocc' }}
       AR: ${{ matrix.ar || 'cosmoar' }}
       OUT: ${{ github.workspace }}/build/${{ matrix.out }}
@@ -56,7 +57,7 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Build
-        run: ./build.sh openssl otp configure sqlite wasm make release multicall bundle
+        run: ./build.sh openssl otp configure sqlite wasm make elixir release multicall bundle
 
       - name: Upload ${{ matrix.out }}
         uses: actions/upload-artifact@v7

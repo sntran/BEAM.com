@@ -1,0 +1,7 @@
+{application, hexweb,
+ [{description, "An example with Hex packages: a web server with cowboy, JSON with jsx"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {mod, {hexweb_app, []}},
+  {applications, [kernel, stdlib, inets, cowboy, jsx]},
+  {env, []}]}.

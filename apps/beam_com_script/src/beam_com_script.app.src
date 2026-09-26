@@ -1,6 +1,8 @@
 {application, beam_com_script,
- [{description, "Runs a program made from one .erl file"},
+ [{description, "Runs a program of beam.com build: one-file programs, the main module, priv files"},
   {vsn, "0.1.0"},
   {modules, [beam_com_script]},
   {registered, []},
-  {applications, [kernel, stdlib]}]}.
+  {mod, {beam_com_script, boot}},
+  {applications, [kernel, stdlib]},
+  {env, [{extract, []}]}]}.

@@ -4,8 +4,8 @@
 # version and build) in its zip (redbean style).
 #
 # Usage: ./build.sh [step...]
-#   Steps: toolchain openssl otp configure sqlite wasm make release
-#          multicall bundle test unit
+#   Steps: toolchain openssl otp configure sqlite wasm make elixir
+#          release multicall bundle test unit
 #   With no step, all steps run in order.
 #
 # Environment:
@@ -20,14 +20,19 @@
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
+#   ELIXIR           0: leave out Elixir (the elixir, eex, ex_unit, iex,
+#                    logger and mix applications and bin/mix in the zip,
+#                    for "beam.com build" of Elixir code and the tools
+#                    mix, iex, elixir and elixirc; default 1)
+#   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
 #   AR               Archiver (default cosmoar; use x86_64-linux-cosmo-ar
 #                    with x86_64-unknown-cosmo-cc)
 #   CXX              C++ compiler, for the JIT (default: CC with c++ for cc)
-#   JIT              1: build the JIT (BeamAsm) instead of the interpreter
-#                    (default 0). With cosmocc, the file has both backends.
+#   JIT              0: build the interpreter instead of the JIT (BeamAsm)
+#                    (default 1). With cosmocc, the JIT has both backends.
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
 set -eu
@@ -44,20 +49,29 @@ SQLITE_VERSION=${SQLITE_VERSION:-3.53.4}
 SQLITE_YEAR=${SQLITE_YEAR:-2026}
 WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
+ELIXIR=${ELIXIR:-1}
+ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
+ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
 AR=${AR:-cosmoar}
 CXX=${CXX:-${CC%cc}c++}
-JIT=${JIT:-0}
+JIT=${JIT:-1}
 if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com build" copies the ones that
 # a program needs into the new executable.
-BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets"
+BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets
+             xmerl runtime_tools"
 # The small build (OTP_SMALL_BUILD) does not make these.
 EXTRA_APPS="crypto asn1 public_key ssl"
+# Nor these, of which only the Erlang code is needed (src/): xmerl
+# (Phoenix apps have swoosh, which includes xmerl.hrl), and runtime_tools
+# (in the extra_applications of a new Phoenix app; its C code is for
+# dtrace and trace drivers).
+SRC_APPS="xmerl runtime_tools"
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
@@ -131,7 +145,10 @@ step_otp() {
     fi
     # The multi-call wrappers compile with the ERTS flags.
     cp "$ROOT"/cosmo/beam_com.c "$ROOT"/cosmo/beam_com_child_setup.c \
-       "$ROOT"/cosmo/beam_com_inet_gethost.c "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/cosmo/beam_com_inet_gethost.c "$ROOT"/cosmo/beam_com_epmd.h \
+       "$ROOT"/cosmo/beam_com_epmd.c "$ROOT"/cosmo/beam_com_epmd_srv.c \
+       "$ROOT"/cosmo/beam_com_epmd_cli.c "$ROOT"/cosmo/beam_com_watch.c \
+       "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -389,6 +406,10 @@ step_make() {
         PATH=$ERL_TOP/bootstrap/bin:$PATH DEPCC_CC=$CC \
             make -C "lib/$app" opt DEP_CC="$ROOT/cosmo/depcc"
     done
+    for app in $SRC_APPS; do
+        log "Building $app (Erlang code)"
+        PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "lib/$app/src" opt
+    done
 }
 
 step_multicall() {
@@ -397,16 +418,33 @@ step_multicall() {
     objdir=obj/$t/opt/$FLAVOR
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
+    objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
+    objs="$objs $objdir/beam_com_watch.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it.
     rm -f "$t/opt/$FLAVOR/driver_tab.c"
     nifs=$(static_nifs)
-    # --wrap=close: see __wrap_close() in cosmo/beam_com.c.
+    # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
+    # __wrap_mkdir() and __wrap_chown() in cosmo/beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
+}
+
+# Elixir, compiled with the Erlang/OTP of this build (its erl and erlc
+# run on the build machine).
+step_elixir() {
+    [ "$ELIXIR" = 1 ] || return 0
+    log "Building Elixir $ELIXIR_VERSION"
+    src=$BUILD/elixir-$ELIXIR_VERSION
+    if [ ! -f "$src/Makefile" ]; then
+        curl -fsSL -o "$BUILD/elixir.tar.gz" \
+            "https://github.com/elixir-lang/elixir/archive/refs/tags/v$ELIXIR_VERSION.tar.gz"
+        tar -xzf "$BUILD/elixir.tar.gz" -C "$BUILD"
+    fi
+    (cd "$src" && PATH="$ERL_TOP/bin:$PATH" make compile)
 }
 
 step_release() {
@@ -446,6 +484,24 @@ step_bundle() {
         mkdir -p "$STAGE/lib/esqlite-$vsn/ebin"
         "$ERL_TOP/bin/erlc" -o "$STAGE/lib/esqlite-$vsn/ebin" "$ESQLITE"/src/*.erl
         cp "$ESQLITE/src/esqlite.app.src" "$STAGE/lib/esqlite-$vsn/ebin/esqlite.app"
+    fi
+
+    # Elixir: the applications without debug information, but with their
+    # docs (for h/1 in iex) and attributes. They are for "beam.com build"
+    # of Elixir code, and for the tools of Elixir (mix, iex, elixir,
+    # elixirc; bin/mix is the script of mix). A program gets only the
+    # applications that it uses, without docs.
+    if [ "$ELIXIR" = 1 ]; then
+        for app in $ELIXIR_APPS; do
+            src=$BUILD/elixir-$ELIXIR_VERSION/lib/$app/ebin
+            vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/$app.app")
+            mkdir -p "$STAGE/lib/$app-$vsn/ebin"
+            cp "$src"/*.beam "$src/$app.app" "$STAGE/lib/$app-$vsn/ebin/"
+        done
+        "$ERL_TOP/bin/erl" -noshell -eval \
+            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")], [\"Attr\", \"Docs\"]), halt()."
+        mkdir -p "$STAGE/bin"
+        cp "$BUILD/elixir-$ELIXIR_VERSION/bin/mix" "$STAGE/bin/mix"
     fi
 
     # WebAssembly: the wasm application (its NIF is in the emulator).
@@ -501,15 +557,18 @@ step_unit() {
     if [ ! -f "$ERL_TOP/lib/eunit/ebin/eunit.beam" ]; then
         PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/eunit" opt
     fi
-    "$ERL_TOP/bin/escript" "$ROOT/tests/unit/run.escript" "$BUILD/unit"
+    ELIXIR_LIB=$BUILD/elixir-$ELIXIR_VERSION/lib \
+        "$ERL_TOP/bin/escript" "$ROOT/tests/unit/run.escript" "$BUILD/unit"
 }
 
 step_test() {
     log "Running $OUT"
     "$OUT" version | tee "$BUILD/test.out"
     grep -q "Erlang/OTP  : $OTP_VERSION" "$BUILD/test.out"
+    [ "$ELIXIR" = 1 ] && grep -q "Elixir      : $ELIXIR_VERSION" "$BUILD/test.out"
+    # The commands use the name of their file (beam.com, beam-emu.com).
     "$OUT" help > "$BUILD/test.out"
-    grep -q "usage: beam.com COMMAND" "$BUILD/test.out"
+    grep -q "usage: $(basename "$OUT") COMMAND" "$BUILD/test.out"
     log "Building a program with $OUT build"
     "$OUT" build "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
@@ -531,7 +590,7 @@ step_test() {
 }
 
 if [ $# -eq 0 ]; then
-    set -- toolchain openssl otp configure sqlite wasm make release \
+    set -- toolchain openssl otp configure sqlite wasm make elixir release \
         multicall bundle test unit
 fi
 mkdir -p "$BUILD"

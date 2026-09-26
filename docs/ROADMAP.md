@@ -14,9 +14,11 @@ platforms.
   also on Windows (exported from the Windows store at start).
 - Port programs on macOS and the BSDs (fd passing in the native
   `cmsghdr` layout).
-- A sandbox for programs: `beam.com build --pledge ... --unveil ...`
-  (Cosmopolitan's `pledge()` and `unveil()`; Linux and OpenBSD). The
-  launcher applies the rules before ERTS starts its threads.
+- A sandbox for programs: `beam.com build --allow-read ... --allow-net`,
+  the permission flags of Deno (with Cosmopolitan's `pledge()` and
+  `unveil()`; Linux and OpenBSD). The launcher applies them before ERTS
+  starts its threads. They replace the first flags, `--pledge` and
+  `--unveil`: the names of OpenBSD were foreign to most users.
 - `beam.com build` of `.yrl`, `.xrl` and ASN.1 files (with `parsetools`
   and `asn1ct` in the zip).
 - `beam.com build`: no Erlang installation needed. It compiles one
@@ -55,8 +57,12 @@ platforms.
 
 - WAMR 2.4.5, the fast interpreter with WASI preview 1, is linked into
   the emulator as a static NIF. It adds about 0.6 MB for the two CPUs.
-- The Erlang API is ours (`wasm:load/1`, `instantiate/2`, `call/3`,
-  `run/3`, memory access), and it does not show WAMR types.
+- The Erlang API does not show WAMR types. Its names come from APIs
+  that users know: the WebAssembly JavaScript API (`compile/1`,
+  `instantiate/1,2,3`), wasmex (`call_function/3`, `function_exists/2`,
+  `read_binary/3`, `write_binary/3`), `WebAssembly.Memory`
+  (`memory_size/1`, `memory_grow/2`) and `node:wasi` (the options
+  `args`, `env`, `preopens`, and `start/1`); `run/2` as `wasmtime run`.
 - Tested on each platform: calls with i32 and f64, traps, memory, a
   hand-made WASI module, and a Go program (`GOOS=wasip1`: arguments,
   environment, files).
@@ -77,7 +83,7 @@ can be added on WAMR, or the runtime can be replaced.
 ### JIT (build flag `JIT=1`)
 
 - BeamAsm in one fat file: the x86 backend in the x86_64 half and the
-  arm backend in the aarch64 half (`beam-jit.com`, 42 MB). See
+  arm backend in the aarch64 half (the default `beam.com`, 40 MB). See
   `docs/JIT.md`.
 - The native stack for Erlang code is off, and asmjit has no
   precompiled header. On macOS arm64, `MAP_JIT` and the per-thread write
@@ -87,17 +93,60 @@ can be added on WAMR, or the runtime can be replaced.
 
 ### 1. JIT (BeamAsm): the default, and W^X
 
-- The fat JIT as the default `beam.com`, when it is green on every
-  platform, with the interpreter as `beam-emu.com` or as a build option.
-- Dual mapping (W^X) in asmjit under Cosmopolitan: memfd on Linux, a
-  file elsewhere (today it falls back to RWX memory, except on macOS
-  arm64, which uses `MAP_JIT`).
+- Done: the fat JIT is the default `beam.com`, and `beam-emu.com` has
+  the interpreter (`JIT=0`).
+- Done: W^X. Measured in CI (`tests/programs/jit_maps.erl`): asmjit
+  already uses dual mapping (`shm_open()`) under Cosmopolitan, with no
+  writable and executable page, on Linux, FreeBSD, NetBSD and macOS
+  x86_64; macOS arm64 uses `MAP_JIT`; the OpenBSD kernel enforces W^X
+  itself. See `docs/JIT.md`.
 
 ### Later: more for `beam.com build`
 
-- Hex packages (source), fetched with the `httpc` and TLS support that
-  `beam.com` already has, and a lock file.
-- Elixir sources.
+- Done: Hex packages (the `deps` of `rebar.config`, `rebar.lock`,
+  checksums, a cache), with `httpc` and TLS in `beam.com`.
+- Done: Elixir. Evaluated first: Elixir 1.20.4 compiles with the
+  Erlang/OTP 29.1.1 of this build; `elixir`, `eex`, `logger` and `mix`
+  are 10 MB of beam files, 2.7 MB without debug information and docs,
+  and 1.8 MB in the zip. `beam.com build` compiles one Elixir file with
+  `main/1`, and Mix projects (read with Mix), with Hex packages in
+  Elixir and `mix.lock`.
+- Done: the tools of Elixir. `beam.com` runs `mix`, `iex`, `elixir` and
+  `elixirc` (with `ex_unit` and the docs), as its first argument or by
+  the name of the file (`mix.com`, `iex.com`, `elixir.com`,
+  `elixirc.com`: the same file under other names), and escripts.
+  Programs are built without docs and debug information (−7.7 MB).
+- Next: `mix release` (it needs ERTS on disk), and the options of the
+  Elixir scripts that change the `erl` command (`--erl`).
+- Done: Phoenix from source with the tools (`iex.com -S mix
+  phx.server`): `beam.com` has `xmerl` and `runtime_tools`, and CI runs
+  a new Phoenix app (without Ecto) on Linux.
+- Done: distributed Erlang and remote shells: `epmd` is in the file,
+  and starts only for `-sname`, `-name` and `-remsh`; `beam.com` takes
+  the flags of `erl` (`beam.com -sname me -remsh app`); a program whose
+  release has a node name has `app.com remote`.
+- Done: a file watcher in the file, as `inotifywait` (inotify on Linux,
+  a comparison of the files on the BSDs), which the tools give to
+  `file_system`: `phoenix_live_reload` without `inotify-tools`.
+- Next: the watcher with kqueue on the BSDs, and for `file_system` on
+  macOS (its `mac_listener` format) and Windows; reload of new code in a
+  running program when its file changes.
+- Next for Phoenix: the NIFs of `exqlite` (`--database sqlite3`, with
+  the SQLite that is in `beam.com`) and of `bcrypt_elixir`
+  (`phx.gen.auth`), linked into `beam.com` as static NIFs, so that the
+  packages from Hex work unchanged; then `config/runtime.exs` and
+  `priv/static` in `beam.com build`, for a Phoenix app in one file.
+- Done: command line programs, for larger projects (for example an
+  orchestration tool with a sandbox worker): the `main/1` of an application
+  (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours
+  and parse transforms compiled first; `priv` directories copied to a
+  cache when other programs must read them (an executable in `priv`, or
+  `--extract-priv`); erl mode (a link named `erl`, or `BEAM_COM_ERL=1`)
+  and `-beam_com_exe`, so that a program can start a new VM from its
+  own file.
+- Next: git dependencies (`{git, URL, {ref, R}}` in `rebar.config`,
+  `git:`/`github:` in `mix.exs`), with the lock entries of rebar3 and
+  Mix.
 - Not planned: NIF dependencies, rebar3 plugins.
 
 ### More from Cosmopolitan
@@ -115,13 +164,56 @@ can be added on WAMR, or the runtime can be replaced.
   without compression (the rest stays compressed): 2 MB more, and the
   start is about 50 ms (27%) faster. A zip with no compression at all
   is about 21 MB larger, so only the modules of the boot are stored.
-- Done: `beam.com build --native TARGET` writes a native ELF (Linux,
+- Done: `beam.com build --target TARGET` writes a native ELF (Linux,
   FreeBSD) or Mach-O (macOS x86_64) file, with the same bytes as
   `assimilate`. There is no native form for Apple Silicon (APE files run
-  there only with the APE loader).
+  there only with the APE loader). The flag was `--native` first; it is
+  `--target` now, with the target triples of Rust and `deno compile`
+  (and the short names of Zig), as other compilers name it.
 - Used already: the zip file system (`/zip`), the fat x86_64 and
   aarch64 file, `.args`, the `--strace` and `--ftrace` flags, and
   `GetProgramExecutableName()` for the helper programs.
+
+## Watch list (checked 2026-09-26)
+
+What other projects did recently, and what it means for BEAM.com. All
+the parts of the build are at their latest stable release (cosmocc
+4.0.2, Erlang/OTP 29.1.1, Elixir 1.20.4, OpenSSL 4.0.2, SQLite 3.53.4,
+WAMR 2.4.5).
+
+- **Cosmopolitan master** has fixes that are not in a release yet: in
+  threads and locks (`EINTR` in condition variables, the lock on NetBSD,
+  the locks on Windows and XNU). Take the next cosmocc release when it
+  comes, and run the stress tests again (see C25 in `docs/UPSTREAM.md`).
+  C25 and C26 (`close()` and the fd table, `docs/UPSTREAM.md`) are
+  candidates to send upstream.
+- **OpenBSD in CI stays on 7.3**: the CI action has OpenBSD 7.3 to 7.9,
+  but Cosmopolitan supports OpenBSD 7.3 and earlier only (see "Platform
+  status" in the README, and C14 in `docs/UPSTREAM.md`). BEAM.com does
+  not work around this: OpenBSD 7.4 and later accept system calls only
+  from the places that the kernel records (`pinsyscalls`), which needs a
+  change in Cosmopolitan itself (its system calls through `libc.so`, as
+  on Apple Silicon, or a table of system calls in a native file). We
+  wait for support in Cosmopolitan.
+- **OTP 29 TLS**: the default key exchange of `ssl` is now the hybrid
+  post-quantum group `x25519mlkem768`. Next: a check in `tls_check` that
+  a TLS 1.3 connection uses it with the static OpenSSL 4.0.2.
+- **OTP deprecates `.ez` archives**: no effect; BEAM.com reads its zip
+  as a file system (`/zip`), not as code archives.
+- **Elixir 1.20** can evaluate module bodies instead of compiling them
+  (`module_definition: :interpreted`). A probe: read `mix.exs` that way,
+  which can make a build of a Mix project faster.
+- **hex_core 0.19** has a security fix. BEAM.com has its own Hex client
+  (`beam_com_hex`), so check whether the same problem applies to it.
+- **Gleam 1.18**: its compiler is a native program, not Erlang, so
+  `beam.com build` cannot compile Gleam. A Gleam project can give its
+  Erlang output (`gleam export erlang-shipment`) to `beam.com build`; a
+  probe of this is possible.
+- **Burrito 1.6**: see "Nothing is extracted" in the README for the
+  comparison. BEAM.com now copies a `priv` directory only when other
+  programs must read its files.
+- **AtomVM 0.7** (alpha): a small VM for microcontrollers; not a
+  replacement for ERTS here.
 
 ## Decided against
 
@@ -129,8 +221,8 @@ can be added on WAMR, or the runtime can be replaced.
   and Landlock apply to the calling thread and the threads that it
   starts later, and the threads of the VM exist before any Erlang code
   runs. A call from Erlang would restrict one scheduler thread only. The
-  rules come from the build (`--pledge`, `--unveil`) and the launcher
-  applies them.
+  rules come from the build (`--allow-*`) and the launcher applies
+  them.
 
 - Loading native per-platform NIF libraries (`cosmo_dlopen`): it breaks
   "build once", and the calling conventions and exported symbols make

@@ -1,9 +1,15 @@
 # JIT (BeamAsm) in BEAM.com
 
-## Status: one fat file with both backends (steps c and d)
+## Status: the default `beam.com`
 
-`JIT=1 ./build.sh` (with the normal, fat `cosmocc`) builds a
-`beam-jit.com` with both backends of BeamAsm: the x86 backend in the
+Since all platforms were green with the fat JIT, and the benchmarks
+(`docs/BENCHMARKS.md`) show that it is worth its cost, `beam.com` has
+the JIT, and `beam-emu.com` has the interpreter (`JIT=0 ./build.sh`).
+
+## One fat file with both backends (steps c and d)
+
+`JIT=1 ./build.sh` (the default, with the normal, fat `cosmocc`) builds a
+`beam.com` with both backends of BeamAsm: the x86 backend in the
 x86_64 half and the arm backend in the aarch64 half. CI builds it and
 tests it on every platform (see `tests/run.sh`).
 
@@ -37,15 +43,30 @@ What was needed, in addition to the x86_64 probe below:
 - **The dependency pass** (C23): cosmocc defines no CPU for `-MM`, so
   the wrapper files take the x86 files there.
 
-Sizes: `beam-jit.com` (fat) is 42.0 MB; the fat interpreter `beam.com`
-is 37 MB.
+Sizes (CI): the fat JIT is 40.0 MB, the fat interpreter 37.2 MB.
 
-Tested locally: all behavior tests with `beam-jit.com` on Linux x86_64,
+Tested locally: all behavior tests with the fat JIT on Linux x86_64,
 and on the aarch64 half with qemu.
 
-Not done yet: dual mapping (W^X) in asmjit under Cosmopolitan. Today
-asmjit falls back to single-mapped RWX memory, except on macOS arm64,
-where it uses `MAP_JIT`.
+### W^X: no page is writable and executable
+
+asmjit maps the JIT code two times (dual mapping): one executable view
+and one writable view of the same shared memory object
+(`shm_open()`; on Linux a deleted file in `/dev/shm`). No change was
+needed. `tests/programs/jit_maps.erl` reads the memory map of the
+program (`/proc/self/maps`, `procstat -v`, `vmmap`), and CI checks it:
+
+| Platform | Pages that are writable and executable | Dual mapped |
+|---|---|---|
+| Linux x86_64 and aarch64 | 0 | yes |
+| FreeBSD, NetBSD | 0 | yes |
+| macOS x86_64 | 0 | (the probe cannot see it in `vmmap`) |
+| macOS arm64 | 1 (`MAP_JIT`) | no: one mapping, with a write permission for each thread (`__jit_begin()`/`__jit_end()`), which the hardware enforces |
+| OpenBSD | (no memory map for the program) | the kernel does not allow RWX pages at all, and the JIT runs |
+| Windows | not measured | |
+
+On Linux, `+JMsingle true` gives one RWX mapping, which the check sees
+(so the check works).
 
 ## The x86_64 probe (steps a and b)
 
@@ -88,10 +109,10 @@ Design report, 2026-09-26, before step (a). Paths are relative to the built OTP 
   time, and five generated files differ between x86 and arm. A fat build
   needs per-CPU wrapper files selected with `#if defined(__x86_64__)`.
 - Executable memory: asmjit's POSIX path works under Cosmopolitan on every
-  OS, but it needs a small patch so dual mapping (W^X) actually works
-  (`SHM_ANON` is a macro but NULL at run time on non-FreeBSD). Windows and
-  macOS x86_64 fall back to single-mapped RWX. macOS arm64 needs `MAP_JIT`
-  or dual mapping through a file.
+  OS. (This research expected a small patch for dual mapping, because
+  `SHM_ANON` is a macro but NULL at run time on non-FreeBSD; the
+  measurement later showed that dual mapping works without it: see
+  "W^X" above. macOS arm64 uses `MAP_JIT`.)
 - Calling convention: Cosmopolitan never defines `WIN32`/`_WIN32`, so the
   System V code paths are used everywhere, including Windows. Correct.
 - Recommendation: build with `--disable-native-stack`-equivalent

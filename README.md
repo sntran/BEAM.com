@@ -8,6 +8,10 @@ It uses the "redbean style": the executable is also a zip file. You add
 an Erlang release to the zip, and the one file runs your release on
 Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.
 
+`beam.com` also has Elixir 1.20.4 and its tools. The same file under
+another name is a tool: `mix.com`, `iex.com`, `elixir.com` and
+`elixirc.com` (see "The tools" below).
+
 You do not need Erlang to make such a file. `beam.com` has the compiler:
 
 ```
@@ -37,7 +41,7 @@ $ sh ./beam.com version
 beam.com 0.1.0
   Erlang/OTP  : 29.1.1
   ERTS        : 17.1
-  Emulator    : emu
+  Emulator    : jit
   OS type     : unix/linux
   Architecture: x86_64-pc-linux-gnu
   Schedulers  : 4
@@ -55,8 +59,10 @@ server with the certificates of the OS (on Windows too).
 ## Build a program with `beam.com build`
 
 ```sh
-beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
-               [--unveil "PERMISSIONS PATH"]... [--native TARGET]
+beam.com build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]
+               [--allow-write[=PATH,...]] [--allow-net] [--allow-run[=PROGRAM,...]]
+               [--allow-all] [--target TARGET] [--main MODULE]
+               [--tool rebar|mix] [--extract-priv APP]...
 ```
 
 `INPUT` is one of these:
@@ -69,8 +75,13 @@ beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]
   `priv/`, `config/sys.config`, `config/vm.args` (the rebar3 layout) and
   the `erl_opts` of `rebar.config`. Parsers (`src/*.yrl`, yecc),
   scanners (`src/*.xrl`, leex) and ASN.1 modules (`asn1/*.asn1` or
-  `src/*.asn1`, `.asn` too; BER) are made into Erlang code first.
-  Dependencies are not fetched yet.
+  `src/*.asn1`, `.asn` too; BER) are made into Erlang code first. The
+  modules that other files name in `-behaviour` or as a
+  `parse_transform` are compiled first, as rebar3 does. The `deps` of
+  `rebar.config` are Hex packages (see below). An application can also
+  have an entry, as an escript: see "Command line programs" below.
+- **One Elixir file** (`.ex` or `.exs`) in which one module exports
+  `main/1`, or **a Mix project** (`mix.exs`): see "Elixir" below.
 
 The builder compiles the code, selects the OTP applications that the
 program needs, makes an OTP release with `systools`, and writes a copy of
@@ -84,19 +95,323 @@ and all the applications that these need. Use `-a APP` for an
 application that the code only calls with `apply/3` or similar.
 
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
-`parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm` and
-`esqlite`.
+`parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm`,
+`esqlite`, and Elixir (`elixir`, `eex`, `logger` and `mix`).
 
-### A native file for one system (`--native`)
+### Hex packages
 
-`--native TARGET` writes a file for one system instead of an APE file,
-as Cosmopolitan's `assimilate` does. `TARGET` is `linux-x86_64`,
-`linux-aarch64`, `freebsd-x86_64` or `macos-x86_64`:
+The `deps` of `rebar.config` are fetched from [hex.pm](https://hex.pm)
+and compiled into the program, as rebar3 does, without rebar3:
+
+```erlang
+{deps, [{cowboy, "~> 2.13"},       % a Hex requirement
+        {jsx, "3.1.0"},            % this version only
+        recon,                     % the highest version
+        {mylib, "~> 1.0", {pkg, my_lib}}]}.  % another package name
+```
+
+- **Versions.** When `rebar.lock` has all the deps, its versions are
+  used, and nothing is resolved. Otherwise `beam.com build` takes the
+  highest version of each package that matches all the requirements (of
+  `rebar.config` and of the packages), the locked version first when it
+  matches, and writes `rebar.lock` (the format of rebar3). A conflict
+  is an error that names both requirements; a version in `rebar.config`
+  solves it. Pre-releases are used only when a requirement names one.
+- **Checks.** Each tarball is checked with the outer checksum (SHA-256
+  of the file: `pkg_hash_ext` of `rebar.lock`, or the checksum of the
+  Hex API) and the inner checksum (`pkg_hash`, and the `CHECKSUM` file).
+- **Cache.** The tarballs are kept in the cache of the user
+  (`~/.cache/beam.com` on Linux; `BEAM_COM_CACHE` changes it). With
+  `rebar.lock` and a full cache, a build does not use the network.
+- **Network.** HTTPS with `httpc`, verified with the certificates of
+  the OS. `HTTPS_PROXY` and `NO_PROXY` are used. `HEX_API_URL` (default
+  `https://hex.pm/api`) and `HEX_MIRROR` (default `https://repo.hex.pm`)
+  select other servers.
+- **Build.** The packages are compiled in order (a package after the
+  packages that it needs), with their `erl_opts` (without
+  `warnings_as_errors`), and their warnings are not shown. A package
+  can use the parse transforms and the headers (`include_lib`) of the
+  packages that it needs.
+- **Not supported:** git and other sources, NIFs (C code) and rebar3
+  plugins or hooks. Elixir packages (Mix) are supported: see below.
+
+[`examples/hexweb`](examples/hexweb) uses cowboy (with cowlib and
+ranch) and jsx: it starts a web server and gets JSON from it. CI builds
+it on each platform, two times (with and without `rebar.lock`).
+
+### Elixir
+
+`beam.com` has Elixir 1.20.4 (compiled with its Erlang/OTP 29.1.1, the
+beam files without debug information: 2.8 MB in the zip, with the docs
+for `h/1` in `iex`), so `beam.com build` compiles Elixir code without an
+Elixir installation:
 
 ```sh
-beam.com build hello.erl --native linux-x86_64 -o hello
+beam.com build hello.ex             # one file; a module exports main/1
+beam.com build my_project           # a Mix project (mix.exs)
+```
+
+- **One file** (`.ex` or `.exs`): the modules of the file, and the one
+  that exports `main/1` runs; it gets the arguments as binaries (as
+  `System.argv/0`). An exception is printed in the format of Elixir, and
+  the status is 127.
+- **A Mix project**: `mix.exs` is read with Mix, in the `:prod`
+  environment (the Mix tool is not used): `:app`, `:version`, `:deps`,
+  `:elixirc_paths` (`lib`) and `:erlc_paths` (`src`) of `project/0`,
+  and `:mod`, `:extra_applications`, `:applications`, `:env` and
+  `:registered` of `application/0`. The Erlang files are compiled
+  first, then the Elixir files. `config/config.exs` becomes the
+  `sys.config` of the release (with `Config.Reader`, env `:prod`).
+- **Deps** are Hex packages, in Erlang (rebar3, make) or in Elixir (Mix),
+  as for rebar3 projects (see "Hex packages"), with `mix.lock` (in the
+  format of Mix) in place of `rebar.lock`. Deps `only: :dev` or
+  `:test` and `optional: true` are left out; `runtime: false` deps are
+  compiled, but they are not in the applications of the program.
+- A program gets only the Elixir applications that it uses: `elixir`,
+  with `compiler` (which Elixir needs at run time), makes a program
+  1.9 MB larger than the same program in Erlang, and its start about
+  40 ms slower (`docs/BENCHMARKS.md`).
+- **Not supported:** umbrella projects, `config/runtime.exs`, protocol
+  consolidation (protocols work, but their dispatch is not optimized),
+  and Mix tasks or aliases.
+
+[`examples/greeter_ex`](examples/greeter_ex) is a Mix project with jason
+(a Hex package in Elixir) and `config/config.exs`;
+[`tests/programs/elixir_check.ex`](tests/programs/elixir_check.ex) is a
+one-file program. CI builds and runs both on each platform.
+
+### The tools: `mix`, `iex`, `elixir`, `elixirc` and `escript`
+
+`beam.com` is also an Elixir installation in one file. Give the file
+the name of a tool, and it is that tool. The names `mix.com`, `iex.com`,
+`elixir.com` and `elixirc.com` are the same file as `beam.com`:
+
+```sh
+cp beam.com mix.com                 # or a link: ln beam.com mix.com
+./mix.com new hello && cd hello
+../mix.com test
+../iex.com -S mix                   # iex.com: another copy or link
+../elixir.com -e 'IO.puts(1 + 2)'
+../elixirc.com lib/hello.ex -o ebin
+```
+
+The name can also be without `.com` (`mix`), or with `.exe` on Windows
+(`mix.exe`). The tool can also be the first argument of `beam.com`:
+`beam.com mix test`, `beam.com iex -S mix`.
+
+- They run as the scripts of Elixir run them (`-s elixir start_cli`,
+  `+iex`, `+elixirc`), with the applications of the zip: `elixir`,
+  `eex`, `ex_unit`, `iex`, `logger` and `mix`, with their docs (`h/1` in
+  `iex`). `iex -S mix` and `elixir -S mix` use the `mix` script of the
+  zip.
+- `escript FILE` runs an escript, as the `escript` program of OTP, with
+  the flags of its `%%!` line. Escripts from `mix escript.build` run
+  with it.
+- Packages: `mix local.hex` installs Hex, and `mix deps.get` then
+  fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
+  rebar3, which Mix runs as an escript: put a link named `escript` in
+  `PATH`. On NetBSD, where `sh` stops at the first NUL byte of an APE
+  file, make `escript` a small script instead:
+  `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`. `beam.com build` does not need Hex or rebar3 (see "Hex
+  packages").
+- `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
+- To build an Elixir project into one file, use `beam.com build` (see
+  "Elixir" above): the tools do not have the `build` command.
+- **Not supported:** `mix release` (it copies ERTS from disk, and there
+  is none: `beam.com build` makes the program instead); the options of
+  the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
+  `--name`, `--cookie`, `--pipe-to`; give the flags of `erl` in
+  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`). On
+  Windows, there are no port programs: Mix tasks that start other
+  programs (rebar3, git) do not work.
+
+#### Make your own tools
+
+You make the tool files yourself from `beam.com`, and only the tools
+that you need. A tool file is `beam.com` under the name of the tool, so
+a copy, a hard link or a symbolic link is enough:
+
+```sh
+# Only mix and iex, in ~/bin:
+cp beam.com ~/bin/mix.com
+ln ~/bin/mix.com ~/bin/iex.com      # a hard link: no second copy on disk
+
+# All the tools, as with an installation (Linux, macOS and the BSDs):
+for tool in mix iex elixir elixirc escript; do ln -s beam.com ~/bin/$tool; done
+mix test
+```
+
+On Windows, copy `beam.com` to `mix.exe`, `iex.exe`, `elixir.exe` or
+`elixirc.exe`, or make hard links with `mklink /H mix.exe beam.com`.
+
+### Phoenix from source
+
+With the tools, a Phoenix project runs from its source, as with an
+Elixir installation, but without Erlang or Elixir on the computer:
+
+```sh
+mix.com local.hex --force
+mix.com archive.install hex phx_new
+mix.com phx.new hello --no-ecto
+cd hello
+mix.com deps.get
+iex.com -S mix phx.server        # http://localhost:4000
+```
+
+- `beam.com` has the OTP applications that a new Phoenix app needs
+  beyond Elixir: `xmerl` (for `swoosh`) and `runtime_tools`.
+- The esbuild and tailwind watchers download their programs and run
+  them as ports, as they do with Elixir (not on Windows, which has no
+  port programs here).
+- Live reload works without `inotify-tools`: the tools set
+  `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
+  file watcher of the file (see "The file watcher"), on Linux and the
+  BSDs. On macOS, `file_system` compiles its own watcher, which needs the
+  command line tools of Xcode.
+- **Not yet:** a database with a NIF. `--database sqlite3` (exqlite) and
+  `phx.gen.auth` (bcrypt) load C libraries at run time, which BEAM.com
+  cannot do; linking their NIFs into `beam.com` is the next step (see
+  the ROADMAP). PostgreSQL (`--database postgres`, the default) uses
+  Postgrex, which is Elixir only.
+
+CI runs these steps on Linux: `phx.new` without Ecto, `deps.get`,
+`compile`, and `iex.com -S mix phx.server`, which must serve the start
+page.
+
+### The file watcher
+
+The file has a file watcher with the command line and the output of
+`inotifywait` (of inotify-tools), for the programs that use it, such as
+`file_system` and so `phoenix_live_reload`:
+
+```sh
+beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
+```
+
+- On Linux it uses inotify; on the BSDs it compares the files every half
+  second (a move is then `DELETE` and `CREATE`).
+- On macOS, `file_system` uses `mac_listener` (with FSEvents) in place of
+  `inotifywait`. The file is also `mac_listener`, with the same command
+  line and output, and it compares the files as on the BSDs:
+  `beam.com mac_listener --latency=0.5 -F /absolute/dir`.
+- The tools of Elixir set `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` to a link
+  named `inotifywait` to the file (on macOS,
+  `FILESYSTEM_FSMAC_EXECUTABLE_FILE` to a script `mac_listener` that runs
+  the file), in the cache of BEAM.com (`BEAM_COM_CACHE`, else the user
+  cache), unless you set it. There is no watcher for Windows yet.
+- The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
+  (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
+  `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).
+
+### Distributed Erlang and remote shells
+
+Distributed Erlang works as with `erl`: the flags `-sname`, `-name` and
+`-remsh` turn it on, and only then the file starts `epmd` (it is in the
+file too, as `erlexec` starts it: `epmd -daemon`, unless `-start_epmd
+false`). Without these flags, no `epmd` starts and no port is opened.
+
+`beam.com` takes the flags of `erl`, so it is also the client:
+
+```sh
+beam.com -sname dev                              # a shell in a new node
+beam.com -sname me -setcookie SECRET -remsh app  # a shell in the node app
+beam.com epmd -names                             # the nodes on this computer
+```
+
+A program whose release has a node name (`-sname` or `-name` in
+`config/vm.args`) has the `remote` command of the scripts of rebar3 and
+`mix release`: a shell in the running node, with the cookie of the same
+`vm.args`. There you can inspect the node and load new code into it (for
+example `c:l(Module)`, or `code:load_binary/3`):
+
+```sh
+beam.com build examples/counter        # config/vm.args: -sname counter
+./counter.com &
+./counter.com remote
+(counter@host)1> counter:incr().
+```
+
+As in every remote shell, `halt()` there stops the node of the program;
+leave the shell with Ctrl-G then `q`, or with Ctrl-C two times.
+
+The graphical `observer` needs `wx`, which is not in `beam.com`; start
+it in an Erlang installation and connect to the node, or use the shell.
+
+### Command line programs: `--main`, `priv` files and erl mode
+
+An application directory can be a command line program, as an escript
+made with `rebar3 escriptize` or `mix escript.build`. The builder takes
+the module whose `main/1` runs:
+
+- `--main MODULE`, or
+- `rebar.config`: `-escript main MODULE` in `escript_emu_args`, else
+  `escript_main_app` (the module with the name of the application), or
+- `mix.exs`: `escript: [main_module: MODULE]`.
+
+The release starts all the applications first; then `MODULE:main/1`
+gets the command line arguments (as strings; as binaries for an Elixir
+module), and the program halts with status 0 when `main/1` returns (127
+on an exception), as for one `.erl` file. `vm.args` gets
+`-s beam_com_script main MODULE`. A directory with both `rebar.config`
+and `mix.exs` is built as a rebar3 project; `--tool mix` selects Mix.
+
+**`priv` files as real files.** Code reads `priv` from the zip
+(`code:priv_dir/1` is in `/zip`), which works for `file:read_file/1`,
+but other programs (`sh`, a port program, a tool that gets a path)
+cannot read `/zip`. When the `priv` directory of an application has an
+executable file, or `--extract-priv APP` names the application, the
+program copies that `priv` directory at its first start to
+`CACHE/priv/HASH/APP-VSN/priv` (read-only files; the executables stay
+executable), and `code:priv_dir(APP)` is then that directory. The code
+stays in the zip. `HASH` is from the files, so a new build gets a new
+directory, and the next starts use the copy. `CACHE` is
+`$BEAM_COM_CACHE`, else the user cache directory
+(`filename:basedir(user_cache, "beam.com")`: `~/Library/Caches/beam.com`
+on macOS, `$XDG_CACHE_HOME/beam.com` or `~/.cache/beam.com` on the other
+systems, Windows too).
+
+**erl mode.** A program that starts a new Erlang VM (a peer node, a
+worker in a sandbox) can start its own file: each program has
+`-beam_com_exe PATH` (`init:get_argument(beam_com_exe)`), the path of
+its file. When the file is started with `BEAM_COM_ERL=1` in the
+environment, or through a link named `erl`, all the arguments are for
+`erl`, and the VM starts with the `start_clean` boot and the
+applications of the zip in the code path, not with the release:
+
+```erlang
+{ok, [[Exe]]} = init:get_argument(beam_com_exe),
+Port = open_port({spawn_executable, Exe},
+                 [{env, [{"BEAM_COM_ERL", "1"}]},
+                  {args, ["-noinput", "-eval", "worker:start()"]}]).
+```
+
+(`{arg0, "erl"}` is not enough: when the kernel cannot start an APE
+file, Cosmopolitan starts it with the APE loader, which gives the path
+of the file as `argv[0]`.)
+
+[`examples/toolbox`](examples/toolbox) shows the three: its `main/1`
+comes from `rebar.config`, it runs a shell script from `priv`, and it
+starts itself again as `erl`.
+
+### A native file for one system (`--target`)
+
+`--target TARGET` writes a file for one system instead of an APE file,
+as Cosmopolitan's `assimilate` does. `TARGET` is a target triple, as for
+`deno compile --target` and Rust (or the shorter name of Zig):
+
+| `TARGET` | Short name | System |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | `x86_64-linux` | Linux, x86_64 |
+| `aarch64-unknown-linux-gnu` | `aarch64-linux` | Linux, aarch64 |
+| `x86_64-unknown-freebsd` | `x86_64-freebsd` | FreeBSD, x86_64 |
+| `x86_64-apple-darwin` | `x86_64-macos` | macOS, Intel |
+
+```sh
+beam.com build hello.erl --target x86_64-linux -o hello
 ./hello
 ```
+
+Without `--target`, the file is an APE file for all the systems.
 
 The kernel starts the native file directly: no shell script at the
 start, no APE loader in `$TMPDIR` or `$HOME`, and on macOS a Mach-O file
@@ -118,15 +433,36 @@ interpreter, linked into `beam.com`). The `wasm` application is in the
 zip, and `beam.com build` selects it when the code calls `wasm`:
 
 ```erlang
-{ok, Mod} = wasm:load(Bytes),                    % the bytes of a .wasm file
-{ok, Inst} = wasm:instantiate(Mod),
-{ok, [42]} = wasm:call(Inst, "add", [40, 2]),    % i32/i64: integers, f32/f64: floats
-{ok, Bin} = wasm:memory_read(Inst, Offset, Len),
+{ok, Mod} = wasm:compile(Bytes),                 % the bytes of a .wasm file
+{ok, Inst} = wasm:instantiate(Mod),              % or wasm:instantiate(Bytes)
+true = wasm:function_exists(Inst, "add"),
+{ok, [42]} = wasm:call_function(Inst, "add", [40, 2]),  % i32/i64: integers, f32/f64: floats
+{ok, Bin} = wasm:read_binary(Inst, Offset, Len), % the default memory
+ok = wasm:write_binary(Inst, Offset, Bin),
+{ok, Bytes} = wasm:memory_size(Inst),
+{ok, OldPages} = wasm:memory_grow(Inst, 1),      % 64 KiB pages
 
 %% A WASI program (from Rust, Go, Zig, C, ...): argv, env and directories.
-{ok, ExitCode} = wasm:run(Bytes, ["prog", "arg"],
-                          #{env => [{"KEY", "value"}], dirs => [{"/", "."}]}).
+{ok, ExitCode} = wasm:run(Bytes, #{args => ["prog", "arg"],
+                                   env => #{"KEY" => "value"},
+                                   preopens => #{"/" => "."}}),
+%% The same in two steps: instantiate with the WASI options, then start.
+{ok, Inst2} = wasm:instantiate(Bytes, #{}, #{args => ["prog"]}),
+{ok, ExitCode2} = wasm:start(Inst2).
 ```
+
+The names come from APIs that you may know already:
+
+| `wasm` | From |
+|---|---|
+| `compile/1`, `instantiate/1,2,3` (a module or its bytes, the imports, the options) | the WebAssembly JavaScript API (`WebAssembly.compile`, `WebAssembly.instantiate`) |
+| `call_function/3`, `function_exists/2`, `read_binary/3`, `write_binary/3` | [wasmex](https://hexdocs.pm/wasmex) (Elixir) |
+| `memory_size/1` (bytes), `memory_grow/2` (pages; gives the old size) | `WebAssembly.Memory` |
+| the options `args`, `env` and `preopens`, and `start/1` | [`node:wasi`](https://nodejs.org/api/wasi.html) |
+| `run/2` | `wasmtime run` |
+
+The imports must be `#{}` for now: host functions (Erlang functions
+that the module calls) are not supported yet.
 
 [`examples/wasm_check.erl`](examples/wasm_check.erl) tests calls, traps,
 memory and a WASI program, and runs a `.wasm` file that you give it. CI
@@ -135,14 +471,23 @@ runs it on each platform with a Go program
 WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 
 Go resolves relative paths from `/`, so give the directory of a Go
-program as `"/"` in `dirs`.
+program as `"/"` in `preopens`.
 
-### JIT
+### JIT, and the interpreter (`beam-emu.com`)
 
-`JIT=1 ./build.sh` builds `beam.com` with BeamAsm, the JIT of OTP, in one
-fat file: the x86 backend in the x86_64 half and the arm backend in the
-aarch64 half. CI makes it as `beam-jit.com` (42 MB) and tests it on
-every platform ([`docs/JIT.md`](docs/JIT.md)).
+`beam.com` runs Erlang code with BeamAsm, the JIT of OTP, in one fat
+file: the x86 backend in the x86_64 half and the arm backend in the
+aarch64 half ([`docs/JIT.md`](docs/JIT.md)). The programs that it builds
+have the JIT too. No memory page of the JIT code is writable and
+executable at the same time (W^X): the JIT writes the code through a
+second mapping.
+
+`beam-emu.com` is the same with the BEAM interpreter (`JIT=0
+./build.sh`). It is 2.8 MB smaller and starts 40 to 90 ms faster, but
+Erlang code is slower: 2 times on x86_64 and up to 11 times on aarch64
+for function calls ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)). Use it
+to build small command-line programs, where the start time counts more.
+Code in C (crypto, SQLite, WebAssembly) has the same speed in both.
 
 ### SQLite
 
@@ -162,45 +507,72 @@ SQLite adds about 1.8 MB (two CPUs) to `beam.com` and to each program
 that it makes, also when the program does not use SQLite, because the
 NIF is in the emulator. Build with `SQLITE=0` to leave it out.
 
-### Sandbox: `--pledge` and `--unveil`
+### Sandbox: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`
 
-A program can give up what it does not need, with the `pledge()` and
-`unveil()` of Cosmopolitan (as OpenBSD programs do):
+A program can give up what it does not need. The flags are the
+permission flags of [Deno](https://docs.deno.com/runtime/fundamentals/security/),
+and as with `deno compile`, they are stored in the program when you
+build it:
 
 ```sh
-beam.com build server.erl --pledge "inet dns" --unveil "r /etc/ssl" --unveil "rwc /var/lib/server"
+beam.com build server.erl --allow-net --allow-read=/etc/myapp --allow-write=/var/lib/myapp
 ```
 
-- `--pledge PROMISES`: the groups of system calls that the program
-  keeps, for example `inet` (sockets), `dns`, `wpath` and `cpath` (write
-  and create files), `proc exec` (port programs). `stdio rpath` are
-  always added: ERTS needs them to start. `beam-jit.com` also adds
-  `prot_exec`: without it, the JIT cannot allocate memory for its code
-  and ERTS stops at the start ("Cannot allocate executable memory").
-  `beam.com help build` lists the promises.
-- `--unveil "PERMISSIONS PATH"` (more than one): the files and
-  directories that the program can see, with the permissions `r`, `w`,
-  `x` and `c` (create). All other paths are hidden. BEAM.com adds its own
-  file, `/dev/null`, `/dev/urandom` and the APE loader.
+Without `--allow-*` flags, there is no sandbox: the program can do all
+that its user can. With one or more of them, the program can do only
+what they allow:
 
-A forbidden system call returns an error: Erlang code gets `{error,
-eperm}` (pledge) or `{error, eacces}` (unveil). Without `proc exec`,
-port programs fail (`open_port/2` returns an error), and kernel uses its
-own DNS client, because the native resolver is a port program.
-
-| System | `--pledge` | `--unveil` |
+| Flag | Short | The program can |
 |---|---|---|
-| Linux | yes (seccomp) | yes (Landlock, Linux 5.13 and later) |
-| OpenBSD | the kernel stops the program on a forbidden call | yes |
-| macOS, Windows, FreeBSD, NetBSD | ignored | ignored |
+| `--allow-read[=PATH,...]` | `-R` | read these files and directories (all, without a list) |
+| `--allow-write[=PATH,...]` | `-W` | write and create these files and directories (all, without a list) |
+| `--allow-net` | `-N` | use sockets and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS) |
+| `--allow-run[=PROGRAM,...]` | | start these programs as ports (all, without a list); a name without `/` is found in `PATH` |
+| `--allow-all` | `-A` | do everything: no sandbox |
 
-The rules are applied when the program starts, before ERTS starts its
-threads, so that they apply to all the threads of the VM (on Linux, a
-rule applies to the thread that sets it and the threads that it starts
-later). For the same reason there is no `pledge()` for Erlang code.
-`BEAM_COM_PLEDGE` and `BEAM_COM_UNVEIL` (rules separated by `;`) add
-rules at run time, to try a sandbox without a new build; they can only
-take more away.
+- The flags add up: `--allow-read=/a --allow-read=/b` allows both, and a
+  flag without a list allows all.
+- A directory includes all that is in it. A path that does not exist
+  when the program starts is left out (the system can only allow paths
+  that exist), so to create files, allow their directory:
+  `--allow-write=/var/lib/myapp`, not `/var/lib/myapp/new.db`.
+- A program always can read its own file (with the code), `/dev/null`
+  and `/dev/urandom`, and the JIT keeps the directory of its code maps
+  (`/dev/shm` on Linux, else `/tmp`).
+- A program that runs other programs (`--allow-run=PROGRAM`) also gets
+  the dynamic loader and the libraries (`/lib`, `/usr/lib`, ...). A
+  shell script needs its shell too: `--allow-run=sh,./script.sh`.
+  `--allow-run` without a list gives execute and read access to all
+  files, so it is almost no sandbox (as in Deno).
+- Not supported, because the sandbox cannot enforce them:
+  `--allow-net=HOST` (no filter by host), `--allow-env`,
+  `--allow-sys`, `--allow-ffi` and the `--deny-*` flags. `beam.com
+  build` stops with an error for them.
+
+A forbidden action gives an error: reading or writing a hidden file
+gives `{error, eacces}`, and a socket or a port without its flag
+`{error, eperm}`. Without `--allow-run`, kernel uses its own DNS
+client, because the native resolver is a port program.
+
+| System | The sandbox |
+|---|---|
+| Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
+| OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
+| macOS, Windows, FreeBSD, NetBSD | no: the flags are ignored |
+
+`BEAM_COM_ALLOW` gives permissions to a program that has none in its
+file, to try a sandbox without a new build: the flags without
+`--allow-`, separated by `;`, for example
+`BEAM_COM_ALLOW='read=/etc;net' ./server.com`. A program with
+permissions in its file (also `--allow-all`) ignores it, so the
+environment cannot give a program more than its file allows.
+
+The flags become Cosmopolitan's `pledge()` (system calls) and
+`unveil()` (paths), which the program applies when it starts, before
+ERTS starts its threads, so that they apply to all the threads of the
+VM (on Linux, a rule applies to the thread that sets it and the threads
+that it starts later). For the same reason there is no sandbox call for
+Erlang code.
 
 ## Add your release
 
@@ -266,7 +638,7 @@ Other rules:
 BEAM.com runs the code where it is: in the zip of its own file. ERTS
 reads the `.beam` files, the boot script and the configuration from
 `/zip/...`, the zip file system of Cosmopolitan, as from a directory.
-There is no install step and no cache directory.
+There is no install step, and no cache directory for the code.
 
 Tools such as [Burrito](https://github.com/burrito-elixir/burrito) and
 Bakeware work in a different way: they unpack ERTS and the release to a
@@ -279,7 +651,7 @@ files from there.
 | Files left on disk | none (see below) | the unpacked release, until you remove it |
 | One file for | all the platforms and CPUs | one platform and CPU |
 | NIFs | only the static NIFs in `beam.com` | any NIF of the release |
-| Files in `priv/` | read from the zip; executables in `priv/` cannot run | normal files |
+| Files in `priv/` | read from the zip; copied to a cache directory only when they must be real files (see "Command line programs") | normal files |
 | The zip | read-only at run time | normal files |
 
 What BEAM.com writes, and removes:
@@ -289,6 +661,9 @@ What BEAM.com writes, and removes:
   macOS and the BSDs, not Windows). It stays there, for all APE files
   of that version. A Linux system with the loader registered in
   `binfmt_misc` does not need this.
+- A program whose `priv` has an executable file (or with
+  `--extract-priv`) copies that `priv` directory to the user cache at
+  its first start (see "Command line programs"). It stays there.
 - On Windows, the resolver settings and the certificates of Windows go
   to two files in the temp directory at start, which are removed at
   exit (see "Crypto and TLS").
@@ -365,6 +740,13 @@ keeps the bytes up to the first entry that it removes, moves the entries
 after that point that it keeps, adds the new entries, and writes a new
 central directory with the new offsets.
 
+The code of OTP 29 and of Elixir has its docs and its debug information
+(for `h/1`, the debugger and `cover`). A program does not need them: the
+builder strips them from the beam files of the program, as `mix release`
+does (`strip_beams`). It keeps the chunks that the loader uses, the line
+numbers (for stack traces) and the attributes. A program is about 7.7 MB
+smaller, and it starts as fast as before (`docs/BENCHMARKS.md`).
+
 ## Debugging
 
 - `BEAM_COM_VERBOSE=1` shows the arguments that BEAM.com gives ERTS.
@@ -408,7 +790,7 @@ arguments and in a header that the compiler includes in each file
 
 | Change | Why |
 | --- | --- |
-| `--disable-jit` | The BEAM interpreter is used in `beam.com`. `JIT=1` gives `--enable-jit` with both backends (`docs/JIT.md`). |
+| `--enable-jit` | BeamAsm with both backends (`docs/JIT.md`). `JIT=0` gives `--disable-jit`: the BEAM interpreter (`beam-emu.com`). |
 | `--disable-kernel-poll`, `ac_cv_header_poll_h=no` | The `select()` back-end is used. The `POLL*` values of Cosmopolitan are not compile-time constants, and epoll/kqueue are not on all systems. |
 | `--disable-esock` | The `socket` NIF needs BSD types that Cosmopolitan does not have. `gen_tcp` and `gen_udp` use `inet_drv`. |
 | `erts_cv_linux_thp=no` | The 2 MiB page alignment for Linux breaks the APE layout. |
@@ -489,13 +871,16 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 ## Known limits
 
-- The default `beam.com` has no JIT yet (`beam-jit.com` has it).
 - No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
   work (`crypto`, `asn1`, `wasm` and `esqlite`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
   SIMD, no threads, and no component model yet.
-- No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
+- Distributed Erlang is tested on Linux, macOS and the BSDs, not on
+  Windows yet.
+- Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)
+  as a relative path, because its Unix VFS runs there; give a relative
+  path, or the form of Cosmopolitan (`/C/db/x.db`).
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
 - `run_erl` does not work (there is no `mkfifo()`).
@@ -504,8 +889,9 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   only).
 - A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
   writes a warning when `start_erl.data` names another ERTS version.
-- `beam.com build` does not fetch dependencies (Hex packages) yet, and
-  it does not compile Elixir.
+- `beam.com build` takes only Hex packages (no git dependencies). For
+  Elixir: no umbrella projects, no `config/runtime.exs`, no protocol
+  consolidation.
 
 ## Roadmap
 

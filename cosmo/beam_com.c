@@ -25,12 +25,17 @@
  * apps/beam_com). "build" also runs when the zip has a release.
  */
 #include <cosmo.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
 
@@ -51,38 +56,108 @@
 #define BEAM_COM_ARGS "/zip/.args"
 #define BEAM_COM_RELEASES "/zip/releases"
 #define BEAM_COM_TOOL "/zip/lib/beam_com/ebin/beam_com.app"
-#define BEAM_COM_PLEDGE "/zip/.pledge"
-#define BEAM_COM_UNVEIL "/zip/.unveil"
+#define BEAM_COM_ALLOW "/zip/.allow"
 
-/* close() with the lock of the file descriptor table (UPSTREAM.md C25).
- * The emulator is linked with -Wl,--wrap=close (build.sh), so each call
- * of close() comes here. Cosmopolitan's close() of a kernel descriptor
- * calls the close system call, and then clears the entry of the
- * descriptor in its table, without the lock. In that gap, another thread
- * can open a /zip file, get the same number from the kernel (zipos
- * reserves it with dup()), and write its entry, which close() then
- * clears: the /zip descriptor becomes the kernel descriptor (a copy of
- * stderr), and read() fails with EBADF. The lock is recursive, so the
- * close() of a /zip file, which takes it again, works. */
+/* close() with the lock of the file descriptor table (UPSTREAM.md C25
+ * and C26). The emulator is linked with -Wl,--wrap=close (build.sh), so
+ * each call of close() comes here.
+ *
+ * C25: Cosmopolitan's close() of a kernel descriptor calls the close
+ * system call, and then clears the entry of the descriptor in its table,
+ * without the lock. In that gap, another thread can open a /zip file, get
+ * the same number from the kernel (zipos reserves it with dup()), and
+ * write its entry, which close() then clears. The lock prevents it: the
+ * /zip open takes it too. The lock is recursive.
+ *
+ * C26: the close() of a /zip descriptor calls the close system call, and
+ * only then frees the zipos handle and clears the entry. In that gap,
+ * another thread can open a real file (which does not take the lock) and
+ * get the same number from the kernel; its fstat() or read() then sees
+ * the old /zip entry, and uses the freed handle (SIGSEGV in
+ * __zipos_fstat). Here the entry is cleared first, then the kernel
+ * descriptor is closed, then the handle is freed. Only in the process
+ * itself: in a child of vfork(), which shares the memory, Cosmopolitan
+ * only closes the kernel descriptor (the real close() does that).
+ * Windows has no kernel descriptor for /zip files. */
+struct ZiposHandle;
 int __real_close(int fd);
 /* From libc/calls/state.internal.h, which cannot be included here: it
  * includes libc/thread/tls.h, which stops with #error in the dependency
  * pass of cosmocc, where no CPU is defined (UPSTREAM.md C23). */
 void __fds_lock(void);
 void __fds_unlock(void);
+extern struct Fds g_fds;
+void __releasefd(int fd);
+void __zipos_drop(struct ZiposHandle *h);
+int sys_close(int fd);
+
+static int close_pid;
+
+__attribute__((__constructor__)) static void close_init(void)
+{
+    close_pid = getpid();
+}
 
 int __wrap_close(int fd)
 {
+    struct ZiposHandle *h;
     int rc;
 
     __fds_lock();
-    rc = __real_close(fd);
+    if (fd >= 0 && (size_t)fd < g_fds.n && g_fds.p[fd].kind == kFdZip &&
+        !beam_com_is_windows() && getpid() == close_pid) {
+        h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;
+        __releasefd(fd);
+        rc = sys_close(fd);
+        __zipos_drop(h);
+    } else {
+        rc = __real_close(fd);
+    }
     __fds_unlock();
     return rc;
 }
 
+/* mkdir() of a directory that exists (UPSTREAM.md C27). The emulator is
+ * linked with -Wl,--wrap=mkdir (build.sh). On Windows, Cosmopolitan's
+ * mkdir() of a drive root ("/C") gives EACCES (CreateDirectory() is
+ * denied), not EEXIST. Elixir's File.mkdir_p/1 makes each parent from
+ * the root and accepts only EEXIST for one that exists, so it failed
+ * for each absolute path. POSIX gives EEXIST when the path exists. */
+int __real_mkdir(const char *path, mode_t mode);
+
+int __wrap_mkdir(const char *path, mode_t mode)
+{
+    struct stat st;
+    int rc = __real_mkdir(path, mode), e = errno;
+
+    if (rc == -1 && e == EACCES && beam_com_is_windows())
+        errno = stat(path, &st) == 0 ? EEXIST : e;
+    return rc;
+}
+
+/* chown() on Windows (UPSTREAM.md C28). The emulator is linked with
+ * -Wl,--wrap=chown (build.sh). prim_file:write_file_info/3 (for example
+ * File.touch/1 of Elixir, which Mix calls) always sets the owner, with -1
+ * and -1 when the owner does not change, which POSIX does not change.
+ * Cosmopolitan's chown() gives ENOSYS on Windows. There, chown(path, -1,
+ * -1) gives 0 when the path exists, else the error of stat() (ENOENT, on
+ * which File.touch/1 makes the file). */
+int __real_chown(const char *path, uid_t owner, gid_t group);
+
+int __wrap_chown(const char *path, uid_t owner, gid_t group)
+{
+    struct stat st;
+
+    if (beam_com_is_windows() && owner == (uid_t)-1 && group == (gid_t)-1)
+        return stat(path, &st);
+    return __real_chown(path, owner, group);
+}
+
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
+extern int epmd_main(int argc, char **argv);
+extern int beam_com_inotifywait_main(int argc, char **argv);
+extern int beam_com_mac_listener_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -198,29 +273,32 @@ static int read_zip_args(struct arglist *out)
 }
 
 /*
- * --- Sandbox: pledge() and unveil() -------------------------------------
+ * --- Sandbox: the permissions of --allow-* -----------------------------
  *
- * A program can give up what it does not need, as OpenBSD programs do.
- * The rules come from the zip (beam.com build --pledge, --unveil) and from
- * the environment (to try a sandbox without a new build):
+ * A program can give up what it does not need. The permissions are those
+ * of Deno (beam.com build --allow-read, --allow-write, --allow-net,
+ * --allow-run, --allow-all), one on each line of /zip/.allow:
  *
- *   /zip/.unveil, BEAM_COM_UNVEIL  paths: "PERMISSIONS PATH" on each line
- *                                  (BEAM_COM_UNVEIL: separated by ";"),
- *                                  PERMISSIONS of r, w, x and c
- *   /zip/.pledge, BEAM_COM_PLEDGE  promises, such as "inet dns" ("stdio
- *                                  rpath" are always added)
+ *   read, read=PATH,...     read all files, or only these
+ *   write, write=PATH,...   write (and create) all files, or only these
+ *   net                     sockets and DNS
+ *   run, run=PROGRAM,...    start all programs (ports), or only these
+ *   all                     no sandbox
  *
- * The environment can only restrict more: its rules are applied after the
- * rules of the zip, and a second pledge() or unveil() cannot give back
- * what the first one took.
+ * With permissions, the program can do only what they allow. BEAM_COM_ALLOW
+ * (the same words, separated by ";") gives permissions to a program that
+ * has none in its file, to try a sandbox without a new build; the
+ * environment never changes the permissions of the file.
  *
- * The rules must be applied here, before ERTS starts its threads: on
- * Linux, seccomp (pledge) and Landlock (unveil) apply to the calling
- * thread and to the threads that it starts later. On OpenBSD they apply
- * to the process. On the other systems, pledge() and unveil() do nothing.
+ * They are applied with the pledge() (system calls) and unveil() (paths)
+ * of Cosmopolitan, here, before ERTS starts its threads: on Linux,
+ * seccomp (pledge) and Landlock (unveil) apply to the calling thread and
+ * to the threads that it starts later. On OpenBSD they apply to the
+ * process. On the other systems, pledge() and unveil() do nothing.
  *
  * A forbidden system call returns EPERM (Linux), so Erlang code gets an
- * error such as {error, eperm}. OpenBSD always kills the process.
+ * error such as {error, eperm}; a hidden path gives EACCES. OpenBSD kills
+ * the process on a forbidden system call.
  *
  * The helper programs (erl_child_setup, inet_gethost) are this file,
  * executed again. On Linux they keep the rules of their parent (and the
@@ -231,6 +309,12 @@ static int read_zip_args(struct arglist *out)
  */
 static char *join(const char *a, const char *b, const char *c);
 
+struct allow {
+    int all, net, run;
+    int read_all, write_all, run_all;
+    struct arglist read, write, programs;
+};
+
 static void sandbox_error(int helper, const char *what, const char *arg)
 {
     if (helper)
@@ -239,20 +323,16 @@ static void sandbox_error(int helper, const char *what, const char *arg)
     beam_com_exit(127, 1);
 }
 
-static void sandbox_unveil(int helper, char *rule)
+static void sandbox_unveil(int helper, const char *path,
+                           const char *permissions)
 {
-    char *path = strchr(rule, ' ');
-
-    if (!path)
-        sandbox_error(helper, "unveil: expected \"PERMISSIONS PATH\":", rule);
-    *path++ = '\0';
-    while (*path == ' ')
-        path++;
-    if (unveil(path, rule) == -1)
+    if (unveil(path, permissions) == -1)
         sandbox_error(helper, "unveil", path);
 }
 
-/* A path that may not exist (unveil() fails with ENOENT for it). */
+/* A path that may not exist (unveil() fails with ENOENT for it): it is
+ * left out. unveil() needs a path that exists; to create files, the
+ * program needs their directory. */
 static void sandbox_unveil_optional(int helper, const char *path,
                                     const char *permissions)
 {
@@ -273,102 +353,170 @@ static void sandbox_unveil_loader(int helper)
         sandbox_unveil_optional(helper, join(home, "/.ape-", APE_VERSION_STR), "rx");
 }
 
+/* A program of --allow-run, by path, or by name in PATH (as a port
+ * finds it with os:find_executable/1). NULL when it is nowhere. */
+static char *find_program(const char *name)
+{
+    const char *path = getenv("PATH");
+    char *copy, *dir, *save, *file;
+
+    if (strchr(name, '/'))
+        return strdup(name);
+    if (!path)
+        return NULL;
+    copy = strdup(path);
+    for (dir = strtok_r(copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+        file = join(*dir ? dir : ".", "/", name);
+        if (access(file, X_OK) == 0)
+            return file;
+        free(file);
+    }
+    return NULL;
+}
+
+static void allow_list(char *value, struct arglist *out)
+{
+    char *item, *save;
+
+    for (item = strtok_r(value, ",", &save); item; item = strtok_r(NULL, ",", &save))
+        push(out, strdup(item));
+}
+
+/* One permission: "read", "read=/etc,/srv", "net", ... */
+static void allow_parse(int helper, struct allow *a, char *word)
+{
+    char *value = strchr(word, '=');
+
+    while (*word == ' ' || *word == '\t')
+        word++;
+    if (value)
+        *value++ = '\0';
+    if (strcmp(word, "all") == 0 && !value)
+        a->all = 1;
+    else if (strcmp(word, "net") == 0 && !value)
+        a->net = 1;
+    else if (strcmp(word, "read") == 0)
+        value ? allow_list(value, &a->read) : (void)(a->read_all = 1);
+    else if (strcmp(word, "write") == 0)
+        value ? allow_list(value, &a->write) : (void)(a->write_all = 1);
+    else if (strcmp(word, "run") == 0) {
+        a->run = 1;
+        value ? allow_list(value, &a->programs) : (void)(a->run_all = 1);
+    } else if (!helper) {
+        fprintf(stderr, "beam.com: unknown permission %s (read, write, net, "
+                        "run or all)\n", word);
+        beam_com_exit(127, 1);
+    }
+}
+
 /* ERTS needs "stdio rpath" to start: without them, it waits forever
  * (seen on Linux). Threads are part of "stdio". unveil limits which files
  * "rpath" can read. The JIT needs "prot_exec" for the memory of its
- * code. */
+ * code, and "cpath wpath" for shm_open(), which makes the file of its two
+ * views (W^X): without them, asmjit maps its code writable and executable
+ * (seen in the jit_maps check). unveil limits writes to the directory of
+ * shm_open() and the paths of --allow-write. */
 #ifdef BEAMASM
-#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec "
+#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec cpath wpath "
 #else
 #define BEAM_COM_BASE_PROMISES "stdio rpath "
 #endif
 
-static void sandbox_pledge(int helper, const char *promises)
+static void apply_allow(int helper, struct allow *a)
 {
-    char *all = join(BEAM_COM_BASE_PROMISES, promises, "");
-
-    if (pledge(all, NULL) == -1)
-        sandbox_error(helper, "pledge", all);
-}
-
-static int has_word(const char *words, const char *word)
-{
-    size_t n = strlen(word);
-    const char *p;
-
-    for (p = words; (p = strstr(p, word)); p += n)
-        if ((p == words || p[-1] == ' ' || p[-1] == '\t') &&
-            (p[n] == '\0' || p[n] == ' ' || p[n] == '\t'))
-            return 1;
-    return 0;
-}
-
-static char *join_words(struct arglist *l)
-{
-    size_t n = 1;
-    char *s;
+    static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
+                                 "/usr/local/lib", "/usr/libexec"};
+    static const char *net_files[] = {
+        "/etc/resolv.conf", "/etc/hosts", "/etc/services", "/etc/protocols",
+        /* The certificates of the OS, for public_key:cacerts_get(). */
+        "/etc/ssl", "/etc/pki", "/usr/local/share/certs", "/usr/share/ca-certificates"};
+    char promises[256];
+    size_t k;
     int i;
 
-    for (i = 0; i < l->n; i++)
-        n += strlen(l->v[i]) + 1;
-    if (!(s = calloc(1, n)))
-        die("calloc");
-    for (i = 0; i < l->n; i++) {
-        if (i)
-            strcat(s, " ");
-        strcat(s, l->v[i]);
+    /* BEAM.com executes its own file again for the helper programs,
+     * and ERTS opens /dev/null at start. */
+    sandbox_unveil(helper, GetProgramExecutableName(), "rx");
+    sandbox_unveil(helper, "/dev/null", "rw");
+    sandbox_unveil(helper, "/dev/urandom", "r");
+    sandbox_unveil_loader(helper);
+#ifdef BEAMASM
+    /* The JIT maps its code two times (W^X) with shm_open(), whose
+     * file Cosmopolitan makes in /dev/shm on Linux, else in /tmp
+     * (libc/calls/shm_path_np.c). Without it, asmjit maps the code
+     * writable and executable, which OpenBSD refuses: "Cannot
+     * allocate executable memory". */
+    sandbox_unveil(helper, IsLinux() && access("/dev/shm", F_OK) == 0 ? "/dev/shm" : "/tmp",
+                   "rwc");
+#endif
+    if (a->read_all)
+        sandbox_unveil(helper, "/", "r");
+    for (i = 0; i < a->read.n; i++)
+        sandbox_unveil_optional(helper, a->read.v[i], "r");
+    if (a->write_all)
+        sandbox_unveil(helper, "/", "rwc");
+    for (i = 0; i < a->write.n; i++)
+        sandbox_unveil_optional(helper, a->write.v[i], "rwc");
+    if (a->net)
+        for (k = 0; k < sizeof(net_files) / sizeof(net_files[0]); k++)
+            sandbox_unveil_optional(helper, net_files[k], "r");
+    if (a->run_all)
+        sandbox_unveil(helper, "/", "rx");
+    if (a->programs.n) {
+        /* The dynamic loader and the libraries of the programs. */
+        for (k = 0; k < sizeof(libs) / sizeof(libs[0]); k++)
+            sandbox_unveil_optional(helper, libs[k], "rx");
+        sandbox_unveil_optional(helper, "/etc/ld.so.cache", "r");
+        for (i = 0; i < a->programs.n; i++)
+            sandbox_unveil_optional(helper, find_program(a->programs.v[i]), "rx");
     }
-    return s;
+    if (unveil(NULL, NULL) == -1)
+        sandbox_error(helper, "unveil", "(commit)");
+
+    /* OpenBSD stops ERTS under any pledge() that BEAM.com has tried
+     * (SIGABRT at the start, also for the interpreter), and it stops the
+     * process on a forbidden system call instead of returning an error.
+     * There the sandbox is unveil() only (the paths). */
+    if (IsOpenbsd())
+        return;
+    snprintf(promises, sizeof(promises), "%s%s%s%s", BEAM_COM_BASE_PROMISES,
+             a->write_all || a->write.n ? "wpath cpath fattr flock " : "",
+             a->net ? "inet dns " : "",
+             /* erl_child_setup gets the descriptors of a port over a
+              * socket (SCM_RIGHTS). */
+             a->run ? "proc exec sendfd recvfd " : "");
+    if (pledge(promises, NULL) == -1)
+        sandbox_error(helper, "pledge", promises);
+
+    /* Without "proc exec", ERTS cannot start its port programs, and the
+     * native name resolver is one: kernel halts when it cannot start it.
+     * Kernel uses its own DNS client instead (as on Windows). */
+    if (!a->run && !getenv("ERL_INETRC"))
+        setenv("ERL_INETRC", BEAM_COM_BINDIR "/sandbox.inetrc", 1);
 }
 
 static void apply_sandbox(int helper)
 {
-    struct arglist rules = {0}, promises = {0};
-    char *env, *copy, *rule, *save;
-    int i, no_ports = 0;
+    struct allow a = {0};
+    struct arglist words = {0};
+    char *env, *copy, *word, *save;
+    int i;
 
     if (helper && IsLinux())
         return;
     __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
 
-    read_lines(BEAM_COM_UNVEIL, &rules);
-    if ((env = getenv("BEAM_COM_UNVEIL")) && *env) {
+    if (!read_lines(BEAM_COM_ALLOW, &words) && (env = getenv("BEAM_COM_ALLOW")) && *env) {
         copy = strdup(env);
-        for (rule = strtok_r(copy, ";\n", &save); rule;
-             rule = strtok_r(NULL, ";\n", &save))
-            push(&rules, rule);
+        for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
+            push(&words, word);
     }
-    if (rules.n) {
-        /* BEAM.com executes its own file again for the helper programs,
-         * and ERTS opens /dev/null at start. */
-        if (unveil(GetProgramExecutableName(), "rx") == -1)
-            sandbox_error(helper, "unveil", GetProgramExecutableName());
-        if (unveil("/dev/null", "rw") == -1)
-            sandbox_error(helper, "unveil", "/dev/null");
-        if (unveil("/dev/urandom", "r") == -1)
-            sandbox_error(helper, "unveil", "/dev/urandom");
-        sandbox_unveil_loader(helper);
-        for (i = 0; i < rules.n; i++)
-            sandbox_unveil(helper, rules.v[i]);
-        if (unveil(NULL, NULL) == -1)
-            sandbox_error(helper, "unveil", "(commit)");
-    }
-
-    if (read_lines(BEAM_COM_PLEDGE, &promises)) {
-        char *words = join_words(&promises);
-        sandbox_pledge(helper, words);
-        no_ports |= !has_word(words, "proc") || !has_word(words, "exec");
-    }
-    if ((env = getenv("BEAM_COM_PLEDGE"))) {
-        sandbox_pledge(helper, env);
-        no_ports |= !has_word(env, "proc") || !has_word(env, "exec");
-    }
-
-    /* Without "proc exec", ERTS cannot start its port programs, and the
-     * native name resolver is one: kernel halts when it cannot start it.
-     * Kernel uses its own DNS client instead (as on Windows). */
-    if (no_ports && !getenv("ERL_INETRC"))
-        setenv("ERL_INETRC", BEAM_COM_BINDIR "/sandbox.inetrc", 1);
+    if (!words.n)
+        return;
+    for (i = 0; i < words.n; i++)
+        allow_parse(helper, &a, words.v[i]);
+    if (!a.all)
+        apply_allow(helper, &a);
 }
 
 static int file_exists(const char *path)
@@ -378,6 +526,152 @@ static int file_exists(const char *path)
         return 0;
     fclose(f);
     return 1;
+}
+
+/*
+ * The tools: "escript", and the tools of Elixir: "mix", "iex", "elixir"
+ * and "elixirc", also with .com or .exe (mix.com is this file under the
+ * name of the tool). NULL for another name.
+ */
+static const char *elixir_tool(const char *name)
+{
+    static const char *tools[] = {"mix", "iex", "elixir", "elixirc", "escript"};
+    size_t i, n;
+
+    for (i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
+        n = strlen(tools[i]);
+        if (strncmp(name, tools[i], n) == 0 &&
+            (name[n] == '\0' || strcmp(name + n, ".exe") == 0 ||
+             strcmp(name + n, ".com") == 0))
+            return tools[i];
+    }
+    return NULL;
+}
+
+/*
+ * The emulator flags of an escript: a "%%!" line among its first three
+ * lines (after "#!" and "%% coding: ..."), as the escript program of OTP
+ * reads them. For example "+S 1", or "-escript main MODULE".
+ */
+static void escript_flags(const char *path, struct arglist *out)
+{
+    FILE *f = fopen(path, "rb");
+    char line[4096], *word, *save;
+    int n;
+
+    if (!f)
+        return;
+    for (n = 0; n < 3 && fgets(line, sizeof(line), f); n++) {
+        if (strncmp(line, "%%!", 3) == 0) {
+            for (word = strtok_r(line + 3, " \t\r\n", &save); word;
+                 word = strtok_r(NULL, " \t\r\n", &save))
+                push(out, strdup(word));
+            break;
+        }
+    }
+    fclose(f);
+}
+
+/* mkdir -p */
+static void make_dirs(char *path)
+{
+    char *p;
+
+    for (p = path + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(path, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(path, 0755);
+}
+
+/*
+ * file_system (and so phoenix_live_reload) watches files with inotifywait
+ * of inotify-tools (FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE, else PATH), and
+ * on macOS with mac_listener (FILESYSTEM_FSMAC_EXECUTABLE_FILE). For the
+ * tools of Elixir, the variable names a file in the cache of BEAM.com
+ * (BEAM_COM_CACHE, else the user cache, as beam_com_script), so that the
+ * watcher of this file runs (cosmo/beam_com_watch.c):
+ *
+ *   - Linux and the BSDs: a link named inotifywait to this file.
+ *   - macOS: a script mac_listener that runs this file with
+ *     BEAM_COM_PROGRAM=mac_listener (the name of a link can be lost when
+ *     the APE loader starts the file).
+ *
+ * Not when the variable is set, and not on Windows (file_system has its
+ * own watcher there).
+ */
+static void watch_link(void)
+{
+    const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
+               *home = getenv("HOME"), *exe = GetProgramExecutableName();
+    const char *var = IsXnu() ? "FILESYSTEM_FSMAC_EXECUTABLE_FILE"
+                              : "FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE";
+    char *dir, *link, *tmp, *script, target[4096];
+    ssize_t n;
+    int fd, ok;
+
+    if (getenv(var) || beam_com_is_windows() || !exe || *exe != '/' || strchr(exe, '\''))
+        return;
+    if (cache && *cache)
+        dir = join(cache, "/bin", "");
+    else if (xdg && *xdg)
+        dir = join(xdg, "/beam.com/bin", "");
+    else if (home)
+        dir = join(home, "/.cache/beam.com/bin", "");
+    else
+        return;
+    make_dirs(dir);
+    link = join(dir, IsXnu() ? "/mac_listener" : "/inotifywait", "");
+    /* A new file, then rename(): two tools that start at the same time
+     * do not see a missing file. */
+    snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
+    tmp = strdup(target);
+    if (IsXnu()) {
+        script = join("#!/bin/sh\nBEAM_COM_PROGRAM=mac_listener exec '", exe, "' \"$@\"\n");
+        fd = open(link, O_RDONLY);
+        n = fd >= 0 ? read(fd, target, sizeof(target) - 1) : -1;
+        if (fd >= 0)
+            close(fd);
+        if (n < 0 || (target[n] = '\0', strcmp(target, script) != 0)) {
+            unlink(tmp);
+            fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+            ok = fd >= 0 && write(fd, script, strlen(script)) == (ssize_t)strlen(script);
+            if (fd >= 0)
+                close(fd);
+            if (!ok || rename(tmp, link) != 0) {
+                unlink(tmp);
+                return;
+            }
+        }
+    } else {
+        n = readlink(link, target, sizeof(target) - 1);
+        if (n < 0 || (target[n] = '\0', strcmp(target, exe) != 0)) {
+            unlink(tmp);
+            if (symlink(exe, tmp) != 0 || rename(tmp, link) != 0) {
+                unlink(tmp);
+                return;
+            }
+        }
+    }
+    setenv(var, link, 1);
+}
+
+/* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
+static int zip_has_elixir(void)
+{
+    DIR *dir = opendir(BEAM_COM_ROOT "/lib");
+    struct dirent *entry;
+    int found = 0;
+
+    if (!dir)
+        return 0;
+    while (!found && (entry = readdir(dir)))
+        found = starts_with(entry->d_name, "elixir-");
+    closedir(dir);
+    return found;
 }
 
 static char *join(const char *a, const char *b, const char *c)
@@ -731,6 +1025,43 @@ int beam_com_exec_helper(const char *path, char *const argv[],
     return execve(GetProgramExecutableName(), argv, env.v);
 }
 
+/*
+ * Distributed Erlang needs epmd. It starts only for -sname, -name (the
+ * long form) or -remsh, never otherwise, as erlexec starts "epmd -daemon"
+ * before the emulator (unless -start_epmd false). epmd is this file: the
+ * child runs as epmd (BEAM_COM_PROGRAM), and "-daemon" returns at once
+ * when an epmd already runs, or after the daemon has started.
+ */
+static void start_epmd(struct arglist *all)
+{
+    extern char **environ;
+    struct arglist env = {0};
+    char *args[] = {"epmd", "-daemon", NULL};
+    int i, named = 0, status;
+    pid_t pid;
+
+    for (i = 0; i < all->n; i++) {
+        if (strcmp(all->v[i], "-sname") == 0 || strcmp(all->v[i], "-name") == 0 ||
+            strcmp(all->v[i], "-remsh") == 0)
+            named = 1;
+        if (strcmp(all->v[i], "-start_epmd") == 0 && i + 1 < all->n &&
+            strcmp(all->v[i + 1], "false") == 0)
+            return;
+    }
+    if (!named)
+        return;
+    for (i = 0; environ[i]; i++)
+        if (strncmp(environ[i], "BEAM_COM_PROGRAM=", 17) != 0)
+            push(&env, environ[i]);
+    push(&env, "BEAM_COM_PROGRAM=epmd");
+    if ((pid = fork()) == 0) {
+        execve(GetProgramExecutableName(), args, env.v);
+        _exit(127);
+    }
+    if (pid > 0)
+        waitpid(pid, &status, 0);
+}
+
 void beam_com_main(int *argcp, char ***argvp)
 {
     int argc = *argcp;
@@ -738,7 +1069,8 @@ void beam_com_main(int *argcp, char ***argvp)
     const char *name = beam_com_basename(argv[0]);
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
-    int i, extra = 0, used_cli = 0, has_release, has_args;
+    int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode;
+    const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
      * that the helper starts do not see it. */
@@ -756,16 +1088,169 @@ void beam_com_main(int *argcp, char ***argvp)
         ShowCrashReports();
 
     apply_sandbox(starts_with(name, "erl_child_setup") ||
-                  starts_with(name, "inet_gethost"));
+                  starts_with(name, "inet_gethost") || starts_with(name, "epmd"));
 
     if (starts_with(name, "erl_child_setup"))
         exit(erl_child_setup_main(argc, argv));
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
+    /* epmd: started by start_epmd() below, or by the user ("epmd
+     * -names", with a link named epmd, or "beam.com epmd -names"). */
+    if (starts_with(name, "epmd"))
+        exit(epmd_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "epmd") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data")) {
+        argv[1] = "epmd";
+        exit(epmd_main(argc - 1, argv + 1));
+    }
+    /* inotifywait: the file watcher (cosmo/beam_com_watch.c), by name
+     * (the link that watch_link() makes) or as "beam.com inotifywait". */
+    if (starts_with(name, "inotifywait"))
+        exit(beam_com_inotifywait_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "inotifywait") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        exit(beam_com_inotifywait_main(argc - 1, argv + 1));
+    /* mac_listener: the same watcher, as the watcher of file_system on
+     * macOS (the script that watch_link() makes), or "beam.com
+     * mac_listener". */
+    if (starts_with(name, "mac_listener"))
+        exit(beam_com_mac_listener_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "mac_listener") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        exit(beam_com_mac_listener_main(argc - 1, argv + 1));
 
-    has_release = read_release(&file);
-    has_args = read_zip_args(&file);
-    if (file_exists(BEAM_COM_TOOL) &&
+    /* erl mode: the program behaves as erl (the runtime of its zip, with
+     * /zip as the root and all its applications in the code path), not
+     * as its release. For code that starts another Erlang node of the
+     * program (peer, or a worker in a sandbox): run the program file with
+     * the name "erl" (a link), or with BEAM_COM_ERL=1. All the arguments
+     * are erl arguments. */
+    erl_mode = strcmp(name, "erl") == 0 || strcmp(name, "erl.exe") == 0 ||
+               strcmp(name, "erl.com") == 0 ||
+               (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
+    /* beam.com with the flags of erl ("beam.com -sname me -remsh app",
+     * "beam.com +S 1 -eval ..."): erl mode too, in a file without a
+     * release (whose arguments are its own). -h, --help and --version are
+     * commands of beam.com. Not for a tool (elixir.com -e ...). */
+    if (!erl_mode && argc > 1 && (argv[1][0] == '-' || argv[1][0] == '+') &&
+        !elixir_tool(name) &&
+        strcmp(argv[1], "-h") != 0 && strcmp(argv[1], "--help") != 0 &&
+        strcmp(argv[1], "--version") != 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        erl_mode = 1;
+    /* "app.com remote": a shell in the running node of the release in
+     * the zip, as "bin/app remote" of rebar3 and mix release: erl mode
+     * with -remsh and the node name (-sname or -name) and -setcookie of
+     * the vm.args of the release. The new node is hidden, and gets a
+     * random name (-remsh does that since OTP 25). */
+    if (!erl_mode && argc > 1 && strcmp(argv[1], "remote") == 0 &&
+        file_exists(BEAM_COM_RELEASES "/start_erl.data")) {
+        struct arglist rel = {0}, args = {0};
+        const char *node = NULL, *cookie = NULL;
+
+        read_release(&rel);
+        for (i = 0; i + 1 < rel.n; i++) {
+            if (strcmp(rel.v[i], "-sname") == 0 || strcmp(rel.v[i], "-name") == 0)
+                node = rel.v[i + 1];
+            else if (strcmp(rel.v[i], "-setcookie") == 0)
+                cookie = rel.v[i + 1];
+        }
+        if (!node) {
+            fprintf(stderr, "%s: remote: the release has no -sname or -name "
+                            "(in its vm.args)\n", name);
+            exit(1);
+        }
+        push(&args, argv[0]);
+        push(&args, "-remsh");
+        push(&args, (char *)node);
+        push(&args, "-hidden");
+        if (cookie) {
+            push(&args, "-setcookie");
+            push(&args, (char *)cookie);
+        }
+        for (i = 2; i < argc; i++)
+            push(&args, argv[i]);
+        argc = args.n;
+        argv = args.v;
+        erl_mode = 1;
+    }
+    /* The tools: escript, and the Elixir tools as the scripts of Elixir
+     * start them. The name of the file (a copy or a link named mix.com,
+     * iex.com, elixir.com, elixirc.com or escript, with or without .com
+     * or .exe), or the first argument of the file ("beam.com mix test").
+     * They run with all the applications of the zip in the code path. */
+    tool = erl_mode ? NULL : elixir_tool(name);
+    if (!erl_mode && !tool && argc > 1 && file_exists(BEAM_COM_TOOL) &&
+        (tool = elixir_tool(argv[1])) && strchr(argv[1], '.') == NULL) {
+        /* "beam.com mix test": mix gets "test". */
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+    }
+    /* "iex -S mix": Elixir looks for an executable mix in PATH and
+     * loads it as a script; the script of mix is in the zip. */
+    if (tool && (strcmp(tool, "iex") == 0 || strcmp(tool, "elixir") == 0)) {
+        for (i = 1; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-S") == 0) {
+                if (strcmp(argv[i + 1], "mix") == 0)
+                    argv[i + 1] = BEAM_COM_BINDIR "/mix";
+                break;
+            }
+        }
+    }
+    if (tool && strcmp(tool, "escript") != 0 && !zip_has_elixir()) {
+        fprintf(stderr, "beam.com: %s: Elixir is not in this file "
+                        "(built with ELIXIR=0)\n", tool);
+        exit(1);
+    }
+    if (erl_mode) {
+        unsetenv("BEAM_COM_ERL");
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/start_clean");
+        push(&file, "...");
+        has_release = 1;
+        has_args = 0;
+    } else if (tool && strcmp(tool, "escript") == 0) {
+        /* As the escript program of OTP: "escript FILE ARGS". */
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/no_dot_erlang");
+        push(&file, "-noshell");
+        if (argc > 1)
+            escript_flags(argv[1], &file);
+        push(&file, "-run");
+        push(&file, "escript");
+        push(&file, "start");
+        push(&file, "-extra");
+        has_release = 1;
+        has_args = 0;
+    } else if (tool) {
+        watch_link();
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/start_clean");
+        push(&file, "-noshell");
+        if (strcmp(tool, "iex") == 0) {
+            push(&file, "-user");
+            push(&file, "elixir");
+            push(&file, "-extra");
+            push(&file, "--no-halt");
+            push(&file, "+iex");
+        } else {
+            push(&file, "-s");
+            push(&file, "elixir");
+            push(&file, "start_cli");
+            push(&file, "-extra");
+            if (strcmp(tool, "elixirc") == 0)
+                push(&file, "+elixirc");
+            else if (strcmp(tool, "mix") == 0)
+                push(&file, BEAM_COM_BINDIR "/mix");
+        }
+        has_release = 1;
+        has_args = 0;
+    } else {
+        has_release = read_release(&file);
+        has_args = read_zip_args(&file);
+    }
+    if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) &&
         ((!has_release && !has_args) ||
          (argc > 1 && strcmp(argv[1], "build") == 0))) {
         /* The commands of beam.com: when the zip has no release (the
@@ -776,8 +1261,6 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
-        push(&file, "-beam_com_exe");
-        push(&file, GetProgramExecutableName());
         push(&file, "-run");
         push(&file, "beam_com");
         push(&file, "main");
@@ -787,15 +1270,25 @@ void beam_com_main(int *argcp, char ***argvp)
     if (!has_release && !has_args)
         return; /* Not a bundle: behave like a plain beam.smp. */
 
-    /* ERL_FLAGS has more flags, as with erl. */
-    if (getenv("ERL_FLAGS")) {
-        struct arglist flags = {0};
-        char *copy = strdup(getenv("ERL_FLAGS")), *word, *save;
-        for (word = strtok_r(copy, " \t\r\n", &save); word;
-             word = strtok_r(NULL, " \t\r\n", &save))
-            push(&flags, word);
-        for (i = 0; i < flags.n; i++)
-            add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+    /* ERL_FLAGS has more flags, as with erl, and ELIXIR_ERL_OPTIONS for
+     * the Elixir tools, as with the scripts of Elixir. */
+    {
+        const char *flag_vars[2];
+        int v;
+        flag_vars[0] = "ERL_FLAGS";
+        flag_vars[1] = tool ? "ELIXIR_ERL_OPTIONS" : NULL;
+        for (v = 0; v < 2; v++) {
+            struct arglist flags = {0};
+            char *copy, *word, *save;
+            if (!flag_vars[v] || !getenv(flag_vars[v]))
+                continue;
+            copy = strdup(getenv(flag_vars[v]));
+            for (word = strtok_r(copy, " \t\r\n", &save); word;
+                 word = strtok_r(NULL, " \t\r\n", &save))
+                push(&flags, word);
+            for (i = 0; i < flags.n; i++)
+                add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+        }
     }
 
     for (i = 0; i < file.n; i++) {
@@ -843,11 +1336,17 @@ void beam_com_main(int *argcp, char ***argvp)
     push(&all, "--");
     push(&all, "-home");
     push(&all, home_dir());
+    /* The path of this file, for the program: init:get_argument(
+     * beam_com_exe) (for example to start it again in erl mode). */
+    push(&all, "-beam_com_exe");
+    push(&all, GetProgramExecutableName());
     push(&all, "--");
     for (i = 0; i < windows.n; i++)
         push(&all, windows.v[i]);
     for (i = 0; i < init.n; i++)
         push(&all, init.v[i]);
+
+    start_epmd(&all);
 
     if (getenv("BEAM_COM_VERBOSE")) {
         fprintf(stderr, "beam.com: executing:");
