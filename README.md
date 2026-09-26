@@ -134,6 +134,46 @@ SQLite adds about 1.8 MB (two CPUs) to `beam.com` and to each program
 that it makes, also when the program does not use SQLite, because the
 NIF is in the emulator. Build with `SQLITE=0` to leave it out.
 
+### Sandbox: `--pledge` and `--unveil`
+
+A program can give up what it does not need, with the `pledge()` and
+`unveil()` of Cosmopolitan (as OpenBSD programs do):
+
+```sh
+beam.com build server.erl --pledge "inet dns" --unveil "r /etc/ssl" --unveil "rwc /var/lib/server"
+```
+
+- `--pledge PROMISES`: the groups of system calls that the program
+  keeps, for example `inet` (sockets), `dns`, `wpath` and `cpath` (write
+  and create files), `proc exec` (port programs). `stdio rpath` are
+  always added: ERTS needs them to start. `beam-jit.com` also adds
+  `prot_exec`: without it, the JIT cannot allocate memory for its code
+  and ERTS stops at the start ("Cannot allocate executable memory").
+  `beam.com help build` lists the promises.
+- `--unveil "PERMISSIONS PATH"` (more than one): the files and
+  directories that the program can see, with the permissions `r`, `w`,
+  `x` and `c` (create). All other paths are hidden. BEAM.com adds its own
+  file, `/dev/null`, `/dev/urandom` and the APE loader.
+
+A forbidden system call returns an error: Erlang code gets `{error,
+eperm}` (pledge) or `{error, eacces}` (unveil). Without `proc exec`,
+port programs fail (`open_port/2` returns an error), and kernel uses its
+own DNS client, because the native resolver is a port program.
+
+| System | `--pledge` | `--unveil` |
+|---|---|---|
+| Linux | yes (seccomp) | yes (Landlock, Linux 5.13 and later) |
+| OpenBSD | the kernel stops the program on a forbidden call | yes |
+| macOS, Windows, FreeBSD, NetBSD | ignored | ignored |
+
+The rules are applied when the program starts, before ERTS starts its
+threads, so that they apply to all the threads of the VM (on Linux, a
+rule applies to the thread that sets it and the threads that it starts
+later). For the same reason there is no `pledge()` for Erlang code.
+`BEAM_COM_PLEDGE` and `BEAM_COM_UNVEIL` (rules separated by `;`) add
+rules at run time, to try a sandbox without a new build; they can only
+take more away.
+
 ## Add your release
 
 Make a normal OTP release **without ERTS**, for OTP 29, and add its

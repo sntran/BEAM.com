@@ -19,11 +19,7 @@ build_options_test_() ->
                     opts(["-o", "1", "a", "-o", "2"]))}].
 
 build_errors_test_() ->
-    Usage = {error, "usage: beam.com build INPUT [-o OUTPUT] [-a APP]...~n"
-             "  INPUT   a .erl file with main/1, or an application directory~n"
-             "  OUTPUT  the new executable (default: the name of INPUT.com)~n"
-             "  APP     an OTP application to add (for calls that the~n"
-             "          builder cannot see, such as apply/3)", []},
+    {error, "usage: " ++ _, []} = Usage = (catch beam_com:command(["build"])),
     [{"no input", ?_assertThrow(Usage, opts([]))},
      {"only options", ?_assertThrow(Usage, opts(["-o", "x.com"]))},
      {"two inputs", ?_assertThrow(Usage, opts(["a.erl", "b.erl"]))},
@@ -33,6 +29,18 @@ build_errors_test_() ->
       ?_assertThrow({error, "option ~ts needs a value", ["-a"]}, opts(["a.erl", "-a"]))},
      {"an unknown option",
       ?_assertThrow({error, "unknown option ~ts", ["-z"]}, opts(["a.erl", "-z"]))},
+     {"--pledge without a value",
+      ?_assertThrow({error, "option ~ts needs a value", ["--pledge"]}, opts(["a.erl", "--pledge"]))},
+     {"--unveil without a value",
+      ?_assertThrow({error, "option ~ts needs a value", ["--unveil"]}, opts(["a.erl", "--unveil"]))},
+     {"sandbox options",
+      ?_assertEqual(#{input => "a.erl", apps => [], pledge => "inet",
+                      unveil => ["r /etc", "rw /tmp"]},
+                    opts(["--pledge", "inet", "a.erl", "--unveil", "r /etc",
+                          "--unveil", "rw /tmp"]))},
+     {"the last --pledge wins",
+      ?_assertEqual(#{input => "a", apps => [], pledge => "dns"},
+                    opts(["--pledge", "inet", "a", "--pledge", "dns"]))},
      {"build with no input", ?_assertThrow(Usage, beam_com:command(["build"]))}].
 
 %% The output of a command, and its result. A small I/O server collects
@@ -80,7 +88,8 @@ commands_test_() ->
      {"the help of each command",
       fun() ->
               {ok, Build} = output(["help", "build"]),
-              ?assert(has(Build, "usage: beam.com build INPUT [-o OUTPUT] [-a APP]...\n")),
+              ?assert(has(Build, "usage: beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]\n")),
+              ?assert(has(Build, "Promises: stdio rpath")),
               ?assertNot(has(Build, "~n")),
               {ok, Version} = output(["help", "version"]),
               ?assert(has(Version, "usage: beam.com version")),

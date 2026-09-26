@@ -88,6 +88,10 @@ check() {
         echo "FAIL: $name did not stop in $limit seconds"
         cat "$tmp.diag" 2>/dev/null
     fi
+    if [ "$probe" = 1 ]; then
+        echo "PROBE: $name exited with $rc (not checked)"
+        return
+    fi
     if [ $rc -ne "$expect" ]; then
         echo "FAIL: $name exited with $rc (expected $expect)"
         failed="$failed
@@ -100,7 +104,7 @@ check() {
         while [ -n "$rest" ]; do
             p=${rest%%@@*}
             case $rest in *@@*) rest=${rest#*@@} ;; *) rest= ;; esac
-            if ! grep -q "$p" "$tmp"; then
+            if ! grep -q -e "$p" "$tmp"; then
                 echo "FAIL: $name did not print \"$p\""
                 failed="$failed
   $name $*: did not print \"$p\""
@@ -120,6 +124,17 @@ check_status() {
     shift
     check "$@"
     expect=0
+}
+
+# probe NAME ARGS...: run as check (with the time limit), but only show
+# the output and the exit status (for behavior that is not known yet).
+probe=0
+probe() {
+    probe=1
+    probe_name=$1
+    shift
+    check "$probe_name" '' "$@"
+    probe=0
 }
 
 greeter='said hello 3 times'
@@ -188,6 +203,42 @@ if [ -d examples ]; then
         build examples/hashsum.erl -a nosuch -o "$dir/never.com"
 fi
 
+# The sandbox (beam.com build --pledge, --unveil). Linux applies both
+# rules, OpenBSD applies unveil (a pledge violation kills the process
+# there), and the other systems ignore them.
+if [ -d examples ]; then
+    check_status 1 beam.com 'unknown promise bogus' \
+        build tests/programs/sandbox_check.erl --pledge bogus -o "$dir/never.com"
+    check_status 1 beam.com '--unveil needs' \
+        build tests/programs/sandbox_check.erl --unveil "q /etc" -o "$dir/never.com"
+    check beam.com 'wrote .*sandbox_pledge.com' \
+        build tests/programs/sandbox_check.erl --pledge inet -o "$dir/sandbox_pledge.com"
+    check beam.com 'wrote .*sandbox_unveil.com' \
+        build tests/programs/sandbox_check.erl --unveil "r /etc" -o "$dir/sandbox_unveil.com"
+    rm -f "$dir/sandbox.tmp"
+    case $os in
+        linux)
+            pledged='read: ok@@write: error eperm@@listen: ok@@done'
+            unveiled='read: ok@@read: error eacces@@write: error eacces@@listen: ok@@done' ;;
+        openbsd)
+            pledged=
+            unveiled='read: ok@@read: error e[a-z]*@@write: error e[a-z]*@@listen: ok@@done' ;;
+        *)
+            pledged='read: ok@@write: ok@@listen: ok@@done'
+            unveiled='read: ok@@read: ok@@write: ok@@listen: ok@@done' ;;
+    esac
+    if [ -n "$pledged" ]; then
+        check sandbox_pledge.com "$pledged" \
+            read /etc/hosts write "$dir/sandbox.tmp" listen
+    else
+        # Shows what OpenBSD does with this pledge (not checked yet).
+        probe sandbox_pledge.com read /etc/hosts write "$dir/sandbox.tmp" listen
+    fi
+    rm -f "$dir/sandbox.tmp"
+    check sandbox_unveil.com "$unveiled" \
+        read /etc/hosts read "$dir/sandbox_pledge.com" write "$dir/sandbox.tmp" listen
+fi
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
@@ -233,6 +284,17 @@ if [ -f "$dir/beam-jit.com" ]; then
         check beam-jit.com 'wrote .*crypto_check.jit.com' \
             build examples/crypto_check -o "$dir/crypto_check.jit.com"
         [ -f "$dir/crypto_check.jit.com" ] && check crypto_check.jit.com "$crypto_check"
+        # The sandbox with the JIT: the launcher adds "prot_exec" for the
+        # memory of the JIT code.
+        if [ -n "$pledged" ]; then
+            check beam-jit.com 'wrote .*sandbox_pledge.jit.com' \
+                build tests/programs/sandbox_check.erl --pledge inet \
+                -o "$dir/sandbox_pledge.jit.com"
+            rm -f "$dir/sandbox.tmp"
+            [ -f "$dir/sandbox_pledge.jit.com" ] && check sandbox_pledge.jit.com "$pledged" \
+                read /etc/hosts write "$dir/sandbox.tmp" listen
+            rm -f "$dir/sandbox.tmp"
+        fi
     fi
 fi
 

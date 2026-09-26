@@ -132,20 +132,54 @@ index 2d1d60e..c72eb74 100644
      /* Must be done before we have a chance to spawn any scheduler threads. */
      sys_init_signal_stack();
  
+diff --git a/erts/emulator/sys/unix/sys.c b/erts/emulator/sys/unix/sys.c
+index 218da54..59003e1 100644
+--- a/erts/emulator/sys/unix/sys.c
++++ b/erts/emulator/sys/unix/sys.c
+@@ -395,8 +395,15 @@ erts_sys_pre_init(void)
+       /* Make sure fds 1 and 2 are open */
+       while (fd < 3) {
+ 	fd = open("/dev/null", O_WRONLY);
++#ifdef __COSMOPOLITAN__
++	/* BEAM.com: stop when /dev/null cannot be opened (for example in
++	 * a sandbox), instead of trying forever. */
++	if (fd < 0)
++	    break;
++#endif
+       }
+-      close(fd);
++      if (fd >= 0)
++	close(fd);
+     }
+ 
+     /* We need a file descriptor to close in the crashdump creation.
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index bdd6528..5dc0dfb 100644
+index bdd6528..7f9bc91 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
-@@ -481,6 +481,16 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -197,6 +197,11 @@ erl_sys_late_init(void)
+ 
+ /* II.I Spawn prototypes */
+ static ErlDrvData spawn_start(ErlDrvPort, char*, SysDriverOpts*);
++#ifdef __COSMOPOLITAN__
++/* BEAM.com: 0 when erl_child_setup runs, else the reason why it does not
++ * (ENOTSUP on Windows, or the error of fork()). */
++static int beam_com_no_forker;
++#endif
+ static ErlDrvSSizeT spawn_control(ErlDrvData, unsigned int, char *,
+                                   ErlDrvSizeT, char **, ErlDrvSizeT);
+ 
+@@ -481,6 +486,17 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
      char *wd, *cwd;
      int ifd[2], ofd[2], stderrfd;
  
 +#ifdef __COSMOPOLITAN__
-+    /* BEAM.com: on Windows there is no erl_child_setup (see forker_start),
-+     * so port programs cannot be started. Fail the port instead of
-+     * writing to a forker that is not there (ERTS_DUMP_EXIT). */
-+    if (beam_com_is_windows()) {
-+        errno = ENOTSUP;
++    /* BEAM.com: without erl_child_setup (on Windows, or when fork() is
++     * not allowed, see forker_start), port programs cannot be started.
++     * Fail the port instead of writing to a forker that is not there
++     * (ERTS_DUMP_EXIT). */
++    if (beam_com_no_forker) {
++        errno = beam_com_no_forker;
 +        return ERL_DRV_ERROR_ERRNO;
 +    }
 +#endif
@@ -153,7 +187,7 @@ index bdd6528..5dc0dfb 100644
      if (pipe(ifd) < 0) return ERL_DRV_ERROR_ERRNO;
      errno = EMFILE;		/* default for next three conditions */
      if (ifd[0] >= sys_max_files() || pipe(ofd) < 0) {
-@@ -518,7 +528,11 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -518,7 +534,11 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
  	memcpy((void *) cmd_line,(void *) name, len);
  	cmd_line[len] = '\0';
  	len = len + 1;
@@ -165,7 +199,7 @@ index bdd6528..5dc0dfb 100644
  	    int save_errno = errno;
  	    erts_free(ERTS_ALC_T_TMP, cmd_line);
              close_pipes(ifd, ofd);
-@@ -1600,6 +1614,19 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1600,6 +1620,20 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
  
      forker_port = erts_drvport2id(port_num);
  
@@ -178,6 +212,7 @@ index bdd6528..5dc0dfb 100644
 +     * rest of the boot is unchanged, but do not start the child. */
 +    if (beam_com_is_windows()) {
 +        forker_fd = -1;
++        beam_com_no_forker = ENOTSUP;
 +        return (ErlDrvData)port_num;
 +    }
 +#endif
@@ -185,7 +220,29 @@ index bdd6528..5dc0dfb 100644
      res = erts_sys_explicit_8bit_getenv("BINDIR", bindir, &bindirsz);
      if (res == 0) {
          erts_exit(1, "Environment variable BINDIR is not set\n");
-@@ -1657,6 +1684,20 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1633,6 +1667,21 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+ 
+     i = fork();
+ 
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: fork() fails when a sandbox does not allow it (pledge()
++     * without "proc"). Run without erl_child_setup, as on Windows: port
++     * programs fail with the error of fork(). */
++    if (i < 0) {
++        beam_com_no_forker = errno;
++        erts_sched_bind_atfork_parent(unbind);
++        erts_free(ERTS_ALC_T_CS_PROG_PATH, child_setup_prog);
++        close(fds[0]);
++        close(fds[1]);
++        forker_fd = -1;
++        return (ErlDrvData)port_num;
++    }
++#endif
++
+     if (i == 0) {
+         /* The child */
+         char *cs_argv[FORKER_ARGV_NO_OF_ARGS] =
+@@ -1657,6 +1706,20 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
      (void) setsid();
  #endif
  

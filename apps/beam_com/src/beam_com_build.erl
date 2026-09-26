@@ -10,7 +10,7 @@
 %% of beam.com.
 -module(beam_com_build).
 
--export([run/1]).
+-export([run/1, check_promises/1, check_unveil/1]).
 
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
@@ -45,7 +45,7 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Release = try release(App, Apps, Base, Tmp, Root)
               after file:del_dir_r(Tmp)
               end,
-    New = with_dirs(app_files(App) ++ Release),
+    New = with_dirs(app_files(App) ++ Release ++ sandbox_files(Opts)),
     Keep = keep(Apps, Base),
     Data = beam_com_zip:write(Bin, Keep, New),
     write_file(Output, Data),
@@ -63,6 +63,45 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
 %% directory ".". Paths from the command line get "/" instead.
 slashes(Path, {_, windows}) -> lists:flatten(string:replace(Path, "\\", "/", all));
 slashes(Path, _) -> Path.
+
+%% The sandbox of the program (see beam_com.c): /zip/.pledge has the
+%% promises, /zip/.unveil one "PERMISSIONS PATH" rule on each line.
+sandbox_files(Opts) ->
+    [{".pledge", [P, "\n"]} || #{pledge := P} <- [Opts]]
+        ++ [{".unveil", [[R, "\n"] || R <- Rules]}
+            || #{unveil := Rules} <- [Opts], Rules =/= []].
+
+-define(PROMISES, ["stdio", "rpath", "wpath", "cpath", "dpath", "flock",
+                   "fattr", "inet", "anet", "unix", "dns", "tty", "recvfd",
+                   "sendfd", "proc", "exec", "id", "unveil", "settime",
+                   "prot_exec", "vminfo", "tmppath", "chown"]).
+
+%% The promises of --pledge, checked (the names of Cosmopolitan's
+%% pledge()), separated by one space.
+check_promises(Promises) ->
+    Words = string:lexemes(Promises, " \t"),
+    case [W || W <- Words, not lists:member(W, ?PROMISES)] of
+        [] -> lists:flatten(lists:join(" ", Words));
+        [Bad | _] -> throw({error, "unknown promise ~ts (see beam.com help build)", [Bad]})
+    end.
+
+%% An --unveil rule, checked: "PERMISSIONS PATH".
+check_unveil(Rule) ->
+    case string:split(string:trim(Rule), " ") of
+        [Perms, Path0] ->
+            Path = string:trim(Path0),
+            case Perms =/= "" andalso Path =/= ""
+                andalso lists:all(fun(C) -> lists:member(C, "rwxc") end, Perms) of
+                true -> Perms ++ " " ++ Path;
+                false -> bad_unveil(Rule)
+            end;
+        _ ->
+            bad_unveil(Rule)
+    end.
+
+bad_unveil(Rule) ->
+    throw({error, "--unveil needs \"PERMISSIONS PATH\", with PERMISSIONS of "
+           "r, w, x and c: ~ts", [Rule]}).
 
 default_output(Input) ->
     filename:basename(Input, ".erl") ++ ".com".
@@ -307,6 +346,8 @@ keep(Apps, Base) ->
             lists:any(fun(Dir) -> keep_app_file(Dir, Name) end, Dirs);
        ("releases/" ++ _) -> false;
        (".args") -> false;
+       (".pledge") -> false;
+       (".unveil") -> false;
        (_) -> true
     end.
 

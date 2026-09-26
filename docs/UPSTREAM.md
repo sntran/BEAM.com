@@ -536,6 +536,24 @@ the `#error` of `beam_jit_main.cpp` does not apply to that pass.
 **Possible upstream fix.** Document it; or make the dependency output
 the union of the x86_64 and the aarch64 pass.
 
+### C24. unveil() hides the APE loader from execve()
+
+**Status:** cosmocc 4.0.2 (`libc/proc/execve-sysv.c`, `libc/calls/unveil.c`).
+
+**Symptom.** After `unveil()` on Linux, a program that executes an APE
+file (here: itself, for its helper programs) gets `ENOEXEC`: the helper
+does not start.
+
+**Cause.** When the kernel cannot run an APE file, `execve()` tries the
+APE loader: `/usr/bin/ape`, `$TMPDIR/.ape-1.10`, `$HOME/.ape-1.10` and
+`./.ape-1.10`. Landlock hides these paths unless they are unveiled.
+
+**Workaround in BEAM.com.** When there are unveil rules, the launcher
+also unveils the loader paths that exist (`rx`), and its own file.
+
+**Possible upstream fix.** Document it next to `unveil()`, or unveil the
+loader that started the process automatically.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -796,3 +814,40 @@ variables cannot turn them on.
 
 **Fix in BEAM.com.** With `BEAM_COM_FAT_JIT=yes`, the three values are 1.
 They are used only in code for ARM, so the x86_64 half does not change.
+
+### O15. ERTS tries to open /dev/null forever
+
+**Status:** OTP 29.1.1 (`erts/emulator/sys/unix/sys.c`, `erts_sys_pre_init()`).
+
+**Symptom.** In a sandbox that forbids `/dev/null` (a pledge without
+`rpath`, or unveil rules without `/dev/null`), the emulator uses 100% of
+one CPU and never starts.
+
+**Cause.** `while (fd < 3) fd = open("/dev/null", O_WRONLY);` has no exit
+when `open()` fails.
+
+**Fix in BEAM.com.** The loop stops when `open()` fails.
+
+**Possible upstream fix.** The same.
+
+### O16. ERTS does not check fork() when it starts erl_child_setup
+
+**Status:** OTP 29.1.1 (`erts/emulator/sys/unix/sys_drivers.c`,
+`forker_start()`).
+
+**Symptom.** When `fork()` is not allowed (a pledge without `proc`), the
+emulator stops at start: "Failed to write to erl_child_setup" and a crash
+dump.
+
+**Cause.** `forker_start()` does not check the result of `fork()`. The
+emulator keeps the socket to a helper that was never started, and the
+first write fails.
+
+**Fix in BEAM.com.** When `fork()` fails, the emulator runs without
+`erl_child_setup` (as on Windows): `open_port/2` for a program returns
+the error of `fork()`. The launcher also makes kernel use its own DNS
+client then, because the native resolver is a port program and kernel
+halts when it cannot start it.
+
+**Possible upstream fix.** Check the result of `fork()`, and let the
+emulator run without port programs.

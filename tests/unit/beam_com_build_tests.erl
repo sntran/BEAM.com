@@ -320,6 +320,7 @@ release_test_() ->
                   {"run/1 with an application directory",
                    {timeout, 120, fun() -> run_app_dir(Dir) end}},
                   {"run/1 with an error", fun() -> run_error(Dir) end},
+                  {"run/1 with a sandbox", {timeout, 120, fun() -> run_sandbox(Dir) end}},
                   {"run/1 errors and warnings", {timeout, 120, fun() -> run_edges(Dir) end}}]
      end}.
 
@@ -396,7 +397,9 @@ fake_exe(Dir, Root) ->
                                [{"bin/start_clean.boot", <<"boot">>},
                                 {"releases/start_erl.data", <<"old">>},
                                 {"releases/0.1.0/start.boot", <<"old">>},
-                                {".args", <<"-x">>} | LibFiles])),
+                                {".args", <<"-x">>},
+                                {".pledge", <<"old">>},
+                                {".unveil", <<"r /old">>} | LibFiles])),
     File = filename:join(Dir, "beam.com"),
     ok = file:write_file(File, Exe),
     File.
@@ -435,7 +438,7 @@ run(Dir) ->
                               "bin/start_clean.boot", "usr/share/zoneinfo/UTC",
                               ".symtab.amd64"]],
     [?assertNot(Has(P)) || P <- ["lib/beam_com/", "lib/sasl-", Crypto ++ "include/",
-                                 ".args"]],
+                                 ".args", ".pledge", ".unveil"]],
     %% The old release was replaced, and stdlib reads the new file.
     {ok, Files} = zip:unzip(Bin, [memory]),
     ?assertEqual(<<(list_to_binary(erlang:system_info(version)))/binary, " 0.1.0\n">>,
@@ -445,6 +448,62 @@ run(Dir) ->
     ?assertEqual(8#755, element(8, Info) band 8#777),
     %% No temporary directory is left.
     ?assertEqual([], filelib:wildcard(filename:join(Dir, ".*.tmp"))).
+
+%% --pledge and --unveil write /zip/.pledge and /zip/.unveil, which
+%% beam_com.c reads at start.
+run_sandbox(Dir) ->
+    Root = fake_root(Dir),
+    write(filename:join([Root, "lib", "beam_com_script-0.1.0", "ebin"]),
+          "beam_com_script.app",
+          "{application, beam_com_script, [{description, \"\"}, {vsn, \"0.1.0\"},"
+          " {modules, []}, {registered, []}, {applications, [kernel, stdlib]}]}.\n"),
+    Exe = fake_exe(Dir, Root),
+    F = write(Dir, "boxed.erl", "-module(boxed).\n-export([main/1]).\nmain(_) -> ok.\n"),
+    Out = filename:join(Dir, "boxed.com"),
+    ok = silent(fun() ->
+                        beam_com_build:run(#{input => F, apps => [], output => Out,
+                                             root => Root, exe => Exe,
+                                             pledge => "inet dns",
+                                             unveil => ["r /etc", "rwc /tmp/x"]})
+                end),
+    {ok, Bin} = file:read_file(Out),
+    {ok, Files} = zip:unzip(Bin, [memory]),
+    ?assertEqual(<<"inet dns\n">>, proplists:get_value(".pledge", Files)),
+    ?assertEqual(<<"r /etc\nrwc /tmp/x\n">>, proplists:get_value(".unveil", Files)),
+    %% An empty pledge is a pledge ("stdio rpath" only).
+    ok = silent(fun() ->
+                        beam_com_build:run(#{input => F, apps => [], output => Out,
+                                             root => Root, exe => Exe, pledge => ""})
+                end),
+    {ok, Files2} = zip:unzip(element(2, file:read_file(Out)), [memory]),
+    ?assertEqual(<<"\n">>, proplists:get_value(".pledge", Files2)),
+    ?assertEqual(undefined, proplists:get_value(".unveil", Files2)).
+
+sandbox_options_test_() ->
+    Unknown = fun(W) -> {error, "unknown promise ~ts (see beam.com help build)", [W]} end,
+    Bad = fun(R) -> {error, "--unveil needs \"PERMISSIONS PATH\", with PERMISSIONS of "
+                     "r, w, x and c: ~ts", [R]} end,
+    UnknownBogus = Unknown("bogus"),
+    UnknownThread = Unknown("thread"),
+    BadQ = Bad("q /etc"),
+    BadNoPath = Bad("r"),
+    BadEmpty = Bad(""),
+    [?_assertEqual("inet dns", beam_com_build:check_promises("inet   dns")),
+     ?_assertEqual("", beam_com_build:check_promises("")),
+     ?_assertEqual("stdio rpath wpath cpath dpath flock fattr inet anet unix dns tty "
+                   "recvfd sendfd proc exec id unveil settime prot_exec vminfo tmppath chown",
+                   beam_com_build:check_promises(
+                     "stdio rpath wpath cpath dpath flock fattr inet anet unix dns tty "
+                     "recvfd sendfd proc exec id unveil settime prot_exec vminfo tmppath chown")),
+     {"an unknown promise", ?_assertThrow(UnknownBogus, beam_com_build:check_promises("inet bogus"))},
+     {"not a promise of Cosmopolitan",
+      ?_assertThrow(UnknownThread, beam_com_build:check_promises("thread"))},
+     ?_assertEqual("r /etc", beam_com_build:check_unveil("r /etc")),
+     ?_assertEqual("rwxc /a b", beam_com_build:check_unveil("  rwxc /a b ")),
+     {"a path with spaces", ?_assertEqual("r /a b", beam_com_build:check_unveil("r /a b"))},
+     {"a wrong permission", ?_assertThrow(BadQ, beam_com_build:check_unveil("q /etc"))},
+     {"no path", ?_assertThrow(BadNoPath, beam_com_build:check_unveil("r"))},
+     {"nothing", ?_assertThrow(BadEmpty, beam_com_build:check_unveil(""))}].
 
 run_app_dir(Dir) ->
     Root = filename:join(Dir, "root"),

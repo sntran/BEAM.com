@@ -14,6 +14,9 @@ platforms.
   also on Windows (exported from the Windows store at start).
 - Port programs on macOS and the BSDs (fd passing in the native
   `cmsghdr` layout).
+- A sandbox for programs: `beam.com build --pledge ... --unveil ...`
+  (Cosmopolitan's `pledge()` and `unveil()`; Linux and OpenBSD). The
+  launcher applies the rules before ERTS starts its threads.
 - `beam.com build`: no Erlang installation needed. It compiles one
   `.erl` file with `main/1`, or an application directory, selects the
   OTP applications that the code needs (from the `.app` file and the
@@ -88,22 +91,6 @@ can be added on WAMR, or the runtime can be replaced.
   file elsewhere (today it falls back to RWX memory, except on macOS
   arm64, which uses `MAP_JIT`).
 
-### 2. pledge() and unveil()
-
-Cosmopolitan has `pledge()` (Linux with seccomp-BPF, and OpenBSD) and
-`unveil()` (Linux with Landlock, and OpenBSD). A program could give up
-what it does not need after its start, as OpenBSD daemons do.
-
-- A static NIF with `beam_com:pledge(Promises)` and
-  `beam_com:unveil(Path, Permissions)`, which return `{error, enotsup}`
-  on the other systems.
-- The mode that returns `EPERM` (not the one that kills the process), so
-  a forbidden call is an Erlang error.
-- To check first: that the filter covers all the threads of the VM, and
-  which promises the VM needs at run time (for example `prot_exec` for
-  the JIT, `proc exec` for port programs).
-- Tests on Linux and on OpenBSD in CI.
-
 ### Later: more for `beam.com build`
 
 - Hex packages (source), fetched with the `httpc` and TLS support that
@@ -130,6 +117,13 @@ what it does not need after its start, as OpenBSD daemons do.
   `GetProgramExecutableName()` for the helper programs.
 
 ## Decided against
+
+- `beam_com:pledge/1` and `unveil/2` for Erlang code: on Linux, seccomp
+  and Landlock apply to the calling thread and the threads that it
+  starts later, and the threads of the VM exist before any Erlang code
+  runs. A call from Erlang would restrict one scheduler thread only. The
+  rules come from the build (`--pledge`, `--unveil`) and the launcher
+  applies them.
 
 - Loading native per-platform NIF libraries (`cosmo_dlopen`): it breaks
   "build once", and the calling conventions and exported symbols make
