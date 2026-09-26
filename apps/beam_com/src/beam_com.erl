@@ -1,15 +1,15 @@
-%% The commands of beam.com. beam.com starts this module with
-%% "-run beam_com main" when its zip has no release, and for "build":
+%% The commands of beam.com. The file starts this module with "-run beam_com main" when its zip has no
+%% release, and for "build":
 %%
 %%   beam.com [help [COMMAND]]
 %%   beam.com version
 %%   beam.com build INPUT [-o OUTPUT] [-a APP]...
 -module(beam_com).
 
--export([main/0]).
+-export([main/0, name/0]).
 
 -ifdef(TEST).
--export([command/1, build_options/2, help/1, version/0]).
+-export([command/1, build_options/2, help/1, version/0, name/1]).
 -endif.
 
 main() ->
@@ -17,8 +17,8 @@ main() ->
                  ok -> 0
              catch
                  throw:{error, Format, Args} ->
-                     io:format(standard_error, "beam.com: " ++ Format ++ "~n",
-                               Args),
+                     io:format(standard_error, "~ts: " ++ Format ++ "~n",
+                               [name() | Args]),
                      1
              end,
     erlang:halt(Status).
@@ -30,11 +30,29 @@ command([Help | Rest]) when Help =:= "help"; Help =:= "--help"; Help =:= "-h" ->
 command([Version]) when Version =:= "version"; Version =:= "--version" ->
     io:put_chars(version());
 command(["version" | _]) ->
-    throw({error, "usage: beam.com version", []});
+    throw({error, "usage: ~ts version", [name()]});
 command(["build" | Args]) ->
     beam_com_build:run(build_options(Args, #{apps => []}));
 command([Command | _]) ->
-    throw({error, "unknown command ~ts (see beam.com help)", [Command]}).
+    throw({error, "unknown command ~ts (see ~ts help)", [Command, name()]}).
+
+%% The name of this file for the messages: beam.com, beam-emu.com, or
+%% the name of a copy (also a copy named beam.exe on Windows).
+name() ->
+    case init:get_argument(beam_com_exe) of
+        {ok, [[Exe | _] | _]} -> name(Exe);
+        _ -> "beam.com"
+    end.
+
+%% The path can have backslashes on Windows, where os:type() is unix.
+name(Exe) ->
+    filename:rootname(lists:last(string:lexemes(Exe, "/\\"))) ++ ".com".
+
+elixir_version() ->
+    case lists:keyfind("elixir", 1, zip_apps()) of
+        {_, Vsn} -> Vsn;
+        false -> none
+    end.
 
 build_options([], #{input := _} = Opts) ->
     Opts;
@@ -75,9 +93,11 @@ usage() ->
     throw({error, "usage: " ++ build_usage(), []}).
 
 build_usage() ->
-    "beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]~n"
-    "               [--unveil \"PERMISSIONS PATH\"]... [--target TARGET]~n"
-    "               [--main MODULE] [--tool rebar|mix] [--extract-priv APP]...~n"
+    Name = name(),
+    Pad = lists:duplicate(length(Name) + 7, $\s),
+    Name ++ " build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]~n" ++
+    Pad ++ "[--unveil \"PERMISSIONS PATH\"]... [--target TARGET]~n" ++
+    Pad ++ "[--main MODULE] [--tool rebar|mix] [--extract-priv APP]...~n"
     "  INPUT     a .erl, .ex or .exs file with main/1, or an application~n"
     "            directory (rebar3 or Mix)~n"
     "  OUTPUT    the new executable (default: the name of INPUT.com)~n"
@@ -104,19 +124,37 @@ build_usage() ->
 
 %% The text of "beam.com help [COMMAND]".
 help([]) ->
-    ["BEAM.com: Erlang/OTP ", otp_version(), " in one executable file, for Linux,\n"
-     "macOS, Windows and the BSDs, on x86_64 and aarch64.\n"
+    Name = name(),
+    {Runtime, Inputs, Tools} =
+        case elixir_version() of
+            none -> {[], "a .erl file with main/1, or\n"
+                         "                  from an application directory\n", []};
+            Elixir -> {[" and Elixir ", Elixir],
+                       "a .erl, .ex or .exs file with\n"
+                       "                  main/1, or from an application directory\n"
+                       "                  (rebar3 or Mix)\n",
+                       ["  mix, iex, elixir, elixirc [ARGUMENTS]\n"
+                        "                  the tools of Elixir, as with an Elixir\n"
+                        "                  installation (\"", Name, " mix test\")\n"]}
+        end,
+    ["BEAM.com: Erlang/OTP ", otp_version(), Runtime, " in one executable file, for\n"
+     "Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.\n"
      "\n"
-     "usage: beam.com COMMAND [ARGUMENTS]\n"
+     "usage: ", Name, " COMMAND [ARGUMENTS]\n"
      "\n"
      "Commands:\n"
      "  build INPUT [-o OUTPUT] [-a APP]...\n"
-     "                  make an executable from a .erl file with main/1, or\n"
-     "                  from an application directory\n"
+     "                  make an executable from ", Inputs,
+     "  escript FILE [ARGUMENTS]\n"
+     "                  run an escript\n",
+     Tools,
      "  version         show the versions, the emulator and the platform\n"
      "  help [COMMAND]  show this text, or the help of a command\n"
      "\n"
-     "To run an OTP release, add it to the zip of a copy of beam.com.\n"
+     "A copy of this file or a link to it with the name of a tool (escript",
+     case Tools of [] -> ""; _ -> ",\nmix, iex, elixir, elixirc; also mix.com, iex.com, ..." end,
+     ") runs that tool.\n"
+     "To run an OTP release, add it to the zip of a copy of ", Name, ".\n"
      "More: https://github.com/sntran/BEAM.com\n"];
 help(["build"]) ->
     ["usage: ", io_lib:format(build_usage(), []), "\n"
@@ -129,14 +167,14 @@ help(["build"]) ->
      "tmppath chown. A forbidden system call returns an error (EPERM) on\n"
      "Linux; OpenBSD stops the program. The other systems ignore them.\n"];
 help(["version"]) ->
-    "usage: beam.com version\n"
-    "\n"
-    "Shows the versions of Erlang/OTP and ERTS, the emulator, the\n"
-    "platform, and the applications in the zip of beam.com.\n";
+    ["usage: ", name(), " version\n"
+     "\n"
+     "Shows the versions of Erlang/OTP, ERTS and Elixir, the emulator, the\n"
+     "platform, and the applications in the zip of ", name(), ".\n"];
 help(["help"]) ->
-    "usage: beam.com help [COMMAND]\n";
+    ["usage: ", name(), " help [COMMAND]\n"];
 help([Command | _]) ->
-    throw({error, "unknown command ~ts (see beam.com help)", [Command]}).
+    throw({error, "unknown command ~ts (see ~ts help)", [Command, name()]}).
 
 %% The text of "beam.com version".
 version() ->
@@ -145,8 +183,12 @@ version() ->
     Apps = lists:sort([{atom_to_list(A), V}
                        || {A, _, V} <- application:loaded_applications()] ++
                       zip_apps()),
-    ["beam.com ", vsn(), "\n",
+    [name(), " ", vsn(), "\n",
      io_lib:format("  Erlang/OTP  : ~ts~n", [otp_version()]),
+     case elixir_version() of
+         none -> [];
+         Elixir -> io_lib:format("  Elixir      : ~ts~n", [Elixir])
+     end,
      io_lib:format("  ERTS        : ~ts~n", [erlang:system_info(version)]),
      io_lib:format("  Emulator    : ~ts~n", [erlang:system_info(emu_flavor)]),
      io_lib:format("  OS type     : ~p/~p~n", [Family, Name]),

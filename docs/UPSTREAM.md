@@ -596,7 +596,7 @@ release, as `close()` already does for `/zip` descriptors.
 **Symptom.** A build of an Elixir project (`beam.com build
 examples/greeter_ex`, which reads many files of the zip at the same
 time) sometimes dies with `SIGSEGV` (seen in CI on NetBSD, exit 139).
-With the tools of Elixir, `mix format` (many files at the same time)
+`beam.com mix format` (many files at the same time)
 dies the same way in `__zipos_fstat()`, called by `fstat()` in
 `efile_open()` of `read_file_nif` on a dirty I/O thread: 5 of 200 runs,
 with 4 runs at the same time.
@@ -641,6 +641,27 @@ says that `mkdir()` of an existing path gives `EEXIST`.
 
 **Possible upstream fix.** In `sys_mkdirat_nt()`, give `EEXIST` when
 `CreateDirectory()` fails and the path exists.
+
+### C28. chown() gives ENOSYS on Windows, also with -1 and -1
+
+**Status:** cosmocc 4.0.2 (`libc/calls/chown.c`, `fchownat.c`).
+
+**Symptom.** On Windows, `mix test` stopped at the start: `File.Error
+could not touch ".../mix_user_check_...": function not implemented`, in
+`Mix.Utils.detect_user_id!/0`.
+
+**Cause.** `prim_file:write_file_info/3` (which `File.touch/1` of Elixir
+calls) always sets the owner, with `-1` and `-1` when the owner does
+not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
+gives `ENOSYS` on Windows for all values.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `cosmo/beam_com.c` gives, on
+Windows, for `-1` and `-1`: 0 when the path exists, else the error of
+`stat()` (`ENOENT`, on which `File.touch/1` makes the file).
+
+**Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
+return 0 for `-1` and `-1` when the path exists.
 
 ## WAMR (WebAssembly Micro Runtime)
 

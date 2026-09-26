@@ -315,6 +315,77 @@ if [ -d examples ]; then
     rm -f examples/greeter_ex/mix.lock
 fi
 
+# The tools: escript, and mix, iex, elixir and elixirc, as a first
+# argument of beam.com or by the name of the file: mix.com, iex.com,
+# elixir.com and elixirc.com are beam.com under other names (here hard
+# links, as a copy), and mix, iex, elixir and escript are symbolic links.
+# The Mix checks run in a new directory. BEAM_COM_TEST_OFFLINE=1 leaves
+# out the checks that need hex.pm and builds.hex.pm.
+cat > "$tmp.escript" <<'ESCRIPT'
+#!/usr/bin/env escript
+%%! +S 1 -escript main tools_escript
+-module(tools_escript).
+-export([main/1]).
+main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).
+ESCRIPT
+check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
+check beam.com '^55$' elixir -e 'IO.puts(Enum.sum(1..10))'
+check beam.com '^Mix 1\.' mix --version
+if [ -f "$dir/beam.com" ]; then
+    here=$(pwd)
+    work=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_mix.XXXXXX")
+    dir_rel=$dir runner_rel=$runner
+    dir=$(cd "$dir" && pwd)
+    case $runner in */*) runner=$here/$runner ;; esac
+    for t in mix iex elixir elixirc; do ln -f "$dir/beam.com" "$dir/$t.com"; done
+    for t in mix iex elixir escript; do ln -sf beam.com "$dir/$t"; done
+    cd "$work"
+    check elixir.com '^55$@@^\["x", "y"\]$' -e 'IO.puts(Enum.sum(1..10)); IO.inspect(System.argv())' x y
+    printf 'defmodule ToolsC do\n  def f, do: :ok\nend\n' > tools_c.ex
+    check elixirc.com '' tools_c.ex -o out
+    [ -f out/Elixir.ToolsC.beam ] || { echo "FAIL: elixirc wrote no beam file"; fail=1; failed="$failed
+  elixirc.com: no out/Elixir.ToolsC.beam"; }
+    check mix.com 'creating mix.exs' new hello
+    cd hello
+    check mix.com '2 passed' test
+    check mix '' format --check-formatted
+    check elixir '^world$' -S mix run -e 'IO.puts(Hello.hello())'
+    # iex evaluates .iex.exs after the start of the shell (and of mix).
+    printf 'IO.puts("iex: #{Hello.hello()}")\nSystem.halt()\n' > tools.iex.exs
+    check iex.com '^iex: world$' --dot-iex tools.iex.exs -S mix
+    # An escript from Mix: its "%%!" line names the main module.
+    sed 's/deps: deps()/deps: deps(), escript: [main_module: Hello.CLI]/' mix.exs > mix.exs.new
+    mv mix.exs.new mix.exs
+    printf 'defmodule Hello.CLI do\n  def main(args), do: IO.puts("cli: #{inspect(args)}")\nend\n' > lib/cli.ex
+    check mix 'Generated escript hello' escript.build
+    check escript '^cli: \["p", "q"\]$' hello p q
+    if [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ]; then
+        # Hex and rebar3 (for the Erlang packages), installed by Mix into
+        # ~/.mix; Mix runs rebar3 with the escript in PATH. Where the kernel
+        # cannot start an APE file and sh stops at its first NUL byte
+        # (NetBSD), escript is a small script that starts the file with the
+        # APE loader.
+        if [ "$os" = netbsd ]; then
+            rm -f "$dir/escript"
+            printf '#!/bin/sh\nexec %s %s/beam.com escript "$@"\n' "$runner" "$dir" > "$dir/escript"
+            chmod +x "$dir/escript"
+        fi
+        PATH=$dir:$PATH
+        export PATH
+        check mix '' local.hex --force
+        check mix '' local.rebar --force
+        sed 's/# {:dep_from_hexpm, "~> 0.3.0"},/{:jason, "~> 1.4"}, {:telemetry, "~> 1.3"},/' mix.exs > mix.exs.new
+        mv mix.exs.new mix.exs
+        check mix 'jason@@telemetry' deps.get
+        check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
+    fi
+    cd "$here"
+    rm -f "$dir/mix" "$dir/iex" "$dir/elixir" "$dir/escript" \
+        "$dir/mix.com" "$dir/iex.com" "$dir/elixir.com" "$dir/elixirc.com"
+    rm -rf "$work"
+    dir=$dir_rel runner=$runner_rel
+fi
+
 # An application with an entry (toolbox): the main module comes from
 # escript_emu_args of rebar.config, a behaviour is compiled before the
 # module that uses it, priv has an executable file (so it is copied to

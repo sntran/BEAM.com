@@ -25,6 +25,7 @@
  * apps/beam_com). "build" also runs when the zip has a release.
  */
 #include <cosmo.h>
+#include <dirent.h>
 #include <errno.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -131,6 +132,24 @@ int __wrap_mkdir(const char *path, mode_t mode)
     if (rc == -1 && e == EACCES && beam_com_is_windows())
         errno = stat(path, &st) == 0 ? EEXIST : e;
     return rc;
+}
+
+/* chown() on Windows (UPSTREAM.md C28). The emulator is linked with
+ * -Wl,--wrap=chown (build.sh). prim_file:write_file_info/3 (for example
+ * File.touch/1 of Elixir, which Mix calls) always sets the owner, with -1
+ * and -1 when the owner does not change, which POSIX does not change.
+ * Cosmopolitan's chown() gives ENOSYS on Windows. There, chown(path, -1,
+ * -1) gives 0 when the path exists, else the error of stat() (ENOENT, on
+ * which File.touch/1 makes the file). */
+int __real_chown(const char *path, uid_t owner, gid_t group);
+
+int __wrap_chown(const char *path, uid_t owner, gid_t group)
+{
+    struct stat st;
+
+    if (beam_com_is_windows() && owner == (uid_t)-1 && group == (gid_t)-1)
+        return stat(path, &st);
+    return __real_chown(path, owner, group);
 }
 
 extern int erl_child_setup_main(int argc, char **argv);
@@ -440,6 +459,65 @@ static int file_exists(const char *path)
         return 0;
     fclose(f);
     return 1;
+}
+
+/*
+ * The tools: "escript", and the tools of Elixir: "mix", "iex", "elixir"
+ * and "elixirc", also with .com or .exe (mix.com is this file under the
+ * name of the tool). NULL for another name.
+ */
+static const char *elixir_tool(const char *name)
+{
+    static const char *tools[] = {"mix", "iex", "elixir", "elixirc", "escript"};
+    size_t i, n;
+
+    for (i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
+        n = strlen(tools[i]);
+        if (strncmp(name, tools[i], n) == 0 &&
+            (name[n] == '\0' || strcmp(name + n, ".exe") == 0 ||
+             strcmp(name + n, ".com") == 0))
+            return tools[i];
+    }
+    return NULL;
+}
+
+/*
+ * The emulator flags of an escript: a "%%!" line among its first three
+ * lines (after "#!" and "%% coding: ..."), as the escript program of OTP
+ * reads them. For example "+S 1", or "-escript main MODULE".
+ */
+static void escript_flags(const char *path, struct arglist *out)
+{
+    FILE *f = fopen(path, "rb");
+    char line[4096], *word, *save;
+    int n;
+
+    if (!f)
+        return;
+    for (n = 0; n < 3 && fgets(line, sizeof(line), f); n++) {
+        if (strncmp(line, "%%!", 3) == 0) {
+            for (word = strtok_r(line + 3, " \t\r\n", &save); word;
+                 word = strtok_r(NULL, " \t\r\n", &save))
+                push(out, strdup(word));
+            break;
+        }
+    }
+    fclose(f);
+}
+
+/* The zip has Elixir: a directory lib/elixir-VSN (not with ELIXIR=0). */
+static int zip_has_elixir(void)
+{
+    DIR *dir = opendir(BEAM_COM_ROOT "/lib");
+    struct dirent *entry;
+    int found = 0;
+
+    if (!dir)
+        return 0;
+    while (!found && (entry = readdir(dir)))
+        found = starts_with(entry->d_name, "elixir-");
+    closedir(dir);
+    return found;
 }
 
 static char *join(const char *a, const char *b, const char *c)
@@ -801,6 +879,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode;
+    const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
      * that the helper starts do not see it. */
@@ -834,6 +913,35 @@ void beam_com_main(int *argcp, char ***argvp)
     erl_mode = strcmp(name, "erl") == 0 || strcmp(name, "erl.exe") == 0 ||
                strcmp(name, "erl.com") == 0 ||
                (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
+    /* The tools: escript, and the Elixir tools as the scripts of Elixir
+     * start them. The name of the file (a copy or a link named mix.com,
+     * iex.com, elixir.com, elixirc.com or escript, with or without .com
+     * or .exe), or the first argument of the file ("beam.com mix test").
+     * They run with all the applications of the zip in the code path. */
+    tool = erl_mode ? NULL : elixir_tool(name);
+    if (!erl_mode && !tool && argc > 1 && file_exists(BEAM_COM_TOOL) &&
+        (tool = elixir_tool(argv[1])) && strchr(argv[1], '.') == NULL) {
+        /* "beam.com mix test": mix gets "test". */
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+    }
+    /* "iex -S mix": Elixir looks for an executable mix in PATH and
+     * loads it as a script; the script of mix is in the zip. */
+    if (tool && (strcmp(tool, "iex") == 0 || strcmp(tool, "elixir") == 0)) {
+        for (i = 1; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-S") == 0) {
+                if (strcmp(argv[i + 1], "mix") == 0)
+                    argv[i + 1] = BEAM_COM_BINDIR "/mix";
+                break;
+            }
+        }
+    }
+    if (tool && strcmp(tool, "escript") != 0 && !zip_has_elixir()) {
+        fprintf(stderr, "beam.com: %s: Elixir is not in this file "
+                        "(built with ELIXIR=0)\n", tool);
+        exit(1);
+    }
     if (erl_mode) {
         unsetenv("BEAM_COM_ERL");
         push(&file, "-boot");
@@ -841,11 +949,46 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "...");
         has_release = 1;
         has_args = 0;
+    } else if (tool && strcmp(tool, "escript") == 0) {
+        /* As the escript program of OTP: "escript FILE ARGS". */
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/no_dot_erlang");
+        push(&file, "-noshell");
+        if (argc > 1)
+            escript_flags(argv[1], &file);
+        push(&file, "-run");
+        push(&file, "escript");
+        push(&file, "start");
+        push(&file, "-extra");
+        has_release = 1;
+        has_args = 0;
+    } else if (tool) {
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/start_clean");
+        push(&file, "-noshell");
+        if (strcmp(tool, "iex") == 0) {
+            push(&file, "-user");
+            push(&file, "elixir");
+            push(&file, "-extra");
+            push(&file, "--no-halt");
+            push(&file, "+iex");
+        } else {
+            push(&file, "-s");
+            push(&file, "elixir");
+            push(&file, "start_cli");
+            push(&file, "-extra");
+            if (strcmp(tool, "elixirc") == 0)
+                push(&file, "+elixirc");
+            else if (strcmp(tool, "mix") == 0)
+                push(&file, BEAM_COM_BINDIR "/mix");
+        }
+        has_release = 1;
+        has_args = 0;
     } else {
         has_release = read_release(&file);
         has_args = read_zip_args(&file);
     }
-    if (!erl_mode && file_exists(BEAM_COM_TOOL) &&
+    if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) &&
         ((!has_release && !has_args) ||
          (argc > 1 && strcmp(argv[1], "build") == 0))) {
         /* The commands of beam.com: when the zip has no release (the
@@ -865,15 +1008,25 @@ void beam_com_main(int *argcp, char ***argvp)
     if (!has_release && !has_args)
         return; /* Not a bundle: behave like a plain beam.smp. */
 
-    /* ERL_FLAGS has more flags, as with erl. */
-    if (getenv("ERL_FLAGS")) {
-        struct arglist flags = {0};
-        char *copy = strdup(getenv("ERL_FLAGS")), *word, *save;
-        for (word = strtok_r(copy, " \t\r\n", &save); word;
-             word = strtok_r(NULL, " \t\r\n", &save))
-            push(&flags, word);
-        for (i = 0; i < flags.n; i++)
-            add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+    /* ERL_FLAGS has more flags, as with erl, and ELIXIR_ERL_OPTIONS for
+     * the Elixir tools, as with the scripts of Elixir. */
+    {
+        const char *flag_vars[2];
+        int v;
+        flag_vars[0] = "ERL_FLAGS";
+        flag_vars[1] = tool ? "ELIXIR_ERL_OPTIONS" : NULL;
+        for (v = 0; v < 2; v++) {
+            struct arglist flags = {0};
+            char *copy, *word, *save;
+            if (!flag_vars[v] || !getenv(flag_vars[v]))
+                continue;
+            copy = strdup(getenv(flag_vars[v]));
+            for (word = strtok_r(copy, " \t\r\n", &save); word;
+                 word = strtok_r(NULL, " \t\r\n", &save))
+                push(&flags, word);
+            for (i = 0; i < flags.n; i++)
+                add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+        }
     }
 
     for (i = 0; i < file.n; i++) {

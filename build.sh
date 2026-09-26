@@ -20,9 +20,10 @@
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
-#   ELIXIR           0: leave out Elixir (the elixir, eex, logger and mix
-#                    applications in the zip, for "beam.com build" of
-#                    Elixir code; default 1)
+#   ELIXIR           0: leave out Elixir (the elixir, eex, ex_unit, iex,
+#                    logger and mix applications and bin/mix in the zip,
+#                    for "beam.com build" of Elixir code and the tools
+#                    mix, iex, elixir and elixirc; default 1)
 #   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
@@ -50,7 +51,7 @@ WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 ELIXIR=${ELIXIR:-1}
 ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
-ELIXIR_APPS="elixir eex logger mix"
+ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
@@ -410,10 +411,10 @@ step_multicall() {
     # know it.
     rm -f "$t/opt/$FLAVOR/driver_tab.c"
     nifs=$(static_nifs)
-    # --wrap=close and --wrap=mkdir: see __wrap_close() and
-    # __wrap_mkdir() in cosmo/beam_com.c.
+    # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
+    # __wrap_mkdir() and __wrap_chown() in cosmo/beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -470,9 +471,11 @@ step_bundle() {
         cp "$ESQLITE/src/esqlite.app.src" "$STAGE/lib/esqlite-$vsn/ebin/esqlite.app"
     fi
 
-    # Elixir: the applications without debug information and docs (8 MB
-    # of beam files become 2.7 MB). mix reads mix.exs for "beam.com build"
-    # only; a program gets the applications that it uses.
+    # Elixir: the applications without debug information, but with their
+    # docs (for h/1 in iex) and attributes. They are for "beam.com build"
+    # of Elixir code, and for the tools of Elixir (mix, iex, elixir,
+    # elixirc; bin/mix is the script of mix). A program gets only the
+    # applications that it uses, without docs.
     if [ "$ELIXIR" = 1 ]; then
         for app in $ELIXIR_APPS; do
             src=$BUILD/elixir-$ELIXIR_VERSION/lib/$app/ebin
@@ -481,7 +484,9 @@ step_bundle() {
             cp "$src"/*.beam "$src/$app.app" "$STAGE/lib/$app-$vsn/ebin/"
         done
         "$ERL_TOP/bin/erl" -noshell -eval \
-            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")]), halt()."
+            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")], [\"Attr\", \"Docs\"]), halt()."
+        mkdir -p "$STAGE/bin"
+        cp "$BUILD/elixir-$ELIXIR_VERSION/bin/mix" "$STAGE/bin/mix"
     fi
 
     # WebAssembly: the wasm application (its NIF is in the emulator).
@@ -545,8 +550,10 @@ step_test() {
     log "Running $OUT"
     "$OUT" version | tee "$BUILD/test.out"
     grep -q "Erlang/OTP  : $OTP_VERSION" "$BUILD/test.out"
+    [ "$ELIXIR" = 1 ] && grep -q "Elixir      : $ELIXIR_VERSION" "$BUILD/test.out"
+    # The commands use the name of their file (beam.com, beam-emu.com).
     "$OUT" help > "$BUILD/test.out"
-    grep -q "usage: beam.com COMMAND" "$BUILD/test.out"
+    grep -q "usage: $(basename "$OUT") COMMAND" "$BUILD/test.out"
     log "Building a program with $OUT build"
     "$OUT" build "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"

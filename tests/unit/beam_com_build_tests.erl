@@ -112,7 +112,11 @@ script_test_() ->
 slashes_test_() ->
     [{"Windows: backslashes are separators",
       ?_assertEqual("bin/x.com", beam_com_build:slashes("bin\\x.com", {unix, windows}))},
-     ?_assertEqual("C:/a/b/c", beam_com_build:slashes("C:\\a\\b/c", {unix, windows})),
+     {"Windows: a drive becomes /C/",
+      [?_assertEqual("/C/a/b/c", beam_com_build:slashes("C:\\a\\b/c", {unix, windows})),
+       ?_assertEqual("/d/x.com", beam_com_build:slashes("d:/x.com", {unix, windows})),
+       ?_assertEqual("/D", beam_com_build:slashes("D:", {unix, windows})),
+       ?_assertEqual("D:x", beam_com_build:slashes("D:x", {unix, windows}))]},
      {"other systems: no change",
       ?_assertEqual("a\\b", beam_com_build:slashes("a\\b", {unix, linux}))}].
 
@@ -793,7 +797,8 @@ entry_test_() ->
               {"the priv directories to copy", fun extract/0},
               {"sys.config for beam_com_script", fun with_extract/0},
               {"behaviours and parse transforms first",
-               {timeout, 60, fun() -> compile_all(Dir) end}}]
+               {timeout, 60, fun() -> compile_all(Dir) end}},
+              {"the docs are not in a program", fun() -> without_docs(Dir) end}]
      end}.
 
 tool(Dir) ->
@@ -923,6 +928,35 @@ compile_all(Dir) ->
     ?assertEqual(non_existing, code:which(zz_beh)),
     ?assertEqual(["mod_a"], beam_com_build:first_names(
                               write(Src, "q.erl", "-module(q).\n-behavior('mod_a').\n"))).
+
+%% An application whose code has docs (as the Elixir applications in
+%% beam.com), and one without them.
+without_docs(Dir) ->
+    Root = filename:join(Dir, "docroot"),
+    Beam = fun(App, Src) ->
+                   Ebin = filename:join([Root, "lib", App ++ "-1.0", "ebin"]),
+                   File = write(Dir, "m_" ++ App ++ ".erl", Src),
+                   {ok, _, B} = compile:file(File, [binary]),
+                   write(Ebin, "m_" ++ App ++ ".beam", B)
+           end,
+    Beam("withdocs", "-module(m_withdocs).\n-moduledoc \"Docs.\".\n-vsn(\"7\").\n"
+         "-export([f/0]).\n-doc \"F.\".\nf() -> ok.\n"),
+    Beam("plain", "-module(m_plain).\n-export([f/0]).\nf() -> ok.\n"),
+    Base = #{withdocs => #{vsn => "1.0"}, plain => #{vsn => "1.0"}},
+    ?assertEqual([], beam_com_build:without_docs([plain], Base, Root)),
+    [{Name, Stripped}] = beam_com_build:without_docs([plain, withdocs], Base, Root),
+    ?assertEqual("lib/withdocs-1.0/ebin/m_withdocs.beam", Name),
+    ?assertMatch({ok, {m_withdocs, [{"Docs", missing_chunk}]}},
+                 beam_lib:chunks(Stripped, ["Docs"], [allow_missing_chunks])),
+    %% No debug information; the attributes and the line numbers stay.
+    ?assertMatch({ok, {m_withdocs, [{debug_info, _}]}},
+                 beam_lib:chunks(Stripped, [debug_info], [allow_missing_chunks])),
+    ?assertMatch({ok, {m_withdocs, [{"Dbgi", missing_chunk}, {"Line", <<_/binary>>}]}},
+                 beam_lib:chunks(Stripped, ["Dbgi", "Line"], [allow_missing_chunks])),
+    {module, m_withdocs} = code:load_binary(m_withdocs, "m_withdocs.beam", Stripped),
+    ?assertEqual(ok, m_withdocs:f()),
+    ?assertEqual("7", proplists:get_value(vsn, m_withdocs:module_info(attributes))),
+    code:purge(m_withdocs), code:delete(m_withdocs).
 
 beam(Module, Main) ->
     Exports = case Main of true -> "-export([main/1]).\nmain(_) -> ok.\n";

@@ -3,6 +3,8 @@
 # "beam.com build".
 # Usage: tests/run.ps1 DIR
 param([string]$Dir = ".")
+# An absolute path: some checks run in another directory.
+$Dir = (Resolve-Path $Dir).Path
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -17,6 +19,9 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     $env:BEAM_COM_VERBOSE = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Resolve-Path $exe).Path
+    # The directory of Push-Location and Set-Location (the process keeps
+    # its own working directory).
+    $psi.WorkingDirectory = (Get-Location).ProviderPath
     # Quote the arguments with spaces or quotes (the rules of
     # CommandLineToArgvW).
     $psi.Arguments = ($Arguments | ForEach-Object {
@@ -197,6 +202,34 @@ if (Test-Path "examples") {
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
 }
 
+# The tools (see tests/run.sh), as the first argument of beam.com, and
+# by the name of the file (mix.com, elixir.com: hard links to beam.com,
+# as a copy). No port programs here (so no Hex or rebar3).
+$escript = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_tools.escript"
+Set-Content -Path $escript -Encoding ascii -Value @(
+    '#!/usr/bin/env escript',
+    '%%! +S 1 -escript main tools_escript',
+    '-module(tools_escript).',
+    '-export([main/1]).',
+    'main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).')
+Check "beam.com" 'escript: \["a","b c"\] 1' @("escript", $escript, "a", "b c")
+Check "beam.com" '(?m)^55\r?$' @("elixir", "-e", "IO.puts(Enum.sum(1..10))")
+foreach ($t in @("mix", "elixir")) {
+    New-Item -ItemType HardLink -Path (Join-Path $Dir "$t.com") -Target (Join-Path $Dir "beam.com") -Force | Out-Null
+}
+if (Test-Path (Join-Path $Dir "elixir.com")) {
+    Check "elixir.com" '(?m)^55\r?$' @("-e", "IO.puts(Enum.sum(1..10))")
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_mix_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    Push-Location $work
+    Check "mix.com" 'creating mix.exs' @("new", "hello")
+    Set-Location hello
+    Check "mix.com" '2 passed' @("test")
+    Pop-Location
+    Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $Dir "mix.com"), (Join-Path $Dir "elixir.com") -ErrorAction SilentlyContinue
+}
+
 # An application with an entry (toolbox): see tests/run.sh. The priv and
 # peer commands run a shell script and a port program; they are tested
 # on the other systems.
@@ -272,7 +305,10 @@ if (Test-Path "examples") {
     if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
-        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
+        # A relative path: the Unix VFS of SQLite takes a path with a drive
+        # (D:\...) as a relative path (README, "Known limits").
+        $db = (Resolve-Path -Relative $Dir) + "/test.db"
+        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape($db)) @($db)
     }
     if (Test-Path (Join-Path $Dir "beam-emu.com")) {
         Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")
