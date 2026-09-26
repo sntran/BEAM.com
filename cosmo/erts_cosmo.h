@@ -16,6 +16,11 @@
 #include <netinet/in.h>
 #include <poll.h>
 
+/* The JIT is C++: the declarations below have C linkage. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Do not include <string.h> or <cosmo.h> here: autoconf tests that
  * undeclared builtins such as strchr() give an error. */
 char *GetProgramExecutableName(void);
@@ -102,6 +107,10 @@ static inline const char *beam_com_exec_path(const char *path)
  */
 int beam_com_exec_helper(const char *path, char *const argv[],
                          char *const envp[]) __attribute__((__weak__));
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __COSMOPOLITAN__ */
 #endif /* BEAM_COM_ERTS_COSMO_H */

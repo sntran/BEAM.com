@@ -1,0 +1,56 @@
+diff --git a/erts/configure b/erts/configure
+index afa96f2..08207b5 100755
+--- a/erts/configure
++++ b/erts/configure
+@@ -26631,7 +26631,9 @@ then :
+       #
+       # On other platforms we'll wrangle sigaltstack(2) to let signals execute
+       # on an alternate stack.
+-      enable_native_stack=yes
++      # A value from the environment wins (BEAM.com: one binary for all
++      # OSes, OpenBSD too).
++      enable_native_stack=${enable_native_stack:-yes}
+      ;;
+ esac
+ 
+diff --git a/erts/configure.ac b/erts/configure.ac
+index c5113a5..ffb7dc5 100644
+--- a/erts/configure.ac
++++ b/erts/configure.ac
+@@ -3210,7 +3210,9 @@ AS_IF([test ${enable_jit} != no],
+       #
+       # On other platforms we'll wrangle sigaltstack(2) to let signals execute
+       # on an alternate stack.
+-      enable_native_stack=yes
++      # A value from the environment wins (BEAM.com: one binary for all
++      # OSes, OpenBSD too).
++      enable_native_stack=${enable_native_stack:-yes}
+     ])
+ 
+   case "$JIT_ARCH" in
+diff --git a/erts/emulator/Makefile.in b/erts/emulator/Makefile.in
+index 3920b99..9ca7134 100644
+--- a/erts/emulator/Makefile.in
++++ b/erts/emulator/Makefile.in
+@@ -1020,7 +1020,9 @@ ASMJIT_FLAGS=-DASMJIT_EMBED=1 \
+ 	-DASMJIT_STATIC=1 \
+ 	-DASMJIT_NO_FOREIGN=1
+ ASMJIT_CXXFLAGS=$(filter-out -Wformat -Wformat=2, $(CXXFLAGS)) @NO_MAYBE_UNINITIALIZED@
+-ASMJIT_PCH_OBJ=$(TTF_DIR)/asmjit/core.h.gch
++# No precompiled header: cosmocc compiles each file for two CPUs, and it
++# cannot make or use one .gch file. The asmjit headers are included.
++ASMJIT_PCH_OBJ=$(TTF_DIR)/asmjit/core.h.stamp
+ ASMJIT_PCH_SRC=$(TTF_DIR)/asmjit/core.h
+ 
+ ifeq ($(JIT_ENABLED),yes)
+@@ -1045,9 +1047,7 @@ $(OBJDIR)/asmjit/%.o: asmjit/%.cpp $(ASMJIT_PCH_OBJ) $(dir $@)
+ ## The dependency on erl_bif_info.c is in order to trigger a rebuild when
+ ## the git sha define on the command line argument changes
+ $(ASMJIT_PCH_OBJ): $(ASMJIT_PCH_SRC) $(ASMJIT_TTF_H) beam/erl_bif_info.c
+-	$(V_CXX) $(ASMJIT_FLAGS) $(INCLUDES)                                  \
+-          $(subst $(space)-O2$(space), $(GEN_OPT_FLGS) , $(CXXFLAGS))         \
+-          -I$(TTF_DIR) -x c++-header -c $< -o $@
++	$(V_at)touch $@
+ 
+ ## We copy all asmjit headers into TTF_DIR in order for cross-compilation
+ ## with pre-compiled header to work.
