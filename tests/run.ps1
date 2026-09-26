@@ -101,6 +101,8 @@ Check "beam.com" 'usage: beam.com COMMAND' @("help")
 Check "beam.com" 'usage: beam.com build INPUT' @("help", "build")
 Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : emu@@stdlib-@@esqlite-@@wasm-' @("version")
 Check "beam.com" 'unknown command nosuch \(see beam.com help\)' @("nosuch") 1
+# The --strace flag of the Cosmopolitan runtime (README, "Debugging").
+Check "beam.com" 'SYS @@Erlang/OTP  : ' @("--strace", "version")
 
 # Releases made with rebar3 and added with zip (by CI).
 foreach ($app in $apps) {

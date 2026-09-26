@@ -192,6 +192,38 @@ Other rules:
 
 ## How it works
 
+### Nothing is extracted
+
+BEAM.com runs the code where it is: in the zip of its own file. ERTS
+reads the `.beam` files, the boot script and the configuration from
+`/zip/...`, the zip file system of Cosmopolitan, as from a directory.
+There is no install step and no cache directory.
+
+Tools such as [Burrito](https://github.com/burrito-elixir/burrito) and
+Bakeware work in a different way: they unpack ERTS and the release to a
+directory on the first run (one for each version), and then run the
+files from there.
+
+| | BEAM.com | Burrito, Bakeware |
+|---|---|---|
+| First start | the same as the next ones | unpacks to disk first |
+| Files left on disk | none (see below) | the unpacked release, until you remove it |
+| One file for | all the platforms and CPUs | one platform and CPU |
+| NIFs | only the static NIFs in `beam.com` | any NIF of the release |
+| Files in `priv/` | read from the zip; executables in `priv/` cannot run | normal files |
+| The zip | read-only at run time | normal files |
+
+What BEAM.com writes, and removes:
+
+- When you start an APE file with `sh`, its shell header writes the
+  small APE loader to `$TMPDIR/.ape-1.10` on the first run (Linux,
+  macOS and the BSDs, not Windows). It stays there, for all APE files
+  of that version. A Linux system with the loader registered in
+  `binfmt_misc` does not need this.
+- On Windows, the resolver settings and the certificates of Windows go
+  to two files in the temp directory at start, which are removed at
+  exit (see "Crypto and TLS").
+
 ### One file, many programs
 
 An OTP installation has more than one executable. ERTS starts
@@ -256,6 +288,14 @@ builder ([`apps/beam_com/src/beam_com_zip.erl`](apps/beam_com/src/beam_com_zip.e
 keeps the bytes up to the first entry that it removes, moves the entries
 after that point that it keeps, adds the new entries, and writes a new
 central directory with the new offsets.
+
+## Debugging
+
+- `BEAM_COM_VERBOSE=1` shows the arguments that BEAM.com gives ERTS.
+- The Cosmopolitan runtime flags work before all other arguments, on
+  every platform: `beam.com --strace version` logs each system call
+  (also on Windows and macOS), and `--ftrace` logs each C function
+  call. The log goes to standard error.
 
 ## Build
 
