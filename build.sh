@@ -273,8 +273,8 @@ step_wasm() {
     # Notes on the options:
     #  - WASM_DISABLE_WRITE_GS_BASE: on x86_64, WAMR writes the GS base
     #    register, and Cosmopolitan keeps its thread-local storage there.
-    #  - WASM_HAVE_MREMAP=0: Cosmopolitan declares mremap(), but does not
-    #    define it (WAMR's CMake finds the declaration).
+    #  - WASM_HAVE_MREMAP=0: Cosmopolitan has no mremap() (only
+    #    cosmo_mremap()). WAMR then uses its own (mremap.c).
     #  - WASM_DISABLE_HW_BOUND_CHECK: no guard pages and signal handlers
     #    for the linear memory (the Windows emulation of signals).
     #  - SIMD needs SIMDe, which is not in the WAMR repository.
