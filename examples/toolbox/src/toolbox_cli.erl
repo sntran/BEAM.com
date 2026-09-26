@@ -17,7 +17,7 @@ main(["priv"]) ->
 main(["peer"]) ->
     {ok, [[Exe]]} = init:get_argument(beam_com_exe),
     Port = open_port({spawn_executable, Exe},
-                     [{arg0, "erl"}, {args, ["-noinput", "-eval",
+                     [{env, [{"BEAM_COM_ERL", "1"}]}, {args, ["-noinput", "-eval",
                        "io:format(\"peer: ~p ~p~n\", [code:which(toolbox_english) =/= non_existing,"
                        " erlang:system_info(emu_flavor)]), halt()."]},
                       exit_status, stderr_to_stdout, binary]),
