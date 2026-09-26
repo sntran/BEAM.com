@@ -348,6 +348,16 @@ static void apply_sandbox(int helper)
         if (unveil("/dev/urandom", "r") == -1)
             sandbox_error(helper, "unveil", "/dev/urandom");
         sandbox_unveil_loader(helper);
+#ifdef BEAMASM
+        /* The JIT maps its code two times (W^X) with shm_open(), whose
+         * file Cosmopolitan makes in /dev/shm on Linux, else in /tmp
+         * (libc/calls/shm_path_np.c). Without it, asmjit maps the code
+         * writable and executable, which OpenBSD refuses: "Cannot
+         * allocate executable memory". */
+        if (unveil(IsLinux() && access("/dev/shm", F_OK) == 0 ? "/dev/shm" : "/tmp",
+                   "rwc") == -1)
+            sandbox_error(helper, "unveil", "(the directory of shm_open)");
+#endif
         for (i = 0; i < rules.n; i++)
             sandbox_unveil(helper, rules.v[i]);
         if (unveil(NULL, NULL) == -1)

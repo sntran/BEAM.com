@@ -186,12 +186,17 @@ beam.com build server.erl --pledge "inet dns" --unveil "r /etc/ssl" --unveil "rw
   always added: ERTS needs them to start. `beam.com` (the JIT)
   also adds `prot_exec`: without it, the JIT cannot allocate memory for
   its code and ERTS stops at the start ("Cannot allocate executable
-  memory"). `beam-emu.com` does not need it.
+  memory"). `beam-emu.com` does not need it. On OpenBSD, the JIT also
+  needs `cpath wpath` under a pledge: it maps its code with
+  `shm_open()`, which creates a file in `/tmp` (the kernel stops the
+  program without them); or use `beam-emu.com`.
   `beam.com help build` lists the promises.
 - `--unveil "PERMISSIONS PATH"` (more than one): the files and
   directories that the program can see, with the permissions `r`, `w`,
   `x` and `c` (create). All other paths are hidden. BEAM.com adds its own
-  file, `/dev/null`, `/dev/urandom` and the APE loader.
+  file, `/dev/null`, `/dev/urandom`, the APE loader, and for the JIT the
+  directory of `shm_open()` (`/dev/shm` on Linux, else `/tmp`): without
+  it, the JIT cannot keep W^X, and OpenBSD stops it.
 
 A forbidden system call returns an error: Erlang code gets `{error,
 eperm}` (pledge) or `{error, eacces}` (unveil). Without `proc exec`,
