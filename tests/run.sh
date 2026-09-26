@@ -55,12 +55,23 @@ check() {
     BEAM_COM_VERBOSE=1 $runner "$dir/$name" "$@" > "$tmp" 2>&1 &
     pid=$!
     rm -f "$tmp.diag"
-    ( sleep "$limit"; diagnose "$pid" > "$tmp.diag" 2>&1; kill -9 "$pid" ) \
-        >/dev/null 2>&1 &
+    # The watchdog ends by itself when the program ends (a killed "sleep"
+    # would stay behind).
+    (
+        i=0
+        while kill -0 "$pid" 2>/dev/null && [ $i -lt "$limit" ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            diagnose "$pid" > "$tmp.diag" 2>&1
+            kill -9 "$pid"
+        fi
+    ) >/dev/null 2>&1 &
     watchdog=$!
     wait "$pid"
     rc=$?
-    kill "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
     # The output stays in the file: in a shell variable, a large output is
     # too long for an external printf (OpenBSD ksh). A long output is
     # shortened in the log; the checks read the whole file.
