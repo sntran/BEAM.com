@@ -185,11 +185,19 @@ index bdd6528..5dc0dfb 100644
      res = erts_sys_explicit_8bit_getenv("BINDIR", bindir, &bindirsz);
      if (res == 0) {
          erts_exit(1, "Environment variable BINDIR is not set\n");
-@@ -1657,6 +1684,12 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1657,6 +1684,20 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
      (void) setsid();
  #endif
  
 +#ifdef __COSMOPOLITAN__
++        /* BEAM.com: close the end of the emulator. erl_child_setup gets
++         * EOF on its end when the emulator exits, and then it exits too.
++         * If this child kept the end of the emulator open, it would not. */
++        if (fds[0] != 3)
++            close(fds[0]);
++        if (fds[1] != 3)
++            close(fds[1]);
++
 +        /* BEAM.com: erl_child_setup is linked into this executable. */
 +        if (beam_com_exec_helper && beam_com_is_zip(child_setup_prog))
 +            beam_com_exec_helper(child_setup_prog, cs_argv, NULL);

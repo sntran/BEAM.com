@@ -13,6 +13,7 @@ main() ->
     io:format("  ERTS version: ~s~n", [erlang:system_info(version)]),
     io:format("  OS type     : ~p/~p~n", [Family, Name]),
     io:format("  Architecture: ~s~n", [erlang:system_info(system_architecture)]),
+    io:format("  Emulator    : ~s~n", [erlang:system_info(emu_flavor)]),
     io:format("  Schedulers  : ~p~n", [erlang:system_info(schedulers)]),
     io:format("  Release     : ~p~n", [release()]),
     io:format("  Arguments   : ~p~n", [init:get_plain_arguments()]),

@@ -24,6 +24,9 @@
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
 #   AR               Archiver (default cosmoar; use x86_64-linux-cosmo-ar
 #                    with x86_64-unknown-cosmo-cc)
+#   CXX              C++ compiler, for the JIT (default: CC with c++ for cc)
+#   JIT              1: build the JIT (BeamAsm) instead of the interpreter
+#                    (the JIT probe; default 0)
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
 set -eu
@@ -44,6 +47,9 @@ BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
 AR=${AR:-cosmoar}
+CXX=${CXX:-${CC%cc}c++}
+JIT=${JIT:-0}
+if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com build" copies the ones that
@@ -141,8 +147,18 @@ step_configure() {
     #    the NIFs link normal programs (no -shared).
     # The crypto and asn1 NIFs are linked into the emulator
     # (--enable-static-nifs), so libcrypto must be linked into it too.
+    # The JIT: the Erlang code does not use the native stack. That needs
+    # signal handlers on an alternate stack, and OpenBSD does not allow it
+    # (see patches/otp/0002-jit.patch).
+    if [ "$JIT" = 1 ]; then
+        jit=--enable-jit
+        enable_native_stack=no
+        export enable_native_stack
+    else
+        jit=--disable-jit
+    fi
     ./configure \
-        CC="$CC" AR="$AR" RANLIB=true LIBS="$OPENSSL/lib/libcrypto.a" \
+        CC="$CC" CXX="$CXX" AR="$AR" RANLIB=true LIBS="$OPENSSL/lib/libcrypto.a" \
         DED_LD="$ROOT/cosmo/noshared" DED_LDFLAGS="-no-pie" \
         DED_LD_FLAG_RUNTIME_LIBRARY_PATH="-Wl,-rpath," \
         CFLAGS="-O2 -g -DZSTD_DISABLE_ASM -include $ROOT/cosmo/erts_cosmo.h" \
@@ -151,7 +167,7 @@ step_configure() {
         erts_cv_linux_thp=no \
         erl_cv_clock_gettime_monotonic_default_resolution=CLOCK_MONOTONIC \
         erl_cv_clock_gettime_monotonic_high_resolution=CLOCK_MONOTONIC \
-        --disable-jit \
+        $jit \
         --disable-kernel-poll \
         --disable-esock \
         --disable-security-hardening-flags \
@@ -371,17 +387,17 @@ step_make() {
 step_multicall() {
     log "Linking the multi-call emulator"
     t=$(target)
-    objdir=obj/$t/opt/emu
+    objdir=obj/$t/opt/$FLAVOR
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
-    make -f "$t/Makefile" TYPE=opt FLAVOR=emu $objs
-    rm -f "$ERL_TOP/bin/$t/beam.emu"
+    make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
+    rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it.
-    rm -f "$t/opt/emu/driver_tab.c"
+    rm -f "$t/opt/$FLAVOR/driver_tab.c"
     nifs=$(static_nifs)
-    make -f "$t/Makefile" TYPE=opt FLAVOR=emu EMU_LDFLAGS="$objs" \
-        ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.emu"
+    make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR EMU_LDFLAGS="$objs" \
+        ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
 step_release() {
@@ -457,7 +473,18 @@ step_bundle() {
     cp "$ROOT/hello/sys.config" "$ROOT/hello/vm.args" "$rel/"
     echo "$erts_vsn 0.1.0" > "$STAGE/releases/start_erl.data"
 
-    cp "$ERL_TOP/bin/$t/beam.emu" "$OUT"
+    emu=$ERL_TOP/bin/$t/beam.$FLAVOR
+    if [ "$(od -An -c -N4 "$emu" | tr -d ' ')" = '177ELF' ]; then
+        # A compiler for one CPU (x86_64-unknown-cosmo-cc) makes an ELF
+        # file. apelink makes it an APE file, with the zip of the ELF.
+        case $(target) in
+            aarch64-*) loader=$COSMOCC/bin/ape-aarch64.elf ;;
+            *) loader=$COSMOCC/bin/ape-x86_64.elf ;;
+        esac
+        apelink -l "$loader" -o "$OUT" "$emu"
+    else
+        cp "$emu" "$OUT"
+    fi
     chmod +x "$OUT"
     (cd "$STAGE" && zip -q -r -9 "$OUT" bin lib releases)
     ls -l "$OUT"

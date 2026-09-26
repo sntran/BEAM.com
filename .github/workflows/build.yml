@@ -22,8 +22,18 @@ jobs:
           - { name: Build, sqlite: "0", out: beam.com }
           # The SQLite probe (see docs/ROADMAP.md).
           - { name: Build with SQLite, sqlite: "1", out: beam-sqlite.com }
+          # The JIT probe: x86_64 only for now (see docs/ROADMAP.md).
+          - name: Build with JIT (x86_64)
+            sqlite: "0"
+            jit: "1"
+            out: beam-jit.com
+            cc: x86_64-unknown-cosmo-cc
+            ar: x86_64-linux-cosmo-ar
     env:
       SQLITE: ${{ matrix.sqlite }}
+      JIT: ${{ matrix.jit || '0' }}
+      CC: ${{ matrix.cc || 'cosmocc' }}
+      AR: ${{ matrix.ar || 'cosmoar' }}
       OUT: ${{ github.workspace }}/build/${{ matrix.out }}
     steps:
       - uses: actions/checkout@v7
@@ -41,7 +51,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build/openssl
-          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}
+          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ matrix.cc || 'cosmocc' }}
 
       - name: Register the APE loader
         # Lets the kernel run APE files (the OTP build runs the tools it
@@ -64,19 +74,19 @@ jobs:
           if-no-files-found: error
 
       - uses: actions/setup-go@v7
-        if: matrix.sqlite == '0'
+        if: matrix.out == 'beam.com'
         with:
           go-version: stable
           cache: false
 
       - name: Build the WASI example in Go
-        if: matrix.sqlite == '0'
+        if: matrix.out == 'beam.com'
         run: |
           cd examples/wasm/hello_go
           GOOS=wasip1 GOARCH=wasm go build -o ../../../build/hello_go.wasm .
 
       - name: Upload the WASI example
-        if: matrix.sqlite == '0'
+        if: matrix.out == 'beam.com'
         uses: actions/upload-artifact@v7
         with:
           name: hello_go.wasm
@@ -84,7 +94,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload the APE loader
-        if: matrix.sqlite == '0'
+        if: matrix.out == 'beam.com'
         # NetBSD and OpenBSD cannot run APE files through sh.
         uses: actions/upload-artifact@v7
         with:

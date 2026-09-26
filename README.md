@@ -95,6 +95,14 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `dirs`.
 
+### JIT (probe)
+
+`JIT=1 CC=x86_64-unknown-cosmo-cc AR=x86_64-linux-cosmo-ar ./build.sh`
+builds `beam.com` with BeamAsm, the JIT of OTP, for x86_64 only. CI makes
+it as `beam-jit.com` and tests it on every x86_64 platform. The aarch64
+half and one fat file with both are the next steps
+([`docs/JIT.md`](docs/JIT.md)).
+
 ### SQLite (probe)
 
 Build with `SQLITE=1 ./build.sh` to link SQLite 3.53.4 (the
@@ -335,7 +343,9 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 ## Known limits
 
-- No JIT, no `socket` NIF, no NIFs or drivers in shared objects
+- The default `beam.com` has no JIT (the JIT is an x86_64-only probe,
+  `beam-jit.com`).
+- No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
   work (`crypto`, `asn1`, `wasm`, and `esqlite` with `SQLITE=1`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no

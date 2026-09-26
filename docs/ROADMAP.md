@@ -62,21 +62,46 @@ component model is designed so that a host can build it on a core
 WebAssembly engine (as `jco` does in JavaScript), so a component layer
 can be added on WAMR, or the runtime can be replaced.
 
+### JIT (build flag `JIT=1`, x86_64 only)
+
+- BeamAsm works in an x86_64-only `beam-jit.com`, built with
+  `x86_64-unknown-cosmo-cc`, on Linux, macOS x86_64, Windows, FreeBSD,
+  NetBSD and OpenBSD 7.3 (tested in CI).
+- 28.7 MB for `beam-jit.com`, about 20 MB for its programs.
+- The native stack for Erlang code is off, and asmjit has no
+  precompiled header. See `docs/JIT.md`.
+
 ## Next, in this order
 
-### 1. JIT (BeamAsm) probe
+### 1. JIT (BeamAsm): the aarch64 half and one fat file
 
-- The two CPU backends (x86_64 and aarch64) must be selected per CPU in
-  the fat build (wrapper files and the generated files for both).
-- Executable memory must be selected at run time for each OS (dual
-  mapping or single mapping). OpenBSD enforces W^X.
-- Good: Cosmopolitan uses the System V calling convention on every OS,
-  so the Unix path of BeamAsm is also correct on Windows.
-- Risk: the native stack and `sigaltstack` under the Windows signal
-  emulation.
-- Fallback: two files, `beam.com` (JIT) and `beam-emu.com` (interpreter).
-- Steps: x86_64 JIT on Linux; the other x86_64 platforms; the aarch64
-  half; the fallback.
+The x86_64 probe works on every x86_64 platform (see "Probe results"
+and [`docs/JIT.md`](JIT.md)). Next, from the design in `docs/JIT.md`:
+
+- (c) the aarch64 JIT alone: the ARM cache-instruction checks of
+  configure, `MAP_JIT` or dual mapping on Apple Silicon (the biggest
+  risk), Linux aarch64.
+- (d) one fat file with both backends: both sets of generated files, and
+  wrapper files that select the backend with `#if`.
+- (e) the fallback: `beam.com` (JIT) and `beam-emu.com` (interpreter).
+- Dual mapping (W^X) in asmjit under Cosmopolitan: memfd on Linux, a
+  file elsewhere (today it falls back to RWX memory).
+
+### 2. pledge() and unveil()
+
+Cosmopolitan has `pledge()` (Linux with seccomp-BPF, and OpenBSD) and
+`unveil()` (Linux with Landlock, and OpenBSD). A program could give up
+what it does not need after its start, as OpenBSD daemons do.
+
+- A static NIF with `beam_com:pledge(Promises)` and
+  `beam_com:unveil(Path, Permissions)`, which return `{error, enotsup}`
+  on the other systems.
+- The mode that returns `EPERM` (not the one that kills the process), so
+  a forbidden call is an Erlang error.
+- To check first: that the filter covers all the threads of the VM, and
+  which promises the VM needs at run time (for example `prot_exec` for
+  the JIT, `proc exec` for port programs).
+- Tests on Linux and on OpenBSD in CI.
 
 ### Later: more for `beam.com build`
 

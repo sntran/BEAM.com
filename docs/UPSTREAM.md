@@ -680,3 +680,31 @@ the recipe runs once and makes all the targets.
 **Possible upstream fix.** The same grouped target, or one stamp file
 as the target of the recipe, with the libraries depending on it (this
 also works with older make).
+
+### O12. The `erl_child_setup` child keeps the socket end of the emulator
+
+**Status:** OTP 29.1.1, `erts/emulator/sys/unix/sys_drivers.c`
+(`forker_start()`). Seen with BEAM.com on macOS (arm64 and x86_64).
+
+**Symptom.** After each program run, `erl_child_setup` stayed, with
+PPID 1 (50 processes after one test run on the CI runner). Linux and
+the BSDs did not show this.
+
+**Cause.** `forker_start()` makes a socket pair, forks, and in the
+child moves `fds[1]` to fd 3 and executes `erl_child_setup`. The child
+does not close `fds[0]`, the end of the emulator. `erl_child_setup`
+exits when it reads EOF on fd 3, which comes only when all copies of
+`fds[0]` are closed. Upstream, `erl_child_setup` calls `closefrom(4)`
+first, which closes the copy. On macOS under Cosmopolitan the copy
+stayed open anyway. (We did not find why: Cosmopolitan's `closefrom()`
+closes each fd up to `RLIMIT_NOFILE` on XNU, and the `execve()` of an
+APE file on XNU goes through the APE loader.)
+
+**Fix in BEAM.com.** The child closes `fds[0]` (and the original
+`fds[1]`) before it executes `erl_child_setup`. After this, no process
+stays on any platform. `tests/run.sh` fails when a process of the tests
+is still running at the end.
+
+**Possible upstream fix.** The same two `close()` calls. They do not
+depend on `closefrom()` or on the `/dev/fd` loop, and they cost
+nothing.

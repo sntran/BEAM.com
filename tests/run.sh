@@ -15,6 +15,36 @@ tmp=${TMPDIR:-/tmp}/beam_com_test.$$
 fail=0
 failed=
 
+# The processes of the tests that still run (for diagnostics).
+our_processes() {
+    # Zombies are left out: in a container, PID 1 may not collect them.
+    ps -A -o pid,ppid,stat,command 2>/dev/null | grep -v -e grep -e '\.sh' |
+        awk '$3 !~ /^Z/' | grep -e "$dir/[^ ]*\.com" -e '\.ape-' || true
+}
+
+# Called by the watchdog before it kills a program: the processes, and
+# the stack traces where the system has a tool for it.
+diagnose() {
+    echo "--- processes"
+    our_processes
+    for q in "$1" $(pgrep -P "$1" 2>/dev/null); do
+        if command -v sample >/dev/null 2>&1; then
+            echo "--- sample $q (macOS)"
+            sample "$q" 1 2>&1 | head -200
+        elif command -v procstat >/dev/null 2>&1; then
+            echo "--- procstat -kk $q (FreeBSD)"
+            procstat -kk "$q" 2>&1 | head -100
+        elif [ -d "/proc/$q/task" ]; then
+            echo "--- threads of $q (Linux: name, state, wait channel)"
+            for t in /proc/$q/task/*; do
+                printf '%s %s %s\n' "$(cat $t/comm 2>/dev/null)" \
+                    "$(awk '{print $3}' $t/stat 2>/dev/null)" \
+                    "$(cat $t/wchan 2>/dev/null)"
+            done | sort | uniq -c
+        fi
+    done
+}
+
 check() {
     name=$1 pattern=$2
     shift 2
@@ -25,17 +55,38 @@ check() {
     [ "$runner" = sh ] || chmod +x "$runner"
     BEAM_COM_VERBOSE=1 $runner "$dir/$name" "$@" > "$tmp" 2>&1 &
     pid=$!
-    ( sleep "$limit"; kill -9 "$pid" ) >/dev/null 2>&1 &
+    rm -f "$tmp.diag"
+    # The watchdog ends by itself when the program ends (a killed "sleep"
+    # would stay behind).
+    (
+        i=0
+        while kill -0 "$pid" 2>/dev/null && [ $i -lt "$limit" ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            diagnose "$pid" > "$tmp.diag" 2>&1
+            kill -9 "$pid"
+        fi
+    ) >/dev/null 2>&1 &
     watchdog=$!
     wait "$pid"
     rc=$?
-    kill "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
     # The output stays in the file: in a shell variable, a large output is
-    # too long for an external printf (OpenBSD ksh).
-    cat "$tmp"
+    # too long for an external printf (OpenBSD ksh). A long output is
+    # shortened in the log; the checks read the whole file.
+    lines=$(wc -l < "$tmp")
+    if [ "$lines" -gt 200 ]; then
+        head -n 40 "$tmp"
+        echo "... ($lines lines) ..."
+        tail -n 40 "$tmp"
+    else
+        cat "$tmp"
+    fi
     if [ $rc -eq 137 ]; then
         echo "FAIL: $name did not stop in $limit seconds"
-        ps -ef 2>/dev/null | grep -v grep | grep -e "$name" -e beam || true
+        cat "$tmp.diag" 2>/dev/null
     fi
     if [ $rc -ne "$expect" ]; then
         echo "FAIL: $name exited with $rc (expected $expect)"
@@ -150,6 +201,34 @@ if [ -d examples ]; then
     [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
+# The JIT probe: beam-jit.com is x86_64 only.
+case $(uname -m) in
+    x86_64|amd64) jit_cpu=1 ;;
+    *) jit_cpu=0 ;;
+esac
+if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
+    check beam-jit.com 'Emulator    : jit@@Arguments   : \["hello","world"\]' hello world
+    if [ -d examples ]; then
+        check beam-jit.com 'wrote .*hashsum.jit.com' \
+            build examples/hashsum.erl -o "$dir/hashsum.jit.com"
+        [ -f "$dir/hashsum.jit.com" ] && check hashsum.jit.com "$hashsum" abc
+        check beam-jit.com 'wrote .*greeter.jit.com' \
+            build examples/greeter -o "$dir/greeter.jit.com"
+        [ -f "$dir/greeter.jit.com" ] && check greeter.jit.com "$greeter"
+        check beam-jit.com 'wrote .*wasm_tests.jit.com' \
+            build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.jit.com"
+        [ -f "$dir/wasm_tests.jit.com" ] && check wasm_tests.jit.com 'wasm_tests: all [0-9]* passed'
+        check beam-jit.com 'wrote .*script_check.jit.com' \
+            build tests/programs/script_check.erl -o "$dir/script_check.jit.com"
+        if [ -f "$dir/script_check.jit.com" ]; then
+            check script_check.jit.com 'argc 2@@arg b c$@@arg 日本$' args "b c" 日本
+            check_status 127 script_check.jit.com 'exception error: {boom,42}' raise
+            check_status 3 script_check.jit.com 'halting 3' halt 3
+            check script_check.jit.com '^line 100000$@@^last line$' big
+        fi
+    fi
+fi
+
 # The SQLite probe: beam-sqlite.com (built with SQLITE=1).
 sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
@@ -161,7 +240,35 @@ if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
         check sqlite_check.b.com "${sqlite}$dir/test.db" "$dir/test.db"
     fi
 fi
-rm -f "$tmp"
+rm -f "$tmp" "$tmp.diag"
+# Processes that a test left behind (helper programs must stop with the
+# emulator).
+# No process of the tests may stay (for example erl_child_setup, see
+# docs/UPSTREAM.md O12). A helper can need a moment to see the end of
+# its program.
+i=0
+while [ -n "$(our_processes)" ] && [ $i -lt 5 ]; do
+    sleep 1
+    i=$((i + 1))
+done
+left=$(our_processes)
+if [ -n "$left" ]; then
+    fail=1
+    failed="$failed
+  processes still running after the tests"
+    echo "==> Processes still running after the tests:"
+    printf '%s\n' "$left"
+    # The open files and the stack of the first one.
+    first=$(printf '%s\n' "$left" | awk 'NR == 1 {print $1}')
+    if command -v lsof >/dev/null 2>&1; then
+        echo "--- lsof -p $first"
+        lsof -p "$first" 2>&1 | head -40
+    fi
+    if command -v sample >/dev/null 2>&1; then
+        echo "--- sample $first (macOS)"
+        sample "$first" 1 2>&1 | head -80
+    fi
+fi
 if [ $fail -ne 0 ]; then
     echo "==> Failed checks:$failed"
 else
