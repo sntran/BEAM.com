@@ -35,6 +35,7 @@
 /* Cosmopolitan internals used for the Windows setup (see below). */
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
 #include "libc/nt/dll.h"                    /* LoadLibrary(), GetProcAddress() */
+#include "libc/nt/runtime.h"                /* ExitProcess() */
 #include "libc/runtime/runtime.h"           /* __get_tmpdir() */
 #include "net/http/escape.h"                /* EncodeBase64() */
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
@@ -58,10 +59,38 @@ struct arglist {
     int cap;
 };
 
+/*
+ * On Windows, Cosmopolitan's _Exit() gives Windows the POSIX wait status
+ * (status << 8): cmd, PowerShell and other Windows programs then see 256
+ * for status 1 (a Cosmopolitan parent decodes it). BEAM.com gives
+ * Windows the status itself. For exit(), the status is given after the
+ * exit handlers, in the last destructor (priority 101 runs last).
+ */
+static int windows_exit_status = -1;
+
+__attribute__((__destructor__(101))) static void windows_exit(void)
+{
+    if (windows_exit_status >= 0)
+        ExitProcess(windows_exit_status);
+}
+
+void beam_com_exit(int status, int flush)
+{
+    status &= 255;
+    if (beam_com_is_windows()) {
+        if (!flush)
+            ExitProcess(status);
+        windows_exit_status = status;
+    }
+    if (flush)
+        exit(status);
+    _exit(status);
+}
+
 static void die(const char *what)
 {
     fprintf(stderr, "beam.com: %s: %s\n", what, strerror(errno));
-    exit(127);
+    beam_com_exit(127, 1);
 }
 
 static void push(struct arglist *l, char *arg)
@@ -190,7 +219,7 @@ static int read_release(struct arglist *out)
     if (fscanf(f, "%63s %255s", erts_vsn, rel_vsn) != 2) {
         fclose(f);
         fprintf(stderr, "beam.com: bad " BEAM_COM_RELEASES "/start_erl.data\n");
-        exit(127);
+        beam_com_exit(127, 1);
     }
     fclose(f);
 
@@ -203,7 +232,7 @@ static int read_release(struct arglist *out)
     path = join(dir, "start", ".boot");
     if (!file_exists(path)) {
         fprintf(stderr, "beam.com: %s not found\n", path);
-        exit(127);
+        beam_com_exit(127, 1);
     }
     push(out, "-boot");
     push(out, join(dir, "start", ""));
