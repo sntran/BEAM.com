@@ -10,7 +10,7 @@
 %%   bench NAME MILLISECONDS
 %%
 %% The work is the same for each build, so the times of a build with the
-%% interpreter (beam.com) and with the JIT (beam-jit.com) can be compared
+%% interpreter (beam-emu.com) and with the JIT (beam.com) can be compared
 %% on the same machine. tests/bench/run.sh runs it and makes a table.
 -module(bench).
 -export([main/1]).

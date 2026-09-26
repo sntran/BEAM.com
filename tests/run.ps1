@@ -100,7 +100,7 @@ $apps = @("greeter", "crypto_check", "tls_check")
 Check "beam.com" 'usage: beam.com COMMAND@@build INPUT@@version' @()
 Check "beam.com" 'usage: beam.com COMMAND' @("help")
 Check "beam.com" 'usage: beam.com build INPUT' @("help", "build")
-Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : emu@@stdlib-@@esqlite-@@wasm-' @("version")
+Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-' @("version")
 Check "beam.com" 'unknown command nosuch \(see beam.com help\)' @("nosuch") 1
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
 Check "beam.com" 'SYS @@Erlang/OTP  : ' @("--strace", "version")
@@ -182,32 +182,32 @@ if (Test-Path "examples") {
     }
 }
 
-# The JIT: beam-jit.com has the x86 and the arm backend.
-if (Test-Path (Join-Path $Dir "beam-jit.com")) {
-    Check "beam-jit.com" 'Emulator    : jit@@OS type     : unix/windows' @("version")
+# The interpreter: beam-emu.com (beam.com has the JIT).
+if (Test-Path (Join-Path $Dir "beam-emu.com")) {
+    Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("version")
     if (Test-Path "examples") {
-        Check "beam-jit.com" 'wrote .*hashsum.jit.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.jit.com")
-        if (Test-Path (Join-Path $Dir "hashsum.jit.com")) {
-            Check "hashsum.jit.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
+        Check "beam-emu.com" 'wrote .*hashsum.emu.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.emu.com")
+        if (Test-Path (Join-Path $Dir "hashsum.emu.com")) {
+            Check "hashsum.emu.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
         }
-        Check "beam-jit.com" 'wrote .*greeter.jit.com' @("build", "examples/greeter", "-o", "$Dir/greeter.jit.com")
-        if (Test-Path (Join-Path $Dir "greeter.jit.com")) {
-            Check "greeter.jit.com" $patterns["greeter"] @()
+        Check "beam-emu.com" 'wrote .*greeter.emu.com' @("build", "examples/greeter", "-o", "$Dir/greeter.emu.com")
+        if (Test-Path (Join-Path $Dir "greeter.emu.com")) {
+            Check "greeter.emu.com" $patterns["greeter"] @()
         }
-        Check "beam-jit.com" 'wrote .*wasm_tests.jit.com' @("build", "tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.jit.com")
-        if (Test-Path (Join-Path $Dir "wasm_tests.jit.com")) {
-            Check "wasm_tests.jit.com" 'wasm_tests: all [0-9]+ passed' @()
+        Check "beam-emu.com" 'wrote .*wasm_tests.emu.com' @("build", "tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.emu.com")
+        if (Test-Path (Join-Path $Dir "wasm_tests.emu.com")) {
+            Check "wasm_tests.emu.com" 'wasm_tests: all [0-9]+ passed' @()
         }
-        Check "beam-jit.com" 'wrote .*script_check.jit.com' @("build", "tests/programs/script_check.erl", "-o", "$Dir/script_check.jit.com")
-        if (Test-Path (Join-Path $Dir "script_check.jit.com")) {
-            Check "script_check.jit.com" '(?m)argc 2@@(?m)^arg b c$@@(?m)^arg 日本$' @("args", "b c", "日本")
-            Check "script_check.jit.com" 'exception error: \{boom,42\}' @("raise") 127
-            Check "script_check.jit.com" 'halting 3' @("halt", "3") 3
-            Check "script_check.jit.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
+        Check "beam-emu.com" 'wrote .*script_check.emu.com' @("build", "tests/programs/script_check.erl", "-o", "$Dir/script_check.emu.com")
+        if (Test-Path (Join-Path $Dir "script_check.emu.com")) {
+            Check "script_check.emu.com" '(?m)argc 2@@(?m)^arg b c$@@(?m)^arg 日本$' @("args", "b c", "日本")
+            Check "script_check.emu.com" 'exception error: \{boom,42\}' @("raise") 127
+            Check "script_check.emu.com" 'halting 3' @("halt", "3") 3
+            Check "script_check.emu.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
         }
-        Check "beam-jit.com" 'wrote .*crypto_check.jit.com' @("build", "examples/crypto_check", "-o", "$Dir/crypto_check.jit.com")
-        if (Test-Path (Join-Path $Dir "crypto_check.jit.com")) {
-            Check "crypto_check.jit.com" $patterns["crypto_check"] @()
+        Check "beam-emu.com" 'wrote .*crypto_check.emu.com' @("build", "examples/crypto_check", "-o", "$Dir/crypto_check.emu.com")
+        if (Test-Path (Join-Path $Dir "crypto_check.emu.com")) {
+            Check "crypto_check.emu.com" $patterns["crypto_check"] @()
         }
     }
 }
@@ -221,10 +221,10 @@ if (Test-Path "examples") {
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
         Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
     }
-    if (Test-Path (Join-Path $Dir "beam-jit.com")) {
-        Check "beam-jit.com" 'wrote .*sqlite_check.jit.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.jit.com")
-        if (Test-Path (Join-Path $Dir "sqlite_check.jit.com")) {
-            Check "sqlite_check.jit.com" ($sqlite + ':memory:') @()
+    if (Test-Path (Join-Path $Dir "beam-emu.com")) {
+        Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")
+        if (Test-Path (Join-Path $Dir "sqlite_check.emu.com")) {
+            Check "sqlite_check.emu.com" ($sqlite + ':memory:') @()
         }
     }
 }

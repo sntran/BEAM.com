@@ -26,8 +26,8 @@
 #   AR               Archiver (default cosmoar; use x86_64-linux-cosmo-ar
 #                    with x86_64-unknown-cosmo-cc)
 #   CXX              C++ compiler, for the JIT (default: CC with c++ for cc)
-#   JIT              1: build the JIT (BeamAsm) instead of the interpreter
-#                    (default 0). With cosmocc, the file has both backends.
+#   JIT              0: build the interpreter instead of the JIT (BeamAsm)
+#                    (default 1). With cosmocc, the JIT has both backends.
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
 set -eu
@@ -49,7 +49,7 @@ COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
 AR=${AR:-cosmoar}
 CXX=${CXX:-${CC%cc}c++}
-JIT=${JIT:-0}
+JIT=${JIT:-1}
 if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 

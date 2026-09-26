@@ -37,7 +37,7 @@ $ sh ./beam.com version
 beam.com 0.1.0
   Erlang/OTP  : 29.1.1
   ERTS        : 17.1
-  Emulator    : emu
+  Emulator    : jit
   OS type     : unix/linux
   Architecture: x86_64-pc-linux-gnu
   Schedulers  : 4
@@ -137,14 +137,21 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `dirs`.
 
-### JIT
+### JIT, and the interpreter (`beam-emu.com`)
 
-`JIT=1 ./build.sh` builds `beam.com` with BeamAsm, the JIT of OTP, in one
-fat file: the x86 backend in the x86_64 half and the arm backend in the
-aarch64 half. CI makes it as `beam-jit.com` (42 MB) and tests it on
-every platform ([`docs/JIT.md`](docs/JIT.md)). No memory page of the JIT
-code is writable and executable at the same time (W^X): the JIT writes
-the code through a second mapping.
+`beam.com` runs Erlang code with BeamAsm, the JIT of OTP, in one fat
+file: the x86 backend in the x86_64 half and the arm backend in the
+aarch64 half ([`docs/JIT.md`](docs/JIT.md)). The programs that it builds
+have the JIT too. No memory page of the JIT code is writable and
+executable at the same time (W^X): the JIT writes the code through a
+second mapping.
+
+`beam-emu.com` is the same with the BEAM interpreter (`JIT=0
+./build.sh`). It is 2.8 MB smaller and starts 40 to 90 ms faster, but
+Erlang code is slower: 2 times on x86_64 and up to 11 times on aarch64
+for function calls ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)). Use it
+to build small command-line programs, where the start time counts more.
+Code in C (crypto, SQLite, WebAssembly) has the same speed in both.
 
 ### SQLite
 
@@ -176,9 +183,10 @@ beam.com build server.erl --pledge "inet dns" --unveil "r /etc/ssl" --unveil "rw
 - `--pledge PROMISES`: the groups of system calls that the program
   keeps, for example `inet` (sockets), `dns`, `wpath` and `cpath` (write
   and create files), `proc exec` (port programs). `stdio rpath` are
-  always added: ERTS needs them to start. `beam-jit.com` also adds
-  `prot_exec`: without it, the JIT cannot allocate memory for its code
-  and ERTS stops at the start ("Cannot allocate executable memory").
+  always added: ERTS needs them to start. `beam.com` (the JIT)
+  also adds `prot_exec`: without it, the JIT cannot allocate memory for
+  its code and ERTS stops at the start ("Cannot allocate executable
+  memory"). `beam-emu.com` does not need it.
   `beam.com help build` lists the promises.
 - `--unveil "PERMISSIONS PATH"` (more than one): the files and
   directories that the program can see, with the permissions `r`, `w`,
@@ -410,7 +418,7 @@ arguments and in a header that the compiler includes in each file
 
 | Change | Why |
 | --- | --- |
-| `--disable-jit` | The BEAM interpreter is used in `beam.com`. `JIT=1` gives `--enable-jit` with both backends (`docs/JIT.md`). |
+| `--enable-jit` | BeamAsm with both backends (`docs/JIT.md`). `JIT=0` gives `--disable-jit`: the BEAM interpreter (`beam-emu.com`). |
 | `--disable-kernel-poll`, `ac_cv_header_poll_h=no` | The `select()` back-end is used. The `POLL*` values of Cosmopolitan are not compile-time constants, and epoll/kqueue are not on all systems. |
 | `--disable-esock` | The `socket` NIF needs BSD types that Cosmopolitan does not have. `gen_tcp` and `gen_udp` use `inet_drv`. |
 | `erts_cv_linux_thp=no` | The 2 MiB page alignment for Linux breaks the APE layout. |
@@ -491,7 +499,6 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 ## Known limits
 
-- The default `beam.com` has no JIT yet (`beam-jit.com` has it).
 - No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
   work (`crypto`, `asn1`, `wasm` and `esqlite`).
