@@ -1,0 +1,7 @@
+{application, crypto_check,
+ [{description, "Checks the crypto NIF of BEAM.com"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {mod, {crypto_check_app, []}},
+  {applications, [kernel, stdlib, crypto]},
+  {env, []}]}.

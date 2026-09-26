@@ -54,15 +54,26 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     Write-Host $out
     if ($rc -ne 0) {
         Write-Host "FAIL: $Name exited with $rc"; $script:fail = 1
-    } elseif ($out -notmatch $Pattern) {
-        Write-Host "FAIL: $Name did not print `"$Pattern`""; $script:fail = 1
     } else {
-        Write-Host "PASS: $Name"
+        # The patterns are separated by "@@". Each one must be found.
+        $ok = $true
+        foreach ($pat in ($Pattern -split '@@')) {
+            if ($out -notmatch $pat) {
+                Write-Host "FAIL: $Name did not print `"$pat`""
+                $ok = $false; $script:fail = 1
+            }
+        }
+        if ($ok) { Write-Host "PASS: $Name" }
     }
 }
 
 Check "beam.com" 'Arguments   : \["hello","world"\]' @("hello", "world")
 if (Test-Path (Join-Path $Dir "greeter.com")) {
     Check "greeter.com" 'said hello 3 times' @()
+}
+if (Test-Path (Join-Path $Dir "crypto_check.com")) {
+    Check "crypto_check.com" ('sha256\(abc\) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' +
+        '@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0' +
+        '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello') @()
 }
 exit $fail

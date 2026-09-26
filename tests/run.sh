@@ -36,16 +36,29 @@ check() {
     if [ $rc -ne 0 ]; then
         echo "FAIL: $name exited with $rc"
         fail=1
-    elif ! printf '%s\n' "$out" | grep -q "$pattern"; then
-        echo "FAIL: $name did not print \"$pattern\""
-        fail=1
     else
-        echo "PASS: $name"
+        # The patterns are separated by "@@". Each one must be found.
+        ok=1
+        rest=$pattern
+        while [ -n "$rest" ]; do
+            p=${rest%%@@*}
+            case $rest in *@@*) rest=${rest#*@@} ;; *) rest= ;; esac
+            if ! printf '%s\n' "$out" | grep -q "$p"; then
+                echo "FAIL: $name did not print \"$p\""
+                ok=0
+                fail=1
+            fi
+        done
+        [ $ok -eq 1 ] && echo "PASS: $name"
     fi
 }
 
 check beam.com 'Arguments   : \["hello","world"\]' hello world
 if [ -f "$dir/greeter.com" ]; then
     check greeter.com 'said hello 3 times'
+fi
+if [ -f "$dir/crypto_check.com" ]; then
+    check crypto_check.com \
+        'sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello'
 fi
 exit $fail

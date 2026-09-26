@@ -8,6 +8,7 @@ on:
 env:
   OTP_VERSION: "29.1.1"
   COSMOCC_VERSION: "4.0.2"
+  OPENSSL_VERSION: "3.5.8"
 
 jobs:
   build:
@@ -26,6 +27,12 @@ jobs:
       - name: Download cosmocc
         run: ./build.sh toolchain
 
+      - name: Cache OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: build/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}
+
       - name: Register the APE loader
         # Lets the kernel run APE files (the OTP build runs the tools it
         # builds). WINE and other MZ handlers on the runner are disabled.
@@ -37,7 +44,7 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Build
-        run: ./build.sh otp configure make release multicall bundle
+        run: ./build.sh openssl otp configure make release multicall bundle
 
       - name: Upload beam.com
         uses: actions/upload-artifact@v4
@@ -97,19 +104,23 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: "3"
 
-      - name: Build the greeter release and add it to beam.com
+      - name: Build the example releases and add them to beam.com
         run: |
-          (cd examples/greeter && rebar3 release)
-          cp beam.com greeter.com
-          (cd examples/greeter/_build/default/rel/greeter &&
-           find releases lib -type f | sort &&
-           zip -r ../../../../../../greeter.com releases lib)
+          for app in greeter crypto_check; do
+            (cd examples/$app && rebar3 release)
+            cp beam.com $app.com
+            (cd examples/$app/_build/default/rel/$app &&
+             find releases lib -type f | sort &&
+             zip -r ../../../../../../$app.com releases lib)
+          done
 
-      - name: Upload greeter.com
+      - name: Upload the example releases
         uses: actions/upload-artifact@v4
         with:
-          name: greeter.com
-          path: greeter.com
+          name: examples
+          path: |
+            greeter.com
+            crypto_check.com
           if-no-files-found: error
 
   test:
