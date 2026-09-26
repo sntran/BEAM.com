@@ -33,6 +33,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
@@ -135,6 +136,7 @@ int __wrap_mkdir(const char *path, mode_t mode)
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
+extern int epmd_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -915,6 +917,43 @@ int beam_com_exec_helper(const char *path, char *const argv[],
     return execve(GetProgramExecutableName(), argv, env.v);
 }
 
+/*
+ * Distributed Erlang needs epmd. It starts only for -sname, -name (the
+ * long form) or -remsh, never otherwise, as erlexec starts "epmd -daemon"
+ * before the emulator (unless -start_epmd false). epmd is this file: the
+ * child runs as epmd (BEAM_COM_PROGRAM), and "-daemon" returns at once
+ * when an epmd already runs, or after the daemon has started.
+ */
+static void start_epmd(struct arglist *all)
+{
+    extern char **environ;
+    struct arglist env = {0};
+    char *args[] = {"epmd", "-daemon", NULL};
+    int i, named = 0, status;
+    pid_t pid;
+
+    for (i = 0; i < all->n; i++) {
+        if (strcmp(all->v[i], "-sname") == 0 || strcmp(all->v[i], "-name") == 0 ||
+            strcmp(all->v[i], "-remsh") == 0)
+            named = 1;
+        if (strcmp(all->v[i], "-start_epmd") == 0 && i + 1 < all->n &&
+            strcmp(all->v[i + 1], "false") == 0)
+            return;
+    }
+    if (!named)
+        return;
+    for (i = 0; environ[i]; i++)
+        if (strncmp(environ[i], "BEAM_COM_PROGRAM=", 17) != 0)
+            push(&env, environ[i]);
+    push(&env, "BEAM_COM_PROGRAM=epmd");
+    if ((pid = fork()) == 0) {
+        execve(GetProgramExecutableName(), args, env.v);
+        _exit(127);
+    }
+    if (pid > 0)
+        waitpid(pid, &status, 0);
+}
+
 void beam_com_main(int *argcp, char ***argvp)
 {
     int argc = *argcp;
@@ -941,12 +980,21 @@ void beam_com_main(int *argcp, char ***argvp)
         ShowCrashReports();
 
     apply_sandbox(starts_with(name, "erl_child_setup") ||
-                  starts_with(name, "inet_gethost"));
+                  starts_with(name, "inet_gethost") || starts_with(name, "epmd"));
 
     if (starts_with(name, "erl_child_setup"))
         exit(erl_child_setup_main(argc, argv));
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
+    /* epmd: started by start_epmd() below, or by the user ("epmd
+     * -names", with a link named epmd, or "beam.com epmd -names"). */
+    if (starts_with(name, "epmd"))
+        exit(epmd_main(argc, argv));
+    if (argc > 1 && strcmp(argv[1], "epmd") == 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data")) {
+        argv[1] = "epmd";
+        exit(epmd_main(argc - 1, argv + 1));
+    }
 
     /* erl mode: the program behaves as erl (the runtime of its zip, with
      * /zip as the root and all its applications in the code path), not
@@ -957,6 +1005,52 @@ void beam_com_main(int *argcp, char ***argvp)
     erl_mode = strcmp(name, "erl") == 0 || strcmp(name, "erl.exe") == 0 ||
                strcmp(name, "erl.com") == 0 ||
                (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
+    /* beam.com with the flags of erl ("beam.com -sname me -remsh app",
+     * "beam.com +S 1 -eval ..."): erl mode too, in a file without a
+     * release (whose arguments are its own). -h, --help and --version are
+     * commands of beam.com. Not for a tool (elixir.com -e ...). */
+    if (!erl_mode && argc > 1 && (argv[1][0] == '-' || argv[1][0] == '+') &&
+        !elixir_tool(name) &&
+        strcmp(argv[1], "-h") != 0 && strcmp(argv[1], "--help") != 0 &&
+        strcmp(argv[1], "--version") != 0 && file_exists(BEAM_COM_TOOL) &&
+        !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
+        erl_mode = 1;
+    /* "app.com remote": a shell in the running node of the release in
+     * the zip, as "bin/app remote" of rebar3 and mix release: erl mode
+     * with -remsh and the node name (-sname or -name) and -setcookie of
+     * the vm.args of the release. The new node is hidden, and gets a
+     * random name (-remsh does that since OTP 25). */
+    if (!erl_mode && argc > 1 && strcmp(argv[1], "remote") == 0 &&
+        file_exists(BEAM_COM_RELEASES "/start_erl.data")) {
+        struct arglist rel = {0}, args = {0};
+        const char *node = NULL, *cookie = NULL;
+
+        read_release(&rel);
+        for (i = 0; i + 1 < rel.n; i++) {
+            if (strcmp(rel.v[i], "-sname") == 0 || strcmp(rel.v[i], "-name") == 0)
+                node = rel.v[i + 1];
+            else if (strcmp(rel.v[i], "-setcookie") == 0)
+                cookie = rel.v[i + 1];
+        }
+        if (!node) {
+            fprintf(stderr, "%s: remote: the release has no -sname or -name "
+                            "(in its vm.args)\n", name);
+            exit(1);
+        }
+        push(&args, argv[0]);
+        push(&args, "-remsh");
+        push(&args, (char *)node);
+        push(&args, "-hidden");
+        if (cookie) {
+            push(&args, "-setcookie");
+            push(&args, (char *)cookie);
+        }
+        for (i = 2; i < argc; i++)
+            push(&args, argv[i]);
+        argc = args.n;
+        argv = args.v;
+        erl_mode = 1;
+    }
     /* The tools: escript, and the Elixir tools as the scripts of Elixir
      * start them. The name of the file (a copy or a link named mix.com,
      * iex.com, elixir.com, elixirc.com or escript, with or without .com
@@ -1127,6 +1221,8 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&all, windows.v[i]);
     for (i = 0; i < init.n; i++)
         push(&all, init.v[i]);
+
+    start_epmd(&all);
 
     if (getenv("BEAM_COM_VERBOSE")) {
         fprintf(stderr, "beam.com: executing:");

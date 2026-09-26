@@ -145,7 +145,9 @@ step_otp() {
     fi
     # The multi-call wrappers compile with the ERTS flags.
     cp "$ROOT"/cosmo/beam_com.c "$ROOT"/cosmo/beam_com_child_setup.c \
-       "$ROOT"/cosmo/beam_com_inet_gethost.c "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/cosmo/beam_com_inet_gethost.c "$ROOT"/cosmo/beam_com_epmd.h \
+       "$ROOT"/cosmo/beam_com_epmd.c "$ROOT"/cosmo/beam_com_epmd_srv.c \
+       "$ROOT"/cosmo/beam_com_epmd_cli.c "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -415,6 +417,7 @@ step_multicall() {
     objdir=obj/$t/opt/$FLAVOR
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
+    objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not

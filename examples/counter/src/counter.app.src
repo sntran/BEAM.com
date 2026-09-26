@@ -1,0 +1,6 @@
+{application, counter,
+ [{description, "A counter server, for app.com remote"},
+  {vsn, "1.0.0"},
+  {registered, [counter]},
+  {mod, {counter_app, []}},
+  {applications, [kernel, stdlib]}]}.

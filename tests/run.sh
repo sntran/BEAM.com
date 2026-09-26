@@ -478,6 +478,56 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     dir=$dir_rel runner=$runner_rel limit=$limit_saved PATH=$path_saved
 fi
 
+# Distributed Erlang and remote shells (not on Windows). epmd is in the
+# file, and starts only for -sname, -name or -remsh. examples/counter has
+# -sname counter in its vm.args: "counter.com remote" is a shell in the
+# running node, and so is "beam.com -remsh counter".
+if [ -d examples ] && [ -f "$dir/beam.com" ]; then
+    $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
+    check beam.com 'Erlang/OTP' version
+    check_status 1 beam.com 'Cannot connect to local epmd' epmd -names
+    check beam.com 'wrote .*counter.com@@applications: kernel stdlib' \
+        build examples/counter -o "$dir/counter.com"
+    if [ -f "$dir/counter.com" ]; then
+        $runner "$dir/counter.com" > "$tmp.counter" 2>&1 &
+        counter=$!
+        i=0
+        while [ $i -lt 30 ] && ! $runner "$dir/beam.com" epmd -names 2>/dev/null | grep -q 'name counter'; do
+            sleep 1
+            i=$((i + 1))
+        done
+        check beam.com 'name counter at port' epmd -names
+        # The end of the input ends the remote shell; halt() there would
+        # stop the counter node.
+        printf 'counter:incr(), counter:incr(), io:format("value ~p on ~p~n", [counter:value(), node()]).\n' > "$tmp.remsh"
+        echo "==> counter.com remote"
+        if $runner "$dir/counter.com" remote < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep -q '^.*value 2 on counter@'; then
+            echo "PASS: counter.com remote"
+        else
+            cat "$tmp.out"
+            echo "FAIL: counter.com remote"
+            fail=1
+            failed="$failed
+  counter.com remote: no shell in the counter node"
+        fi
+        printf 'io:format("remsh ~p~n", [counter:value()]).\n' > "$tmp.remsh"
+        echo "==> beam.com -remsh counter"
+        if $runner "$dir/beam.com" -sname probe -setcookie beamcom -remsh counter < "$tmp.remsh" 2>&1 | tee "$tmp.out" | grep -q 'remsh 2'; then
+            echo "PASS: beam.com -remsh counter"
+        else
+            cat "$tmp.out"
+            echo "FAIL: beam.com -remsh counter"
+            fail=1
+            failed="$failed
+  beam.com -sname probe -remsh counter: no shell in the counter node"
+        fi
+        kill "$counter" 2>/dev/null
+        pkill -f "$dir/counter.com" 2>/dev/null
+        wait "$counter" 2>/dev/null
+    fi
+    $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
+fi
+
 # An application with an entry (toolbox): the main module comes from
 # escript_emu_args of rebar.config, a behaviour is compiled before the
 # module that uses it, priv has an executable file (so it is copied to

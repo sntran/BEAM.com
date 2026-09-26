@@ -220,7 +220,8 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - **Not supported:** `mix release` (it copies ERTS from disk, and there
   is none: `beam.com build` makes the program instead); the options of
   the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
-  `--name`, `--cookie`, `--pipe-to`; there is no distribution). On
+  `--name`, `--cookie`, `--pipe-to`; give the flags of `erl` in
+  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`). On
   Windows, there are no port programs: Mix tasks that start other
   programs (rebar3, git) do not work.
 
@@ -273,6 +274,40 @@ iex.com -S mix phx.server        # http://localhost:4000
 CI runs these steps on Linux: `phx.new` without Ecto, `deps.get`,
 `compile`, and `iex.com -S mix phx.server`, which must serve the start
 page.
+
+### Distributed Erlang and remote shells
+
+Distributed Erlang works as with `erl`: the flags `-sname`, `-name` and
+`-remsh` turn it on, and only then the file starts `epmd` (it is in the
+file too, as `erlexec` starts it: `epmd -daemon`, unless `-start_epmd
+false`). Without these flags, no `epmd` starts and no port is opened.
+
+`beam.com` takes the flags of `erl`, so it is also the client:
+
+```sh
+beam.com -sname dev                              # a shell in a new node
+beam.com -sname me -setcookie SECRET -remsh app  # a shell in the node app
+beam.com epmd -names                             # the nodes on this computer
+```
+
+A program whose release has a node name (`-sname` or `-name` in
+`config/vm.args`) has the `remote` command of the scripts of rebar3 and
+`mix release`: a shell in the running node, with the cookie of the same
+`vm.args`. There you can inspect the node and load new code into it (for
+example `c:l(Module)`, or `code:load_binary/3`):
+
+```sh
+beam.com build examples/counter        # config/vm.args: -sname counter
+./counter.com &
+./counter.com remote
+(counter@host)1> counter:incr().
+```
+
+As in every remote shell, `halt()` there stops the node of the program;
+leave the shell with Ctrl-G then `q`, or with Ctrl-C two times.
+
+The graphical `observer` needs `wx`, which is not in `beam.com`; start
+it in an Erlang installation and connect to the node, or use the shell.
 
 ### Command line programs: `--main`, `priv` files and erl mode
 
@@ -792,7 +827,8 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   work (`crypto`, `asn1`, `wasm` and `esqlite`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
   SIMD, no threads, and no component model yet.
-- No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
+- Distributed Erlang is tested on Linux, macOS and the BSDs, not on
+  Windows yet.
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
 - `run_erl` does not work (there is no `mkfifo()`).

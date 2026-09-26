@@ -149,7 +149,10 @@ help([]) ->
      "  build INPUT [-o OUTPUT] [-a APP]...\n"
      "                  make an executable from ", Inputs,
      "  escript FILE [ARGUMENTS]\n"
-     "                  run an escript\n",
+     "                  run an escript\n"
+     "  -FLAG ...       the flags of erl (\"-sname me -remsh app\"): run as erl\n"
+     "  epmd [ARGUMENTS]\n"
+     "                  epmd, which -sname, -name and -remsh start\n",
      Tools,
      "  version         show the versions, the emulator and the platform\n"
      "  help [COMMAND]  show this text, or the help of a command\n"
