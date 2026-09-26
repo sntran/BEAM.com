@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build BEAM.com: Erlang/OTP's runtime (ERTS) as one Actually Portable
-# Executable, with the OTP libraries and the hello module in its zip
-# (redbean style).
+# Executable, with the OTP libraries, the beam.com commands and the hello
+# release in its zip (redbean style).
 #
 # Usage: ./build.sh [step...]
 #   Steps: toolchain openssl otp configure make release multicall bundle test
@@ -29,6 +29,12 @@ COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
 AR=${AR:-cosmoar}
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+
+# The OTP applications in the zip. "beam.com build" copies the ones that
+# a program needs into the new executable.
+BUNDLE_APPS="kernel stdlib sasl compiler crypto asn1 public_key ssl inets"
+# The small build (OTP_SMALL_BUILD) does not make these.
+EXTRA_APPS="crypto asn1 public_key ssl"
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
@@ -162,6 +168,11 @@ step_make() {
     # it once for each file.
     DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
         DEP_CC="$ROOT/cosmo/depcc"
+    for app in $EXTRA_APPS; do
+        log "Building $app"
+        PATH=$ERL_TOP/bootstrap/bin:$PATH DEPCC_CC=$CC \
+            make -C "lib/$app" opt DEP_CC="$ROOT/cosmo/depcc"
+    done
 }
 
 step_multicall() {
@@ -190,15 +201,33 @@ step_bundle() {
     rm -rf "$STAGE"
     mkdir -p "$STAGE/bin"
 
-    # OTP: boot scripts for tools, and the kernel and stdlib applications.
+    # OTP: boot scripts for tools, and the applications (ebin, and
+    # include for "beam.com build").
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
     cp "$ROOT/cosmo/windows.inetrc" "$STAGE/bin/"
-    for app in kernel stdlib; do
-        dir=$(cd "$RELEASE/lib" && ls -d "$app"-* | head -n 1)
-        mkdir -p "$STAGE/lib/$dir"
-        cp -R "$RELEASE/lib/$dir/ebin" "$STAGE/lib/$dir/"
+    for app in $BUNDLE_APPS; do
+        src=$ERL_TOP/lib/$app
+        vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/ebin/$app.app")
+        [ -n "$vsn" ] || { echo "No version for $app" >&2; exit 1; }
+        mkdir -p "$STAGE/lib/$app-$vsn/ebin"
+        cp "$src"/ebin/*.beam "$src/ebin/$app.app" "$STAGE/lib/$app-$vsn/ebin/"
+        if ls "$src"/include/*.hrl >/dev/null 2>&1; then
+            mkdir -p "$STAGE/lib/$app-$vsn/include"
+            cp "$src"/include/*.hrl "$STAGE/lib/$app-$vsn/include/"
+        fi
     done
+
+    # The commands of beam.com (lib/beam_com has no version, so that
+    # beam_com.c can find it), and the runner of one-file programs.
+    mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
+    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/apps/beam_com/src/*.erl
+    cp "$ROOT/apps/beam_com/src/beam_com.app.src" \
+       "$STAGE/lib/beam_com/ebin/beam_com.app"
+    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_script-0.1.0/ebin" \
+        "$ROOT"/apps/beam_com_script/src/*.erl
+    cp "$ROOT/apps/beam_com_script/src/beam_com_script.app.src" \
+       "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
 
     # The hello release, made like any other OTP release.
     erts_vsn=$(cd "$RELEASE" && ls -d erts-* | sed 's/^erts-//')
@@ -226,6 +255,11 @@ step_test() {
     log "Running $OUT"
     "$OUT" one two | tee "$BUILD/test.out"
     grep -q "Hello, World!" "$BUILD/test.out"
+    log "Building a program with $OUT build"
+    "$OUT" build "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
+    "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
+    grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
+        "$BUILD/test.out"
 }
 
 if [ $# -eq 0 ]; then
