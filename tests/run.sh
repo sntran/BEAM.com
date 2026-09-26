@@ -243,8 +243,19 @@ fi
 rm -f "$tmp" "$tmp.diag"
 # Processes that a test left behind (helper programs must stop with the
 # emulator).
+# No process of the tests may stay (for example erl_child_setup, see
+# docs/UPSTREAM.md O12). A helper can need a moment to see the end of
+# its program.
+i=0
+while [ -n "$(our_processes)" ] && [ $i -lt 5 ]; do
+    sleep 1
+    i=$((i + 1))
+done
 left=$(our_processes)
 if [ -n "$left" ]; then
+    fail=1
+    failed="$failed
+  processes still running after the tests"
     echo "==> Processes still running after the tests:"
     printf '%s\n' "$left"
     # The open files and the stack of the first one.
