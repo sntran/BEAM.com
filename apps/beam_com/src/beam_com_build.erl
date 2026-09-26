@@ -15,7 +15,7 @@
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
-         parents/1, keep/2, executable/0]).
+         parents/1, keep/2, executable/0, slashes/2]).
 -endif.
 
 -define(ROOT, "/zip").
@@ -24,8 +24,8 @@
 %% Opts: input, apps, and optionally output. root (the zip, "/zip") and
 %% exe (the path of this executable) are for the tests.
 run(#{input := Input0, apps := ExtraApps} = Opts) ->
-    Input = string:trim(Input0, trailing, "/\\"),
-    Output = maps:get(output, Opts, default_output(Input)),
+    Input = string:trim(slashes(Input0, os:type()), trailing, "/\\"),
+    Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
     App = case filelib:is_dir(Input) of
@@ -56,6 +56,13 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
               [Output, iolist_size(Data), maps:get(name, App),
                maps:get(vsn, App),
                lists:join(" ", [atom_to_list(A) || A <- Apps])]).
+
+%% ERTS in BEAM.com is the Unix build also on Windows (os:type() is
+%% {unix, windows}), so the filename module does not take "\\" as a
+%% separator, but Windows does: "bin\\x.com" would be one file name in the
+%% directory ".". Paths from the command line get "/" instead.
+slashes(Path, {_, windows}) -> lists:flatten(string:replace(Path, "\\", "/", all));
+slashes(Path, _) -> Path.
 
 default_output(Input) ->
     filename:basename(Input, ".erl") ++ ".com".
