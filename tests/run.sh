@@ -127,7 +127,13 @@ crypto_check='sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410
 tls_check='ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
 hashsum='^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
 
-check beam.com 'Arguments   : \["hello","world"\]' hello world
+# The commands of the default beam.com. os:type() names this system.
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+check beam.com 'usage: beam.com COMMAND@@build INPUT@@version'
+check beam.com 'usage: beam.com COMMAND' help
+check beam.com 'usage: beam.com build INPUT' help build
+check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : emu@@stdlib-" version
+check_status 1 beam.com 'unknown command nosuch (see beam.com help)' nosuch
 
 # Releases made with rebar3 and added with zip (by CI).
 for app in greeter crypto_check tls_check; do
@@ -207,7 +213,7 @@ case $(uname -m) in
     *) jit_cpu=0 ;;
 esac
 if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
-    check beam-jit.com 'Emulator    : jit@@Arguments   : \["hello","world"\]' hello world
+    check beam-jit.com "Emulator    : jit@@OS type     : unix/$os" version
     if [ -d examples ]; then
         check beam-jit.com 'wrote .*hashsum.jit.com' \
             build examples/hashsum.erl -o "$dir/hashsum.jit.com"

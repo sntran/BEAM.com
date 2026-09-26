@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build BEAM.com: Erlang/OTP's runtime (ERTS) as one Actually Portable
-# Executable, with the OTP libraries, the beam.com commands and the hello
-# release in its zip (redbean style).
+# Executable, with the OTP libraries and the commands of beam.com (help,
+# version and build) in its zip (redbean style).
 #
 # Usage: ./build.sh [step...]
 #   Steps: toolchain openssl otp configure sqlite wasm make release
@@ -450,28 +450,16 @@ step_bundle() {
     # beam_com.c can find it), and the runner of one-file programs.
     mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/apps/beam_com/src/*.erl
-    cp "$ROOT/apps/beam_com/src/beam_com.app.src" \
-       "$STAGE/lib/beam_com/ebin/beam_com.app"
+    sed "s/{otp_version, \"\"}/{otp_version, \"$OTP_VERSION\"}/" \
+        "$ROOT/apps/beam_com/src/beam_com.app.src" \
+        > "$STAGE/lib/beam_com/ebin/beam_com.app"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_script-0.1.0/ebin" \
         "$ROOT"/apps/beam_com_script/src/*.erl
     cp "$ROOT/apps/beam_com_script/src/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
 
-    # The hello release, made like any other OTP release.
-    erts_vsn=$(cd "$RELEASE" && ls -d erts-* | sed 's/^erts-//')
-    kernel_vsn=$(cd "$STAGE/lib" && ls -d kernel-* | sed 's/^kernel-//')
-    stdlib_vsn=$(cd "$STAGE/lib" && ls -d stdlib-* | sed 's/^stdlib-//')
-    app=$STAGE/lib/hello-0.1.0
-    rel=$STAGE/releases/0.1.0
-    mkdir -p "$app/ebin" "$rel"
-    "$ERL_TOP/bin/erlc" -o "$app/ebin" \
-        "$ROOT/hello/hello.erl" "$ROOT/hello/hello_app.erl"
-    cp "$ROOT/hello/hello.app" "$app/ebin/"
-    printf '{release, {"hello", "0.1.0"}, {erts, "%s"},\n [{kernel, "%s"}, {stdlib, "%s"}, {hello, "0.1.0"}]}.\n' \
-        "$erts_vsn" "$kernel_vsn" "$stdlib_vsn" > "$rel/hello.rel"
-    "$ERL_TOP/bin/escript" "$ROOT/tools/make_boot.escript" "$rel/hello" "$STAGE"
-    cp "$ROOT/hello/sys.config" "$ROOT/hello/vm.args" "$rel/"
-    echo "$erts_vsn 0.1.0" > "$STAGE/releases/start_erl.data"
+    # There is no release: beam.com runs its commands (help, version and
+    # build). A release that is added to the zip runs instead.
 
     emu=$ERL_TOP/bin/$t/beam.$FLAVOR
     if [ "$(od -An -c -N4 "$emu" | tr -d ' ')" = '177ELF' ]; then
@@ -486,7 +474,7 @@ step_bundle() {
         cp "$emu" "$OUT"
     fi
     chmod +x "$OUT"
-    (cd "$STAGE" && zip -q -r -9 "$OUT" bin lib releases)
+    (cd "$STAGE" && zip -q -r -9 "$OUT" bin lib)
     ls -l "$OUT"
 }
 
@@ -502,8 +490,10 @@ step_unit() {
 
 step_test() {
     log "Running $OUT"
-    "$OUT" one two | tee "$BUILD/test.out"
-    grep -q "Hello, World!" "$BUILD/test.out"
+    "$OUT" version | tee "$BUILD/test.out"
+    grep -q "Erlang/OTP  : $OTP_VERSION" "$BUILD/test.out"
+    "$OUT" help > "$BUILD/test.out"
+    grep -q "usage: beam.com COMMAND" "$BUILD/test.out"
     log "Building a program with $OUT build"
     "$OUT" build "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"

@@ -20,19 +20,33 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc
 ```
 
 ```
-$ sh ./beam.com hello world
-Hello, World! from BEAM.com
-  OTP release : 29
-  ERTS version: 17.1
+$ sh ./beam.com help
+BEAM.com: Erlang/OTP 29.1.1 in one executable file, for Linux,
+macOS, Windows and the BSDs, on x86_64 and aarch64.
+
+usage: beam.com COMMAND [ARGUMENTS]
+
+Commands:
+  build INPUT [-o OUTPUT] [-a APP]...
+                  make an executable from a .erl file with main/1, or
+                  from an application directory
+  version         show the versions, the emulator and the platform
+  help [COMMAND]  show this text, or the help of a command
+...
+$ sh ./beam.com version
+beam.com 0.1.0
+  Erlang/OTP  : 29.1.1
+  ERTS        : 17.1
+  Emulator    : emu
   OS type     : unix/linux
   Architecture: x86_64-pc-linux-gnu
-  Schedulers  : 2
-  Release     : "/zip/releases/0.1.0/start"
-  Arguments   : ["hello","world"]
+  Schedulers  : 4
+  Applications: asn1-5.5.2 beam_com-0.1.0 ... stdlib-8.1 wasm-0.1.0
 ```
 
-The default `beam.com` holds a small `hello` release
-([`hello/`](hello)). Erlang/OTP version: **29.1.1**.
+The default `beam.com` has no release: it runs these commands (`beam.com`
+with no argument shows the help). When you add a release to a copy of
+`beam.com`, the release runs instead. Erlang/OTP version: **29.1.1**.
 
 `crypto` and `ssl` work: the `crypto` and `asn1` NIFs are linked into
 `beam.com` with a static OpenSSL 4.0.2, and TLS connections verify the
@@ -210,22 +224,21 @@ lib/kernel-11.0.4/{ebin,include}/...
 lib/stdlib-8.1/{ebin,include}/...
 lib/.../                           sasl, compiler, crypto, asn1,
                                    public_key, ssl, inets
-lib/beam_com/ebin/...              the "build" command (apps/beam_com)
+lib/beam_com/ebin/...              the commands (apps/beam_com)
 lib/beam_com_script-0.1.0/ebin/... runs one-file programs
-lib/hello-0.1.0/ebin/...
-releases/start_erl.data            "17.1 0.1.0"
-releases/0.1.0/start.boot          made with systools (tools/make_boot.escript)
-releases/0.1.0/sys.config
-releases/0.1.0/vm.args
+lib/wasm-0.1.0/ebin/...
 ```
+
+There is no `releases/` directory: a release that you add brings its own.
 
 BEAM.com does the work of `erlexec`. It gives ERTS
 `-root /zip -bindir /zip/bin -progname beam.com -home $HOME`, then the
 release arguments, `ERL_FLAGS`, `.args` and the command line.
 
-When the first argument is `build` and the zip has `lib/beam_com`,
-BEAM.com boots `start_clean` and runs `beam_com:main/0` instead of the
-release.
+When the zip has `lib/beam_com` and no release (the default
+`beam.com`), BEAM.com boots `start_clean` and runs `beam_com:main/0`,
+which runs the command. With a release, only `build` does this, and the
+other arguments go to the release.
 
 ### How `beam.com build` writes the new file
 

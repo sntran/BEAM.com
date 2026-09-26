@@ -95,7 +95,12 @@ $patterns = @{
 }
 $apps = @("greeter", "crypto_check", "tls_check")
 
-Check "beam.com" 'Arguments   : \["hello","world"\]' @("hello", "world")
+# The commands of the default beam.com.
+Check "beam.com" 'usage: beam.com COMMAND@@build INPUT@@version' @()
+Check "beam.com" 'usage: beam.com COMMAND' @("help")
+Check "beam.com" 'usage: beam.com build INPUT' @("help", "build")
+Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : emu@@stdlib-' @("version")
+Check "beam.com" 'unknown command nosuch \(see beam.com help\)' @("nosuch") 1
 
 # Releases made with rebar3 and added with zip (by CI).
 foreach ($app in $apps) {
@@ -164,7 +169,7 @@ if (Test-Path "examples") {
 
 # The JIT probe: beam-jit.com is x86_64 only.
 if ((Test-Path (Join-Path $Dir "beam-jit.com")) -and ($env:PROCESSOR_ARCHITECTURE -eq "AMD64")) {
-    Check "beam-jit.com" 'Emulator    : jit@@Arguments   : \["hello","world"\]' @("hello", "world")
+    Check "beam-jit.com" 'Emulator    : jit@@OS type     : unix/windows' @("version")
     if (Test-Path "examples") {
         Check "beam-jit.com" 'wrote .*hashsum.jit.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.jit.com")
         if (Test-Path (Join-Path $Dir "hashsum.jit.com")) {
