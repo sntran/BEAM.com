@@ -20,9 +20,9 @@
  *
  * When there is neither, the program is a plain beam.smp.
  *
- * When the first argument is a command of beam.com ("build") and the
- * zip has the beam_com application, the command runs instead of the
- * release (see apps/beam_com).
+ * When the zip has the beam_com application and no release (the default
+ * beam.com), the commands of beam.com run (help, version and build, see
+ * apps/beam_com). "build" also runs when the zip has a release.
  */
 #include <cosmo.h>
 #include <errno.h>
@@ -542,9 +542,16 @@ void beam_com_main(int *argcp, char ***argvp)
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
 
-    if (argc > 1 && strcmp(argv[1], "build") == 0 && file_exists(BEAM_COM_TOOL)) {
-        /* A command of beam.com. It gets the arguments with
-         * init:get_plain_arguments() (after "-extra", below). */
+    has_release = read_release(&file);
+    has_args = read_zip_args(&file);
+    if (file_exists(BEAM_COM_TOOL) &&
+        ((!has_release && !has_args) ||
+         (argc > 1 && strcmp(argv[1], "build") == 0))) {
+        /* The commands of beam.com: when the zip has no release (the
+         * default beam.com), and "build" also when it has one. They get
+         * the arguments with init:get_plain_arguments() (after "-extra",
+         * below). */
+        file = (struct arglist){0};
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
@@ -555,9 +562,6 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "main");
         has_release = 1;
         has_args = 0;
-    } else {
-        has_release = read_release(&file);
-        has_args = read_zip_args(&file);
     }
     if (!has_release && !has_args)
         return; /* Not a bundle: behave like a plain beam.smp. */

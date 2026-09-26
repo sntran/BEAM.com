@@ -4,7 +4,7 @@
 
 BeamAsm, the JIT of OTP, works in an x86_64-only `beam-jit.com`
 (`JIT=1 CC=x86_64-unknown-cosmo-cc ./build.sh`). CI builds it and runs
-`hello`, and builds and runs `hashsum` and `greeter` with it, on every
+`beam-jit.com version`, and builds and runs `hashsum` and `greeter` with it, on every
 x86_64 platform: Linux, macOS x86_64, Windows, FreeBSD, NetBSD and
 OpenBSD 7.3. `erlang:system_info(emu_flavor)` is `jit` on each one.
 

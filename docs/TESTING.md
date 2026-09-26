@@ -6,7 +6,7 @@ behavior, also for errors and limits, not only for the normal case.
 ## 1. Unit tests (Erlang, with coverage)
 
 `tests/unit/*_tests.erl` are EUnit tests for the Erlang code of
-`apps/beam_com` (the command line, the builder and the zip writer).
+`apps/beam_com` (the commands, the builder and the zip writer).
 
 ```sh
 ./build.sh unit            # after the make step; needs no beam.com
@@ -21,7 +21,7 @@ prints the line coverage of each module. The HTML report is in
 |---|---|---|
 | `beam_com_zip` | 100% | |
 | `beam_com_build` | 98.8% | the `-beam_com_exe` argument (only in a real `beam.com`), and a `systools` result that `silent` does not give |
-| `beam_com` | 68.8% | `main/0`, which halts the node (tested by `tests/run.sh`) |
+| `beam_com` | 85.7% | `main/0`, which halts the node (tested by `tests/run.sh`), and the fallback when the `.app` file is missing |
 | `beam_com_script` | 0% | it halts the node (tested by `tests/programs/script_check.erl`) |
 
 The oracle of the zip tests is independent code: the `zip` module of
