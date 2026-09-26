@@ -65,7 +65,7 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
         }
         # Kernel must accept the inetrc that BEAM.com writes on Windows.
         if ($out -match 'inet_config: syntax error') {
-            Write-Host "FAIL: $Name: kernel did not accept the inetrc"
+            Write-Host "FAIL: ${Name}: kernel did not accept the inetrc"
             $ok = $false; $script:fail = 1
         }
         if ($ok) { Write-Host "PASS: $Name" }
