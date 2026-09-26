@@ -210,17 +210,21 @@ systems, Windows too).
 **erl mode.** A program that starts a new Erlang VM (a peer node, a
 worker in a sandbox) can start its own file: each program has
 `-beam_com_exe PATH` (`init:get_argument(beam_com_exe)`), the path of
-its file. When the file is started with the name `erl` (a link, or
-`{arg0, "erl"}` of `open_port/2`) or with `BEAM_COM_ERL=1` in the
-environment, all the arguments are for `erl`, and the VM starts with
-the `start_clean` boot and the applications of the zip in the code
-path, not with the release:
+its file. When the file is started with `BEAM_COM_ERL=1` in the
+environment, or through a link named `erl`, all the arguments are for
+`erl`, and the VM starts with the `start_clean` boot and the
+applications of the zip in the code path, not with the release:
 
 ```erlang
 {ok, [[Exe]]} = init:get_argument(beam_com_exe),
 Port = open_port({spawn_executable, Exe},
-                 [{arg0, "erl"}, {args, ["-noinput", "-eval", "worker:start()"]}]).
+                 [{env, [{"BEAM_COM_ERL", "1"}]},
+                  {args, ["-noinput", "-eval", "worker:start()"]}]).
 ```
+
+(`{arg0, "erl"}` is not enough: when the kernel cannot start an APE
+file, Cosmopolitan starts it with the APE loader, which gives the path
+of the file as `argv[0]`.)
 
 [`examples/toolbox`](examples/toolbox) shows the three: its `main/1`
 comes from `rebar.config`, it runs a shell script from `priv`, and it

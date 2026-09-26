@@ -107,7 +107,12 @@ copy(From, Dir, Executables) ->
                     true -> 8#555;
                     false -> 8#444
                 end,
-         ok = file:change_mode(Target, Mode)
+         case file:change_mode(Target, Mode) of
+             ok -> ok;
+             %% Cosmopolitan has no chmod() on Windows, where the modes
+             %% do not decide what runs.
+             {error, enosys} -> ok
+         end
      end || F <- Files],
     case file:rename(Tmp, Dir) of
         ok -> ok;
