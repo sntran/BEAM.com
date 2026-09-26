@@ -588,6 +588,27 @@ it: 0 of 600 starts fail.
 another thread); or hold the lock around the system call and the
 release, as `close()` already does for `/zip` descriptors.
 
+### C27. mkdir() of a drive root gives EACCES on Windows
+
+**Status:** cosmocc 4.0.2 (`libc/calls/mkdirat-nt.c`).
+
+**Symptom.** On Windows, `beam.com build` of Elixir code failed:
+`File.Error ... reason: eacces, action: "make directory (with -p)"` for
+the temporary directory, which existed.
+
+**Cause.** Elixir's `File.mkdir_p/1` makes each parent directory from
+the root (`/C`, `/C/Users`, ...), and accepts only `eexist` for one that
+exists. Cosmopolitan's `mkdir()` on Windows calls `CreateDirectory()`,
+which is denied for a drive root (`C:\`), and gives `EACCES`. POSIX
+says that `mkdir()` of an existing path gives `EEXIST`.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=mkdir`, and `__wrap_mkdir()` in `cosmo/beam_com.c` gives
+`EEXIST` in place of `EACCES` on Windows when the path exists.
+
+**Possible upstream fix.** In `sys_mkdirat_nt()`, give `EEXIST` when
+`CreateDirectory()` fails and the path exists.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
