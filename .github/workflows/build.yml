@@ -63,6 +63,26 @@ jobs:
           path: build/${{ matrix.out }}
           if-no-files-found: error
 
+      - uses: actions/setup-go@v5
+        if: matrix.sqlite == '0'
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build the WASI example in Go
+        if: matrix.sqlite == '0'
+        run: |
+          cd examples/wasm/hello_go
+          GOOS=wasip1 GOARCH=wasm go build -o ../../../build/hello_go.wasm .
+
+      - name: Upload the WASI example
+        if: matrix.sqlite == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello_go.wasm
+          path: build/hello_go.wasm
+          if-no-files-found: error
+
       - name: Upload the APE loader
         if: matrix.sqlite == '0'
         # NetBSD and OpenBSD cannot run APE files through sh.
