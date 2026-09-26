@@ -493,6 +493,49 @@ started by native programs on Windows, so the Windows convention wins.
 (for programs that are started by native Windows programs), or a way for
 `wait4-nt.c` to tell a plain status from a wait status.
 
+### C22. aarch64: x28 holds the thread pointer
+
+**Status:** cosmocc 4.0.2 (`bin/cosmocc`: `-ffixed-x18 -ffixed-x28`;
+`libc/thread/tls.h`: `__get_tls()` reads x28).
+
+**Symptom.** Not seen as a crash: found before the first run, when the
+ARM JIT of OTP was prepared. The ARM JIT keeps the Erlang register X3 in
+x28 (`beam/jit/arm/beam_asm.hpp`). While JIT code runs, x28 would not
+point at the thread information block, so every C function that the JIT
+calls (BIFs, the garbage collector, allocators) and every signal handler
+would read a wrong TLS pointer.
+
+**Cause.** Cosmopolitan reserves x28 for its TLS on aarch64 (x18 is
+reserved by macOS). Code that is not compiled by cosmocc, such as
+generated code, must leave x28 alone.
+
+**Workaround in BEAM.com.** The ARM JIT uses its register layout of
+DEBUG builds under `__COSMOPOLITAN__`: X0-X2 in x25-x27, X3-X5 in the
+caller-saved x15-x17. x28 is not used.
+
+**Possible upstream fix.** Document the reserved registers next to the
+aarch64 notes of cosmocc, for JITs and hand-written assembly.
+
+### C23. The dependency pass (`-M`, `-MM`, `-E`) defines no CPU
+
+**Status:** cosmocc 4.0.2 (`bin/cosmocc`, `INTENT=cpp`: `-U__x86_64__`
+and the other CPU macros).
+
+**Symptom.** `make depend` of OTP stops at `#error` lines that expect
+x86_64 or aarch64 (`beam_jit_main.cpp`: "Platform lacks implementation
+for clearing instruction cache").
+
+**Cause.** For the preprocessor only, cosmocc removes the macros of the
+CPU, because the output is for both CPUs. Code that selects by CPU gets
+neither branch.
+
+**Workaround in BEAM.com.** The wrapper files of the fat JIT take the
+x86 files when no CPU is defined (the dependencies are the same), and
+the `#error` of `beam_jit_main.cpp` does not apply to that pass.
+
+**Possible upstream fix.** Document it; or make the dependency output
+the union of the x86_64 and the aarch64 pass.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -708,3 +751,48 @@ is still running at the end.
 **Possible upstream fix.** The same two `close()` calls. They do not
 depend on `closefrom()` or on the `/dev/fd` loop, and they cost
 nothing.
+
+### O13. The JIT selects its backend and the macOS code at compile time
+
+**Status:** OTP 29.1.1 (`erts/configure.ac`, `emulator/Makefile.in`,
+`beam/jit/beam_jit_main.cpp`, asmjit `core/virtmem.cpp`).
+
+**Symptom.** One file cannot have both JIT backends, and on macOS arm64
+the JIT would use code for Linux: no `MAP_JIT`, no per-thread write
+permission, no `sys_icache_invalidate()`.
+
+**Cause.** configure picks one `JIT_ARCH` from the host CPU, and the
+generated tables and the backend files are made for that one. The macOS
+code is under `#if defined(__APPLE__)`, which cosmocc does not define
+(the OS is known only at run time).
+
+**Fix in BEAM.com** (`patches/otp/0002-jit.patch`):
+
+- `JIT_ARCH=fat` (when `BEAM_COM_FAT_JIT=yes`): the Makefile makes the
+  opcode tables and `beam_asm_global.hpp` once for each backend
+  (`$(TTF_DIR)/jit-x86`, `jit-arm`), with small wrapper files that
+  include the backend of the compiler pass (`beam/jit/fat`). asmjit is
+  compiled with both backends; `ASMJIT_NO_FOREIGN` makes the files of
+  the other CPU empty.
+- Run-time checks (`IsXnuSilicon()`) where upstream checks `__APPLE__`:
+  single-mapped memory with `MAP_JIT`, Cosmopolitan's `__jit_begin()` and
+  `__jit_end()` for the write permission, and `__clear_cache()` (which
+  calls `sys_icache_invalidate()` on macOS).
+
+**Possible upstream fix.** A configure option for more than one backend
+is not likely to be useful upstream. The run-time checks could be
+upstream as "if the OS is not known at compile time" hooks.
+
+### O14. The ARM cache checks run only on an ARM host
+
+**Status:** OTP 29.1.1 (`make/autoconf/otp.m4`, `ETHR_CHK_GCC_ATOMIC_OPS`).
+
+**Symptom.** In a fat build, configured on x86_64, the aarch64 half
+has `ETHR_HAVE_GCC_ASM_ARM_{ISB_SY,DC_CVAU,IC_IVAU}_INSTRUCTION` set to
+0, and the ARM JIT cannot clear the instruction cache.
+
+**Cause.** The checks run only when `host_cpu` is ARM, and cache
+variables cannot turn them on.
+
+**Fix in BEAM.com.** With `BEAM_COM_FAT_JIT=yes`, the three values are 1.
+They are used only in code for ARM, so the x86_64 half does not change.

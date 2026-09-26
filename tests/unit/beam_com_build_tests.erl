@@ -109,6 +109,13 @@ script_test_() ->
 
 %%% Application directories
 
+slashes_test_() ->
+    [{"Windows: backslashes are separators",
+      ?_assertEqual("bin/x.com", beam_com_build:slashes("bin\\x.com", {unix, windows}))},
+     ?_assertEqual("C:/a/b/c", beam_com_build:slashes("C:\\a\\b/c", {unix, windows})),
+     {"other systems: no change",
+      ?_assertEqual("a\\b", beam_com_build:slashes("a\\b", {unix, linux}))}].
+
 app_dir_test_() ->
     {setup, fun tmp/0, fun rm/1,
      fun(Dir) ->

@@ -209,12 +209,8 @@ if [ -d examples ]; then
     [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
-# The JIT probe: beam-jit.com is x86_64 only.
-case $(uname -m) in
-    x86_64|amd64) jit_cpu=1 ;;
-    *) jit_cpu=0 ;;
-esac
-if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
+# The JIT: beam-jit.com has the x86 and the arm backend.
+if [ -f "$dir/beam-jit.com" ]; then
     check beam-jit.com "Emulator    : jit@@OS type     : unix/$os" version
     if [ -d examples ]; then
         check beam-jit.com 'wrote .*hashsum.jit.com' \
@@ -234,6 +230,9 @@ if [ -f "$dir/beam-jit.com" ] && [ $jit_cpu = 1 ]; then
             check_status 3 script_check.jit.com 'halting 3' halt 3
             check script_check.jit.com '^line 100000$@@^last line$' big
         fi
+        check beam-jit.com 'wrote .*crypto_check.jit.com' \
+            build examples/crypto_check -o "$dir/crypto_check.jit.com"
+        [ -f "$dir/crypto_check.jit.com" ] && check crypto_check.jit.com "$crypto_check"
     fi
 fi
 
@@ -246,6 +245,11 @@ if [ -d examples ]; then
         check sqlite_check.b.com "$sqlite:memory:"
         rm -f "$dir/test.db"
         check sqlite_check.b.com "${sqlite}$dir/test.db" "$dir/test.db"
+    fi
+    if [ -f "$dir/beam-jit.com" ]; then
+        check beam-jit.com 'wrote .*sqlite_check.jit.com' \
+            build examples/sqlite_check.erl -o "$dir/sqlite_check.jit.com"
+        [ -f "$dir/sqlite_check.jit.com" ] && check sqlite_check.jit.com "$sqlite:memory:"
     fi
 fi
 rm -f "$tmp" "$tmp.diag"

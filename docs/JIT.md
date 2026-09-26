@@ -1,12 +1,57 @@
 # JIT (BeamAsm) in BEAM.com
 
-## Probe result (step a and b)
+## Status: one fat file with both backends (steps c and d)
 
-BeamAsm, the JIT of OTP, works in an x86_64-only `beam-jit.com`
-(`JIT=1 CC=x86_64-unknown-cosmo-cc ./build.sh`). CI builds it and runs
-`beam-jit.com version`, and builds and runs `hashsum` and `greeter` with it, on every
-x86_64 platform: Linux, macOS x86_64, Windows, FreeBSD, NetBSD and
-OpenBSD 7.3. `erlang:system_info(emu_flavor)` is `jit` on each one.
+`JIT=1 ./build.sh` (with the normal, fat `cosmocc`) builds a
+`beam-jit.com` with both backends of BeamAsm: the x86 backend in the
+x86_64 half and the arm backend in the aarch64 half. CI builds it and
+tests it on every platform (see `tests/run.sh`).
+
+What was needed, in addition to the x86_64 probe below:
+
+- **`JIT_ARCH=fat`** (`patches/otp/0002-jit.patch`, when
+  `BEAM_COM_FAT_JIT=yes`, which `build.sh` sets for `cosmocc`). The
+  Makefile generates the opcode tables and `beam_asm_global.hpp` once for
+  each backend, into `$(TTF_DIR)/jit-x86` and `jit-arm`. Small wrapper
+  files select the backend of the compiler pass with
+  `#if defined(__x86_64__)` / `#elif defined(__aarch64__)`:
+  `beam/jit/fat/*.cpp` and `beam_asm.hpp` for the backend sources, and
+  `beam/jit/fat/ttf/*` for the generated files. asmjit is compiled with
+  both backends (`ASMJIT_NO_FOREIGN` empties the files of the other CPU).
+- **Step c was done inside step d.** An aarch64-only build would need a
+  real cross-compile of OTP: configure takes the backend from the host
+  CPU, and the OTP build runs the tools that it builds. The fat build
+  needs neither.
+- **x28** (`docs/UPSTREAM.md` C22): Cosmopolitan keeps its thread
+  pointer in x28 on aarch64. The arm backend keeps X3 in x28, so it uses
+  its DEBUG register layout under Cosmopolitan (X3-X5 in x15-x17).
+- **The ARM cache instructions** (O14): the configure checks for
+  `isb sy`, `dc cvau` and `ic ivau` run only on an ARM host. With
+  `BEAM_COM_FAT_JIT=yes` they are set to 1 (used only in ARM code).
+- **macOS on Apple Silicon** (O13): cosmocc does not define `__APPLE__`,
+  so the macOS code of asmjit and ERTS is replaced by run-time checks
+  (`IsXnuSilicon()`): single-mapped memory with `MAP_JIT`, the
+  per-thread write permission with Cosmopolitan's `__jit_begin()` and
+  `__jit_end()`, and `__clear_cache()` (it calls
+  `sys_icache_invalidate()` on macOS).
+- **The dependency pass** (C23): cosmocc defines no CPU for `-MM`, so
+  the wrapper files take the x86 files there.
+
+Sizes: `beam-jit.com` (fat) is 42.0 MB; the fat interpreter `beam.com`
+is 37 MB.
+
+Tested locally: all behavior tests with `beam-jit.com` on Linux x86_64,
+and on the aarch64 half with qemu.
+
+Not done yet: dual mapping (W^X) in asmjit under Cosmopolitan. Today
+asmjit falls back to single-mapped RWX memory, except on macOS arm64,
+where it uses `MAP_JIT`.
+
+## The x86_64 probe (steps a and b)
+
+BeamAsm first worked in an x86_64-only `beam-jit.com`
+(`JIT=1 CC=x86_64-unknown-cosmo-cc ./build.sh`), on Linux, macOS x86_64,
+Windows, FreeBSD, NetBSD and OpenBSD 7.3.
 
 What was needed:
 
@@ -21,14 +66,10 @@ What was needed:
 - The compiler of one CPU writes an ELF file. `build.sh` makes the APE
   file with `apelink` (`objcopy -O binary` drops the zip of the ELF).
 
-Sizes: `beam-jit.com` (x86_64 only) is 28.7 MB, and the programs that it
-makes are about 20 MB (the fat interpreter `beam.com` is 37 MB, and its
-programs 27-32 MB). The x86_64 JIT emulator alone is 11.3 MB.
+Sizes: the x86_64-only `beam-jit.com` was 28.7 MB, and the programs that
+it makes about 20 MB. The x86_64 JIT emulator alone is 11.3 MB.
 
-Not done yet: the aarch64 half, and the fat file with both backends. The
-design below plans them.
-
-## Design for the next steps
+## The design (written before step a)
 
 Design report, 2026-09-26, before step (a). Paths are relative to the built OTP 29.1.1 tree
 (`build/otp`, "OTP") or the Cosmopolitan source

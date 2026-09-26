@@ -169,8 +169,8 @@ if (Test-Path "examples") {
     }
 }
 
-# The JIT probe: beam-jit.com is x86_64 only.
-if ((Test-Path (Join-Path $Dir "beam-jit.com")) -and ($env:PROCESSOR_ARCHITECTURE -eq "AMD64")) {
+# The JIT: beam-jit.com has the x86 and the arm backend.
+if (Test-Path (Join-Path $Dir "beam-jit.com")) {
     Check "beam-jit.com" 'Emulator    : jit@@OS type     : unix/windows' @("version")
     if (Test-Path "examples") {
         Check "beam-jit.com" 'wrote .*hashsum.jit.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.jit.com")
@@ -192,6 +192,10 @@ if ((Test-Path (Join-Path $Dir "beam-jit.com")) -and ($env:PROCESSOR_ARCHITECTUR
             Check "script_check.jit.com" 'halting 3' @("halt", "3") 3
             Check "script_check.jit.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
         }
+        Check "beam-jit.com" 'wrote .*crypto_check.jit.com' @("build", "examples/crypto_check", "-o", "$Dir/crypto_check.jit.com")
+        if (Test-Path (Join-Path $Dir "crypto_check.jit.com")) {
+            Check "crypto_check.jit.com" $patterns["crypto_check"] @()
+        }
     }
 }
 
@@ -203,6 +207,12 @@ if (Test-Path "examples") {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
         Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
+    }
+    if (Test-Path (Join-Path $Dir "beam-jit.com")) {
+        Check "beam-jit.com" 'wrote .*sqlite_check.jit.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.jit.com")
+        if (Test-Path (Join-Path $Dir "sqlite_check.jit.com")) {
+            Check "sqlite_check.jit.com" ($sqlite + ':memory:') @()
+        }
     }
 }
 if ($fail -ne 0) {

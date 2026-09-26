@@ -71,3 +71,9 @@ Without CI, two platforms can be tested on a Linux x86_64 machine:
 Wine 9.0 could not run Cosmopolitan programs in a container without a
 display (even a "hello" program waits forever), so Windows needs CI or a
 Windows machine. macOS and the BSDs also need CI or a real machine.
+
+## 4. Benchmarks
+
+`tests/bench/run.sh` (and `run.ps1`) measure the size, the start time and
+the speed of typical work for each variant. CI runs them after the tests
+on each platform. See [`BENCHMARKS.md`](BENCHMARKS.md).
