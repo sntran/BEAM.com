@@ -1,0 +1,17 @@
+%% Fallback inetrc of BEAM.com on Windows.
+%%
+%% At start, BEAM.com writes an inetrc in the temp directory with the
+%% name servers and the hosts file of Windows and points ERL_INETRC at
+%% it (see windows_setup() in beam_com.c). This file is used instead
+%% when that file cannot be written. Set ERL_INETRC to use your own.
+%%
+%% There are no port programs on Windows, so the native resolver
+%% (inet_gethost) cannot run. Resolve names with the hosts file support
+%% and the DNS client of Erlang.
+{lookup, [file, dns]}.
+%% Windows has no /etc/resolv.conf. Without this line kernel watches that
+%% file and replaces the name server list with its (empty) content before
+%% every lookup, which undoes inet_db:add_ns/1 and gives nxdomain.
+{resolv_conf, ""}.
+%% Add name servers with {nameserver, {A,B,C,D}} here, or with
+%% inet_db:add_ns/1 in your application.

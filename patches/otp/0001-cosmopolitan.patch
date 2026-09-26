@@ -1,3 +1,18 @@
+diff --git a/erts/emulator/Makefile.in b/erts/emulator/Makefile.in
+index 028e2bc..3920b99 100644
+--- a/erts/emulator/Makefile.in
++++ b/erts/emulator/Makefile.in
+@@ -1295,7 +1295,9 @@ endif
+ 
+ ifeq ($(COMPILE_STATIC_LIBS),yes)
+ 
+-$(STATIC_NIF_LIBS) $(STATIC_DRIVER_LIBS):
++# One run of the recipe makes all the libraries (a grouped target). With
++# a normal rule, "make -j" runs it once for each library at the same time.
++$(STATIC_NIF_LIBS) $(STATIC_DRIVER_LIBS) &:
+ 	echo "=== Entering lib to make static libs"
+ 	(cd $(ERL_TOP)/lib/ && $(MAKE) BUILD_STATIC_LIBS=1 TYPE=$(TYPE) static_lib)
+ 	echo "=== Leaving lib after making static libs"
 diff --git a/erts/emulator/beam/erl_bits.c b/erts/emulator/beam/erl_bits.c
 index 6b70a2e..8f642c3 100644
 --- a/erts/emulator/beam/erl_bits.c
@@ -161,6 +176,129 @@ index bdd6528..5dc0dfb 100644
          execv(child_setup_prog, cs_argv);
          _exit(1);
      }
+diff --git a/erts/emulator/sys/unix/sys_uds.c b/erts/emulator/sys/unix/sys_uds.c
+index 0dcdd9b..ea74af1 100644
+--- a/erts/emulator/sys/unix/sys_uds.c
++++ b/erts/emulator/sys/unix/sys_uds.c
+@@ -58,6 +58,40 @@
+ 
+ #include "sys_uds.h"
+ 
++#ifdef __COSMOPOLITAN__
++/*
++ * BEAM.com: Cosmopolitan gives struct msghdr to the kernel unchanged on
++ * BSD and XNU, and its struct cmsghdr has the Linux layout (a 64-bit
++ * cmsg_len). The BSD and XNU kernels use a 32-bit cmsg_len, so they see
++ * a wrong level and type, and sendmsg() fails with EINVAL. On these
++ * systems, we write and read the control message in the native layout.
++ *
++ * Native layout: uint32 len, int level, int type, then the data at
++ * offset 12 (XNU, 4-byte alignment) or 16 (the BSDs, 8-byte alignment).
++ * The kernel also writes msg_flags at offset 44, which is the upper half
++ * of the 64-bit msg_controllen of Cosmopolitan.
++ */
++#include <stdint.h>
++
++#define UDS_HOSTXNU 8
++#define UDS_HOSTBSD (8 | 16 | 32 | 64) /* XNU, OpenBSD, FreeBSD, NetBSD */
++
++static int uds_native_cmsg(void)
++{
++    return (__hostos & UDS_HOSTBSD) != 0;
++}
++
++static size_t uds_cmsg_align(void)
++{
++    return (__hostos & UDS_HOSTXNU) ? 4 : 8;
++}
++
++static size_t uds_cmsg_hdrlen(void)
++{
++    return (__hostos & UDS_HOSTXNU) ? 12 : 16;
++}
++#endif
++
+ int
+ sys_uds_readv(int fd, struct iovec *iov, size_t iov_len,
+              int *fds, int fd_count, int flags) {
+@@ -87,6 +121,43 @@ sys_uds_readv(int fd, struct iovec *iov, size_t iov_len,
+         return res;
+     }
+ 
++#ifdef __COSMOPOLITAN__
++    if (uds_native_cmsg()) {
++        size_t controllen = (uint32_t) msg.msg_controllen;
++        unsigned msg_flags = (unsigned) (msg.msg_controllen >> 32);
++        size_t hdr = uds_cmsg_hdrlen(), align = uds_cmsg_align();
++        char *p = ancillary_buff, *end = ancillary_buff + controllen;
++
++        if ((msg_flags & MSG_CTRUNC) == MSG_CTRUNC) {
++            errno = EMFILE;
++            return -1;
++        }
++        while (p + hdr <= end) {
++            uint32_t len;
++            int level, type;
++            memcpy(&len, p, sizeof(len));
++            memcpy(&level, p + 4, sizeof(level));
++            memcpy(&type, p + 8, sizeof(type));
++            if (len < hdr || p + len > end)
++                break;
++            if (level == SOL_SOCKET && type == SCM_RIGHTS) {
++                char *data = p + hdr;
++                while (data + sizeof(int) <= p + len) {
++                    int received;
++                    memcpy(&received, data, sizeof(received));
++                    data += sizeof(int);
++                    if (i < fd_count)
++                        fds[i++] = received;
++                    else
++                        close(received);
++                }
++            }
++            p += (len + align - 1) & ~(align - 1);
++        }
++        return res;
++    }
++#endif
++
+     if((msg.msg_flags & MSG_CTRUNC) == MSG_CTRUNC)
+     {
+         /* We assume that we have given enough space for any header
+@@ -162,6 +233,25 @@ sys_uds_writev(int fd, struct iovec *iov, size_t iov_len,
+         msg.msg_iovlen = iov_len;
+     }
+ 
++#ifdef __COSMOPOLITAN__
++    if (uds_native_cmsg()) {
++        /* See uds_native_cmsg(): write the native BSD/XNU layout. */
++        size_t hdr = uds_cmsg_hdrlen(), align = uds_cmsg_align();
++        size_t data_len = sizeof(int) * fd_count;
++        size_t space = hdr + ((data_len + align - 1) & ~(align - 1));
++        uint32_t len = (uint32_t) (hdr + data_len);
++        int level = SOL_SOCKET, type = SCM_RIGHTS;
++        char *buf = calloc(1, space);
++        if (!buf) abort();
++        memcpy(buf, &len, sizeof(len));
++        memcpy(buf + 4, &level, sizeof(level));
++        memcpy(buf + 8, &type, sizeof(type));
++        memcpy(buf + hdr, fds, data_len);
++        msg.msg_control = buf;
++        msg.msg_controllen = space;
++    } else
++#endif
++    {
+     /* initialize the ancillary data */
+     msg.msg_control = calloc(1, CMSG_SPACE(sizeof(int) * fd_count));
+     msg.msg_controllen = CMSG_SPACE(sizeof(int) * fd_count);
+@@ -173,6 +263,7 @@ sys_uds_writev(int fd, struct iovec *iov, size_t iov_len,
+     cmsg->cmsg_type = SCM_RIGHTS;
+     cmsg->cmsg_len = CMSG_LEN(sizeof(int) * fd_count);
+     memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * fd_count);
++    }
+ 
+     res = sendmsg(fd, &msg, flags);
+ 
 diff --git a/erts/emulator/zstd/zstd.mk b/erts/emulator/zstd/zstd.mk
 index d3725de..cbd985d 100644
 --- a/erts/emulator/zstd/zstd.mk

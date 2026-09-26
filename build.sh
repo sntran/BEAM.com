@@ -4,12 +4,13 @@
 # (redbean style).
 #
 # Usage: ./build.sh [step...]
-#   Steps: toolchain otp configure make release multicall bundle test
+#   Steps: toolchain openssl otp configure make release multicall bundle test
 #   With no step, all steps run in order.
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
+#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 3.5.8)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
@@ -22,6 +23,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
+OPENSSL_VERSION=${OPENSSL_VERSION:-3.5.8}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
@@ -30,6 +32,7 @@ JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
+OPENSSL=$BUILD/openssl
 STAGE=$BUILD/stage
 OUT=${OUT:-$BUILD/beam.com}
 
@@ -50,6 +53,35 @@ step_toolchain() {
     curl -fsSL -o "$BUILD/cosmocc.zip" "$url"
     (cd "$COSMOCC" && unzip -q "$BUILD/cosmocc.zip")
     rm -f "$BUILD/cosmocc.zip"
+}
+
+step_openssl() {
+    if [ -f "$OPENSSL/lib/libcrypto.a" ]; then
+        log "Using OpenSSL in $OPENSSL"
+        return
+    fi
+    src=$BUILD/openssl-src
+    if [ ! -d "$src/.git" ]; then
+        log "Cloning OpenSSL $OPENSSL_VERSION"
+        git clone -q --depth 1 --branch "openssl-$OPENSSL_VERSION" \
+            https://github.com/openssl/openssl.git "$src"
+    fi
+    log "Building a static libcrypto with $CC"
+    cd "$src"
+    # Only libcrypto is used (by the crypto NIF). No assembly code, so
+    # that the same C code compiles for x86_64 and aarch64.
+    ./Configure linux-generic64 CC="$CC" AR="$AR" RANLIB=true \
+        --prefix="$OPENSSL" --libdir=lib \
+        no-shared no-asm no-dso no-engine no-async no-tests no-apps \
+        no-docs no-module no-afalgeng no-uplink no-secure-memory
+    make -j"$JOBS" build_libs
+    make install_dev
+    # A fat archive has its aarch64 twin in .aarch64/, and "make install"
+    # does not copy it.
+    if [ -f .aarch64/libcrypto.a ]; then
+        mkdir -p "$OPENSSL/lib/.aarch64"
+        cp .aarch64/libcrypto.a "$OPENSSL/lib/.aarch64/"
+    fi
 }
 
 step_otp() {
@@ -80,8 +112,15 @@ step_configure() {
     #  - sendfile: inet_drv only knows the Linux/BSD/Solaris variants.
     #  - linux_thp: 2 MiB page alignment breaks the APE layout.
     #  - clock ids: CLOCK_UPTIME exists in the headers but only works on BSD.
+    #  - DED_LD*: there are no shared objects. cosmo/noshared writes
+    #    placeholder files for NIF libraries, and the configure tests of
+    #    the NIFs link normal programs (no -shared).
+    # The crypto and asn1 NIFs are linked into the emulator
+    # (--enable-static-nifs), so libcrypto must be linked into it too.
     ./configure \
-        CC="$CC" AR="$AR" RANLIB=true \
+        CC="$CC" AR="$AR" RANLIB=true LIBS="$OPENSSL/lib/libcrypto.a" \
+        DED_LD="$ROOT/cosmo/noshared" DED_LDFLAGS="-no-pie" \
+        DED_LD_FLAG_RUNTIME_LIBRARY_PATH="-Wl,-rpath," \
         CFLAGS="-O2 -g -DZSTD_DISABLE_ASM -include $ROOT/cosmo/erts_cosmo.h" \
         ac_cv_header_poll_h=no \
         ac_cv_func_sendfile=no \
@@ -95,7 +134,9 @@ step_configure() {
         --disable-pie \
         --disable-parallel-configure \
         --without-termcap \
-        --without-ssl \
+        --with-ssl="$OPENSSL" \
+        --disable-dynamic-ssl-lib \
+        --enable-static-nifs \
         --without-javac \
         --without-wx \
         --without-odbc \
@@ -119,10 +160,8 @@ step_make() {
     cd "$ERL_TOP"
     # cosmocc does not support "-MM" with many input files. depcc runs
     # it once for each file.
-    # There are no shared objects, so noshared writes placeholder files
-    # for the NIF libraries (DED_LD).
     DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
-        DEP_CC="$ROOT/cosmo/depcc" DED_LD="$ROOT/cosmo/noshared"
+        DEP_CC="$ROOT/cosmo/depcc"
 }
 
 step_multicall() {
@@ -154,6 +193,7 @@ step_bundle() {
     # OTP: boot scripts for tools, and the kernel and stdlib applications.
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
+    cp "$ROOT/cosmo/windows.inetrc" "$STAGE/bin/"
     for app in kernel stdlib; do
         dir=$(cd "$RELEASE/lib" && ls -d "$app"-* | head -n 1)
         mkdir -p "$STAGE/lib/$dir"
@@ -189,7 +229,7 @@ step_test() {
 }
 
 if [ $# -eq 0 ]; then
-    set -- toolchain otp configure make release multicall bundle test
+    set -- toolchain openssl otp configure make release multicall bundle test
 fi
 mkdir -p "$BUILD"
 for s in "$@"; do

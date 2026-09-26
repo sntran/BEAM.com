@@ -375,6 +375,64 @@ Related notes from the same code reading (not yet seen in CI):
 - `sched_getaffinity()` on Windows wants `size == sizeof(cpu_set_t)`
   exactly (`libc/proc/sched_getaffinity.c`); Linux accepts a larger size.
 
+### C17. BSD and XNU: `sendmsg`/`recvmsg` do not convert `struct cmsghdr`
+
+**Status:** 4.0.2 in CI (macOS arm64 and x86_64, FreeBSD, NetBSD, OpenBSD
+7.3). HEAD source: `libc/sock/sendmsg.c` and `recvmsg.c` give the
+`msghdr` to the kernel unchanged (only `msg_name` is converted).
+
+**Effect.** Cosmopolitan's `struct cmsghdr` has the Linux layout (64-bit
+`cmsg_len`, data at offset 16). The BSD and XNU kernels use a 32-bit
+`cmsg_len`, so they read the high half of `cmsg_len` as the level, and
+`sendmsg(SCM_RIGHTS)` fails with `EINVAL`. The data offset is also
+different (12 on XNU, 16 on the BSDs). For `recvmsg`, the kernel writes
+`msg_flags` at offset 44, which is the upper half of the 64-bit
+`msg_controllen`, so `MSG_CTRUNC` is lost. In ERTS every port program
+(`os:cmd/1`, `inet_gethost`) failed with
+`Failed to write to erl_child_setup: 22` on macOS and the BSDs. It works
+on Linux, where the layouts are the same.
+
+**Workaround in BEAM.com.** `sys_uds.c` writes and reads the control
+message in the native layout when `__hostos` is a BSD or XNU.
+
+**Possible upstream fix.** In `sendmsg()`/`recvmsg()` on BSD and XNU,
+convert each `cmsghdr` (length, level, type and data offset) and
+`msg_flags`, in the same way as `msg_name` is already converted.
+
+### C18. Windows: no public API for the name servers, no `crypt32` imports
+
+**Status:** 4.0.2 (headers in the cosmocc package). Not a bug; notes for
+programs that bring their own resolver or TLS stack.
+
+**Name servers.** On Windows there is no `/etc/resolv.conf`.
+Cosmopolitan's resolver reads the name servers from the registry in
+`__get_resolv_conf_nt()` (`third_party/musl/resolvconf.c`), which is
+reached through `__get_resolv_conf()`. The function is exported from
+`libcosmo.a`, but its header (`third_party/musl/lookup.internal.h`) is
+internal, it returns IPv4 servers only (at most `MAXNS`, 3) and no
+`search` list (both are `TODO(jart)` in the source). The same is true
+of `GetHostsTxtPath()` (`libc/calls/sysdir.internal.h`), which gives
+`C:\Windows\System32\drivers\etc\hosts`. A program with its own
+resolver (ERTS: `inet_res`) has no public way to get this information.
+`GetAdaptersAddresses()` (iphlpapi) is imported and declared, so a
+program can also read the servers itself.
+
+**Certificates.** `libc/nt/` has no import stubs for `crypt32.dll`
+(`CertOpenSystemStoreW`, `CertEnumCertificatesInStore`,
+`CertCloseStore`). A program that wants the trusted roots of Windows
+loads the DLL with `LoadLibrary()` and calls the functions through
+`GetProcAddress()` pointers declared with `__attribute__((__ms_abi__))`
+(the pattern of `libc/dlopen/dlopen.c`). This works.
+
+**Workaround in BEAM.com.** `windows_setup()` in `cosmo/beam_com.c`
+uses `__get_resolv_conf()` and `GetHostsTxtPath()` for an inetrc file,
+and `crypt32` through `LoadLibrary()` for a PEM file.
+
+**Possible upstream fix.** Move the two declarations to a public header
+(for example `libc/calls/calls.h` or a new `libc/dns.h`), or add a
+public function that returns the name servers, and consider `crypt32`
+stubs in `libc/nt/`.
+
 ---
 
 ## Erlang/OTP
@@ -446,3 +504,72 @@ and selects the program by `argv[0]`. A small ERTS hook for "the path
 of the helper programs" (instead of `BINDIR/name`) would make
 single-file runtimes possible without patches to `sys_drivers.c` and
 `erl_child_setup.c`.
+
+### O10. `inet_db` discards added name servers when `/etc/resolv.conf` is missing
+
+**Status:** OTP 29.1.1, `lib/kernel/src/inet_db.erl` and
+`inet_config.erl`. Seen in BEAM.com on Windows (`os:type()` is
+`{unix, windows}` and there is no `/etc/resolv.conf`), but the code is
+the same on any Unix without that file.
+
+**Reproducer** (any Unix, as root: `mv /etc/resolv.conf /tmp/`):
+
+```erlang
+inet_db:set_lookup([dns]),
+inet_db:add_ns({8,8,8,8}),
+inet_db:res_option(nameservers),            % [{{8,8,8,8},53}]
+inet_res:resolve("www.erlang.org", in, a),  % {error,nxdomain}, nothing is sent
+inet_db:res_option(nameservers).            % []
+```
+
+**Cause.** `inet_config:init/0` sets `resolv_conf_name` to
+`/etc/resolv.conf` for every `{unix, _}`. `inet_res` calls
+`inet_db:res_update_conf/0` before each lookup (in `make_options/1`,
+before it reads `nameservers`). In `inet_db:handle_update_file/7`, when
+`erl_prim_loader:read_file_info(File)` fails, the code takes the
+"No file - clear content" branch and parses an empty binary, which
+sends `{replace_ns, []}` and `{replace_search, []}`: the servers added
+with `inet_db:add_ns/1` (or `{nameserver, IP}` in an inetrc) are gone,
+and `inet_res:res_query/5` answers `{error, nxdomain}` for an empty
+`nameservers` list without a query. This repeats every
+`?RES_FILE_UPDATE_TM` (5 s).
+
+**Workaround in BEAM.com.** `{resolv_conf, ""}.` in the inetrc, before
+the `{nameserver, _}` entries. An empty file name deletes the monitor
+(`handle_set_file/7`), and `inet_config` then does not set the default
+name because `inet_db:res_option(resolv_conf)` is no longer `undefined`.
+
+**Possible upstream fix.** In `handle_update_file/7`, when the file
+does not exist and never existed (`Finfo =:= undefined`), keep the
+current content instead of replacing it with the parse of `<<>>`; or
+only clear when a file that was read earlier disappears. Documenting
+`{resolv_conf, ""}` as the way to turn the monitor off would also help.
+
+### O11. The static NIF libraries are made two times at the same time with `make -j`
+
+**Status:** OTP 29.1.1, `erts/emulator/Makefile.in`. Seen in CI with
+`--enable-static-nifs` (crypto and asn1) and `make -j4`. It does not
+occur on each build.
+
+**Symptom.**
+
+```
+ CC	../priv/obj/x86_64-pc-linux-gnu/aead_static.o
+ CC	../priv/obj/x86_64-pc-linux-gnu/aead_static.o
+...
+../priv/obj/x86_64-pc-linux-gnu/algorithms_static.o: open failed with No such file or directory
+make[8]: *** [x86_64-pc-linux-gnu/Makefile:235: ...algorithms_static.o] Error 1
+```
+
+**Cause.** The rule `$(STATIC_NIF_LIBS) $(STATIC_DRIVER_LIBS):` has
+more than one target and no prerequisites. For make, this is one rule
+for each target, so with `-j` it runs the recipe (`make -C lib
+static_lib`, which makes all the libraries) once for each library at
+the same time. The two runs write the same object files.
+
+**Fix in BEAM.com.** A grouped target (`&:`, GNU make 4.3 and later):
+the recipe runs once and makes all the targets.
+
+**Possible upstream fix.** The same grouped target, or one stamp file
+as the target of the recipe, with the libraries depending on it (this
+also works with older make).
