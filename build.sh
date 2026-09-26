@@ -63,9 +63,15 @@ JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com build" copies the ones that
 # a program needs into the new executable.
-BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets"
+BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets
+             xmerl runtime_tools"
 # The small build (OTP_SMALL_BUILD) does not make these.
 EXTRA_APPS="crypto asn1 public_key ssl"
+# Nor these, of which only the Erlang code is needed (src/): xmerl
+# (Phoenix apps have swoosh, which includes xmerl.hrl), and runtime_tools
+# (in the extra_applications of a new Phoenix app; its C code is for
+# dtrace and trace drivers).
+SRC_APPS="xmerl runtime_tools"
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
@@ -396,6 +402,10 @@ step_make() {
         log "Building $app"
         PATH=$ERL_TOP/bootstrap/bin:$PATH DEPCC_CC=$CC \
             make -C "lib/$app" opt DEP_CC="$ROOT/cosmo/depcc"
+    done
+    for app in $SRC_APPS; do
+        log "Building $app (Erlang code)"
+        PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "lib/$app/src" opt
     done
 }
 

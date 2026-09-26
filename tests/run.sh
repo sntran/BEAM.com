@@ -416,6 +416,68 @@ if [ -f "$dir/beam.com" ]; then
     dir=$dir_rel runner=$runner_rel
 fi
 
+# Phoenix from source, with the tools: a new app (mix phx.new, without
+# Ecto), its deps from hex.pm and GitHub (heroicons is a git dep), and
+# "iex.com -S mix phx.server" serves the start page. Linux only: it needs
+# git, curl and the network (the esbuild and tailwind watchers download
+# their programs).
+if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/beam.com" ] &&
+   command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    here=$(pwd)
+    work=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_phx.XXXXXX")
+    dir_rel=$dir runner_rel=$runner limit_saved=$limit path_saved=$PATH
+    dir=$(cd "$dir" && pwd)
+    case $runner in */*) runner=$here/$runner ;; esac
+    limit=600
+    for t in mix iex; do ln -f "$dir/beam.com" "$dir/$t.com"; done
+    for t in mix escript; do ln -sf beam.com "$dir/$t"; done
+    PATH=$dir:$PATH
+    export PATH
+    cd "$work"
+    check mix.com '' local.hex --force
+    check mix.com 'phx_new' archive.install hex phx_new --force
+    check mix.com 'creating hello/mix.exs' phx.new hello --no-ecto --no-install
+    if [ -d hello ]; then
+        cd hello
+        check mix.com 'phoenix' deps.get
+        check mix.com '' compile
+        PORT=4123
+        export PORT
+        echo "==> iex.com -S mix phx.server"
+        sleep 300 | $runner "$dir/iex.com" -S mix phx.server > "$tmp.phx" 2>&1 &
+        phx=$!
+        served=
+        i=0
+        while [ $i -lt 90 ]; do
+            sleep 2
+            i=$((i + 1))
+            if curl -s http://127.0.0.1:$PORT/ 2>/dev/null | grep -q 'Phoenix Framework'; then
+                served=yes
+                break
+            fi
+        done
+        unset PORT
+        grep -v '^ *$' "$tmp.phx" | head -20
+        if [ -n "$served" ]; then
+            echo "PASS: iex.com -S mix phx.server (after $((i * 2)) s)"
+        else
+            echo "FAIL: iex.com -S mix phx.server did not serve the start page"
+            fail=1
+            failed="$failed
+  iex.com -S mix phx.server: no start page on http://127.0.0.1:4123/"
+        fi
+        # Stop the VM (the program of the pipeline), then the sleep.
+        pkill -f "$dir/iex.com" 2>/dev/null
+        kill "$phx" 2>/dev/null
+        pkill -f "^sleep 300$" 2>/dev/null
+        wait "$phx" 2>/dev/null
+    fi
+    cd "$here"
+    rm -f "$dir/mix" "$dir/escript" "$dir/mix.com" "$dir/iex.com"
+    rm -rf "$work"
+    dir=$dir_rel runner=$runner_rel limit=$limit_saved PATH=$path_saved
+fi
+
 # An application with an entry (toolbox): the main module comes from
 # escript_emu_args of rebar.config, a behaviour is compiled before the
 # module that uses it, priv has an executable file (so it is copied to

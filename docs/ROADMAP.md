@@ -114,6 +114,14 @@ can be added on WAMR, or the runtime can be replaced.
   Programs are built without docs and debug information (−7.7 MB).
 - Next: `mix release` (it needs ERTS on disk), and the options of the
   Elixir scripts that change the `erl` command (`--erl`).
+- Done: Phoenix from source with the tools (`iex.com -S mix
+  phx.server`): `beam.com` has `xmerl` and `runtime_tools`, and CI runs
+  a new Phoenix app (without Ecto) on Linux.
+- Next for Phoenix: the NIFs of `exqlite` (`--database sqlite3`, with
+  the SQLite that is in `beam.com`) and of `bcrypt_elixir`
+  (`phx.gen.auth`), linked into `beam.com` as static NIFs, so that the
+  packages from Hex work unchanged; then `config/runtime.exs` and
+  `priv/static` in `beam.com build`, for a Phoenix app in one file.
 - Done: command line programs, for larger projects (for example an
   orchestration tool with a sandbox worker): the `main/1` of an application
   (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours
