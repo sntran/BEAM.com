@@ -4,8 +4,8 @@
 # release in its zip (redbean style).
 #
 # Usage: ./build.sh [step...]
-#   Steps: toolchain openssl otp configure sqlite make release multicall
-#          bundle test
+#   Steps: toolchain openssl otp configure sqlite wasm make release
+#          multicall bundle test
 #   With no step, all steps run in order.
 #
 # Environment:
@@ -14,6 +14,9 @@
 #   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 3.5.8)
 #   SQLITE           1: link SQLite (the esqlite NIF) into beam.com, and put
 #                    the esqlite application in the zip (default 0)
+#   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
+#                    wasm application in the zip (default 1)
+#   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
@@ -30,6 +33,8 @@ OPENSSL_VERSION=${OPENSSL_VERSION:-3.5.8}
 SQLITE=${SQLITE:-0}
 # esqlite (Apache-2.0) with the SQLite 3.50.4 amalgamation (public domain).
 ESQLITE_COMMIT=${ESQLITE_COMMIT:-5c8d590d8eb70de17dd2c64dfc7502f4fd2fcba8}
+WASM=${WASM:-1}
+WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
@@ -46,6 +51,7 @@ ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
 OPENSSL=$BUILD/openssl
 ESQLITE=$BUILD/esqlite
+WAMR=$BUILD/wamr
 STAGE=$BUILD/stage
 OUT=${OUT:-$BUILD/beam.com}
 
@@ -203,14 +209,131 @@ step_sqlite() {
     "$AR" rcs esqlite3_nif.a esqlite3_nif.o sqlite3.o
 }
 
+# The WAMR sources for the interpreter with WASI (from the CMake files of
+# WAMR, for the cosmopolitan platform).
+WAMR_SOURCES="
+    core/shared/platform/cosmopolitan/platform_init.c
+    core/shared/platform/common/posix/posix_blocking_op.c
+    core/shared/platform/common/posix/posix_clock.c
+    core/shared/platform/common/posix/posix_file.c
+    core/shared/platform/common/posix/posix_malloc.c
+    core/shared/platform/common/posix/posix_memmap.c
+    core/shared/platform/common/posix/posix_sleep.c
+    core/shared/platform/common/posix/posix_socket.c
+    core/shared/platform/common/posix/posix_thread.c
+    core/shared/platform/common/posix/posix_time.c
+    core/shared/platform/common/libc-util/libc_errno.c
+    core/shared/platform/common/memory/mremap.c
+    core/shared/mem-alloc/ems/ems_alloc.c
+    core/shared/mem-alloc/ems/ems_gc.c
+    core/shared/mem-alloc/ems/ems_hmu.c
+    core/shared/mem-alloc/ems/ems_kfc.c
+    core/shared/mem-alloc/mem_alloc.c
+    core/shared/utils/bh_assert.c
+    core/shared/utils/bh_bitmap.c
+    core/shared/utils/bh_common.c
+    core/shared/utils/bh_hashmap.c
+    core/shared/utils/bh_leb128.c
+    core/shared/utils/bh_list.c
+    core/shared/utils/bh_log.c
+    core/shared/utils/bh_queue.c
+    core/shared/utils/bh_vector.c
+    core/shared/utils/runtime_timer.c
+    core/iwasm/libraries/libc-wasi/libc_wasi_wrapper.c
+    core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/blocking_op.c
+    core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
+    core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/random.c
+    core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/str.c
+    core/iwasm/common/wasm_application.c
+    core/iwasm/common/wasm_blocking_op.c
+    core/iwasm/common/wasm_c_api.c
+    core/iwasm/common/wasm_exec_env.c
+    core/iwasm/common/wasm_loader_common.c
+    core/iwasm/common/wasm_memory.c
+    core/iwasm/common/wasm_native.c
+    core/iwasm/common/wasm_runtime_common.c
+    core/iwasm/common/wasm_shared_memory.c
+    core/iwasm/interpreter/wasm_interp_fast.c
+    core/iwasm/interpreter/wasm_loader.c
+    core/iwasm/interpreter/wasm_runtime.c"
+
+step_wasm() {
+    [ "$WASM" = 1 ] || return 0
+    if [ ! -d "$WAMR/.git" ]; then
+        log "Cloning WAMR $WAMR_VERSION"
+        git clone -q --depth 1 --branch "WAMR-$WAMR_VERSION" \
+            https://github.com/bytecodealliance/wasm-micro-runtime.git "$WAMR"
+    fi
+    log "Building WAMR and the wasm NIF as a static NIF"
+    t=$(target)
+    obj=$WAMR/obj
+    rm -rf "$obj"
+    mkdir -p "$obj/.aarch64" "$WAMR/.aarch64"
+    cd "$WAMR"
+    # Notes on the options:
+    #  - WASM_DISABLE_WRITE_GS_BASE: on x86_64, WAMR writes the GS base
+    #    register, and Cosmopolitan keeps its thread-local storage there.
+    #  - WASM_HAVE_MREMAP=0: Cosmopolitan has no mremap() (only
+    #    cosmo_mremap()). WAMR then uses its own (mremap.c).
+    #  - WASM_DISABLE_HW_BOUND_CHECK: no guard pages and signal handlers
+    #    for the linear memory (the Windows emulation of signals).
+    #  - SIMD needs SIMDe, which is not in the WAMR repository.
+    flags="-O2 -include $ROOT/apps/wasm/c_src/wamr_target.h
+        -DBH_PLATFORM_COSMOPOLITAN -DBH_MALLOC=wasm_runtime_malloc
+        -DBH_FREE=wasm_runtime_free -D_GNU_SOURCE
+        -DWASM_ENABLE_INTERP=1 -DWASM_ENABLE_FAST_INTERP=1
+        -DWASM_ENABLE_LIBC_WASI=1 -DWASM_ENABLE_BULK_MEMORY=1
+        -DWASM_ENABLE_BULK_MEMORY_OPT=1 -DWASM_ENABLE_SHRUNK_MEMORY=1
+        -DWASM_ENABLE_MODULE_INST_CONTEXT=1 -DWASM_ENABLE_SIMD=0
+        -DWASM_DISABLE_HW_BOUND_CHECK=1 -DWASM_DISABLE_STACK_HW_BOUND_CHECK=1
+        -DWASM_DISABLE_WAKEUP_BLOCKING_OP=0 -DWASM_DISABLE_WRITE_GS_BASE=1
+        -DWASM_HAVE_MREMAP=0 -DWASM_GLOBAL_HEAP_SIZE=10485760
+        -Icore/iwasm/include -Icore/iwasm/common -Icore/iwasm/interpreter
+        -Icore/iwasm/libraries/libc-wasi/sandboxed-system-primitives/include
+        -Icore/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src
+        -Icore/shared/platform/cosmopolitan -Icore/shared/platform/include
+        -Icore/shared/platform/common/libc-util -Icore/shared/mem-alloc
+        -Icore/shared/utils -Icore/shared/utils/uncommon"
+    for src in $WAMR_SOURCES; do
+        # shellcheck disable=SC2086
+        "$CC" $flags -c "$src" -o "$obj/$(basename "$src" .c).o"
+    done
+    # cosmocc does not take assembler files, so the trampoline is made
+    # with the compiler of each CPU (the aarch64 object goes in .aarch64/).
+    x86_64-unknown-cosmo-cc -c -Icore/iwasm/common/arch \
+        "$ROOT/apps/wasm/c_src/invokeNative.S" -o "$obj/invokeNative.o"
+    aarch64-unknown-cosmo-cc -c -Icore/iwasm/common/arch \
+        "$ROOT/apps/wasm/c_src/invokeNative.S" -o "$obj/.aarch64/invokeNative.o"
+    "$CC" -O2 -DSTATIC_ERLANG_NIF_LIBNAME=wasm -Icore/iwasm/include \
+        -I"$ERL_TOP/erts/emulator/beam" -I"$ERL_TOP/erts/include" \
+        -I"$ERL_TOP/erts/include/$t" \
+        -c "$ROOT/apps/wasm/c_src/wasm_nif.c" -o "$obj/wasm_nif.o"
+    rm -f wasm.a .aarch64/wasm.a
+    (cd "$obj" && "$AR" rcs "$WAMR/wasm.a" ./*.o)
+}
+
 # The STATIC_NIFS value for the emulator Makefile. Empty: the configured
 # static NIFs (crypto and asn1).
 static_nifs() {
-    [ "$SQLITE" = 1 ] || return 0
+    [ "$SQLITE" = 1 ] || [ "$WASM" = 1 ] || return 0
     t=$(target)
     printf '%s' "$ERL_TOP/lib/asn1/priv/lib/$t/asn1rt_nif.a" \
-        " $ERL_TOP/lib/crypto/priv/lib/$t/crypto.a" \
-        " $ESQLITE/esqlite3_nif.a"
+        " $ERL_TOP/lib/crypto/priv/lib/$t/crypto.a"
+    [ "$SQLITE" = 1 ] && printf ' %s' "$ESQLITE/esqlite3_nif.a"
+    [ "$WASM" = 1 ] && printf ' %s' "$WAMR/wasm.a"
+    return 0
+}
+
+# Stop early when a static NIF archive of an enabled option is missing
+# (its step did not run).
+check_static_nifs() {
+    for a in $(static_nifs); do
+        [ -f "$a" ] || case $a in
+            */lib/asn1/*|*/lib/crypto/*) ;;  # made by the OTP build
+            *) echo "Missing $a: run the sqlite and wasm steps first" >&2
+               exit 1 ;;
+        esac
+    done
 }
 
 step_make() {
@@ -218,6 +341,7 @@ step_make() {
     cd "$ERL_TOP"
     # cosmocc does not support "-MM" with many input files. depcc runs
     # it once for each file.
+    check_static_nifs
     nifs=$(static_nifs)
     DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
         DEP_CC="$ROOT/cosmo/depcc" ${nifs:+"STATIC_NIFS=$nifs"}
@@ -236,6 +360,9 @@ step_multicall() {
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=emu $objs
     rm -f "$ERL_TOP/bin/$t/beam.emu"
+    # The table of static NIFs depends on STATIC_NIFS, and make does not
+    # know it.
+    rm -f "$t/opt/emu/driver_tab.c"
     nifs=$(static_nifs)
     make -f "$t/Makefile" TYPE=opt FLAVOR=emu EMU_LDFLAGS="$objs" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.emu"
@@ -280,6 +407,13 @@ step_bundle() {
         cp "$ESQLITE/src/esqlite.app.src" "$STAGE/lib/esqlite-$vsn/ebin/esqlite.app"
     fi
 
+    # WebAssembly: the wasm application (its NIF is in the emulator).
+    if [ "$WASM" = 1 ]; then
+        mkdir -p "$STAGE/lib/wasm-0.1.0/ebin"
+        "$ERL_TOP/bin/erlc" -o "$STAGE/lib/wasm-0.1.0/ebin" "$ROOT"/apps/wasm/src/*.erl
+        cp "$ROOT/apps/wasm/src/wasm.app.src" "$STAGE/lib/wasm-0.1.0/ebin/wasm.app"
+    fi
+
     # The commands of beam.com (lib/beam_com has no version, so that
     # beam_com.c can find it), and the runner of one-file programs.
     mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
@@ -322,6 +456,11 @@ step_test() {
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
     grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
         "$BUILD/test.out"
+    if [ "$WASM" = 1 ]; then
+        "$OUT" build "$ROOT/examples/wasm_check.erl" -o "$BUILD/wasm_check.com"
+        "$BUILD/wasm_check.com" | tee "$BUILD/test.out"
+        grep -q '^wasm: wasi exit code 7' "$BUILD/test.out"
+    fi
     if [ "$SQLITE" = 1 ]; then
         "$OUT" build "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
         "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
@@ -330,8 +469,8 @@ step_test() {
 }
 
 if [ $# -eq 0 ]; then
-    set -- toolchain openssl otp configure sqlite make release multicall \
-        bundle test
+    set -- toolchain openssl otp configure sqlite wasm make release \
+        multicall bundle test
 fi
 mkdir -p "$BUILD"
 for s in "$@"; do

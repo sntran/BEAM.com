@@ -435,6 +435,88 @@ stubs in `libc/nt/`.
 
 ---
 
+### C19. `cosmocc` does not take assembler files
+
+**Status:** 3.3.2; HEAD (`tool/cosmocc/bin/cosmocc` stops with
+"assembler input files not supported" for `.s` and `.S`).
+
+**Symptom.** `cosmocc -c trampoline.S` fails, so a project cannot use
+the per-CPU assembly files that many runtimes have (WAMR has one for
+each CPU), even when the file selects the CPU with `#if`.
+
+**Workaround in BEAM.com.** Compile the file with
+`x86_64-unknown-cosmo-cc` and `aarch64-unknown-cosmo-cc`, and put the
+aarch64 object in `.aarch64/` next to the x86_64 object (the layout that
+`cosmocc` and `cosmoar` use).
+
+**Possible upstream fix.** For `.S`, run the preprocessor and the
+assembler of each CPU, as for C files. A `.s` file cannot be for both
+CPUs, but `.S` with `#if defined(__aarch64__)` can.
+
+### C20. No `mremap()`
+
+**Status:** 3.3.2 (link error), HEAD (only `cosmo_mremap()` in
+`libc/runtime/runtime.h`).
+
+**Symptom.** Code that uses `mremap()` when `_GNU_SOURCE` is defined
+does not link: `undefined reference to 'mremap'`. A configure test that
+runs on the build machine (with the host compiler) finds `mremap()`.
+
+**Workaround in BEAM.com.** WAMR is compiled with `WASM_HAVE_MREMAP=0`,
+and it uses its own implementation.
+
+**Possible upstream fix.** Export `mremap()` with the Linux signature
+(`cosmo_mremap()` already exists), or document the name.
+
+## WAMR (WebAssembly Micro Runtime)
+
+Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
+aarch64) build with `cosmocc`.
+
+### W1. The `cosmopolitan` platform must not write the GS base
+
+**Symptom.** The first call into WebAssembly works, and the next call to
+`printf()` crashes in `pthread_mutex_lock()` (Cosmopolitan's TLS).
+
+**Cause.** On x86_64, WAMR writes the GS base register (`wrgsbase`,
+`os_writegsbase()`, unless `WASM_DISABLE_WRITE_GS_BASE=1`). Cosmopolitan
+keeps its thread-local storage pointer in `%gs` (`libc/thread/tls.h`).
+
+**Workaround in BEAM.com.** `-DWASM_DISABLE_WRITE_GS_BASE=1`.
+
+**Possible upstream fix.** Set `WASM_DISABLE_WRITE_GS_BASE=1` in the
+`cosmopolitan` platform (`platform_internal.h` or
+`shared_platform.cmake`).
+
+### W2. `invokeNative_general.c` only works on 32-bit targets
+
+**Symptom.** A WASI call (`fd_write`) crashes in
+`wasm_runtime_get_wasi_ctx()` with `WAMR_BUILD_INVOKE_NATIVE_GENERAL=1`
+on x86_64.
+
+**Cause.** The generic trampoline passes the arguments as 32-bit words,
+so the 64-bit `exec_env` pointer becomes two arguments.
+
+**Workaround in BEAM.com.** The assembly trampolines
+(`invokeNative_em64.s`, `invokeNative_aarch64.s`), selected with `#if`
+as in `invokeNative_osx_universal.s`.
+
+**Possible upstream fix.** Refuse `WAMR_BUILD_INVOKE_NATIVE_GENERAL` on
+64-bit targets in CMake, or make the C version pass `uint64` words there.
+
+### W3. A fat build needs the target to follow the compiler
+
+**Symptom.** With `WAMR_BUILD_TARGET=X86_64`, CMake adds x86-only flags
+(`-mindirect-branch-register`), which the aarch64 compiler of `cosmocc`
+refuses, and `BUILD_TARGET_X86_64` is also defined for the aarch64 half.
+
+**Workaround in BEAM.com.** BEAM.com compiles the WAMR sources with its
+own flags, and a forced-include header defines `BUILD_TARGET_X86_64` or
+`BUILD_TARGET_AARCH64` from `__x86_64__` and `__aarch64__`.
+
+**Possible upstream fix.** A "universal" target for the `cosmopolitan`
+platform, as for macOS universal binaries.
+
 ## Erlang/OTP
 
 These are small, general changes. They help any unusual libc or

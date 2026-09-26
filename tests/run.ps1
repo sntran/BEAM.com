@@ -106,6 +106,19 @@ if (Test-Path "examples") {
         }
     }
 }
+# WebAssembly: wasm_check, and a WASI program in Go (made by CI).
+$wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
+$go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*wasm_check.b.com' @("build", "examples/wasm_check.erl", "-o", "$Dir/wasm_check.b.com")
+    if (Test-Path (Join-Path $Dir "wasm_check.b.com")) {
+        Check "wasm_check.b.com" $wasm @()
+        if (Test-Path (Join-Path $Dir "hello_go.wasm")) {
+            Check "wasm_check.b.com" $go @("$Dir/hello_go.wasm", "one", "two")
+        }
+    }
+}
+
 # The SQLite probe: beam-sqlite.com (built with SQLITE=1).
 $sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "beam-sqlite.com"))) {

@@ -83,6 +83,20 @@ if [ -d examples ]; then
     done
 fi
 
+# WebAssembly: wasm_check, and a WASI program in Go (made by CI).
+wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
+go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
+if [ -d examples ]; then
+    check beam.com 'wrote .*wasm_check.b.com' \
+        build examples/wasm_check.erl -o "$dir/wasm_check.b.com"
+    if [ -f "$dir/wasm_check.b.com" ]; then
+        check wasm_check.b.com "$wasm"
+        if [ -f "$dir/hello_go.wasm" ]; then
+            check wasm_check.b.com "$go" "$dir/hello_go.wasm" one two
+        fi
+    fi
+fi
+
 # The SQLite probe: beam-sqlite.com (built with SQLITE=1).
 sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then

@@ -54,13 +54,33 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Build
-        run: ./build.sh openssl otp configure sqlite make release multicall bundle
+        run: ./build.sh openssl otp configure sqlite wasm make release multicall bundle
 
       - name: Upload ${{ matrix.out }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.out }}
           path: build/${{ matrix.out }}
+          if-no-files-found: error
+
+      - uses: actions/setup-go@v5
+        if: matrix.sqlite == '0'
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build the WASI example in Go
+        if: matrix.sqlite == '0'
+        run: |
+          cd examples/wasm/hello_go
+          GOOS=wasip1 GOARCH=wasm go build -o ../../../build/hello_go.wasm .
+
+      - name: Upload the WASI example
+        if: matrix.sqlite == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello_go.wasm
+          path: build/hello_go.wasm
           if-no-files-found: error
 
       - name: Upload the APE loader
