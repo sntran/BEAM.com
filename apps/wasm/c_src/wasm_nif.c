@@ -39,7 +39,7 @@ static ErlNifResourceType *module_type;
 static ErlNifResourceType *instance_type;
 
 static ERL_NIF_TERM am_ok, am_error, am_exit, am_trap, am_i32, am_i64,
-    am_f32, am_f64, am_stack_size, am_heap_size, am_args, am_env, am_dirs,
+    am_f32, am_f64, am_stack_size, am_heap_size, am_args, am_env, am_preopens,
     am_not_found, am_badarg, am_no_memory, am_out_of_bounds, am_nan,
     am_infinity, am_neg_infinity;
 
@@ -101,7 +101,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
     am_heap_size = enif_make_atom(env, "heap_size");
     am_args = enif_make_atom(env, "args");
     am_env = enif_make_atom(env, "env");
-    am_dirs = enif_make_atom(env, "dirs");
+    am_preopens = enif_make_atom(env, "preopens");
     am_not_found = enif_make_atom(env, "not_found");
     am_badarg = enif_make_atom(env, "badarg");
     am_no_memory = enif_make_atom(env, "no_memory");
@@ -127,9 +127,9 @@ static void ensure_thread_env(void)
         wasm_runtime_init_thread_env();
 }
 
-/* load(Binary) -> {ok, Module} | {error, Message} */
-static ERL_NIF_TERM nif_load(ErlNifEnv *env, int argc,
-                             const ERL_NIF_TERM argv[])
+/* compile(Binary) -> {ok, Module} | {error, Message} */
+static ERL_NIF_TERM nif_compile(ErlNifEnv *env, int argc,
+                                const ERL_NIF_TERM argv[])
 {
     ErlNifBinary bin;
     module_res *m;
@@ -231,7 +231,7 @@ static int get_list_opt(ErlNifEnv *env, ERL_NIF_TERM map, ERL_NIF_TERM key,
  * instantiate(Module, Opts) -> {ok, Instance} | {error, Message}
  *   Opts: #{stack_size, heap_size, args => [iodata()],
  *           env => [iodata()] ("NAME=VALUE"),
- *           dirs => [iodata()] ("GUEST::HOST", preopened directories)}
+ *           preopens => [iodata()] ("GUEST::HOST", preopened directories)}
  */
 static ERL_NIF_TERM nif_instantiate(ErlNifEnv *env, int argc,
                                     const ERL_NIF_TERM argv[])
@@ -252,7 +252,7 @@ static ERL_NIF_TERM nif_instantiate(ErlNifEnv *env, int argc,
                          &heap_size)
         || !get_list_opt(env, argv[1], am_args, &args, &nargs)
         || !get_list_opt(env, argv[1], am_env, &envs, &nenv)
-        || !get_list_opt(env, argv[1], am_dirs, &dirs, &ndirs)) {
+        || !get_list_opt(env, argv[1], am_preopens, &dirs, &ndirs)) {
         free_list(args, nargs);
         free_list(envs, nenv);
         free_list(dirs, ndirs);
@@ -396,7 +396,7 @@ static ERL_NIF_TERM call_error(ErlNifEnv *env, instance_res *i)
     return result;
 }
 
-/* call(Instance, Name, Args) -> {ok, [Result]} | {exit, Code} | {error, _} */
+/* call_function(Instance, Name, Args) -> {ok, [Result]} | {exit, Code} | {error, _} */
 static ERL_NIF_TERM nif_call(ErlNifEnv *env, int argc,
                              const ERL_NIF_TERM argv[])
 {
@@ -501,8 +501,8 @@ static ERL_NIF_TERM nif_memory_size(ErlNifEnv *env, int argc,
     return enif_make_tuple2(env, am_ok, enif_make_uint64(env, size));
 }
 
-/* memory_read(Instance, Offset, Length) -> {ok, Binary} | {error, _} */
-static ERL_NIF_TERM nif_memory_read(ErlNifEnv *env, int argc,
+/* read_binary(Instance, Offset, Length) -> {ok, Binary} | {error, _} */
+static ERL_NIF_TERM nif_read_binary(ErlNifEnv *env, int argc,
                                     const ERL_NIF_TERM argv[])
 {
     instance_res *i;
@@ -530,8 +530,8 @@ static ERL_NIF_TERM nif_memory_read(ErlNifEnv *env, int argc,
     return enif_make_tuple2(env, am_ok, bin);
 }
 
-/* memory_write(Instance, Offset, Data) -> ok | {error, _} */
-static ERL_NIF_TERM nif_memory_write(ErlNifEnv *env, int argc,
+/* write_binary(Instance, Offset, Data) -> ok | {error, _} */
+static ERL_NIF_TERM nif_write_binary(ErlNifEnv *env, int argc,
                                      const ERL_NIF_TERM argv[])
 {
     instance_res *i;
@@ -559,13 +559,67 @@ static ERL_NIF_TERM nif_memory_write(ErlNifEnv *env, int argc,
     return am_ok;
 }
 
+/* memory_grow(Instance, Pages) -> {ok, PreviousPages} | {error, _}, as
+ * WebAssembly.Memory.grow() and the memory.grow instruction. */
+static ERL_NIF_TERM nif_memory_grow(ErlNifEnv *env, int argc,
+                                    const ERL_NIF_TERM argv[])
+{
+    instance_res *i;
+    ErlNifUInt64 pages;
+    wasm_memory_inst_t mem;
+    uint64_t before;
+    bool ok;
+    (void)argc;
+
+    if (!enif_get_resource(env, argv[0], instance_type, (void **)&i)
+        || !enif_get_uint64(env, argv[1], &pages))
+        return enif_make_badarg(env);
+    enif_mutex_lock(i->lock);
+    mem = wasm_runtime_get_default_memory(i->inst);
+    if (!mem) {
+        enif_mutex_unlock(i->lock);
+        return enif_make_tuple2(env, am_error, am_not_found);
+    }
+    before = wasm_memory_get_cur_page_count(mem);
+    ok = pages == 0 || wasm_runtime_enlarge_memory(i->inst, pages);
+    enif_mutex_unlock(i->lock);
+    if (!ok)
+        return enif_make_tuple2(env, am_error, am_out_of_bounds);
+    return enif_make_tuple2(env, am_ok, enif_make_uint64(env, before));
+}
+
+/* function_exists(Instance, Name) -> boolean() */
+static ERL_NIF_TERM nif_function_exists(ErlNifEnv *env, int argc,
+                                        const ERL_NIF_TERM argv[])
+{
+    instance_res *i;
+    ErlNifBinary name_bin;
+    char name[256];
+    int found;
+    (void)argc;
+
+    if (!enif_get_resource(env, argv[0], instance_type, (void **)&i)
+        || !enif_inspect_iolist_as_binary(env, argv[1], &name_bin))
+        return enif_make_badarg(env);
+    if (name_bin.size >= sizeof(name))
+        return enif_make_atom(env, "false");
+    memcpy(name, name_bin.data, name_bin.size);
+    name[name_bin.size] = '\0';
+    enif_mutex_lock(i->lock);
+    found = wasm_runtime_lookup_function(i->inst, name) != NULL;
+    enif_mutex_unlock(i->lock);
+    return enif_make_atom(env, found ? "true" : "false");
+}
+
 static ErlNifFunc nif_funcs[] = {
-    {"load_nif", 1, nif_load, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"compile_nif", 1, nif_compile, ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"instantiate_nif", 2, nif_instantiate, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"call_nif", 3, nif_call, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"call_function_nif", 3, nif_call, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"function_exists_nif", 2, nif_function_exists, 0},
     {"memory_size", 1, nif_memory_size, 0},
-    {"memory_read", 3, nif_memory_read, 0},
-    {"memory_write", 3, nif_memory_write, 0},
+    {"memory_grow", 2, nif_memory_grow, 0},
+    {"read_binary", 3, nif_read_binary, 0},
+    {"write_binary", 3, nif_write_binary, 0},
 };
 
 ERL_NIF_INIT(wasm, nif_funcs, on_load, NULL, NULL, NULL)

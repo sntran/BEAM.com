@@ -642,6 +642,27 @@ says that `mkdir()` of an existing path gives `EEXIST`.
 **Possible upstream fix.** In `sys_mkdirat_nt()`, give `EEXIST` when
 `CreateDirectory()` fails and the path exists.
 
+### C28. chown() gives ENOSYS on Windows, also with -1 and -1
+
+**Status:** cosmocc 4.0.2 (`libc/calls/chown.c`, `fchownat.c`).
+
+**Symptom.** On Windows, `mix test` stopped at the start: `File.Error
+could not touch ".../mix_user_check_...": function not implemented`, in
+`Mix.Utils.detect_user_id!/0`.
+
+**Cause.** `prim_file:write_file_info/3` (which `File.touch/1` of Elixir
+calls) always sets the owner, with `-1` and `-1` when the owner does
+not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
+gives `ENOSYS` on Windows for all values.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `cosmo/beam_com.c` gives, on
+Windows, for `-1` and `-1`: 0 when the path exists, else the error of
+`stat()` (`ENOENT`, on which `File.touch/1` makes the file).
+
+**Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
+return 0 for `-1` and `-1` when the path exists.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

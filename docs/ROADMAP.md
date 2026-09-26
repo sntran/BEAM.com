@@ -57,8 +57,12 @@ platforms.
 
 - WAMR 2.4.5, the fast interpreter with WASI preview 1, is linked into
   the emulator as a static NIF. It adds about 0.6 MB for the two CPUs.
-- The Erlang API is ours (`wasm:load/1`, `instantiate/2`, `call/3`,
-  `run/3`, memory access), and it does not show WAMR types.
+- The Erlang API does not show WAMR types. Its names come from APIs
+  that users know: the WebAssembly JavaScript API (`compile/1`,
+  `instantiate/1,2,3`), wasmex (`call_function/3`, `function_exists/2`,
+  `read_binary/3`, `write_binary/3`), `WebAssembly.Memory`
+  (`memory_size/1`, `memory_grow/2`) and `node:wasi` (the options
+  `args`, `env`, `preopens`, and `start/1`); `run/2` as `wasmtime run`.
 - Tested on each platform: calls with i32 and f64, traps, memory, a
   hand-made WASI module, and a Go program (`GOOS=wasip1`: arguments,
   environment, files).
@@ -185,7 +189,12 @@ WAMR 2.4.5).
   candidates to send upstream.
 - **OpenBSD in CI stays on 7.3**: the CI action has OpenBSD 7.3 to 7.9,
   but Cosmopolitan supports OpenBSD 7.3 and earlier only (see "Platform
-  status" in the README).
+  status" in the README, and C14 in `docs/UPSTREAM.md`). BEAM.com does
+  not work around this: OpenBSD 7.4 and later accept system calls only
+  from the places that the kernel records (`pinsyscalls`), which needs a
+  change in Cosmopolitan itself (its system calls through `libc.so`, as
+  on Apple Silicon, or a table of system calls in a native file). We
+  wait for support in Cosmopolitan.
 - **OTP 29 TLS**: the default key exchange of `ssl` is now the hybrid
   post-quantum group `x25519mlkem768`. Next: a check in `tls_check` that
   a TLS 1.3 connection uses it with the static OpenSSL 4.0.2.

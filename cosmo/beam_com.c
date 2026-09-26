@@ -135,6 +135,24 @@ int __wrap_mkdir(const char *path, mode_t mode)
     return rc;
 }
 
+/* chown() on Windows (UPSTREAM.md C28). The emulator is linked with
+ * -Wl,--wrap=chown (build.sh). prim_file:write_file_info/3 (for example
+ * File.touch/1 of Elixir, which Mix calls) always sets the owner, with -1
+ * and -1 when the owner does not change, which POSIX does not change.
+ * Cosmopolitan's chown() gives ENOSYS on Windows. There, chown(path, -1,
+ * -1) gives 0 when the path exists, else the error of stat() (ENOENT, on
+ * which File.touch/1 makes the file). */
+int __real_chown(const char *path, uid_t owner, gid_t group);
+
+int __wrap_chown(const char *path, uid_t owner, gid_t group)
+{
+    struct stat st;
+
+    if (beam_com_is_windows() && owner == (uid_t)-1 && group == (gid_t)-1)
+        return stat(path, &st);
+    return __real_chown(path, owner, group);
+}
+
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
 extern int epmd_main(int argc, char **argv);
