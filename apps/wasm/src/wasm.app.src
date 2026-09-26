@@ -1,0 +1,6 @@
+{application, wasm,
+ [{description, "WebAssembly and WASI for Erlang (WAMR, in beam.com)"},
+  {vsn, "0.1.0"},
+  {modules, [wasm]},
+  {registered, []},
+  {applications, [kernel, stdlib]}]}.
