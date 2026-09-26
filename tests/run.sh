@@ -35,8 +35,8 @@ check() {
         echo "FAIL: $name did not stop in $limit seconds"
         ps -ef 2>/dev/null | grep -v grep | grep -e "$name" -e beam || true
     fi
-    if [ $rc -ne 0 ]; then
-        echo "FAIL: $name exited with $rc"
+    if [ $rc -ne "$expect" ]; then
+        echo "FAIL: $name exited with $rc (expected $expect)"
         fail=1
     else
         # The patterns are separated by "@@". Each one must be found.
@@ -53,6 +53,16 @@ check() {
         done
         [ $ok -eq 1 ] && echo "PASS: $name"
     fi
+}
+
+# check_status RC NAME PATTERN ARGS...: as check, but the program must
+# exit with RC.
+expect=0
+check_status() {
+    expect=$1
+    shift
+    check "$@"
+    expect=0
 }
 
 greeter='said hello 3 times'
@@ -83,6 +93,36 @@ if [ -d examples ]; then
     done
 fi
 
+# One-file programs (beam_com_script) and the command line of beam.com.
+if [ -d examples ]; then
+    check beam.com 'wrote .*script_check.b.com' \
+        build tests/programs/script_check.erl -o "$dir/script_check.b.com"
+    if [ -f "$dir/script_check.b.com" ]; then
+        check script_check.b.com 'argc 4@@arg a$@@arg b c$@@arg é$@@arg 日本$' \
+            args a "b c" é 日本
+        # Arguments are for the program, also when they look like flags.
+        check script_check.b.com 'argc 4@@arg +S$@@arg 1$@@arg -extra$@@arg x$' \
+            args +S 1 -extra x
+        check script_check.b.com 'returning' return
+        check_status 127 script_check.b.com 'raising@@exception error: {boom,42}' raise
+        check_status 127 script_check.b.com 'exception throw: thrown_value' throw
+        check_status 127 script_check.b.com 'exception exit: normal' exit
+        check_status 3 script_check.b.com 'halting 3' halt 3
+        check script_check.b.com '^line 100000$@@^last line$' big
+        check script_check.b.com 'returned' spawn
+        ERL_FLAGS='+S 1'
+        export ERL_FLAGS
+        check script_check.b.com 'schedulers 1$' info
+        unset ERL_FLAGS
+    fi
+    check_status 1 beam.com 'usage: beam.com build INPUT' build
+    check_status 1 beam.com 'none.erl: no such file' build none.erl
+    check_status 1 beam.com 'unknown option -z' build x.erl -z
+    check_status 1 beam.com 'option -o needs a value' build x.erl -o
+    check_status 1 beam.com 'the application nosuch is not in beam.com' \
+        build examples/hashsum.erl -a nosuch -o "$dir/never.com"
+fi
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
@@ -95,6 +135,13 @@ if [ -d examples ]; then
             check wasm_check.b.com "$go" "$dir/hello_go.wasm" one two
         fi
     fi
+fi
+
+# The behavior tests of the wasm application.
+if [ -d examples ]; then
+    check beam.com 'wrote .*wasm_tests.b.com' \
+        build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.b.com"
+    [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
 # The SQLite probe: beam-sqlite.com (built with SQLITE=1).

@@ -5,7 +5,7 @@
 param([string]$Dir = ".")
 $fail = 0
 
-function Check($Name, $Pattern, [string[]]$Arguments) {
+function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     Write-Host "==> $Name"
     # Windows runs an APE file as a PE executable. Use an .exe name.
     $exe = Join-Path $Dir ($Name -replace '\.com$', '.exe')
@@ -16,7 +16,14 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     $env:BEAM_COM_VERBOSE = "1"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Resolve-Path $exe).Path
-    $psi.Arguments = ($Arguments -join ' ')
+    # Quote the arguments with spaces or quotes (the rules of
+    # CommandLineToArgvW).
+    $psi.Arguments = ($Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+    }) -join ' '
+    # BEAM.com writes UTF-8.
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardInput = $true
@@ -54,8 +61,8 @@ function Check($Name, $Pattern, [string[]]$Arguments) {
     $out = ($lines.ToArray() -join "`n")
     $rc = if ($timedOut) { 124 } else { $p.ExitCode }
     Write-Host $out
-    if ($rc -ne 0) {
-        Write-Host "FAIL: $Name exited with $rc"; $script:fail = 1
+    if ($rc -ne $Expect) {
+        Write-Host "FAIL: $Name exited with $rc (expected $Expect)"; $script:fail = 1
     } else {
         # The patterns are separated by "@@". Each one must be found.
         $ok = $true
@@ -106,6 +113,30 @@ if (Test-Path "examples") {
         }
     }
 }
+# One-file programs (beam_com_script) and the command line of beam.com.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*script_check.b.com' @("build", "tests/programs/script_check.erl", "-o", "$Dir/script_check.b.com")
+    if (Test-Path (Join-Path $Dir "script_check.b.com")) {
+        Check "script_check.b.com" '(?m)argc 4@@(?m)^arg a$@@(?m)^arg b c$@@(?m)^arg é$@@(?m)^arg 日本$' @("args", "a", "b c", "é", "日本")
+        Check "script_check.b.com" '(?m)argc 4@@(?m)^arg \+S$@@(?m)^arg 1$@@(?m)^arg -extra$@@(?m)^arg x$' @("args", "+S", "1", "-extra", "x")
+        Check "script_check.b.com" 'returning' @("return")
+        Check "script_check.b.com" 'raising@@exception error: \{boom,42\}' @("raise") 127
+        Check "script_check.b.com" 'exception throw: thrown_value' @("throw") 127
+        Check "script_check.b.com" 'exception exit: normal' @("exit") 127
+        Check "script_check.b.com" 'halting 3' @("halt", "3") 3
+        Check "script_check.b.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
+        Check "script_check.b.com" 'returned' @("spawn")
+        $env:ERL_FLAGS = "+S 1"
+        Check "script_check.b.com" '(?m)^schedulers 1$' @("info")
+        Remove-Item Env:ERL_FLAGS
+    }
+    Check "beam.com" 'usage: beam.com build INPUT' @("build") 1
+    Check "beam.com" 'none.erl: no such file' @("build", "none.erl") 1
+    Check "beam.com" 'unknown option -z' @("build", "x.erl", "-z") 1
+    Check "beam.com" 'option -o needs a value' @("build", "x.erl", "-o") 1
+    Check "beam.com" 'the application nosuch is not in beam.com' @("build", "examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
+}
+
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
@@ -116,6 +147,14 @@ if (Test-Path "examples") {
         if (Test-Path (Join-Path $Dir "hello_go.wasm")) {
             Check "wasm_check.b.com" $go @("$Dir/hello_go.wasm", "one", "two")
         }
+    }
+}
+
+# The behavior tests of the wasm application.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*wasm_tests.b.com' @("build", "tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.b.com")
+    if (Test-Path (Join-Path $Dir "wasm_tests.b.com")) {
+        Check "wasm_tests.b.com" 'wasm_tests: all [0-9]+ passed' @()
     }
 }
 

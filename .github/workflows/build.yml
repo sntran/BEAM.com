@@ -96,6 +96,11 @@ jobs:
         timeout-minutes: 5
         run: BEAM_COM_VERBOSE=1 timeout 120 ./build.sh test
 
+      - name: Unit tests
+        if: matrix.out == 'beam.com'
+        timeout-minutes: 10
+        run: ./build.sh unit
+
       - name: Trace a failed test
         if: failure()
         timeout-minutes: 5

@@ -5,7 +5,7 @@
 #
 # Usage: ./build.sh [step...]
 #   Steps: toolchain openssl otp configure sqlite wasm make release
-#          multicall bundle test
+#          multicall bundle test unit
 #   With no step, all steps run in order.
 #
 # Environment:
@@ -463,6 +463,16 @@ step_bundle() {
     ls -l "$OUT"
 }
 
+# The unit tests of the Erlang code (tests/unit), with coverage. They
+# run on the Erlang of the OTP build tree.
+step_unit() {
+    log "Running the unit tests"
+    if [ ! -f "$ERL_TOP/lib/eunit/ebin/eunit.beam" ]; then
+        PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/eunit" opt
+    fi
+    "$ERL_TOP/bin/escript" "$ROOT/tests/unit/run.escript" "$BUILD/unit"
+}
+
 step_test() {
     log "Running $OUT"
     "$OUT" one two | tee "$BUILD/test.out"
@@ -486,7 +496,7 @@ step_test() {
 
 if [ $# -eq 0 ]; then
     set -- toolchain openssl otp configure sqlite wasm make release \
-        multicall bundle test
+        multicall bundle test unit
 fi
 mkdir -p "$BUILD"
 for s in "$@"; do
