@@ -12,25 +12,37 @@
 
 -export([run/1]).
 
+-ifdef(TEST).
+-export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
+         select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
+         parents/1, keep/2, executable/0]).
+-endif.
+
 -define(ROOT, "/zip").
 -define(DEFAULT_VSN, "0.1.0").
 
+%% Opts: input, apps, and optionally output. root (the zip, "/zip") and
+%% exe (the path of this executable) are for the tests.
 run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Input = string:trim(Input0, trailing, "/\\"),
     Output = maps:get(output, Opts, default_output(Input)),
-    Base = base_apps(),
+    Root = maps:get(root, Opts, ?ROOT),
+    Base = base_apps(Root),
     App = case filelib:is_dir(Input) of
               true -> app_dir(Input);
               false -> script(Input)
           end,
     Apps = select_apps(App, ExtraApps, Base),
-    Exe = executable(),
+    Exe = case Opts of
+              #{exe := E} -> E;
+              _ -> executable()
+          end,
     {ok, Bin} = read_file(Exe),
     Tmp = filename:absname(filename:join(filename:dirname(Output),
                                          "." ++ filename:basename(Output)
                                          ++ ".tmp")),
     _ = file:del_dir_r(Tmp),
-    Release = try release(App, Apps, Base, Tmp)
+    Release = try release(App, Apps, Base, Tmp, Root)
               after file:del_dir_r(Tmp)
               end,
     New = with_dirs(app_files(App) ++ Release),
@@ -56,8 +68,8 @@ executable() ->
     end.
 
 %% The OTP applications in the zip of beam.com: #{Name => Info}.
-base_apps() ->
-    LibDir = filename:join(?ROOT, "lib"),
+base_apps(Root) ->
+    LibDir = filename:join(Root, "lib"),
     {ok, Dirs} = file:list_dir(LibDir),
     maps:from_list(
       [{Name, #{vsn => Vsn, dir => filename:join(LibDir, Dir),
@@ -105,8 +117,13 @@ app_dir(Dir) ->
               V when is_list(V) -> V;
               _ -> ?DEFAULT_VSN
           end,
+    %% systools needs these keys. A minimal .app.src may not have them.
+    Defaults = [{description, atom_to_list(Name)}, {registered, []},
+                {applications, [kernel, stdlib]}],
+    Props1 = Props0 ++ [D || {K, _} = D <- Defaults,
+                             not lists:keymember(K, 1, Props0)],
     Props = lists:keystore(vsn, 1,
-                           lists:keystore(modules, 1, Props0,
+                           lists:keystore(modules, 1, Props1,
                                           {modules, [M || {M, _} <- Beams]}),
                            {vsn, Vsn}),
     PrivDir = filename:join(Dir, "priv"),
@@ -166,9 +183,16 @@ select_apps(#{name := Name, props := Props, beams := Beams}, Extra, Base) ->
     Index = maps:from_list(
               [{M, A} || A := #{props := P} <- Base, A =/= Name,
                          M <- proplists:get_value(modules, P, [])]),
-    Called = [maps:get(M, Index) || {_, Beam} <- Beams, M <- imports(Beam),
-                                    not lists:member(M, Own),
-                                    is_map_key(M, Index)],
+    Imports = [{Mod, M} || {Mod, Beam} <- Beams, M <- imports(Beam),
+                           not lists:member(M, Own)],
+    Called = [maps:get(M, Index) || {_, M} <- Imports, is_map_key(M, Index)],
+    %% A call to a module that is nowhere fails at run time (undef).
+    Preloaded = erlang:pre_loaded(),
+    [io:format(standard_error,
+               "beam.com: warning: ~p calls ~p, which is not in beam.com~n",
+               [Mod, M])
+     || {Mod, M} <- lists:usort(Imports), not is_map_key(M, Index),
+        not lists:member(M, Preloaded)],
     Roots = [kernel, stdlib] ++ deps(Props) ++ Extra ++ Called,
     closure(lists:usort(Roots) -- [Name], Base, Name, []).
 
@@ -205,7 +229,7 @@ app_files(#{name := Name, vsn := Vsn, props := Props, beams := Beams,
 
 %% Make the boot script with systools, and the files of releases/.
 release(#{name := Name0, vsn := Vsn, props := Props, beams := Beams,
-          config := Config}, Apps, Base, Tmp) ->
+          config := Config}, Apps, Base, Tmp, Root) ->
     Name = atom_to_list(Name0),
     AppDir = filename:join([Tmp, "lib", Name ++ "-" ++ Vsn]),
     Ebin = filename:join(AppDir, "ebin"),
@@ -226,7 +250,7 @@ release(#{name := Name0, vsn := Vsn, props := Props, beams := Beams,
     case systools:make_script(RelFile,
                               [{path, Path}, {outdir, Tmp}, silent,
                                no_warn_sasl,
-                               {variables, [{"ROOT", ?ROOT}]}]) of
+                               {variables, [{"ROOT", Root}]}]) of
         ok -> ok;
         {ok, _, _Warnings} -> ok;
         {error, Mod, Error} ->

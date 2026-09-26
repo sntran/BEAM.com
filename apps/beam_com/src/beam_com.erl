@@ -6,6 +6,10 @@
 
 -export([main/0]).
 
+-ifdef(TEST).
+-export([command/1, build_options/2]).
+-endif.
+
 main() ->
     Status = try command(init:get_plain_arguments()) of
                  ok -> 0
@@ -30,6 +34,8 @@ build_options(["-o", Output | Rest], Opts) ->
     build_options(Rest, Opts#{output => Output});
 build_options(["-a", App | Rest], #{apps := Apps} = Opts) ->
     build_options(Rest, Opts#{apps := Apps ++ [list_to_atom(App)]});
+build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a" ->
+    throw({error, "option ~ts needs a value", [Option]});
 build_options([[$- | _] = Option | _], _Opts) ->
     throw({error, "unknown option ~ts", [Option]});
 build_options([Input | Rest], Opts) when not is_map_key(input, Opts) ->
