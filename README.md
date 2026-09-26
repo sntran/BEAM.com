@@ -66,7 +66,10 @@ beam.com build INPUT [-o OUTPUT] [-a APP]...
 - **An application directory**: `src/*.erl` (subdirectories too),
   `src/NAME.app.src` or `ebin/NAME.app`, and optionally `include/`,
   `priv/`, `config/sys.config`, `config/vm.args` (the rebar3 layout) and
-  the `erl_opts` of `rebar.config`. Dependencies are not fetched yet.
+  the `erl_opts` of `rebar.config`. Parsers (`src/*.yrl`, yecc),
+  scanners (`src/*.xrl`, leex) and ASN.1 modules (`asn1/*.asn1` or
+  `src/*.asn1`, `.asn` too; BER) are made into Erlang code first.
+  Dependencies are not fetched yet.
 
 The builder compiles the code, selects the OTP applications that the
 program needs, makes an OTP release with `systools`, and writes a copy of
@@ -80,7 +83,8 @@ and all the applications that these need. Use `-a APP` for an
 application that the code only calls with `apply/3` or similar.
 
 The zip of `beam.com` has `kernel`, `stdlib`, `sasl`, `compiler`,
-`crypto`, `asn1`, `public_key`, `ssl`, `inets` and `wasm`.
+`parsetools`, `crypto`, `asn1`, `public_key`, `ssl`, `inets`, `wasm` and
+`esqlite`.
 
 ### WebAssembly
 
@@ -199,6 +203,8 @@ and also builds each one with `beam.com build` on every platform):
   program with SQLite (only for `beam.com build`).
 - [`examples/greeter`](examples/greeter): an application, a supervisor
   and a `gen_server`.
+- [`examples/calc`](examples/calc): a scanner (`.xrl`), a parser (`.yrl`)
+  and an ASN.1 module (only for `beam.com build`).
 - [`examples/crypto_check`](examples/crypto_check): hashes, HMAC,
   AES-GCM and random bytes with `crypto`.
 - [`examples/tls_check`](examples/tls_check): port programs, a local
@@ -461,7 +467,7 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 - A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
   writes a warning when `start_erl.data` names another ERTS version.
 - `beam.com build` does not fetch dependencies (Hex packages) yet, and
-  it does not compile Elixir, `.yrl`/`.xrl` or `.asn1` files.
+  it does not compile Elixir.
 
 ## Roadmap
 

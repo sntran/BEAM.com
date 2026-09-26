@@ -55,7 +55,7 @@ JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com build" copies the ones that
 # a program needs into the new executable.
-BUNDLE_APPS="kernel stdlib sasl compiler crypto asn1 public_key ssl inets"
+BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets"
 # The small build (OTP_SMALL_BUILD) does not make these.
 EXTRA_APPS="crypto asn1 public_key ssl"
 

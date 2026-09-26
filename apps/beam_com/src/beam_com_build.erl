@@ -3,7 +3,8 @@
 %% The input is one .erl file with main/1 (as for escript), or an
 %% application directory (src/*.erl, src/NAME.app.src or ebin/NAME.app,
 %% and optionally include/, priv/, config/sys.config and
-%% config/vm.args). The builder compiles the code, makes an OTP release
+%% config/vm.args; .yrl and .xrl files in src/, and ASN.1 files in asn1/
+%% or src/). The builder compiles the code, makes an OTP release
 %% with the applications that the code needs, and writes a copy of this
 %% executable with the release in its zip. It needs no Erlang
 %% installation: the compiler and the OTP applications are in the zip
@@ -15,7 +16,7 @@
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
-         parents/1, keep/2, executable/0, slashes/2]).
+         parents/1, keep/2, executable/0, slashes/2, generate/2]).
 -endif.
 
 -define(ROOT, "/zip").
@@ -155,10 +156,18 @@ script(File) ->
 app_dir(Dir) ->
     {Name, Props0} = app_file(Dir),
     ErlOpts = erl_opts(Dir),
-    Includes = [{i, filename:join(Dir, "include")},
-                {i, filename:join(Dir, "src")}],
-    Sources = filelib:wildcard(filename:join([Dir, "src", "**", "*.erl"])),
-    Beams = [compile(Src, Includes ++ ErlOpts) || Src <- Sources],
+    Gen = temp_dir("gen"),
+    Beams = try
+                Generated = generate(Dir, Gen),
+                Includes = [{i, filename:join(Dir, "include")},
+                            {i, filename:join(Dir, "src")},
+                            {i, Gen}],
+                Sources = filelib:wildcard(filename:join([Dir, "src", "**", "*.erl"]))
+                    ++ Generated,
+                [compile(Src, Includes ++ ErlOpts) || Src <- Sources]
+            after
+                file:del_dir_r(Gen)
+            end,
     Vsn = case proplists:get_value(vsn, Props0) of
               V when is_list(V) -> V;
               _ -> ?DEFAULT_VSN
@@ -203,6 +212,69 @@ erl_opts(Dir) ->
         {ok, Terms} -> proplists:get_value(erl_opts, Terms, []);
         _ -> []
     end.
+
+%% The source files that are made from other files, into the directory
+%% Gen: parsers (.yrl, yecc), scanners (.xrl, leex) and ASN.1 modules
+%% (.asn1 and .asn in asn1/ or src/, asn1ct, with the BER encoding). A
+%% .yrl or .xrl file with an .erl file of the same name next to it is left
+%% out: the .erl file is used (rebar3 writes it there). The result is the
+%% list of the .erl files in Gen.
+generate(Dir, Gen) ->
+    ok = filelib:ensure_path(Gen),
+    Src = filename:join(Dir, "src"),
+    Made = fun(File) -> filelib:is_regular(filename:rootname(File) ++ ".erl") end,
+    Yrl = [F || F <- filelib:wildcard(filename:join([Src, "**", "*.yrl"])), not Made(F)],
+    Xrl = [F || F <- filelib:wildcard(filename:join([Src, "**", "*.xrl"])), not Made(F)],
+    Asn = lists:append([filelib:wildcard(filename:join(D, "*." ++ Ext))
+                        || D <- [filename:join(Dir, "asn1"), Src],
+                           Ext <- ["asn1", "asn"]]),
+    [yecc(F, Gen) || F <- Yrl],
+    [leex(F, Gen) || F <- Xrl],
+    [asn1(F, Gen) || F <- Asn],
+    filelib:wildcard(filename:join(Gen, "*.erl")).
+
+yecc(File, Gen) ->
+    Out = filename:join(Gen, filename:basename(File, ".yrl") ++ ".erl"),
+    case yecc:file(File, [{parserfile, Out}, report_errors, report_warnings]) of
+        {ok, _} -> ok;
+        {ok, _, _} -> ok;
+        _ -> throw({error, "~ts: yecc failed", [File]})
+    end.
+
+leex(File, Gen) ->
+    Out = filename:join(Gen, filename:basename(File, ".xrl") ++ ".erl"),
+    case leex:file(File, [{scannerfile, Out}, report_errors, report_warnings]) of
+        {ok, _} -> ok;
+        {ok, _, _} -> ok;
+        _ -> throw({error, "~ts: leex failed", [File]})
+    end.
+
+%% asn1ct names the .erl and .hrl files after the file (pair.asn1:
+%% pair.erl), but the module after the ASN.1 module ('Pair'), and the
+%% .erl file includes "Pair.hrl". The files are renamed after the module.
+asn1(File, Gen) ->
+    case asn1ct:compile(File, [noobj, ber, {outdir, Gen}, {i, Gen}]) of
+        ok -> ok;
+        _ -> throw({error, "~ts: the ASN.1 compiler failed", [File]})
+    end,
+    Base = filename:join(Gen, filename:rootname(filename:basename(File))),
+    {ok, Source} = file:read_file(Base ++ ".erl"),
+    {match, [Module]} = re:run(Source, "^-module\\('?([^')]+)'?\\)\\.",
+                               [multiline, {capture, all_but_first, list}]),
+    New = filename:join(Gen, Module),
+    case New =:= Base of
+        true -> ok;
+        false ->
+            ok = file:rename(Base ++ ".erl", New ++ ".erl"),
+            ok = file:rename(Base ++ ".hrl", New ++ ".hrl")
+    end.
+
+%% A new directory for temporary files.
+temp_dir(What) ->
+    Base = hd([D || V <- ["TMPDIR", "TMP", "TEMP"],
+                    D <- [os:getenv(V)], D =/= false, D =/= ""] ++ ["/tmp"]),
+    filename:join(Base, lists:concat(["beam_com_", What, "_", os:getpid(), "_",
+                                      erlang:unique_integer([positive])])).
 
 compile(File, Opts) ->
     case compile:file(File, [binary, report_errors, report_warnings

@@ -1,0 +1,9 @@
+-- A small ASN.1 module for the calc example.
+Greeting DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+Hello ::= SEQUENCE {
+    name  IA5String,
+    count INTEGER
+}
+
+END
