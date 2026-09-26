@@ -21,9 +21,10 @@
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
 #   ELIXIR           1: also make elixir.com, a copy of beam.com with Elixir
-#                    (the elixir, eex, logger and mix applications in the
-#                    zip, for "elixir.com build" of Elixir code; default 1).
-#                    beam.com itself has no Elixir.
+#                    (the elixir, eex, ex_unit, iex, logger and mix
+#                    applications in the zip: "elixir.com build" of Elixir
+#                    code, and the tools mix, iex, elixir and elixirc;
+#                    default 1). beam.com itself has no Elixir.
 #   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
@@ -51,7 +52,7 @@ WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 ELIXIR=${ELIXIR:-1}
 ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
-ELIXIR_APPS="elixir eex logger mix"
+ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
@@ -517,9 +518,11 @@ step_bundle() {
     ls -l "$OUT"
 
     # elixir.com: beam.com with Elixir, the applications without debug
-    # information and docs (8 MB of beam files become 2.7 MB). mix reads
-    # mix.exs for "elixir.com build" only; a program gets the
-    # applications that it uses.
+    # information, but with their docs (for h/1 in iex: +0.8 MB). It runs
+    # the tools of Elixir (mix, iex,
+    # elixir, elixirc; bin/mix is the script of mix), and "elixir.com
+    # build" reads mix.exs with Mix. A program gets the applications that
+    # it uses.
     if [ "$ELIXIR" = 1 ]; then
         log "Bundling $ELIXIR_OUT"
         rm -rf "$STAGE.elixir"
@@ -530,9 +533,11 @@ step_bundle() {
             cp "$src"/*.beam "$src/$app.app" "$STAGE.elixir/lib/$app-$vsn/ebin/"
         done
         "$ERL_TOP/bin/erl" -noshell -eval \
-            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE.elixir/lib/\" ++ A ++ \"-*/ebin/*.beam\")]), halt()."
+            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE.elixir/lib/\" ++ A ++ \"-*/ebin/*.beam\")], [\"Attr\", \"Docs\"]), halt()."
+        mkdir -p "$STAGE.elixir/bin"
+        cp "$BUILD/elixir-$ELIXIR_VERSION/bin/mix" "$STAGE.elixir/bin/mix"
         cp "$OUT" "$ELIXIR_OUT"
-        (cd "$STAGE.elixir" && zip -q -r -9 "$ELIXIR_OUT" lib)
+        (cd "$STAGE.elixir" && zip -q -r -9 "$ELIXIR_OUT" bin lib)
         ls -l "$ELIXIR_OUT"
     fi
 }

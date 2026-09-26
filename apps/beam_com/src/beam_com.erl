@@ -125,14 +125,17 @@ build_usage() ->
 %% The text of "beam.com help [COMMAND]".
 help([]) ->
     Name = name(),
-    {Runtime, Inputs} =
+    {Runtime, Inputs, Tools} =
         case elixir_version() of
             none -> {[], "a .erl file with main/1, or\n"
-                         "                  from an application directory\n"};
+                         "                  from an application directory\n", []};
             Elixir -> {[" and Elixir ", Elixir],
                        "a .erl, .ex or .exs file with\n"
                        "                  main/1, or from an application directory\n"
-                       "                  (rebar3 or Mix)\n"}
+                       "                  (rebar3 or Mix)\n",
+                       ["  mix, iex, elixir, elixirc [ARGUMENTS]\n"
+                        "                  the tools of Elixir, as with an Elixir\n"
+                        "                  installation (\"", Name, " mix test\")\n"]}
         end,
     ["BEAM.com: Erlang/OTP ", otp_version(), Runtime, " in one executable file, for\n"
      "Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.\n"
@@ -142,9 +145,15 @@ help([]) ->
      "Commands:\n"
      "  build INPUT [-o OUTPUT] [-a APP]...\n"
      "                  make an executable from ", Inputs,
+     "  escript FILE [ARGUMENTS]\n"
+     "                  run an escript\n",
+     Tools,
      "  version         show the versions, the emulator and the platform\n"
      "  help [COMMAND]  show this text, or the help of a command\n"
      "\n"
+     "A link to this file with the name of a tool (escript",
+     case Tools of [] -> ""; _ -> ", mix, iex,\nelixir, elixirc" end,
+     ") runs that tool.\n"
      "To run an OTP release, add it to the zip of a copy of ", Name, ".\n"
      "More: https://github.com/sntran/BEAM.com\n"];
 help(["build"]) ->

@@ -25,12 +25,14 @@
  * apps/beam_com). "build" also runs when the zip has a release.
  */
 #include <cosmo.h>
+#include <dirent.h>
 #include <errno.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
 
@@ -54,29 +56,61 @@
 #define BEAM_COM_PLEDGE "/zip/.pledge"
 #define BEAM_COM_UNVEIL "/zip/.unveil"
 
-/* close() with the lock of the file descriptor table (UPSTREAM.md C25).
- * The emulator is linked with -Wl,--wrap=close (build.sh), so each call
- * of close() comes here. Cosmopolitan's close() of a kernel descriptor
- * calls the close system call, and then clears the entry of the
- * descriptor in its table, without the lock. In that gap, another thread
- * can open a /zip file, get the same number from the kernel (zipos
- * reserves it with dup()), and write its entry, which close() then
- * clears: the /zip descriptor becomes the kernel descriptor (a copy of
- * stderr), and read() fails with EBADF. The lock is recursive, so the
- * close() of a /zip file, which takes it again, works. */
+/* close() with the lock of the file descriptor table (UPSTREAM.md C25
+ * and C26). The emulator is linked with -Wl,--wrap=close (build.sh), so
+ * each call of close() comes here.
+ *
+ * C25: Cosmopolitan's close() of a kernel descriptor calls the close
+ * system call, and then clears the entry of the descriptor in its table,
+ * without the lock. In that gap, another thread can open a /zip file, get
+ * the same number from the kernel (zipos reserves it with dup()), and
+ * write its entry, which close() then clears. The lock prevents it: the
+ * /zip open takes it too. The lock is recursive.
+ *
+ * C26: the close() of a /zip descriptor calls the close system call, and
+ * only then frees the zipos handle and clears the entry. In that gap,
+ * another thread can open a real file (which does not take the lock) and
+ * get the same number from the kernel; its fstat() or read() then sees
+ * the old /zip entry, and uses the freed handle (SIGSEGV in
+ * __zipos_fstat). Here the entry is cleared first, then the kernel
+ * descriptor is closed, then the handle is freed. Only in the process
+ * itself: in a child of vfork(), which shares the memory, Cosmopolitan
+ * only closes the kernel descriptor (the real close() does that).
+ * Windows has no kernel descriptor for /zip files. */
+struct ZiposHandle;
 int __real_close(int fd);
 /* From libc/calls/state.internal.h, which cannot be included here: it
  * includes libc/thread/tls.h, which stops with #error in the dependency
  * pass of cosmocc, where no CPU is defined (UPSTREAM.md C23). */
 void __fds_lock(void);
 void __fds_unlock(void);
+extern struct Fds g_fds;
+void __releasefd(int fd);
+void __zipos_drop(struct ZiposHandle *h);
+int sys_close(int fd);
+
+static int close_pid;
+
+__attribute__((__constructor__)) static void close_init(void)
+{
+    close_pid = getpid();
+}
 
 int __wrap_close(int fd)
 {
+    struct ZiposHandle *h;
     int rc;
 
     __fds_lock();
-    rc = __real_close(fd);
+    if (fd >= 0 && (size_t)fd < g_fds.n && g_fds.p[fd].kind == kFdZip &&
+        !beam_com_is_windows() && getpid() == close_pid) {
+        h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;
+        __releasefd(fd);
+        rc = sys_close(fd);
+        __zipos_drop(h);
+    } else {
+        rc = __real_close(fd);
+    }
     __fds_unlock();
     return rc;
 }
@@ -378,6 +412,68 @@ static int file_exists(const char *path)
         return 0;
     fclose(f);
     return 1;
+}
+
+/*
+ * The tools: "escript" (both files), and the Elixir tools of elixir.com:
+ * "mix", "iex", "elixirc" (also with .exe or .com) and "elixir" (only
+ * without an extension: elixir.com and elixir.exe are the file itself,
+ * with its commands). NULL for another name.
+ */
+static const char *elixir_tool(const char *name)
+{
+    static const char *tools[] = {"mix", "iex", "elixirc", "escript"};
+    size_t i, n;
+
+    if (strcmp(name, "elixir") == 0)
+        return "elixir";
+    for (i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
+        n = strlen(tools[i]);
+        if (strncmp(name, tools[i], n) == 0 &&
+            (name[n] == '\0' || strcmp(name + n, ".exe") == 0 ||
+             strcmp(name + n, ".com") == 0))
+            return tools[i];
+    }
+    return NULL;
+}
+
+/*
+ * The emulator flags of an escript: a "%%!" line among its first three
+ * lines (after "#!" and "%% coding: ..."), as the escript program of OTP
+ * reads them. For example "+S 1", or "-escript main MODULE".
+ */
+static void escript_flags(const char *path, struct arglist *out)
+{
+    FILE *f = fopen(path, "rb");
+    char line[4096], *word, *save;
+    int n;
+
+    if (!f)
+        return;
+    for (n = 0; n < 3 && fgets(line, sizeof(line), f); n++) {
+        if (strncmp(line, "%%!", 3) == 0) {
+            for (word = strtok_r(line + 3, " \t\r\n", &save); word;
+                 word = strtok_r(NULL, " \t\r\n", &save))
+                push(out, strdup(word));
+            break;
+        }
+    }
+    fclose(f);
+}
+
+/* The zip has Elixir: a directory lib/elixir-VSN (elixir.com). */
+static int zip_has_elixir(void)
+{
+    DIR *dir = opendir(BEAM_COM_ROOT "/lib");
+    struct dirent *entry;
+    int found = 0;
+
+    if (!dir)
+        return 0;
+    while (!found && (entry = readdir(dir)))
+        found = starts_with(entry->d_name, "elixir-");
+    closedir(dir);
+    return found;
 }
 
 static char *join(const char *a, const char *b, const char *c)
@@ -739,6 +835,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode;
+    const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
      * that the helper starts do not see it. */
@@ -772,6 +869,34 @@ void beam_com_main(int *argcp, char ***argvp)
     erl_mode = strcmp(name, "erl") == 0 || strcmp(name, "erl.exe") == 0 ||
                strcmp(name, "erl.com") == 0 ||
                (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
+    /* The tools: escript, and the Elixir tools as the scripts of Elixir
+     * start them. A link named escript, mix, iex, elixirc or elixir, or
+     * the first argument of the file ("elixir.com mix test"). They run
+     * with all the applications of the zip in the code path. */
+    tool = erl_mode ? NULL : elixir_tool(name);
+    if (!erl_mode && !tool && argc > 1 && file_exists(BEAM_COM_TOOL) &&
+        (tool = elixir_tool(argv[1])) && strchr(argv[1], '.') == NULL) {
+        /* "elixir.com mix test": mix gets "test". */
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+    }
+    /* "iex -S mix": Elixir looks for an executable mix in PATH and
+     * loads it as a script; the script of mix is in the zip. */
+    if (tool && (strcmp(tool, "iex") == 0 || strcmp(tool, "elixir") == 0)) {
+        for (i = 1; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-S") == 0) {
+                if (strcmp(argv[i + 1], "mix") == 0)
+                    argv[i + 1] = BEAM_COM_BINDIR "/mix";
+                break;
+            }
+        }
+    }
+    if (tool && strcmp(tool, "escript") != 0 && !zip_has_elixir()) {
+        fprintf(stderr, "beam.com: %s: Elixir is not in this file "
+                        "(use elixir.com)\n", tool);
+        exit(1);
+    }
     if (erl_mode) {
         unsetenv("BEAM_COM_ERL");
         push(&file, "-boot");
@@ -779,11 +904,46 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "...");
         has_release = 1;
         has_args = 0;
+    } else if (tool && strcmp(tool, "escript") == 0) {
+        /* As the escript program of OTP: "escript FILE ARGS". */
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/no_dot_erlang");
+        push(&file, "-noshell");
+        if (argc > 1)
+            escript_flags(argv[1], &file);
+        push(&file, "-run");
+        push(&file, "escript");
+        push(&file, "start");
+        push(&file, "-extra");
+        has_release = 1;
+        has_args = 0;
+    } else if (tool) {
+        push(&file, "-boot");
+        push(&file, BEAM_COM_BINDIR "/start_clean");
+        push(&file, "-noshell");
+        if (strcmp(tool, "iex") == 0) {
+            push(&file, "-user");
+            push(&file, "elixir");
+            push(&file, "-extra");
+            push(&file, "--no-halt");
+            push(&file, "+iex");
+        } else {
+            push(&file, "-s");
+            push(&file, "elixir");
+            push(&file, "start_cli");
+            push(&file, "-extra");
+            if (strcmp(tool, "elixirc") == 0)
+                push(&file, "+elixirc");
+            else if (strcmp(tool, "mix") == 0)
+                push(&file, BEAM_COM_BINDIR "/mix");
+        }
+        has_release = 1;
+        has_args = 0;
     } else {
         has_release = read_release(&file);
         has_args = read_zip_args(&file);
     }
-    if (!erl_mode && file_exists(BEAM_COM_TOOL) &&
+    if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) &&
         ((!has_release && !has_args) ||
          (argc > 1 && strcmp(argv[1], "build") == 0))) {
         /* The commands of beam.com: when the zip has no release (the
@@ -803,15 +963,25 @@ void beam_com_main(int *argcp, char ***argvp)
     if (!has_release && !has_args)
         return; /* Not a bundle: behave like a plain beam.smp. */
 
-    /* ERL_FLAGS has more flags, as with erl. */
-    if (getenv("ERL_FLAGS")) {
-        struct arglist flags = {0};
-        char *copy = strdup(getenv("ERL_FLAGS")), *word, *save;
-        for (word = strtok_r(copy, " \t\r\n", &save); word;
-             word = strtok_r(NULL, " \t\r\n", &save))
-            push(&flags, word);
-        for (i = 0; i < flags.n; i++)
-            add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+    /* ERL_FLAGS has more flags, as with erl, and ELIXIR_ERL_OPTIONS for
+     * the Elixir tools, as with the scripts of Elixir. */
+    {
+        const char *flag_vars[2];
+        int v;
+        flag_vars[0] = "ERL_FLAGS";
+        flag_vars[1] = tool ? "ELIXIR_ERL_OPTIONS" : NULL;
+        for (v = 0; v < 2; v++) {
+            struct arglist flags = {0};
+            char *copy, *word, *save;
+            if (!flag_vars[v] || !getenv(flag_vars[v]))
+                continue;
+            copy = strdup(getenv(flag_vars[v]));
+            for (word = strtok_r(copy, " \t\r\n", &save); word;
+                 word = strtok_r(NULL, " \t\r\n", &save))
+                push(&flags, word);
+            for (i = 0; i < flags.n; i++)
+                add_user_arg(&emu, &init, flags.v, &i, flags.n, &extra);
+        }
     }
 
     for (i = 0; i < file.n; i++) {

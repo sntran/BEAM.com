@@ -13,8 +13,8 @@ Erlang programs:
 
 | File | For | Size |
 |---|---|---|
-| `beam.com` | Erlang | 44 MB |
-| `elixir.com` | Erlang and Elixir: `beam.com` with Elixir 1.20.4 | +1.8 MB |
+| `beam.com` | Erlang | 42 MB |
+| `elixir.com` | Erlang and Elixir: `beam.com` with Elixir 1.20.4 and its tools (`mix`, `iex`, ...) | +2.8 MB |
 
 A program that you build gets only the applications that it uses, so an
 Erlang program from `elixir.com` is the same as one from `beam.com`.
@@ -151,9 +151,9 @@ it on each platform, two times (with and without `rebar.lock`).
 ### Elixir
 
 `elixir.com` is `beam.com` with Elixir 1.20.4 (compiled with its
-Erlang/OTP 29.1.1, the beam files without debug information and docs:
-1.8 MB in the zip), so `elixir.com build` compiles Elixir code without
-an Elixir installation:
+Erlang/OTP 29.1.1, the beam files without debug information: 2.8 MB in
+the zip), so `elixir.com build` compiles Elixir code without an Elixir
+installation:
 
 ```sh
 elixir.com build hello.ex           # one file; a module exports main/1
@@ -181,8 +181,8 @@ Hex), it stops with "Elixir is not in beam.com: use elixir.com".
   compiled, but they are not in the applications of the program.
 - A program gets only the Elixir applications that it uses: `elixir`,
   with `compiler` (which Elixir needs at run time), makes a program
-  3.9 MB larger than the same program in Erlang, and its start about
-  35 ms slower (`docs/BENCHMARKS.md`).
+  1.9 MB larger than the same program in Erlang, and its start about
+  40 ms slower (`docs/BENCHMARKS.md`).
 - **Not supported:** umbrella projects, `config/runtime.exs`, protocol
   consolidation (protocols work, but their dispatch is not optimized),
   and Mix tasks or aliases.
@@ -191,6 +191,45 @@ Hex), it stops with "Elixir is not in beam.com: use elixir.com".
 (a Hex package in Elixir) and `config/config.exs`;
 [`tests/programs/elixir_check.ex`](tests/programs/elixir_check.ex) is a
 one-file program. CI builds and runs both on each platform.
+
+### The tools: `mix`, `iex`, `elixir`, `elixirc` and `escript`
+
+`elixir.com` is also an Elixir installation in one file. The tools of
+Elixir are the first argument, or the name of a link to the file:
+
+```sh
+elixir.com mix new hello && cd hello
+elixir.com mix test
+elixir.com iex -S mix
+elixir.com elixir -e 'IO.puts(1 + 2)'
+elixir.com elixirc lib/hello.ex -o ebin
+
+# Or links, as with an installation (Linux, macOS and the BSDs):
+for tool in mix iex elixir elixirc escript; do ln -s elixir.com ~/bin/$tool; done
+mix test
+```
+
+- They run as the scripts of Elixir run them (`-s elixir start_cli`,
+  `+iex`, `+elixirc`), with the applications of the zip: `elixir`,
+  `eex`, `ex_unit`, `iex`, `logger` and `mix`, with their docs (`h/1` in
+  `iex`). `iex -S mix` and `elixir -S mix` use the `mix` script of the
+  zip.
+- `escript FILE` (both files) runs an escript, as the `escript` program
+  of OTP, with the flags of its `%%!` line. Escripts from `mix
+  escript.build` run with it.
+- Packages: `mix local.hex` installs Hex, and `mix deps.get` then
+  fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
+  rebar3, which Mix runs as an escript: put the `escript` link in
+  `PATH`. `beam.com build` and `elixir.com build` do not need Hex or
+  rebar3 (see "Hex packages").
+- `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
+- **Not supported:** `mix release` (it copies ERTS from disk, and there
+  is none: `elixir.com build` makes the program instead); the options of
+  the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
+  `--name`, `--cookie`, `--pipe-to`; there is no distribution). On
+  Windows, there are no links and no port programs: use the first
+  argument (`elixir.exe mix test`), and Mix tasks that start other
+  programs (rebar3, git) do not work.
 
 ### Command line programs: `--main`, `priv` files and erl mode
 
@@ -534,6 +573,13 @@ builder ([`apps/beam_com/src/beam_com_zip.erl`](apps/beam_com/src/beam_com_zip.e
 keeps the bytes up to the first entry that it removes, moves the entries
 after that point that it keeps, adds the new entries, and writes a new
 central directory with the new offsets.
+
+The code of OTP 29 and of Elixir has its docs and its debug information
+(for `h/1`, the debugger and `cover`). A program does not need them: the
+builder strips them from the beam files of the program, as `mix release`
+does (`strip_beams`). It keeps the chunks that the loader uses, the line
+numbers (for stack traces) and the attributes. A program is about 7.7 MB
+smaller, and it starts as fast as before (`docs/BENCHMARKS.md`).
 
 ## Debugging
 

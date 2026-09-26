@@ -3,6 +3,8 @@
 # "beam.com build".
 # Usage: tests/run.ps1 DIR
 param([string]$Dir = ".")
+# An absolute path: some checks run in another directory.
+$Dir = (Resolve-Path $Dir).Path
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -189,6 +191,29 @@ if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "elixir.com"))) {
         Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
     }
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+}
+
+# The tools (see tests/run.sh), as the first argument: Windows has no
+# links for them, and no port programs (so no Hex or rebar3 here).
+$escript = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_tools.escript"
+Set-Content -Path $escript -Encoding ascii -Value @(
+    '#!/usr/bin/env escript',
+    '%%! +S 1 -escript main tools_escript',
+    '-module(tools_escript).',
+    '-export([main/1]).',
+    'main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).')
+Check "beam.com" 'escript: \["a","b c"\] 1' @("escript", $escript, "a", "b c")
+Check "beam.com" 'mix: Elixir is not in this file \(use elixir.com\)' @("mix") 1
+if (Test-Path (Join-Path $Dir "elixir.com")) {
+    Check "elixir.com" '(?m)^55\r?$' @("elixir", "-e", "IO.puts(Enum.sum(1..10))")
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_mix_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    Push-Location $work
+    Check "elixir.com" 'creating mix.exs' @("mix", "new", "hello")
+    Set-Location hello
+    Check "elixir.com" '2 passed' @("mix", "test")
+    Pop-Location
+    Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 
 # An application with an entry (toolbox): see tests/run.sh. The priv and

@@ -74,6 +74,22 @@ stored_or_deflated_test() ->
     ?assertEqual(8, maps:get("text", Methods)),
     ?assert(byte_size(Out) < byte_size(exe(prefix())) + 1000 + 2400).
 
+%% The code of kernel and stdlib is stored (the boot reads it without
+%% inflating); other code is compressed.
+kernel_stdlib_stored_test() ->
+    Text = binary:copy(<<"compress me ">>, 200),
+    Out = write(exe(prefix()), fun all/1,
+                [{"lib/kernel-11.0/ebin/code.beam", Text},
+                 {"lib/stdlib-8.1/ebin/lists.beam", Text},
+                 {"lib/stdlib-8.1/include/x.hrl", Text},
+                 {"lib/other-1.0/ebin/o.beam", Text}]),
+    Methods = maps:from_list([{N, M} || {N, M, _} <- central(Out)]),
+    ?assertEqual(0, maps:get("lib/kernel-11.0/ebin/code.beam", Methods)),
+    ?assertEqual(0, maps:get("lib/stdlib-8.1/ebin/lists.beam", Methods)),
+    ?assertEqual(8, maps:get("lib/stdlib-8.1/include/x.hrl", Methods)),
+    ?assertEqual(8, maps:get("lib/other-1.0/ebin/o.beam", Methods)),
+    ?assertEqual(Text, proplists:get_value("lib/kernel-11.0/ebin/code.beam", files(Out))).
+
 directory_attributes_test() ->
     Out = write(exe(prefix()), fun all/1, [{"d/", <<>>}, {"f", <<"x">>}]),
     Attrs = maps:from_list([{N, A} || {N, _, A} <- central(Out)]),

@@ -18,6 +18,7 @@
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
          parents/1, keep/2, executable/0, slashes/2, generate/2, native/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
+         without_docs/3,
          with_extract/2, compile_all/2, first_names/1]).
 -endif.
 
@@ -77,8 +78,10 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
     Release = try release(AppX, Apps, Base, Tmp, Root)
               after file:del_dir_r(Tmp)
               end,
-    New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)),
-    Keep = keep([A || A <- Apps, is_map_key(A, Base0)], Base0),
+    Kept = [A || A <- Apps, is_map_key(A, Base0)],
+    New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)
+                    ++ without_docs(Kept, Base0, Root)),
+    Keep = keep(Kept, Base0),
     Data = case Opts of
                #{native := Target} ->
                    native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
@@ -794,6 +797,43 @@ parents(Name) ->
     Parts = lists:droplast(string:split(Name, "/", all)),
     [lists:flatten(lists:join("/", lists:sublist(Parts, N))) ++ "/"
      || N <- lists:seq(1, length(Parts))].
+
+%% A program does not need the docs and the debug information of the
+%% code: the beam files of OTP 29 and of elixir.com have both (for h/1
+%% and the debugger). For the applications of the zip whose code has docs
+%% (the first beam file tells), the program gets the beam files without
+%% them, in place of the entries of the zip, as "mix release" strips
+%% them (strip_beams): it keeps the chunks that the loader uses, the line
+%% numbers and the attributes, and does not compress the file.
+without_docs(Apps, Base, Root) ->
+    lists:append([app_without_docs(A, maps:get(vsn, maps:get(A, Base)), Root)
+                  || A <- Apps]).
+
+app_without_docs(App, Vsn, Root) ->
+    Dir = atom_to_list(App) ++ "-" ++ Vsn,
+    Files = lists:sort(filelib:wildcard(filename:join([Root, "lib", Dir, "ebin", "*.beam"]))),
+    case Files =/= [] andalso has_docs(hd(Files)) of
+        false -> [];
+        true ->
+            [begin
+                 {ok, Beam} = read_file(F),
+                 {"lib/" ++ Dir ++ "/ebin/" ++ filename:basename(F), strip(Beam)}
+             end || F <- Files]
+    end.
+
+strip(Beam) ->
+    Keep = ["Atom", "AtU8", "Attr", "Code", "StrT", "ImpT", "ExpT", "FunT",
+            "LitT", "Line", "Type", "Meta", "Recs"],
+    {ok, {_, Chunks}} = beam_lib:chunks(Beam, Keep, [allow_missing_chunks]),
+    {ok, Stripped} = beam_lib:build_module([C || {_, Data} = C <- Chunks, is_binary(Data)]),
+    Stripped.
+
+has_docs(File) ->
+    {ok, Beam} = read_file(File),
+    case beam_lib:chunks(Beam, ["Docs"], [allow_missing_chunks]) of
+        {ok, {_, [{"Docs", Docs}]}} -> is_binary(Docs);
+        _ -> false
+    end.
 
 %% The entries of beam.com that the new executable keeps: everything
 %% except the releases, .args, and the applications that the release

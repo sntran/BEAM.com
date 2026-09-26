@@ -109,6 +109,11 @@ can be added on WAMR, or the runtime can be replaced.
   `beam.com` with Elixir (+1.8 MB). An Erlang program is the same from
   both. The name of each file shows what it is for, as the `.com`
   shows that it is an APE file.
+- Done: `elixir.com` has the tools of Elixir (`mix`, `iex`, `elixir`,
+  `elixirc`, with `ex_unit` and the docs), and both files run escripts.
+  Programs are built without docs and debug information (−7.7 MB).
+- Next: `mix release` (it needs ERTS on disk), and the options of the
+  Elixir scripts that change the `erl` command (`--erl`).
 - Done: command line programs, for larger projects (for example an
   orchestration tool with a sandbox worker): the `main/1` of an application
   (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours
@@ -156,8 +161,8 @@ WAMR 2.4.5).
   threads and locks (`EINTR` in condition variables, the lock on NetBSD,
   the locks on Windows and XNU). Take the next cosmocc release when it
   comes, and run the stress tests again (see C25 in `docs/UPSTREAM.md`).
-  C25 (`close()` without the lock of the fd table) is a candidate to
-  send upstream.
+  C25 and C26 (`close()` and the fd table, `docs/UPSTREAM.md`) are
+  candidates to send upstream.
 - **OpenBSD in CI stays on 7.3**: the CI action has OpenBSD 7.3 to 7.9,
   but Cosmopolitan supports OpenBSD 7.3 and earlier only (see "Platform
   status" in the README).
