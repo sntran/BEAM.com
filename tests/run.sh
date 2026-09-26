@@ -214,21 +214,23 @@ if [ -d examples ]; then
     check_status 1 beam.com 'option -o needs a value' build x.erl -o
     check_status 1 beam.com 'the application nosuch is not in beam.com' \
         build examples/hashsum.erl -a nosuch -o "$dir/never.com"
-    check_status 1 beam.com 'unknown native target macos-arm64' \
-        build examples/hashsum.erl --native macos-arm64
+    check_status 1 beam.com 'aarch64-apple-darwin: Apple Silicon has no native form' \
+        build examples/hashsum.erl --target aarch64-apple-darwin
+    check_status 1 beam.com 'unknown target linux-x86_64' \
+        build examples/hashsum.erl --target linux-x86_64
 
-    # --native: a file for this system only, which the kernel starts
+    # --target: a file for this system only, which the kernel starts
     # directly (no shell, no APE loader).
     case $os-$(uname -m) in
-        linux-x86_64) native=linux-x86_64 ;;
-        linux-aarch64) native=linux-aarch64 ;;
-        freebsd-amd64) native=freebsd-x86_64 ;;
-        darwin-x86_64) native=macos-x86_64 ;;
+        linux-x86_64) native=x86_64-unknown-linux-gnu ;;
+        linux-aarch64) native=aarch64-linux ;;
+        freebsd-amd64) native=x86_64-unknown-freebsd ;;
+        darwin-x86_64) native=x86_64-macos ;;
         *) native= ;;
     esac
     if [ -n "$native" ]; then
         check beam.com 'wrote .*hashsum.native' \
-            build examples/hashsum.erl --native "$native" -o "$dir/hashsum.native"
+            build examples/hashsum.erl --target "$native" -o "$dir/hashsum.native"
         if [ -f "$dir/hashsum.native" ]; then
             saved_runner=$runner
             runner=

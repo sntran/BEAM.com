@@ -722,9 +722,9 @@ run_edges(Dir) ->
     App = silent(fun() -> beam_com_build:app_dir(Warn) end),
     ?assertMatch(#{beams := [{warn, _}]}, App).
 
-%% --native: a small APE-like file with the parts of the shell script
+%% --target: a small APE-like file with the parts of the shell script
 %% that assimilate reads (tests/run.sh compares with real files).
-native_test_() ->
+target_test_() ->
     Elf = fun(Machine, Abi) ->
                   <<127, "ELF", 2, 1, 1, Abi, 0:64, 2:16/little, Machine:16/little,
                     1:32/little, 16#401000:64/little, 0:64, 64:64/little, 0:32,
@@ -744,26 +744,40 @@ native_test_() ->
     Ape = <<Script/binary, Pad/binary, MachO/binary, Tail/binary>>,
     Native = fun(T) -> beam_com_build:native(T, Ape) end,
     Rest = fun(Bin, N) -> binary:part(Bin, N, byte_size(Bin) - N) end,
-    [{"linux-x86_64: the ELF header with OS ABI 0, the rest the same",
-      ?_assertEqual(<<(Elf(16#3e, 0))/binary, (Rest(Ape, 64))/binary>>, Native("linux-x86_64"))},
-     {"linux-aarch64",
-      ?_assertEqual(<<(Elf(16#b7, 0))/binary, (Rest(Ape, 64))/binary>>, Native("linux-aarch64"))},
-     {"freebsd-x86_64 keeps OS ABI 9 (FreeBSD)",
-      ?_assertEqual(<<(Elf(16#3e, 9))/binary, (Rest(Ape, 64))/binary>>, Native("freebsd-x86_64"))},
-     {"macos-x86_64: the Mach-O header from the dd command",
-      ?_assertEqual(<<MachO/binary, (Rest(Ape, byte_size(MachO)))/binary>>, Native("macos-x86_64"))},
+    [{"x86_64 Linux: the ELF header with OS ABI 0, the rest the same",
+      ?_assertEqual(<<(Elf(16#3e, 0))/binary, (Rest(Ape, 64))/binary>>,
+                    Native("x86_64-unknown-linux-gnu"))},
+     {"aarch64 Linux",
+      ?_assertEqual(<<(Elf(16#b7, 0))/binary, (Rest(Ape, 64))/binary>>,
+                    Native("aarch64-unknown-linux-gnu"))},
+     {"FreeBSD keeps OS ABI 9",
+      ?_assertEqual(<<(Elf(16#3e, 9))/binary, (Rest(Ape, 64))/binary>>,
+                    Native("x86_64-unknown-freebsd"))},
+     {"macOS x86_64: the Mach-O header from the dd command",
+      ?_assertEqual(<<MachO/binary, (Rest(Ape, byte_size(MachO)))/binary>>,
+                    Native("x86_64-apple-darwin"))},
      {"the same size: the offsets of the zip do not change",
-      ?_assertEqual(byte_size(Ape), byte_size(Native("macos-x86_64")))},
+      ?_assertEqual(byte_size(Ape), byte_size(Native("x86_64-apple-darwin")))},
      {"no header for the CPU",
       ?_assertThrow({error, "no ELF header for this CPU in the APE file", []},
-                    beam_com_build:native("linux-x86_64", <<"MZqFpD='\n'\n">>))},
+                    beam_com_build:native("x86_64-unknown-linux-gnu", <<"MZqFpD='\n'\n">>))},
      {"no Mach-O header",
       ?_assertThrow({error, "no Mach-O header for this CPU in the APE file", []},
-                    beam_com_build:native("macos-x86_64", Script))},
-     {"known targets", ?_assertEqual("linux-aarch64", beam_com_build:check_native("linux-aarch64"))},
+                    beam_com_build:native("x86_64-apple-darwin", Script))},
+     {"the triples, and the short names",
+      [?_assertEqual(T, beam_com_build:check_target(N))
+       || {N, T} <- [{"x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"},
+                     {"x86_64-linux", "x86_64-unknown-linux-gnu"},
+                     {"aarch64-linux", "aarch64-unknown-linux-gnu"},
+                     {"x86_64-freebsd", "x86_64-unknown-freebsd"},
+                     {"x86_64-macos", "x86_64-apple-darwin"},
+                     {"x86_64-apple-darwin", "x86_64-apple-darwin"}]]},
+     {"Apple Silicon",
+      ?_assertThrow({error, "~ts: Apple Silicon has no native form" ++ _, ["aarch64-apple-darwin"]},
+                    beam_com_build:check_target("aarch64-apple-darwin"))},
      {"an unknown target",
-      ?_assertThrow({error, "unknown native target ~ts (one of: ~ts)", ["macos-arm64", _]},
-                    beam_com_build:check_native("macos-arm64"))}].
+      ?_assertThrow({error, "unknown target ~ts (one of: ~ts)", ["linux-x86_64", _]},
+                    beam_com_build:check_target("linux-x86_64"))}].
 
 %% The entry of an application program (--main, rebar.config, mix.exs),
 %% the priv directories that are copied at start, and the order of

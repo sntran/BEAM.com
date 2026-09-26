@@ -57,11 +57,11 @@ build_options(["--tool", Tool | _], _Opts) ->
     throw({error, "--tool is rebar or mix, not ~ts", [Tool]});
 build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
-build_options(["--native", Target | Rest], Opts) ->
-    build_options(Rest, Opts#{native => beam_com_build:check_native(Target)});
+build_options(["--target", Target | Rest], Opts) ->
+    build_options(Rest, Opts#{target => beam_com_build:check_target(Target)});
 build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a";
                                     Option =:= "--pledge"; Option =:= "--unveil";
-                                    Option =:= "--native"; Option =:= "--main";
+                                    Option =:= "--target"; Option =:= "--main";
                                     Option =:= "--tool"; Option =:= "--extract-priv" ->
     throw({error, "option ~ts needs a value", [Option]});
 build_options([[$- | _] = Option | _], _Opts) ->
@@ -76,7 +76,7 @@ usage() ->
 
 build_usage() ->
     "beam.com build INPUT [-o OUTPUT] [-a APP]... [--pledge PROMISES]~n"
-    "               [--unveil \"PERMISSIONS PATH\"]... [--native TARGET]~n"
+    "               [--unveil \"PERMISSIONS PATH\"]... [--target TARGET]~n"
     "               [--main MODULE] [--tool rebar|mix] [--extract-priv APP]...~n"
     "  INPUT     a .erl, .ex or .exs file with main/1, or an application~n"
     "            directory (rebar3 or Mix)~n"
@@ -90,8 +90,9 @@ build_usage() ->
     "            OpenBSD), with PERMISSIONS of r, w, x and c; other paths~n"
     "            are hidden~n"
     "  TARGET    a native file for one system, not an APE file:~n"
-    "            linux-x86_64, linux-aarch64, freebsd-x86_64 or~n"
-    "            macos-x86_64~n"
+    "            x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,~n"
+    "            x86_64-unknown-freebsd or x86_64-apple-darwin (also~n"
+    "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos)~n"
     "  MODULE    for an application: the module whose main/1 runs, with~n"
     "            the arguments, after the start (as an escript); found in~n"
     "            rebar.config (escript) or mix.exs (:escript) when not given~n"
