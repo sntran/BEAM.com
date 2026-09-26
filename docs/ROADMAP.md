@@ -141,6 +141,42 @@ can be added on WAMR, or the runtime can be replaced.
   aarch64 file, `.args`, the `--strace` and `--ftrace` flags, and
   `GetProgramExecutableName()` for the helper programs.
 
+## Watch list (checked 2026-09-26)
+
+What other projects did recently, and what it means for BEAM.com. All
+the parts of the build are at their latest stable release (cosmocc
+4.0.2, Erlang/OTP 29.1.1, Elixir 1.20.4, OpenSSL 4.0.2, SQLite 3.53.4,
+WAMR 2.4.5).
+
+- **Cosmopolitan master** has fixes that are not in a release yet: in
+  threads and locks (`EINTR` in condition variables, the lock on NetBSD,
+  the locks on Windows and XNU). Take the next cosmocc release when it
+  comes, and run the stress tests again (see C25 in `docs/UPSTREAM.md`).
+  C25 (`close()` without the lock of the fd table) is a candidate to
+  send upstream.
+- **OpenBSD in CI stays on 7.3**: the CI action has OpenBSD 7.3 to 7.9,
+  but Cosmopolitan supports OpenBSD 7.3 and earlier only (see "Platform
+  status" in the README).
+- **OTP 29 TLS**: the default key exchange of `ssl` is now the hybrid
+  post-quantum group `x25519mlkem768`. Next: a check in `tls_check` that
+  a TLS 1.3 connection uses it with the static OpenSSL 4.0.2.
+- **OTP deprecates `.ez` archives**: no effect; BEAM.com reads its zip
+  as a file system (`/zip`), not as code archives.
+- **Elixir 1.20** can evaluate module bodies instead of compiling them
+  (`module_definition: :interpreted`). A probe: read `mix.exs` that way,
+  which can make a build of a Mix project faster.
+- **hex_core 0.19** has a security fix. BEAM.com has its own Hex client
+  (`beam_com_hex`), so check whether the same problem applies to it.
+- **Gleam 1.18**: its compiler is a native program, not Erlang, so
+  `beam.com build` cannot compile Gleam. A Gleam project can give its
+  Erlang output (`gleam export erlang-shipment`) to `beam.com build`; a
+  probe of this is possible.
+- **Burrito 1.6**: see "Nothing is extracted" in the README for the
+  comparison. BEAM.com now copies a `priv` directory only when other
+  programs must read its files.
+- **AtomVM 0.7** (alpha): a small VM for microcontrollers; not a
+  replacement for ERTS here.
+
 ## Decided against
 
 - `beam_com:pledge/1` and `unveil/2` for Erlang code: on Linux, seccomp
