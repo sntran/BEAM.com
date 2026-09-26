@@ -6,8 +6,7 @@ could be. Keep it up to date when a new problem or workaround comes.
 
 Status words:
 
-- **3.3.2**: seen with cosmocc 3.3.2 (the local toolchain of the first
-  session).
+- **3.3.2**: seen with cosmocc 3.3.2 (an older local toolchain).
 - **4.0.2**: seen in CI with cosmocc 4.0.2 (the newest release).
 - **HEAD**: checked in the Cosmopolitan source, commit `3293fad0`
   (2026-07-19), which is still version 4.0.2.
