@@ -52,7 +52,7 @@ check() {
     chmod +x "$dir/$name"
     # Run through $runner (sh, as a user without binfmt_misc would do
     # it). A watchdog stops it after $limit seconds.
-    [ "$runner" = sh ] || chmod +x "$runner"
+    case $runner in sh|"") ;; *) chmod +x "$runner" ;; esac
     BEAM_COM_VERBOSE=1 $runner "$dir/$name" "$@" > "$tmp" 2>&1 &
     pid=$!
     rm -f "$tmp.diag"
@@ -189,6 +189,18 @@ if [ -d examples ]; then
         check_status 127 script_check.b.com 'exception throw: thrown_value' throw
         check_status 127 script_check.b.com 'exception exit: normal' exit
         check_status 3 script_check.b.com 'halting 3' halt 3
+        # A crash report (Cosmopolitan's ShowCrashReports), with the
+        # symbols of the zip; BEAM_COM_CRASH_REPORTS=0 turns it off.
+        check_status 134 script_check.b.com 'aborting@@Uncaught SIGABRT@@halt_2' abort
+        BEAM_COM_CRASH_REPORTS=0; export BEAM_COM_CRASH_REPORTS
+        check_status 134 script_check.b.com 'aborting' abort
+        if grep -q 'Uncaught' "$tmp"; then
+            echo "FAIL: script_check.b.com printed a crash report with BEAM_COM_CRASH_REPORTS=0"
+            failed="$failed
+  script_check.b.com abort: a crash report with BEAM_COM_CRASH_REPORTS=0"
+            fail=1
+        fi
+        unset BEAM_COM_CRASH_REPORTS
         check script_check.b.com '^line 100000$@@^last line$' big
         check script_check.b.com 'returned' spawn
         ERL_FLAGS='+S 1'
@@ -202,6 +214,28 @@ if [ -d examples ]; then
     check_status 1 beam.com 'option -o needs a value' build x.erl -o
     check_status 1 beam.com 'the application nosuch is not in beam.com' \
         build examples/hashsum.erl -a nosuch -o "$dir/never.com"
+    check_status 1 beam.com 'unknown native target macos-arm64' \
+        build examples/hashsum.erl --native macos-arm64
+
+    # --native: a file for this system only, which the kernel starts
+    # directly (no shell, no APE loader).
+    case $os-$(uname -m) in
+        linux-x86_64) native=linux-x86_64 ;;
+        linux-aarch64) native=linux-aarch64 ;;
+        freebsd-amd64) native=freebsd-x86_64 ;;
+        darwin-x86_64) native=macos-x86_64 ;;
+        *) native= ;;
+    esac
+    if [ -n "$native" ]; then
+        check beam.com 'wrote .*hashsum.native' \
+            build examples/hashsum.erl --native "$native" -o "$dir/hashsum.native"
+        if [ -f "$dir/hashsum.native" ]; then
+            saved_runner=$runner
+            runner=
+            check hashsum.native "$hashsum" abc
+            runner=$saved_runner
+        fi
+    fi
 fi
 
 # The sandbox (beam.com build --pledge, --unveil). Linux applies both

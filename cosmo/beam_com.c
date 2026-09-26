@@ -54,6 +54,33 @@
 #define BEAM_COM_PLEDGE "/zip/.pledge"
 #define BEAM_COM_UNVEIL "/zip/.unveil"
 
+/* close() with the lock of the file descriptor table (UPSTREAM.md C25).
+ * The emulator is linked with -Wl,--wrap=close (build.sh), so each call
+ * of close() comes here. Cosmopolitan's close() of a kernel descriptor
+ * calls the close system call, and then clears the entry of the
+ * descriptor in its table, without the lock. In that gap, another thread
+ * can open a /zip file, get the same number from the kernel (zipos
+ * reserves it with dup()), and write its entry, which close() then
+ * clears: the /zip descriptor becomes the kernel descriptor (a copy of
+ * stderr), and read() fails with EBADF. The lock is recursive, so the
+ * close() of a /zip file, which takes it again, works. */
+int __real_close(int fd);
+/* From libc/calls/state.internal.h, which cannot be included here: it
+ * includes libc/thread/tls.h, which stops with #error in the dependency
+ * pass of cosmocc, where no CPU is defined (UPSTREAM.md C23). */
+void __fds_lock(void);
+void __fds_unlock(void);
+
+int __wrap_close(int fd)
+{
+    int rc;
+
+    __fds_lock();
+    rc = __real_close(fd);
+    __fds_unlock();
+    return rc;
+}
+
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
 
@@ -719,6 +746,14 @@ void beam_com_main(int *argcp, char ***argvp)
         name = strdup(program);
         unsetenv("BEAM_COM_PROGRAM");
     }
+
+    /* A backtrace (with the symbols of /zip/.symtab.*) when the emulator
+     * dies on a fatal signal: SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP or
+     * SIGABRT. ERTS does not use these signals, and it sets its own
+     * handler for SIGQUIT later. BEAM_COM_CRASH_REPORTS=0 turns it off. */
+    if (!getenv("BEAM_COM_CRASH_REPORTS") ||
+        strcmp(getenv("BEAM_COM_CRASH_REPORTS"), "0") != 0)
+        ShowCrashReports();
 
     apply_sandbox(starts_with(name, "erl_child_setup") ||
                   starts_with(name, "inet_gethost"));

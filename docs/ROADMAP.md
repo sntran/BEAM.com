@@ -100,20 +100,25 @@ can be added on WAMR, or the runtime can be replaced.
 - Elixir sources.
 - Not planned: NIF dependencies, rebar3 plugins.
 
-### Later: more from Cosmopolitan
+### More from Cosmopolitan
 
-- Crash reports: `ShowCrashReports()` prints a backtrace (and the
-  `cosmoaddr2line` command for a better one) when the emulator dies on
-  a fatal signal. To check first: that it does not change how ERTS
-  handles its own signals.
-- A faster start: entries that are stored (not compressed) in the zip
-  can be read without inflating them. Measured on Linux x86_64 with a
-  zip without compression: `beam.com version` starts in about 100 ms
-  instead of about 145 ms, but the file grows from 27.5 MB to 49 MB.
-  To try: store only the modules that the boot loads.
-- A native file for one platform, made with `assimilate` (a Mach-O file
-  for macOS, an ELF file for Linux): no APE loader in `$TMPDIR`, and a
-  macOS file that can be signed. As an option of `beam.com build`.
+- Done: crash reports. `ShowCrashReports()` prints the signal, the
+  registers and a backtrace with function names when the emulator dies
+  on a fatal signal (`BEAM_COM_CRASH_REPORTS=0` turns it off). It
+  installs handlers only for the fatal signals (`SIGSEGV`, `SIGBUS`,
+  `SIGILL`, `SIGFPE`, `SIGABRT`, `SIGTRAP`, `SIGQUIT`); ERTS sets its
+  own handlers after it, so for a signal that ERTS handles, its own
+  handler runs.
+  A `SIGSEGV` sent with `kill` does not stop the process (the handler
+  returns for a signal from a user); the test uses `erlang:halt(abort)`.
+- Done: a faster start. The code of `kernel` and `stdlib` is stored
+  without compression (the rest stays compressed): 2 MB more, and the
+  start is about 50 ms (27%) faster. A zip with no compression at all
+  is about 21 MB larger, so only the modules of the boot are stored.
+- Done: `beam.com build --native TARGET` writes a native ELF (Linux,
+  FreeBSD) or Mach-O (macOS x86_64) file, with the same bytes as
+  `assimilate`. There is no native form for Apple Silicon (APE files run
+  there only with the APE loader).
 - Used already: the zip file system (`/zip`), the fat x86_64 and
   aarch64 file, `.args`, the `--strace` and `--ftrace` flags, and
   `GetProgramExecutableName()` for the helper programs.

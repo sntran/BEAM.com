@@ -119,3 +119,20 @@ What this says, for all platforms:
 So the JIT is worth it for long-running Erlang code, most of all on
 aarch64 (Apple Silicon, ARM servers). It costs 2.8 MB and the slower
 start, which matters for small command-line programs.
+
+## Stored `kernel` and `stdlib` (a faster start)
+
+The zip of `beam.com` stores the code of `kernel` and `stdlib` without
+compression, and all other files compressed. The boot loads these
+modules first, and a stored entry is read without inflating it.
+Local measurement, Linux x86_64 (x86_64-only interpreter build), the
+median of 11 runs of `beam.com version`, two runs:
+
+| | all compressed | `kernel` and `stdlib` stored | difference |
+|---|---:|---:|---:|
+| file size (MB) | 27.2 | 29.1 | +1.9 MB |
+| start: `version` (ms) | 193-202 | 143-146 | about −50 ms (−27%) |
+
+The programs that `beam.com build` makes keep these entries stored, so
+they start faster too. A zip with no compression at all is about 21 MB
+larger, so only these two applications are stored.

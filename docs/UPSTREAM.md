@@ -554,6 +554,40 @@ also unveils the loader paths that exist (`rx`), and its own file.
 **Possible upstream fix.** Document it next to `unveil()`, or unveil the
 loader that started the process automatically.
 
+### C25. close() and a /zip open() in another thread: a race
+
+**Status:** cosmocc 4.0.2 (`libc/calls/close.c`, `libc/runtime/zipos-open.c`).
+
+**Symptom.** About 1 start in 100, when the machine is busy, kernel
+does not start: `File operation error: ebadf. Target:
+/zip/lib/kernel-11.0.4/ebin/inet_parse.beam. Function: read_file`, then
+`undef` for `inet_parse`. Seen first when `kernel` and `stdlib` were
+stored in the zip without compression (7 of 600 starts with 4 starts at
+the same time); 0 of 600 with compressed entries, but the race is the
+same.
+
+**Cause.** `close()` of a kernel descriptor calls the `close` system
+call and then clears the entry of the descriptor in `g_fds`, without the
+lock of the table. A `/zip` open in another thread reserves a number
+with `fcntl(2, F_DUPFD)` and writes its entry under the lock. When the
+open comes between the two steps of `close()`, it gets the number that
+the kernel has just freed, and `close()` then clears its entry. After
+that, the number is a copy of stderr: `fstat()` shows the size of the
+log file, and `read()` fails with `EBADF`. In BEAM.com, the poll thread
+closes the UDP socket of `inet_db` while a file thread reads
+`inet_parse.beam`. A stored entry opens faster (no inflate), so the open
+comes into the gap more often.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=close`, and `__wrap_close()` in `cosmo/beam_com.c` holds
+`__fds_lock()` around the real `close()` (the lock is recursive). With
+it: 0 of 600 starts fail.
+
+**Possible upstream fix.** Clear the entry of a kernel descriptor under
+`__fds_lock()`, and only when it is still empty (not a `kFdZip` entry of
+another thread); or hold the lock around the system call and the
+release, as `close()` already does for `/zip` descriptors.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
