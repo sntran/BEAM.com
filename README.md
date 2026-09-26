@@ -762,6 +762,9 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
   SIMD, no threads, and no component model yet.
 - No distribution: `epmd` is not included, so `-sname`/`-name` do not work.
+- Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)
+  as a relative path, because its Unix VFS runs there; give a relative
+  path, or the form of Cosmopolitan (`/C/db/x.db`).
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
 - `run_erl` does not work (there is no `mkfifo()`).

@@ -305,7 +305,10 @@ if (Test-Path "examples") {
     if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
-        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
+        # A relative path: the Unix VFS of SQLite takes a path with a drive
+        # (D:\...) as a relative path (README, "Known limits").
+        $db = (Resolve-Path -Relative $Dir) + "/test.db"
+        Check "sqlite_check.b.com" ($sqlite + [regex]::Escape($db)) @($db)
     }
     if (Test-Path (Join-Path $Dir "beam-emu.com")) {
         Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")

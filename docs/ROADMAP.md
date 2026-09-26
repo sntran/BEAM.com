@@ -167,7 +167,12 @@ WAMR 2.4.5).
   candidates to send upstream.
 - **OpenBSD in CI stays on 7.3**: the CI action has OpenBSD 7.3 to 7.9,
   but Cosmopolitan supports OpenBSD 7.3 and earlier only (see "Platform
-  status" in the README).
+  status" in the README, and C14 in `docs/UPSTREAM.md`). BEAM.com does
+  not work around this: OpenBSD 7.4 and later accept system calls only
+  from the places that the kernel records (`pinsyscalls`), which needs a
+  change in Cosmopolitan itself (its system calls through `libc.so`, as
+  on Apple Silicon, or a table of system calls in a native file). We
+  wait for support in Cosmopolitan.
 - **OTP 29 TLS**: the default key exchange of `ssl` is now the hybrid
   post-quantum group `x25519mlkem768`. Next: a check in `tls_check` that
   a TLS 1.3 connection uses it with the static OpenSSL 4.0.2.
