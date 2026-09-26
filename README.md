@@ -35,7 +35,7 @@ The default `beam.com` holds a small `hello` release
 ([`hello/`](hello)). Erlang/OTP version: **29.1.1**.
 
 `crypto` and `ssl` work: the `crypto` and `asn1` NIFs are linked into
-`beam.com` with a static OpenSSL 3.5.8, and TLS connections verify the
+`beam.com` with a static OpenSSL 4.0.2, and TLS connections verify the
 server with the certificates of the OS (on Windows too).
 
 ## Build a program with `beam.com build`
@@ -97,7 +97,7 @@ program as `"/"` in `dirs`.
 
 ### SQLite (probe)
 
-Build with `SQLITE=1 ./build.sh` to link SQLite 3.50.4 (the
+Build with `SQLITE=1 ./build.sh` to link SQLite 3.53.4 (the
 [esqlite](https://github.com/mmzeeman/esqlite) NIF) into `beam.com` and
 to put the `esqlite` application in its zip. CI makes this variant as
 `beam-sqlite.com`. It adds about 1.8 MB to each program.
@@ -181,7 +181,7 @@ because Linux `binfmt_misc` does not keep `argv[0]`.
 
 ### Crypto and TLS
 
-`build.sh` builds a static `libcrypto` (OpenSSL 3.5.8, no assembly, so
+`build.sh` builds a static `libcrypto` (OpenSSL 4.0.2, no assembly, so
 the same C code compiles for x86_64 and aarch64), and OTP is configured
 with `--enable-static-nifs`. ERTS selects a static NIF by the name of the
 module that loads it, so the `crypto.beam` of a normal release uses the
@@ -233,7 +233,7 @@ central directory with the new offsets.
 ## Build
 
 You need Linux (x86_64), `git`, `make`, `perl`, `curl`, `zip` and
-`unzip`. The script downloads cosmocc (4.0.2), OpenSSL (3.5.8) and the
+`unzip`. The script downloads cosmocc (4.0.2), OpenSSL (4.0.2) and the
 OTP source, applies the patches, builds a small OTP and makes
 `build/beam.com`:
 

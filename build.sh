@@ -11,9 +11,11 @@
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
-#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 3.5.8)
+#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.2)
 #   SQLITE           1: link SQLite (the esqlite NIF) into beam.com, and put
 #                    the esqlite application in the zip (default 0)
+#   SQLITE_VERSION   SQLite version (default 3.53.4), and SQLITE_YEAR, the
+#                    year directory of its download on sqlite.org (2026)
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
@@ -29,10 +31,13 @@ set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
-OPENSSL_VERSION=${OPENSSL_VERSION:-3.5.8}
+OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
 SQLITE=${SQLITE:-0}
-# esqlite (Apache-2.0) with the SQLite 3.50.4 amalgamation (public domain).
+# esqlite (Apache-2.0), with the SQLite amalgamation (public domain) of
+# sqlite.org instead of the older copy in esqlite.
 ESQLITE_COMMIT=${ESQLITE_COMMIT:-5c8d590d8eb70de17dd2c64dfc7502f4fd2fcba8}
+SQLITE_VERSION=${SQLITE_VERSION:-3.53.4}
+SQLITE_YEAR=${SQLITE_YEAR:-2026}
 WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 BUILD=${BUILD:-$ROOT/build}
@@ -183,6 +188,17 @@ step_sqlite() {
         git -C "$ESQLITE" fetch -q --depth 1 \
             https://github.com/mmzeeman/esqlite.git "$ESQLITE_COMMIT"
         git -C "$ESQLITE" checkout -q FETCH_HEAD
+    fi
+    # The amalgamation of SQLITE_VERSION: 3.53.4 is 3530400 in the name.
+    amalgamation=$(echo "$SQLITE_VERSION" | awk -F. '{printf "sqlite-amalgamation-%d%02d%02d00", $1, $2, $3}')
+    if ! grep -q "define SQLITE_VERSION *\"$SQLITE_VERSION\"" "$ESQLITE/c_src/sqlite3/sqlite3.h"; then
+        log "Downloading SQLite $SQLITE_VERSION"
+        curl -fsSL -o "$BUILD/$amalgamation.zip" \
+            "https://sqlite.org/$SQLITE_YEAR/$amalgamation.zip"
+        (cd "$BUILD" && unzip -q -o "$amalgamation.zip")
+        cp "$BUILD/$amalgamation/sqlite3.c" "$BUILD/$amalgamation/sqlite3.h" \
+            "$ESQLITE/c_src/sqlite3/"
+        rm -rf "$BUILD/$amalgamation" "$BUILD/$amalgamation.zip"
     fi
     log "Building the esqlite NIF (SQLite) as a static NIF"
     t=$(target)
