@@ -19,18 +19,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Build, sqlite: "0", out: beam.com }
-          # The SQLite probe (see docs/ROADMAP.md).
-          - { name: Build with SQLite, sqlite: "1", out: beam-sqlite.com }
+          - { name: Build, out: beam.com }
           # The JIT probe: x86_64 only for now (see docs/ROADMAP.md).
           - name: Build with JIT (x86_64)
-            sqlite: "0"
             jit: "1"
             out: beam-jit.com
             cc: x86_64-unknown-cosmo-cc
             ar: x86_64-linux-cosmo-ar
     env:
-      SQLITE: ${{ matrix.sqlite }}
       JIT: ${{ matrix.jit || '0' }}
       CC: ${{ matrix.cc || 'cosmocc' }}
       AR: ${{ matrix.ar || 'cosmoar' }}

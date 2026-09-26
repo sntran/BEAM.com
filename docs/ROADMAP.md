@@ -25,7 +25,7 @@ platforms.
 
 ## Probe results
 
-### SQLite (build flag `SQLITE=1`)
+### SQLite (default on, `SQLITE=0` to leave it out)
 
 - The `esqlite` NIF (Apache-2.0) with the SQLite 3.53.4 amalgamation is
   linked into the emulator as a static NIF, the same way as `crypto`.
@@ -35,9 +35,16 @@ platforms.
   CPUs (compiled with `-Os`, as esqlite does; 2.8 MB with `-O2`). The
   cost is in each program that is made from that `beam.com`, also when
   the program does not use SQLite, because the NIF is in the emulator.
-- CI builds `beam-sqlite.com` next to `beam.com`, and runs a SQLite
-  program (an in-memory database and a database file) on each platform.
-- Default: not decided yet. `beam.com` stays without SQLite until then.
+- CI runs a SQLite program (an in-memory database and a database file)
+  on each platform.
+- Default: on, since the probe. SQLite is small, and a database in the
+  one file is useful for many programs.
+- Why esqlite, and not SQLite alone: Erlang code cannot call C
+  functions directly. A NIF must convert the terms and hold the
+  database handles as resources, and esqlite does this in one C file
+  (about 1300 lines). SQLite itself is compiled directly with `cosmocc`
+  (the amalgamation of sqlite.org, not the older copy in esqlite). An
+  own NIF (as for `wasm`) is possible later, if esqlite does not fit.
 
 ### WebAssembly (default on, `WASM=0` to leave it out)
 

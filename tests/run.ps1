@@ -99,7 +99,7 @@ $apps = @("greeter", "crypto_check", "tls_check")
 Check "beam.com" 'usage: beam.com COMMAND@@build INPUT@@version' @()
 Check "beam.com" 'usage: beam.com COMMAND' @("help")
 Check "beam.com" 'usage: beam.com build INPUT' @("help", "build")
-Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : emu@@stdlib-' @("version")
+Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : emu@@stdlib-@@esqlite-@@wasm-' @("version")
 Check "beam.com" 'unknown command nosuch \(see beam.com help\)' @("nosuch") 1
 
 # Releases made with rebar3 and added with zip (by CI).
@@ -193,10 +193,10 @@ if ((Test-Path (Join-Path $Dir "beam-jit.com")) -and ($env:PROCESSOR_ARCHITECTUR
     }
 }
 
-# The SQLite probe: beam-sqlite.com (built with SQLITE=1).
+# SQLite (in beam.com).
 $sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
-if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "beam-sqlite.com"))) {
-    Check "beam-sqlite.com" 'wrote .*sqlite_check.b.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*sqlite_check.b.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
     if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
