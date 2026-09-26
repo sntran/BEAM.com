@@ -389,9 +389,12 @@ static void allow_parse(int helper, struct allow *a, char *word)
 /* ERTS needs "stdio rpath" to start: without them, it waits forever
  * (seen on Linux). Threads are part of "stdio". unveil limits which files
  * "rpath" can read. The JIT needs "prot_exec" for the memory of its
- * code. */
+ * code, and "cpath wpath" for shm_open(), which makes the file of its two
+ * views (W^X): without them, asmjit maps its code writable and executable
+ * (seen in the jit_maps check). unveil limits writes to the directory of
+ * shm_open() and the paths of --allow-write. */
 #ifdef BEAMASM
-#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec "
+#define BEAM_COM_BASE_PROMISES "stdio rpath prot_exec cpath wpath "
 #else
 #define BEAM_COM_BASE_PROMISES "stdio rpath "
 #endif
