@@ -193,6 +193,21 @@ jobs:
         shell: pwsh
         run: tests/run.ps1 bin
 
+      # The table goes to the summary of the run (docs/BENCHMARKS.md).
+      - name: Benchmarks (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          tests/bench/run.sh bin | tee bench.md
+          { echo "### Benchmarks: ${{ matrix.name }}"; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Benchmarks (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          tests/bench/run.ps1 -Dir bin | Tee-Object -FilePath bench.md
+          "### Benchmarks: ${{ matrix.name }}`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          Get-Content bench.md | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
   test-bsd:
     name: Run on ${{ matrix.name }}
     needs: [build, example-release]
@@ -218,7 +233,8 @@ jobs:
         if: matrix.vm == 'freebsd'
         uses: vmactions/freebsd-vm@v1
         with:
-          run: sh tests/run.sh bin
+          run: |
+            sh tests/run.sh bin && sh tests/bench/run.sh bin > bench.md
 
       - name: Run on NetBSD
         if: matrix.vm == 'netbsd'
@@ -232,7 +248,8 @@ jobs:
             # helper programs that beam.com starts (it executes itself).
             cp bin/ape-x86_64.elf "$HOME/.ape-1.10"
             chmod +x "$HOME/.ape-1.10"
-            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin
+            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin &&
+              RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
 
       - name: Run on OpenBSD
         if: matrix.vm == 'openbsd'
@@ -247,4 +264,10 @@ jobs:
             # helper programs that beam.com starts (it executes itself).
             cp bin/ape-x86_64.elf "$HOME/.ape-1.10"
             chmod +x "$HOME/.ape-1.10"
-            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin
+            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin &&
+              RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
+
+      - name: Benchmarks
+        run: |
+          cat bench.md
+          { echo "### Benchmarks: ${{ matrix.name }}"; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"

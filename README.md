@@ -393,6 +393,10 @@ Unit tests with coverage (`./build.sh unit`), behavior tests that run in
 `beam.com` on each platform (`tests/run.sh`, `tests/run.ps1`), and how
 to test without CI: see [`docs/TESTING.md`](docs/TESTING.md).
 
+Benchmarks (size, start time, and the speed of typical work, for each
+variant, such as the interpreter against the JIT): see
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
 ## Notes for upstream
 
 [`docs/UPSTREAM.md`](docs/UPSTREAM.md) records what did not work with
