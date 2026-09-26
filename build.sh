@@ -421,10 +421,10 @@ step_multicall() {
     # know it.
     rm -f "$t/opt/$FLAVOR/driver_tab.c"
     nifs=$(static_nifs)
-    # --wrap=close and --wrap=mkdir: see __wrap_close() and
-    # __wrap_mkdir() in cosmo/beam_com.c.
+    # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
+    # __wrap_mkdir() and __wrap_chown() in cosmo/beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
