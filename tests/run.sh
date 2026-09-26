@@ -490,10 +490,10 @@ if [ -d examples ]; then
                 export ERL_FLAGS
                 check jit_maps.b.com 'wx pages: [1-9]@@dual mapped: no'
                 unset ERL_FLAGS
-                # With unveil rules, the launcher unveils the directory of
+                # With the sandbox, the launcher unveils the directory of
                 # shm_open() (/dev/shm), so the JIT keeps its two views.
                 check beam.com 'wrote .*jit_maps_unveil.b.com' \
-                    build tests/programs/jit_maps.erl --unveil "r /proc" \
+                    build tests/programs/jit_maps.erl --allow-read=/proc \
                     -o "$dir/jit_maps_unveil.b.com"
                 [ -f "$dir/jit_maps_unveil.b.com" ] &&
                     check jit_maps_unveil.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
