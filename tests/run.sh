@@ -13,6 +13,7 @@ limit=${LIMIT:-120}
 runner=${RUNNER:-sh}
 tmp=${TMPDIR:-/tmp}/beam_com_test.$$
 fail=0
+failed=
 
 check() {
     name=$1 pattern=$2
@@ -29,14 +30,17 @@ check() {
     wait "$pid"
     rc=$?
     kill "$watchdog" 2>/dev/null
-    out=$(cat "$tmp")
-    printf '%s\n' "$out"
+    # The output stays in the file: in a shell variable, a large output is
+    # too long for an external printf (OpenBSD ksh).
+    cat "$tmp"
     if [ $rc -eq 137 ]; then
         echo "FAIL: $name did not stop in $limit seconds"
         ps -ef 2>/dev/null | grep -v grep | grep -e "$name" -e beam || true
     fi
     if [ $rc -ne "$expect" ]; then
         echo "FAIL: $name exited with $rc (expected $expect)"
+        failed="$failed
+  $name $*: exited with $rc (expected $expect)"
         fail=1
     else
         # The patterns are separated by "@@". Each one must be found.
@@ -45,8 +49,10 @@ check() {
         while [ -n "$rest" ]; do
             p=${rest%%@@*}
             case $rest in *@@*) rest=${rest#*@@} ;; *) rest= ;; esac
-            if ! printf '%s\n' "$out" | grep -q "$p"; then
+            if ! grep -q "$p" "$tmp"; then
                 echo "FAIL: $name did not print \"$p\""
+                failed="$failed
+  $name $*: did not print \"$p\""
                 ok=0
                 fail=1
             fi
@@ -154,5 +160,11 @@ if [ -d examples ] && [ -f "$dir/beam-sqlite.com" ]; then
         rm -f "$dir/test.db"
         check sqlite_check.b.com "${sqlite}$dir/test.db" "$dir/test.db"
     fi
+fi
+rm -f "$tmp"
+if [ $fail -ne 0 ]; then
+    echo "==> Failed checks:$failed"
+else
+    echo "==> All checks passed"
 fi
 exit $fail

@@ -4,6 +4,7 @@
 # Usage: tests/run.ps1 DIR
 param([string]$Dir = ".")
 $fail = 0
+$failures = [System.Collections.Generic.List[string]]::new()
 
 function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     Write-Host "==> $Name"
@@ -63,18 +64,21 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     Write-Host $out
     if ($rc -ne $Expect) {
         Write-Host "FAIL: $Name exited with $rc (expected $Expect)"; $script:fail = 1
+        $script:failures.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)")
     } else {
         # The patterns are separated by "@@". Each one must be found.
         $ok = $true
         foreach ($pat in ($Pattern -split '@@')) {
             if ($out -notmatch $pat) {
                 Write-Host "FAIL: $Name did not print `"$pat`""
+                $script:failures.Add("$Name $($Arguments -join ' '): did not print `"$pat`"")
                 $ok = $false; $script:fail = 1
             }
         }
         # Kernel must accept the inetrc that BEAM.com writes on Windows.
         if ($out -match 'inet_config: syntax error') {
             Write-Host "FAIL: ${Name}: kernel did not accept the inetrc"
+            $script:failures.Add("${Name}: kernel did not accept the inetrc")
             $ok = $false; $script:fail = 1
         }
         if ($ok) { Write-Host "PASS: $Name" }
@@ -167,5 +171,11 @@ if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "beam-sqlite.com"))) 
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
         Check "sqlite_check.b.com" ($sqlite + [regex]::Escape("$Dir/test.db")) @("$Dir/test.db")
     }
+}
+if ($fail -ne 0) {
+    Write-Host "==> Failed checks:"
+    $failures | ForEach-Object { Write-Host "  $_" }
+} else {
+    Write-Host "==> All checks passed"
 }
 exit $fail
