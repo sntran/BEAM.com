@@ -54,7 +54,7 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Build
-        run: ./build.sh openssl otp configure sqlite make release multicall bundle
+        run: ./build.sh openssl otp configure sqlite wasm make release multicall bundle
 
       - name: Upload ${{ matrix.out }}
         uses: actions/upload-artifact@v4

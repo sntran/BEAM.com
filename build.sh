@@ -324,11 +324,24 @@ static_nifs() {
     return 0
 }
 
+# Stop early when a static NIF archive of an enabled option is missing
+# (its step did not run).
+check_static_nifs() {
+    for a in $(static_nifs); do
+        [ -f "$a" ] || case $a in
+            */lib/asn1/*|*/lib/crypto/*) ;;  # made by the OTP build
+            *) echo "Missing $a: run the sqlite and wasm steps first" >&2
+               exit 1 ;;
+        esac
+    done
+}
+
 step_make() {
     log "Building OTP (small build)"
     cd "$ERL_TOP"
     # cosmocc does not support "-MM" with many input files. depcc runs
     # it once for each file.
+    check_static_nifs
     nifs=$(static_nifs)
     DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
         DEP_CC="$ROOT/cosmo/depcc" ${nifs:+"STATIC_NIFS=$nifs"}
