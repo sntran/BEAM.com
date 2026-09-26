@@ -77,7 +77,7 @@ can be added on WAMR, or the runtime can be replaced.
 ### JIT (build flag `JIT=1`)
 
 - BeamAsm in one fat file: the x86 backend in the x86_64 half and the
-  arm backend in the aarch64 half (`beam-jit.com`, 42 MB). See
+  arm backend in the aarch64 half (the default `beam.com`, 40 MB). See
   `docs/JIT.md`.
 - The native stack for Erlang code is off, and asmjit has no
   precompiled header. On macOS arm64, `MAP_JIT` and the per-thread write
@@ -87,8 +87,8 @@ can be added on WAMR, or the runtime can be replaced.
 
 ### 1. JIT (BeamAsm): the default, and W^X
 
-- The fat JIT as the default `beam.com`, when it is green on every
-  platform, with the interpreter as `beam-emu.com` or as a build option.
+- Done: the fat JIT is the default `beam.com`, and `beam-emu.com` has
+  the interpreter (`JIT=0`).
 - Done: W^X. Measured in CI (`tests/programs/jit_maps.erl`): asmjit
   already uses dual mapping (`shm_open()`) under Cosmopolitan, with no
   writable and executable page, on Linux, FreeBSD, NetBSD and macOS

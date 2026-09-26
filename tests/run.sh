@@ -148,7 +148,7 @@ os=$(uname -s | tr '[:upper:]' '[:lower:]')
 check beam.com 'usage: beam.com COMMAND@@build INPUT@@version'
 check beam.com 'usage: beam.com COMMAND' help
 check beam.com 'usage: beam.com build INPUT' help build
-check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : emu@@stdlib-@@esqlite-@@wasm-" version
+check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" version
 check_status 1 beam.com 'unknown command nosuch (see beam.com help)' nosuch
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
 check beam.com 'SYS @@Erlang/OTP  : ' --strace version
@@ -295,65 +295,75 @@ if [ -d examples ]; then
     [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
-# The JIT: beam-jit.com has the x86 and the arm backend.
-if [ -f "$dir/beam-jit.com" ]; then
-    check beam-jit.com "Emulator    : jit@@OS type     : unix/$os" version
+if [ -d examples ]; then
+    # W^X: the JIT maps its code two times (executable, and writable),
+    # so no page is writable and executable. On Linux, +JMsingle (one
+    # mapping) shows that the check sees RWX pages. macOS arm64 uses
+    # one MAP_JIT mapping (RWX, with a write permission for each
+    # thread). OpenBSD has no memory map for the program to read; its
+    # kernel does not allow RWX pages at all.
+    check beam.com 'wrote .*jit_maps.b.com' \
+        build tests/programs/jit_maps.erl -o "$dir/jit_maps.b.com"
+    if [ -f "$dir/jit_maps.b.com" ]; then
+        case $os in
+            linux)
+                check jit_maps.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes'
+                ERL_FLAGS='+JMsingle true'
+                export ERL_FLAGS
+                check jit_maps.b.com 'wx pages: [1-9]@@dual mapped: no'
+                unset ERL_FLAGS
+                # With unveil rules, the launcher unveils the directory of
+                # shm_open() (/dev/shm), so the JIT keeps its two views.
+                check beam.com 'wrote .*jit_maps_unveil.b.com' \
+                    build tests/programs/jit_maps.erl --unveil "r /proc" \
+                    -o "$dir/jit_maps_unveil.b.com"
+                [ -f "$dir/jit_maps_unveil.b.com" ] &&
+                    check jit_maps_unveil.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
+            freebsd|netbsd)
+                check jit_maps.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
+            darwin)
+                case $(uname -m) in
+                    arm64) check jit_maps.b.com 'emulator: jit@@wx pages: [1-9]' ;;
+                    *) check jit_maps.b.com 'emulator: jit@@wx pages: 0$' ;;
+                esac ;;
+            *)
+                probe jit_maps.b.com ;;
+        esac
+    fi
+fi
+
+# The interpreter: beam-emu.com (beam.com has the JIT).
+if [ -f "$dir/beam-emu.com" ]; then
+    check beam-emu.com "Emulator    : emu@@OS type     : unix/$os" version
     if [ -d examples ]; then
-        check beam-jit.com 'wrote .*hashsum.jit.com' \
-            build examples/hashsum.erl -o "$dir/hashsum.jit.com"
-        [ -f "$dir/hashsum.jit.com" ] && check hashsum.jit.com "$hashsum" abc
-        check beam-jit.com 'wrote .*greeter.jit.com' \
-            build examples/greeter -o "$dir/greeter.jit.com"
-        [ -f "$dir/greeter.jit.com" ] && check greeter.jit.com "$greeter"
-        check beam-jit.com 'wrote .*wasm_tests.jit.com' \
-            build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.jit.com"
-        [ -f "$dir/wasm_tests.jit.com" ] && check wasm_tests.jit.com 'wasm_tests: all [0-9]* passed'
-        check beam-jit.com 'wrote .*script_check.jit.com' \
-            build tests/programs/script_check.erl -o "$dir/script_check.jit.com"
-        if [ -f "$dir/script_check.jit.com" ]; then
-            check script_check.jit.com 'argc 2@@arg b c$@@arg 日本$' args "b c" 日本
-            check_status 127 script_check.jit.com 'exception error: {boom,42}' raise
-            check_status 3 script_check.jit.com 'halting 3' halt 3
-            check script_check.jit.com '^line 100000$@@^last line$' big
+        check beam-emu.com 'wrote .*hashsum.emu.com' \
+            build examples/hashsum.erl -o "$dir/hashsum.emu.com"
+        [ -f "$dir/hashsum.emu.com" ] && check hashsum.emu.com "$hashsum" abc
+        check beam-emu.com 'wrote .*greeter.emu.com' \
+            build examples/greeter -o "$dir/greeter.emu.com"
+        [ -f "$dir/greeter.emu.com" ] && check greeter.emu.com "$greeter"
+        check beam-emu.com 'wrote .*wasm_tests.emu.com' \
+            build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.emu.com"
+        [ -f "$dir/wasm_tests.emu.com" ] && check wasm_tests.emu.com 'wasm_tests: all [0-9]* passed'
+        check beam-emu.com 'wrote .*script_check.emu.com' \
+            build tests/programs/script_check.erl -o "$dir/script_check.emu.com"
+        if [ -f "$dir/script_check.emu.com" ]; then
+            check script_check.emu.com 'argc 2@@arg b c$@@arg 日本$' args "b c" 日本
+            check_status 127 script_check.emu.com 'exception error: {boom,42}' raise
+            check_status 3 script_check.emu.com 'halting 3' halt 3
+            check script_check.emu.com '^line 100000$@@^last line$' big
         fi
-        check beam-jit.com 'wrote .*crypto_check.jit.com' \
-            build examples/crypto_check -o "$dir/crypto_check.jit.com"
-        [ -f "$dir/crypto_check.jit.com" ] && check crypto_check.jit.com "$crypto_check"
-        # W^X: the JIT maps its code two times (executable, and writable),
-        # so no page is writable and executable. On Linux, +JMsingle (one
-        # mapping) shows that the check sees RWX pages. macOS arm64 uses
-        # one MAP_JIT mapping (RWX, with a write permission for each
-        # thread). OpenBSD has no memory map for the program to read; its
-        # kernel does not allow RWX pages at all.
-        check beam-jit.com 'wrote .*jit_maps.jit.com' \
-            build tests/programs/jit_maps.erl -o "$dir/jit_maps.jit.com"
-        if [ -f "$dir/jit_maps.jit.com" ]; then
-            case $os in
-                linux)
-                    check jit_maps.jit.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes'
-                    ERL_FLAGS='+JMsingle true'
-                    export ERL_FLAGS
-                    check jit_maps.jit.com 'wx pages: [1-9]@@dual mapped: no'
-                    unset ERL_FLAGS ;;
-                freebsd|netbsd)
-                    check jit_maps.jit.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
-                darwin)
-                    case $(uname -m) in
-                        arm64) check jit_maps.jit.com 'emulator: jit@@wx pages: [1-9]' ;;
-                        *) check jit_maps.jit.com 'emulator: jit@@wx pages: 0$' ;;
-                    esac ;;
-                *)
-                    probe jit_maps.jit.com ;;
-            esac
-        fi
-        # The sandbox with the JIT: the launcher adds "prot_exec" for the
-        # memory of the JIT code.
+        check beam-emu.com 'wrote .*crypto_check.emu.com' \
+            build examples/crypto_check -o "$dir/crypto_check.emu.com"
+        [ -f "$dir/crypto_check.emu.com" ] && check crypto_check.emu.com "$crypto_check"
+        # The sandbox with the interpreter (the sandbox checks above use
+        # beam.com, the JIT, for which the launcher adds "prot_exec").
         if [ -n "$pledged" ]; then
-            check beam-jit.com 'wrote .*sandbox_pledge.jit.com' \
+            check beam-emu.com 'wrote .*sandbox_pledge.emu.com' \
                 build tests/programs/sandbox_check.erl --pledge inet \
-                -o "$dir/sandbox_pledge.jit.com"
+                -o "$dir/sandbox_pledge.emu.com"
             rm -f "$dir/sandbox.tmp"
-            [ -f "$dir/sandbox_pledge.jit.com" ] && check sandbox_pledge.jit.com "$pledged" \
+            [ -f "$dir/sandbox_pledge.emu.com" ] && check sandbox_pledge.emu.com "$pledged" \
                 read /etc/hosts write "$dir/sandbox.tmp" listen
             rm -f "$dir/sandbox.tmp"
         fi
@@ -370,10 +380,10 @@ if [ -d examples ]; then
         rm -f "$dir/test.db"
         check sqlite_check.b.com "${sqlite}$dir/test.db" "$dir/test.db"
     fi
-    if [ -f "$dir/beam-jit.com" ]; then
-        check beam-jit.com 'wrote .*sqlite_check.jit.com' \
-            build examples/sqlite_check.erl -o "$dir/sqlite_check.jit.com"
-        [ -f "$dir/sqlite_check.jit.com" ] && check sqlite_check.jit.com "$sqlite:memory:"
+    if [ -f "$dir/beam-emu.com" ]; then
+        check beam-emu.com 'wrote .*sqlite_check.emu.com' \
+            build examples/sqlite_check.erl -o "$dir/sqlite_check.emu.com"
+        [ -f "$dir/sqlite_check.emu.com" ] && check sqlite_check.emu.com "$sqlite:memory:"
     fi
 fi
 rm -f "$tmp" "$tmp.diag"

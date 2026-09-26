@@ -7,12 +7,12 @@ time, and the speed of typical work.
 ## How to run them
 
 ```sh
-tests/bench/run.sh DIR          # Unix; DIR has beam.com and beam-jit.com
+tests/bench/run.sh DIR          # Unix; DIR has beam-emu.com and beam.com
 tests/bench/run.ps1 -Dir DIR    # Windows
 ```
 
 The script builds [`tests/bench/bench.erl`](../tests/bench/bench.erl)
-with each variant (`beam.com build`, `beam-jit.com build`), runs it, and
+with each variant (`beam-emu.com build`, `beam.com build`), runs it, and
 prints one Markdown table. CI runs it on each platform after the tests,
 and puts the table in the summary of the run.
 
@@ -39,6 +39,10 @@ expect some noise; a difference of less than about 10% does not tell
 much.
 
 ## JIT (BeamAsm) against the interpreter
+
+The tables below were measured when `beam.com` was the interpreter and
+`beam-jit.com` the JIT. Now `beam.com` is the JIT and `beam-emu.com` the
+interpreter; the files are the same.
 
 Local measurement, Linux x86_64 (4 CPUs), two runs; `beam.com` is an
 x86_64-only interpreter build here and `beam-jit.com` the fat JIT, so

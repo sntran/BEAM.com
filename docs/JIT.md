@@ -1,9 +1,15 @@
 # JIT (BeamAsm) in BEAM.com
 
-## Status: one fat file with both backends (steps c and d)
+## Status: the default `beam.com`
 
-`JIT=1 ./build.sh` (with the normal, fat `cosmocc`) builds a
-`beam-jit.com` with both backends of BeamAsm: the x86 backend in the
+Since all platforms were green with the fat JIT, and the benchmarks
+(`docs/BENCHMARKS.md`) show that it is worth its cost, `beam.com` has
+the JIT, and `beam-emu.com` has the interpreter (`JIT=0 ./build.sh`).
+
+## One fat file with both backends (steps c and d)
+
+`JIT=1 ./build.sh` (the default, with the normal, fat `cosmocc`) builds a
+`beam.com` with both backends of BeamAsm: the x86 backend in the
 x86_64 half and the arm backend in the aarch64 half. CI builds it and
 tests it on every platform (see `tests/run.sh`).
 
@@ -37,10 +43,9 @@ What was needed, in addition to the x86_64 probe below:
 - **The dependency pass** (C23): cosmocc defines no CPU for `-MM`, so
   the wrapper files take the x86 files there.
 
-Sizes: `beam-jit.com` (fat) is 42.0 MB; the fat interpreter `beam.com`
-is 37 MB.
+Sizes (CI): the fat JIT is 40.0 MB, the fat interpreter 37.2 MB.
 
-Tested locally: all behavior tests with `beam-jit.com` on Linux x86_64,
+Tested locally: all behavior tests with the fat JIT on Linux x86_64,
 and on the aarch64 half with qemu.
 
 ### W^X: no page is writable and executable

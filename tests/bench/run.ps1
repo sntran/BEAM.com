@@ -1,6 +1,6 @@
 # Benchmarks of BEAM.com on Windows, as tests/bench/run.sh: file sizes,
 # start times and the workloads of tests/bench/bench.erl, for each
-# variant in Dir (beam.com, beam-jit.com). The result is a Markdown table.
+# variant in Dir (beam-emu.com, beam.com). The result is a Markdown table.
 #
 # Usage: tests/bench/run.ps1 -Dir DIR   (from the top of the repository)
 param([string]$Dir = ".")
@@ -22,7 +22,7 @@ function StartTime($Exe, [string[]]$Arguments) {
     return [int](($times | Sort-Object)[4])
 }
 
-$variants = @("beam.com", "beam-jit.com") | Where-Object { Test-Path (Join-Path $Dir $_) }
+$variants = @("beam-emu.com", "beam.com") | Where-Object { Test-Path (Join-Path $Dir $_) }
 $results = @{}
 foreach ($v in $variants) {
     $exe = Exe $v

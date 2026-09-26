@@ -1,6 +1,6 @@
 #!/bin/sh
 # Benchmarks of BEAM.com: file sizes, start times, and the workloads of
-# tests/bench/bench.erl, for each variant in DIR (beam.com, beam-jit.com).
+# tests/bench/bench.erl, for each variant in DIR (beam-emu.com, beam.com).
 # The result is a Markdown table on standard output.
 #
 # Usage: tests/bench/run.sh DIR   (from the top of the repository)
@@ -17,7 +17,7 @@ mkdir -p "$out"
 runner_path=$(command -v "$runner")
 
 variants=
-for v in beam.com beam-jit.com; do
+for v in beam-emu.com beam.com; do
     [ -f "$dir/$v" ] && variants="$variants $v"
 done
 
