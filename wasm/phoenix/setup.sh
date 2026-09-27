@@ -44,8 +44,16 @@ mkdir -p lib/wasm_host src
 cp "$HERE"/wasm_host/*.ex lib/wasm_host/
 cp "$HERE/../erts/host/wasm_host.erl" "$HERE/../erts/host/wasm_tcp.erl" src/
 cp "$HERE/tcp_controller.ex" lib/hello_web/controllers/
+cp "$HERE/ssh_keys.ex" lib/hello_web/
 grep -q '"/tcp"' lib/hello_web/router.ex ||
     sed -i 's|    live "/counter", CounterLive|    live "/counter", CounterLive\n    get "/tcp", TcpController, :show|' lib/hello_web/router.ex
+grep -q '"/listen"' lib/hello_web/router.ex ||
+    sed -i 's|    get "/tcp", TcpController, :show|    get "/tcp", TcpController, :show\n    get "/listen", TcpController, :listen|' lib/hello_web/router.ex
+grep -q '"/ssh"' lib/hello_web/router.ex ||
+    sed -i 's|    get "/listen", TcpController, :listen|    get "/listen", TcpController, :listen\n    get "/ssh", TcpController, :ssh|' lib/hello_web/router.ex
+# The SSH test server (GET /ssh): the ssh application in the release.
+grep -q ':ssh' mix.exs ||
+    sed -i 's|extra_applications: \[:logger, :runtime_tools\]|extra_applications: [:logger, :runtime_tools, :ssh]|' mix.exs
 grep -q WASM_HOST config/runtime.exs || cat >> config/runtime.exs <<'EXS'
 
 # The WebAssembly emulator: the JavaScript host serves HTTP and WebSockets.

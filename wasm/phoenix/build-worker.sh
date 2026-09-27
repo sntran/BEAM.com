@@ -1,9 +1,9 @@
 #!/bin/sh
-# Build the Phoenix app of setup.sh as a Cloudflare Worker (wasm/worker): a
-# Durable Object runs the WebAssembly runtime of wasm/erts, and writes the
-# release (release.bin, packed in Erlang) into its file system at /app.
+# Build the Phoenix app of setup.sh for Cloudflare Workers (wasm/worker): the
+# BEAM runtime Worker (the WebAssembly runtime of wasm/erts), and a Worker with
+# the release (release.bin, packed in Erlang) that the runtime boots.
 #
-#   EMSDK=... BOOTSTRAP=/path/to/otp ELIXIR=/path/to/elixir wasm/phoenix/build-worker.sh
+#   EMSDK=... BOOTSTRAP=/path/to/otp ELIXIR=/path/to/elixir [MODULES=file] wasm/phoenix/build-worker.sh
 #   workerd serve wasm/phoenix/build/worker/worker.capnp   # http://localhost:8789/counter
 #
 # The runtime is built once (Emscripten); the release needs no toolchain.

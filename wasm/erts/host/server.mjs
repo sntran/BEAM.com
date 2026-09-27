@@ -14,6 +14,8 @@ const port = Number(process.env.PORT || 4000);
 const pending = new Map();  // id -> {res} or {req, socket, head} (an upgrade)
 const sockets = new Map();  // id -> ws
 const tcps = new Map();     // id -> net.Socket (wasm_tcp)
+const servers = new Map();  // id of a listener -> net.Server (wasm_tcp)
+const tcpHost = process.env.TCP_HOST || '127.0.0.1';  // the address of the listeners
 const wss = new WebSocketServer({ noServer: true });
 let nextId = 1;
 let beam;
@@ -29,6 +31,14 @@ function request(req, body, extra) {
   for (let i = 0; i < req.rawHeaders.length; i += 2) headers.push([req.rawHeaders[i], req.rawHeaders[i + 1]]);
   pending.set(id, extra);
   event({ t: 'http', id, method: req.method, path: req.url, headers, scheme: 'http' }, body);
+}
+
+// The events of a TCP socket (a connection that Erlang made or accepted).
+function tcpEvents(id, sock) {
+  tcps.set(id, sock);
+  sock.on('data', (d) => event({ t: 'tcp_data', id }, d));
+  sock.on('error', (e) => event({ t: 'tcp_error', id, reason: (e.code || 'einval').toLowerCase() }));
+  sock.on('close', () => { tcps.delete(id); event({ t: 'tcp_closed', id }); });
 }
 
 function onsend(bytes) {
@@ -58,13 +68,25 @@ function onsend(bytes) {
     case 'ws_close': sockets.get(msg.id)?.close(msg.code || 1000); break;
     case 'tcp_connect': {
       const sock = net.connect({ host: msg.host, port: msg.port });
-      tcps.set(msg.id, sock);
       sock.on('connect', () => event({ t: 'tcp_open', id: msg.id }));
-      sock.on('data', (d) => event({ t: 'tcp_data', id: msg.id }, d));
-      sock.on('error', (e) => event({ t: 'tcp_error', id: msg.id, reason: (e.code || 'einval').toLowerCase() }));
-      sock.on('close', () => { tcps.delete(msg.id); event({ t: 'tcp_closed', id: msg.id }); });
+      tcpEvents(msg.id, sock);
       break;
     }
+    case 'tcp_listen': {
+      const server = net.createServer((sock) => {
+        const id = `a${nextId++}`;
+        event({ t: 'tcp_accept', id: msg.id, conn: id, host: sock.remoteAddress, port: sock.remotePort });
+        tcpEvents(id, sock);
+      });
+      server.on('error', (e) => event({ t: 'tcp_error', id: msg.id, reason: (e.code || 'einval').toLowerCase() }));
+      server.listen(msg.port, tcpHost, () => {
+        servers.set(msg.id, server);
+        console.error(`host: tcp ${tcpHost}:${msg.port}`);
+        event({ t: 'tcp_listening', id: msg.id });
+      });
+      break;
+    }
+    case 'tcp_unlisten': servers.get(msg.id)?.close(); servers.delete(msg.id); break;
     case 'tcp_send': tcps.get(msg.id)?.write(body); break;
     case 'tcp_close': tcps.get(msg.id)?.destroy(); tcps.delete(msg.id); break;
   }

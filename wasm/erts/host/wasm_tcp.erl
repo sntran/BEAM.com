@@ -1,16 +1,23 @@
-%% TCP client sockets through the JavaScript host: node:net in Node.js,
-%% connect() of cloudflare:sockets in Workers. After
-%% inet_db:set_tcp_module(wasm_tcp), gen_tcp:connect/3,4 makes such
-%% sockets, and gen_tcp and inet dispatch to this module for them
-%% ({'$inet', wasm_tcp, Pid}, as for the socket backend).
+%% TCP sockets through the JavaScript host. After
+%% inet_db:set_tcp_module(wasm_tcp), gen_tcp and inet dispatch to this
+%% module ({'$inet', wasm_tcp, Pid}, as for the socket backend):
 %%
-%% Each socket is a process. It gets the events of the host (tcp_open,
-%% tcp_data, tcp_closed, tcp_error) from the pump ('Elixir.WasmHost.Server')
-%% and sends tcp_connect, tcp_send and tcp_close. Only {packet, raw}.
+%% - gen_tcp:connect/3,4: node:net in Node.js, connect() of
+%%   cloudflare:sockets in Workers;
+%% - gen_tcp:listen/2 and accept/1,2: a server of node:net in Node.js; in
+%%   Workers (which get no TCP connections), each WebSocket to
+%%   /.tcp/PORT is a connection to the listener of PORT.
+%%
+%% Each socket and each listener is a process. It gets the events of the
+%% host (tcp_open, tcp_data, tcp_closed, tcp_error, tcp_listening,
+%% tcp_accept) from the pump ('Elixir.WasmHost.Server') and sends
+%% tcp_connect, tcp_send, tcp_close, tcp_listen and tcp_unlisten. Packets:
+%% raw (0), 1, 2, 4 and line.
 -module(wasm_tcp).
 -behaviour(gen_server).
 
--export([getaddrs/2, getserv/1, connect/4, send/2, recv/2, recv/3, unrecv/2,
+-export([getaddrs/2, getserv/1, connect/4, listen/2, accept/1, accept/2,
+         send/2, recv/2, recv/3, unrecv/2,
          close/1, shutdown/2, controlling_process/2, setopts/2, getopts/2,
          peername/1, sockname/1, getstat/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -30,6 +37,16 @@ connect(Address, Port, Opts, Timeout) ->
         Error -> Error
     end.
 
+listen(Port, Opts) ->
+    {ok, Pid} = gen_server:start(?MODULE, {listen, self(), Port, Opts}, []),
+    case gen_server:call(Pid, listen, infinity) of
+        ok -> {ok, ?SOCKET(Pid)};
+        Error -> Error
+    end.
+
+accept(Socket) -> accept(Socket, infinity).
+accept(?SOCKET(Pid), Timeout) -> call(Pid, {accept, self(), Timeout}).
+
 send(?SOCKET(Pid), Data) -> call(Pid, {send, Data}).
 recv(Socket, Length) -> recv(Socket, Length, infinity).
 recv(?SOCKET(Pid), Length, Timeout) -> call(Pid, {recv, Length, Timeout}).
@@ -40,7 +57,7 @@ controlling_process(?SOCKET(Pid), NewOwner) -> call(Pid, {controlling_process, s
 setopts(?SOCKET(Pid), Opts) -> call(Pid, {setopts, Opts}).
 getopts(?SOCKET(Pid), Opts) -> call(Pid, {getopts, Opts}).
 peername(?SOCKET(Pid)) -> call(Pid, peername).
-sockname(?SOCKET(_)) -> {ok, {{0, 0, 0, 0}, 0}}.
+sockname(?SOCKET(Pid)) -> call(Pid, sockname).
 getstat(?SOCKET(_), _) -> {ok, []}.
 
 call(Pid, Request) ->
@@ -56,14 +73,30 @@ host(A) when is_binary(A) -> A.
 
 %% --- the process of a socket ----------------------------------------------
 
-init({Owner, Opts}) ->
-    Id = <<"t", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+init({listen, Owner, Port, Opts}) ->
+    Id = new_id(<<"l">>),
     ?HOST:register(Id),
-    Ref = monitor(process, Owner),
-    S0 = #{id => Id, owner => Owner, ref => Ref, active => true, mode => list,
-           buf => <<>>, recv => undefined, connect => undefined, peer => undefined,
-           closed => false},
-    {ok, options(Opts, S0)}.
+    {ok, #{kind => listen, id => Id, owner => Owner, ref => monitor(process, Owner),
+           port => Port, opts => Opts, listen => undefined,
+           conns => queue:new(), acceptors => queue:new(), early => #{}, started => #{}}};
+init({Owner, Opts}) ->
+    Id = new_id(<<"t">>),
+    ?HOST:register(Id),
+    {ok, options(Opts, socket(Id, Owner))};
+%% A connection of a listener: open, and passive until accept/2 gives it
+%% to its owner (with the options of the listener).
+init({accepted, Id, Peer, Opts}) ->
+    ?HOST:register(Id),
+    S = options(Opts, (socket(Id, self()))#{peer := Peer}),
+    {ok, S#{active := false, later => maps:get(active, S)}}.
+
+new_id(Prefix) ->
+    <<Prefix/binary, (integer_to_binary(erlang:unique_integer([positive])))/binary>>.
+
+socket(Id, Owner) ->
+    #{kind => socket, id => Id, owner => Owner, ref => monitor(process, Owner),
+      active => true, mode => list, packet => raw, other => #{}, buf => <<>>, recv => undefined,
+      connect => undefined, peer => undefined, closed => false}.
 
 options(Opts, S) -> lists:foldl(fun option/2, S, Opts).
 
@@ -71,8 +104,55 @@ option(binary, S) -> S#{mode := binary};
 option(list, S) -> S#{mode := list};
 option({mode, M}, S) -> S#{mode := M};
 option({active, A}, S) -> S#{active := A};
+option({packet, P}, S) when P =:= raw; P =:= 0 -> S#{packet := raw};
+option({packet, P}, S) when P =:= 1; P =:= 2; P =:= 4; P =:= line -> S#{packet := P};
+%% Other options: kept for getopts (the host does not use them).
+option({K, V}, #{other := O} = S) -> S#{other := O#{K => V}};
 option(_, S) -> S.
 
+%% The values that getopts gives for the options that were not set.
+-define(DEFAULTS, #{buffer => 65536, recbuf => 65536, sndbuf => 65536, nodelay => false,
+                    keepalive => false, reuseaddr => false, packet_size => 0, delay_send => false,
+                    send_timeout => infinity, send_timeout_close => false, exit_on_close => true,
+                    high_watermark => 8192, low_watermark => 4096, linger => {false, 0},
+                    tos => 0, priority => 0, show_econnreset => false, deliver => term}).
+
+%% --- a listener -------------------------------------------------------------
+handle_call(listen, From, #{kind := listen, id := Id, port := Port} = S) ->
+    ?HOST:send_host(#{t => tcp_listen, id => Id, port => Port}),
+    {noreply, S#{listen := From}};
+handle_call({accept, Pid, Timeout}, From, #{kind := listen, conns := Conns, acceptors := As} = S) ->
+    case queue:out(Conns) of
+        {{value, Conn}, Rest} ->
+            {noreply, hand(Conn, {From, Pid, undefined}, S#{conns := Rest})};
+        {empty, _} ->
+            TRef = case Timeout of
+                infinity -> undefined;
+                _ -> erlang:send_after(Timeout, self(), {accept_timeout, From})
+            end,
+            {noreply, S#{acceptors := queue:in({From, Pid, TRef}, As)}}
+    end;
+handle_call(sockname, _From, #{kind := listen, port := Port} = S) ->
+    {reply, {ok, {{0, 0, 0, 0}, Port}}, S};
+handle_call(close, _From, #{kind := listen, id := Id} = S) ->
+    ?HOST:send_host(#{t => tcp_unlisten, id => Id}),
+    {stop, normal, ok, S};
+handle_call({setopts, _}, _From, #{kind := listen} = S) ->
+    {reply, ok, S};
+handle_call({getopts, _}, _From, #{kind := listen} = S) ->
+    {reply, {ok, []}, S};
+handle_call({controlling_process, Caller, New}, _From, #{kind := listen, owner := Caller, ref := Ref} = S) ->
+    demonitor(Ref, [flush]),
+    {reply, ok, S#{owner := New, ref := monitor(process, New)}};
+handle_call(_, _From, #{kind := listen} = S) ->
+    {reply, {error, enotconn}, S};
+%% --- a socket ----------------------------------------------------------------
+handle_call({accepted, Owner}, _From, #{ref := Ref, later := A} = S) ->
+    demonitor(Ref, [flush]),
+    S1 = maps:remove(later, S#{owner := Owner, ref := monitor(process, Owner), active := A}),
+    {reply, ok, serve_recv(flush_active(S1))};
+handle_call(sockname, _From, S) ->
+    {reply, {ok, {{0, 0, 0, 0}, 0}}, S};
 handle_call({connect, Host, Port, Timeout}, From, #{id := Id} = S) ->
     ?HOST:send_host(#{t => tcp_connect, id => Id, host => Host, port => Port}),
     TRef = case Timeout of
@@ -80,8 +160,8 @@ handle_call({connect, Host, Port, Timeout}, From, #{id := Id} = S) ->
         _ -> erlang:send_after(Timeout, self(), connect_timeout)
     end,
     {noreply, S#{connect := {From, TRef}, peer := {Host, Port}}};
-handle_call({send, Data}, _From, #{id := Id} = S) ->
-    ?HOST:send_host(#{t => tcp_send, id => Id}, Data),
+handle_call({send, Data}, _From, #{id := Id, packet := P} = S) ->
+    ?HOST:send_host(#{t => tcp_send, id => Id}, [header(P, iolist_size(Data)), Data]),
     {reply, ok, S};
 handle_call({recv, _, _}, _From, #{active := A} = S) when A =/= false ->
     {reply, {error, einval}, S};
@@ -102,9 +182,11 @@ handle_call({controlling_process, _, _}, _From, S) ->
     {reply, {error, not_owner}, S};
 handle_call({setopts, Opts}, _From, S) ->
     {reply, ok, flush_active(options(Opts, S))};
-handle_call({getopts, Opts}, _From, #{active := A, mode := M} = S) ->
-    Known = #{active => A, mode => M, packet => raw, header => 0},
+handle_call({getopts, Opts}, _From, #{active := A, mode := M, packet := P, other := O} = S) ->
+    Known = maps:merge(maps:merge(?DEFAULTS, O), #{active => A, mode => M, packet => P, header => 0}),
     {reply, {ok, [{K, V} || K <- Opts, {ok, V} <- [maps:find(K, Known)]]}, S};
+handle_call(peername, _From, #{peer := undefined} = S) ->
+    {reply, {error, enotconn}, S};
 handle_call(peername, _From, #{peer := {Host, Port}} = S) ->
     Addr = case inet:parse_address(binary_to_list(Host)) of
         {ok, IP} -> IP;
@@ -114,6 +196,45 @@ handle_call(peername, _From, #{peer := {Host, Port}} = S) ->
 
 handle_cast(_, S) -> {noreply, S}.
 
+%% --- a listener -------------------------------------------------------------
+handle_info({wasm_host, <<"tcp_listening">>, _, _}, #{kind := listen, listen := From} = S) ->
+    gen_server:reply(From, ok),
+    {noreply, S#{listen := undefined}};
+handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{kind := listen, listen := From} = S)
+  when From =/= undefined ->
+    gen_server:reply(From, {error, reason(Meta)}),
+    {stop, normal, S};
+handle_info({wasm_host, <<"tcp_accept">>, Meta, _}, #{kind := listen, opts := Opts} = S) ->
+    #{<<"conn">> := Id} = Meta,
+    Peer = {maps:get(<<"host">>, Meta, <<"0.0.0.0">>), maps:get(<<"port">>, Meta, 0)},
+    {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, Opts}, []),
+    %% The events of the connection that came before its process: to it.
+    S1 = forward_early(Id, Pid, S),
+    case queue:out(maps:get(acceptors, S1)) of
+        {{value, A}, Rest} -> {noreply, hand({Id, Pid}, A, S1#{acceptors := Rest})};
+        {empty, _} -> {noreply, S1#{conns := queue:in({Id, Pid}, maps:get(conns, S1))}}
+    end;
+%% An event of a connection that the pump gave to the listener (before the
+%% process of the connection was registered): to that process.
+handle_info({wasm_host, T, #{<<"id">> := Id}, _} = Msg, #{kind := listen, early := Early, started := Started} = S)
+  when T =/= <<"tcp_listening">>, T =/= <<"tcp_error">> ->
+    case Started of
+        #{Id := Pid} -> Pid ! Msg, {noreply, S};
+        _ -> {noreply, S#{early := Early#{Id => [Msg | maps:get(Id, Early, [])]}}}
+    end;
+handle_info({accept_timeout, From}, #{kind := listen, acceptors := As} = S) ->
+    case lists:keytake(From, 1, queue:to_list(As)) of
+        {value, _, Rest} ->
+            gen_server:reply(From, {error, timeout}),
+            {noreply, S#{acceptors := queue:from_list(Rest)}};
+        false -> {noreply, S}
+    end;
+handle_info({'DOWN', Ref, process, _, _}, #{kind := listen, ref := Ref, id := Id} = S) ->
+    ?HOST:send_host(#{t => tcp_unlisten, id => Id}),
+    {stop, normal, S};
+handle_info(_, #{kind := listen} = S) ->
+    {noreply, S};
+%% --- a socket ----------------------------------------------------------------
 handle_info({wasm_host, <<"tcp_open">>, _, _}, #{connect := {From, TRef}} = S) ->
     cancel(TRef),
     gen_server:reply(From, ok),
@@ -145,6 +266,17 @@ terminate(_, #{id := Id}) ->
 
 reason(Meta) -> binary_to_atom(maps:get(<<"reason">>, Meta, <<"econnrefused">>)).
 
+%% Gives the connection {Id, Pid} to the acceptor {From, Pid, TRef}.
+hand({_Id, Pid}, {From, Owner, TRef}, S) ->
+    cancel(TRef),
+    ok = gen_server:call(Pid, {accepted, Owner}),
+    gen_server:reply(From, {ok, ?SOCKET(Pid)}),
+    S.
+
+forward_early(Id, Pid, #{early := Early, started := Started} = S) ->
+    [Pid ! Msg || Msg <- lists:reverse(maps:get(Id, Early, []))],
+    S#{early := maps:remove(Id, Early), started := Started#{Id => Pid}}.
+
 cancel(undefined) -> ok;
 cancel(TRef) -> erlang:cancel_timer(TRef).
 
@@ -155,38 +287,64 @@ close_host(#{id := Id} = S) ->
 data(Bin, #{mode := binary}) -> Bin;
 data(Bin, #{mode := list}) -> binary_to_list(Bin).
 
-%% Data from the host: to the owner (active modes) or to the buffer.
-deliver(Data, #{active := false, buf := Buf} = S) ->
-    serve_recv(S#{buf := <<Buf/binary, Data/binary>>});
-deliver(Data, #{owner := Owner, active := A} = S) ->
-    Socket = ?SOCKET(self()),
-    Owner ! {tcp, Socket, data(Data, S)},
-    case A of
-        true -> S;
-        once -> S#{active := false};
-        1 -> Owner ! {tcp_passive, Socket}, S#{active := false};
-        N when is_integer(N) -> S#{active := N - 1}
+header(raw, _) -> <<>>;
+header(line, _) -> <<>>;
+header(N, Size) -> <<Size:(N * 8)>>.
+
+%% The next packet in the buffer: {Packet, Rest}, or none.
+next_packet(#{buf := <<>>}) -> none;
+next_packet(#{packet := raw, buf := Buf}) -> {Buf, <<>>};
+next_packet(#{packet := P, buf := Buf}) ->
+    case erlang:decode_packet(P, Buf, []) of
+        {ok, Packet, Rest} -> {Packet, Rest};
+        _ -> none
     end.
 
-flush_active(#{active := A, buf := Buf} = S) when A =/= false, Buf =/= <<>> ->
-    deliver(Buf, S#{buf := <<>>});
-flush_active(S) -> S.
+%% Data from the host: to the buffer, then to the owner (active modes) or
+%% to a waiting recv.
+deliver(Data, #{buf := Buf} = S) ->
+    serve_recv(push(S#{buf := <<Buf/binary, Data/binary>>})).
 
-serve_recv(#{recv := {From, 0, TRef}, buf := Buf} = S) when Buf =/= <<>> ->
-    cancel(TRef),
-    gen_server:reply(From, {ok, data(Buf, S)}),
-    S#{recv := undefined, buf := <<>>};
+%% In an active mode: the packets of the buffer to the owner.
+push(#{active := false} = S) -> S;
+push(#{owner := Owner, active := A} = S) ->
+    case next_packet(S) of
+        none -> S;
+        {Packet, Rest} ->
+            Socket = ?SOCKET(self()),
+            Owner ! {tcp, Socket, data(Packet, S)},
+            S1 = S#{buf := Rest},
+            case A of
+                true -> push(S1);
+                once -> S1#{active := false};
+                1 -> Owner ! {tcp_passive, Socket}, S1#{active := false};
+                N when is_integer(N) -> push(S1#{active := N - 1})
+            end
+    end.
+
+flush_active(S) -> push(S).
+
+serve_recv(#{recv := {From, 0, TRef}} = S) ->
+    case next_packet(S) of
+        none -> serve_closed(S);
+        {Packet, Rest} ->
+            cancel(TRef),
+            gen_server:reply(From, {ok, data(Packet, S)}),
+            S#{recv := undefined, buf := Rest}
+    end;
 serve_recv(#{recv := {From, Len, TRef}, buf := Buf} = S)
   when Len > 0, byte_size(Buf) >= Len ->
     cancel(TRef),
     <<Part:Len/binary, Rest/binary>> = Buf,
     gen_server:reply(From, {ok, data(Part, S)}),
     S#{recv := undefined, buf := Rest};
-serve_recv(#{recv := {From, _, TRef}, closed := true} = S) ->
+serve_recv(S) -> serve_closed(S).
+
+serve_closed(#{recv := {From, _, TRef}, closed := true} = S) ->
     cancel(TRef),
     gen_server:reply(From, {error, closed}),
     S#{recv := undefined};
-serve_recv(S) -> S.
+serve_closed(S) -> S.
 
 closed(#{recv := {From, _, TRef}} = S) ->
     cancel(TRef),

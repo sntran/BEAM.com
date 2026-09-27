@@ -1,21 +1,22 @@
-// An Erlang or Elixir release on Cloudflare Workers: the WebAssembly emulator
-// (threads on JSPI, the runtime of wasm/erts, with no files) writes the
-// release (release.bin of pack.erl) into its file system at /app and boots it.
+// The BEAM on Cloudflare Workers: a Worker with the WebAssembly emulator
+// (threads on JSPI, the runtime of wasm/erts, with no files) and no
+// application. At the first request of an isolate, it gets a release
+// (release.bin of pack.erl), writes it into its file system at /app and boots
+// it; the next requests to the isolate use the same VM. The release comes
+// from:
+// - a service binding APP (another Worker, as app.js): GET /release.bin;
+// - else a text binding RELEASE_URL (R2, any URL): a fetch of that URL;
+// - else a module release.bin in this Worker.
+// A Durable Object can hold the VM in place of the isolate: see Vm.
 //
-// Where the VM lives:
-// - a binding BEAM (a Durable Object namespace): one object for the app, and
-//   all requests and sockets go to it;
-// - no binding BEAM: a plain Worker, with one VM for each isolate; the next
-//   requests to the same isolate use it again.
-// Where the release comes from:
-// - a binding APP (a service binding to another Worker): GET /release.bin;
-// - a text binding RELEASE_URL: a fetch of that URL;
-// - else the module release.bin in this Worker.
+// Workers get no TCP connections: a WebSocket to /.tcp/PORT is a connection
+// to the listener of PORT (gen_tcp:listen of wasm_tcp), and its binary
+// messages are the bytes (a client proxy, as tcp-proxy.mjs or websocat -b,
+// makes a local TCP port of it).
 //
 // It gives each request and WebSocket frame to Erlang through wasm_host (the
 // events of wasm/phoenix/wasm_host/server.ex), and the endpoint adapter of the
 // app answers; wasm_tcp sockets use connect().
-import { DurableObject } from 'cloudflare:workers';
 import { connect } from 'cloudflare:sockets';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
@@ -46,37 +47,34 @@ function unpack(FS, bytes) {
   return meta;
 }
 
-let vm;  // the VM of this isolate (without a Durable Object)
+let vm;  // the VM of this isolate
 
 export default {
   fetch(request, env, ctx) {
-    if (env.BEAM) return env.BEAM.get(env.BEAM.idFromName('app')).fetch(request);
     if (!vm) {
-      const v = vm = new Vm(env, true);
+      const v = vm = new Vm(env);
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
     return vm.fetch(request, ctx);
   },
 };
 
-export class Beam extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    this.vm = new Vm(env);
-  }
-
-  fetch(request) {
-    return this.vm.fetch(request);
-  }
-}
-
-class Vm {
-  // plain: a plain Worker (no Durable Object), where the VM runs only in
-  // the handlers of open requests (serve).
-  constructor(env, plain = false) {
+// A VM and its release. In a Worker (plain), the VM runs only in the handlers
+// of open requests (serve). A Durable Object has one context for all its
+// requests, and runs the VM all the time:
+//
+//   import { DurableObject } from 'cloudflare:workers';
+//   import { Vm } from './worker.js';
+//   export class Beam extends DurableObject {
+//     constructor(ctx, env) { super(ctx, env); this.vm = new Vm(env, { plain: false }); }
+//     fetch(request) { return this.vm.fetch(request); }
+//   }
+export class Vm {
+  constructor(env, { plain = true } = {}) {
     this.pending = new Map();  // id -> {resolve, request, stream}
     this.sockets = new Map();  // id -> the server end of a WebSocketPair
-    this.tcps = new Map();     // id -> {socket, writer} (wasm_tcp)
+    this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
+    this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
     this.nextId = 1;
     this.plain = plain;
     this.handlers = [];        // the open requests (plain)
@@ -165,6 +163,8 @@ class Vm {
     const url = new URL(request.url);
     const id = this.nextId++;
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+    const tcp = upgrade && url.pathname.match(/^\/\.tcp\/(\d+)$/);
+    if (tcp) return this.tcpAccept(Number(tcp[1]), request, h, finished);
     const body = upgrade || request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
     const response = new Promise((resolve) => this.pending.set(id, { resolve, upgrade, handler: h }));
     response.then(finished);
@@ -245,6 +245,30 @@ class Vm {
     h.wake?.();
   }
 
+  // A connection to a listener of wasm_tcp: a WebSocket to /.tcp/PORT. In a
+  // plain Worker it belongs to the handler h of its request.
+  tcpAccept(port, request, h, finished) {
+    const listener = this.listeners.get(port);
+    finished();
+    if (!listener) return new Response(`no listener on ${port}\n`, { status: 404 });
+    const id = `w${this.nextId++}`;
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.binaryType = 'arraybuffer';  // (the default can be Blob)
+    if (h) h.sockets++;
+    this.tcps.set(id, { send: (b) => server.send(b), close: () => server.close(), h });
+    this.event({ t: 'tcp_accept', id: listener, conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
+    server.addEventListener('message', (e) => {
+      this.event({ t: 'tcp_data', id }, typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data);
+    });
+    server.addEventListener('close', () => {
+      this.tcps.delete(id);
+      this.event({ t: 'tcp_closed', id });
+      if (h) { h.sockets--; h.wake?.(); }
+    });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
   // A TCP socket of wasm_tcp: connect() of cloudflare:sockets. In a plain
   // Worker it belongs to the handler h, and closes with that request.
   async tcpConnect({ id, host, port }, h) {
@@ -252,7 +276,8 @@ class Vm {
     if (h) h.sockets++;
     try {
       socket = connect({ hostname: host, port });
-      this.tcps.set(id, { socket, writer: socket.writable.getWriter(), h });
+      const writer = socket.writable.getWriter();
+      this.tcps.set(id, { send: (b) => writer.write(b), close: () => socket.close().catch(() => {}), h });
       await socket.opened;
     } catch (e) {
       console.log(`beam: connect ${host}:${port}: ${e.message}`);
@@ -302,6 +327,7 @@ class Vm {
         if (h) h.sockets++;
         const [client, server] = Object.values(new WebSocketPair());
         server.accept();
+        server.binaryType = 'arraybuffer';  // (the default can be Blob)
         this.sockets.set(msg.id, server);
         server.addEventListener('message', (e) => {
           const binary = typeof e.data !== 'string';
@@ -334,15 +360,26 @@ class Vm {
       }
       case 'tcp_send': {
         const t = this.tcps.get(msg.id);
-        if (t) this.run(() => t.writer.write(body), t.h);
+        if (t) this.run(() => t.send(body), t.h);
         break;
       }
       case 'tcp_close': {
         const t = this.tcps.get(msg.id);
         this.tcps.delete(msg.id);
-        if (t) this.run(() => t.socket.close().catch(() => {}), t.h);
+        if (t) this.run(() => t.close(), t.h);
         break;
       }
+      case 'tcp_listen':
+        if (this.listeners.has(msg.port)) {
+          this.event({ t: 'tcp_error', id: msg.id, reason: 'eaddrinuse' });
+        } else {
+          this.listeners.set(msg.port, msg.id);
+          this.event({ t: 'tcp_listening', id: msg.id });
+        }
+        break;
+      case 'tcp_unlisten':
+        for (const [port, id] of this.listeners) if (id === msg.id) this.listeners.delete(port);
+        break;
     }
   }
 }

@@ -10,6 +10,7 @@ defmodule WasmHost.Server do
       {"t":"ws_msg","id":1,"op":"text"}
       {"t":"ws_close","id":1}
       {"t":"tcp_data","id":"t7"}
+      {"t":"tcp_accept","id":"l3","conn":"a9","host":"1.2.3.4","port":5678}
 
   The events of TCP sockets (`:wasm_tcp`) go to the process of the socket.
   """
@@ -49,8 +50,20 @@ defmodule WasmHost.Server do
       %{"t" => "http"} ->
         spawn(fn -> WasmHost.Conn.run(plug, meta, body) end)
 
+      # A connection to a listener of wasm_tcp: its events go to the listener
+      # until the process of the connection registers.
+      %{"t" => "tcp_accept", "id" => id, "conn" => conn} ->
+        case :ets.lookup(@table, id) do
+          [{^id, pid}] ->
+            :ets.insert_new(@table, {conn, pid})
+            send(pid, {:wasm_host, "tcp_accept", meta, body})
+
+          [] ->
+            send_host(%{t: "tcp_close", id: conn})
+        end
+
       %{"t" => t, "id" => id}
-      when t in ["ws_msg", "ws_close", "tcp_open", "tcp_data", "tcp_closed", "tcp_error"] ->
+      when t in ["ws_msg", "ws_close", "tcp_open", "tcp_data", "tcp_closed", "tcp_error", "tcp_listening"] ->
         case :ets.lookup(@table, id) do
           [{^id, pid}] -> send(pid, {:wasm_host, t, meta, body})
           [] -> :ok
