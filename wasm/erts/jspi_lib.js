@@ -10,12 +10,19 @@ addToLibrary({
   $jspiExit: (e) => {
     if (!(e instanceof ExitStatus)) { err(e); e = new ExitStatus(2); }
     Module['onExit']?.(e.status);
-    if (ENVIRONMENT_IS_NODE) process.exit(e.status);
+    if (ENVIRONMENT_IS_NODE) {
+      if (process.env.JSPI_STATS) err(`jspi: memory ${wasmMemory.buffer.byteLength >> 20} MB`);
+      process.exit(e.status);
+    }
     ABORT = true;
   },
   // After the pending I/O and timers of the host (a macrotask).
   $jspiLater: (f) => typeof setImmediate == 'function' ? setImmediate(f) : setTimeout(f, 0),
-  jspi_spawn__deps: ['$jspi', '$jspiLater', '$jspiExit'],
+  // Node.js: the program gets the environment of the process.
+  $jspiEnv__deps: ['$ENV'],
+  $jspiEnv__postset: "if (ENVIRONMENT_IS_NODE) Object.assign(ENV, process.env);",
+  $jspiEnv: {},
+  jspi_spawn__deps: ['$jspi', '$jspiLater', '$jspiExit', '$jspiEnv'],
   jspi_spawn: (t) => {
     jspi.entry ??= WebAssembly.promising(wasmExports['jspi_thread_entry']);
     jspiLater(() => jspi.entry(t).catch(jspiExit));
