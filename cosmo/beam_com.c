@@ -903,6 +903,40 @@ static void run_exec(void)
     _exit(127);
 }
 
+/*
+ * On Windows, execv() at the exit of the VM starts the program, but the
+ * program does not run: it stops with no output. There, this process
+ * starts itself again as a child (BEAM_COM_RUN_CHILD) for the build, waits
+ * for it, and then becomes the program. This process does not start the
+ * VM (as start_epmd()).
+ */
+static void run_in_child(char **argv)
+{
+    extern char **environ;
+    struct arglist env = {0};
+    int i, status;
+    pid_t pid;
+
+    for (i = 0; environ[i]; i++)
+        push(&env, environ[i]);
+    push(&env, "BEAM_COM_RUN_CHILD=1");
+    fflush(stdout);
+    fflush(stderr);
+    if ((pid = fork()) == 0) {
+        beam_com_execve(GetProgramExecutableName(), argv, env.v);
+        _exit(127);
+    }
+    if (pid < 0 || waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "beam.com: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        run_exec();
+    if (run_file)
+        unlink(run_file);
+    exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+}
+
 /* make: the name of the program that make_link() makes. */
 static int is_make(const char *name)
 {
@@ -1554,8 +1588,14 @@ void beam_com_main(int *argcp, char ***argvp)
                     break;
             run_argc = i < argc ? argc - i - 1 : 0;
             run_argv = argv + argc - run_argc;
-            run_setup();
-            atexit(run_exec);
+            if (getenv("BEAM_COM_RUN_CHILD")) {
+                unsetenv("BEAM_COM_RUN_CHILD");
+            } else {
+                run_setup();
+                if (beam_com_is_windows())
+                    run_in_child(argv);
+                atexit(run_exec);
+            }
         }
         file = (struct arglist){0};
         push(&file, "-boot");
