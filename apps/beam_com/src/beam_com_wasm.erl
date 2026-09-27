@@ -27,6 +27,7 @@
 -module(beam_com_wasm).
 
 -export([release_dir/2, write/3]).
+-export([sqlite_shim/2]).
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
@@ -35,7 +36,7 @@
 
 -define(HOST_APP, wasm_host).
 %% The applications whose NIFs are only in the native beam.com.
--define(NATIVE_NIFS, [esqlite, wasm, exqlite, bcrypt_elixir]).
+-define(NATIVE_NIFS, [esqlite, wasm, bcrypt_elixir]).
 
 %% A release directory (with releases/start_erl.data) as the input.
 release_dir(Dir, Root) ->
@@ -55,7 +56,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                  {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"],
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
      || A <- lists:usort(Apps), lists:member(A, ?NATIVE_NIFS)],
-    Files1 = with_host(Files0, Root),
+    Files1 = with_sqlite(with_host(Files0, Root), Root),
     Meta = meta(Rel#{apps => Apps}),
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
@@ -69,7 +70,8 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                            "  release: ~ts ~ts, ~b files, ~.1f MB~n"
                            "  boot: ~ts~n"
                            "  test: workerd serve ~ts~n"
-                           "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n",
+                           "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n"
+                           "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n",
                            [beam_com:name(), Output, Name, Name, Name, Vsn, length(Files),
                             iolist_size(Bin) / 1048576,
                             case Mods of
@@ -188,6 +190,41 @@ with_host(Files, Root) ->
              false -> D
          end} || {P, D} <- Files, not lists:prefix(Dir ++ "/", P)] ++ Host.
 
+%% Ecto SQLite (exqlite): its NIF module in place of the one of exqlite,
+%% which calls the shim of wasm_host (the host runs the SQL).
+with_sqlite(Files, Root) ->
+    [case lists:suffix("/ebin/Elixir.Exqlite.Sqlite3NIF.beam", P) of
+         true ->
+             [Shim] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "ebin",
+                                                      "wasm_host_sqlite.beam"])),
+             {ok, {_, [{exports, Exports}]}} = beam_lib:chunks(Shim, [exports]),
+             {P, sqlite_shim(iolist_to_binary(D), Exports)};
+         false -> {P, D}
+     end || {P, D} <- Files].
+
+%% A module 'Elixir.Exqlite.Sqlite3NIF' with the exports of the original
+%% (Beam): each one calls wasm_host_sqlite, or fails (not_supported) when
+%% the shim does not have it. No on_load (no NIF to load).
+sqlite_shim(Beam, Shim) ->
+    Mod = 'Elixir.Exqlite.Sqlite3NIF',
+    {ok, {Mod, [{exports, Exports0}]}} = beam_lib:chunks(Beam, [exports]),
+    Exports = [FA || {F, _} = FA <- Exports0, F =/= module_info],
+    Fun = fun({load_nif = F, 0}) ->
+                  {function, 1, F, 0, [{clause, 1, [], [], [{atom, 1, ok}]}]};
+             ({F, A}) ->
+                  Vars = [{var, 1, list_to_atom("A" ++ integer_to_list(I))} || I <- lists:seq(1, A)],
+                  Body = case lists:member({F, A}, Shim) of
+                             true -> {call, 1, {remote, 1, {atom, 1, wasm_host_sqlite}, {atom, 1, F}}, Vars};
+                             false -> {call, 1, {remote, 1, {atom, 1, erlang}, {atom, 1, nif_error}},
+                                       [{atom, 1, not_supported}]}
+                         end,
+                  {function, 1, F, A, [{clause, 1, Vars, [], [Body]}]}
+          end,
+    Forms = [{attribute, 1, module, Mod}, {attribute, 1, export, Exports}
+             | [Fun(FA) || FA <- Exports]],
+    {ok, Mod, Bin} = compile:forms(Forms, [binary, return_errors]),
+    Bin.
+
 %% The boot script loads Mods in one batch, after kernel starts.
 with_boot_modules(Files, []) ->
     Files;
@@ -267,17 +304,26 @@ worker_files(#{name := Name} = Rel, Runtime, Root) ->
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
     [{"worker.js", Worker("worker.js")},
+     {"durable.js", Worker("durable.js")},
+     {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)},
      {"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
      {"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
      {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
      {"release/app.js", Worker("app.js")},
-     {"wrangler.jsonc", wrangler(Name, Phoenix)},
+     {"wrangler.jsonc", wrangler(Name, Phoenix, lists:member(exqlite, maps:get(apps, Rel, [])))},
      {"release/wrangler.jsonc", wrangler_release(Name)},
      {"worker.capnp", capnp(Phoenix)}].
 
 -define(DATE, "2026-09-01").
 
-wrangler(Name, Phoenix) ->
+wrangler(Name, Phoenix, Sqlite) ->
+    D1 = case Sqlite of
+             true -> ",\n  // Ecto SQLite: the host runs the SQL on this D1 database (BEAM_D1\n"
+                     "  // names another binding). wrangler d1 create " ++ Name ++ ", then its id.\n"
+                     "  \"d1_databases\": [{ \"binding\": \"DB\", \"database_name\": \"" ++ Name ++
+                     "\", \"database_id\": \"00000000-0000-0000-0000-000000000000\" }]";
+             false -> ""
+         end,
     Vars = case Phoenix of
                true -> ",\n  // wrangler secret put SECRET_KEY_BASE (mix phx.gen.secret)\n"
                        "  \"vars\": { \"PHX_HOST\": \"" ++ Name ++ ".workers.dev\" }";
@@ -307,6 +353,33 @@ wrangler(Name, Phoenix) ->
      "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
      "  ],\n"
      "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }]",
+     D1, Vars, "\n}\n"].
+
+%% The same runtime in one Durable Object (durable.js), with its SQLite
+%% storage for Ecto SQLite.
+wrangler_durable(Name, Phoenix) ->
+    Vars = case Phoenix of
+               true -> ",\n  \"vars\": { \"PHX_HOST\": \"" ++ Name ++ ".workers.dev\" }";
+               false -> ""
+           end,
+    ["// The BEAM runtime in one Durable Object (durable.js): one VM for all\n"
+     "// the requests, and its SQLite storage for Ecto SQLite.\n"
+     "//   wrangler deploy -c wrangler.durable.jsonc\n"
+     "{\n"
+     "  \"name\": \"", Name, "\",\n"
+     "  \"main\": \"durable.js\",\n"
+     "  \"compatibility_date\": \"", ?DATE, "\",\n"
+     "  \"compatibility_flags\": [\"no_handle_cross_request_promise_resolution\"],\n"
+     "  \"no_bundle\": true,\n"
+     "  \"find_additional_modules\": true,\n"
+     "  \"rules\": [\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"durable.js\", \"worker.js\", \"beam.mjs\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
+     "  ],\n"
+     "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }],\n"
+     "  \"durable_objects\": { \"bindings\": [{ \"name\": \"BEAM\", \"class_name\": \"Beam\" }] },\n"
+     "  \"migrations\": [{ \"tag\": \"v1\", \"new_sqlite_classes\": [\"Beam\"] }]",
      Vars, "\n}\n"].
 
 wrangler_release(Name) ->

@@ -15,7 +15,9 @@ main([OutDir]) ->
                                                filename:absname(escript:script_name())))),
     Ebin = filename:join(OutDir, "ebin"),
     ok = filelib:ensure_path(Ebin),
-    Sources = filelib:wildcard(filename:join(Root, "apps/beam_com*/src/*.erl")),
+    %% wasm_host_sqlite (the shim of Ecto SQLite) needs no host to test.
+    Sources = filelib:wildcard(filename:join(Root, "apps/beam_com*/src/*.erl"))
+        ++ [filename:join(Root, "apps/wasm_host/src/wasm_host_sqlite.erl")],
     Tests = filelib:wildcard(filename:join(Root, "tests/unit/*_tests.erl")),
     Opts = [debug_info, {d, 'TEST'}, {outdir, Ebin}, report, return_errors],
     [compile_or_halt(F, Opts) || F <- Sources ++ Tests],

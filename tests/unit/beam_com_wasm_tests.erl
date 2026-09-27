@@ -154,3 +154,24 @@ snapshot_key_test_() ->
      {"another runtime: another key",
       ?_assertNotEqual(Key, beam_com_wasm:snapshot_key(Files, lists:keyreplace("beam.wasm", 1, Worker,
                                                                                {"beam.wasm", <<"c">>})))}].
+
+%% A module in place of the NIF of exqlite: the exports of the original,
+%% calls to the shim, and not_supported for the others.
+sqlite_shim_test() ->
+    Mod = 'Elixir.Exqlite.Sqlite3NIF',
+    Forms = [{attribute, 1, module, Mod},
+             {attribute, 1, export, [{load_nif, 0}, {open, 2}, {made_up, 1}]},
+             {function, 1, load_nif, 0, [{clause, 1, [], [], [{atom, 1, native}]}]},
+             {function, 1, open, 2, [{clause, 1, [{var, 1, '_'}, {var, 1, '_'}], [], [{atom, 1, native}]}]},
+             {function, 1, made_up, 1, [{clause, 1, [{var, 1, '_'}], [], [{atom, 1, native}]}]}],
+    {ok, Mod, Original} = compile:forms(Forms, [binary]),
+    Bin = beam_com_wasm:sqlite_shim(Original, [{open, 2}]),
+    {module, Mod} = code:load_binary(Mod, "shim", Bin),
+    try
+        ?assertEqual(ok, Mod:load_nif()),
+        ets:info(wasm_host_sqlite) =:= undefined andalso wasm_host_sqlite:table(),
+        ?assertMatch({ok, {wasm_sqlite, _}}, Mod:open("db", [])),   % the shim
+        ?assertError(not_supported, Mod:made_up(x))
+    after
+        code:purge(Mod), code:delete(Mod)
+    end.

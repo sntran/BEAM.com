@@ -36,9 +36,18 @@ compile([], _Out, _Label) ->
 compile(Files, Out, Label) ->
     start([elixir]),
     ok = filelib:ensure_path(Out),
-    Bins = [unicode:characters_to_binary(F) || F <- Files],
-    case 'Elixir.Kernel.ParallelCompiler':compile_to_path(
-           Bins, unicode:characters_to_binary(Out), [{return_diagnostics, true}]) of
+    Bins = [unicode:characters_to_binary(filename:absname(F)) || F <- Files],
+    OutBin = unicode:characters_to_binary(filename:absname(Out)),
+    %% As Mix: the directory of the project (Label) is the current one, for
+    %% the files that the code reads when it compiles (the templates of
+    %% Plug: EEx.compile_file("lib/plug/templates/...")).
+    {ok, Cwd} = file:get_cwd(),
+    filelib:is_dir(Label) andalso file:set_cwd(Label),
+    Result = try 'Elixir.Kernel.ParallelCompiler':compile_to_path(
+                   Bins, OutBin, [{return_diagnostics, true}])
+             after file:set_cwd(Cwd)
+             end,
+    case Result of
         {ok, Modules, _Diagnostics} ->
             [{M, element(2, {ok, _} = file:read_file(
                                           filename:join(Out, atom_to_list(M) ++ ".beam")))}

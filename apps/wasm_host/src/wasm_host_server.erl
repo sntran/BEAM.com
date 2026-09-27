@@ -17,7 +17,7 @@
 
 -define(TABLE, ?MODULE).
 -define(EVENTS, [<<"tcp_open">>, <<"tcp_data">>, <<"tcp_closed">>, <<"tcp_error">>,
-                 <<"tcp_listening">>]).
+                 <<"tcp_listening">>, <<"sql_reply">>]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -32,6 +32,8 @@ send_host(Header, Body) -> wasm_host:send([json:encode(Header), $\n, Body]).
 
 init([]) ->
     ?TABLE = ets:new(?TABLE, [named_table, public, {read_concurrency, true}]),
+    %% The connections and statements of Ecto SQLite (wasm_host_sqlite).
+    wasm_host_sqlite:table(),
     %% gen_tcp makes sockets of the host.
     ok = inet_db:set_tcp_module(wasm_tcp),
     %% No native resolver (inet_gethost is a port program): the hosts file.

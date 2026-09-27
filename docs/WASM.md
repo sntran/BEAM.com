@@ -379,6 +379,7 @@ without ERTS. The output is a directory:
 |---|---|
 | `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | the runtime Worker (`NAME`): the BEAM, with no program |
 | `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`); the runtime gets `release.bin` from it at the first request of an isolate |
+| `durable.js`, `wrangler.durable.jsonc` | the same runtime in one Durable Object (one VM for all the requests, and its SQLite storage for Ecto SQLite): `wrangler deploy -c wrangler.durable.jsonc` |
 | `worker.capnp` | both Workers for `workerd` |
 | `tcp-proxy.mjs` | a local TCP port for a listener of the program (a WebSocket to `/.tcp/PORT`) |
 
@@ -412,8 +413,8 @@ without ERTS. The output is a directory:
   fails, the Worker loads the modules one by one (with a warning). No run
   on Windows (no port programs).
 - **NIFs:** the runtime has the NIFs of `crypto` and `asn1` only. A
-  release with `esqlite`, `wasm`, `exqlite` or `bcrypt_elixir` gets a
-  warning.
+  release with `esqlite`, `wasm` or `bcrypt_elixir` gets a warning.
+  `exqlite` (Ecto SQLite) works through the host: see "Ecto SQLite".
 
 Measured in `workerd` (the first request after a new `workerd`, 7 runs
 each, medians; the release directory of the Phoenix demo, 8.5 MB, 1,347
@@ -782,6 +783,61 @@ documentation (2026-09-27):**
 same limits and prices (Pages limits and pricing pages). A Durable Object
 has the same 128 MB and 30 s of CPU. Containers (paid plan) run a native
 BEAM with no WebAssembly, but get only HTTP through a Worker.
+
+### Ecto SQLite: D1 and Durable Objects
+
+There is no SQLite in the runtime: the host runs the SQL. A release with
+`exqlite` (the driver of `ecto_sqlite3`) gets, in place of its NIF module
+(`Exqlite.Sqlite3NIF`), a module that calls `wasm_host_sqlite`, which
+sends each statement to `worker.js`:
+
+- in a Durable Object (`durable.js`), to its SQLite storage
+  (`ctx.storage.sql`: on the same machine, and the answer comes at once);
+- else to the D1 database of the binding `DB` (`BEAM_D1` names another);
+  `wrangler.jsonc` has the binding (`wrangler d1 create NAME`, then its id).
+
+The app is not changed: `examples/notes` (Ecto with a migration, Plug and
+Bandit) runs natively on a SQLite file, and on Workers with D1 or with a
+Durable Object. Tested with `wrangler dev`: inserts with `RETURNING`,
+`Repo.aggregate/2`, a query with `ORDER BY`, blobs, a transaction, the
+migration at the boot, and the data after a restart, also on a VM
+restored from a snapshot.
+
+How it works: a statement runs on the host at its first `columns/2` or
+step, after the binds, and all its rows come back at once (JSON: a blob as
+`{"b": base64}`, an integer over 2^53 as `{"i": "..."}`). The number of
+parameters comes from the SQL (`?`, `?NNN`, `:name`). For D1, a statement
+that gives rows (`SELECT`, `RETURNING`, `PRAGMA`) uses `raw()` (the names
+of the columns, and the rows as lists); the others `run()` (changes and
+the row id). For a Durable Object, the changes and the row id come from
+`SELECT changes(), last_insert_rowid()` (`rowsWritten` also counts the
+writes of `sqlite_sequence`: Ecto saw two rows for one insert).
+
+Limits:
+
+- **Transactions:** neither D1 nor the storage of a Durable Object lets
+  SQL control a transaction (`BEGIN` is refused). `BEGIN`, `COMMIT`,
+  `ROLLBACK` and the savepoints only change `transaction_status/1`: each
+  statement commits alone, and a rollback does not undo what ran before.
+- A `PRAGMA` that sets a value does nothing (the backends refuse most of
+  them); a `PRAGMA` with no value gives the value that was set. A `PRAGMA`
+  with an argument (`table_info(t)`) goes to the host.
+- `serialize/2`, `deserialize/3`, the hooks and the extensions are not
+  there.
+
+Found on the way:
+
+- **The build of Plug failed** in `beam.com` (`EEx.compile_file("lib/plug/templates/...")`
+  at compile time): as Mix, the builder now compiles each package with its
+  directory as the current one.
+- **A snapshot must not hold I/O of the host.** The Worker made its
+  snapshot at `ready`, which `wasm_host` sends before the app starts: the
+  migration waited for a D1 answer that was not in the snapshot, and the
+  restored VM waited forever. Now the Worker waits until the server of the
+  app listens (`PORT`), and until no SQL call or socket is open. And a
+  Durable Object took its snapshot while the answer to `tcp_listen` was
+  still in the pipe of the host: now, after the threads return, all the
+  pipes must be empty, else the VM goes on and the Worker tries again.
 
 ### A snapshot of the booted VM (on by default)
 

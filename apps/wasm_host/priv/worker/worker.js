@@ -205,6 +205,58 @@ function restore(m, exports, snap) {
   return n;
 }
 
+// Ecto SQLite (wasm_host_sqlite): the host runs each statement, on the
+// SQLite storage of a Durable Object (ctx.storage.sql: the option sql of
+// Vm), else on the D1 database of the binding BEAM_D1 (default DB). A
+// value on the wire: a blob as {b: base64}, a big integer as {i: "..."}.
+function toWire(v) {
+  // D1 gives a BLOB as an array of bytes (a SQL value is no array else).
+  if (Array.isArray(v)) v = Uint8Array.from(v);
+  if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) {
+    let bin = '';
+    for (const c of new Uint8Array(v.buffer ?? v, v.byteOffset ?? 0, v.byteLength)) bin += String.fromCharCode(c);
+    return { b: btoa(bin) };
+  }
+  if (typeof v === 'bigint') return { i: String(v) };
+  return v;
+}
+
+function fromWire(v) {
+  if (v && typeof v === 'object' && 'b' in v) return Uint8Array.from(atob(v.b), (c) => c.charCodeAt(0)).buffer;
+  if (v && typeof v === 'object' && 'i' in v) return BigInt(v.i);
+  return v;
+}
+
+// The statements that give rows (the others give changes and a row id).
+const givesRows = (sql) => /^\s*(select|with|pragma|values|explain)\b/i.test(sql) || /\breturning\b/i.test(sql);
+
+// The changes of SQLite (rowsWritten counts the writes of the indexes and
+// of sqlite_sequence too).
+const reads = (sql) => /^\s*(select|with|pragma|values|explain)\b/i.test(sql);
+
+function sqlDurable(storage, sql, params) {
+  const c = storage.exec(sql, ...params);
+  const rows = [...c.raw()].map((r) => r.map(toWire));
+  const out = { columns: c.columnNames, rows, changes: 0 };
+  if (!reads(sql)) {
+    const [[changes, rowid]] = [...storage.exec('SELECT changes(), last_insert_rowid()').raw()];
+    Object.assign(out, { changes, last_row_id: rowid });
+  }
+  return out;
+}
+
+async function sqlD1(env, sql, params) {
+  const name = env.BEAM_D1 ?? 'DB';
+  if (!env[name]) throw new Error(`no D1 binding ${name} (or set BEAM_D1)`);
+  const st = env[name].prepare(sql).bind(...params);
+  if (givesRows(sql)) {
+    const [columns = [], ...rows] = await st.raw({ columnNames: true });
+    return { columns, rows: rows.map((r) => r.map(toWire)), changes: reads(sql) ? 0 : rows.length };
+  }
+  const { meta } = await st.run();
+  return { columns: [], rows: [], changes: meta.changes ?? 0, last_row_id: meta.last_row_id ?? 0 };
+}
+
 let vm;  // the VM of this isolate
 
 export default {
@@ -224,11 +276,12 @@ export default {
 //   import { DurableObject } from 'cloudflare:workers';
 //   import { Vm } from './worker.js';
 //   export class Beam extends DurableObject {
-//     constructor(ctx, env) { super(ctx, env); this.vm = new Vm(env, { plain: false }); }
+//     constructor(ctx, env) { super(ctx, env); this.vm = new Vm(env, { plain: false, sql: ctx.storage.sql }); }
 //     fetch(request) { return this.vm.fetch(request); }
 //   }
 export class Vm {
-  constructor(env, { plain = true } = {}) {
+  constructor(env, { plain = true, sql = null } = {}) {
+    this.sql = sql;            // ctx.storage.sql of a Durable Object (Ecto SQLite)
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
     this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
     this.nextId = 1;
@@ -337,14 +390,33 @@ export class Vm {
     const key = this.makeKey;
     this.makeKey = null;
     const x = this.exports;
-    x.erts_wasm_hibernate();
-    for (let i = 0; x.jspi_live_threads() > 0; i++) {
-      if (i > 5000) {
-        x.jspi_report_live();
-        x.erts_wasm_resume();
-        return;
+    // Not before the app is up (its server listens), and not while the host
+    // has I/O of the VM (a SQL call, a socket): that I/O would not be in
+    // the snapshot, and a restored VM would wait for it forever.
+    const tick = () => new Promise((r) => setTimeout(r, 1));
+    const port = Number(this.env.PORT ?? 4000);
+    await Promise.race([this.listening(port), new Promise((r) => setTimeout(r, 10000))]);
+    const busy = () => this.sqlPending > 0 || this.tcps.size > 0;
+    // Data in a pipe (an event of the host that Erlang did not take yet,
+    // or a wake-up of ERTS) would not be in the snapshot either.
+    const unread = () => this.beam.FS.streams.some((st) => st?.node?.pipe?.buckets.some((b) => b.offset > b.roffset));
+    for (let attempt = 0; ; attempt++) {
+      for (let i = 0; busy() && i < 2000; i++) await tick();
+      if (busy()) { this.makeKey = key; return; }
+      x.erts_wasm_hibernate();
+      for (let i = 0; x.jspi_live_threads() > 0; i++) {
+        if (i > 5000) {
+          x.jspi_report_live();
+          x.erts_wasm_resume();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 0));
       }
-      await new Promise((r) => setTimeout(r, 0));
+      if (!busy() && !unread()) break;
+      // Not a quiet moment: go on, and try again.
+      x.erts_wasm_resume();
+      if (attempt >= 20) { this.makeKey = key; return; }
+      for (let i = 0; i < 5; i++) await tick();
     }
     let bytes;
     try {
@@ -463,6 +535,26 @@ export class Vm {
     h.wake?.();
   }
 
+  // One statement of wasm_host_sqlite. A D1 call is I/O of the request h:
+  // it keeps h open (as a socket) until the answer.
+  async sqlQuery(msg, body, h) {
+    if (h) h.sockets++;
+    this.sqlPending = (this.sqlPending ?? 0) + 1;
+    let reply;
+    try {
+      const q = JSON.parse(new TextDecoder().decode(body));
+      const params = q.params.map(fromWire);
+      reply = this.sql ? sqlDurable(this.sql, q.sql, params) : await sqlD1(this.env, q.sql, params);
+    } catch (e) {
+      reply = { error: String(e?.message ?? e) };
+      console.log(`beam: sql: ${reply.error}`);
+    } finally {
+      this.sqlPending--;
+      if (h) { h.sockets--; h.wake?.(); }
+    }
+    this.event({ t: 'sql_reply', id: msg.id }, new TextEncoder().encode(JSON.stringify(reply)));
+  }
+
   // A listener on port, once there is one.
   listening(port) {
     if (this.listeners.has(port)) return Promise.resolve();
@@ -479,6 +571,9 @@ export class Vm {
     headers.set('host', url.host);
     headers.delete('transfer-encoding');
     headers.delete('sec-websocket-extensions');  // no compression: frames as they are
+    // The Workers runtime compresses the response for each client: the app
+    // does not (the edge adds Accept-Encoding to the requests).
+    headers.delete('accept-encoding');
     if (upgrade) {
       headers.set('connection', 'Upgrade');
       headers.set('sec-websocket-key', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))));
@@ -719,6 +814,11 @@ export class Vm {
       case 'tcp_connect': {
         const h = this.handlers.at(-1);
         this.run(() => this.tcpConnect(msg, h), h);
+        break;
+      }
+      case 'sql': {
+        const h = this.handlers.at(-1);
+        this.run(() => this.sqlQuery(msg, body, h), h);
         break;
       }
       case 'tcp_send': {

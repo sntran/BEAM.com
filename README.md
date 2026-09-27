@@ -567,7 +567,11 @@ workerd serve worker/worker.capnp                          # test on this comput
   its booted VM (in the Cache API, or an R2 bucket), and the next
   isolates start from it: the first request of a Phoenix app takes about
   0.2 s, not 0.6 s. The var `BEAM_SNAPSHOT = "off"` turns it off.
-- Only the NIFs of `crypto` and `asn1` are in the runtime.
+- Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
+  (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
+  SQLite storage of a Durable Object (`wrangler deploy -c
+  wrangler.durable.jsonc`: one VM for all the requests). Each statement
+  commits alone: a rollback does not undo.
 
 See [`docs/WASM.md`](docs/WASM.md) for the details, the measurements
 (first request of a Phoenix app: 0.6 s; next requests: 3 ms) and the
