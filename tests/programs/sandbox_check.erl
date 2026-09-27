@@ -1,4 +1,4 @@
-%% A one-file program for "beam.com build" that tests the sandbox
+%% A one-file program for "beam.com INPUT -o OUTPUT" that tests the sandbox
 %% (the --allow-* flags). It does the actions of its command line and
 %% prints the result of each one:
 %%

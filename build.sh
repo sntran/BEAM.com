@@ -29,7 +29,7 @@
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
 #   ELIXIR           0: leave out Elixir (the elixir, eex, ex_unit, iex,
 #                    logger and mix applications and bin/mix in the zip,
-#                    for "beam.com build" of Elixir code and the tools
+#                    for "beam.com INPUT -o OUTPUT" of Elixir code and the tools
 #                    mix, iex, elixir and elixirc; default 1)
 #   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
@@ -75,7 +75,7 @@ JIT=${JIT:-1}
 if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
-# The OTP applications in the zip. "beam.com build" copies the ones that
+# The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
 # a program needs into the new executable.
 BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets
              xmerl runtime_tools"
@@ -559,7 +559,7 @@ step_bundle() {
     mkdir -p "$STAGE/bin"
 
     # OTP: boot scripts for tools, and the applications (ebin, and
-    # include for "beam.com build").
+    # include for "beam.com INPUT -o OUTPUT").
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
     cp "$ROOT/cosmo/windows.inetrc" "$ROOT/cosmo/sandbox.inetrc" "$STAGE/bin/"
@@ -584,7 +584,7 @@ step_bundle() {
     fi
 
     # Elixir: the applications without debug information, but with their
-    # docs (for h/1 in iex) and attributes. They are for "beam.com build"
+    # docs (for h/1 in iex) and attributes. They are for "beam.com INPUT -o OUTPUT"
     # of Elixir code, and for the tools of Elixir (mix, iex, elixir,
     # elixirc; bin/mix is the script of mix). A program gets only the
     # applications that it uses, without docs.
@@ -624,8 +624,8 @@ step_bundle() {
     cp "$ROOT/apps/beam_com_script/src/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
 
-    # There is no release: beam.com runs its commands (help, version and
-    # build). A release that is added to the zip runs instead.
+    # There is no release: beam.com runs its command line (run, -o,
+    # --help, --version). A release that is added to the zip runs instead.
 
     emu=$ERL_TOP/bin/$t/beam.$FLAVOR
     if [ "$(od -An -c -N4 "$emu" | tr -d ' ')" = '177ELF' ]; then
@@ -643,7 +643,7 @@ step_bundle() {
     # The code of kernel and stdlib is stored, not compressed: the boot
     # loads most of it, and stored entries need no inflating. It costs
     # about 2 MB, and a program starts about 50 ms faster (a quarter of
-    # its start time; see docs/BENCHMARKS.md). beam.com build keeps the
+    # its start time; see docs/BENCHMARKS.md). beam.com INPUT -o OUTPUT keeps the
     # entries as they are, so the programs get the same.
     (cd "$STAGE" &&
      zip -q -r -9 "$OUT" bin lib -x 'lib/kernel-*/ebin/*' -x 'lib/stdlib-*/ebin/*' &&
@@ -664,14 +664,17 @@ step_unit() {
 
 step_test() {
     log "Running $OUT"
-    "$OUT" version | tee "$BUILD/test.out"
+    "$OUT" --version | tee "$BUILD/test.out"
     grep -q "Erlang/OTP  : $OTP_VERSION" "$BUILD/test.out"
     [ "$ELIXIR" = 1 ] && grep -q "Elixir      : $ELIXIR_VERSION" "$BUILD/test.out"
     # The commands use the name of their file (beam.com, beam-emu.com).
-    "$OUT" help > "$BUILD/test.out"
-    grep -q "usage: $(basename "$OUT") COMMAND" "$BUILD/test.out"
-    log "Building a program with $OUT build"
-    "$OUT" build "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
+    "$OUT" --help > "$BUILD/test.out"
+    grep -q "usage: $(basename "$OUT") \[FLAGS\] \[INPUT\] \[-- ARGUMENTS\]" "$BUILD/test.out"
+    log "Running a program with $OUT, and building it with -o"
+    BEAM_COM_CACHE=$BUILD/cache "$OUT" "$ROOT/examples/hashsum.erl" -- abc | tee "$BUILD/test.out"
+    grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
+        "$BUILD/test.out"
+    "$OUT" "$ROOT/examples/hashsum.erl" -o "$BUILD/hashsum.com"
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
     grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
         "$BUILD/test.out"
@@ -679,12 +682,12 @@ step_test() {
     unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/kernel-[^/]*/ebin/code.beam$'
     unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/stdlib-[^/]*/ebin/lists.beam$'
     if [ "$WASM" = 1 ]; then
-        "$OUT" build "$ROOT/examples/wasm_check.erl" -o "$BUILD/wasm_check.com"
+        "$OUT" "$ROOT/examples/wasm_check.erl" -o "$BUILD/wasm_check.com"
         "$BUILD/wasm_check.com" | tee "$BUILD/test.out"
         grep -q '^wasm: wasi exit code 7' "$BUILD/test.out"
     fi
     if [ "$SQLITE" = 1 ]; then
-        "$OUT" build "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
+        "$OUT" "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
         "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
         grep -q '^sqlite: json \["alpha","beta","gamma"\]' "$BUILD/test.out"
     fi

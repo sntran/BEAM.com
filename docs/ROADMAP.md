@@ -14,14 +14,14 @@ platforms.
   also on Windows (exported from the Windows store at start).
 - Port programs on macOS and the BSDs (fd passing in the native
   `cmsghdr` layout).
-- A sandbox for programs: `beam.com build --allow-read ... --allow-net`,
+- A sandbox for programs: `beam.com INPUT --allow-read ... --allow-net -o OUTPUT`,
   the permission flags of Deno (with Cosmopolitan's `pledge()` and
   `unveil()`; Linux and OpenBSD). The launcher applies them before ERTS
   starts its threads. They replace the first flags, `--pledge` and
   `--unveil`: the names of OpenBSD were foreign to most users.
-- `beam.com build` of `.yrl`, `.xrl` and ASN.1 files (with `parsetools`
+- `beam.com INPUT -o OUTPUT` of `.yrl`, `.xrl` and ASN.1 files (with `parsetools`
   and `asn1ct` in the zip).
-- `beam.com build`: no Erlang installation needed. It compiles one
+- `beam.com INPUT -o OUTPUT`: no Erlang installation needed. It compiles one
   `.erl` file with `main/1`, or an application directory, selects the
   OTP applications that the code needs (from the `.app` file and the
   imports of the compiled code), makes the release with `systools`, and
@@ -36,7 +36,7 @@ platforms.
 
 - The `esqlite` NIF (Apache-2.0) with the SQLite 3.53.4 amalgamation is
   linked into the emulator as a static NIF, the same way as `crypto`.
-  The `esqlite` application is in the zip, and `beam.com build` selects
+  The `esqlite` application is in the zip, and `beam.com INPUT -o OUTPUT` selects
   it when the code calls `esqlite3`.
 - Size: SQLite and the NIF add about 1.8 MB to the emulator for the two
   CPUs (compiled with `-Os`, as esqlite does; 2.8 MB with `-O2`). The
@@ -101,14 +101,14 @@ can be added on WAMR, or the runtime can be replaced.
   x86_64; macOS arm64 uses `MAP_JIT`; the OpenBSD kernel enforces W^X
   itself. See `docs/JIT.md`.
 
-### Later: more for `beam.com build`
+### Later: more for `beam.com INPUT -o OUTPUT`
 
 - Done: Hex packages (the `deps` of `rebar.config`, `rebar.lock`,
   checksums, a cache), with `httpc` and TLS in `beam.com`.
 - Done: Elixir. Evaluated first: Elixir 1.20.4 compiles with the
   Erlang/OTP 29.1.1 of this build; `elixir`, `eex`, `logger` and `mix`
   are 10 MB of beam files, 2.7 MB without debug information and docs,
-  and 1.8 MB in the zip. `beam.com build` compiles one Elixir file with
+  and 1.8 MB in the zip. `beam.com INPUT -o OUTPUT` compiles one Elixir file with
   `main/1`, and Mix projects (read with Mix), with Hex packages in
   Elixir and `mix.lock`.
 - Done: the tools of Elixir. `beam.com` runs `mix`, `iex`, `elixir` and
@@ -144,7 +144,7 @@ can be added on WAMR, or the runtime can be replaced.
   `phx.gen.auth` on Linux (`ecto.migrate`, an account with a password,
   a registration over HTTP).
 - Next for Phoenix: `config/runtime.exs` and `priv/static` in
-  `beam.com build`, for a Phoenix app in one file.
+  `beam.com INPUT -o OUTPUT`, for a Phoenix app in one file.
 - Done: command line programs, for larger projects (for example an
   orchestration tool with a sandbox worker): the `main/1` of an application
   (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours
@@ -173,7 +173,7 @@ can be added on WAMR, or the runtime can be replaced.
   without compression (the rest stays compressed): 2 MB more, and the
   start is about 50 ms (27%) faster. A zip with no compression at all
   is about 21 MB larger, so only the modules of the boot are stored.
-- Done: `beam.com build --target TARGET` writes a native ELF (Linux,
+- Done: `beam.com INPUT --target TARGET -o OUTPUT` writes a native ELF (Linux,
   FreeBSD) or Mach-O (macOS x86_64) file, with the same bytes as
   `assimilate`. There is no native form for Apple Silicon (APE files run
   there only with the APE loader). The flag was `--native` first; it is
@@ -215,8 +215,8 @@ WAMR 2.4.5).
 - **hex_core 0.19** has a security fix. BEAM.com has its own Hex client
   (`beam_com_hex`), so check whether the same problem applies to it.
 - **Gleam 1.18**: its compiler is a native program, not Erlang, so
-  `beam.com build` cannot compile Gleam. A Gleam project can give its
-  Erlang output (`gleam export erlang-shipment`) to `beam.com build`; a
+  `beam.com INPUT -o OUTPUT` cannot compile Gleam. A Gleam project can give its
+  Erlang output (`gleam export erlang-shipment`) to `beam.com INPUT -o OUTPUT`; a
   probe of this is possible.
 - **Burrito 1.6**: see "Nothing is extracted" in the README for the
   comparison. BEAM.com now copies a `priv` directory only when other

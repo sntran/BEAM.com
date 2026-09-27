@@ -1,7 +1,7 @@
-%% A one-file program for "beam.com build": prints the SHA-256 of each
+%% A one-file program for "beam.com INPUT -o OUTPUT": prints the SHA-256 of each
 %% argument, as sha256sum does for files.
 %%
-%%   beam.com build hashsum.erl
+%%   beam.com hashsum.erl -o hashsum.com
 %%   ./hashsum.com abc
 %%
 %% It calls crypto, so the builder adds the crypto application.

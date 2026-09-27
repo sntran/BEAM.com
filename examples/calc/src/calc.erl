@@ -1,8 +1,8 @@
-%% An example application for "beam.com build" with generated code:
+%% An example application for "beam.com INPUT -o OUTPUT" with generated code:
 %% calc_lexer.xrl (leex), calc_parser.yrl (yecc) and asn1/Greeting.asn1
-%% (the ASN.1 compiler). beam.com build makes the .erl files itself.
+%% (the ASN.1 compiler). a build (-o) makes the .erl files itself.
 %%
-%%   beam.com build examples/calc
+%%   beam.com examples/calc -o calc.com
 %%   ./calc.com
 -module(calc).
 -export([main/0, eval/1]).

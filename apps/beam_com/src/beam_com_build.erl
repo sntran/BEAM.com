@@ -1,4 +1,4 @@
-%% beam.com build: make a new executable from Erlang source code.
+%% beam.com INPUT -o OUTPUT: make a new executable from Erlang source code.
 %%
 %% The input is one .erl file with main/1 (as for escript), or an
 %% application directory (src/*.erl, src/NAME.app.src or ebin/NAME.app,
@@ -93,7 +93,7 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
            end,
     write_file(Output, Data),
     _ = file:change_mode(Output, 8#755),
-    io:format("~ts: wrote ~ts (~b bytes)~n"
+    maps:get(quiet, Opts, false) orelse io:format("~ts: wrote ~ts (~b bytes)~n"
               "  release: ~s ~s~n"
               "  applications: ~s~n",
               [beam_com:name(), Output, iolist_size(Data), maps:get(name, App),
@@ -152,7 +152,7 @@ allow(Flag, Allow) ->
             end;
         unsupported ->
             throw({error, "~ts is not supported: the sandbox cannot enforce it "
-                   "(see beam.com help build)", [Flag]});
+                   "(see beam.com --help)", [Flag]});
         unknown ->
             throw({error, "unknown option ~ts", [Flag]})
     end.

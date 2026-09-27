@@ -1,6 +1,6 @@
-%% A one-file program for "beam.com build" that runs WebAssembly.
+%% A one-file program for "beam.com INPUT -o OUTPUT" that runs WebAssembly.
 %%
-%%   beam.com build wasm_check.erl
+%%   beam.com wasm_check.erl -o wasm_check.com
 %%   ./wasm_check.com [PROGRAM.wasm ARG...]
 %%
 %% Without arguments, it makes small WebAssembly modules itself (so that
