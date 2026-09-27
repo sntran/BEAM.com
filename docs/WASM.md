@@ -162,14 +162,13 @@ WebAssembly than native.
   x86-64 instruction (also the code that the JIT of ERTS makes).
   WebAssembly adds only 1.4 times to native Blink: the interpreter is the
   cost, not WebAssembly.
-- **The start takes one minute and 1.4 GB.** Workers give 128 MB of
-  memory and a few seconds of CPU time for a request; Deno Deploy is
-  similar. So this way cannot serve requests there. It could run Erlang
+- **The start takes one minute and 1.4 GB.** A Worker has 128 MB of
+  memory and a limit of CPU time for each request, and Deno Deploy has
+  limits of the same kind. So this way cannot serve requests there. It could run Erlang
   code in a browser tab for a demonstration.
 - **Each layer needed a fix**: the exit of Blink with threads, the
   `emscripten_sleep()` of its Emscripten code, the command line of the
   APE loader, `socketpair()` in ERTS, the double mapping of the JIT.
-  Blink has had no release since 2023.
 - A JIT of Blink for WebAssembly (x86-64 blocks compiled to WebAssembly
   modules at run time, as the emulator v86 does for 32-bit x86) could
   make it 10 or more times faster, but that is a large new project, and
