@@ -27,7 +27,7 @@ export class Beam extends DurableObject {
     const vsn = env.RELEASE_VSN;
     const t0 = Date.now();
     return new Promise((resolve, reject) => {
-      this.onready = () => { console.log(`beam: ready in ${Date.now() - t0} ms`); resolve(); };
+      this.onready = () => { console.log(`beam: ready in ${Date.now() - t0} ms, ${this.memory()}`); resolve(); };
       createBeam({
         arguments: ['-S', '1', '-SDcpu', '1', '-A', '0', '--',
           '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
@@ -53,6 +53,10 @@ export class Beam extends DurableObject {
         onExit: (code) => reject(new Error(`beam exited with status ${code}`)),
       }).catch(reject);
     });
+  }
+
+  memory() {
+    return `memory ${this.beam.HEAPU8.length >> 20} MB`;
   }
 
   event(header, body) {
@@ -111,6 +115,7 @@ export class Beam extends DurableObject {
             binary ? e.data : new TextEncoder().encode(e.data));
         });
         server.addEventListener('close', () => { this.sockets.delete(msg.id); this.event({ t: 'ws_close', id: msg.id }); });
+        console.log(`beam: socket ${msg.id}, ${this.sockets.size} open, ${this.memory()}`);
         p.resolve(new Response(null, { status: 101, webSocket: client }));
         break;
       }
