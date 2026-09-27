@@ -20,7 +20,8 @@ defmodule HelloWeb.TcpController do
            :ok <- mod.send(socket, "GET #{path} HTTP/1.0\r\nHost: #{host}\r\n\r\n"),
            {:ok, body} <- read_all(mod, socket, "") do
         [status | _] = String.split(body, "\r\n", parts: 2)
-        "#{status} (#{byte_size(body)} bytes, #{System.monotonic_time(:millisecond) - t0} ms, #{mod})"
+        last = body |> String.trim_trailing() |> String.split("\n") |> List.last()
+        "#{status} (#{byte_size(body)} bytes, #{System.monotonic_time(:millisecond) - t0} ms, #{mod}): #{last}"
       else
         error -> "error: #{inspect(error)}"
       end
