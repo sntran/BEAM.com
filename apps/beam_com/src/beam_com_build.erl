@@ -17,6 +17,7 @@
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
          parents/1, keep/2, executable/0, slashes/2, generate/2, native/2,
+         base_kind/1, check_base/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
          with_extract/2, compile_all/2, first_names/1]).
@@ -42,6 +43,8 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     end.
 
 build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
+    %% The new file is a copy of this executable: check its format first.
+    check_base(Opts),
     {App0, Deps} = case filelib:is_dir(Input) of
                        true ->
                            Tool = tool(Input, Opts),
@@ -208,11 +211,93 @@ check_target(Name) ->
 
 native(Target, Bin) ->
     {_, _, Header} = lists:keyfind(Target, 1, ?TARGETS),
-    Head = case Header of
-               {elf, Machine, Abi} -> elf_header(Bin, Machine, Abi);
-               {macho, Cpu} -> macho_header(Bin, Cpu)
-           end,
-    <<Head/binary, (binary:part(Bin, byte_size(Head), byte_size(Bin) - byte_size(Head)))/binary>>.
+    case {base_kind(Bin), Header} of
+        {{elf, Machine, _}, {elf, Machine, Abi}} ->
+            %% A native file of this CPU (see check_base/2): only the OS
+            %% ABI can be different.
+            <<Ident:7/binary, OsAbi, Rest/binary>> = Bin,
+            <<Ident/binary, (native_abi(Abi, OsAbi)), Rest/binary>>;
+        {{macho, Cpu}, {macho, Cpu}} ->
+            Bin;
+        _ ->
+            Head = case Header of
+                       {elf, Machine, Abi} -> elf_header(Bin, Machine, Abi);
+                       {macho, Cpu} -> macho_header(Bin, Cpu)
+                   end,
+            <<Head/binary, (binary:part(Bin, byte_size(Head), byte_size(Bin) - byte_size(Head)))/binary>>
+    end.
+
+%% The kernels other than FreeBSD do not look at the OS ABI; assimilate
+%% sets it to System V (0) for them. FreeBSD needs its own (9).
+native_abi(sysv, 9) -> 0;
+native_abi(sysv, OsAbi) -> OsAbi;
+native_abi(freebsd, _) -> 9.
+
+%% The format of the file that the new file is a copy of (this
+%% executable): an APE file, or a native file (made with --target, or
+%% with --assimilate of the APE loader), or unknown.
+base_kind(<<"MZqFpD", _/binary>>) -> ape;
+base_kind(<<"jartsr", _/binary>>) -> ape;
+base_kind(<<127, "ELF", 2, _, _, OsAbi, _:8/binary, _Type:16/little, Machine:16/little,
+            _/binary>>) -> {elf, Machine, OsAbi};
+base_kind(<<16#feedfacf:32/little, Cpu:32/little, _/binary>>) -> {macho, Cpu};
+base_kind(_) -> unknown.
+
+%% The first bytes of this executable, when it can be read (else the
+%% error comes later, from read_file/1).
+check_base(Opts) ->
+    Exe = case Opts of
+              #{exe := E} -> E;
+              _ ->
+                  case init:get_argument(beam_com_exe) of
+                      {ok, [[E]]} -> E;
+                      _ -> none
+                  end
+          end,
+    case Exe =/= none andalso file:open(Exe, [read, binary, raw]) of
+        {ok, File} ->
+            Head = file:read(File, 64),
+            ok = file:close(File),
+            case Head of
+                {ok, Bin} -> check_base(Bin, maps:get(target, Opts, none));
+                _ -> ok
+            end;
+        _ ->
+            ok
+    end.
+
+%% A native base gives a native file, which runs only on one system.
+%% Without --target, the user did not ask for that: stop, with what to do.
+%% With --target, the base must be a file for the CPU of the target. An
+%% APE base, or one of unknown format, is not checked.
+check_base(Bin, Target) ->
+    case {base_kind(Bin), Target} of
+        {ape, _} -> ok;
+        {unknown, _} -> ok;
+        {Kind, none} ->
+            throw({error, "this is a native file (~ts), not an APE file: a program built "
+                   "from it runs only on this system. Build with the APE file of beam.com, "
+                   "or give --target to make a native file", [kind_name(Kind)]});
+        {Kind, _} ->
+            {_, _, Header} = lists:keyfind(Target, 1, ?TARGETS),
+            case {Kind, Header} of
+                {{elf, Machine, _}, {elf, Machine, _}} -> ok;
+                {{macho, Cpu}, {macho, Cpu}} -> ok;
+                _ ->
+                    throw({error, "this is a native file (~ts), not an APE file: it cannot "
+                           "make a file for ~ts. Build with the APE file of beam.com",
+                           [kind_name(Kind), Target]})
+            end
+    end.
+
+kind_name({elf, Machine, _}) -> ["ELF, ", cpu_name(Machine)];
+kind_name({macho, Cpu}) -> ["Mach-O, ", cpu_name(Cpu)].
+
+cpu_name(16#3e) -> "x86_64";
+cpu_name(16#b7) -> "aarch64";
+cpu_name(16#01000007) -> "x86_64";
+cpu_name(16#0100000c) -> "arm64";
+cpu_name(N) -> io_lib:format("CPU ~.16#", [N]).
 
 %% The ELF header in a printf '...' of the first 8 KB, for the CPU.
 elf_header(Bin, Machine, Abi) ->

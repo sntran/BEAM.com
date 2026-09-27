@@ -101,14 +101,18 @@ diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/e
 index aa5c2e9..432e7fc 100644
 --- a/erts/emulator/sys/unix/erl_child_setup.c
 +++ b/erts/emulator/sys/unix/erl_child_setup.c
-@@ -360,6 +360,12 @@ start_new_child(int pipes[])
+@@ -360,6 +360,16 @@ start_new_child(int pipes[])
  
      if (args) {
          /* spawn_executable */
 +#ifdef __COSMOPOLITAN__
-+        /* BEAM.com: programs in /zip/bin are linked into this executable. */
++        /* BEAM.com: programs in /zip/bin are linked into this executable.
++         * beam_com_execve() starts an APE file (for example the file of
++         * the program, in erl mode) with the APE loader on Linux. */
 +        if (beam_com_exec_helper && beam_com_is_zip(cmd))
 +            beam_com_exec_helper(cmd, args, new_environ);
++        else if (beam_com_execve)
++            beam_com_execve(cmd, args, new_environ);
 +        else
 +#endif
          execve(cmd, args, new_environ);
