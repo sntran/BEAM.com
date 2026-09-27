@@ -30,17 +30,12 @@ export RELEASE_ROOT="$REL" RELEASE_NAME=hello RELEASE_VSN="$VSN" RELEASE_MODE=in
     RELEASE_TMP="$REL/tmp" RELEASE_SYS_CONFIG="$REL/tmp/run.runtime" RELEASE_PROG=hello
 export SECRET_KEY_BASE="${SECRET_KEY_BASE:-$(head -c 48 /dev/urandom | base64 | tr -d '\n')}" PHX_HOST="${PHX_HOST:-localhost}"
 cd "$HERE/../erts/build"
-# SERVE=1: the Node.js host serves HTTP and WebSockets on $PORT (4000) for
-# the endpoint (wasm_host). The dirty I/O schedulers keep their default
+# SERVE=1: Bandit serves HTTP on $PORT (4000), with TCP sockets of the
+# Node.js host (wasm_tcp). The dirty I/O schedulers keep their default
 # number: one of them waits for the events of the host.
 host=beam-node.mjs beam=
 if [ "${SERVE:-0}" = 1 ]; then
     export PHX_SERVER=true WASM_HOST=1
-    host=$HERE/../erts/host/server.mjs beam=./beam.mjs
-fi
-# SERVE=tcp: Bandit serves HTTP on $PORT, with TCP sockets of the host.
-if [ "${SERVE:-0}" = tcp ]; then
-    export PHX_SERVER=true WASM_HOST=tcp HOST_PORT=${HOST_PORT:-4999}
     host=$HERE/../erts/host/server.mjs beam=./beam.mjs
 fi
 # shellcheck disable=SC2086

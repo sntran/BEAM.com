@@ -9,21 +9,18 @@
 // - else a module release.bin in this Worker.
 // A Durable Object can hold the VM in place of the isolate: see Vm.
 //
-// The app serves HTTP in one of two ways:
-// - WASM_HOST=tcp (a text binding): its own HTTP server (Bandit, with gen_tcp
-//   of wasm_tcp) listens on PORT (4000), and each request is a TCP
-//   connection to it (bridge): the request as HTTP/1.1 bytes, the response
-//   read back, and WebSocket frames turned into messages;
-// - else: the endpoint adapter WasmHost.PhoenixAdapter gets http events.
+// The HTTP server of the app (Bandit, with gen_tcp of wasm_tcp) listens on
+// PORT (4000), and each request is a TCP connection to it (bridge): the
+// request as HTTP/1.1 bytes, the response read back, and WebSocket frames
+// turned into messages.
 //
 // Workers get no TCP connections: a WebSocket to /.tcp/PORT is a connection
 // to the listener of PORT (gen_tcp:listen of wasm_tcp), and its binary
 // messages are the bytes (a client proxy, as tcp-proxy.mjs or websocat -b,
 // makes a local TCP port of it).
 //
-// It gives each request and WebSocket frame to Erlang through wasm_host (the
-// events of wasm/phoenix/wasm_host/server.ex), and the endpoint adapter of the
-// app answers; wasm_tcp sockets use connect().
+// The events between the host and Erlang (wasm_host) are those of
+// wasm/phoenix/wasm_host/server.ex; outgoing wasm_tcp sockets use connect().
 import { connect } from 'cloudflare:sockets';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
@@ -78,8 +75,6 @@ export default {
 //   }
 export class Vm {
   constructor(env, { plain = true } = {}) {
-    this.pending = new Map();  // id -> {resolve, request, stream}
-    this.sockets = new Map();  // id -> the server end of a WebSocketPair
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
     this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
     this.nextId = 1;
@@ -176,19 +171,10 @@ export class Vm {
   async request(request, h, finished) {
     await this.ready;
     const url = new URL(request.url);
-    const id = this.nextId++;
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
     const tcp = upgrade && url.pathname.match(/^\/\.tcp\/(\d+)$/);
     if (tcp) return this.tcpAccept(Number(tcp[1]), request, h, finished);
-    if (this.env.WASM_HOST === 'tcp') return this.bridge(request, url, upgrade, h, finished);
-    const body = upgrade || request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
-    const response = new Promise((resolve) => this.pending.set(id, { resolve, upgrade, handler: h }));
-    response.then(finished);
-    this.event({
-      t: 'http', id, method: request.method, path: url.pathname + url.search,
-      headers: [...request.headers], scheme: url.protocol.replace(':', ''),
-    }, body);
-    return response;
+    return this.bridge(request, url, upgrade, h, finished);
   }
 
   // A plain Worker runs code only for an open request, and an I/O object (a
@@ -267,7 +253,7 @@ export class Vm {
     return new Promise((r) => this.waitListen.set(port, [...(this.waitListen.get(port) ?? []), r]));
   }
 
-  // WASM_HOST=tcp: the request as a TCP connection to the HTTP server of the
+  // The request as a TCP connection to the HTTP server of the
   // app on PORT. Bandit does the HTTP; here only the bytes are framed.
   async bridge(request, url, upgrade, h, finished) {
     const port = Number(this.env.PORT ?? 4000);
@@ -507,55 +493,10 @@ export class Vm {
     const nl = bytes.indexOf(10);
     const msg = JSON.parse(new TextDecoder().decode(bytes.subarray(0, nl)));
     const body = bytes.slice(nl + 1);
-    const p = this.pending.get(msg.id);
     switch (msg.t) {
       case 'ready':
         this.onready();
         break;
-      case 'resp':
-        this.pending.delete(msg.id);
-        p?.resolve(new Response(msg.status === 204 || msg.status === 304 ? null : body,
-          { status: msg.status, headers: new Headers(msg.headers) }));
-        break;
-      case 'head': this.run(() => {
-        const { readable, writable } = new TransformStream();
-        p.writer = writable.getWriter();
-        p.resolve(new Response(readable, { status: msg.status, headers: new Headers(msg.headers) }));
-      }, p.handler); break;
-      case 'chunk': this.run(() => p.writer.write(body), p.handler); break;
-      case 'end': this.pending.delete(msg.id); this.run(() => p.writer.close(), p.handler); break;
-      case 'ws_accept': this.run(() => {
-        this.pending.delete(msg.id);
-        const h = p.handler;
-        if (h) h.sockets++;
-        const [client, server] = Object.values(new WebSocketPair());
-        server.accept();
-        server.binaryType = 'arraybuffer';  // (the default can be Blob)
-        this.sockets.set(msg.id, server);
-        server.addEventListener('message', (e) => {
-          const binary = typeof e.data !== 'string';
-          this.event({ t: 'ws_msg', id: msg.id, op: binary ? 'binary' : 'text' },
-            binary ? e.data : new TextEncoder().encode(e.data));
-        });
-        server.addEventListener('close', () => {
-          this.sockets.delete(msg.id);
-          this.event({ t: 'ws_close', id: msg.id });
-          if (h) { h.sockets--; h.wake?.(); }
-        });
-        server.handler = h;
-        console.log(`beam: socket ${msg.id}, ${this.sockets.size} open, ${this.memory()}`);
-        p.resolve(new Response(null, { status: 101, webSocket: client }));
-      }, p.handler); break;
-      case 'ws_send': {
-        const ws = this.sockets.get(msg.id);
-        if (ws) this.run(() => ws.send(msg.op === 'binary' ? body : new TextDecoder().decode(body)), ws.handler);
-        break;
-      }
-      case 'ws_close': {
-        const ws = this.sockets.get(msg.id);
-        if (ws) this.run(() => ws.close(msg.code || 1000), ws.handler);
-        break;
-      }
       case 'tcp_connect': {
         const h = this.handlers.at(-1);
         this.run(() => this.tcpConnect(msg, h), h);

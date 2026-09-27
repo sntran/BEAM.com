@@ -38,8 +38,8 @@ grep -q 'releases:' mix.exs ||
         -e 's|{:phoenix_live_view, "[^"]*"}|{:phoenix_live_view, github: "phoenixframework/phoenix_live_view", override: true}|' mix.exs
 mix.com deps.get
 
-# The WebAssembly host adapter (wasm/phoenix/wasm_host): the Elixir side in
-# lib/, the NIF stub in src/, and the adapter at run time with WASM_HOST=1.
+# The WebAssembly host (wasm/phoenix/wasm_host): the pump in
+# lib/, and in src/ the NIF stub, the TCP sockets and the distribution.
 mkdir -p lib/wasm_host src
 cp "$HERE"/wasm_host/*.ex lib/wasm_host/
 cp "$HERE/../erts/host/wasm_host.erl" "$HERE/../erts/host/wasm_tcp.erl" "$HERE/../erts/host/wasm_tcp_dist.erl" src/
@@ -56,22 +56,10 @@ grep -q '"/ssh"' lib/hello_web/router.ex ||
 # The SSH test server (GET /ssh): the ssh application in the release.
 grep -q ':ssh' mix.exs ||
     sed -i 's|extra_applications: \[:logger, :runtime_tools\]|extra_applications: [:logger, :runtime_tools, :ssh]|' mix.exs
-grep -q WASM_HOST config/runtime.exs || cat >> config/runtime.exs <<'EXS'
-
-# The WebAssembly emulator. WASM_HOST=1: the JavaScript host serves HTTP and
-# WebSockets (WasmHost.PhoenixAdapter). WASM_HOST=tcp: Bandit serves them,
-# on TCP sockets of the host (:wasm_tcp).
-if System.get_env("WASM_HOST") == "1" do
-  config :hello, HelloWeb.Endpoint, adapter: WasmHost.PhoenixAdapter
-end
-EXS
-sed -i 's|^if System.get_env("WASM_HOST") do$|if System.get_env("WASM_HOST") == "1" do|' config/runtime.exs
+# The WebAssembly emulator (the host sets WASM_HOST): the pump of the host
+# starts first, for the TCP sockets on which Bandit listens.
 grep -q 'WasmHost.Server.children' lib/hello/application.ex ||
     sed -i 's|^    children = \[$|    children = WasmHost.Server.children() ++ [|' lib/hello/application.ex
-# WebSockAdapter knows only a fixed list of adapters.
-f=deps/websock_adapter/lib/websock_adapter.ex
-grep -q WasmHost.Conn "$f" ||
-    sed -i 's|^  defp tuple_for(adapter, _websock, _state, _opts),|  defp tuple_for(WasmHost.Conn, websock, state, opts), do: {websock, state, opts}\n\n  defp tuple_for(adapter, _websock, _state, _opts),|' "$f"
 
 # No esbuild: app.js is phoenix.js, phoenix_live_view.js and the start of
 # the LiveSocket, as the comments of the generated app.js say.
@@ -87,5 +75,4 @@ window.liveSocket = liveSocket;
 JS
     mv "$js.new" "$js"
 }
-mix.com deps.compile websock_adapter --force
 mix.com release --overwrite

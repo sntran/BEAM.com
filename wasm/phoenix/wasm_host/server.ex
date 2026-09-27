@@ -1,18 +1,16 @@
 defmodule WasmHost.Server do
   @moduledoc """
-  Takes the events of the JavaScript host (`:wasm_host.recv/0`) and
-  dispatches them: an HTTP request to a new process that runs the plug,
-  a WebSocket frame to the process of its connection.
+  The pump of the WebAssembly emulator: it takes the events of the
+  JavaScript host (`:wasm_host.recv/0`) and gives each one to the process
+  of its TCP socket or listener (`:wasm_tcp`). The HTTP server of the app
+  (Bandit) listens with `:gen_tcp` on these sockets.
 
   An event is a JSON header, a newline, and the body:
 
-      {"t":"http","id":1,"method":"GET","path":"/x?a=1","headers":[["host","h"]],"scheme":"https"}
-      {"t":"ws_msg","id":1,"op":"text"}
-      {"t":"ws_close","id":1}
       {"t":"tcp_data","id":"t7"}
       {"t":"tcp_accept","id":"l3","conn":"a9","host":"1.2.3.4","port":5678}
 
-  The events of TCP sockets (`:wasm_tcp`) go to the process of the socket.
+  It also starts the distribution over `:wasm_tcp` (`DIST_NAME`).
   """
   use GenServer
 
@@ -21,24 +19,22 @@ defmodule WasmHost.Server do
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
-  The children to start first in an application with `WASM_HOST=tcp`: the
-  pump alone, for the TCP sockets of `:wasm_tcp` (the HTTP server of the
-  app, as Bandit, listens with `:gen_tcp`).
+  The children to start first in an application: the pump, when the app
+  runs in the WebAssembly emulator (the host sets `WASM_HOST`); else none.
   """
   def children do
-    if System.get_env("WASM_HOST") == "tcp", do: [__MODULE__], else: []
+    if System.get_env("WASM_HOST"), do: [__MODULE__], else: []
   end
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     :ets.new(@table, [:named_table, :public, read_concurrency: true])
     # gen_tcp:connect makes sockets of the host (wasm_tcp).
     :inet_db.set_tcp_module(:wasm_tcp)
     # No native resolver (inet_gethost is a port program): the hosts file.
     :inet_db.set_lookup([:file])
 
-    plug = Keyword.get(opts, :plug)
-    pump = spawn_link(fn -> pump(plug) end)
+    pump = spawn_link(fn -> pump() end)
     # After the pump: a listener waits for an event of the host.
     spawn(fn -> start_distribution() end)
     # WASM_HOST_BOOT_MODULES=file: the modules that the boot loaded, for
@@ -96,15 +92,12 @@ defmodule WasmHost.Server do
     keep_connected(node)
   end
 
-  defp pump(plug) do
+  defp pump do
     event = :wasm_host.recv()
     [header, body] = :binary.split(event, "\n")
     meta = :json.decode(header)
 
     case meta do
-      %{"t" => "http"} when plug != nil ->
-        spawn(fn -> WasmHost.Conn.run(plug, meta, body) end)
-
       # A connection to a listener of wasm_tcp: its events go to the listener
       # until the process of the connection registers.
       %{"t" => "tcp_accept", "id" => id, "conn" => conn} ->
@@ -118,7 +111,7 @@ defmodule WasmHost.Server do
         end
 
       %{"t" => t, "id" => id}
-      when t in ["ws_msg", "ws_close", "tcp_open", "tcp_data", "tcp_closed", "tcp_error", "tcp_listening"] ->
+      when t in ["tcp_open", "tcp_data", "tcp_closed", "tcp_error", "tcp_listening"] ->
         case :ets.lookup(@table, id) do
           [{^id, pid}] -> send(pid, {:wasm_host, t, meta, body})
           [] -> :ok
@@ -128,6 +121,6 @@ defmodule WasmHost.Server do
         :ok
     end
 
-    pump(plug)
+    pump()
   end
 end
