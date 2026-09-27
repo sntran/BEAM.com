@@ -539,9 +539,12 @@ What was found:
 ### Bandit, unchanged
 
 The first adapter of the spike (`WasmHost.PhoenixAdapter`, `WasmHost.Conn`,
-`WasmHost.WebSocket`: 286 lines) replaces Bandit: a `Plug.Conn` adapter of
+`WasmHost.WebSocket`: 286 lines) replaced Bandit: a `Plug.Conn` adapter of
 our own, and a patch of `websock_adapter`. With `gen_tcp:listen/2` in
-`wasm_tcp`, Bandit itself can run, as in any Phoenix app: `WASM_HOST=tcp`.
+`wasm_tcp`, Bandit itself runs, as in any Phoenix app, and the adapter
+and the patch are removed. `WasmHost.Server` is only the pump of the host
+(TCP sockets, listeners, the distribution): the first child of the app
+when the host sets `WASM_HOST`.
 
 - **Node.js:** Bandit listens with `gen_tcp`, and the host listens for it
   with `node:net` (`SERVE=tcp wasm/phoenix/run.sh`).
@@ -585,9 +588,33 @@ that only connects (`dist_listen` false) is hidden: it is not in
 `nodes()`, and `net_kernel:monitor_nodes/2` needs `{node_type, all}`.
 What it gives: a shell into a VM at the edge; Workers as nodes of a
 cluster of native `beam.com` nodes (PubSub, `:global`, `:rpc`); code that
-a hub sends to the edge. A node needs a VM that runs all the time: a
-Durable Object, not the runtime Worker (its VM runs only in requests, and
-its connections close with them).
+a hub sends to the edge.
+
+**A connection keeps a runtime Worker awake.** The VM of the runtime
+Worker runs while a request is open, and a connection to its listener
+(`DIST_LISTEN=true`, a WebSocket to `/.tcp/4370`) is an open request. In
+`workerd`: a native node connected, started a timer on the edge, and
+stayed idle for 90 s; the connection stayed up (the distribution drops a
+node after 60 s with no tick), the uptime showed the same VM, and an HTTP
+request after it took 7 ms (warm). Cloudflare: "There is no hard limit on
+duration for HTTP-triggered Workers. As long as the client remains
+connected, the Worker can continue processing" (limits page,
+2026-09-27). The limits of this:
+
+- Cloudflare updates the runtime a few times a week, and ends open
+  requests after 30 s: the other node must connect again (a new isolate,
+  a cold boot).
+- The connection keeps one isolate awake, in the location near the other
+  node. Requests of users in other locations, or to other isolates in the
+  same location, can still start cold; only a Durable Object gives one VM
+  for all requests.
+- A connection out of the Worker (`DIST_CONNECT`) belongs to the request
+  that opened it, and ends at most 30 s after that request: to keep the
+  Worker awake, the other node connects in.
+- While idle, the VM costs almost no CPU time (a tick each 15 s), and
+  Workers do not bill wall time. Erlang processes can hibernate to make
+  their memory smaller (the limit of an isolate is 128 MB); that does not
+  change the CPU time.
 
 Found: the native resolver of OTP is a port program (`inet_gethost`), and
 a lookup stopped the VM: `WasmHost.Server` sets the resolver to the hosts
