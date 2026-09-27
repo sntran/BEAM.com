@@ -40,6 +40,15 @@
 #   CXX              C++ compiler, for the JIT (default: CC with c++ for cc)
 #   JIT              0: build the interpreter instead of the JIT (BeamAsm)
 #                    (default 1). With cosmocc, the JIT has both backends.
+#   OTP_APPS         More OTP applications in the zip, with spaces (for a
+#                    custom build: "ssh mnesia"); their Erlang code only
+#                    (the C code of an application, as the port programs of
+#                    os_mon, is not built)
+#   HEX              1: put Hex in the zip, for mix (a custom build;
+#                    default 0). Only with ELIXIR=1.
+#   REBAR3           1: put rebar3 in the zip, as the tool rebar3 (and for
+#                    the rebar3 dependencies of mix; a custom build;
+#                    default 0)
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
 set -eu
@@ -66,6 +75,9 @@ WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 ELIXIR=${ELIXIR:-1}
 ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
 ELIXIR_APPS="elixir eex ex_unit iex logger mix"
+OTP_APPS=${OTP_APPS:-}
+HEX=${HEX:-0}
+REBAR3=${REBAR3:-0}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 CC=${CC:-cosmocc}
@@ -86,6 +98,14 @@ EXTRA_APPS="crypto asn1 public_key ssl"
 # (in the extra_applications of a new Phoenix app; its C code is for
 # dtrace and trace drivers).
 SRC_APPS="xmerl runtime_tools"
+# The applications of OTP_APPS (a custom build) that are not in the zip
+# yet: their Erlang code too.
+for app in $OTP_APPS; do
+    case " $BUNDLE_APPS " in
+        *" $app "*) ;;
+        *) BUNDLE_APPS="$BUNDLE_APPS $app" SRC_APPS="$SRC_APPS $app" ;;
+    esac
+done
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
@@ -599,6 +619,31 @@ step_bundle() {
             "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")], [\"Attr\", \"Docs\"]), halt()."
         mkdir -p "$STAGE/bin"
         cp "$BUILD/elixir-$ELIXIR_VERSION/bin/mix" "$STAGE/bin/mix"
+    fi
+
+    # Hex (HEX=1, a custom build): the application of the archive that
+    # "mix local.hex" installs (the newest Hex for this Elixir and OTP).
+    # beam.com puts lib/hex-VSN in the code path of the Elixir tools, and
+    # mix uses Hex when it is loaded.
+    if [ "$HEX" = 1 ]; then
+        [ "$ELIXIR" = 1 ] || { echo "HEX=1 needs ELIXIR=1" >&2; exit 1; }
+        mixhome=$BUILD/mix-home
+        rm -rf "$mixhome"
+        MIX_HOME=$mixhome PATH="$ERL_TOP/bin:$BUILD/elixir-$ELIXIR_VERSION/bin:$PATH" \
+            mix local.hex --force
+        hexdir=$(ls -d "$mixhome"/archives/hex-*/hex-* | head -n 1)
+        [ -f "$hexdir/ebin/hex.app" ] || { echo "No Hex in $mixhome" >&2; exit 1; }
+        mkdir -p "$STAGE/lib/$(basename "$hexdir")"
+        cp -R "$hexdir/ebin" "$STAGE/lib/$(basename "$hexdir")/"
+    fi
+
+    # rebar3 (REBAR3=1, a custom build): the newest release, an escript,
+    # as bin/rebar3. beam.com runs it as the tool rebar3 (rebar3.com, or
+    # "beam.com rebar3"), and gives it to mix (MIX_REBAR3).
+    if [ "$REBAR3" = 1 ]; then
+        curl -fsSL -o "$STAGE/bin/rebar3" \
+            https://github.com/erlang/rebar3/releases/latest/download/rebar3
+        head -c 2 "$STAGE/bin/rebar3" | grep -q '#!' || { echo "Not an escript: rebar3" >&2; exit 1; }
     fi
 
     # WebAssembly: the wasm application (its NIF is in the emulator).
