@@ -24,14 +24,12 @@
 #include <string.h>
 #include <time.h>
 
-#define IMPORT(name) __attribute__((import_module("jspi"), import_name(#name)))
-#define EXPORT(name) __attribute__((export_name(#name)))
-
+/* The host side is jspi_lib.js (an Emscripten JS library). */
 struct __pthread;
-IMPORT(spawn) void jspi_spawn(struct __pthread *);
-IMPORT(suspend) int jspi_suspend(struct __pthread *, int timeout_ms);
-IMPORT(resume) void jspi_resume(struct __pthread *);
-IMPORT(yield) void jspi_yield(void);
+void jspi_spawn(struct __pthread *);
+int jspi_suspend(struct __pthread *, int timeout_ms);
+void jspi_resume(struct __pthread *);
+void jspi_yield(void);
 uintptr_t jspi_get_sp(void);
 void jspi_set_sp(uintptr_t);
 
@@ -167,7 +165,7 @@ int pthread_join(pthread_t t, void **ret)
 
 int pthread_detach(pthread_t t) { t->detached = 1; return 0; }
 pthread_t pthread_self(void) { return cur; }
-int pthread_equal(pthread_t a, pthread_t b) { return a == b; }
+int (pthread_equal)(pthread_t a, pthread_t b) { return a == b; }
 int sched_yield(void)
 {
     struct __pthread *self = cur;
@@ -355,15 +353,70 @@ int pthread_once(pthread_once_t *o, void (*fn)(void))
     return 0;
 }
 
-/* --- the main thread ---------------------------------------------------- */
 
-/* wasi-libc: calls main with the arguments of WASI (either form of main). */
-int __main_void(void);
+/* --- calls that wait ---------------------------------------------------- */
 
-/* A reactor does not run exit(): flush stdio here. */
-EXPORT(jspi_main) int jspi_main(void)
+#include <poll.h>
+#include <emscripten/syscalls.h>
+
+/* Emscripten's poll() suspends under JSPI (its __syscall_poll is a
+ * suspending import that waits on the wait queues of the files): the other
+ * threads run meanwhile, so put the shadow stack pointer and the current
+ * thread back after it. A zero timeout does not suspend. */
+int poll(struct pollfd *fds, nfds_t n, int timeout)
 {
-    int status = __main_void();
-    fflush(NULL);
-    return status;
+    struct __pthread *self = cur;
+    uintptr_t sp;
+    int r;
+
+    if (timeout == 0) {
+        r = __syscall_poll_nonblocking(fds, n);
+    } else {
+        sp = jspi_get_sp();
+        r = __syscall_poll(fds, n, timeout);
+        jspi_set_sp(sp);
+        cur = self;
+    }
+    if (r < 0) {
+        errno = -r;
+        return -1;
+    }
+    return r;
+}
+
+/* A sleep suspends the thread on a timer (no busy wait). */
+int nanosleep(const struct timespec *req, struct timespec *rem)
+{
+    struct timespec now, end;
+    long long ms;
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    end.tv_sec += req->tv_sec;
+    end.tv_nsec += req->tv_nsec;
+    if (end.tv_nsec >= 1000000000) {
+        end.tv_sec++;
+        end.tv_nsec -= 1000000000;
+    }
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = (end.tv_sec - now.tv_sec) * 1000LL + (end.tv_nsec - now.tv_nsec + 999999) / 1000000;
+        if (ms <= 0)
+            break;
+        block(ms > 0x7fffffff ? 0x7fffffff : (int)ms);
+    }
+    if (rem)
+        rem->tv_sec = rem->tv_nsec = 0;
+    return 0;
+}
+
+/* --- no sockets (yet) --------------------------------------------------- */
+
+/* Emscripten emulates sockets with WebSockets (a bind starts a WebSocket
+ * server in Node.js). No sockets for now: the network of the host comes
+ * later. */
+int socket(int domain, int type, int protocol)
+{
+    (void)domain; (void)type; (void)protocol;
+    errno = EAFNOSUPPORT;
+    return -1;
 }

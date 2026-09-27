@@ -1,0 +1,91 @@
+diff --git a/erts/emulator/beam/io.c b/erts/emulator/beam/io.c
+index 24468ad..660030c 100644
+--- a/erts/emulator/beam/io.c
++++ b/erts/emulator/beam/io.c
+@@ -710,6 +710,16 @@ erts_open_driver(erts_driver_t* driver,	/* Pointer to driver. */
+         }
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++	/* WebAssembly checks the type of an indirect call: only the system
++	 * drivers take the options. */
++	if (driver->entry != &fd_driver_entry
++	    && driver->entry != &spawn_driver_entry
++	    && driver->entry != &forker_driver_entry)
++	    drv_data = ((ErlDrvData (*)(ErlDrvPort, char *)) driver->start)(
++		ERTS_Port2ErlDrvPort(port), name);
++	else
++#endif
+ 	drv_data = (*driver->start)(ERTS_Port2ErlDrvPort(port), name, opts);
+ 	if (((SWord) drv_data) == -1)
+ 	    error_type = -1;
+diff --git a/erts/emulator/sys/unix/sys.c b/erts/emulator/sys/unix/sys.c
+index 218da54..b879ad5 100644
+--- a/erts/emulator/sys/unix/sys.c
++++ b/erts/emulator/sys/unix/sys.c
+@@ -58,6 +58,9 @@
+ #define ERTS_WANT_BREAK_HANDLING
+ #define WANT_NONBLOCKING    /* must define this to pull in defs from sys.h */
+ #include "sys.h"
++#ifdef __EMSCRIPTEN__
++#include <poll.h>
++#endif
+ #include "erl_thr_progress.h"
+ 
+ #if defined(__APPLE__) && defined(__MACH__) && !defined(__DARWIN__)
+@@ -1134,6 +1137,15 @@ signal_dispatcher_thread_func(void *unused)
+         do {
+             res = read(sig_notify_fds[0], (void *) &sb.buf[i], sizeof(int) - i);
+             i += res > 0 ? res : 0;
++#ifdef __EMSCRIPTEN__
++            /* The pipes of Emscripten do not block: wait with poll(), which
++             * suspends this (green) thread. */
++            if (res < 0 && errno == EAGAIN) {
++                struct pollfd pfd = {sig_notify_fds[0], POLLIN, 0};
++                poll(&pfd, 1, -1);
++                errno = EINTR;
++            }
++#endif
+         } while ((i < sizeof(int) && res >= 0) || (res < 0 && errno == EINTR));
+ 
+ 	if (res < 0) {
+diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
+index bdd6528..dfc3a7d 100644
+--- a/erts/emulator/sys/unix/sys_drivers.c
++++ b/erts/emulator/sys/unix/sys_drivers.c
+@@ -197,6 +197,10 @@ erl_sys_late_init(void)
+ 
+ /* II.I Spawn prototypes */
+ static ErlDrvData spawn_start(ErlDrvPort, char*, SysDriverOpts*);
++#ifdef __EMSCRIPTEN__
++/* WebAssembly: no fork(), so no erl_child_setup: port programs fail. */
++static int no_forker;
++#endif
+ static ErlDrvSSizeT spawn_control(ErlDrvData, unsigned int, char *,
+                                   ErlDrvSizeT, char **, ErlDrvSizeT);
+ 
+@@ -481,6 +485,12 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+     char *wd, *cwd;
+     int ifd[2], ofd[2], stderrfd;
+ 
++#ifdef __EMSCRIPTEN__
++    if (no_forker) {
++        errno = no_forker;
++        return ERL_DRV_ERROR_ERRNO;
++    }
++#endif
+     if (pipe(ifd) < 0) return ERL_DRV_ERROR_ERRNO;
+     errno = EMFILE;		/* default for next three conditions */
+     if (ifd[0] >= sys_max_files() || pipe(ofd) < 0) {
+@@ -1599,6 +1609,11 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+     char *child_setup_prog;
+ 
+     forker_port = erts_drvport2id(port_num);
++#ifdef __EMSCRIPTEN__
++    forker_fd = -1;
++    no_forker = ENOSYS;
++    return (ErlDrvData)port_num;
++#endif
+ 
+     res = erts_sys_explicit_8bit_getenv("BINDIR", bindir, &bindirsz);
+     if (res == 0) {
