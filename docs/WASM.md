@@ -536,6 +536,75 @@ What was found:
 - Anyone who can reach the Worker can reach its listeners: the path needs
   protection (Cloudflare Access, a token) in a real deploy.
 
+### Bandit, unchanged
+
+The first adapter of the spike (`WasmHost.PhoenixAdapter`, `WasmHost.Conn`,
+`WasmHost.WebSocket`: 286 lines) replaces Bandit: a `Plug.Conn` adapter of
+our own, and a patch of `websock_adapter`. With `gen_tcp:listen/2` in
+`wasm_tcp`, Bandit itself can run, as in any Phoenix app: `WASM_HOST=tcp`.
+
+- **Node.js:** Bandit listens with `gen_tcp`, and the host listens for it
+  with `node:net` (`SERVE=tcp wasm/phoenix/run.sh`).
+- **Workers:** a Worker gets requests, not TCP connections: `worker.js`
+  makes each request a TCP connection to the listener on `PORT` (the
+  request as HTTP/1.1 bytes, with `connection: close`), reads the
+  response back (`content-length`, `chunked`, or until the end, as a
+  stream), and for a WebSocket turns the frames into messages and back
+  (masked, as a client does; no compression). HTTP stays in Bandit.
+- **Needed:** `wasm_tcp:sendfile/4` (`Plug.Static` sends files with
+  `file:sendfile/5`), and `WasmHost.Server` started alone as the first
+  child of the app, for the TCP sockets.
+
+All the checks pass with Bandit 1.12.5 and no patch: pages, static files,
+`gen_tcp`, TLS, LiveView, 20 LiveView pages at once (Node.js: clicks in
+368 ms; `workerd`: in 356 ms). The costs: the HTTP bytes are made and
+read two times (in JavaScript and in Bandit), and the Worker has a small
+HTTP framing of its own, which is general (it knows no Phoenix). The
+benefit: no adapter to keep in step with Phoenix, Plug and Bandit.
+
+### Distributed Erlang
+
+`wasm_tcp_dist` (`-proto_dist wasm_tcp`) is the distribution example of
+OTP (`gen_tcp_dist`: distribution processes, as `wasm_tcp` sockets are
+processes, not ports), on `wasm_tcp`. There is no epmd (a Worker cannot
+run one): all nodes use one port (`-erl_epmd_port`, `DIST_PORT`, 4370).
+`WasmHost.Server` starts the distribution after the pump (a listener
+waits for an event of the host), from `DIST_NAME`, `DIST_COOKIE`,
+`DIST_LISTEN` and `DIST_CONNECT`; `worker.js` adds the boot flags when
+`DIST_NAME` is set.
+
+| | Round trip of an `erpc:call/4` |
+|---|---|
+| A native hub, and the node in Node.js that connects to it | 273 µs (44 ms before `TCP_NODELAY` on the host sockets) |
+| A native hub, and a Durable Object in `workerd` that connects to it | 1.2 to 1.6 ms |
+| A native node on a computer, to a Durable Object with `DIST_LISTEN=true`, through `tcp-proxy.mjs` | 1.9 ms |
+
+The hub (or the computer) sees the applications, the processes and the
+memory of the edge node, and monitors and kills its processes. A node
+that only connects (`dist_listen` false) is hidden: it is not in
+`nodes()`, and `net_kernel:monitor_nodes/2` needs `{node_type, all}`.
+What it gives: a shell into a VM at the edge; Workers as nodes of a
+cluster of native `beam.com` nodes (PubSub, `:global`, `:rpc`); code that
+a hub sends to the edge. A node needs a VM that runs all the time: a
+Durable Object, not the runtime Worker (its VM runs only in requests, and
+its connections close with them).
+
+Found: the native resolver of OTP is a port program (`inet_gethost`), and
+a lookup stopped the VM: `WasmHost.Server` sets the resolver to the hosts
+file. The distribution checks the traffic with `inet:getstat/2`:
+`wasm_tcp` counts the bytes.
+
+### A proxy that the host runs (`wasm_tcp:splice/2`)
+
+Erlang decides (it accepts a connection, and connects to the server
+behind it), then `wasm_tcp:splice/2` joins the two sockets in the host:
+the data of each goes to the other one with no copy through the VM, and
+they end together. A download of 50 MB through the demo proxy (`GET
+/splice`) takes 66 ms in Node.js (36 ms direct), and 2.3 s in `workerd`
+through `tcp-proxy.mjs` and a WebSocket. The client proxy
+(`tcp-proxy.mjs`) runs on the computer of the client: the bytes go from
+there to the edge, through no other server.
+
 ### The cold start
 
 **Measured** (the demo app with Phoenix 1.9.0-dev; the Node.js host, where
