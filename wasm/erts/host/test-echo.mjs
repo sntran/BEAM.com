@@ -7,7 +7,8 @@ const [root, ebin] = process.argv.slice(2);
 const opts = {
   arguments: ['-S', '1', '--', '-root', root, '-bindir', root + '/bin', '-progname', 'erl', '--',
     '-home', '/', '-boot', root + '/bin/start_clean', '-pa', ebin, '-noshell', '-eval',
-    'Loop = fun L(0) -> halt(); L(N) -> E = wasm_host:recv(), wasm_host:send([<<"echo:">>, E]), L(N - 1) end, Loop(3).'],
+    'Loop = fun L(0) -> halt(); L(N) -> case wasm_host:take() of empty -> ok = wasm_host:select(), ' +
+    'receive {select, _, _, ready_input} -> L(N) end; E -> wasm_host:send([<<"echo:">>, E]), L(N - 1) end end, Loop(3).'],
 };
 const got = [];
 let Module;

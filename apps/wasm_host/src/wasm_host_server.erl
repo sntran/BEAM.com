@@ -1,5 +1,5 @@
 %% The pump of the WebAssembly runtime: it takes the events of the
-%% JavaScript host (wasm_host:recv/0) and gives each one to the process
+%% JavaScript host (wasm_host:take/0) and gives each one to the process
 %% of its TCP socket or listener (wasm_tcp). The servers of the program
 %% (Bandit, Cowboy, ...) listen with gen_tcp on these sockets.
 %%
@@ -82,8 +82,18 @@ keep_connected(Node) ->
     end,
     keep_connected(Node).
 
+%% The events of the host, until there is none; then wait for the next.
 pump() ->
-    Event = wasm_host:recv(),
+    case wasm_host:take() of
+        empty ->
+            ok = wasm_host:select(),
+            receive {select, _, _, ready_input} -> ok end;
+        Event ->
+            event(Event)
+    end,
+    pump().
+
+event(Event) ->
     [Header, Body] = binary:split(Event, <<"\n">>),
     case json:decode(Header) of
         %% A connection to a listener of wasm_tcp: its events go to the
@@ -96,6 +106,12 @@ pump() ->
                 [] ->
                     send_host(#{t => tcp_close, id => Conn})
             end;
+        %% The VM continues from a snapshot of its memory (worker.js): all
+        %% the isolates restored from it have the same state, so OpenSSL
+        %% gets new random bytes from the host (the next
+        %% crypto:strong_rand_bytes/1 differs in each isolate).
+        #{<<"t">> := <<"restored">>} ->
+            try crypto:rand_seed(Body) catch error:undef -> ok end;
         #{<<"t">> := T, <<"id">> := Id} = Meta ->
             case lists:member(T, ?EVENTS) andalso ets:lookup(?TABLE, Id) of
                 [{Id, Pid}] -> Pid ! {wasm_host, T, Meta, Body};
@@ -103,5 +119,4 @@ pump() ->
             end;
         _ ->
             ok
-    end,
-    pump().
+    end.

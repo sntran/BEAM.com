@@ -47,9 +47,17 @@ struct __pthread {
     struct __pthread *next; /* in a wait queue */
     int woken;              /* resumed by a signal, not by a timeout */
     void *keys[KEYS];
+    /* A snapshot: the thread returned to the host (jspi_park), and starts
+     * again in resume_fn(resume_arg) (jspi_resume_all). */
+    int parked;
+    void *(*resume_fn)(void *);
+    void *resume_arg;
+    struct __pthread *all_next; /* all the threads (not joined) */
+    char name[32];              /* ethread: the name of the thread */
 };
 
 static struct __pthread main_thread;
+static struct __pthread *all_threads;
 static struct __pthread *cur = &main_thread;
 static void (*key_dtors[KEYS])(void *);
 static int key_used[KEYS];
@@ -119,6 +127,8 @@ void jspi_thread_run(struct __pthread *t)
 
     cur = t;
     t->ret = t->fn(t->arg);
+    if (t->parked) /* keep its keys: it starts again */
+        return;
     for (i = 0; i < KEYS; i++)
         if (key_used[i] && key_dtors[i] && t->keys[i])
             key_dtors[i](t->keys[i]);
@@ -144,6 +154,8 @@ int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*fn)(void 
     t->stack_size = size;
     t->stack_top = (char *)(((uintptr_t)t->stack + size) & ~(uintptr_t)15);
     t->detached = attr && attr->__u.__s[1];
+    t->all_next = all_threads;
+    all_threads = t;
     *out = t;
     jspi_spawn(t);
     return 0;
@@ -158,6 +170,12 @@ int pthread_join(pthread_t t, void **ret)
     }
     if (ret)
         *ret = t->ret;
+    for (struct __pthread **p = &all_threads; *p; p = &(*p)->all_next) {
+        if (*p == t) {
+            *p = t->all_next;
+            break;
+        }
+    }
     free(t->stack);
     free(t);
     return 0;
@@ -437,17 +455,83 @@ int socket(int domain, int type, int protocol)
     return -1;
 }
 
-/* --- messages from the host (wasm_host_nif.c) ---------------------------- */
+/* --- a snapshot of the memory ------------------------------------------- */
 
-int jspi_host_wait(void); /* suspends until the host has an event: its size */
-
-int jspi_host_recv_size(void)
+/* The current thread returns to the host now (it has nothing to do), and
+ * starts again in fn(arg), on its own stack, with its keys: the same
+ * struct __pthread. Its callers return at once (ethread: no exit cleanup). */
+void jspi_park(void *(*fn)(void *), void *arg)
 {
-    struct __pthread *self = cur;
-    uintptr_t sp = jspi_get_sp();
-    int size = jspi_host_wait();
+    cur->resume_fn = fn;
+    cur->resume_arg = arg;
+    cur->parked = 1;
+}
 
-    jspi_set_sp(sp);
-    cur = self;
-    return size;
+int jspi_self_parked(void) { return cur->parked; }
+
+/* Start the parked threads again: in this instance, or in a new instance
+ * with the memory of a snapshot. The number of threads. */
+EMSCRIPTEN_KEEPALIVE int jspi_resume_all(void)
+{
+    struct __pthread *t;
+    int n = 0;
+
+    for (t = all_threads; t; t = t->all_next) {
+        if (!t->parked)
+            continue;
+        t->parked = 0;
+        t->fn = t->resume_fn;
+        t->arg = t->resume_arg;
+        t->done = 0;
+        jspi_spawn(t);
+        n++;
+    }
+    return n;
+}
+
+/* The threads that run or wait (not parked, not ended): 0 when all of them
+ * returned for a snapshot. */
+EMSCRIPTEN_KEEPALIVE int jspi_live_threads(void)
+{
+    struct __pthread *t;
+    int n = 0;
+
+    for (t = all_threads; t; t = t->all_next)
+        n += !t->parked && !t->done;
+    return n;
+}
+
+/* Grow the memory to size bytes (a restore of a larger snapshot), through
+ * Emscripten, so that its views of the memory (HEAPU8, ...) follow. */
+#include <emscripten/heap.h>
+EMSCRIPTEN_KEEPALIVE int jspi_snapshot_grow(size_t size)
+{
+    return size <= emscripten_get_heap_size() || emscripten_resize_heap(size);
+}
+
+/* A pipe, for the host that makes the files of a snapshot again: the two
+ * file descriptors (read | write << 16), or -1. */
+#include <unistd.h>
+EMSCRIPTEN_KEEPALIVE int jspi_snapshot_pipe(void)
+{
+    int fds[2];
+    return pipe(fds) ? -1 : fds[0] | fds[1] << 16;
+}
+
+/* ethread gives the name of its threads (for jspi_report_live). */
+void jspi_set_name(const char *name)
+{
+    if (name) {
+        strncpy(cur->name, name, sizeof(cur->name) - 1);
+        cur->name[sizeof(cur->name) - 1] = 0;
+    }
+}
+
+/* Print the threads that run or wait (the ones that did not park). */
+EMSCRIPTEN_KEEPALIVE void jspi_report_live(void)
+{
+    struct __pthread *t;
+    for (t = all_threads; t; t = t->all_next)
+        if (!t->parked && !t->done)
+            fprintf(stderr, "jspi: thread %s did not park\n", t->name[0] ? t->name : "?");
 }

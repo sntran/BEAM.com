@@ -243,11 +243,14 @@ workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
    `MAP_FIXED` and `MAP_NORESERVE`, but its `mmap()` is `malloc()`.
    64-bit ERTS stopped at the start ("Failed to reserve physical memory
    for descriptors"); now it uses the literal pointer tag.
-6. Build settings: `erl_crash_dump.c` without `-fexceptions`,
+6. **Hibernate and resume, for a snapshot** (`erl_process.c`,
+   `erl_async.c`, `erl_trace.c`, `sys.c`, `beam_emu.c`, `beam_common.c`,
+   `ethread.c`): see "A snapshot of the booted VM".
+7. Build settings: `erl_crash_dump.c` without `-fexceptions`,
    `HAVE_MALLOPT` off in `config.h` (Emscripten does not declare it), no
    `-export-dynamic` (no dynamic NIFs; it made a JS wrapper for each
    symbol: 1 MB of JS in place of 124 KB).
-7. Compiler flags: no security hardening flags (stack canaries, fortify
+8. Compiler flags: no security hardening flags (stack canaries, fortify
    checks), but `-fno-strict-aliasing`, `-fno-strict-overflow` and
    `-fno-delete-null-pointer-checks`, which ERTS needs. Configure removes
    these three with `--disable-security-hardening-flags`; without them,
@@ -436,7 +439,7 @@ and 20 s for `examples/worker` (with the compilation of Cowboy).
 | Part | What |
 |---|---|
 | The risk check | libcrypto for WebAssembly; the release (`mix release`, no ERTS) boots as `bin/hello start` does; interactive mode |
-| `wasm_host` | a static NIF: `recv/0` runs on a dirty I/O scheduler and suspends its green thread until the host has an event (the normal scheduler runs meanwhile); `send/1`. Events are a JSON header, a newline and the body |
+| `wasm_host` | a static NIF: `take/0` gives the next event of the host, and `select/0` a message when there is one (the host writes a byte into a pipe for each event: `enif_select`); `send/1`. Events are a JSON header, a newline and the body. (At first `recv/0` waited on a dirty I/O scheduler; that thread could not return for a snapshot) |
 | `apps/wasm_host` | the pump of the host events (`wasm_host_server`), and `wasm_tcp`; the first version was a Phoenix endpoint adapter (now removed: Bandit runs unchanged over `wasm_tcp`) |
 | `wasm/erts/host/server.mjs` | a Node.js host: `node:http` and WebSockets (`ws`) |
 | `apps/wasm_host/priv/worker/worker.js` | the runtime Worker (and a Durable Object wrapper): one VM for all requests of an isolate |
@@ -493,8 +496,7 @@ the whole is only 4% smaller, and the files take two times more memory.
 - **A static NIF is found through `code:priv_dir/1`:** the OTP
   applications need a `priv` directory (empty) in the Worker, else the
   asn1 NIF does not load and TLS cannot decode certificates.
-- **Dirty I/O schedulers:** `wasm_host:recv/0` holds one of them while it
-  waits, and interactive mode reads the `.beam` files with dirty I/O
+- **Dirty I/O schedulers:** interactive mode reads the `.beam` files with dirty I/O
   NIFs: the release keeps the default number of dirty I/O schedulers (10
   green threads cost almost nothing).
 
@@ -761,18 +763,9 @@ compiled config function), and no applications that it does not use.
 **Not measured, from a review of the code and of the Cloudflare
 documentation (2026-09-27):**
 
-1. **A snapshot of the booted VM** (maybe 50 to 100 ms in place of 0.5 s;
-   weeks). Cloudflare snapshots the linear memory of Python Workers at
-   deploy, but only for Python: there is no API for other WebAssembly. A
-   snapshot of our own must also keep the state of the JavaScript side
-   (the files, the timers, the threads). The threads are the hard part: a
-   thread that waits (JSPI) is on a stack of the engine that JavaScript
-   cannot save. So the snapshot must come at a point where no thread has a
-   stack: before the threads start (a small gain), or after a change of
-   ERTS where each thread returns to the host when it waits (as
-   `process_main()` returns now). Clocks and random seeds must be new after
-   a restore. A snapshot of 48 MB and the live memory must fit in the 128
-   MB of an isolate.
+1. **A snapshot of the booted VM:** done since (see "A snapshot of the
+   booted VM"): the first request of the Phoenix app takes 0.20 s, not
+   0.61 s.
 2. **Small ones:** `wasm-opt` on `beam.wasm`; `-init_debug` shows the boot
    steps (but its output makes the boot 3 times slower).
 3. **Not possible:** a boot in the global scope of the Worker (no timers or
@@ -783,6 +776,112 @@ documentation (2026-09-27):**
 same limits and prices (Pages limits and pricing pages). A Durable Object
 has the same 128 MB and 30 s of CPU. Containers (paid plan) run a native
 BEAM with no WebAssembly, but get only HTTP through a Worker.
+
+### A snapshot of the booted VM (the spike works)
+
+The first request of an isolate boots the VM: 0.61 s for the Phoenix app
+in `workerd`, of which about 0.3 s is the floor of ERTS, kernel and
+stdlib. A snapshot of the memory after the boot takes that away: the
+runtime Worker copies the memory into a new instance and the VM goes on.
+
+```sh
+beam.com _build/prod/rel/hello -o worker --target wasm32
+node wasm/snapshot/snapshot.mjs worker --warm 4000:/counter \
+    --env SECRET_KEY_BASE=... --env PHX_HOST=...    # writes worker/release/snapshot.bin (Node.js 26)
+node wasm/snapshot/snapshot.mjs worker --check 4000:/counter  # restore it in Node.js, 3 requests
+workerd serve worker/worker.capnp
+```
+
+**The problem, and the way.** A thread that waits is a suspended JSPI
+stack of the engine, and JavaScript cannot save it. So each thread of
+ERTS returns to the host when it has nothing to do, and no stack is left
+to save:
+
+- `erts_wasm_hibernate()` (exported) sets a flag and wakes all the threads:
+  the normal and the dirty schedulers, the aux thread, the poll thread,
+  the async thread, the signal dispatcher and the system-message
+  dispatcher (17 threads with `-S 1 -SDcpu 1 -A 0`). Each one returns at
+  the place where it waits when idle (a scheduler after
+  `scheduler_wait()`, with its run queue as the next `erts_schedule()`
+  expects it; the others at the top of their loops), and calls
+  `jspi_park(fn, arg)`: the function to start it again. The main thread of
+  ERTS returns from `main()` (where the runtime stays after it: not the
+  Node.js build).
+- ethread does not clean up a parked thread (its event and its keys stay),
+  and `jspi_pthread.c` keeps its `struct __pthread` (the same
+  `pthread_self()`, keys and stack).
+- The host waits until `jspi_live_threads()` is 0 (0.5 to 0.7 ms), and
+  copies the non-zero 64 KiB pages of the memory, the files that the boot
+  wrote, the open files (the pipes of ERTS, by number) and the listeners
+  of `wasm_tcp`.
+- In a new instance (`noInitialRun`), `worker.js` writes `release.bin`
+  into its files, copies the pages, makes the pipes again with the same
+  numbers (`jspi_snapshot_pipe()`), and calls `erts_wasm_resume()`: each
+  thread starts again in its function (`jspi_resume_all()`), past the
+  initialization.
+- `wasm_host:recv/0` waited in a NIF on a dirty I/O scheduler, and that
+  thread could not return: now the host writes a byte into a pipe for
+  each event, and the pump waits for it with `enif_select` (`select/0`,
+  `take/0`), as for a socket. The Workers without a snapshot work the same
+  way (the same times).
+- **Time:** the VM of the snapshot runs with `-c false` (no time
+  correction): the monotonic time follows the system time, and after a
+  restore it jumps forward by the gap, so the timers that were due fire at
+  once. With time correction, ERTS stops at the first time read after a
+  restore ("OS monotonic time stepped backwards": `performance.now()` of
+  a new instance starts again at 0). Tested.
+- **Random:** the state of OpenSSL is in the memory, so all the isolates
+  of one snapshot gave the same random bytes: two restores gave the same
+  CSRF token of the Phoenix page. After a restore, `worker.js` sends 48
+  random bytes (`crypto.getRandomValues`) in a `restored` event, and
+  `wasm_host_server` gives them to `crypto:rand_seed/1` (OpenSSL reseeds
+  its primary generator, and the others follow). Then the tokens differ.
+  Tested.
+
+**Results** (`workerd`, the first request after a new `workerd`, 7 runs,
+medians; the snapshot made after one warm-up request, with its modules
+loaded):
+
+| | Without a snapshot | With a snapshot |
+|---|---|---|
+| Phoenix (`/counter`), first request | 0.612 s | 0.197 s |
+| Phoenix, VM ready | 0.49 s | 0.12 s (`release.bin` and `snapshot.bin` from the other Worker in 42 to 52 ms) |
+| Cowboy (`examples/worker`), first request | 0.344 s | 0.125 s |
+| Next requests | 3 to 5 ms | 3 to 5 ms |
+| LiveView: connect, 3 clicks, the pushed seconds | works | works (a click: 67 ms, the same) |
+| `snapshot.bin` | | 33.5 MB (Phoenix: 536 of 933 pages), 20.4 MB (Cowboy) |
+
+In Node.js the restore takes about 110 ms from the start of the process
+(files 35 ms, memory 25 ms), and the first answer of Phoenix 65 to 87 ms
+more: V8 compiles each function of the new instance at its first call.
+
+**Sizes and memory.** The Worker with the release has `release.bin` (8.5
+MB) and `snapshot.bin` (33.5 MB): under the 64 MiB of a Worker. The runtime
+gets both with a fetch, and frees the snapshot after the copy: the live
+memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
+
+**What is still open** (not in `beam.com` yet):
+
+- **The state is shared.** Every isolate starts from the same state: the
+  counter of `examples/worker` said "request 2" in each new isolate (its
+  warm-up request was before the snapshot). Values made at the boot are
+  the same everywhere (the `endpoint_id` of Phoenix, tokens made at the
+  boot, the seeds of `rand` of the processes that exist). The
+  environment too: `SECRET_KEY_BASE` and the other values that
+  `runtime.exs` read at the boot are in the snapshot, so a new secret
+  needs a new snapshot (or the app reads them again on `restored`).
+- **Who makes it.** `snapshot.mjs` needs Node.js 26 (JSPI) and the same
+  `beam.wasm` as the Worker (the memory holds indices of its function
+  table: a snapshot of another build is wrong). `beam.com` has no
+  WebAssembly engine to make it; a flag of `--target wasm32` could call
+  Node.js when it is there.
+- **The idle point.** A thread that waits in another place (a long NIF, a
+  port) does not return: `snapshot.mjs` then stops with an error and names
+  the thread.
+- **A crash dump** of the VM in the Worker fails with `SuspendError`: a
+  wait inside the `setjmp` wrappers (`invoke_*`) of `erl_crash_dump.c`
+  cannot suspend under JSPI. Not about the snapshot.
+- Not tested: a deploy to Cloudflare, and `performance.now()` there.
 
 ### Cloudflare's limits (from its limits and pricing pages, 2026-09-27)
 
@@ -865,9 +964,8 @@ Still open:
   time and memory limits in production, and JSPI there.
 - **More Durable Objects:** PubSub between objects (a
   `Phoenix.PubSub` adapter over Durable Object requests).
-- **A snapshot of the booted VM** (the memory after the boot), to make
-  the cold start shorter, and so that a first request could fit the 10 ms
-  of CPU time of the free plan.
+- **The snapshot in `beam.com`:** see "What is still open" in "A snapshot
+  of the booted VM".
 - **UDP and DNS** through the host.
 - **Incoming TCP:** the `connect()` handler of Workers (Spectrum, private
   beta; a paid product) when it is available; distributed Erlang over `wasm_tcp` (it needs

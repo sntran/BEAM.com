@@ -41,6 +41,7 @@ function unpack(FS, bytes) {
   const text = new TextDecoder();
   if (text.decode(b.subarray(0, 8)) !== 'BEAMFS1\n') throw new Error('release.bin: not a release');
   let meta = null;
+  const dirs = new Set();
   for (let i = 8; i < b.length;) {
     const plen = view.getUint32(i); i += 4;
     const path = text.decode(b.subarray(i, i + plen)); i += plen;
@@ -48,10 +49,72 @@ function unpack(FS, bytes) {
     const data = b.subarray(i, i + dlen); i += dlen;
     if (path === '.release.json') { meta = JSON.parse(text.decode(data)); continue; }
     const full = '/app/' + path;
-    FS.mkdirTree(full.slice(0, full.lastIndexOf('/')));
-    FS.writeFile(full, data);
+    const dir = full.slice(0, full.lastIndexOf('/'));
+    if (!dirs.has(dir)) { FS.mkdirTree(dir); dirs.add(dir); }
+    // canOwn: the file is a view of release.bin, not a copy.
+    FS.writeFile(full, data, { canOwn: true });
   }
   return meta;
+}
+
+// snapshot.bin (optional, beside release.bin): the memory of a booted VM
+// whose threads all returned to the host (erts_wasm_hibernate), and the
+// files and pipes of that moment. "BEAMSNP1", a 32-bit length and a JSON
+// header, then the 64 KiB pages of the header (the others are zero).
+async function loadSnapshot(env) {
+  try {
+    if (env.APP) {
+      const r = await env.APP.fetch('http://app/snapshot.bin');
+      return r.ok ? r.arrayBuffer() : null;
+    }
+    return (await import('./snapshot.bin')).default;
+  } catch {
+    return null;
+  }
+}
+
+function parseSnapshot(bytes) {
+  const b = new Uint8Array(bytes);
+  if (new TextDecoder().decode(b.subarray(0, 8)) !== 'BEAMSNP1') throw new Error('snapshot.bin: not a snapshot');
+  const len = new DataView(b.buffer, b.byteOffset).getUint32(8);
+  const head = JSON.parse(new TextDecoder().decode(b.subarray(12, 12 + len)));
+  return { ...head, pagesData: b.subarray(12 + len) };
+}
+
+// The memory and the open files of the snapshot, in a new instance (before
+// main(), which does not run): then the threads start again.
+function restore(m, exports, snap) {
+  const PAGE = 65536;
+  // The pages of the new instance that are not in the snapshot: zero (the
+  // memory that grows is zero already).
+  const first = m.HEAPU8.length / PAGE, have = new Set(snap.pages);
+  for (let p = 0; p < first; p++) if (!have.has(p)) m.HEAPU8.fill(0, p * PAGE, (p + 1) * PAGE);
+  if (!exports.jspi_snapshot_grow(snap.size)) throw new Error('snapshot: no memory');
+  const heap = m.HEAPU8;
+  snap.pages.forEach((p, i) => heap.set(snap.pagesData.subarray(i * PAGE, (i + 1) * PAGE), p * PAGE));
+  const made = new Set();
+  for (const s of snap.fs.streams) {
+    if (s.fd <= 2) continue;
+    if (s.pipe !== undefined) {
+      if (!made.has(s.pipe)) { made.add(s.pipe); exports.jspi_snapshot_pipe(); }
+      const got = m.FS.getStream(s.fd);
+      if (!got?.node?.pipe) throw new Error(`snapshot: fd ${s.fd} is not a pipe`);
+      got.flags = s.flags;
+    } else {
+      const st = m.FS.open(s.path, s.flags);
+      if (st.fd !== s.fd) throw new Error(`snapshot: fd ${s.fd} is ${st.fd}`);
+      st.position = s.position;
+    }
+  }
+  exports.wasm_host_restore();
+  const n = exports.erts_wasm_resume();
+  // New random bytes for OpenSSL, before any request (wasm_host_server).
+  const h = new TextEncoder().encode('{"t":"restored"}\n');
+  const b = new Uint8Array(h.length + 48);
+  b.set(h);
+  crypto.getRandomValues(b.subarray(h.length));
+  m.beamHost.push(b);
+  return n;
 }
 
 let vm;  // the VM of this isolate
@@ -93,11 +156,24 @@ export class Vm {
 
   async boot(env) {
     const t0 = Date.now();
-    const release = await loadRelease(env);
+    const [release, snapBytes] = await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    const snap = snapBytes && parseSnapshot(snapBytes);
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
-      this.onready = () => { console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
+      const snapKB = snapBytes ? snapBytes.byteLength >> 10 : 0;
+      this.onready = () => { console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
       createBeam({
+        noInitialRun: !!snap,
+        onRuntimeInitialized: snap ? () => {
+          try {
+            this.listeners = new Map(Object.entries(snap.listeners ?? {}).map(([p, id]) => [Number(p), id]));
+            restore(this.beam, this.exports, snap);
+            // The copy is in the memory of the VM now: free the buffer (an
+            // isolate has 128 MB).
+            snap.pagesData = null;
+            this.onready();
+          } catch (e) { reject(e); }
+        } : undefined,
         // The boot arguments are set in preRun, after the release is unpacked.
         arguments: [],
         jspiSchedule: this.plain ? {
@@ -115,6 +191,11 @@ export class Vm {
           // .release.json: the name, the version, the boot arguments and the
           // environment of the release (beam_com_wasm).
           const { name, vsn, args, env: relEnv } = unpack(m.FS, release);
+          // The files that the boot of the snapshot wrote.
+          for (const [p, b64] of Object.entries(snap?.fs.files ?? {})) {
+            m.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+            m.FS.writeFile(p, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+          }
           m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
@@ -139,7 +220,7 @@ export class Vm {
         printErr: (s) => console.log(s),
         // Workers compile no WebAssembly at run time: use the imported module.
         instantiateWasm: (imports, done) => {
-          WebAssembly.instantiate(wasm, imports).then((instance) => done(instance));
+          WebAssembly.instantiate(wasm, imports).then((instance) => { this.exports = instance.exports; done(instance); });
           return {};
         },
         onExit: (code) => reject(new Error(`beam exited with status ${code}`)),

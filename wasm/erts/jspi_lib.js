@@ -69,22 +69,24 @@ addToLibrary({
   // Messages between the host and Erlang (wasm_host_nif.c):
   // Module.beamHost.push(bytes) gives an event to Erlang, and
   // Module.beamHost.onsend(bytes) gets what Erlang sends.
-  $jspiHost: { queue: [], waiter: null },
+  // Each event also writes a byte into the pipe of wasm_host (fd): its
+  // enif_select wakes the pump (wasm_host_nif.c).
+  $jspiHost__deps: ['$FS'],
+  $jspiHost: { queue: [], fd: -1 },
   $jspiHost__postset: `Module['beamHost'] = {
     onsend: null,
     push(bytes) {
       jspiHost.queue.push(bytes);
-      const w = jspiHost.waiter;
-      if (w) { jspiHost.waiter = null; w(bytes.length); }
+      const s = jspiHost.fd >= 0 && FS.getStream(jspiHost.fd);
+      if (s) FS.write(s, new Uint8Array([1]), 0, 1);
     },
   };`,
-  jspi_host_wait__deps: ['$jspiHost'],
-  jspi_host_wait__async: true,
-  jspi_host_wait__sig: 'i',
-  jspi_host_wait: () => new Promise((resolve) => {
-    if (jspiHost.queue.length) resolve(jspiHost.queue[0].length);
-    else jspiHost.waiter = resolve;
-  }),
+  jspi_host_set_fd__deps: ['$jspiHost'],
+  jspi_host_set_fd__sig: 'vi',
+  jspi_host_set_fd: (fd) => { jspiHost.fd = fd; },
+  jspi_host_next_size__deps: ['$jspiHost'],
+  jspi_host_next_size__sig: 'i',
+  jspi_host_next_size: () => jspiHost.queue.length ? jspiHost.queue[0].length : -1,
   jspi_host_take__deps: ['$jspiHost'],
   jspi_host_take__sig: 'vp',
   jspi_host_take: (ptr) => { HEAPU8.set(jspiHost.queue.shift(), ptr); },
@@ -111,6 +113,10 @@ addToLibrary({
     }
     if (ms >= 0) timer = jspiTimer(() => finish(0), ms);
   }),
+  // The main thread of ERTS may return from main() where the runtime stays
+  // after it (not Node.js, which exits then): no wait of it in a snapshot.
+  jspi_main_may_return__sig: 'i',
+  jspi_main_may_return: () => ENVIRONMENT_IS_NODE ? 0 : 1,
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
   jspi_yield__sig: 'v',
