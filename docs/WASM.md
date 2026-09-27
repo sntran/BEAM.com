@@ -96,6 +96,89 @@ The test file is 156 KB (`-O2`). No compiler warnings (`-Wall -Wextra`).
 - `setjmp`/`longjmp` is only in the SIGSEGV check of stack overflow
   (`sys/unix/sys.c`), which a WebAssembly build does not need.
 
+## The Blink spike: beam.com, as it is, in an x86-64 emulator (done)
+
+A test of the other way: do not port ERTS, but run the x86-64 file of
+`beam.com` in [Blink](https://github.com/jart/blink), the x86-64 Linux
+emulator of Justine Tunney, compiled to WebAssembly. Blink runs the
+programs of Cosmopolitan (APE files), and it has code for Emscripten.
+
+`wasm/blink/build.sh` builds it and runs a program:
+
+```sh
+EMSDK=/path/to/emsdk NODE=/path/to/node wasm/blink/build.sh beam.com version
+```
+
+### How it is built
+
+- **Emscripten 6.0.10, not wasi-libc.** Blink needs `setjmp`/`longjmp`,
+  `termios`, signals and other POSIX parts that wasi-libc does not have;
+  Emscripten has them, and Blink already has code for it.
+- **Guest threads are Emscripten pthreads** (a Worker for each one, with
+  `SharedArrayBuffer`), and Blink runs in a pthread
+  (`PROXY_TO_PTHREAD`), so it can block. This is the quick way for the
+  spike; the JSPI green threads of phase A are the way for Workers and
+  Deno Deploy, which have no Workers of their own.
+- No JIT (Blink has no JIT for WebAssembly), no sockets, no `fork`. The
+  files of the host are in `NODERAWFS`.
+- `wasm/blink/blink.patch` (35 lines) has the fixes: the command line of
+  the APE loader, `poll()` with a timeout, and the exit
+  (docs/UPSTREAM.md, B1 to B3). The configure of Blink gets a
+  `CONFIG_RUNNER` (Node.js) for its tests.
+- One change in ERTS: without `socketpair(AF_UNIX)`, it runs without
+  `erl_child_setup`, as without `fork()` (docs/UPSTREAM.md, O16).
+- The JIT of ERTS must use one mapping (`+JMsingle true`): Blink in
+  WebAssembly cannot map a file two times (shared).
+
+### Results (Node.js 26.10; 4 CPUs)
+
+`beam.com version` (the JIT build, 4 schedulers) runs to its end and
+exits with status 0. The Erlang code:
+
+```erlang
+lists:foldl(fun(X, A) -> (A + X*X) rem 1000003 end, 0, lists:seq(1, 1000000))
+```
+
+(in `-eval`, so `erl_eval` runs it), and 10,000 `spawn/1`, with
+`+S 1 +SDcpu 1 +SDio 1 +A 0`:
+
+| | Native | Blink, native | Blink in WebAssembly |
+|---|---|---|---|
+| `beam.com version` (start, output, exit) | 0.2 s | 54 s | 62 s |
+| The fold (1 million) | 0.58 s | 229 s (390×) | 315 s (540×) |
+| 10,000 spawns | 0.048 s | 16.9 s (350×) | 22.8 s (480×) |
+| Peak memory (RSS of Node.js) | | | 1.3 to 1.4 GB |
+| Size | | | `blink.wasm` 488 KB (154 KB with gzip), and the 49 MB `beam.com` |
+
+A small x86-64 program (a loop of 100 million) is 290 times slower in
+WebAssembly than native.
+
+### What was found
+
+- **It works**: all of OTP, the JIT, the NIFs, the schedulers, in
+  WebAssembly, from the file that runs on the other systems, with a
+  35-line patch of Blink and one small change of ERTS.
+- **It is 400 to 550 times slower than native.** Blink interprets each
+  x86-64 instruction (also the code that the JIT of ERTS makes).
+  WebAssembly adds only 1.4 times to native Blink: the interpreter is the
+  cost, not WebAssembly.
+- **The start takes one minute and 1.4 GB.** Workers give 128 MB of
+  memory and a few seconds of CPU time for a request; Deno Deploy is
+  similar. So this way cannot serve requests there. It could run Erlang
+  code in a browser tab for a demonstration.
+- **Each layer needed a fix**: the exit of Blink with threads, the
+  `emscripten_sleep()` of its Emscripten code, the command line of the
+  APE loader, `socketpair()` in ERTS, the double mapping of the JIT.
+  Blink has had no release since 2023.
+- A JIT of Blink for WebAssembly (x86-64 blocks compiled to WebAssembly
+  modules at run time, as the emulator v86 does for 32-bit x86) could
+  make it 10 or more times faster, but that is a large new project, and
+  still far from native.
+
+**Result:** the Blink way proves that all of OTP can run in WebAssembly,
+but not at a usable speed or size. Phase B (ERTS compiled to WebAssembly,
+with the JSPI threads of phase A) stays the way.
+
 ## Phase B: ERTS itself (next)
 
 Cross-compile `beam-emu` (the interpreter) for `wasm32-wasip1` with this

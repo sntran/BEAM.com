@@ -1049,8 +1049,12 @@ dump.
 emulator keeps the socket to a helper that was never started, and the
 first write fails.
 
-**Fix in BEAM.com.** When `fork()` fails, the emulator runs without
-`erl_child_setup` (as on Windows): `open_port/2` for a program returns
+The same happens when `socketpair(AF_UNIX)` fails (an emulator without
+sockets, such as Blink in WebAssembly): "Could not open unix domain
+socket in spawn_init" and an abort.
+
+**Fix in BEAM.com.** When `socketpair()` or `fork()` fails, the emulator
+runs without `erl_child_setup` (as on Windows): `open_port/2` for a program returns
 the error of `fork()`. The launcher also makes kernel use its own DNS
 client then, because the native resolver is a port program and kernel
 halts when it cannot start it.
@@ -1200,3 +1204,62 @@ linked, and runs the real `make` for the other ones. They also set
 application or environment setting with a list of applications) that
 skips the native build, for runtimes that have the NIFs built in
 (static NIFs).
+
+---
+
+## Blink (the x86-64 emulator)
+
+Seen with Blink at commit `f006a4f` (github.com/jart/blink), in the
+WebAssembly spike (docs/WASM.md). `wasm/blink/blink.patch` has the fixes
+of B1 to B3.
+
+### B1. Blink does not take the command line of the APE loader
+
+**Symptom.** Under Blink, `beam.com` fails to start itself again (for
+example for `erl_child_setup`): "blink: command not found: -".
+
+**Cause.** Under Blink, `/proc/self/exe` is Blink, so `beam.com` thinks
+an APE loader runs it, and starts `blink - PROGRAM ARGV0 ARGS...`, the
+command line of the APE loader. Blink takes `-` as the program.
+
+**Fix in the spike.** Blink takes `- PROGRAM ARGV0 ARGS...` as `-0`
+(`argv[0]` given).
+
+**Possible upstream fix.** The same in Blink; or Blink gives the guest
+path for `/proc/self/exe`.
+
+### B2. The Emscripten build of Blink calls `emscripten_sleep()`
+
+**Symptom.** With pthreads, the WebAssembly build stops at the first
+`poll()` without an event: "Please compile your program with async
+support".
+
+**Cause.** For the browser, Blink gives the event loop back in `poll()`
+and `read()` with `emscripten_sleep()`, which needs Asyncify. Also, the
+`poll()` of Emscripten does not wait for its timeout.
+
+**Fix in the spike.** With pthreads (and `PROXY_TO_PTHREAD`), Blink does
+not run on the main thread and can block: `poll()` waits for its timeout
+in short `usleep()` steps.
+
+### B3. Blink does not exit with guest threads in WebAssembly
+
+**Symptom.** After `exit_group()`, Node.js does not exit, and the output
+that Emscripten holds is lost. Native Blink also stops for some time at
+the exit of `beam.com` ("kill9'd thread after 10 tries").
+
+**Cause.** Blink stops the other threads with `pthread_kill()`, and the
+Workers of Emscripten get no signals.
+
+**Fix in the spike.** In the Emscripten build, `exit_group()` calls
+`emscripten_force_exit()`.
+
+### B4. A static glibc program crashes in `exit()`
+
+**Symptom.** A static program of glibc 2.39 (Ubuntu 24.04, `gcc
+-static`) jumps to an address on the stack in `exit()` and gets SIGSEGV,
+under native Blink and in WebAssembly. Programs of Cosmopolitan are not
+affected.
+
+**Not fixed.** Not needed for BEAM.com.
+
