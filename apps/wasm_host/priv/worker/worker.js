@@ -57,6 +57,94 @@ function unpack(FS, bytes) {
   return meta;
 }
 
+// .release.json, the first file of release.bin.
+function releaseMeta(bytes) {
+  const b = new Uint8Array(bytes);
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const plen = view.getUint32(8);
+  const dlen = view.getUint32(12 + plen);
+  return JSON.parse(new TextDecoder().decode(b.subarray(16 + plen, 16 + plen + dlen)));
+}
+
+// The snapshots that the Worker makes itself (see Vm.makeSnapshot): in the
+// R2 bucket of the binding SNAPSHOTS, else in the Cache API (of each data
+// center). The key: the runtime, worker.js and the release (snapshot_key of
+// .release.json, from the build), and the text bindings, which the boot
+// reads (a new secret gives a new snapshot).
+const snapshots = {
+  url: (key) => `https://beam-snapshot.invalid/${key}`,
+  async get(env, key) {
+    try {
+      if (env.SNAPSHOTS) return (await env.SNAPSHOTS.get(key))?.arrayBuffer() ?? null;
+      return (await caches.default.match(snapshots.url(key)))?.arrayBuffer() ?? null;
+    } catch (e) {
+      // No store here (workerd with no cache): no snapshot to make either.
+      console.log(`beam: no snapshot store (${e.message})`);
+      snapshots.unavailable = true;
+      return null;
+    }
+  },
+  async put(env, key, bytes) {
+    if (env.SNAPSHOTS) return env.SNAPSHOTS.put(key, bytes);
+    return caches.default.put(snapshots.url(key), new Response(bytes, {
+      headers: { 'content-type': 'application/octet-stream', 'cache-control': 'public, max-age=2592000' },
+    }));
+  },
+};
+
+async function snapshotKey(env, meta) {
+  const vars = Object.entries(env).filter(([, v]) => typeof v === 'string').sort(([a], [b]) => (a < b ? -1 : 1));
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([meta.snapshot_key, vars])));
+  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+// The memory and the open files of a VM whose threads all returned
+// (erts_wasm_hibernate), as snapshot.bin. The files that the boot wrote
+// are the ones that are not views of release.bin (unpack: canOwn).
+function capture(m, release, listeners) {
+  const PAGE = 65536;
+  const heap = m.HEAPU8;
+  const words = new BigUint64Array(heap.buffer, 0, heap.length / 8);
+  const pages = [];
+  for (let p = 0, w = PAGE / 8; p < heap.length / PAGE; p++) {
+    for (let i = p * w; i < (p + 1) * w; i++) if (words[i]) { pages.push(p); break; }
+  }
+  const files = {};
+  const walk = (d) => {
+    for (const n of m.FS.readdir(d)) {
+      if (n === '.' || n === '..') continue;
+      const p = d === '/' ? '/' + n : d + '/' + n;
+      if (p === '/dev' || p === '/proc') continue;
+      const node = m.FS.lookupPath(p).node;
+      if (m.FS.isDir(node.mode)) walk(p);
+      else if (m.FS.isFile(node.mode) && node.contents?.buffer !== release) {
+        let bin = '';
+        for (const c of m.FS.readFile(p)) bin += String.fromCharCode(c);
+        files[p] = btoa(bin);
+      }
+    }
+  };
+  walk('/');
+  const pipes = new Map();
+  const streams = m.FS.streams.map((st, fd) => {
+    if (!st) return null;
+    if (st.node?.pipe) {
+      if (!pipes.has(st.node.pipe)) pipes.set(st.node.pipe, pipes.size);
+      return { fd, pipe: pipes.get(st.node.pipe), flags: st.flags };
+    }
+    return { fd, path: st.path, flags: st.flags, position: st.position };
+  }).filter(Boolean);
+  const head = new TextEncoder().encode(JSON.stringify({
+    size: heap.length, pages, fs: { files, streams }, listeners: Object.fromEntries(listeners),
+  }));
+  const out = new Uint8Array(12 + head.length + pages.length * PAGE);
+  out.set(new TextEncoder().encode('BEAMSNP1'));
+  new DataView(out.buffer).setUint32(8, head.length);
+  out.set(head, 12);
+  pages.forEach((p, i) => out.set(heap.subarray(p * PAGE, (p + 1) * PAGE), 12 + head.length + i * PAGE));
+  return out;
+}
+
 // snapshot.bin (optional, beside release.bin): the memory of a booted VM
 // whose threads all returned to the host (erts_wasm_hibernate), and the
 // files and pipes of that moment. "BEAMSNP1", a 32-bit length and a JSON
@@ -156,8 +244,18 @@ export class Vm {
 
   async boot(env) {
     const t0 = Date.now();
-    const [release, snapBytes] = await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    const [release, bundled] = await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    // A snapshot of the build (snapshot.bin), else one that a Worker made
+    // (BEAM_SNAPSHOT = "off" turns them off).
+    let snapBytes = bundled, key = null;
+    if (!snapBytes && env.BEAM_SNAPSHOT !== 'off') {
+      key = await snapshotKey(env, releaseMeta(release));
+      snapBytes = await snapshots.get(env, key);
+    }
     const snap = snapBytes && parseSnapshot(snapBytes);
+    // No snapshot yet: this VM makes it, before its first request.
+    this.makeKey = !snap && !snapshots.unavailable && key;
+    this.release = release;
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
       const snapKB = snapBytes ? snapBytes.byteLength >> 10 : 0;
@@ -196,7 +294,10 @@ export class Vm {
             m.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
             m.FS.writeFile(p, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
           }
-          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', '--',
+          // -c false (no time correction) for a snapshot: the monotonic time
+          // then follows the system time, which goes on after a restore (the
+          // OS monotonic time of a new instance starts again at 0).
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...(this.makeKey ? ['-c', 'false'] : []), '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
@@ -228,6 +329,34 @@ export class Vm {
     });
   }
 
+  // The first request of a VM with no snapshot: all the threads return
+  // (erts_wasm_hibernate), the memory is copied, the threads go on, and the
+  // copy goes to the store in the background. About 1 ms of the VM, and the
+  // time of the copy.
+  async makeSnapshot() {
+    const key = this.makeKey;
+    this.makeKey = null;
+    const x = this.exports;
+    x.erts_wasm_hibernate();
+    for (let i = 0; x.jspi_live_threads() > 0; i++) {
+      if (i > 5000) {
+        x.jspi_report_live();
+        x.erts_wasm_resume();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    let bytes;
+    try {
+      bytes = capture(this.beam, this.release, this.listeners);
+    } finally {
+      x.erts_wasm_resume();
+    }
+    console.log(`beam: snapshot ${bytes.length >> 10} KB (${key.slice(0, 12)})`);
+    const put = snapshots.put(this.env, key, bytes).catch((e) => console.log(`beam: snapshot not stored: ${e.message}`));
+    this.waitUntil?.(put);
+  }
+
   memory() {
     return `memory ${this.beam.HEAPU8.length >> 20} MB`;
   }
@@ -243,6 +372,7 @@ export class Vm {
 
   // ctx: the context of a request to a plain Worker (none in a Durable Object).
   async fetch(request, ctx) {
+    if (ctx) this.waitUntil = (p) => ctx.waitUntil(p);
     let finished = () => {};
     const h = this.plain ? this.serve(ctx, new Promise((r) => { finished = r; })) : undefined;
     try {
@@ -255,6 +385,7 @@ export class Vm {
 
   async request(request, h, finished) {
     await this.ready;
+    if (this.makeKey) await this.makeSnapshot();
     const url = new URL(request.url);
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
     const tcp = upgrade && url.pathname.match(/^\/\.tcp\/(\d+)$/);
@@ -398,7 +529,10 @@ export class Vm {
       if (c.head || c.status === 204 || c.status === 304) c.length = 0;
       const { readable, writable } = new TransformStream();
       c.writer = writable.getWriter();
-      c.resolve(new Response(c.length === 0 ? null : readable, { status: c.status, headers }));
+      // The app compressed the body (Bandit: gzip, deflate): the runtime
+      // must send it as it is, not compress it again.
+      const encodeBody = headers.has('content-encoding') ? 'manual' : 'automatic';
+      c.resolve(new Response(c.length === 0 ? null : readable, { status: c.status, headers, encodeBody }));
       c.finished();
     }
     if (c.ws) return this.bridgeFrames(c);

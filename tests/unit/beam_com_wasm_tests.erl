@@ -139,3 +139,18 @@ runtime_dir_test_() ->
                 || F <- ["beam.wasm", "beam.mjs"]],
                ?assertEqual(Priv, beam_com_wasm:runtime_dir(Root))
        end}]}.
+
+snapshot_key_test_() ->
+    Files = [{"lib/a-1/ebin/a.beam", <<"x">>}],
+    Worker = [{"worker.js", <<"w">>}, {"beam.mjs", <<"m">>}, {"beam.wasm", <<"b">>},
+              {"worker.capnp", <<"a random key">>}],
+    Key = beam_com_wasm:snapshot_key(Files, Worker),
+    [?_assertEqual(64, byte_size(Key)),
+     {"the same runtime, Worker and release: the same key",
+      ?_assertEqual(Key, beam_com_wasm:snapshot_key(Files, lists:keyreplace("worker.capnp", 1, Worker,
+                                                                           {"worker.capnp", <<"other">>})))},
+     {"another release: another key",
+      ?_assertNotEqual(Key, beam_com_wasm:snapshot_key([{"lib/a-1/ebin/a.beam", <<"y">>}], Worker))},
+     {"another runtime: another key",
+      ?_assertNotEqual(Key, beam_com_wasm:snapshot_key(Files, lists:keyreplace("beam.wasm", 1, Worker,
+                                                                               {"beam.wasm", <<"c">>})))}].

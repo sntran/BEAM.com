@@ -30,7 +30,7 @@
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
-         runtime_dir/1, meta/1, worker_files/3]).
+         runtime_dir/1, meta/1, worker_files/3, snapshot_key/2]).
 -endif.
 
 -define(HOST_APP, wasm_host).
@@ -59,9 +59,11 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     Meta = meta(Rel#{apps => Apps}),
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
-    Bin = pack([{".release.json", json:encode(Meta)} | Files]),
+    Worker = worker_files(Rel#{apps => Apps}, Runtime, Root),
+    Bin = pack([{".release.json", json:encode(Meta#{snapshot_key => snapshot_key(Files, Worker)})}
+                | Files]),
     [ok = filelib:ensure_path(filename:join(Output, D)) || D <- ["", "release"]],
-    [write_file(filename:join(Output, F), D) || {F, D} <- worker_files(Rel#{apps => Apps}, Runtime, Root)],
+    [write_file(filename:join(Output, F), D) || {F, D} <- Worker],
     write_file(filename:join([Output, "release", "release.bin"]), Bin),
     Quiet orelse io:format("~ts: wrote ~ts (the Workers ~ts and ~ts-release)~n"
                            "  release: ~ts ~ts, ~b files, ~.1f MB~n"
@@ -226,6 +228,13 @@ meta(#{name := Name, vsn := Vsn, kind := Kind, files := Files} = Rel) ->
     #{name => unicode:characters_to_binary(Name), vsn => unicode:characters_to_binary(Vsn),
       args => [unicode:characters_to_binary(A) || A <- Args], env => maps:from_list(Env)}.
 
+%% A snapshot that a Worker makes (worker.js) holds the memory of this
+%% runtime with this release: its key is the hash of both, and of the code
+%% of the Worker that restores it.
+snapshot_key(Files, Worker) ->
+    Parts = [D || {F, D} <- Worker, lists:member(F, ["worker.js", "beam.mjs", "beam.wasm"])],
+    binary:encode_hex(crypto:hash(sha256, [Parts | pack(Files)]), lowercase).
+
 %% The flags of vm.args that the runtime takes: not the emulator flags
 %% (+S and the others: the runtime has its own), not a node name (use
 %% DIST_NAME), and not the flags that erlexec takes.
@@ -277,22 +286,42 @@ wrangler(Name, Phoenix) ->
     ["// The BEAM runtime Worker. It gets the release from the Worker\n"
      "// ", Name, "-release (deploy that one first). The text \"vars\" are\n"
      "// the environment of the release.\n"
+     "//\n"
+     "// At the first request of a new deploy, the Worker makes a snapshot of\n"
+     "// its booted VM, and the next isolates start from it (a short cold\n"
+     "// start). It keeps it in the Cache API, or in an R2 bucket bound as\n"
+     "// SNAPSHOTS (\"r2_buckets\"). The var BEAM_SNAPSHOT = \"off\" turns this off.\n"
      "{\n"
      "  \"name\": \"", Name, "\",\n"
      "  \"main\": \"worker.js\",\n"
      "  \"compatibility_date\": \"", ?DATE, "\",\n"
      "  // The VM of an isolate serves all its requests.\n"
      "  \"compatibility_flags\": [\"no_handle_cross_request_promise_resolution\"],\n"
+     "  // The files as they are (no bundle): an optional module that is not\n"
+     "  // here (release.bin) is an error only at run time.\n"
+     "  \"no_bundle\": true,\n"
+     "  \"find_additional_modules\": true,\n"
+     "  \"rules\": [\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"worker.js\", \"beam.mjs\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
+     "  ],\n"
      "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }]",
      Vars, "\n}\n"].
 
 wrangler_release(Name) ->
-    ["// The Worker with the release (release.bin), for the runtime Worker.\n"
+    ["// The Worker with the release (release.bin), for the runtime Worker,\n"
+     "// and a snapshot of the build if there is one (snapshot.bin).\n"
      "{\n"
      "  \"name\": \"", Name, "-release\",\n"
      "  \"main\": \"app.js\",\n"
      "  \"compatibility_date\": \"", ?DATE, "\",\n"
-     "  \"rules\": [{ \"type\": \"Data\", \"globs\": [\"**/*.bin\"] }]\n"
+     "  \"no_bundle\": true,\n"
+     "  \"find_additional_modules\": true,\n"
+     "  \"rules\": [\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"app.js\"] },\n"
+     "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
+     "  ]\n"
      "}\n"].
 
 capnp(Phoenix) ->

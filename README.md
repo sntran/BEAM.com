@@ -563,6 +563,10 @@ workerd serve worker/worker.capnp                          # test on this comput
 - The build runs the release once on this computer, to find the modules
   of its boot (a shorter cold start). `BEAM_COM_WASM_NATIVE_RUN=0` turns
   that off.
+- At the first request of a new deploy, the Worker makes a snapshot of
+  its booted VM (in the Cache API, or an R2 bucket), and the next
+  isolates start from it: the first request of a Phoenix app takes about
+  0.2 s, not 0.6 s. The var `BEAM_SNAPSHOT = "off"` turns it off.
 - Only the NIFs of `crypto` and `asn1` are in the runtime.
 
 See [`docs/WASM.md`](docs/WASM.md) for the details, the measurements

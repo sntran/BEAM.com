@@ -643,6 +643,13 @@ read two times (in JavaScript and in Bandit), and the Worker has a small
 HTTP framing of its own, which is general (it knows no Phoenix). The
 benefit: no adapter to keep in step with Phoenix, Plug and Bandit.
 
+**Compressed bodies.** Bandit compresses a response (gzip) when the
+request accepts it, and the Workers runtime compresses a body again
+unless the response says `encodeBody: "manual"`: the page came twice
+compressed (seen with `wrangler dev`; the browser loaded no script, so
+LiveView did not connect). `worker.js` now sends a body with
+`Content-Encoding` as it is.
+
 ### Distributed Erlang
 
 `wasm_tcp_dist` (`-proto_dist wasm_tcp`) is the distribution example of
@@ -777,17 +784,47 @@ same limits and prices (Pages limits and pricing pages). A Durable Object
 has the same 128 MB and 30 s of CPU. Containers (paid plan) run a native
 BEAM with no WebAssembly, but get only HTTP through a Worker.
 
-### A snapshot of the booted VM (the spike works)
+### A snapshot of the booted VM (on by default)
 
 The first request of an isolate boots the VM: 0.61 s for the Phoenix app
 in `workerd`, of which about 0.3 s is the floor of ERTS, kernel and
 stdlib. A snapshot of the memory after the boot takes that away: the
 runtime Worker copies the memory into a new instance and the VM goes on.
 
+**The Worker makes it itself** (no Node.js, nothing to set up):
+
+- At the first request of a VM with no snapshot, before the Worker serves
+  that request, all the threads return (about 1 ms), the Worker copies
+  the memory, the threads go on, and the copy goes to the store in the
+  background. The first request is about 80 ms longer (the copy).
+- The store is the Cache API (of each data center), or the R2 bucket of a
+  binding `SNAPSHOTS`. With no store (`workerd` with no cache), the Worker
+  makes none.
+- The key: the hash of `beam.wasm`, `beam.mjs`, `worker.js` and the
+  release (`snapshot_key` in `.release.json`, from the build), and of the
+  text bindings. So a new deploy, or a new secret, gives a new snapshot,
+  and the snapshot has the real environment of the deploy.
+- The snapshot is made before the first request: the state of the app is
+  the state after its boot, with no request in it.
+- The VM that makes it runs with `-c false` (see "Time" below).
+- `BEAM_SNAPSHOT = "off"` (a var of the Worker) turns it off.
+
+Tested with `wrangler dev` (Miniflare: its Cache API keeps the snapshot
+on the disk): the first start made it (19 MB for Cowboy, 31 MB for
+Phoenix); after a restart, the first request restored it, and LiveView
+worked on the restored VM. Not measured on Cloudflare yet: the time to
+read 20 to 34 MB from the Cache API, and the memory while the Worker
+makes a snapshot (the VM, 58 MB for Phoenix, and the copy, 31 MB, in the
+128 MB of an isolate).
+
+**Or at build time**, with Node.js 26 (a snapshot after warm-up
+requests; the Worker with the release keeps it as `snapshot.bin`, and
+the runtime uses it first):
+
 ```sh
 beam.com _build/prod/rel/hello -o worker --target wasm32
 node wasm/snapshot/snapshot.mjs worker --warm 4000:/counter \
-    --env SECRET_KEY_BASE=... --env PHX_HOST=...    # writes worker/release/snapshot.bin (Node.js 26)
+    --env SECRET_KEY_BASE=... --env PHX_HOST=...    # writes worker/release/snapshot.bin
 node wasm/snapshot/snapshot.mjs worker --check 4000:/counter  # restore it in Node.js, 3 requests
 workerd serve worker/worker.capnp
 ```
@@ -862,7 +899,9 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
 
 **What is still open** (not in `beam.com` yet):
 
-- **The state is shared.** Every isolate starts from the same state: the
+- **The state is shared.** Every isolate starts from the same state (a
+  snapshot of the build here; the Worker makes its own before any
+  request): the
   counter of `examples/worker` said "request 2" in each new isolate (its
   warm-up request was before the snapshot). Values made at the boot are
   the same everywhere (the `endpoint_id` of Phoenix, tokens made at the
@@ -870,11 +909,10 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
   environment too: `SECRET_KEY_BASE` and the other values that
   `runtime.exs` read at the boot are in the snapshot, so a new secret
   needs a new snapshot (or the app reads them again on `restored`).
-- **Who makes it.** `snapshot.mjs` needs Node.js 26 (JSPI) and the same
+- **A snapshot of the build** needs Node.js 26 (JSPI) and the same
   `beam.wasm` as the Worker (the memory holds indices of its function
-  table: a snapshot of another build is wrong). `beam.com` has no
-  WebAssembly engine to make it; a flag of `--target wasm32` could call
-  Node.js when it is there.
+  table: a snapshot of another build is wrong). The snapshots that the
+  Worker makes need neither.
 - **The idle point.** A thread that waits in another place (a long NIF, a
   port) does not return: `snapshot.mjs` then stops with an error and names
   the thread.
