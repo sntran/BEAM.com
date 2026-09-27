@@ -549,7 +549,8 @@ APE loader: `/usr/bin/ape`, `$TMPDIR/.ape-1.10`, `$HOME/.ape-1.10` and
 `./.ape-1.10`. Landlock hides these paths unless they are unveiled.
 
 **Workaround in BEAM.com.** When there are unveil rules, the launcher
-also unveils the loader paths that exist (`rx`), and its own file.
+also unveils the loader paths that exist (`rx`), the loader that runs
+the process (`/proc/self/exe`, see C31), and its own file.
 
 **Possible upstream fix.** Document it next to `unveil()`, or unveil the
 loader that started the process automatically.
@@ -719,6 +720,45 @@ it can then keep a removable volume busy while it runs.
 
 **Possible upstream fix.** Add `O_EVTONLY` (0 on the other systems, or
 `O_PATH` on Linux) to `<fcntl.h>` and to `__xoflags()`.
+
+### C31. WSL: execve() of an APE file starts it as a Windows program
+
+**Status:** cosmocc 4.0.2 (`libc/proc/execve-sysv.c`,
+`libc/runtime/winmain.greg.c`).
+
+**Symptom.** On WSL2 (Debian 13, with the default binfmt_misc entry
+`WSLInterop`), `sh ./beam.com version` prints `error: APE is running on
+WIN32 inside WSL. You need to run: sudo sh -c 'echo -1 >
+/proc/sys/fs/binfmt_misc/WSLInterop'`. Then ERTS stops, in some runs,
+with `Failed to read from erl_child_setup: 104` and a crash dump. A
+program that opens a port stops each time. A native file
+(`--target x86_64-linux`) works.
+
+**Cause.** The shell script of the APE file starts the first process
+with the APE loader. BEAM.com then executes its own file again for
+`erl_child_setup` (and `inet_gethost`, `epmd`). Cosmopolitan's
+`execve()` gives the APE file to the kernel first, and starts the APE
+loader only when the kernel gives `ENOEXEC`. On WSL, the `WSLInterop`
+entry (magic `MZ`) matches the APE file, so the kernel accepts it and
+starts it as a Windows program. There, `IsWslChimera()` in
+`winmain.greg.c` prints the error and exits with 77. The same occurs
+on Linux with any binfmt_misc entry for `MZ` (for example Wine).
+
+**Workaround in BEAM.com.** `beam_com_execve()` in `cosmo/beam_com.c`:
+on Linux, when `/proc/self/exe` is not the program file (a loader runs
+it) and the file to start is an APE file, it executes `/proc/self/exe`
+(the loader) with the arguments `ape - FILE ARGV0 ARGV1 ...`. The
+kernel never gets the APE file. The helper programs, `epmd`, the
+`spawn_executable` ports of `erl_child_setup` and the file watcher
+script of the tools use it. A native file starts itself as before.
+`tests/run.sh` checks it with a `WSLInterop` entry in the binfmt_misc
+of a user namespace (Linux 6.7 or later).
+
+**Possible upstream fix.** In `sys_execve()`, on Linux, when the process
+runs under the APE loader (or on WSL, where `/proc/sys/fs/binfmt_misc/
+WSLInterop` exists), start an APE file with the loader first, not with
+the kernel. Or: in `winmain.greg.c`, when `IsWslChimera()`, execute the
+file again with the Linux loader in place of the exit.
 
 ## WAMR (WebAssembly Micro Runtime)
 
