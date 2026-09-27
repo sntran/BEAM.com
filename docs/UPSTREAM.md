@@ -663,6 +663,63 @@ Windows, for `-1` and `-1`: 0 when the path exists, else the error of
 **Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
 return 0 for `-1` and `-1` when the path exists.
 
+### C29. No `kqueue()` and `kevent()` for programs
+
+**Status:** cosmocc 4.0.2, HEAD. `<sys/event.h>` is empty ("eventfd()
+is meh").
+
+**Reproducer.**
+
+```c
+#include <sys/event.h>
+int main(void) { return kqueue(); }
+/* error: implicit declaration of function 'kqueue' */
+```
+
+**Cause.** libc has the system calls as `sys_kqueue` and `sys_kevent`
+(global, "no wrapper" in `libc/sysv/syscalls.sh`, with the numbers of
+macOS, FreeBSD, NetBSD and OpenBSD, also on aarch64), but no header
+declares them, and there is no `struct kevent`. The struct is not the
+same on all systems: FreeBSD 12 adds `ext[4]` (64 bytes), NetBSD has a
+32-bit filter and flags (40 bytes with `__kevent50`), and on NetBSD
+`EVFILT_READ` is 0 and `EVFILT_VNODE` is 3 (-1 and -4 on the others).
+On macOS, `sys_kevent` is not `kevent` (363) but `kevent64` (369):
+`struct kevent64_s` (48 bytes, with `ext[2]`) and a `flags` argument
+before the timeout, which is then a seventh argument. A call with the
+arguments of `kevent()` gives the timeout pointer as `flags`; the first
+version of the watcher did this, and on macOS it fell back to the
+interval (CI of #29).
+
+**Workaround in BEAM.com.** `cosmo/beam_com_watch.c` declares
+`sys_kqueue()` and `sys_kevent()` itself, and has the four layouts of
+`struct kevent`. It selects one at run time (`IsNetbsd()`,
+`IsFreebsd()`, `IsXnu()`). On macOS it always gives
+`KEVENT_FLAG_IMMEDIATE`, so the kernel does not read a timeout, and it
+waits with `poll()` on the kqueue descriptor.
+
+**Possible upstream fix.** Public `kqueue()` and `kevent()` with one
+`struct kevent` (for example the FreeBSD layout) that libc converts to
+the layout of the system, and `ENOSYS` on Linux and Windows.
+
+### C30. `open()` cannot give `O_EVTONLY` (macOS)
+
+**Status:** cosmocc 4.0.2, HEAD (`libc/calls/xoflags.c`).
+
+**Symptom.** A descriptor that only watches a file with kqueue must be
+opened with `O_EVTONLY` (0x8000) on macOS, so that it does not keep the
+volume busy (an unmount or an eject then works).
+
+**Cause.** `open()` takes the Linux values of the `O_*` flags, and
+`__xoflags()` converts them to the values of the system. It gives
+`EINVAL` for an unknown bit, and it has no flag for `O_EVTONLY`. The
+system call stubs of `open` are hidden, so a program cannot call them.
+
+**Workaround in BEAM.com.** The watcher opens with `O_RDONLY`. On macOS
+it can then keep a removable volume busy while it runs.
+
+**Possible upstream fix.** Add `O_EVTONLY` (0 on the other systems, or
+`O_PATH` on Linux) to `<fcntl.h>` and to `__xoflags()`.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

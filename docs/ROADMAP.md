@@ -128,9 +128,12 @@ can be added on WAMR, or the runtime can be replaced.
 - Done: a file watcher in the file, as `inotifywait` (inotify on Linux,
   a comparison of the files on the BSDs), which the tools give to
   `file_system`: `phoenix_live_reload` without `inotify-tools`.
-- Next: the watcher with kqueue on the BSDs, and for `file_system` on
-  macOS (its `mac_listener` format) and Windows; reload of new code in a
-  running program when its file changes.
+- Done: the watcher as `mac_listener` for `file_system` on macOS, and
+  kqueue on macOS and the BSDs: a change starts the comparison at once
+  (the comparison every interval stays, for the changes that kqueue
+  does not see).
+- Next: the watcher on Windows; reload of new code in a running program
+  when its file changes.
 - Next for Phoenix: the NIFs of `exqlite` (`--database sqlite3`, with
   the SQLite that is in `beam.com`) and of `bcrypt_elixir`
   (`phx.gen.auth`), linked into `beam.com` as static NIFs, so that the
