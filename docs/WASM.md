@@ -382,11 +382,10 @@ without ERTS. The output is a directory:
 | `worker.capnp` | both Workers for `workerd` |
 | `tcp-proxy.mjs` | a local TCP port for a listener of the program (a WebSocket to `/.tcp/PORT`) |
 
-- **The runtime** (`beam.wasm` and `beam.mjs`, 5.3 MB) comes from
-  `BEAM_COM_WASM_RUNTIME` (a directory), else from the zip of `beam.com`
-  (`build.sh` with `WASM_RUNTIME=dir`), else from the cache
-  (`~/.cache/beam.com/wasm32`). The CI of BEAM.com does not build it
-  yet: `wasm/erts/build.sh` with `WORKER=1 WORKER_ROOTFS=none` does.
+- **The runtime** (`beam.wasm` and `beam.mjs`, 5.3 MB) is in the zip of
+  `beam.com` (the step `wasm_runtime` of `build.sh`). `BEAM_COM_WASM_RUNTIME`
+  (a directory) gives another one, and the cache
+  (`~/.cache/beam.com/wasm32`) one for a `beam.com` built without it.
 - **The application `wasm_host`** (in the zip of every `beam.com`:
   `apps/wasm_host`) goes into the release, and the boot script starts it
   after stdlib, before the applications of the program. In the runtime
@@ -986,9 +985,10 @@ Workers with `beam.com`").
 
 Still open:
 
-- **The runtime in CI:** whether BEAM.com carries the Emscripten toolchain
-  in CI (the runtime changes only with OTP and ERTS), and then ships
-  `beam.wasm` in the zip (`WASM_RUNTIME`, 5.3 MB) or as a download.
+- **The runtime in CI:** done. The step `wasm_runtime` of `build.sh`
+  installs emsdk (6.0.10) and builds the variant for Workers from a clone
+  of the same OTP; `bundle` puts it in the zip (`beam.com` is 1.9 MB
+  larger). `WASM_RUNTIME=none` leaves it out.
 - **Upstream:** the changes of ERTS (`otp.patch`).
 
 ## Next

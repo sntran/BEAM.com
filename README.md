@@ -558,8 +558,8 @@ workerd serve worker/worker.capnp                          # test on this comput
 - The directory has two Workers: the runtime (`beam.wasm`) and the
   release (`release.bin`). The runtime boots the release at the first
   request of an isolate, and keeps the VM for the next requests.
-- The runtime is not in the default `beam.com` yet: give its directory
-  with `BEAM_COM_WASM_RUNTIME` (`wasm/erts/build.sh`, `WORKER=1`).
+- The runtime (`beam.wasm`, ERTS built with Emscripten) is in the zip of
+  `beam.com`.
 - The build runs the release once on this computer, to find the modules
   of its boot (a shorter cold start). `BEAM_COM_WASM_NATIVE_RUN=0` turns
   that off.

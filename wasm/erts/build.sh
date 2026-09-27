@@ -80,6 +80,8 @@ rm -f "erts/emulator/$T/opt/emu/driver_tab.c"
 # adds -fexceptions). DEXPORT empty: no dynamic NIFs or drivers, so no
 # export of all symbols (-export-dynamic makes a JS wrapper for each). Our pthread functions come first and replace the
 # stubs of Emscripten's libc.
+# WASM_NODE=0: no Node.js variant (only the one for Workers, WORKER=1).
+if [ "${WASM_NODE:-1}" = 1 ]; then
 LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_ES6 ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
 make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
@@ -87,6 +89,7 @@ cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
 cp "bin/$T/beam.emu" "$OUT/beam.mjs"
 cp "$HERE/beam-node.mjs" "$OUT/"
 ls -l "$OUT/beam.wasm" "$OUT/beam.mjs"
+fi
 
 # The variant for Workers (Cloudflare workerd; hosts without files and
 # without run-time compilation of WebAssembly): an ES module, and the

@@ -446,20 +446,28 @@ if [ -d examples ]; then
 fi
 
 # --target wasm32: the Workers of examples/worker (cowboy, from hex.pm).
-# The runtime is a stand-in here (the WebAssembly ERTS needs Emscripten);
-# the build runs the release natively to find the modules of the boot.
+# The runtime of the zip (the step wasm_runtime of build.sh), else a
+# stand-in; the build runs the release natively to find the modules of
+# the boot.
 if [ -d examples ]; then
-    mkdir -p "$dir/wasm-runtime"
-    printf 'stand-in' > "$dir/wasm-runtime/beam.wasm"
-    printf 'stand-in' > "$dir/wasm-runtime/beam.mjs"
-    unset BEAM_COM_WASM_RUNTIME
-    check_status 1 beam.com 'the WebAssembly runtime (beam.wasm and beam.mjs) is not in' \
-        examples/worker -o "$dir/worker" --target wasm32
-    BEAM_COM_WASM_RUNTIME=$dir/wasm-runtime
-    export BEAM_COM_WASM_RUNTIME
+    in_zip=$($runner "$dir/beam.com" -noshell -eval \
+        'io:format("~ts", [filelib:wildcard("/zip/lib/wasm_host-*/priv/runtime/beam.wasm")]), halt().' 2>/dev/null)
+    if [ -z "$in_zip" ]; then
+        mkdir -p "$dir/wasm-runtime"
+        printf 'stand-in' > "$dir/wasm-runtime/beam.wasm"
+        printf 'stand-in' > "$dir/wasm-runtime/beam.mjs"
+        BEAM_COM_WASM_RUNTIME=$dir/wasm-runtime
+        export BEAM_COM_WASM_RUNTIME
+    fi
     check beam.com 'wrote .*worker (the Workers worker and worker-release)@@release: worker 0.1.0@@boot: [0-9]* modules in one batch' \
         examples/worker -o "$dir/worker" --target wasm32
     unset BEAM_COM_WASM_RUNTIME
+    if [ -n "$in_zip" ] && [ "$(head -c 4 "$dir/worker/beam.wasm" | od -An -c | tr -d ' ')" != '\0asm' ]; then
+        echo "FAIL: the runtime of the zip is not a WebAssembly module"
+        failed="$failed
+  beam.com --target wasm32: beam.wasm"
+        fail=1
+    fi
     for f in worker.js beam.mjs beam.wasm wrangler.jsonc worker.capnp tcp-proxy.mjs \
              release/app.js release/release.bin release/wrangler.jsonc; do
         if [ ! -f "$dir/worker/$f" ]; then
