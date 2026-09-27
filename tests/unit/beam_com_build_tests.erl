@@ -683,7 +683,22 @@ run_error(Dir) ->
                  beam_com_build:run(#{input => write(Dir, "ok.erl",
                                                      "-module(ok).\n-export([main/1]).\nmain(_) -> 1.\n"),
                                       apps => [], output => Out, root => Root,
-                                      exe => filename:join(Dir, "missing.com")})).
+                                      exe => filename:join(Dir, "missing.com")})),
+    %% A native file (assimilated) as the base, without --target: an
+    %% error before the compilation, and no output.
+    {ok, Ape} = file:read_file(Exe),
+    Elf = filename:join(Dir, "beam-elf.com"),
+    ok = file:write_file(Elf, <<127, "ELF", 2, 1, 1, 0, 0:64, 2:16/little, 16#3e:16/little,
+                                (binary:part(Ape, 20, byte_size(Ape) - 20))/binary>>),
+    ?assertThrow({error, "this is a native file (~ts), not an APE file: a program built "
+                  "from it runs only on this system." ++ _, [_]},
+                 beam_com_build:run(#{input => F, apps => [], output => Out,
+                                      root => Root, exe => Elf})),
+    ?assertThrow({error, "this is a native file (~ts), not an APE file: it cannot make "
+                  "a file for ~ts." ++ _, [_, "aarch64-unknown-linux-gnu"]},
+                 beam_com_build:run(#{input => F, apps => [], output => Out, root => Root,
+                                      exe => Elf, target => "aarch64-unknown-linux-gnu"})),
+    ?assertNot(filelib:is_file(Out)).
 
 run_edges(Dir) ->
     Root = filename:join(Dir, "root"),
@@ -758,6 +773,48 @@ target_test_() ->
      {"no Mach-O header",
       ?_assertThrow({error, "no Mach-O header for this CPU in the APE file", []},
                     beam_com_build:native("x86_64-apple-darwin", Script))},
+     {"the format of the base",
+      [?_assertEqual(ape, beam_com_build:base_kind(Ape)),
+       ?_assertEqual(ape, beam_com_build:base_kind(<<"jartsr='\n">>)),
+       ?_assertEqual({elf, 16#3e, 0}, beam_com_build:base_kind(Elf(16#3e, 0))),
+       ?_assertEqual({elf, 16#b7, 9}, beam_com_build:base_kind(Elf(16#b7, 9))),
+       ?_assertEqual({macho, 16#01000007}, beam_com_build:base_kind(MachO)),
+       ?_assertEqual(unknown, beam_com_build:base_kind(<<"PK zip">>)),
+       ?_assertEqual(unknown, beam_com_build:base_kind(<<>>))]},
+     {"a native base of the CPU of the target: the same file",
+      [?_assertEqual(<<(Elf(16#3e, 0))/binary, Tail/binary>>,
+                     beam_com_build:native("x86_64-unknown-linux-gnu",
+                                           <<(Elf(16#3e, 0))/binary, Tail/binary>>)),
+       ?_assertEqual(<<(Elf(16#3e, 0))/binary, Tail/binary>>,
+                     beam_com_build:native("x86_64-unknown-linux-gnu",
+                                           <<(Elf(16#3e, 9))/binary, Tail/binary>>)),
+       ?_assertEqual(<<(Elf(16#3e, 9))/binary, Tail/binary>>,
+                     beam_com_build:native("x86_64-unknown-freebsd",
+                                           <<(Elf(16#3e, 0))/binary, Tail/binary>>)),
+       ?_assertEqual(<<MachO/binary, Tail/binary>>,
+                     beam_com_build:native("x86_64-apple-darwin", <<MachO/binary, Tail/binary>>))]},
+     {"a native base: an error without --target, or for another CPU",
+      [?_assertEqual(ok, beam_com_build:check_base(Ape, none)),
+       ?_assertEqual(ok, beam_com_build:check_base(Ape, "x86_64-apple-darwin")),
+       ?_assertEqual(ok, beam_com_build:check_base(<<"PK zip">>, none)),
+       ?_assertEqual(ok, beam_com_build:check_base(Elf(16#3e, 0), "x86_64-unknown-linux-gnu")),
+       ?_assertEqual(ok, beam_com_build:check_base(Elf(16#3e, 0), "x86_64-unknown-freebsd")),
+       ?_assertEqual(ok, beam_com_build:check_base(MachO, "x86_64-apple-darwin")),
+       ?_assertThrow({error, "this is a native file (~ts), not an APE file: a program built "
+                      "from it runs only on this system. Build with the APE file of "
+                      "beam.com, or give --target to make a native file",
+                      [["ELF, ", "x86_64"]]},
+                     beam_com_build:check_base(Elf(16#3e, 0), none)),
+       ?_assertThrow({error, _, [["Mach-O, ", "x86_64"]]},
+                     beam_com_build:check_base(MachO, none)),
+       ?_assertThrow({error, "this is a native file (~ts), not an APE file: it cannot make "
+                      "a file for ~ts. Build with the APE file of beam.com",
+                      [["ELF, ", "x86_64"], "aarch64-unknown-linux-gnu"]},
+                     beam_com_build:check_base(Elf(16#3e, 0), "aarch64-unknown-linux-gnu")),
+       ?_assertThrow({error, _, [["ELF, ", "aarch64"], "x86_64-apple-darwin"]},
+                     beam_com_build:check_base(Elf(16#b7, 0), "x86_64-apple-darwin")),
+       ?_assertThrow({error, _, [["Mach-O, ", "x86_64"], "x86_64-unknown-linux-gnu"]},
+                     beam_com_build:check_base(MachO, "x86_64-unknown-linux-gnu"))]},
      {"the triples, and the short names",
       [?_assertEqual(T, beam_com_build:check_target(N))
        || {N, T} <- [{"x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"},

@@ -428,6 +428,21 @@ The file runs only on its target. Apple Silicon has no native form:
 there, APE files run with the APE loader. On Windows, the APE file is
 already a native PE file.
 
+The new file is a copy of the file that builds it. So build with the
+APE file of `beam.com` (or a copy of it, such as `beam.exe`). A native
+file, made with `--target` or with `--assimilate`, gives only native
+files:
+
+- Without `--target`, `build` stops with an error: the program would
+  run only on this system, and you did not ask for that. For example:
+  `beam-elf.com: this is a native file (ELF, x86_64), not an APE file:
+  a program built from it runs only on this system. Build with the APE
+  file of beam.com, or give --target to make a native file`.
+- With a `--target` of the same CPU and format (for example
+  `x86_64-linux` from an assimilated file on Linux x86_64), `build`
+  writes a native file for that target.
+- With another `--target`, `build` stops with an error.
+
 ### WebAssembly
 
 `beam.com` runs WebAssembly modules and WASI preview 1 programs with

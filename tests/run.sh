@@ -176,13 +176,27 @@ if [ "$os" = linux ] && [ "$runner" = sh ] && [ -f "$dir/beam.com" ]; then
     sh "$dir/beam-native.com" --assimilate
     runner=
     check beam-native.com 'child_setup: native@@erl mode ok' -noshell -eval "$loader_eval"
-    runner=sh
     if grep -q 'with the APE loader' "$tmp"; then
         echo "FAIL: beam-native.com started a file with the APE loader"
         failed="$failed
   beam-native.com: started a file with the APE loader"
         fail=1
     fi
+    # A build from a native file: an error without --target (the program
+    # would run only on this system), a native file with the --target of
+    # this system.
+    if [ -d examples ]; then
+        case $(uname -m) in aarch64) cpu=aarch64 ;; *) cpu=x86_64 ;; esac
+        check_status 1 beam-native.com "beam-native.com: this is a native file (ELF, $cpu), not an APE file" \
+            build examples/hashsum.erl -o "$dir/never.com"
+        [ -f "$dir/never.com" ] && { echo "FAIL: beam-native.com wrote never.com"; fail=1; failed="$failed
+  beam-native.com build: wrote a file"; }
+        check beam-native.com 'wrote .*hashsum.native2' \
+            build examples/hashsum.erl --target "$cpu-linux" -o "$dir/hashsum.native2"
+        [ -f "$dir/hashsum.native2" ] && check hashsum.native2 "$hashsum" abc
+        rm -f "$dir/never.com" "$dir/hashsum.native2"
+    fi
+    runner=sh
 
     # WSL on Linux: since Linux 6.7, a user namespace can have its own
     # binfmt_misc. There, an entry as WSLInterop sends each "MZ" file to
