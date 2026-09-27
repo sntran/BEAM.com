@@ -17,5 +17,5 @@ while [ $# -gt 0 ] && [ "$1" != "--" ]; do emu="$emu $1"; shift; done
 cd "$OUT"
 # shellcheck disable=SC2086
 exec env BINDIR="$BOOTSTRAP/bin" ROOTDIR="$BOOTSTRAP" EMU=beam PROGNAME=erl \
-    "$NODE" ${NODE_FLAGS:-} beam.cjs $emu -- -root "$BOOTSTRAP" -bindir "$BOOTSTRAP/bin" \
+    "$NODE" ${NODE_FLAGS:-} beam-node.cjs $emu -- -root "$BOOTSTRAP" -bindir "$BOOTSTRAP/bin" \
     -progname erl -- -home "${HOME:-/}" -boot "$BOOTSTRAP/bin/start_clean" "$@"

@@ -40,6 +40,27 @@ addToLibrary({
     const w = jspi.waiters.get(t);
     if (w) queueMicrotask(w); else jspi.early.add(t);
   },
+  // Messages between the host and Erlang (wasm_host_nif.c):
+  // Module.beamHost.push(bytes) gives an event to Erlang, and
+  // Module.beamHost.onsend(bytes) gets what Erlang sends.
+  $jspiHost: { queue: [], waiter: null },
+  $jspiHost__postset: `Module['beamHost'] = {
+    onsend: null,
+    push(bytes) {
+      jspiHost.queue.push(bytes);
+      const w = jspiHost.waiter;
+      if (w) { jspiHost.waiter = null; w(bytes.length); }
+    },
+  };`,
+  jspi_host_wait__deps: ['$jspiHost'],
+  jspi_host_wait__async: true,
+  jspi_host_wait: () => new Promise((resolve) => {
+    if (jspiHost.queue.length) resolve(jspiHost.queue[0].length);
+    else jspiHost.waiter = resolve;
+  }),
+  jspi_host_take__deps: ['$jspiHost'],
+  jspi_host_take: (ptr) => { HEAPU8.set(jspiHost.queue.shift(), ptr); },
+  jspi_host_send: (ptr, size) => { Module['beamHost'].onsend?.(HEAPU8.slice(ptr, ptr + size)); },
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
   jspi_yield: () => new Promise((r) => jspiLater(r)),

@@ -420,3 +420,18 @@ int socket(int domain, int type, int protocol)
     errno = EAFNOSUPPORT;
     return -1;
 }
+
+/* --- messages from the host (wasm_host_nif.c) ---------------------------- */
+
+int jspi_host_wait(void); /* suspends until the host has an event: its size */
+
+int jspi_host_recv_size(void)
+{
+    struct __pthread *self = cur;
+    uintptr_t sp = jspi_get_sp();
+    int size = jspi_host_wait();
+
+    jspi_set_sp(sp);
+    cur = self;
+    return size;
+}

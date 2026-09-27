@@ -56,15 +56,27 @@ make -C erts/lib_src -j"$JOBS" TARGET=$T TYPE=opt opt > "$OUT/lib_src.log" 2>&1
 emcc -O2 -Wall -c "$HERE/jspi_pthread.c" -o "$OUT/jspi_pthread.o"
 emcc -O2 -c "$HERE/sp.S" -o "$OUT/sp.o"
 
+# The static NIFs: asn1 and crypto (the configured ones), and wasm_host
+# (messages with the JavaScript host). The table of static NIFs is made
+# from this list.
+emcc -O2 -Wall -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME=wasm_host \
+    -I"$OTP/erts/emulator/beam" -I"$OTP/erts/include" -I"$OTP/erts/include/$T" \
+    -c "$HERE/wasm_host_nif.c" -o "$OUT/wasm_host_nif.o"
+rm -f "$OUT/wasm_host.a"
+emar rcs "$OUT/wasm_host.a" "$OUT/wasm_host_nif.o"
+NIFS="$OTP/lib/asn1/priv/lib/$T/asn1rt_nif.a $OTP/lib/crypto/priv/lib/$T/crypto.a $OUT/wasm_host.a:wasm_host"
+rm -f "erts/emulator/$T/opt/emu/driver_tab.c"
+
 # -fno-exceptions: erl_crash_dump.c needs no C++-style unwinding (configure
 # adds -fexceptions). DEXPORT empty: no dynamic NIFs or drivers, so no
 # export of all symbols (-export-dynamic makes a JS wrapper for each). Our pthread functions come first and replace the
 # stubs of Emscripten's libc.
-LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_NAME=createBeam ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
-make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
+make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
 cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
 cp "bin/$T/beam.emu" "$OUT/beam.cjs"
+cp "$HERE/beam-node.cjs" "$OUT/"
 ls -l "$OUT/beam.wasm" "$OUT/beam.cjs"
 
 # The variant for Workers (Cloudflare workerd; hosts without files and
@@ -81,7 +93,7 @@ if [ "${WORKER:-0}" = 1 ]; then
         "{ok, _} = beam_lib:strip_files(filelib:wildcard(\"$F/lib/*/ebin/*.beam\")), halt()."
     LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --embed-file $F@/otp --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
-    make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
+    make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
     mkdir -p "$OUT/worker"
     cp "bin/$T/beam.emu" "$OUT/worker/beam.mjs"
     cp "bin/$T/beam.wasm" "$OUT/worker/beam.wasm"

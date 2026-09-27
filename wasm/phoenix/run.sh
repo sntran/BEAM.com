@@ -30,7 +30,16 @@ export RELEASE_ROOT="$REL" RELEASE_NAME=hello RELEASE_VSN="$VSN" RELEASE_MODE=in
     RELEASE_TMP="$REL/tmp" RELEASE_SYS_CONFIG="$REL/tmp/run.runtime" RELEASE_PROG=hello
 export SECRET_KEY_BASE="${SECRET_KEY_BASE:-$(head -c 48 /dev/urandom | base64 | tr -d '\n')}" PHX_HOST="${PHX_HOST:-localhost}"
 cd "$HERE/../erts/build"
-exec env ROOTDIR="$ROOT" BINDIR="$ROOT/bin" EMU=beam PROGNAME=erl "${NODE:-node}" ${NODE_FLAGS:-} beam.cjs \
-    -S 1 -SDcpu 1 -SDio 1 -A 0 -- -root "$ROOT" -bindir "$ROOT/bin" -progname erl -- \
+# SERVE=1: the Node.js host serves HTTP and WebSockets on $PORT (4000) for
+# the endpoint (wasm_host). The dirty I/O schedulers keep their default
+# number: one of them waits for the events of the host.
+host=beam-node.cjs beam=
+if [ "${SERVE:-0}" = 1 ]; then
+    export PHX_SERVER=true WASM_HOST=1
+    host=$HERE/../erts/host/server.cjs beam=./beam.cjs
+fi
+# shellcheck disable=SC2086
+exec env ROOTDIR="$ROOT" BINDIR="$ROOT/bin" EMU=beam PROGNAME=erl "${NODE:-node}" ${NODE_FLAGS:-} "$host" $beam \
+    -S 1 -SDcpu 1 -A 0 -- -root "$ROOT" -bindir "$ROOT/bin" -progname erl -- \
     -home "${HOME:-/}" -mode interactive -config "$REL/tmp/run.runtime" \
     -boot "$REL/releases/$VSN/start" -boot_var RELEASE_LIB "$REL/lib" -noshell "$@"

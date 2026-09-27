@@ -22,4 +22,37 @@ grep -q 'live "/counter"' lib/hello_web/router.ex ||
 grep -q 'releases:' mix.exs ||
     sed -i 's|      listeners: \[Phoenix.CodeReloader\]|      listeners: [Phoenix.CodeReloader],\n      releases: [hello: [include_erts: false, strip_beams: true]]|' mix.exs
 mix.com deps.get
+
+# The WebAssembly host adapter (wasm/phoenix/wasm_host): the Elixir side in
+# lib/, the NIF stub in src/, and the adapter at run time with WASM_HOST=1.
+mkdir -p lib/wasm_host src
+cp "$HERE"/wasm_host/*.ex lib/wasm_host/
+cp "$HERE/../erts/host/wasm_host.erl" src/
+grep -q WASM_HOST config/runtime.exs || cat >> config/runtime.exs <<'EXS'
+
+# The WebAssembly emulator: the JavaScript host serves HTTP and WebSockets.
+if System.get_env("WASM_HOST") do
+  config :hello, HelloWeb.Endpoint, adapter: WasmHost.PhoenixAdapter
+end
+EXS
+# WebSockAdapter knows only a fixed list of adapters.
+f=deps/websock_adapter/lib/websock_adapter.ex
+grep -q WasmHost.Conn "$f" ||
+    sed -i 's|^  defp tuple_for(adapter, _websock, _state, _opts),|  defp tuple_for(WasmHost.Conn, websock, state, opts), do: {websock, state, opts}\n\n  defp tuple_for(adapter, _websock, _state, _opts),|' "$f"
+
+# No esbuild: app.js is phoenix.js, phoenix_live_view.js and the start of
+# the LiveSocket, as the comments of the generated app.js say.
+js=priv/static/assets/js/app.js
+grep -q LiveSocket "$js" || {
+    cat deps/phoenix/priv/static/phoenix.js deps/phoenix_live_view/priv/static/phoenix_live_view.js > "$js.new"
+    cat >> "$js.new" <<'JS'
+
+const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
+const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {params: {_csrf_token: csrfToken}});
+liveSocket.connect();
+window.liveSocket = liveSocket;
+JS
+    mv "$js.new" "$js"
+}
+mix.com deps.compile websock_adapter --force
 mix.com release --overwrite

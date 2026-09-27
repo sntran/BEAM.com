@@ -1,0 +1,6 @@
+{
+  "name": "beam-wasm-host",
+  "private": true,
+  "description": "A Node.js host for the WebAssembly emulator: HTTP and WebSockets through wasm_host",
+  "dependencies": { "ws": "^8.18.0" }
+}
