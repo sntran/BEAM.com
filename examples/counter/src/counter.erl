@@ -2,7 +2,7 @@
 %% has a node name (config/vm.args), so "counter.com remote" opens a
 %% shell in the running node:
 %%
-%%   beam.com build examples/counter
+%%   beam.com examples/counter -o counter.com
 %%   ./counter.com &
 %%   ./counter.com remote
 %%   (counter@host)1> counter:incr().

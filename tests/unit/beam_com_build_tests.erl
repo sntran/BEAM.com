@@ -1,4 +1,4 @@
-%% Unit tests for beam_com_build (beam.com build).
+%% Unit tests for beam_com_build (beam.com INPUT -o OUTPUT).
 %%
 %% The tests use the real OTP applications of the Erlang that runs them
 %% (linked into a temporary lib directory), so systools works on real

@@ -1,15 +1,17 @@
-%% The commands of beam.com. The file starts this module with "-run beam_com main" when its zip has no
-%% release, and for "build":
+%% The command line of beam.com. The file starts this module with
+%% "-run beam_com main" when its zip has no release:
 %%
-%%   beam.com [help [COMMAND]]
-%%   beam.com version
-%%   beam.com build INPUT [-o OUTPUT] [-a APP]...
+%%   beam.com [FLAGS] [INPUT] [-- ARGUMENTS]   run INPUT (default: the
+%%                                             project in this directory)
+%%   beam.com [FLAGS] INPUT -o OUTPUT          make an executable of INPUT
+%%   beam.com --help | --version
 -module(beam_com).
 
 -export([main/0, name/0]).
 
 -ifdef(TEST).
--export([command/1, build_options/2, help/1, version/0, name/1]).
+-export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
+         is_project/1]).
 -endif.
 
 main() ->
@@ -23,18 +25,91 @@ main() ->
              end,
     erlang:halt(Status).
 
-command([]) ->
+command([Help | _]) when Help =:= "--help"; Help =:= "-h" ->
     io:put_chars(help([]));
-command([Help | Rest]) when Help =:= "help"; Help =:= "--help"; Help =:= "-h" ->
-    io:put_chars(help(Rest));
-command([Version]) when Version =:= "version"; Version =:= "--version" ->
+command(["--version"]) ->
     io:put_chars(version());
-command(["version" | _]) ->
-    throw({error, "usage: ~ts version", [name()]});
-command(["build" | Args]) ->
-    beam_com_build:run(build_options(Args, #{apps => []}));
-command([Command | _]) ->
-    throw({error, "unknown command ~ts (see ~ts help)", [Command, name()]}).
+command(["--version" | _]) ->
+    throw({error, "usage: ~ts --version", [name()]});
+command([]) ->
+    case is_project(".") of
+        true -> run(#{input => ".", apps => [], args => []});
+        false -> io:put_chars(help([]))
+    end;
+command(Args) ->
+    Opts = build_options(Args, #{apps => []}),
+    case Opts of
+        #{output := _} -> beam_com_build:run(Opts);
+        _ -> run(Opts)
+    end.
+
+%% A directory with a project of rebar3 or Mix, or an application (src/).
+is_project(Dir) ->
+    lists:any(fun(F) -> filelib:is_file(filename:join(Dir, F)) end,
+              ["mix.exs", "rebar.config", "src"]).
+
+%% Run INPUT: the executable that "-o" would make, in the cache of
+%% BEAM.com (made again when a file of INPUT or this file is newer). This
+%% process ends, and beam_com.c replaces it with the executable (execv,
+%% at exit; the path in the file BEAM_COM_RUN_FILE), with the arguments
+%% after "--": the program gets the terminal, and its exit status is the
+%% one of beam.com.
+run(#{target := _}) ->
+    throw({error, "--target makes a file for another system: use it with -o", []});
+run(#{input := Input} = Opts) ->
+    File = run_file(Input, maps:without([input, args], Opts)),
+    case is_fresh(File, Input) of
+        true -> ok;
+        false ->
+            ok = filelib:ensure_dir(File),
+            beam_com_build:run(Opts#{output => File, quiet => true})
+    end,
+    %% beam_com.c runs File at exit (execv): it names the file for its path.
+    case os:getenv("BEAM_COM_RUN_FILE") of
+        false -> throw({error, "no BEAM_COM_RUN_FILE: run ~ts itself", [File]});
+        Run -> ok = filelib:ensure_dir(Run), ok = file:write_file(Run, File)
+    end,
+    erlang:halt(0).
+
+%% The file of INPUT in the cache: a name from the path of INPUT and the
+%% options of the build (the sandbox, the applications).
+run_file(Input, Opts) ->
+    Abs = filename:absname(Input),
+    Hash = binary:encode_hex(crypto:hash(sha256, term_to_binary({Abs, Opts})), lowercase),
+    Name = filename:rootname(filename:basename(Abs)),
+    filename:join([cache_dir(), "run", Name ++ "-" ++ binary_to_list(binary:part(Hash, 0, 12)) ++ ".com"]).
+
+cache_dir() ->
+    Env = fun(V) -> case os:getenv(V) of false -> ""; X -> X end end,
+    case {Env("BEAM_COM_CACHE"), Env("XDG_CACHE_HOME"), Env("LOCALAPPDATA"), Env("HOME")} of
+        {C, _, _, _} when C =/= "" -> C;
+        {_, X, _, _} when X =/= "" -> filename:join(X, "beam.com");
+        {_, _, L, _} when L =/= "" -> filename:join(L, "beam.com");
+        {_, _, _, H} -> filename:join([H, ".cache", "beam.com"])
+    end.
+
+%% The file in the cache is newer than the files of INPUT (not _build,
+%% deps, .git) and than this file.
+is_fresh(File, Input) ->
+    case filelib:last_modified(File) of
+        0 -> false;
+        T ->
+            Self = case init:get_argument(beam_com_exe) of
+                       {ok, [[Exe | _] | _]} -> filelib:last_modified(Exe);
+                       _ -> 0
+                   end,
+            Self =< T andalso newest(Input) =< T
+    end.
+
+newest(Path) ->
+    case filelib:is_dir(Path) of
+        false -> filelib:last_modified(Path);
+        true ->
+            {ok, Names} = file:list_dir(Path),
+            lists:max([filelib:last_modified(Path) |
+                       [newest(filename:join(Path, N))
+                        || N <- Names, not lists:member(N, ["_build", "deps", ".git", ".elixir_ls"])]])
+    end.
 
 %% The name of this file for the messages: beam.com, beam-emu.com, or
 %% the name of a copy (also a copy named beam.exe on Windows).
@@ -56,8 +131,13 @@ elixir_version() ->
 
 build_options([], #{input := _} = Opts) ->
     Opts;
-build_options([], _Opts) ->
-    usage();
+build_options([], Opts) ->
+    case is_project(".") of
+        true -> Opts#{input => "."};
+        false -> usage()
+    end;
+build_options(["--" | Args], Opts) ->
+    build_options([], Opts#{args => Args});
 build_options(["-o", Output | Rest], Opts) ->
     build_options(Rest, Opts#{output => Output});
 build_options(["-a", App | Rest], #{apps := Apps} = Opts) ->
@@ -85,111 +165,116 @@ build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a";
 build_options([[$- | _] = Option | _], _Opts) ->
     throw({error, "unknown option ~ts", [Option]});
 build_options([Input | Rest], Opts) when not is_map_key(input, Opts) ->
+    old_command(Input),
     build_options(Rest, Opts#{input => Input});
-build_options(_, _Opts) ->
-    usage().
+build_options([Arg | _], #{input := Input}) ->
+    %% "beam.com build app.erl" with a directory build: still the old command.
+    is_old_command(Input) andalso old_hint(Input),
+    throw({error, "~ts: the arguments of the program come after \"--\" (see ~ts --help)",
+           [Arg, name()]}).
+
+%% The commands before beam.com 0.2 (help, version and build): a hint,
+%% when there is no file of that name.
+old_command(Input) ->
+    case is_old_command(Input) andalso not filelib:is_file(Input) of
+        true -> old_hint(Input);
+        false -> ok
+    end.
+
+is_old_command(Input) -> lists:member(Input, ["build", "help", "version"]).
+
+old_hint(Input) ->
+    New = #{"build" => "~ts INPUT -o OUTPUT", "help" => "~ts --help",
+            "version" => "~ts --version"},
+    throw({error, "there is no command ~ts: use \"" ++ maps:get(Input, New) ++ "\"",
+           [Input, name()]}).
 
 usage() ->
-    throw({error, "usage: " ++ build_usage(), []}).
+    throw({error, "usage: " ++ usage_text() ++ "(see ~ts --help)", [name()]}).
 
-build_usage() ->
+usage_text() ->
     Name = name(),
-    Pad = lists:duplicate(length(Name) + 7, $\s),
-    Name ++ " build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]~n" ++
-    Pad ++ "[--allow-write[=PATH,...]] [--allow-net] [--allow-run[=PROGRAM,...]]~n" ++
-    Pad ++ "[--allow-all] [--target TARGET] [--main MODULE]~n" ++
-    Pad ++ "[--tool rebar|mix] [--extract-priv APP]...~n"
-    "  INPUT     a .erl, .ex or .exs file with main/1, or an application~n"
-    "            directory (rebar3 or Mix)~n"
-    "  OUTPUT    the new executable (default: the name of INPUT.com)~n"
-    "  APP       an OTP application to add (for calls that the~n"
-    "            builder cannot see, such as apply/3)~n"
-    "  --allow-*  the sandbox, as the permissions of Deno (Linux and~n"
-    "            OpenBSD): with one of them, the program can do only what~n"
-    "            they allow. -R, -W, -N and -A are short for --allow-read,~n"
-    "            --allow-write, --allow-net and --allow-all~n"
-    "  PATH      a file or directory that the program can read (and~n"
-    "            write); without paths, all~n"
-    "  PROGRAM   a program that the program can run (a port), by path~n"
-    "            or by name (found in PATH); without programs, all~n"
-    "  TARGET    a native file for one system, not an APE file:~n"
-    "            x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,~n"
-    "            x86_64-unknown-freebsd or x86_64-apple-darwin (also~n"
-    "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos)~n"
-    "  MODULE    for an application: the module whose main/1 runs, with~n"
-    "            the arguments, after the start (as an escript); found in~n"
-    "            rebar.config (escript) or mix.exs (:escript) when not given~n"
-    "  --extract-priv  an application whose priv files are copied to real~n"
-    "            files at the first start (for other programs that read~n"
-    "            them); automatic when priv has an executable file~n"
-    "  --tool    the layout of a directory with both rebar.config and~n"
-    "            mix.exs (default: rebar)".
+    Name ++ " [FLAGS] [INPUT] [-- ARGUMENTS]    run INPUT~n"
+    "       " ++ Name ++ " [FLAGS] INPUT -o OUTPUT        make an executable~n".
 
-%% The text of "beam.com help [COMMAND]".
+%% The text of "beam.com --help".
 help([]) ->
     Name = name(),
+    Pad = lists:duplicate(length(Name) + 1, $\s),
     {Runtime, Inputs, Tools} =
         case elixir_version() of
-            none -> {[], "a .erl file with main/1, or\n"
-                         "                  from an application directory\n", []};
+            none -> {[], "a .erl file with main/1, or an application\n"
+                         "            directory (rebar3)\n", []};
             Elixir -> {[" and Elixir ", Elixir],
-                       "a .erl, .ex or .exs file with\n"
-                       "                  main/1, or from an application directory\n"
-                       "                  (rebar3 or Mix)\n",
+                       "a .erl, .ex or .exs file with main/1, or an\n"
+                       "            application directory (rebar3 or Mix)\n",
                        ["  mix, iex, elixir, elixirc [ARGUMENTS]\n"
-                        "                  the tools of Elixir, as with an Elixir\n"
-                        "                  installation (\"", Name, " mix test\")\n"]}
+                        "            the tools of Elixir, as with an Elixir installation\n"
+                        "            (\"", Name, " mix test\")\n"]}
         end,
     ["BEAM.com: Erlang/OTP ", otp_version(), Runtime, " in one executable file, for\n"
      "Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.\n"
      "\n"
-     "usage: ", Name, " COMMAND [ARGUMENTS]\n"
+     "usage: ", Name, " [FLAGS] [INPUT] [-- ARGUMENTS]\n",
+     Pad, "run INPUT (default: the project in this directory)\n"
+     "       ", Name, " [FLAGS] INPUT -o OUTPUT\n",
+     Pad, "make an executable of INPUT\n"
+     "       ", Name, " --help | --version\n"
      "\n"
-     "Commands:\n"
-     "  build INPUT [-o OUTPUT] [-a APP]...\n"
-     "                  make an executable from ", Inputs,
+     "  INPUT     ", Inputs,
+     "  ARGUMENTS the arguments of the program\n"
+     "  -o OUTPUT make the executable OUTPUT (with the compiled code, an OTP\n"
+     "            release with the applications that the code needs, and the\n"
+     "            runtime of ", Name, "), and do not run it\n"
+     "  -a APP    an OTP application to add (for calls that the builder\n"
+     "            cannot see, such as apply/3)\n"
+     "  --allow-read[=PATH,...]  --allow-write[=PATH,...]  --allow-net\n"
+     "  --allow-run[=PROGRAM,...]  --allow-all\n"
+     "            the sandbox, as the permissions of Deno (Linux and OpenBSD):\n"
+     "            with one of them, the program can do only what they allow.\n"
+     "            -R, -W, -N and -A are short for --allow-read, --allow-write,\n"
+     "            --allow-net and --allow-all. PATH: a file or directory that\n"
+     "            the program can read (and write); without paths, all.\n"
+     "            PROGRAM: a program that it can run (a port), by path or by\n"
+     "            name; without programs, all. Reading or writing another file\n"
+     "            gives {error, eacces}, and a socket or a port without the flag\n"
+     "            {error, eperm}. BEAM_COM_ALLOW (\"read=/etc;net\") gives\n"
+     "            permissions to a program that has none in its file.\n"
+     "  --target TARGET\n"
+     "            (with -o) a native file for one system, not an APE file:\n"
+     "            x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,\n"
+     "            x86_64-unknown-freebsd or x86_64-apple-darwin (also\n"
+     "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos)\n"
+     "  --main MODULE\n"
+     "            for an application: the module whose main/1 runs, with the\n"
+     "            arguments, after the start (as an escript); found in\n"
+     "            rebar.config (escript) or mix.exs (:escript) when not given\n"
+     "  --extract-priv APP\n"
+     "            an application whose priv files are copied to real files at\n"
+     "            the first start (for other programs that read them);\n"
+     "            automatic when priv has an executable file\n"
+     "  --tool rebar|mix\n"
+     "            the layout of a directory with both rebar.config and mix.exs\n"
+     "            (default: rebar)\n"
+     "\n"
+     "A run builds the executable in the cache of ", Name, " (BEAM_COM_CACHE, else\n"
+     "~/.cache/beam.com), again when a file of INPUT is newer, and runs it.\n"
+     "\n"
+     "The tools:\n"
      "  escript FILE [ARGUMENTS]\n"
-     "                  run an escript\n"
-     "  -FLAG ...       the flags of erl (\"-sname me -remsh app\"): run as erl\n"
-     "  epmd [ARGUMENTS]\n"
-     "                  epmd, which -sname, -name and -remsh start\n"
-     "  inotifywait [-m] [-r] [-e EVENT]... [--format FORMAT] PATH...\n"
-     "                  a file watcher, as inotifywait of inotify-tools\n"
-     "  mac_listener [--latency=SECONDS] PATH...\n"
-     "                  the same watcher, as mac_listener of file_system\n",
+     "            run an escript\n",
      Tools,
-     "  version         show the versions, the emulator and the platform\n"
-     "  help [COMMAND]  show this text, or the help of a command\n"
+     "  -FLAG ...  the flags of erl (\"-sname me -remsh app\"): run as erl\n"
+     "  epmd [ARGUMENTS]\n"
+     "            epmd, which -sname, -name and -remsh start\n"
+     "  inotifywait, mac_listener\n"
+     "            the file watcher of the file_system package\n"
      "\n"
      "A copy of this file or a link to it with the name of a tool (escript",
      case Tools of [] -> ""; _ -> ",\nmix, iex, elixir, elixirc; also mix.com, iex.com, ..." end,
      ") runs that tool.\n"
      "To run an OTP release, add it to the zip of a copy of ", Name, ".\n"
-     "More: https://github.com/sntran/BEAM.com\n"];
-help(["build"]) ->
-    ["usage: ", io_lib:format(build_usage(), []), "\n"
-     "\n"
-     "The new executable has the compiled code, an OTP release with the\n"
-     "applications that the code needs, and the runtime of beam.com.\n"
-     "\n"
-     "The sandbox: without --allow-* flags, the program can do all that\n"
-     "its user can. With them, it can read, write, use the network and run\n"
-     "programs only as they allow; --allow-all turns the sandbox off.\n"
-     "Reading or writing another file gives {error, eacces}, and a socket\n"
-     "or a port without the flag {error, eperm}. Linux applies all the\n"
-     "flags, OpenBSD only the paths, and the other systems ignore them.\n"
-     "BEAM_COM_ALLOW (flags\n"
-     "without --allow-, separated by \";\": \"read=/etc;net\") gives\n"
-     "permissions to a program that has none in its file.\n"];
-help(["version"]) ->
-    ["usage: ", name(), " version\n"
-     "\n"
-     "Shows the versions of Erlang/OTP, ERTS and Elixir, the emulator, the\n"
-     "platform, and the applications in the zip of ", name(), ".\n"];
-help(["help"]) ->
-    ["usage: ", name(), " help [COMMAND]\n"];
-help([Command | _]) ->
-    throw({error, "unknown command ~ts (see ~ts help)", [Command, name()]}).
+     "More: https://github.com/sntran/BEAM.com\n"].
 
 %% The text of "beam.com version".
 version() ->

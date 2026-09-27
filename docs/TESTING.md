@@ -31,18 +31,18 @@ The builder tests use the real OTP applications (linked into a temporary
 
 ## 2. Behavior tests in beam.com
 
-These programs are built with `beam.com build` and run in `beam.com`
+These programs are built with `beam.com INPUT -o OUTPUT` and run in `beam.com`
 itself, on each platform (the static NIFs exist only there):
 
 | Program | What it checks |
 |---|---|
 | `tests/programs/wasm_tests.erl` | every value type at its limits (i32, i64, f32, f64, NaN and infinity), wrong arguments, all trap kinds and the recovery after a trap, stack exhaustion, memory bounds and growth, 50 processes calling one instance, resource lifetime, missing imports, WASI arguments, environment and exit codes |
 | `tests/programs/script_check.erl` | one-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS` |
-| `examples/*` | the examples, built with rebar3 and with `beam.com build`: releases, crypto (exact hash values), TLS (a local handshake and a verified HTTPS request), port programs, SQLite, WebAssembly and a Go WASI program |
+| `examples/*` | the examples, built with rebar3 and with `beam.com INPUT -o OUTPUT`: releases, crypto (exact hash values), TLS (a local handshake and a verified HTTPS request), port programs, SQLite, WebAssembly and a Go WASI program |
 
 `tests/run.sh` (Unix) and `tests/run.ps1` (Windows) run them and check
 the output and the exit status of each one, with a time limit. They also
-check the errors of `beam.com build` (exit status 1 and the message).
+check the errors of `beam.com INPUT -o OUTPUT` (exit status 1 and the message).
 
 ```sh
 tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)

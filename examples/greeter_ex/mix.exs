@@ -1,4 +1,4 @@
-# An example Mix project for "beam.com build": Elixir code, a Hex package
+# An example Mix project for "beam.com INPUT -o OUTPUT": Elixir code, a Hex package
 # written in Elixir (jason) and config/config.exs. beam.com reads this
 # file with Mix; the Mix tool itself is not needed.
 defmodule GreeterEx.MixProject do

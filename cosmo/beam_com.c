@@ -21,8 +21,8 @@
  * When there is neither, the program is a plain beam.smp.
  *
  * When the zip has the beam_com application and no release (the default
- * beam.com), the commands of beam.com run (help, version and build, see
- * apps/beam_com). "build" also runs when the zip has a release.
+ * beam.com), the command line of beam.com runs (run a program or a
+ * project, -o to build it, --help, --version; see apps/beam_com).
  */
 #include <cosmo.h>
 #include <dirent.h>
@@ -839,6 +839,86 @@ static void rebar3_link(void)
     setenv("MIX_REBAR3", link, 1);
 }
 
+/*
+ * The flags of beam.com (apps/beam_com/src/beam_com.erl), which are not
+ * flags of erl: -h, --help, --version, "--" (the arguments of the program
+ * follow), -o and -a, the sandbox (-R, -W, -N, -A, --allow-*, --deny-*),
+ * and --main, --tool, --extract-priv, --target.
+ */
+static int beam_com_flag(const char *arg)
+{
+    static const char *flags[] = {"-h", "--help", "--version", "--", "-o", "-a", "-R", "-W",
+                                  "-N", "-A", "--main", "--tool", "--extract-priv", "--target"};
+    size_t i;
+
+    for (i = 0; i < sizeof(flags) / sizeof(flags[0]); i++)
+        if (strcmp(arg, flags[i]) == 0)
+            return 1;
+    return starts_with(arg, "--allow-") || starts_with(arg, "--deny-");
+}
+
+/*
+ * A run of beam.com ("beam.com app.erl -- ARGS"): beam_com.erl builds the
+ * executable in the cache, writes its path into the file
+ * BEAM_COM_RUN_FILE (set here: os:putenv/2 changes only the environment
+ * of the VM), and halts. At exit, this process becomes that executable
+ * (execv), with the arguments after "--": the program gets the terminal,
+ * and its exit status is the one of beam.com. No port program: also on
+ * Windows.
+ */
+static char **run_argv;
+static int run_argc;
+static char *run_file;
+
+static void run_setup(void)
+{
+    const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
+               *local = getenv("LOCALAPPDATA"), *home = getenv("HOME");
+    char pid[32], *dir;
+
+    if (cache && *cache)
+        dir = join(cache, "/run", "");
+    else if (xdg && *xdg)
+        dir = join(xdg, "/beam.com/run", "");
+    else if (local && *local)
+        dir = join(local, "/beam.com/run", "");
+    else if (home && *home)
+        dir = join(home, "/.cache/beam.com/run", "");
+    else
+        return;
+    snprintf(pid, sizeof(pid), "%d", (int)getpid());
+    run_file = join(dir, "/.exec.", pid);
+    setenv("BEAM_COM_RUN_FILE", run_file, 1);
+}
+
+static void run_exec(void)
+{
+    char path[4096], **args;
+    FILE *f;
+    size_t n;
+    int i;
+
+    if (!run_file || !(f = fopen(run_file, "rb")))
+        return;
+    n = fread(path, 1, sizeof(path) - 1, f);
+    fclose(f);
+    unlink(run_file);
+    path[n] = '\0';
+    if (!n)
+        return;
+    args = calloc(run_argc + 2, sizeof(char *));
+    if (!args)
+        return;
+    args[0] = path;
+    for (i = 0; i < run_argc; i++)
+        args[i + 1] = run_argv[i];
+    fflush(stdout);
+    fflush(stderr);
+    execv(args[0], args);
+    fprintf(stderr, "beam.com: %s: %s\n", args[0], strerror(errno));
+    _exit(127);
+}
+
 /* make: the name of the program that make_link() makes. */
 static int is_make(const char *name)
 {
@@ -1358,12 +1438,11 @@ void beam_com_main(int *argcp, char ***argvp)
                (getenv("BEAM_COM_ERL") && strcmp(getenv("BEAM_COM_ERL"), "1") == 0);
     /* beam.com with the flags of erl ("beam.com -sname me -remsh app",
      * "beam.com +S 1 -eval ..."): erl mode too, in a file without a
-     * release (whose arguments are its own). -h, --help and --version are
-     * commands of beam.com. Not for a tool (elixir.com -e ...). */
+     * release (whose arguments are its own). The flags of beam.com itself
+     * (run and -o, see beam_com_flag()) are not. Not for a tool
+     * (elixir.com -e ...). */
     if (!erl_mode && !make_mode && argc > 1 && (argv[1][0] == '-' || argv[1][0] == '+') &&
-        !elixir_tool(name) &&
-        strcmp(argv[1], "-h") != 0 && strcmp(argv[1], "--help") != 0 &&
-        strcmp(argv[1], "--version") != 0 && file_exists(BEAM_COM_TOOL) &&
+        !elixir_tool(name) && !beam_com_flag(argv[1]) && file_exists(BEAM_COM_TOOL) &&
         !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
         erl_mode = 1;
     /* "app.com remote": a shell in the running node of the release in
@@ -1493,13 +1572,21 @@ void beam_com_main(int *argcp, char ***argvp)
         has_release = read_release(&file);
         has_args = read_zip_args(&file);
     }
-    if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) &&
-        ((!has_release && !has_args) ||
-         (argc > 1 && strcmp(argv[1], "build") == 0))) {
-        /* The commands of beam.com: when the zip has no release (the
-         * default beam.com), and "build" also when it has one. They get
-         * the arguments with init:get_plain_arguments() (after "-extra",
-         * below). */
+    if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) && !has_release && !has_args) {
+        /* The command line of beam.com (run, -o, --help, --version), when
+         * the zip has no release (the default beam.com). It gets the
+         * arguments with init:get_plain_arguments() (after "-extra",
+         * below). A run ends with BEAM_COM_RUN, the executable to run
+         * (run_exec(), at exit). */
+        if (!make_mode) {
+            for (i = 1; i < argc; i++)
+                if (strcmp(argv[i], "--") == 0)
+                    break;
+            run_argc = i < argc ? argc - i - 1 : 0;
+            run_argv = argv + argc - run_argc;
+            run_setup();
+            atexit(run_exec);
+        }
         file = (struct arglist){0};
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
