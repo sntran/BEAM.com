@@ -160,6 +160,19 @@ commands_test_() ->
                   application:unset_env(beam_com, otp_version)
               end
       end},
+     {"the linked NIFs of Elixir packages from the .app file",
+      fun() ->
+              {ok, Without} = output(["version"]),
+              ?assertNot(has(Without, "Linked NIFs")),
+              ok = application:set_env(beam_com, nifs, [{exqlite, "0.41.0"},
+                                                        {bcrypt_elixir, "3.3.2"}]),
+              try
+                  {ok, Text} = output(["version"]),
+                  ?assert(has(Text, "  Linked NIFs : exqlite-0.41.0 bcrypt_elixir-3.3.2\n"))
+              after
+                  application:set_env(beam_com, nifs, [])
+              end
+      end},
      {"an unknown command", ?_assertThrow(UnknownRun, beam_com:command(["run", "x"]))},
      {"version with arguments",
       ?_assertThrow({error, "usage: ~ts version", ["beam.com"]},

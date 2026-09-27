@@ -4,7 +4,7 @@
 # version and build) in its zip (redbean style).
 #
 # Usage: ./build.sh [step...]
-#   Steps: toolchain openssl otp configure sqlite wasm make elixir
+#   Steps: toolchain openssl otp configure sqlite nifs wasm make elixir
 #          release multicall bundle test unit
 #   With no step, all steps run in order.
 #
@@ -17,6 +17,13 @@
 #                    default 1)
 #   SQLITE_VERSION   SQLite version (default 3.53.4), and SQLITE_YEAR, the
 #                    year directory of its download on sqlite.org (2026)
+#   EXQLITE_VERSION  Version of the hex.pm package exqlite (default 0.41.0),
+#                    whose NIF is linked into beam.com (for ecto_sqlite3),
+#                    with the SQLite of esqlite. Only with SQLITE=1 and
+#                    ELIXIR=1.
+#   BCRYPT_ELIXIR_VERSION  Version of the hex.pm package bcrypt_elixir
+#                    (default 3.3.2), whose NIF is linked into beam.com (for
+#                    phx.gen.auth). Only with ELIXIR=1.
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
@@ -47,6 +54,13 @@ SQLITE=${SQLITE:-1}
 ESQLITE_COMMIT=${ESQLITE_COMMIT:-5c8d590d8eb70de17dd2c64dfc7502f4fd2fcba8}
 SQLITE_VERSION=${SQLITE_VERSION:-3.53.4}
 SQLITE_YEAR=${SQLITE_YEAR:-2026}
+# The NIFs of Elixir packages (with the SHA-256 of the hex.pm tarball).
+# The tools of Elixir compile these packages without a C compiler (see
+# apps/beam_com/src/beam_com_make.erl).
+EXQLITE_VERSION=${EXQLITE_VERSION:-0.41.0}
+EXQLITE_SHA256=${EXQLITE_SHA256:-a7e9b6bed529ab72aa07ed2a925ac109c27e6877a7a8af252361c396a4192855}
+BCRYPT_ELIXIR_VERSION=${BCRYPT_ELIXIR_VERSION:-3.3.2}
+BCRYPT_ELIXIR_SHA256=${BCRYPT_ELIXIR_SHA256:-471be5151874ae7931911057d1467d908955f93554f7a6cd1b7d804cac8cef53}
 WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 ELIXIR=${ELIXIR:-1}
@@ -77,6 +91,7 @@ ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
 OPENSSL=$BUILD/openssl
 ESQLITE=$BUILD/esqlite
+HEXNIFS=$BUILD/hexnifs
 WAMR=$BUILD/wamr
 STAGE=$BUILD/stage
 OUT=${OUT:-$BUILD/beam.com}
@@ -243,17 +258,21 @@ step_sqlite() {
     log "Building the esqlite NIF (SQLite) as a static NIF"
     t=$(target)
     cd "$ESQLITE"
-    # The SQLite options of esqlite (rebar.config.script). The NIF is
-    # static: its init function is esqlite3_nif_nif_init, which ERTS
-    # finds by the name of the module (esqlite3_nif).
+    # The SQLite options of esqlite (rebar.config.script), and the ones of
+    # exqlite (its Makefile), whose NIF uses the same SQLite (step_nifs).
+    # Not the options SQLITE_OMIT_AUTOINIT and SQLITE_OMIT_PROGRESS_CALLBACK
+    # of esqlite: exqlite does not call sqlite3_initialize(), and it uses
+    # sqlite3_progress_handler(). The NIF is static: its init function is
+    # esqlite3_nif_nif_init, which ERTS finds by the name of the module
+    # (esqlite3_nif).
     flags="-Os -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0
         -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS
         -DSQLITE_MAX_EXPR_DEPTH=0 -DSQLITE_OMIT_DEPRECATED
-        -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_USE_ALLOCA
-        -DSQLITE_OMIT_AUTOINIT -DSQLITE_USE_URI -DSQLITE_ENABLE_FTS3
+        -DSQLITE_USE_ALLOCA -DSQLITE_USE_URI -DSQLITE_ENABLE_FTS3
         -DSQLITE_ENABLE_FTS3_PARENTHESIS -DSQLITE_ENABLE_FTS4
         -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS
         -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY
+        -DSQLITE_ENABLE_RBU -DSQLITE_ENABLE_DBSTAT_VTAB -DHAVE_USLEEP=1
         -DSTATIC_ERLANG_NIF_LIBNAME=esqlite3_nif -Ic_src/sqlite3
         -I$ERL_TOP/erts/emulator/beam -I$ERL_TOP/erts/include
         -I$ERL_TOP/erts/include/$t"
@@ -263,6 +282,81 @@ step_sqlite() {
     "$CC" $flags -c c_src/sqlite3/sqlite3.c -o sqlite3.o
     rm -f esqlite3_nif.a .aarch64/esqlite3_nif.a
     "$AR" rcs esqlite3_nif.a esqlite3_nif.o sqlite3.o
+}
+
+# The NIFs of Elixir packages are linked when their package is enabled.
+use_exqlite() { [ "$SQLITE" = 1 ] && [ "$ELIXIR" = 1 ]; }
+use_bcrypt() { [ "$ELIXIR" = 1 ]; }
+
+# Fetch the source of a hex.pm package into $HEXNIFS/NAME-VSN, and check
+# the SHA-256 of its tarball.
+fetch_hex() {
+    [ -f "$HEXNIFS/$1-$2/mix.exs" ] && return 0
+    log "Fetching $1 $2 from hex.pm"
+    mkdir -p "$HEXNIFS/$1-$2"
+    curl -fsSL -o "$HEXNIFS/$1-$2.tar" "https://repo.hex.pm/tarballs/$1-$2.tar"
+    sum=$(sha256sum "$HEXNIFS/$1-$2.tar" | cut -d' ' -f1)
+    if [ "$sum" != "$3" ]; then
+        echo "Bad SHA-256 of $1-$2.tar: $sum" >&2
+        exit 1
+    fi
+    tar -xOf "$HEXNIFS/$1-$2.tar" contents.tar.gz | tar -xzf - -C "$HEXNIFS/$1-$2"
+    rm -f "$HEXNIFS/$1-$2.tar"
+}
+
+# The NIFs of the Elixir packages exqlite (for ecto_sqlite3) and
+# bcrypt_elixir (for phx.gen.auth) as static NIFs. ERTS finds a static
+# NIF by the name of its module (Elixir.Exqlite.Sqlite3NIF and
+# Elixir.Bcrypt.Base), before it opens the file that load_nif/2 gets
+# (priv/sqlite3_nif and priv/bcrypt_nif): so these files are not needed.
+step_nifs() {
+    t=$(target)
+    erl_flags="-I$ERL_TOP/erts/emulator/beam -I$ERL_TOP/erts/include
+        -I$ERL_TOP/erts/include/$t"
+    if use_exqlite; then
+        if [ ! -f "$ESQLITE/esqlite3_nif.a" ]; then
+            echo "Missing $ESQLITE/esqlite3_nif.a: run the sqlite step first" >&2
+            exit 1
+        fi
+        fetch_hex exqlite "$EXQLITE_VERSION" "$EXQLITE_SHA256"
+        log "Building the exqlite NIF as a static NIF"
+        cd "$HEXNIFS/exqlite-$EXQLITE_VERSION"
+        # The SQLite of esqlite (sqlite3.o is in esqlite3_nif.a, before
+        # this archive in STATIC_NIFS), not the copy in exqlite: one
+        # SQLite in beam.com. The init function is sqlite3_nif_nif_init.
+        # (Its Makefile gives -DSTATIC_ERLANG_NIF=1, which erl_nif.h
+        # defines again, with a warning.) The functions update_callback
+        # and on_load are not static: the names get a prefix, because
+        # esqlite3_nif.o also has an update_callback.
+        # shellcheck disable=SC2086
+        "$CC" -O2 -DNDEBUG=1 -DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif \
+            -Dupdate_callback=exqlite_update_callback -Don_load=exqlite_on_load \
+            -I"$ESQLITE/c_src/sqlite3" \
+            $erl_flags -c c_src/sqlite3_nif.c -o sqlite3_nif.o
+        rm -f sqlite3_nif.a .aarch64/sqlite3_nif.a
+        "$AR" rcs sqlite3_nif.a sqlite3_nif.o
+    fi
+    if use_bcrypt; then
+        fetch_hex bcrypt_elixir "$BCRYPT_ELIXIR_VERSION" "$BCRYPT_ELIXIR_SHA256"
+        log "Building the bcrypt_elixir NIF as a static NIF"
+        cd "$HEXNIFS/bcrypt_elixir-$BCRYPT_ELIXIR_VERSION"
+        # shellcheck disable=SC2086
+        "$CC" -O2 -DSTATIC_ERLANG_NIF_LIBNAME=bcrypt_nif -Ic_src $erl_flags \
+            -c c_src/bcrypt_nif.c -o bcrypt_nif.o
+        # shellcheck disable=SC2086
+        "$CC" -O2 -Ic_src -c c_src/blowfish.c -o blowfish.o
+        rm -f bcrypt_nif.a .aarch64/bcrypt_nif.a
+        "$AR" rcs bcrypt_nif.a bcrypt_nif.o blowfish.o
+    fi
+    return 0
+}
+
+# The Elixir packages whose NIFs are linked ("name vsn" on each line),
+# for the env of the beam_com application (beam_com_make).
+hex_nifs() {
+    use_exqlite && echo "exqlite $EXQLITE_VERSION"
+    use_bcrypt && echo "bcrypt_elixir $BCRYPT_ELIXIR_VERSION"
+    return 0
 }
 
 # The WAMR sources for the interpreter with WASI (from the CMake files of
@@ -371,11 +465,14 @@ step_wasm() {
 # The STATIC_NIFS value for the emulator Makefile. Empty: the configured
 # static NIFs (crypto and asn1).
 static_nifs() {
-    [ "$SQLITE" = 1 ] || [ "$WASM" = 1 ] || return 0
+    [ "$SQLITE" = 1 ] || [ "$WASM" = 1 ] || use_bcrypt || return 0
     t=$(target)
     printf '%s' "$ERL_TOP/lib/asn1/priv/lib/$t/asn1rt_nif.a" \
         " $ERL_TOP/lib/crypto/priv/lib/$t/crypto.a"
     [ "$SQLITE" = 1 ] && printf ' %s' "$ESQLITE/esqlite3_nif.a"
+    # After esqlite3_nif.a, which has the SQLite that exqlite uses.
+    use_exqlite && printf ' %s' "$HEXNIFS/exqlite-$EXQLITE_VERSION/sqlite3_nif.a"
+    use_bcrypt && printf ' %s' "$HEXNIFS/bcrypt_elixir-$BCRYPT_ELIXIR_VERSION/bcrypt_nif.a"
     [ "$WASM" = 1 ] && printf ' %s' "$WAMR/wasm.a"
     return 0
 }
@@ -386,7 +483,7 @@ check_static_nifs() {
     for a in $(static_nifs); do
         [ -f "$a" ] || case $a in
             */lib/asn1/*|*/lib/crypto/*) ;;  # made by the OTP build
-            *) echo "Missing $a: run the sqlite and wasm steps first" >&2
+            *) echo "Missing $a: run the sqlite, nifs and wasm steps first" >&2
                exit 1 ;;
         esac
     done
@@ -515,7 +612,11 @@ step_bundle() {
     # beam_com.c can find it), and the runner of one-file programs.
     mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/apps/beam_com/src/*.erl
-    sed "s/{otp_version, \"\"}/{otp_version, \"$OTP_VERSION\"}/" \
+    # The .app file gets the full version of OTP, and the Elixir packages
+    # whose NIFs are linked ([{exqlite, "0.41.0"}, ...]).
+    nifs=$(hex_nifs | awk '{printf "%s{%s, \"%s\"}", (NR > 1 ? ", " : ""), $1, $2}')
+    sed -e "s/{otp_version, \"\"}/{otp_version, \"$OTP_VERSION\"}/" \
+        -e "s/{nifs, \[\]}/{nifs, [$nifs]}/" \
         "$ROOT/apps/beam_com/src/beam_com.app.src" \
         > "$STAGE/lib/beam_com/ebin/beam_com.app"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_script-0.1.0/ebin" \
@@ -590,7 +691,7 @@ step_test() {
 }
 
 if [ $# -eq 0 ]; then
-    set -- toolchain openssl otp configure sqlite wasm make elixir release \
+    set -- toolchain openssl otp configure sqlite nifs wasm make elixir release \
         multicall bundle test unit
 fi
 mkdir -p "$BUILD"

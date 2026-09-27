@@ -1,8 +1,11 @@
 {application, beam_com,
  [{description, "The commands of beam.com"},
   {vsn, "0.1.0"},
-  {modules, [beam_com, beam_com_build, beam_com_elixir, beam_com_hex, beam_com_zip]},
+  {modules, [beam_com, beam_com_build, beam_com_elixir, beam_com_hex, beam_com_make,
+             beam_com_zip]},
   {registered, []},
   {applications, [kernel, stdlib, compiler, sasl]},
-  %% build.sh sets the full version of Erlang/OTP (29.1.1).
-  {env, [{otp_version, ""}]}]}.
+  %% build.sh sets the full version of Erlang/OTP (29.1.1), and the
+  %% Elixir packages whose NIFs are linked into beam.com, with their
+  %% versions ([{exqlite, "0.41.0"}, ...]; see beam_com_make).
+  {env, [{otp_version, ""}, {nifs, []}]}]}.

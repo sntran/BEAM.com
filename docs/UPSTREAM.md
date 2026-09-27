@@ -1050,3 +1050,113 @@ directory `out` does not return. An error report shows
 
 **Possible upstream fix.** Return an error to the caller when the
 database process fails.
+
+### O19. code:del_path/1 does not remove a path with ".."
+
+**Status:** OTP 29.1.1 (`code_server`), with Elixir 1.20.4.
+
+**Symptom.** After `code:add_patha("/zip/bin/../lib/eex-1.20.4/ebin")`,
+`code:del_path("/zip/bin/../lib/eex-1.20.4/ebin")` removes
+`/zip/lib/eex-1.20.4/ebin` (when it is in the path too), and the path
+with ".." stays.
+
+**Cause.** `del_path/1` normalizes the name that it gets, but the path
+keeps the name as it was added.
+
+**Effect.** Mix removes the paths of the applications that a project
+does not need before it compiles (`Code.delete_paths/1`). The scripts of
+Elixir add the Elixir applications with ".." (`-elixir_root
+"$SCRIPT_PATH"/../lib`), so Mix never removes them, and some tasks
+depend on this: `mix ecto.migrate` starts `ecto_sql` (which needs `eex`)
+after Mix has compiled a dependency, and before it runs `app.config`.
+With clean paths (as in beam.com) the start fails:
+`{error, {eex, {"no such file or directory", "eex.app"}}}`.
+
+**Workaround in BEAM.com.** The tools add `eex`, `ex_unit`, `logger` and
+`mix` once more with ".." (`elixir_paths()` in `cosmo/beam_com.c`).
+
+**Possible upstream fix.** In OTP, compare the normalized names in
+`del_path/1`. In ecto_sql, run `app.config` (or `loadpaths`) before the
+start of `ecto_sql` in `ecto.migrate`.
+
+## Elixir packages with NIFs (exqlite, elixir_make)
+
+Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and
+cc_precompiler 0.1.11, when their NIFs are linked into the emulator as
+static NIFs (`step_nifs` in `build.sh`).
+
+### E1. exqlite: global functions with common names
+
+**Symptom.** The emulator does not link: `update_callback` is defined
+two times (in the NIFs of exqlite and esqlite).
+
+**Cause.** `c_src/sqlite3_nif.c` defines `update_callback()`,
+`on_load()`, `log_callback()` and other functions, and the variables
+`log_hook_pid` and `log_hook_mutex`, without `static`. In a shared
+library this does not matter; in a static NIF, all the objects are in
+one program.
+
+**Workaround in BEAM.com.** `-Dupdate_callback=exqlite_update_callback
+-Don_load=exqlite_on_load` when the NIF is compiled.
+
+**Possible upstream fix.** Make all the functions and variables of the
+NIF `static`, except the init function (`ERL_NIF_INIT`).
+
+### E2. exqlite: `-DSTATIC_ERLANG_NIF=1` gives a warning
+
+**Symptom.** `warning: "STATIC_ERLANG_NIF" redefined` when the Makefile
+of exqlite is used with `STATIC_ERLANG_NIF=1`.
+
+**Cause.** The Makefile gives `-DSTATIC_ERLANG_NIF=1`, the C file then
+defines `STATIC_ERLANG_NIF_LIBNAME`, and `erl_nif.h` defines
+`STATIC_ERLANG_NIF` again (empty) when `STATIC_ERLANG_NIF_LIBNAME` is
+defined.
+
+**Workaround in BEAM.com.** `-DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif`
+only.
+
+**Possible upstream fix.** `-DSTATIC_ERLANG_NIF` (without a value) in
+the Makefile, or `#ifndef STATIC_ERLANG_NIF_LIBNAME` in the C file.
+
+### E3. exqlite: a shared SQLite must initialize by itself
+
+**Symptom.** With the SQLite options of esqlite (`SQLITE_OMIT_AUTOINIT`,
+`SQLITE_OMIT_PROGRESS_CALLBACK`), the NIF of exqlite does not link
+(`sqlite3_progress_handler` is missing), and without a call to
+`sqlite3_initialize()` it would crash at the first `sqlite3_open_v2()`.
+
+**Cause.** exqlite expects its own SQLite, compiled with its own
+options. It does not call `sqlite3_initialize()`. It calls
+`sqlite3_config(SQLITE_CONFIG_MALLOC)` in its load function and does not
+check the result: when another user of the same SQLite (esqlite) has
+initialized SQLite before, the call fails, and SQLite keeps its
+allocator (this is not a problem).
+
+**Workaround in BEAM.com.** One SQLite for both NIFs, compiled without
+these two options, and with the options of exqlite that esqlite did not
+have (`SQLITE_ENABLE_RBU`, `SQLITE_ENABLE_DBSTAT_VTAB`, `HAVE_USLEEP`).
+
+**Possible upstream fix.** Call `sqlite3_initialize()` in the load
+function, after `sqlite3_config()`, and ignore `SQLITE_MISUSE` from
+`sqlite3_config()` explicitly.
+
+### E4. elixir_make: no way to skip the build of a NIF that is present
+
+**Symptom.** On a computer without a C compiler, `mix deps.compile`
+stops in exqlite and bcrypt_elixir, although the emulator has their NIFs
+(static NIFs). exqlite first downloads a compiled NIF for the platform
+(cc_precompiler), which the emulator does not use.
+
+**Cause.** elixir_make always runs `make` (the `MAKE` variable, else
+`make`), unless a precompiled file is already in `priv`. Only exqlite
+has a switch (`EXQLITE_USE_SYSTEM`), and it only stops the download.
+
+**Workaround in BEAM.com.** The tools set `MAKE` to a `make` of the file
+(`beam_com_make`), which does nothing for the packages whose NIFs are
+linked, and runs the real `make` for the other ones. They also set
+`EXQLITE_USE_SYSTEM=1`.
+
+**Possible upstream fix.** An option of elixir_make (for example an
+application or environment setting with a list of applications) that
+skips the native build, for runtimes that have the NIFs built in
+(static NIFs).

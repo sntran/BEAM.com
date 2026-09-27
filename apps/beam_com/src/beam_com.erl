@@ -209,6 +209,13 @@ version() ->
      io_lib:format("  OS type     : ~p/~p~n", [Family, Name]),
      io_lib:format("  Architecture: ~ts~n", [erlang:system_info(system_architecture)]),
      io_lib:format("  Schedulers  : ~p~n", [erlang:system_info(schedulers)]),
+     %% The Elixir packages whose NIFs are linked (see beam_com_make).
+     case application:get_env(beam_com, nifs, []) of
+         [] -> [];
+         Nifs -> io_lib:format("  Linked NIFs : ~ts~n",
+                               [lists:join(" ", [[atom_to_list(A), "-", V]
+                                                 || {A, V} <- Nifs])])
+     end,
      io_lib:format("  Applications: ~ts~n",
                    [lists:join(" ", [[A, "-", V] || {A, V} <- lists:usort(Apps)])])].
 
