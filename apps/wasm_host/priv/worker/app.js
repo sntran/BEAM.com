@@ -1,4 +1,4 @@
-// A Worker that holds only a release (release.bin of pack.erl), for a runtime
+// A Worker that holds only a release (release.bin of beam_com_wasm), for a runtime
 // Worker (worker.js with a service binding APP) to boot.
 import release from './release.bin';
 

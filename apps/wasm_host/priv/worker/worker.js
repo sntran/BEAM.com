@@ -1,7 +1,7 @@
 // The BEAM on Cloudflare Workers: a Worker with the WebAssembly emulator
 // (threads on JSPI, the runtime of wasm/erts, with no files) and no
 // application. At the first request of an isolate, it gets a release
-// (release.bin of pack.erl), writes it into its file system at /app and boots
+// (release.bin of beam_com_wasm), writes it into its file system at /app and boots
 // it; the next requests to the isolate use the same VM. The release comes
 // from:
 // - a service binding APP (another Worker, as app.js): GET /release.bin;
@@ -20,7 +20,10 @@
 // makes a local TCP port of it).
 //
 // The events between the host and Erlang (wasm_host) are those of
-// wasm/phoenix/wasm_host/server.ex; outgoing wasm_tcp sockets use connect().
+// wasm_host_server.erl; outgoing wasm_tcp sockets use connect().
+//
+// "beam.com INPUT -o DIR --target wasm32" writes this file into DIR, with
+// the runtime (beam.mjs, beam.wasm) and the release (release.bin).
 import { connect } from 'cloudflare:sockets';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
@@ -109,13 +112,14 @@ export class Vm {
         } : undefined,
         preRun: [(m) => {
           this.beam = m;
-          const { name, vsn } = unpack(m.FS, release);
+          // .release.json: the name, the version, the boot arguments and the
+          // environment of the release (beam_com_wasm).
+          const { name, vsn, args, env: relEnv } = unpack(m.FS, release);
           m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
-            '-home', '/', '-mode', 'interactive', '-config', '/app/tmp/run.runtime',
-            '-boot', `/app/releases/${vsn}/start`, '-boot_var', 'RELEASE_LIB', '/app/lib', '-noshell');
+            '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
-          // DIST_PORT): WasmHost.Server starts it after the boot (DIST_NAME,
+          // DIST_PORT): wasm_host_server starts it after the boot (DIST_NAME,
           // DIST_COOKIE, DIST_LISTEN, DIST_CONNECT), when wasm_tcp works.
           if (env.DIST_NAME) {
             m.arguments.push('-proto_dist', 'wasm_tcp', '-erl_epmd_port', env.DIST_PORT ?? '4370', '-start_epmd', 'false');
@@ -127,8 +131,8 @@ export class Vm {
             ROOTDIR: '/app', BINDIR: '/app/bin', EMU: 'beam', PROGNAME: 'erl', HOME: '/',
             RELEASE_ROOT: '/app', RELEASE_NAME: name, RELEASE_VSN: vsn, RELEASE_MODE: 'interactive',
             RELEASE_TMP: '/app/tmp', RELEASE_SYS_CONFIG: '/app/tmp/run.runtime', RELEASE_PROG: name,
-            PHX_SERVER: 'true', WASM_HOST: '1',
-          }, vars);
+            WASM_HOST: '1',
+          }, relEnv, vars);
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
         }],
         print: (s) => console.log(s),

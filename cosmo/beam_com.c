@@ -1494,9 +1494,17 @@ void beam_com_main(int *argcp, char ***argvp)
         exit(1);
     }
     if (erl_mode) {
+        int own_boot = 0;
         unsetenv("BEAM_COM_ERL");
-        push(&file, "-boot");
-        push(&file, BEAM_COM_BINDIR "/start_clean");
+        /* As erl: "-boot FILE" of the user in place of start_clean (init
+         * takes the first -boot). */
+        for (i = 1; i < argc; i++)
+            if (strcmp(argv[i], "-boot") == 0)
+                own_boot = 1;
+        if (!own_boot) {
+            push(&file, "-boot");
+            push(&file, BEAM_COM_BINDIR "/start_clean");
+        }
         push(&file, "...");
         has_release = 1;
         has_args = 0;

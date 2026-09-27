@@ -541,6 +541,34 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `preopens`.
 
+### Cloudflare Workers: `--target wasm32` (an experiment)
+
+`--target wasm32` makes Cloudflare Workers of a program, in place of an
+executable. It runs on a second runtime: ERTS built with Emscripten for
+WebAssembly (not APE). The program is not changed: its servers (Bandit,
+Cowboy) listen with `gen_tcp` as usual.
+
+```sh
+beam.com examples/worker -o worker --target wasm32         # an app, or a Mix or rebar3 project
+beam.com _build/prod/rel/hello -o worker --target wasm32   # or a release directory (mix release)
+workerd serve worker/worker.capnp                          # test on this computer
+(cd worker/release && wrangler deploy) && (cd worker && wrangler deploy)
+```
+
+- The directory has two Workers: the runtime (`beam.wasm`) and the
+  release (`release.bin`). The runtime boots the release at the first
+  request of an isolate, and keeps the VM for the next requests.
+- The runtime is not in the default `beam.com` yet: give its directory
+  with `BEAM_COM_WASM_RUNTIME` (`wasm/erts/build.sh`, `WORKER=1`).
+- The build runs the release once on this computer, to find the modules
+  of its boot (a shorter cold start). `BEAM_COM_WASM_NATIVE_RUN=0` turns
+  that off.
+- Only the NIFs of `crypto` and `asn1` are in the runtime.
+
+See [`docs/WASM.md`](docs/WASM.md) for the details, the measurements
+(first request of a Phoenix app: 0.6 s; next requests: 3 ms) and the
+limits.
+
 ### JIT, and the interpreter (`beam-emu.com`)
 
 `beam.com` runs Erlang code with BeamAsm, the JIT of OTP, in one fat

@@ -1,5 +1,5 @@
 // A Node.js host for the WebAssembly emulator: the TCP sockets of wasm_tcp
-// (node:net), through wasm_host (see wasm/phoenix/wasm_host/server.ex for the
+// (node:net), through wasm_host (see apps/wasm_host/src/wasm_host_server.erl for the
 // events). The HTTP server of the app (Bandit) listens with gen_tcp, and the
 // host listens for it.
 //

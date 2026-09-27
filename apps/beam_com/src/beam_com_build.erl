@@ -11,7 +11,7 @@
 %% of beam.com.
 -module(beam_com_build).
 
--export([run/1, allow/2, check_target/1]).
+-export([run/1, allow/2, check_target/1, split_dir/1, temp_dir/1, executable/0]).
 
 -ifdef(TEST).
 -export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
@@ -27,6 +27,7 @@
 
 -define(ROOT, "/zip").
 -define(DEFAULT_VSN, "0.1.0").
+-define(WASM, "wasm32-unknown-emscripten").
 
 %% Opts: input, apps, and optionally output. root (the zip, "/zip") and
 %% exe (the path of this executable) are for the tests.
@@ -35,6 +36,12 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
+    case maps:get(target, Opts, none) =:= ?WASM andalso beam_com_wasm:release_dir(Input, Root) of
+        false -> build_input(Input, Output, Opts, ExtraApps, Base, Root);
+        Rel -> beam_com_wasm:write(Output, Rel, Opts#{root => Root})
+    end.
+
+build_input(Input, Output, Opts, ExtraApps, Base, Root) ->
     DepsLib = temp_dir("deps"),
     try build(Input, Output, Opts, ExtraApps, Base, Root, DepsLib)
     after
@@ -43,8 +50,11 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     end.
 
 build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
+    Wasm = maps:get(target, Opts, none) =:= ?WASM,
     %% The new file is a copy of this executable: check its format first.
-    check_base(Opts),
+    Wasm orelse check_base(Opts),
+    Wasm andalso maps:is_key(allow, Opts) andalso
+        throw({error, "--allow-* is for native files, not for --target wasm32", []}),
     {App0, Deps} = case filelib:is_dir(Input) of
                        true ->
                            Tool = tool(Input, Opts),
@@ -69,11 +79,6 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
     AppX = with_extract(App, Extract),
     DepFiles = lists:append([app_files(D) || #{name := N} = D <- Deps,
                                              lists:member(N, Apps)]),
-    Exe = case Opts of
-              #{exe := E} -> E;
-              _ -> executable()
-          end,
-    {ok, Bin} = read_file(Exe),
     Tmp = filename:absname(filename:join(filename:dirname(Output),
                                          "." ++ filename:basename(Output)
                                          ++ ".tmp")),
@@ -82,6 +87,36 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
               after file:del_dir_r(Tmp)
               end,
     Kept = [A || A <- Apps, is_map_key(A, Base0)],
+    case Wasm of
+        true ->
+            %% The applications of the zip, all their files (ebin, priv).
+            Zip = [{"lib/" ++ Dir ++ "/" ++ F, D}
+                   || A <- Kept, Dir <- [atom_to_list(A) ++ "-" ++ maps:get(vsn, maps:get(A, Base0))],
+                      {F, D} <- zip_app_files(filename:join([Root, "lib", Dir]))],
+            beam_com_wasm:write(Output, #{name => atom_to_list(maps:get(name, App)),
+                                          vsn => maps:get(vsn, App), kind => beam_com,
+                                          files => app_files(App) ++ DepFiles ++ Release ++ Zip},
+                                Opts#{root => Root});
+        false ->
+            write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root)
+    end.
+
+zip_app_files(Dir) ->
+    Len = length(filename:split(Dir)),
+    [{filename:join(Rel), case filename:extension(F) of
+                              ".beam" -> strip(Data);
+                              _ -> Data
+                          end}
+     || Sub <- ["ebin", "priv"], F <- filelib:wildcard(filename:join([Dir, Sub, "**"])),
+        filelib:is_regular(F), Rel <- [lists:nthtail(Len, filename:split(F))],
+        {ok, Data} <- [read_file(F)]].
+
+write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
+    Exe = case Opts of
+              #{exe := E} -> E;
+              _ -> executable()
+          end,
+    {ok, Bin} = read_file(Exe),
     New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)
                     ++ without_docs(Kept, Base0, Root)),
     Keep = keep(Kept, Base0),
@@ -194,7 +229,10 @@ allow_flag(_) ->
         [{"x86_64-unknown-linux-gnu", ["x86_64-linux"], {elf, 16#3e, sysv}},
          {"aarch64-unknown-linux-gnu", ["aarch64-linux"], {elf, 16#b7, sysv}},
          {"x86_64-unknown-freebsd", ["x86_64-freebsd"], {elf, 16#3e, freebsd}},
-         {"x86_64-apple-darwin", ["x86_64-macos"], {macho, 16#01000007}}]).
+         {"x86_64-apple-darwin", ["x86_64-macos"], {macho, 16#01000007}},
+         %% Not a native file: a directory with the Workers of Cloudflare
+         %% (beam_com_wasm).
+         {"wasm32-unknown-emscripten", ["wasm32"], wasm}]).
 
 %% The triple of a target name (or of an alias).
 check_target(Name) ->

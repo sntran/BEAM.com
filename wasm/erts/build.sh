@@ -92,8 +92,7 @@ ls -l "$OUT/beam.wasm" "$OUT/beam.mjs"
 # without run-time compilation of WebAssembly): an ES module, and the
 # stripped kernel and stdlib in the memory of the module (/otp).
 # WORKER_ROOTFS: another directory to embed, at WORKER_MOUNT (/otp), and
-# the result in WORKER_OUT ($OUT/worker); wasm/phoenix/build-worker.sh
-# embeds a release so.
+# the result in WORKER_OUT ($OUT/worker).
 if [ "${WORKER:-0}" = 1 ]; then
     F=${WORKER_ROOTFS:-$OUT/rootfs/otp}
     if [ -z "${WORKER_ROOTFS:-}" ] && [ "$F" != none ]; then
@@ -106,8 +105,9 @@ if [ "${WORKER:-0}" = 1 ]; then
             "{ok, _} = beam_lib:strip_files(filelib:wildcard(\"$F/lib/*/ebin/*.beam\")), halt()."
     fi
     WOUT=${WORKER_OUT:-$OUT/worker}
-    # WORKER_ROOTFS=none: no files in the module (the runtime of
-    # wasm/worker: the host writes a release into the file system, FS).
+    # WORKER_ROOTFS=none: no files in the module (the runtime of the
+    # Workers of beam.com --target wasm32: the host writes a release into
+    # the file system, FS).
     if [ "$F" = none ]; then
         FILES="-sFORCE_FILESYSTEM -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8,FS"
     else

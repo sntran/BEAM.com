@@ -350,11 +350,86 @@ pass with them, with no change of the adapter.
 ```sh
 npm install --prefix wasm                                # ws (the Node.js host), playwright-core (the tests)
 BEAM_COM=.../beam.com wasm/phoenix/setup.sh              # mix phx.new, the LiveView, a release
-BOOTSTRAP=... ELIXIR=... SERVE=1 wasm/phoenix/run.sh     # Node.js: http://localhost:4000/counter
-EMSDK=... BOOTSTRAP=... ELIXIR=... [MODULES=file] wasm/phoenix/build-worker.sh
+BEAM_COM=.../beam.com [EMSDK=...] wasm/phoenix/build-worker.sh   # beam.com REL -o DIR --target wasm32
 workerd serve wasm/phoenix/build/worker/worker.capnp     # workerd: http://localhost:8789/counter
+SERVE=1 wasm/phoenix/run.sh                              # the same release.bin in Node.js: http://localhost:4000/counter
 node wasm/phoenix/browser-test.mjs http://localhost:8789/counter
 ```
+
+## Build the Workers with `beam.com` (`--target wasm32`)
+
+`beam.com` makes the Workers of a program, with no toolchain (no
+Emscripten, no Node.js):
+
+```sh
+beam.com examples/worker -o worker --target wasm32          # what beam.com builds
+beam.com _build/prod/rel/hello -o worker --target wasm32    # a release directory (mix release, rebar3)
+workerd serve worker/worker.capnp                           # test on this computer
+(cd worker/release && wrangler deploy) && (cd worker && wrangler deploy)
+```
+
+The input is what `beam.com -o` takes (a `.erl` or `.ex` file, an
+application directory, a rebar3 or Mix project), or a release directory
+without ERTS. The output is a directory:
+
+| File | What |
+|---|---|
+| `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | the runtime Worker (`NAME`): the BEAM, with no program |
+| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`); the runtime gets `release.bin` from it at the first request of an isolate |
+| `worker.capnp` | both Workers for `workerd` |
+| `tcp-proxy.mjs` | a local TCP port for a listener of the program (a WebSocket to `/.tcp/PORT`) |
+
+- **The runtime** (`beam.wasm` and `beam.mjs`, 5.3 MB) comes from
+  `BEAM_COM_WASM_RUNTIME` (a directory), else from the zip of `beam.com`
+  (`build.sh` with `WASM_RUNTIME=dir`), else from the cache
+  (`~/.cache/beam.com/wasm32`). The CI of BEAM.com does not build it
+  yet: `wasm/erts/build.sh` with `WORKER=1 WORKER_ROOTFS=none` does.
+- **The application `wasm_host`** (in the zip of every `beam.com`:
+  `apps/wasm_host`) goes into the release, and the boot script starts it
+  after stdlib, before the applications of the program. In the runtime
+  (`WASM_HOST` set) it starts the pump of the host events and makes
+  `gen_tcp` use `wasm_tcp`; natively it does nothing. So the program is
+  not changed: Bandit, Cowboy (Ranch) and `ssl` listen and connect with
+  `gen_tcp`. A release with its own copy of a module of `wasm_host` is an
+  error. `DIST_NAME` starts distributed Erlang over `wasm_tcp`.
+- **`.release.json`** in `release.bin` has the boot arguments: for a mix
+  release, the runtime configuration in `tmp/` (the config providers and
+  `runtime.exs` run in the Worker); for a release of `beam.com`, its
+  `sys.config`. The flags of `vm.args` stay, except the emulator flags
+  (`+S` and the others: the runtime has its own), `-sname`, `-name`,
+  `-setcookie`, `-env` and `-noshell`. `PHX_SERVER=true` for a release
+  with Phoenix. The text `vars` of the Worker are the environment.
+- **The modules of the boot, from a native run.** The build runs the
+  release once on this computer (`beam.com` in erl mode, with the boot
+  script of the release and `-s wasm_host_app record FILE`, `PORT=0`, and
+  a `SECRET_KEY_BASE` if there is none), until the boot ends. The boot
+  script of the Worker then loads these modules in one batch
+  (`code:ensure_modules_loaded/1`) after kernel. The run starts the
+  applications of the program: `BEAM_COM_WASM_NATIVE_RUN=0` turns it off
+  (a program that must not start on the build computer), and when the run
+  fails, the Worker loads the modules one by one (with a warning). No run
+  on Windows (no port programs).
+- **NIFs:** the runtime has the NIFs of `crypto` and `asn1` only. A
+  release with `esqlite`, `wasm`, `exqlite` or `bcrypt_elixir` gets a
+  warning.
+
+Measured in `workerd` (the first request after a new `workerd`, 7 runs
+each, medians; the release directory of the Phoenix demo, 8.5 MB, 1,347
+files; `examples/worker`, 7.8 MB):
+
+| | First request | VM ready |
+|---|---|---|
+| Phoenix, boot modules in one batch (263 modules) | 0.593 s | 0.47 s |
+| Phoenix, one by one (`BEAM_COM_WASM_NATIVE_RUN=0`) | 0.680 s | 0.38 s |
+| `examples/worker` (Cowboy), 125 modules in one batch | 0.30 to 0.41 s | 0.27 to 0.38 s |
+| `examples/worker`, one by one | 0.33 to 0.36 s | 0.26 to 0.30 s |
+
+The batch makes the first request of Phoenix 87 ms shorter (13%): it
+loads the modules before the pump is ready (so "VM ready" comes later),
+and the requests then find them loaded. For the small Cowboy app it makes
+no difference that the noise shows. The next requests take 2.5 to 4 ms.
+A build takes 2 s for the Phoenix release directory (with the native run)
+and 20 s for `examples/worker` (with the compilation of Cowboy).
 
 ### The parts
 
@@ -362,11 +437,11 @@ node wasm/phoenix/browser-test.mjs http://localhost:8789/counter
 |---|---|
 | The risk check | libcrypto for WebAssembly; the release (`mix release`, no ERTS) boots as `bin/hello start` does; interactive mode |
 | `wasm_host` | a static NIF: `recv/0` runs on a dirty I/O scheduler and suspends its green thread until the host has an event (the normal scheduler runs meanwhile); `send/1`. Events are a JSON header, a newline and the body |
-| `wasm/phoenix/wasm_host/` | a Phoenix endpoint adapter (in place of `Bandit.PhoenixAdapter`): a pump process, a `Plug.Conn.Adapter`, and a loop for `WebSock` handlers (the LiveView socket) |
+| `apps/wasm_host` | the pump of the host events (`wasm_host_server`), and `wasm_tcp`; the first version was a Phoenix endpoint adapter (now removed: Bandit runs unchanged over `wasm_tcp`) |
 | `wasm/erts/host/server.mjs` | a Node.js host: `node:http` and WebSockets (`ws`) |
-| `wasm/worker/worker.js` | a Durable Object: one VM for all requests and `WebSocketPair` sockets |
+| `apps/wasm_host/priv/worker/worker.js` | the runtime Worker (and a Durable Object wrapper): one VM for all requests of an isolate |
 | `wasm_tcp` | TCP client sockets of the host (`node:net`, `connect()` of `cloudflare:sockets`) for `gen_tcp`; `ssl` runs over them |
-| `wasm/worker/pack.erl` | packs a release into `release.bin` (in Erlang, so no toolchain); the Worker writes it into the file system of the VM before the boot |
+| `beam_com_wasm` | packs a release into `release.bin` (in Erlang, so no toolchain; first `wasm/worker/pack.erl`); the Worker writes it into the file system of the VM before the boot |
 
 ### Results
 
@@ -383,7 +458,8 @@ node wasm/phoenix/browser-test.mjs http://localhost:8789/counter
 
 The Worker: the runtime `beam.wasm` is 5.2 MB (1.9 MB with gzip), and
 `release.bin` of the app is 7.5 MB (1,337 files). With `MODULES=file`
-(`pack.erl --modules`), `release.bin` keeps only the `.beam` files of the
+(`pack.erl --modules`, not in `beam.com`: a module that a test run did not
+load fails later with `undef`), `release.bin` keeps only the `.beam` files of the
 modules that a test run loaded (394 modules: `code:all_loaded/0` after
 the pages, the LiveView, `gen_tcp` and `ssl`): 3.5 MB (536 files), and
 all the checks pass with it. Cloudflare counts only the size without
@@ -424,13 +500,13 @@ the whole is only 4% smaller, and the files take two times more memory.
 
 ### The BEAM runtime Worker
 
-`wasm/worker/worker.js` is a Worker with the runtime and no application
+`worker.js` (`apps/wasm_host/priv/worker`) is a Worker with the runtime and no application
 (`worker.js`, `beam.mjs`, `beam.wasm`: 5.3 MB). At the first request of an
 isolate, it gets a release, boots it, and keeps the VM for the next
 requests to that isolate. The release comes from:
 
 - a service binding `APP` to another Worker (`app.js` with `release.bin`:
-  what `wasm/worker/build.sh` makes);
+  what `beam.com --target wasm32` makes);
 - else a text binding `RELEASE_URL` (R2, or any URL);
 - else a module `release.bin` in the runtime Worker itself.
 
@@ -506,7 +582,7 @@ listener is a process; the host gives it each new connection
   inbound TCP connections is coming soon", Cloudflare's TCP sockets page,
   2026-09-27). So a WebSocket to `/.tcp/PORT` of the runtime Worker is a
   connection to the listener of PORT, with the bytes in binary messages.
-  On the client, `wasm/worker/tcp-proxy.mjs LOCAL_PORT wss://host/.tcp/PORT`
+  On the client, `tcp-proxy.mjs LOCAL_PORT wss://host/.tcp/PORT`
   (or `websocat -b`) makes a local port of it. A path with no listener
   gets 404. Cloudflare announced (blog, 2026-08-03, private beta) a
   `connect()` handler of Workers for TCP connections from Spectrum: such a
@@ -667,14 +743,15 @@ What the parts cost:
   no measurable gain.
 - The floor (ERTS, kernel, stdlib: about 300 ms) stays until a snapshot.
 
-**In `pack.erl` now** (general and safe):
+**Tried in `pack.erl`** (the first packer, now `beam_com_wasm`):
 
-- `--boot-modules FILE` (`BOOT_MODULES`): the packed boot script loads the
-  modules of the boot in one batch after kernel
-  (`code:ensure_modules_loaded/1`). `WASM_HOST_BOOT_MODULES=file` makes
-  `WasmHost.Server` write that list at `ready`.
-- `--no-start APPS` (`NO_START`): the boot script loads these applications
-  but does not start them, and they are not dependencies of the others.
+- `--boot-modules FILE`: the packed boot script loads the modules of the
+  boot in one batch after kernel (`code:ensure_modules_loaded/1`), from
+  the list of a run in the Worker. `beam.com --target wasm32` now makes
+  the list itself, with a native run (see "Build the Workers with
+  `beam.com`").
+- `--no-start APPS`: the boot script loads these applications but does
+  not start them. Not in `beam.com`: Bandit now serves HTTP itself.
 
 With both (`bandit,thousand_island` and the boot list), and the config
 provider kept: 0.634 s → 0.587 s in `workerd` (7%). The rest of the gain
@@ -758,47 +835,29 @@ processes" in 436 ms.
 - **Deno and Node.js:** a VM inside a JavaScript program (a CLI, an
   Electron app) with no native binary for each platform.
 
-## How this could fit `beam.com`
+## How this fits `beam.com`
 
-**What it shares with `beam.com`, and what not.** The WebAssembly
-runtime does not use APE or Cosmopolitan: it is ERTS built with
-Emscripten, a second runtime next to the APE one. The Blink spike (APE in
-an emulator) was the way to keep one binary, and it was 150 to 250 times
-slower. What it shares is the goal and the release: the same `.beam`
-files and the same release run on the APE runtime and on the WebAssembly
-runtime, and `beam.com` can make the Worker (`pack.erl` is Erlang code;
-it needs no toolchain). So it fits as a build target of `beam.com` ("build
-once, run on the operating systems and on WebAssembly hosts"), not as a
-part of the APE binary.
+The WebAssembly runtime does not use APE or Cosmopolitan: it is ERTS
+built with Emscripten, a second runtime next to the APE one. The Blink
+spike (APE in an emulator) was the way to keep one binary, and it was 150
+to 250 times slower. What it shares is the goal and the release: the same
+`.beam` files and the same release run on the APE runtime and on the
+WebAssembly runtime. So it is a build target of `beam.com` ("build once,
+run on the operating systems and on WebAssembly hosts"), not a part of
+the APE binary: `beam.com INPUT -o DIR --target wasm32` (see "Build the
+Workers with `beam.com`").
 
-A proposal, not done:
+Still open:
 
-- **`beam.com build --target worker APP`** (or `--target wasm32`): the
-  native build of the release as now, then `pack.erl` (Erlang code that
-  `beam.com` has) and the Worker files. The output is a directory for
-  `wrangler deploy`: `worker.js`, `beam.mjs`, `beam.wasm`, `release.bin`
-  and a `wrangler.toml` (the runtime Worker, and the app Worker or a
-  `RELEASE_URL`), and instructions for a Durable Object. No Emscripten, no
-  Node.js.
-- **The runtime:** `beam.wasm` and `beam.mjs` (5.2 MB; 2 MB with gzip), built by
-  the CI of BEAM.com with `wasm/erts/build.sh`, in the zip of `beam.com`
-  or downloaded at the first `--target worker` build.
-- **The host adapter as an application:** `wasm_host`, `wasm_tcp` and the
-  Phoenix adapter would be one application (Erlang, with an Elixir part
-  for Phoenix) that the build adds to the release, as `beam.com` adds its
-  own applications now. The endpoint gets the adapter at run time (as
-  `WASM_HOST=1` does in the demo), so the same release runs natively.
-- **What must be decided:** whether BEAM.com carries the Emscripten
-  toolchain in CI (the runtime changes only with OTP and ERTS), and
-  whether the upstream points (`WebSockAdapter`, the changes of ERTS)
-  go upstream first.
+- **The runtime in CI:** whether BEAM.com carries the Emscripten toolchain
+  in CI (the runtime changes only with OTP and ERTS), and then ships
+  `beam.wasm` in the zip (`WASM_RUNTIME`, 5.3 MB) or as a download.
+- **Upstream:** the changes of ERTS (`otp.patch`).
 
 ## Next
 
-- **The list of modules:** `pack.erl --modules` needs the list of a test
-  run; `beam.com` could make it (run the release natively with the same
-  code paths), or the runtime could get a missing module from the full
-  set at run time (from R2 or the app Worker).
+- **A smaller `release.bin`:** only the modules of the boot at first, and
+  the others from the app Worker when the code server asks for them.
 - **Data:** an Ecto adapter for the SQL storage of Durable Objects, or
   `exqlite` over it; Postgres through `wasm_tcp` (Postgrex over
   `gen_tcp` and `ssl`, which work now).

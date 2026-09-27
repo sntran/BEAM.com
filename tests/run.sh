@@ -445,6 +445,39 @@ if [ -d examples ]; then
     fi
 fi
 
+# --target wasm32: the Workers of examples/worker (cowboy, from hex.pm).
+# The runtime is a stand-in here (the WebAssembly ERTS needs Emscripten);
+# the build runs the release natively to find the modules of the boot.
+if [ -d examples ]; then
+    mkdir -p "$dir/wasm-runtime"
+    printf 'stand-in' > "$dir/wasm-runtime/beam.wasm"
+    printf 'stand-in' > "$dir/wasm-runtime/beam.mjs"
+    unset BEAM_COM_WASM_RUNTIME
+    check_status 1 beam.com 'the WebAssembly runtime (beam.wasm and beam.mjs) is not in' \
+        examples/worker -o "$dir/worker" --target wasm32
+    BEAM_COM_WASM_RUNTIME=$dir/wasm-runtime
+    export BEAM_COM_WASM_RUNTIME
+    check beam.com 'wrote .*worker (the Workers worker and worker-release)@@release: worker 0.1.0@@boot: [0-9]* modules in one batch' \
+        examples/worker -o "$dir/worker" --target wasm32
+    unset BEAM_COM_WASM_RUNTIME
+    for f in worker.js beam.mjs beam.wasm wrangler.jsonc worker.capnp tcp-proxy.mjs \
+             release/app.js release/release.bin release/wrangler.jsonc; do
+        if [ ! -f "$dir/worker/$f" ]; then
+            echo "FAIL: --target wasm32 did not write $f"
+            failed="$failed
+  beam.com --target wasm32: no $f"
+            fail=1
+        fi
+    done
+    if [ "$(head -c 7 "$dir/worker/release/release.bin" 2>/dev/null)" != BEAMFS1 ]; then
+        echo "FAIL: release.bin does not start with BEAMFS1"
+        failed="$failed
+  beam.com --target wasm32: release.bin"
+        fail=1
+    fi
+    rm -f examples/worker/rebar.lock
+fi
+
 # Elixir: a one-file program, and a Mix project with a Hex package in
 # Elixir (jason, from hex.pm) and config/config.exs.
 greeter_ex='greeter_ex: Hello from config/config.exs (1)@@greeter_ex: Hello from config/config.exs (2)@@greeter_ex: json {.*"elixir":"1\.[0-9.]*".*}@@greeter_ex: decoded 1\.'

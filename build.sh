@@ -27,6 +27,10 @@
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
+#   WASM_RUNTIME     A directory with beam.wasm and beam.mjs (the
+#                    WebAssembly runtime of wasm/erts/build.sh, WORKER=1): put
+#                    it in the zip, for --target wasm32 (default: none; then
+#                    BEAM_COM_WASM_RUNTIME gives it at build time)
 #   ELIXIR           0: leave out Elixir (the elixir, eex, ex_unit, iex,
 #                    logger and mix applications and bin/mix in the zip,
 #                    for "beam.com INPUT -o OUTPUT" of Elixir code and the tools
@@ -623,6 +627,20 @@ step_bundle() {
         "$ROOT"/apps/beam_com_script/src/*.erl
     cp "$ROOT/apps/beam_com_script/src/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
+
+    # The host of the WebAssembly runtime (--target wasm32): Erlang code
+    # that a Worker release gets, and the files of the Workers. With
+    # WASM_RUNTIME=dir (beam.wasm and beam.mjs of wasm/erts/build.sh,
+    # WORKER=1), the runtime too (5 MB).
+    wh=$STAGE/lib/wasm_host-0.1.0
+    mkdir -p "$wh/ebin" "$wh/priv/worker"
+    "$ERL_TOP/bin/erlc" -o "$wh/ebin" "$ROOT"/apps/wasm_host/src/*.erl
+    cp "$ROOT/apps/wasm_host/src/wasm_host.app.src" "$wh/ebin/wasm_host.app"
+    cp "$ROOT"/apps/wasm_host/priv/worker/* "$wh/priv/worker/"
+    if [ -n "${WASM_RUNTIME:-}" ]; then
+        mkdir -p "$wh/priv/runtime"
+        cp "$WASM_RUNTIME/beam.wasm" "$WASM_RUNTIME/beam.mjs" "$wh/priv/runtime/"
+    fi
 
     # There is no release: beam.com runs its command line (run, -o,
     # --help, --version). A release that is added to the zip runs instead.

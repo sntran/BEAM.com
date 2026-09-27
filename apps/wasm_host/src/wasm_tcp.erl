@@ -10,7 +10,7 @@
 %%
 %% Each socket and each listener is a process. It gets the events of the
 %% host (tcp_open, tcp_data, tcp_closed, tcp_error, tcp_listening,
-%% tcp_accept) from the pump ('Elixir.WasmHost.Server') and sends
+%% tcp_accept) from the pump (wasm_host_server) and sends
 %% tcp_connect, tcp_send, tcp_close, tcp_listen and tcp_unlisten. Packets:
 %% raw (0), 1, 2, 4 and line.
 -module(wasm_tcp).
@@ -23,7 +23,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(SOCKET(Pid), {'$inet', ?MODULE, Pid}).
--define(HOST, 'Elixir.WasmHost.Server').
+-define(HOST, wasm_host_server).
 
 %% The host resolves the names.
 getaddrs(Address, _Timer) -> {ok, [Address]}.
@@ -37,7 +37,10 @@ connect(Address, Port, Opts, Timeout) ->
         Error -> Error
     end.
 
-listen(Port, Opts) ->
+%% As inet_tcp: a {port, P} option wins over the argument (Ranch listens
+%% with 0 and the option).
+listen(Port0, Opts) ->
+    Port = proplists:get_value(port, Opts, Port0),
     {ok, Pid} = gen_server:start(?MODULE, {listen, self(), Port, Opts}, []),
     case gen_server:call(Pid, listen, infinity) of
         ok -> {ok, ?SOCKET(Pid)};

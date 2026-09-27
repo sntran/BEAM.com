@@ -38,11 +38,9 @@ grep -q 'releases:' mix.exs ||
         -e 's|{:phoenix_live_view, "[^"]*"}|{:phoenix_live_view, github: "phoenixframework/phoenix_live_view", override: true}|' mix.exs
 mix.com deps.get
 
-# The WebAssembly host (wasm/phoenix/wasm_host): the pump in
-# lib/, and in src/ the NIF stub, the TCP sockets and the distribution.
-mkdir -p lib/wasm_host src
-cp "$HERE"/wasm_host/*.ex lib/wasm_host/
-cp "$HERE/../erts/host/wasm_host.erl" "$HERE/../erts/host/wasm_tcp.erl" "$HERE/../erts/host/wasm_tcp_dist.erl" src/
+# The tests of the host (GET /tcp, /listen, /splice, /ssh). The app does
+# not need the host itself: "beam.com REL -o DIR --target wasm32" adds the
+# application wasm_host to the release.
 cp "$HERE/tcp_controller.ex" lib/hello_web/controllers/
 cp "$HERE/ssh_keys.ex" lib/hello_web/
 grep -q '"/tcp"' lib/hello_web/router.ex ||
@@ -56,10 +54,6 @@ grep -q '"/ssh"' lib/hello_web/router.ex ||
 # The SSH test server (GET /ssh): the ssh application in the release.
 grep -q ':ssh' mix.exs ||
     sed -i 's|extra_applications: \[:logger, :runtime_tools\]|extra_applications: [:logger, :runtime_tools, :ssh]|' mix.exs
-# The WebAssembly emulator (the host sets WASM_HOST): the pump of the host
-# starts first, for the TCP sockets on which Bandit listens.
-grep -q 'WasmHost.Server.children' lib/hello/application.ex ||
-    sed -i 's|^    children = \[$|    children = WasmHost.Server.children() ++ [|' lib/hello/application.ex
 
 # No esbuild: app.js is phoenix.js, phoenix_live_view.js and the start of
 # the LiveSocket, as the comments of the generated app.js say.
