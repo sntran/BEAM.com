@@ -27,7 +27,10 @@ mix.com deps.get
 # lib/, the NIF stub in src/, and the adapter at run time with WASM_HOST=1.
 mkdir -p lib/wasm_host src
 cp "$HERE"/wasm_host/*.ex lib/wasm_host/
-cp "$HERE/../erts/host/wasm_host.erl" src/
+cp "$HERE/../erts/host/wasm_host.erl" "$HERE/../erts/host/wasm_tcp.erl" src/
+cp "$HERE/tcp_controller.ex" lib/hello_web/controllers/
+grep -q '"/tcp"' lib/hello_web/router.ex ||
+    sed -i 's|    live "/counter", CounterLive|    live "/counter", CounterLive\n    get "/tcp", TcpController, :show|' lib/hello_web/router.ex
 grep -q WASM_HOST config/runtime.exs || cat >> config/runtime.exs <<'EXS'
 
 # The WebAssembly emulator: the JavaScript host serves HTTP and WebSockets.

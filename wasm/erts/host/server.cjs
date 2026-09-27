@@ -4,12 +4,14 @@
 //
 //   PORT=4000 node server.cjs /path/to/beam.cjs [EMULATOR FLAGS] -- [ERL ARGS]
 const http = require('node:http');
+const net = require('node:net');
 const { WebSocketServer } = require('ws');
 
 const [beamPath, ...args] = process.argv.slice(2);
 const port = Number(process.env.PORT || 4000);
 const pending = new Map();  // id -> {res} or {req, socket, head} (an upgrade)
 const sockets = new Map();  // id -> ws
+const tcps = new Map();     // id -> net.Socket (wasm_tcp)
 const wss = new WebSocketServer({ noServer: true });
 let nextId = 1;
 let beam;
@@ -52,6 +54,17 @@ function onsend(bytes) {
       break;
     case 'ws_send': sockets.get(msg.id)?.send(body, { binary: msg.op === 'binary' }); break;
     case 'ws_close': sockets.get(msg.id)?.close(msg.code || 1000); break;
+    case 'tcp_connect': {
+      const sock = net.connect({ host: msg.host, port: msg.port });
+      tcps.set(msg.id, sock);
+      sock.on('connect', () => event({ t: 'tcp_open', id: msg.id }));
+      sock.on('data', (d) => event({ t: 'tcp_data', id: msg.id }, d));
+      sock.on('error', (e) => event({ t: 'tcp_error', id: msg.id, reason: (e.code || 'einval').toLowerCase() }));
+      sock.on('close', () => { tcps.delete(msg.id); event({ t: 'tcp_closed', id: msg.id }); });
+      break;
+    }
+    case 'tcp_send': tcps.get(msg.id)?.write(body); break;
+    case 'tcp_close': tcps.get(msg.id)?.destroy(); tcps.delete(msg.id); break;
   }
 }
 

@@ -9,6 +9,9 @@ defmodule WasmHost.Server do
       {"t":"http","id":1,"method":"GET","path":"/x?a=1","headers":[["host","h"]],"scheme":"https"}
       {"t":"ws_msg","id":1,"op":"text"}
       {"t":"ws_close","id":1}
+      {"t":"tcp_data","id":"t7"}
+
+  The events of TCP sockets (`:wasm_tcp`) go to the process of the socket.
   """
   use GenServer
 
@@ -19,6 +22,8 @@ defmodule WasmHost.Server do
   @impl true
   def init(opts) do
     :ets.new(@table, [:named_table, :public, read_concurrency: true])
+    # gen_tcp:connect makes sockets of the host (wasm_tcp).
+    :inet_db.set_tcp_module(:wasm_tcp)
     plug = Keyword.fetch!(opts, :plug)
     pump = spawn_link(fn -> pump(plug) end)
     # The host can take requests now.
@@ -44,7 +49,8 @@ defmodule WasmHost.Server do
       %{"t" => "http"} ->
         spawn(fn -> WasmHost.Conn.run(plug, meta, body) end)
 
-      %{"t" => t, "id" => id} when t in ["ws_msg", "ws_close"] ->
+      %{"t" => t, "id" => id}
+      when t in ["ws_msg", "ws_close", "tcp_open", "tcp_data", "tcp_closed", "tcp_error"] ->
         case :ets.lookup(@table, id) do
           [{^id, pid}] -> send(pid, {:wasm_host, t, meta, body})
           [] -> :ok

@@ -4,6 +4,7 @@
 // wasm/phoenix/wasm_host/server.ex), and the endpoint adapter of the app
 // answers.
 import { DurableObject } from 'cloudflare:workers';
+import { connect } from 'cloudflare:sockets';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
 
@@ -19,6 +20,7 @@ export class Beam extends DurableObject {
     super(ctx, env);
     this.pending = new Map();  // id -> {resolve, request, stream}
     this.sockets = new Map();  // id -> the server end of a WebSocketPair
+    this.tcps = new Map();     // id -> {socket, writer} (wasm_tcp)
     this.nextId = 1;
     this.ready = this.boot(env);
   }
@@ -82,6 +84,31 @@ export class Beam extends DurableObject {
     return response;
   }
 
+  // A TCP socket of wasm_tcp: connect() of cloudflare:sockets.
+  async tcpConnect({ id, host, port }) {
+    let socket;
+    try {
+      socket = connect({ hostname: host, port });
+      this.tcps.set(id, { socket, writer: socket.writable.getWriter() });
+      await socket.opened;
+    } catch (e) {
+      this.tcps.delete(id);
+      this.event({ t: 'tcp_error', id, reason: 'econnrefused' });
+      return;
+    }
+    this.event({ t: 'tcp_open', id });
+    try {
+      const reader = socket.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        this.event({ t: 'tcp_data', id }, value);
+      }
+    } catch (e) {}
+    this.tcps.delete(id);
+    this.event({ t: 'tcp_closed', id });
+  }
+
   onsend(bytes) {
     const nl = bytes.indexOf(10);
     const msg = JSON.parse(new TextDecoder().decode(bytes.subarray(0, nl)));
@@ -125,6 +152,14 @@ export class Beam extends DurableObject {
         break;
       }
       case 'ws_close': this.sockets.get(msg.id)?.close(msg.code || 1000); break;
+      case 'tcp_connect': this.tcpConnect(msg); break;
+      case 'tcp_send': this.tcps.get(msg.id)?.writer.write(body); break;
+      case 'tcp_close': {
+        const t = this.tcps.get(msg.id);
+        this.tcps.delete(msg.id);
+        t?.socket.close().catch(() => {});
+        break;
+      }
     }
   }
 }

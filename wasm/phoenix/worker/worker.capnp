@@ -2,7 +2,11 @@
 using Workerd = import "/workerd/workerd.capnp";
 
 const config :Workerd.Config = (
-  services = [ (name = "main", worker = .app) ],
+  services = [
+    (name = "main", worker = .app),
+    # Outgoing connections (wasm_tcp): also to this computer, for the tests.
+    (name = "net", network = (allow = ["public", "private", "local"])),
+  ],
   sockets = [ (name = "http", address = "127.0.0.1:8789", http = (), service = "main") ],
 );
 
@@ -13,6 +17,7 @@ const app :Workerd.Worker = (
     (name = "beam.wasm", wasm = embed "beam.wasm"),
   ],
   compatibilityDate = "2026-09-01",
+  globalOutbound = "net",
   durableObjectNamespaces = [ (className = "Beam", uniqueKey = "beam-phoenix-hello") ],
   durableObjectStorage = (inMemory = void),
   bindings = [
