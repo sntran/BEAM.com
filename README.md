@@ -821,6 +821,12 @@ arguments and in a header that the compiler includes in each file
 `beam.com`, the example executables and the APE loader are build
 artifacts of each run.
 
+A run starts for each pull request (and again for each new push to it;
+the run of the older commit stops) and for each push to `main`. A change
+of the docs only (Markdown files, `docs/`, the issue forms) starts no
+run. To test a branch without a pull request, run the workflow by hand
+(Actions, "Run workflow").
+
 ### Platform status
 
 | Platform | How to run | beam.com, greeter | crypto | TLS | Port programs |
