@@ -21,6 +21,8 @@ defmodule WasmHost.Server do
     :ets.new(@table, [:named_table, :public, read_concurrency: true])
     plug = Keyword.fetch!(opts, :plug)
     pump = spawn_link(fn -> pump(plug) end)
+    # The host can take requests now.
+    send_host(%{t: "ready"})
     {:ok, %{pump: pump}}
   end
 

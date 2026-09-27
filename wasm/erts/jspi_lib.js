@@ -16,8 +16,22 @@ addToLibrary({
     }
     ABORT = true;
   },
-  // After the pending I/O and timers of the host (a macrotask).
-  $jspiLater: (f) => typeof setImmediate == 'function' ? setImmediate(f) : setTimeout(f, 0),
+  // After the pending I/O and timers of the host (a macrotask): setImmediate
+  // in Node.js, else a MessageChannel message. setTimeout(0), and the
+  // setImmediate of workerd, wait about 1 ms (a timer tick), and ERTS yields
+  // often: its boot took 3 s so in workerd, not 0.5 s.
+  $jspiLater__deps: ['$jspiQueue'],
+  $jspiLater: (f) => {
+    if (ENVIRONMENT_IS_NODE) return setImmediate(f);
+    jspiQueue.fns.push(f);
+    if (!jspiQueue.port) {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => jspiQueue.fns.shift()?.();
+      jspiQueue.port = ch.port2;
+    }
+    jspiQueue.port.postMessage(0);
+  },
+  $jspiQueue: { fns: [], port: null },
   // Node.js: the program gets the environment of the process.
   $jspiEnv__deps: ['$ENV'],
   $jspiEnv__postset: "if (ENVIRONMENT_IS_NODE) Object.assign(ENV, process.env);",

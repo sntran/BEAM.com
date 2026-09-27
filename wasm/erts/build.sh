@@ -82,22 +82,28 @@ ls -l "$OUT/beam.wasm" "$OUT/beam.cjs"
 # The variant for Workers (Cloudflare workerd; hosts without files and
 # without run-time compilation of WebAssembly): an ES module, and the
 # stripped kernel and stdlib in the memory of the module (/otp).
+# WORKER_ROOTFS: another directory to embed, at WORKER_MOUNT (/otp), and
+# the result in WORKER_OUT ($OUT/worker); wasm/phoenix/build-worker.sh
+# embeds a release so.
 if [ "${WORKER:-0}" = 1 ]; then
-    F=$OUT/rootfs/otp
-    rm -rf "$OUT/rootfs"
-    mkdir -p "$F/bin" "$F/lib/kernel/ebin" "$F/lib/stdlib/ebin"
-    cp "$BOOTSTRAP/bin/start_clean.boot" "$F/bin/"
-    cp "$BOOTSTRAP"/lib/kernel/ebin/* "$F/lib/kernel/ebin/"
-    cp "$BOOTSTRAP"/lib/stdlib/ebin/* "$F/lib/stdlib/ebin/"
-    "$BOOTSTRAP/bin/erl" -noshell -eval \
-        "{ok, _} = beam_lib:strip_files(filelib:wildcard(\"$F/lib/*/ebin/*.beam\")), halt()."
-    LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --embed-file $F@/otp --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+    F=${WORKER_ROOTFS:-$OUT/rootfs/otp}
+    if [ -z "${WORKER_ROOTFS:-}" ]; then
+        rm -rf "$OUT/rootfs"
+        mkdir -p "$F/bin" "$F/lib/kernel/ebin" "$F/lib/stdlib/ebin"
+        cp "$BOOTSTRAP/bin/start_clean.boot" "$F/bin/"
+        cp "$BOOTSTRAP"/lib/kernel/ebin/* "$F/lib/kernel/ebin/"
+        cp "$BOOTSTRAP"/lib/stdlib/ebin/* "$F/lib/stdlib/ebin/"
+        "$BOOTSTRAP/bin/erl" -noshell -eval \
+            "{ok, _} = beam_lib:strip_files(filelib:wildcard(\"$F/lib/*/ebin/*.beam\")), halt()."
+    fi
+    WOUT=${WORKER_OUT:-$OUT/worker}
+    LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --embed-file $F@${WORKER_MOUNT:-/otp} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
     make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
-    mkdir -p "$OUT/worker"
-    cp "bin/$T/beam.emu" "$OUT/worker/beam.mjs"
-    cp "bin/$T/beam.wasm" "$OUT/worker/beam.wasm"
-    cp "$HERE/worker/worker.js" "$HERE/worker/worker.capnp" "$OUT/worker/"
-    ls -l "$OUT/worker/beam.wasm"
+    mkdir -p "$WOUT"
+    cp "bin/$T/beam.emu" "$WOUT/beam.mjs"
+    cp "bin/$T/beam.wasm" "$WOUT/beam.wasm"
+    [ -n "${WORKER_ROOTFS:-}" ] || cp "$HERE/worker/worker.js" "$HERE/worker/worker.capnp" "$WOUT/"
+    ls -l "$WOUT/beam.wasm"
     # Run it: workerd serve $OUT/worker/worker.capnp (http://127.0.0.1:8788/?eval=EXPR)
 fi
