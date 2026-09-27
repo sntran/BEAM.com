@@ -1,0 +1,81 @@
+name: A custom build of beam.com
+description: A beam.com with other OTP applications, Hex, rebar3, or without parts. CI builds it and attaches it to this issue.
+title: "Custom build"
+labels: [custom-build]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        CI builds beam.com with these choices, puts the file on this issue (a download of the run, for 90 days, with a GitHub account), and closes the issue. The build takes about 30 to 40 minutes.
+
+        The default beam.com has kernel, stdlib, sasl, compiler, parsetools, crypto, asn1, public_key, ssl, inets, xmerl and runtime_tools, and Elixir with its tools.
+  - type: checkboxes
+    id: otp_apps
+    attributes:
+      label: More OTP applications
+      description: Their Erlang code. The C code of an application (as the port programs of os_mon) is not built.
+      options:
+        - label: ssh
+        - label: mnesia
+        - label: os_mon
+        - label: eldap
+        - label: ftp
+        - label: tftp
+        - label: diameter
+        - label: eunit
+        - label: common_test
+        - label: tools
+        - label: syntax_tools
+        - label: edoc
+  - type: input
+    id: other_apps
+    attributes:
+      label: Other OTP applications
+      description: Names of OTP applications, with spaces (for example "snmp megaco").
+  - type: checkboxes
+    id: tools
+    attributes:
+      label: Tools
+      options:
+        - label: Hex (for mix.com; needs Elixir)
+        - label: rebar3 (the tool rebar3.com, and for the rebar3 dependencies of mix.com)
+  - type: dropdown
+    id: elixir
+    attributes:
+      label: Elixir
+      options:
+        - "Yes"
+        - "No"
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: emulator
+    attributes:
+      label: Emulator
+      options:
+        - JIT (beam.com)
+        - Interpreter (beam-emu.com)
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: sqlite
+    attributes:
+      label: SQLite
+      options:
+        - "Yes"
+        - "No"
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: wasm
+    attributes:
+      label: WebAssembly (WAMR)
+      options:
+        - "Yes"
+        - "No"
+      default: 0
+    validations:
+      required: true

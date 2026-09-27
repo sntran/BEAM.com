@@ -858,6 +858,31 @@ The OTP build runs the APE tools that it builds. If Linux cannot run
 APE files directly, register the APE loader with `binfmt_misc` (see
 [the workflow](.github/workflows/build.yml)).
 
+### A custom build
+
+The default `beam.com` has a fixed set of OTP applications, and no Hex
+or rebar3. A custom build can have more:
+
+- `OTP_APPS="ssh mnesia"`: more OTP applications in the zip (their Erlang
+  code; the C code of an application, as the port programs of `os_mon`,
+  is not built).
+- `HEX=1`: Hex in the zip (the newest, from `mix local.hex`). The tools
+  of Elixir have it in their code path, so `mix.com deps.get` needs no
+  `mix local.hex`. Only with `ELIXIR=1`.
+- `REBAR3=1`: rebar3 in the zip (the newest release). A copy or a link
+  named `rebar3.com` (or `beam.com rebar3`) runs it, and `mix.com` uses
+  it for the dependencies that are rebar3 projects (`MIX_REBAR3`), so
+  `mix local.rebar` is not needed either.
+
+With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and
+`iex.com -S mix phx.server` work as with a normal Elixir installation.
+
+You do not need to build it yourself: open an issue with the form **A
+custom build of beam.com**. CI builds the file with your choices
+([the workflow](.github/workflows/custom-build.yml)), puts it on the
+issue (a download of the run, with a GitHub account, for 90 days), and
+closes the issue.
+
 ### Changes to OTP
 
 The OTP changes are small. Most of the port is in the configure
