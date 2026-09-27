@@ -595,8 +595,8 @@ processes" in 436 ms.
 
 ## Use cases
 
-- **Phoenix LiveView on Workers.** The runtime Worker (or a Durable Object,
-  where each isolate has its own VM) runs the app: pages,
+- **Phoenix LiveView on Workers.** The runtime Worker (each isolate has
+  its own VM) or a Durable Object runs the app: pages,
   LiveView sockets, PubSub and timers in one VM, near the users, with no
   server to manage. An idle VM costs no CPU time. The data can be the
   SQL storage of the Durable Object (SQLite), or Postgres through
