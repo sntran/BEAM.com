@@ -147,9 +147,14 @@ linked_nifs() {
 }
 
 # After mix compiled exqlite and bcrypt_elixir (the output of check is in
-# $tmp): no error, and no NIF file (neither built nor downloaded).
+# $tmp, and check has seen the exit status 0): no error of the compile or
+# of make, and no NIF file (neither built nor downloaded). Not every
+# "error" line: the app can log errors at run time (for example
+# "database is locked" of Exqlite.Connection while ecto.migrate opens the
+# pool on a new database, after which the connection tries again).
 no_nif_build() {
-    if grep -q -e 'rror:' -e '\*\* (' -e 'Could not compile' "$tmp" ||
+    if grep -q -e 'Could not compile' -e '== Compilation error' -e ': make: ' \
+            -e 'Compilation failed' "$tmp" ||
        [ -e _build/dev/lib/exqlite/priv/sqlite3_nif.so ] ||
        [ -e _build/dev/lib/bcrypt_elixir/priv/bcrypt_nif.so ]; then
         echo "FAIL: mix built or downloaded a NIF of exqlite or bcrypt_elixir"
