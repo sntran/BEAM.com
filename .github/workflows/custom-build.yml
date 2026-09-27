@@ -1,0 +1,161 @@
+name: Custom build
+
+# The builder for the issues of the form "A custom build of beam.com"
+# (label custom-build): build.sh with the choices of the issue, the file
+# as an artifact of the run, a comment with its link, and the issue
+# closed. A one-off build for the user who asks: no release.
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+# One build for each issue.
+concurrency:
+  group: custom-build-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+env:
+  OTP_VERSION: "29.1.1"
+  COSMOCC_VERSION: "4.0.2"
+  OPENSSL_VERSION: "4.0.2"
+
+jobs:
+  build:
+    if: contains(github.event.issue.labels.*.name, 'custom-build') && github.event.issue.state == 'open'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the choices of the issue
+        id: choices
+        env:
+          BODY: ${{ github.event.issue.body }}
+        # The text of the issue is input of a user: it only selects known
+        # values, and the names of applications must be names of OTP.
+        run: |
+          python3 - <<'PY'
+          import os, re
+          body = os.environ.get("BODY") or ""
+          sections = {}
+          for part in re.split(r"^### ", body, flags=re.M)[1:]:
+              title, _, text = part.partition("\n")
+              sections[title.strip()] = text.strip()
+          def checked(title):
+              return re.findall(r"^- \[[xX]\] (.+)$", sections.get(title, ""), flags=re.M)
+          def choice(title, default):
+              text = sections.get(title, "").strip()
+              return default if text in ("", "_No response_") else text
+          apps = [a.strip() for a in checked("More OTP applications")]
+          other = choice("Other OTP applications", "")
+          apps += other.split()
+          bad = [a for a in apps if not re.fullmatch(r"[a-z][a-z0-9_]*", a)]
+          if bad:
+              raise SystemExit(f"Not names of applications: {bad}")
+          tools = checked("Tools")
+          env = {
+              "OTP_APPS": " ".join(dict.fromkeys(apps)),
+              "HEX": "1" if any(t.startswith("Hex") for t in tools) else "0",
+              "REBAR3": "1" if any(t.startswith("rebar3") for t in tools) else "0",
+              "ELIXIR": "0" if choice("Elixir", "Yes") == "No" else "1",
+              "JIT": "0" if choice("Emulator", "").startswith("Interpreter") else "1",
+              "SQLITE": "0" if choice("SQLite", "Yes") == "No" else "1",
+              "WASM": "0" if choice("WebAssembly (WAMR)", "Yes") == "No" else "1",
+          }
+          if env["HEX"] == "1" and env["ELIXIR"] == "0":
+              raise SystemExit("Hex needs Elixir")
+          env["OUT_NAME"] = "beam.com" if env["JIT"] == "1" else "beam-emu.com"
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              for k, v in env.items():
+                  f.write(f"{k}={v}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("| Setting | Value |\n|---|---|\n")
+              for k, v in env.items():
+                  f.write(f"| {k} | {v or '(none)'} |\n")
+          PY
+
+      - name: Check the names of the applications
+        run: |
+          git clone -q --depth 1 --branch "OTP-$OTP_VERSION" https://github.com/erlang/otp.git build/otp
+          for app in $OTP_APPS; do
+            [ -d "build/otp/lib/$app/src" ] || { echo "No OTP application: $app" >&2; exit 1; }
+          done
+
+      - name: Cache cosmocc
+        uses: actions/cache@v6
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}
+
+      - name: Download cosmocc
+        run: ./build.sh toolchain
+
+      - name: Cache OpenSSL
+        uses: actions/cache@v6
+        with:
+          path: build/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
+
+      - name: Register the APE loader
+        run: |
+          sudo cp build/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
+          sudo sh -c 'echo -1 > /proc/sys/fs/binfmt_misc/status' || true
+          sudo sh -c 'echo 1 > /proc/sys/fs/binfmt_misc/status' || true
+          sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
+          sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
+
+      - name: Build
+        env:
+          CC: cosmocc
+          AR: cosmoar
+        run: |
+          export OUT="$GITHUB_WORKSPACE/build/$OUT_NAME"
+          ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall bundle
+
+      - name: Check the file
+        run: |
+          f="build/$OUT_NAME"
+          "$f" version
+          if [ "$REBAR3" = 1 ]; then "$f" rebar3 version; fi
+          if [ "$HEX" = 1 ]; then "$f" mix hex; fi
+          for app in $OTP_APPS; do
+            "$f" -noshell -eval "ok = application:load($app), halt()."
+          done
+
+      - name: Upload
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.OUT_NAME }}-issue-${{ github.event.issue.number }}
+          path: build/${{ env.OUT_NAME }}
+          if-no-files-found: error
+
+      - name: Answer the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.upload.outputs.artifact-url }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          {
+            echo "The build is ready: [$OUT_NAME]($URL) (a zip with the file; the download needs a GitHub account, for 90 days)."
+            echo
+            echo "OTP applications added: ${OTP_APPS:-none}. Hex: $HEX. rebar3: $REBAR3. Elixir: $ELIXIR. JIT: $JIT. SQLite: $SQLITE. WebAssembly: $WASM."
+            echo
+            echo "The run: $RUN"
+          } > answer.md
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file answer.md
+          gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed
+
+      - name: Report a failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
+            --body "The build failed: $RUN (the log has the reason). The issue stays open."
