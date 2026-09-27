@@ -33,10 +33,10 @@ cd "$HERE/../erts/build"
 # SERVE=1: the Node.js host serves HTTP and WebSockets on $PORT (4000) for
 # the endpoint (wasm_host). The dirty I/O schedulers keep their default
 # number: one of them waits for the events of the host.
-host=beam-node.cjs beam=
+host=beam-node.mjs beam=
 if [ "${SERVE:-0}" = 1 ]; then
     export PHX_SERVER=true WASM_HOST=1
-    host=$HERE/../erts/host/server.cjs beam=./beam.cjs
+    host=$HERE/../erts/host/server.mjs beam=./beam.mjs
 fi
 # shellcheck disable=SC2086
 exec env ROOTDIR="$ROOT" BINDIR="$ROOT/bin" EMU=beam PROGNAME=erl "${NODE:-node}" ${NODE_FLAGS:-} "$host" $beam \

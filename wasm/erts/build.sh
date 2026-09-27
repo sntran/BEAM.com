@@ -7,7 +7,7 @@
 # BOOTSTRAP is a native build of the same OTP version (the build tree of
 # ./build.sh, build/otp): its bootstrap system gives escript and
 # yielding_c_fun for the build, and its .beam files are used at run time.
-# The result is $OUT/beam.wasm and $OUT/beam.cjs (Node.js); run it with
+# The result is $OUT/beam.wasm and $OUT/beam.mjs (Node.js, an ES module); run it with
 # wasm/erts/run.sh.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -80,13 +80,13 @@ rm -f "erts/emulator/$T/opt/emu/driver_tab.c"
 # adds -fexceptions). DEXPORT empty: no dynamic NIFs or drivers, so no
 # export of all symbols (-export-dynamic makes a JS wrapper for each). Our pthread functions come first and replace the
 # stubs of Emscripten's libc.
-LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_NAME=createBeam ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_ES6 ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
 make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
 cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
-cp "bin/$T/beam.emu" "$OUT/beam.cjs"
-cp "$HERE/beam-node.cjs" "$OUT/"
-ls -l "$OUT/beam.wasm" "$OUT/beam.cjs"
+cp "bin/$T/beam.emu" "$OUT/beam.mjs"
+cp "$HERE/beam-node.mjs" "$OUT/"
+ls -l "$OUT/beam.wasm" "$OUT/beam.mjs"
 
 # The variant for Workers (Cloudflare workerd; hosts without files and
 # without run-time compilation of WebAssembly): an ES module, and the

@@ -2,10 +2,12 @@
 // and gives each request and frame to Erlang through wasm_host (see
 // wasm/phoenix/wasm_host/server.ex for the events).
 //
-//   PORT=4000 node server.cjs /path/to/beam.cjs [EMULATOR FLAGS] -- [ERL ARGS]
-const http = require('node:http');
-const net = require('node:net');
-const { WebSocketServer } = require('ws');
+//   PORT=4000 node server.mjs /path/to/beam.mjs [EMULATOR FLAGS] -- [ERL ARGS]
+import http from 'node:http';
+import net from 'node:net';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { WebSocketServer } from 'ws';
 
 const [beamPath, ...args] = process.argv.slice(2);
 const port = Number(process.env.PORT || 4000);
@@ -75,7 +77,8 @@ const server = http.createServer((req, res) => {
 });
 server.on('upgrade', (req, socket, head) => request(req, null, { req, socket, head }));
 
-require(require('node:path').resolve(beamPath))({
+const { default: createBeam } = await import(pathToFileURL(resolve(beamPath)));
+createBeam({
   arguments: args,
   preRun: [(m) => { beam = m; m.beamHost.onsend = onsend; }],
 });

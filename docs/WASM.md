@@ -202,8 +202,8 @@ workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
 | `wasm/erts/wasm_host_nif.c` | a static NIF: messages between Erlang and the JavaScript host |
 | `wasm/erts/erl-xcomp-wasm32-emscripten.conf` | the cross-compilation settings of OTP (`erl_xcomp_*`): no JIT, no kernel poll, static crypto and asn1 NIFs, no `socket` NIF |
 | `wasm/erts/otp.patch` | seven small changes of ERTS (below) |
-| `wasm/erts/build.sh`, `run.sh`, `beam-node.cjs` | build from a clean OTP clone (libcrypto too; 3 to 4 minutes), and run in Node.js; `WASM64=1` for wasm64, `WORKER=1` for the Worker variants |
-| `wasm/erts/host/` | `wasm_host.erl`, `wasm_tcp.erl`, and a Node.js host (`server.cjs`: HTTP and WebSockets) |
+| `wasm/erts/build.sh`, `run.sh`, `beam-node.mjs` | build from a clean OTP clone (libcrypto too; 3 to 4 minutes), and run in Node.js; `WASM64=1` for wasm64, `WORKER=1` for the Worker variants |
+| `wasm/erts/host/` | `wasm_host.erl`, `wasm_tcp.erl`, and a Node.js host (`server.mjs`: HTTP and WebSockets) |
 | `wasm/erts/worker/` | a Worker that runs `erl -eval` for each request |
 
 - **Emscripten 6.0.10**, not wasi-libc: it has much more of POSIX, a file
@@ -345,11 +345,12 @@ Playwright). Phoenix, LiveView and the `.beam` files of the app are not
 changed.
 
 ```sh
+npm install --prefix wasm                                # ws (the Node.js host), playwright-core (the tests)
 BEAM_COM=.../beam.com wasm/phoenix/setup.sh              # mix phx.new, the LiveView, a release
 BOOTSTRAP=... ELIXIR=... SERVE=1 wasm/phoenix/run.sh     # Node.js: http://localhost:4000/counter
 EMSDK=... BOOTSTRAP=... ELIXIR=... wasm/phoenix/build-worker.sh
 workerd serve wasm/phoenix/build/worker/worker.capnp     # workerd: http://localhost:8789/counter
-node wasm/phoenix/browser-test.cjs http://localhost:8789/counter
+node wasm/phoenix/browser-test.mjs http://localhost:8789/counter
 ```
 
 ### The parts
@@ -359,7 +360,7 @@ node wasm/phoenix/browser-test.cjs http://localhost:8789/counter
 | The risk check | libcrypto for WebAssembly; the release (`mix release`, no ERTS) boots as `bin/hello start` does; interactive mode |
 | `wasm_host` | a static NIF: `recv/0` runs on a dirty I/O scheduler and suspends its green thread until the host has an event (the normal scheduler runs meanwhile); `send/1`. Events are a JSON header, a newline and the body |
 | `wasm/phoenix/wasm_host/` | a Phoenix endpoint adapter (in place of `Bandit.PhoenixAdapter`): a pump process, a `Plug.Conn.Adapter`, and a loop for `WebSock` handlers (the LiveView socket) |
-| `wasm/erts/host/server.cjs` | a Node.js host: `node:http` and WebSockets (`ws`) |
+| `wasm/erts/host/server.mjs` | a Node.js host: `node:http` and WebSockets (`ws`) |
 | `wasm/worker/worker.js` | a Durable Object: one VM for all requests and `WebSocketPair` sockets |
 | `wasm_tcp` | TCP client sockets of the host (`node:net`, `connect()` of `cloudflare:sockets`) for `gen_tcp`; `ssl` runs over them |
 | `wasm/worker/pack.erl` | packs a release into `release.bin` (in Erlang, so no toolchain); the Worker writes it into the file system of the VM before the boot |
