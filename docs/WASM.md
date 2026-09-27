@@ -178,24 +178,135 @@ WebAssembly than native.
 but not at a usable speed or size. Phase B (ERTS compiled to WebAssembly,
 with the JSPI threads of phase A) stays the way.
 
-## Phase B: ERTS itself (next)
+## Phase B: ERTS itself (the spike works)
 
-Cross-compile `beam-emu` (the interpreter) for `wasm32-wasip1` with this
-library, and boot it with `-noshell -eval` (a `hello`, a `gen_server`, a
-`receive ... after`). The known work:
+ERTS of OTP 29.1.1 (the interpreter, `FLAVOR=emu`) is compiled to
+WebAssembly with Emscripten, with the green threads of phase A. It boots
+kernel and stdlib and runs Erlang code in Node.js 26, in Deno 2.9 and in
+Cloudflare's `workerd`, with no change of the `.beam` files.
 
-- The configure of ERTS for `wasm32-wasi`: no JIT, no ports (no `fork`
-  and `exec`), no signals, `ethr_tsd` in place of `__thread`, pthread
-  events in place of futexes, one scheduler (`+S 1`).
-- **The poll thread and the waits of the schedulers must suspend**, not
-  block the host thread: `poll_oneoff` of WASI blocks it. The waits of
-  ERTS go through `ethr_event` (pthread condition variables here), and
-  check I/O needs a poll that suspends (a JSPI import).
-- Memory: no `mmap` of carriers (the allocators on `malloc`).
-- The files of the release (the `.beam` files) through WASI: a preopened
-  directory in Node, a virtual file system in a Worker.
-- Sockets: WASI preview 1 has none; the network would go through `fetch`
-  of the host (a later question).
+```sh
+# EMSDK: an emsdk; BOOTSTRAP: a native build of the same OTP (build/otp)
+EMSDK=... BOOTSTRAP=... wasm/erts/build.sh            # Node.js and Deno
+BOOTSTRAP=... wasm/erts/run.sh -S 1 -- -noshell -eval 'io:format("hello~n"), halt().'
+WORKER=1 EMSDK=... BOOTSTRAP=... wasm/erts/build.sh   # also the Worker variant
+workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
+```
+
+### How it is built
+
+| File | What |
+|---|---|
+| `wasm/erts/jspi_pthread.c`, `sp.S` | the green threads of phase A, for Emscripten; also `poll()` and `nanosleep()` that suspend, and no sockets for now |
+| `wasm/erts/jspi_lib.js` | the host side (an Emscripten JS library: `__async` functions are `Suspending` imports) |
+| `wasm/erts/erl-xcomp-wasm32-emscripten.conf` | the cross-compilation settings of OTP (`erl_xcomp_*`): no JIT, no kernel poll, no SSL, no `socket` NIF |
+| `wasm/erts/otp.patch` | four small changes of ERTS (below) |
+| `wasm/erts/build.sh`, `run.sh` | build from a clean OTP clone (3 minutes), and run in Node.js |
+| `wasm/erts/worker/` | the Worker (`worker.js`: `erl -eval` for each request) and its `workerd` configuration |
+
+- **Emscripten 6.0.10**, not wasi-libc: it has much more of POSIX, a file
+  system, and JSPI support. Its `poll()` already suspends under JSPI and
+  wakes up when a file is ready (for example the wake-up pipe of the
+  schedulers).
+- **Our pthreads replace the stubs of Emscripten's libc**
+  (`--allow-multiple-definition`: the first definition, ours, is used).
+- **Only the emulator is compiled.** The `.beam` files do not depend on
+  the platform: the ones of the native build are used. The build uses
+  the `escript` and `yielding_c_fun` of the native bootstrap system.
+- **Node.js and Deno** read the files of the host (`NODERAWFS`). **The
+  Worker variant** has the stripped kernel and stdlib (2.3 MB) in the
+  memory of the module (`/otp`), and uses the WebAssembly module that the
+  Worker imports (a Worker may not compile WebAssembly at run time).
+
+### The changes of ERTS (`otp.patch`)
+
+1. **A driver is called with the type of its start function** (`io.c`).
+   ERTS calls the start function of every driver with 3 arguments, but
+   the normal drivers (`inet_drv` and others) take 2. Native code accepts
+   this; WebAssembly checks the type of each indirect call ("function
+   signature mismatch").
+2. **No `erl_child_setup`** (`sys_drivers.c`): there is no `fork()`, so
+   `open_port/2` for a program returns `enosys` (as the Windows case of
+   BEAM.com).
+3. **The signal dispatcher waits with `poll()`** (`sys.c`): Emscripten's
+   pipes do not block, and a read that blocks would stop all threads.
+4. **`erl_crash_dump.c` without `-fexceptions`** (a build flag; configure
+   adds it), and `HAVE_MALLOPT` off in `config.h` (Emscripten does not
+   declare it).
+
+### Results
+
+The same computer as the Blink spike (4 CPUs). "Native" is the same OTP
+built for x86-64 with Cosmopolitan.
+
+| | Native interpreter | Native JIT | WebAssembly (Node.js 26) |
+|---|---|---|---|
+| Start, `-eval 'halt().'` | 0.10 s | 0.17 s | 0.25 to 0.30 s |
+| Fold over 1 million small integers (`erl_eval`) | 0.85 s | 0.44 s | 4.8 s (5.6×) |
+| `lists:sort/1` of 200,000 | 0.19 s | 0.11 s | 0.90 s (4.8×) |
+| A map of 100,000, and `maps:fold/3` | 0.23 s | 0.14 s | 1.15 s (5.1×) |
+| 10,000 `spawn/1` | 0.085 s | 0.048 s | 0.27 s (3.1×) |
+
+(The factor is against the native interpreter.) Other numbers:
+
+- **Size:** `beam.wasm` 3.3 MB (1.2 MB with gzip), and 155 KB of
+  JavaScript. The Worker variant, with kernel and stdlib: 5.2 MB (3.0 MB
+  with gzip).
+- **Memory:** the Node.js process peaks at 150 MB (Node.js itself is
+  about 45 MB). In `workerd`, the WebAssembly memory is 43 MB for a
+  hello, and 61 MB with 10,000 processes; the limit of a Worker is 128
+  MB.
+- **Idle costs nothing:** a `timer:sleep(3000)` takes no more CPU time
+  than a direct `halt()`; the schedulers wait on timers of the host.
+- **`workerd`:** a request boots a new VM and runs the code in about
+  0.7 s (processes, messages, `receive ... after`, ETS and timers
+  work). **Deno** runs the Node.js build as it is (0.44 s).
+
+Compared with the Blink spike: the start is 200 times faster (0.3 s, not
+62 s), Erlang code is about 50 to 85 times faster, and the memory is 10
+times smaller.
+
+### What was found
+
+- **The stack of a green thread must be aligned to 16 bytes.** The
+  compiler takes the shadow stack pointer as aligned to 16 bytes, and
+  can compute `sp + 10` as `sp | 10`. `malloc()` aligns to 8 on wasm32,
+  so a term that `ets:match/2` builds on the stack had a wrong pointer,
+  and the call failed with `badarg` (kernel did not start). Phase A had
+  the same error, without a test that showed it; both are fixed.
+- **Suspends inside Emscripten need the stack pointer back too.**
+  Emscripten's `poll()` suspends, and the other threads run meanwhile:
+  our `poll()` puts the shadow stack pointer and the current thread back
+  after it, as the waits of phase A do.
+- **A green thread that calls `exit()`** (Erlang `halt/1`) gets the
+  `ExitStatus` of Emscripten in its promise: the host ends the process
+  (Node.js) or calls `onExit` (the Worker answers the request).
+- **The link of ERTS has no `-O` flag**, so Emscripten linked at `-O0`
+  (no `wasm-opt`, with assertions): the link needs `-O2`.
+- Without `erlexec`, the emulator flags start with `-` (`-S 1`, not
+  `+S 1`).
+- **wasm32 is a 32-bit target:** small integers have 28 bits, so
+  arithmetic over 2^27 makes bignums (native x86-64 has 60 bits), so the
+  tests above use small integers.
+- **About 5 times slower than native**, where WebAssembly usually costs
+  1.5 to 2.5 times. A likely cause is the dispatch of the interpreter:
+  WebAssembly has no computed `goto`, so the threaded code of the
+  interpreter becomes a table switch.
+
+### Next
+
+- **Sockets:** `gen_tcp` and `inet` through the network of the host
+  (`fetch` and `connect()` of Workers, `node:net` in Node.js), as a
+  driver or a NIF. `socket()` fails now.
+- **Speed:** the dispatch of the interpreter; `-O3`; later a JIT that
+  makes WebAssembly modules at run time (where the host allows it).
+- **wasm64** (`-sMEMORY64`): 60-bit small integers as on native, and more
+  than 4 GB. Node.js 26 has memory64.
+- **Workers:** keep a VM between requests (a Durable Object), or a
+  snapshot of the booted VM, so that a request does not pay the start.
+- **`beam.com build --target wasm32`:** an application (and Elixir) in
+  one Worker module.
+- **NIFs:** `crypto` (OpenSSL compiled with Emscripten, or WebCrypto).
 
 ## Limits of the way
 

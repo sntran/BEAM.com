@@ -9,6 +9,7 @@ addToLibrary({
   // pending timers and I/O of the other threads.
   $jspiExit: (e) => {
     if (!(e instanceof ExitStatus)) { err(e); e = new ExitStatus(2); }
+    Module['onExit']?.(e.status);
     if (ENVIRONMENT_IS_NODE) process.exit(e.status);
     ABORT = true;
   },

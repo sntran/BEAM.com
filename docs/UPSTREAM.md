@@ -1123,6 +1123,66 @@ With clean paths (as in beam.com) the start fails:
 `del_path/1`. In ecto_sql, run `app.config` (or `loadpaths`) before the
 start of `ecto_sql` in `ecto.migrate`.
 
+### O20. A driver's start function is called with the wrong type
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/io.c`, `erts_open_driver()`).
+
+**Symptom.** ERTS compiled to WebAssembly stops at the first
+`open_port/2` of a normal driver: "function signature mismatch".
+
+**Cause.** `erts_driver_t` has one type for `start`, with 3 arguments
+(`SysDriverOpts *`), and `erts_open_driver()` calls every driver so. The
+start function of a normal driver (`ErlDrvEntry`, `inet_drv` and the
+others) has 2 arguments. This is undefined behavior in C; native code
+accepts it, but WebAssembly checks the type of each indirect call.
+
+**Fix in the WebAssembly spike.** Call the start of a driver that is not
+a system driver (`fd`, `spawn`, `forker`) with 2 arguments.
+
+**Possible upstream fix.** Keep a flag or a second pointer for the
+system drivers, and call each kind with its own type.
+
+### O21. The signal dispatcher thread needs a blocking `read()`
+
+**Status:** OTP 29.1.1 (`erts/emulator/sys/unix/sys.c`,
+`signal_dispatcher_thread_func()`).
+
+**Symptom.** With Emscripten: "signal-dispatcher thread got unexpected
+error: eagain".
+
+**Cause.** The thread reads the signal pipe with a blocking `read()`,
+and stops ERTS on any error but `EINTR`. The pipes of Emscripten do not
+block.
+
+**Fix in the WebAssembly spike.** On `EAGAIN`, wait with `poll()` (which
+suspends the green thread), then read again.
+
+**Possible upstream fix.** Accept `EAGAIN` and wait with `poll()`; or no
+signal dispatcher on a platform without signals.
+
+## Emscripten
+
+Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/WASM.md,
+phase B).
+
+### EM1. `mallopt()` links but is not declared
+
+**Symptom.** The configure of ERTS finds `mallopt()` (a link test), and
+`utils.c` then fails: "call to undeclared function 'mallopt'".
+
+**Workaround.** `HAVE_MALLOPT` off in the generated `config.h`.
+
+### EM2. The pthread stubs of libc cannot be replaced one by one
+
+**Symptom.** A pthread library of its own (the green threads) gives
+"duplicate symbol: pthread_mutex_init" and others at link time.
+
+**Cause.** Without `-pthread`, the stubs are in one object of libc
+(`library_pthread_stub.o`), which the link takes for other symbols.
+
+**Workaround.** `-Wl,--allow-multiple-definition`, with our objects
+before libc.
+
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
 Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and
@@ -1204,8 +1264,6 @@ linked, and runs the real `make` for the other ones. They also set
 application or environment setting with a list of applications) that
 skips the native build, for runtimes that have the NIFs built in
 (static NIFs).
-
----
 
 ## Blink (the x86-64 emulator)
 
