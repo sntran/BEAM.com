@@ -48,6 +48,7 @@ function onsend(bytes) {
   const body = buf.subarray(nl + 1);
   const p = pending.get(msg.id);
   switch (msg.t) {
+    case 'ready': console.error(`host: ready in ${Date.now() - started} ms`); break;
     case 'resp':
       pending.delete(msg.id);
       if (p?.res) { p.res.writeHead(msg.status, msg.headers); p.res.end(body); }
@@ -100,6 +101,7 @@ const server = http.createServer((req, res) => {
 server.on('upgrade', (req, socket, head) => request(req, null, { req, socket, head }));
 
 const { default: createBeam } = await import(pathToFileURL(resolve(beamPath)));
+const started = Date.now();
 createBeam({
   arguments: args,
   preRun: [(m) => { beam = m; m.beamHost.onsend = onsend; }],

@@ -4,7 +4,8 @@
 %% Worker (worker.js) writes into the file system of the emulator (/app)
 %% before the boot.
 %%
-%%   escript pack.erl [--modules FILE] REL_DIR OUT_FILE LIB_DIR...
+%%   escript pack.erl [--modules FILE] [--boot-modules FILE] [--no-start APPS]
+%%                    REL_DIR OUT_FILE LIB_DIR...
 %%
 %% REL_DIR: _build/prod/rel/NAME. LIB_DIR: where the OTP and Elixir
 %% applications of the .rel file are (APP or APP-VSN directories with
@@ -15,6 +16,16 @@
 %% other files (.app, priv, the release files) stay. A module that is not
 %% in the list cannot load in the Worker (undef).
 %%
+%% --boot-modules FILE: the boot script loads these modules (the ones that
+%% the boot loads, as WASM_HOST_BOOT_MODULES records them) in one batch
+%% after kernel, with code:ensure_modules_loaded/1, in place of one by one.
+%%
+%% --no-start APPS (a list with commas): the boot script loads these
+%% applications but does not start them, and they are not dependencies of
+%% the others: the applications that the host replaces, as the HTTP
+%% server (bandit,thousand_island). Only the boot file in release.bin
+%% changes.
+%%
 %% The format: "BEAMFS1\n", then for each file a 32-bit big-endian length
 %% and the path (relative to /app), a 32-bit length and the data. The
 %% first file is .release.json: {"name": NAME, "vsn": VSN}.
@@ -23,6 +34,13 @@
 main(["--modules", File | Args]) ->
     {ok, B} = file:read_file(File),
     put(modules, sets:from_list([binary_to_list(M) || M <- string:lexemes(B, "\r\n")])),
+    main(Args);
+main(["--boot-modules", File | Args]) ->
+    {ok, B} = file:read_file(File),
+    put(boot_modules, [binary_to_atom(M) || M <- string:lexemes(B, "\r\n")]),
+    main(Args);
+main(["--no-start", Apps | Args]) ->
+    put(no_start, [list_to_atom(A) || A <- string:lexemes(Apps, ",")]),
     main(Args);
 main([RelDir, Out | LibDirs]) ->
     {ok, Data} = file:read_file(filename:join([RelDir, "releases", "start_erl.data"])),
@@ -40,7 +58,7 @@ main([RelDir, Out | LibDirs]) ->
     Size = iolist_size(Bin),
     io:format("~s: ~s ~s, ~b files, ~.1f MB~n", [Out, Name, Vsn, length(Files), Size / 1048576]);
 main(_) ->
-    io:format(standard_error, "usage: pack.erl [--modules FILE] REL_DIR OUT_FILE LIB_DIR...~n", []),
+    io:format(standard_error, "usage: pack.erl [--modules FILE] [--boot-modules FILE] [--no-start APPS] REL_DIR OUT_FILE LIB_DIR...~n", []),
     halt(2).
 
 %% releases/VSN (boot script, sys.config, runtime.exs, consolidated
@@ -50,11 +68,43 @@ release_files(RelDir, Vsn) ->
     Dir = filename:join([RelDir, "releases", Vsn]),
     Keep = fun(F) -> not lists:member(filename:extension(F), [".script", ".bat", ".sh"])
                          andalso not lists:suffix("vm.args", F) end,
-    Files = [{filename:join(["releases", Vsn, F]), read(filename:join(Dir, F))}
+    Files = [{filename:join(["releases", Vsn, F]), boot_file(Dir, F)}
              || F <- files(Dir), Keep(F)],
     {ok, SysConfig} = file:read_file(filename:join(Dir, "sys.config")),
     [{"releases/start_erl.data", read(filename:join([RelDir, "releases", "start_erl.data"]))},
      {"tmp/run.runtime.config", SysConfig} | Files].
+
+%% start.boot, with the changes of --boot-modules and --no-start (a boot
+%% file is the term_to_binary/1 of its script).
+boot_file(Dir, "start.boot" = F) ->
+    case {get(boot_modules), get(no_start)} of
+        {undefined, undefined} -> read(filename:join(Dir, F));
+        {Mods, NoStart} ->
+            {script, Name, Cmds} = binary_to_term(read(filename:join(Dir, F))),
+            Cmds1 = boot_commands(Cmds, default(Mods), default(NoStart)),
+            term_to_binary({script, Name, Cmds1})
+    end;
+boot_file(Dir, F) -> read(filename:join(Dir, F)).
+
+default(undefined) -> [];
+default(L) -> L.
+
+boot_commands(Cmds, Mods, NoStart) ->
+    lists:flatmap(
+      fun({apply, {application, start_boot, [A | _]}} = C) ->
+              case lists:member(A, NoStart) of
+                  true -> [];
+                  false when A =:= kernel, Mods =/= [] ->
+                      [C, {apply, {code, ensure_modules_loaded, [Mods]}}];
+                  false -> [C]
+              end;
+         ({apply, {application, load, [{application, A, P}]}}) ->
+              Deps = [D || D <- proplists:get_value(applications, P, []),
+                           not lists:member(D, NoStart)],
+              [{apply, {application, load,
+                        [{application, A, lists:keystore(applications, 1, P, {applications, Deps})}]}}];
+         (C) -> [C]
+      end, Cmds).
 
 %% An application of the release: from REL_DIR/lib (with its priv; only
 %% the main application keeps priv/static), else from the LIB_DIRs (ebin

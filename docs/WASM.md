@@ -538,33 +538,72 @@ What was found:
 
 ### The cold start
 
-The first request of an isolate boots the VM: 0.55 to 0.73 s, of which
-about 0.25 s is ERTS, kernel and stdlib (`-eval 'halt().'`), and the rest
-is the release (about 400 modules, and the applications). Options, from a
-review of the code and of the Cloudflare documentation (2026-09-27), with
-the largest gain first; not measured yet:
+**Measured** (the demo app with Phoenix 1.9.0-dev; the Node.js host, where
+the clock is correct during the boot, 7 runs, medians; `workerd` for the
+first request):
 
-1. **A snapshot of the booted VM** (the gain: to maybe 50 to 100 ms; the
-   work: weeks). Cloudflare snapshots the linear memory of Python Workers
-   at deploy, but only for Python: there is no API for other WebAssembly.
-   A snapshot of our own must also keep the state of the JavaScript side
-   (the files, the timers, the threads). The threads are the hard part:
-   a thread that waits (JSPI) is on a stack of the engine that JavaScript
-   cannot save. So the snapshot must come at a point where no thread has
-   a stack: before the threads start (a small gain), or after a change of
+| | Boot until `ready` (Node.js) |
+|---|---|
+| `beam.wasm` instantiated | about 40 ms |
+| kernel and stdlib only (`start_clean`, `halt()`) | about 240 ms more (about 300 ms in all) |
+| The Phoenix release, as it is | 538 ms |
+| without the Elixir config provider (the values of `runtime.exs` put in `sys.config`) | 466 ms (−72 ms) |
+| and 9 applications not started (`ssh`, `runtime_tools`, `sasl`, `ssl`, `public_key`, `asn1`, `dns_cluster`, `bandit`, `thousand_island`) | 415 ms (−51 ms) |
+| and the 207 modules of the boot loaded in one batch | 392 ms (−31 ms; 27% less in all) |
+| the same batch, but with all 394 recorded modules | 507 ms (worse: it loads modules that the boot does not need) |
+
+In `workerd`, the first request: 0.634 s as it is, 0.49 s with all three
+(the release of the table above: VM ready in 404 ms, not 612 ms).
+
+What the parts cost:
+
+- **The config provider** (72 ms): the first evaluation of `runtime.exs`
+  takes about 30 ms (the Elixir tokenizer, parser and evaluator load; a
+  second evaluation takes 2 ms), and the provider itself (the checks of
+  the compile-time config, a new `sys.config` file) the rest.
+- **Module loading:** the load work itself (`erlang:prepare_loading/2`)
+  is 93 ms for 293 modules; finding the files costs more when the code
+  path is long and not cached (`-pa`: 341 ms), but a release caches its
+  paths.
+- **Applications:** most of the 51 ms is from applications that the app
+  asks for (`ssh`, `runtime_tools`, `ssl` and the others); `bandit` and
+  `thousand_island` alone (the HTTP server that the host replaces) give
+  no measurable gain.
+- The floor (ERTS, kernel, stdlib: about 300 ms) stays until a snapshot.
+
+**In `pack.erl` now** (general and safe):
+
+- `--boot-modules FILE` (`BOOT_MODULES`): the packed boot script loads the
+  modules of the boot in one batch after kernel
+  (`code:ensure_modules_loaded/1`). `WASM_HOST_BOOT_MODULES=file` makes
+  `WasmHost.Server` write that list at `ready`.
+- `--no-start APPS` (`NO_START`): the boot script loads these applications
+  but does not start them, and they are not dependencies of the others.
+
+With both (`bandit,thousand_island` and the boot list), and the config
+provider kept: 0.634 s → 0.587 s in `workerd` (7%). The rest of the gain
+is a choice of the app: no `runtime.exs` (or one that loads no parser: a
+compiled config function), and no applications that it does not use.
+
+**Not measured, from a review of the code and of the Cloudflare
+documentation (2026-09-27):**
+
+1. **A snapshot of the booted VM** (maybe 50 to 100 ms in place of 0.5 s;
+   weeks). Cloudflare snapshots the linear memory of Python Workers at
+   deploy, but only for Python: there is no API for other WebAssembly. A
+   snapshot of our own must also keep the state of the JavaScript side
+   (the files, the timers, the threads). The threads are the hard part: a
+   thread that waits (JSPI) is on a stack of the engine that JavaScript
+   cannot save. So the snapshot must come at a point where no thread has a
+   stack: before the threads start (a small gain), or after a change of
    ERTS where each thread returns to the host when it waits (as
-   `process_main()` returns now). Clocks and random seeds must be new
-   after a restore. A snapshot of 48 MB and the live memory must fit in
-   the 128 MB of an isolate.
-2. **Less work at the boot** (10 to 30%; days): load the known modules in
-   one step (`code:atomic_load/1` from one blob, not 536 files one by
-   one), and start fewer applications (`telemetry_poller`, `ssl` when it is
-   used).
-3. **Small ones** (a few %; hours): `wasm-opt` on `beam.wasm`; fewer dirty
-   I/O schedulers (they must stay more than one); `-init_debug` to see
-   where the time goes.
-4. **Not possible:** a boot in the global scope of the Worker (no timers
-   or random values there, and a limit of 1 s); a Worker cannot choose the
+   `process_main()` returns now). Clocks and random seeds must be new after
+   a restore. A snapshot of 48 MB and the live memory must fit in the 128
+   MB of an isolate.
+2. **Small ones:** `wasm-opt` on `beam.wasm`; `-init_debug` shows the boot
+   steps (but its output makes the boot 3 times slower).
+3. **Not possible:** a boot in the global scope of the Worker (no timers or
+   random values there, and a limit of 1 s); a Worker cannot choose the
    compiler tier of V8.
 
 **Cloudflare Pages** does not help: Pages Functions are Workers, with the
@@ -676,7 +715,7 @@ A proposal, not done:
   of CPU time of the free plan.
 - **UDP and DNS** through the host.
 - **Incoming TCP:** the `connect()` handler of Workers (Spectrum, private
-  beta) when it is available; distributed Erlang over `wasm_tcp` (it needs
+  beta; a paid product) when it is available; distributed Erlang over `wasm_tcp` (it needs
   a distribution module, as `inet_tcp_dist` over `wasm_tcp`).
 
 ## Limits of the way

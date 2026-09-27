@@ -27,6 +27,12 @@ defmodule WasmHost.Server do
     :inet_db.set_tcp_module(:wasm_tcp)
     plug = Keyword.fetch!(opts, :plug)
     pump = spawn_link(fn -> pump(plug) end)
+    # WASM_HOST_BOOT_MODULES=file: the modules that the boot loaded, for
+    # pack.erl --boot-modules.
+    if path = System.get_env("WASM_HOST_BOOT_MODULES") do
+      File.write!(path, for({m, _} <- Enum.sort(:code.all_loaded()), do: [Atom.to_string(m), ?\n]))
+    end
+
     # The host can take requests now.
     send_host(%{t: "ready"})
     {:ok, %{pump: pump}}
