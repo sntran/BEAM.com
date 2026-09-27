@@ -24,12 +24,14 @@ for d in "$F"/lib/*/priv; do
 done
 rm -f "$F/releases/$VSN"/*.script "$F/releases/$VSN"/env.* "$F/releases/$VSN"/*vm.args
 # The OTP and Elixir applications of the release (ebin only).
-sed -n 's/.*{\([a-z_]*\),"\([0-9.]*\)",[a-z]*}.*/\1 \2/p' "$REL/releases/$VSN/hello.rel" |
+sed -n 's/.*{\([a-z0-9_]*\),"\([0-9.]*\)",[a-z]*}.*/\1 \2/p' "$REL/releases/$VSN/hello.rel" |
 while read -r app vsn; do
     [ -d "$F/lib/$app-$vsn" ] && continue
     for src in "$BOOTSTRAP/lib/$app" "$ELIXIR/lib/$app"; do
         if [ -d "$src/ebin" ]; then
-            mkdir -p "$F/lib/$app-$vsn"
+            # An empty priv: the static NIFs (asn1rt_nif, crypto) are
+            # loaded with a path in code:priv_dir/1.
+            mkdir -p "$F/lib/$app-$vsn/priv"
             cp -R "$src/ebin" "$F/lib/$app-$vsn/"
             break
         fi

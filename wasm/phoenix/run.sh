@@ -17,7 +17,7 @@ if [ ! -d "$ROOT" ]; then
     mkdir -p "$ROOT/lib" "$ROOT/bin"
     cp "$BOOTSTRAP/bin/start_clean.boot" "$ROOT/bin/"
     # The versions come from the .rel file of the release.
-    sed -n 's/.*{\([a-z_]*\),"\([0-9.]*\)",[a-z]*}.*/\1 \2/p' "$REL/releases/$VSN/hello.rel" |
+    sed -n 's/.*{\([a-z0-9_]*\),"\([0-9.]*\)",[a-z]*}.*/\1 \2/p' "$REL/releases/$VSN/hello.rel" |
     while read -r app vsn; do
         if [ -d "$BOOTSTRAP/lib/$app/ebin" ]; then ln -s "$BOOTSTRAP/lib/$app" "$ROOT/lib/$app-$vsn"
         elif [ -d "$ELIXIR/lib/$app/ebin" ]; then ln -s "$ELIXIR/lib/$app" "$ROOT/lib/$app-$vsn"

@@ -1,3 +1,74 @@
+diff --git a/erts/emulator/beam/emu/beam_emu.c b/erts/emulator/beam/emu/beam_emu.c
+index b490e43..b68686d 100644
+--- a/erts/emulator/beam/emu/beam_emu.c
++++ b/erts/emulator/beam/emu/beam_emu.c
+@@ -350,6 +350,18 @@ void process_main(ErtsSchedulerData *esdp)
+     reg = (esdp->registers)->x_reg_array.d;
+     freg = (esdp->registers)->f_reg_array.d;
+ 
++#ifdef __EMSCRIPTEN__
++    /* WebAssembly: this function returns after each time slice, and the
++     * scheduler calls it again. V8 moves a function to optimized code
++     * only at its next call (no on-stack replacement for WebAssembly),
++     * and a scheduler never left this loop: the interpreter stayed in
++     * baseline code, about 3 times slower. */
++    c_p = esdp->wasm_c_p;
++    reds_used = esdp->wasm_reds_used;
++    esdp->wasm_c_p = NULL;
++    goto do_schedule_wasm;
++#endif
++
+     c_p = NULL;
+     reds_used = 0;
+ 
+@@ -364,6 +376,12 @@ void process_main(ErtsSchedulerData *esdp)
+ 	reds_used = REDS_IN(c_p) - (CONTEXT_REDS + FCALLS);
+     ASSERT(reds_used >= 0);
+  do_schedule1:
++#ifdef __EMSCRIPTEN__
++    esdp->wasm_c_p = c_p;
++    esdp->wasm_reds_used = reds_used;
++    return;
++ do_schedule_wasm:
++#endif
+ 
+     if (start_time != 0) {
+         check_monitor_long_schedule(c_p, start_time, start_time_i);
+diff --git a/erts/emulator/beam/erl_process.c b/erts/emulator/beam/erl_process.c
+index 0201ea3..4bbf643 100644
+--- a/erts/emulator/beam/erl_process.c
++++ b/erts/emulator/beam/erl_process.c
+@@ -8796,6 +8796,13 @@ sched_thread_func(void *vesdp)
+     erts_utils_sched_spec_data_init();
+     erts_nif_sched_init(esdp);
+ 
++#ifdef __EMSCRIPTEN__
++    /* process_main() returns after each time slice (see beam_emu.c). */
++    esdp->wasm_c_p = NULL;
++    esdp->wasm_reds_used = 0;
++    for (;;)
++        process_main(esdp);
++#endif
+     process_main(esdp);
+ 
+     /* No schedulers should *ever* terminate */
+diff --git a/erts/emulator/beam/erl_process.h b/erts/emulator/beam/erl_process.h
+index 185922e..8f56187 100644
+--- a/erts/emulator/beam/erl_process.h
++++ b/erts/emulator/beam/erl_process.h
+@@ -747,6 +747,12 @@ struct ErtsSchedulerData_ {
+     erts_alloc_verify_func_t verify_unused_temp_alloc;
+     Allctr_t *verify_unused_temp_alloc_data;
+ #endif
++#ifdef __EMSCRIPTEN__
++    /* process_main() returns after each time slice (see beam_emu.c): the
++     * process and the reductions for the next erts_schedule(). */
++    struct process *wasm_c_p;
++    int wasm_reds_used;
++#endif
+ };
+ 
+ typedef union {
 diff --git a/erts/emulator/beam/io.c b/erts/emulator/beam/io.c
 index 24468ad..660030c 100644
 --- a/erts/emulator/beam/io.c

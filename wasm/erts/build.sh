@@ -73,7 +73,7 @@ rm -f "erts/emulator/$T/opt/emu/driver_tab.c"
 # stubs of Emscripten's libc.
 LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_NAME=createBeam ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
-make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
+make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
 cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
 cp "bin/$T/beam.emu" "$OUT/beam.cjs"
 cp "$HERE/beam-node.cjs" "$OUT/"
@@ -99,7 +99,7 @@ if [ "${WORKER:-0}" = 1 ]; then
     WOUT=${WORKER_OUT:-$OUT/worker}
     LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --embed-file $F@${WORKER_MOUNT:-/otp} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
-    make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS=-fno-exceptions DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
+    make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
     mkdir -p "$WOUT"
     cp "bin/$T/beam.emu" "$WOUT/beam.mjs"
     cp "bin/$T/beam.wasm" "$WOUT/beam.wasm"
