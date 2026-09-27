@@ -178,7 +178,7 @@ WebAssembly than native.
 but not at a usable speed or size. Phase B (ERTS compiled to WebAssembly,
 with the JSPI threads of phase A) stays the way.
 
-## Phase B: ERTS itself (the spike works)
+## Phase B: ERTS itself (done)
 
 ERTS of OTP 29.1.1 (the interpreter, `FLAVOR=emu`) is compiled to
 WebAssembly with Emscripten, with the green threads of phase A. It boots
@@ -197,12 +197,14 @@ workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
 
 | File | What |
 |---|---|
-| `wasm/erts/jspi_pthread.c`, `sp.S` | the green threads of phase A, for Emscripten; also `poll()` and `nanosleep()` that suspend, and no sockets for now |
-| `wasm/erts/jspi_lib.js` | the host side (an Emscripten JS library: `__async` functions are `Suspending` imports) |
-| `wasm/erts/erl-xcomp-wasm32-emscripten.conf` | the cross-compilation settings of OTP (`erl_xcomp_*`): no JIT, no kernel poll, no SSL, no `socket` NIF |
-| `wasm/erts/otp.patch` | four small changes of ERTS (below) |
-| `wasm/erts/build.sh`, `run.sh` | build from a clean OTP clone (3 minutes), and run in Node.js |
-| `wasm/erts/worker/` | the Worker (`worker.js`: `erl -eval` for each request) and its `workerd` configuration |
+| `wasm/erts/jspi_pthread.c`, `sp.S`, `sp64.S` | the green threads of phase A, for Emscripten; also `poll()` and `nanosleep()` that suspend, no `socket()`, and the wait of `wasm_host` |
+| `wasm/erts/jspi_lib.js` | the host side (an Emscripten JS library: `__async` functions are `Suspending` imports); `Module.beamHost` for the messages with Erlang |
+| `wasm/erts/wasm_host_nif.c` | a static NIF: messages between Erlang and the JavaScript host |
+| `wasm/erts/erl-xcomp-wasm32-emscripten.conf` | the cross-compilation settings of OTP (`erl_xcomp_*`): no JIT, no kernel poll, static crypto and asn1 NIFs, no `socket` NIF |
+| `wasm/erts/otp.patch` | seven small changes of ERTS (below) |
+| `wasm/erts/build.sh`, `run.sh`, `beam-node.cjs` | build from a clean OTP clone (libcrypto too; 3 to 4 minutes), and run in Node.js; `WASM64=1` for wasm64, `WORKER=1` for the Worker variants |
+| `wasm/erts/host/` | `wasm_host.erl`, `wasm_tcp.erl`, and a Node.js host (`server.cjs`: HTTP and WebSockets) |
+| `wasm/erts/worker/` | a Worker that runs `erl -eval` for each request |
 
 - **Emscripten 6.0.10**, not wasi-libc: it has much more of POSIX, a file
   system, and JSPI support. Its `poll()` already suspends under JSPI and
@@ -213,10 +215,15 @@ workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
 - **Only the emulator is compiled.** The `.beam` files do not depend on
   the platform: the ones of the native build are used. The build uses
   the `escript` and `yielding_c_fun` of the native bootstrap system.
+- **crypto:** libcrypto of OpenSSL 4.0.2 compiled with Emscripten (no
+  threads, no sockets, no assembly code), and the crypto and asn1 NIFs
+  linked into the emulator, as in `beam.com`. Hashes, HMAC and PBKDF2
+  give the native results.
 - **Node.js and Deno** read the files of the host (`NODERAWFS`). **The
-  Worker variant** has the stripped kernel and stdlib (2.3 MB) in the
-  memory of the module (`/otp`), and uses the WebAssembly module that the
-  Worker imports (a Worker may not compile WebAssembly at run time).
+  Worker variants** have the files in the memory of the module, or get
+  them from the host (see the Phoenix section), and use the WebAssembly
+  module that the Worker imports (a Worker may not compile WebAssembly at
+  run time).
 
 ### The changes of ERTS (`otp.patch`)
 
@@ -230,40 +237,50 @@ workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
    BEAM.com).
 3. **The signal dispatcher waits with `poll()`** (`sys.c`): Emscripten's
    pipes do not block, and a read that blocks would stop all threads.
-4. **`erl_crash_dump.c` without `-fexceptions`** (a build flag; configure
-   adds it), and `HAVE_MALLOPT` off in `config.h` (Emscripten does not
-   declare it).
+4. **`process_main()` returns after each time slice** (`beam_emu.c`,
+   `erl_process.c`, `erl_process.h`): see "Speed" below.
+5. **No reservation of address space** (`erl_mmap.h`): Emscripten defines
+   `MAP_FIXED` and `MAP_NORESERVE`, but its `mmap()` is `malloc()`.
+   64-bit ERTS stopped at the start ("Failed to reserve physical memory
+   for descriptors"); now it uses the literal pointer tag.
+6. Build settings: `erl_crash_dump.c` without `-fexceptions`,
+   `HAVE_MALLOPT` off in `config.h` (Emscripten does not declare it), no
+   `-export-dynamic` (no dynamic NIFs; it made a JS wrapper for each
+   symbol: 1 MB of JS in place of 124 KB).
+7. Compiler flags: no security hardening flags (stack canaries, fortify
+   checks), but `-fno-strict-aliasing`, `-fno-strict-overflow` and
+   `-fno-delete-null-pointer-checks`, which ERTS needs. Configure removes
+   these three with `--disable-security-hardening-flags`; without them,
+   clang made wrong code (Elixir code stopped with an access out of
+   bounds).
 
 ### Results
 
 The same computer as the Blink spike (4 CPUs). "Native" is the same OTP
-built for x86-64 with Cosmopolitan.
+built for x86-64 with Cosmopolitan. "First" is the first build of phase B,
+"now" is with the speed fix.
 
-| | Native interpreter | Native JIT | WebAssembly (Node.js 26) |
-|---|---|---|---|
-| Start, `-eval 'halt().'` | 0.10 s | 0.17 s | 0.25 to 0.30 s |
-| Fold over 1 million small integers (`erl_eval`) | 0.85 s | 0.44 s | 4.8 s (5.6×) |
-| `lists:sort/1` of 200,000 | 0.19 s | 0.11 s | 0.90 s (4.8×) |
-| A map of 100,000, and `maps:fold/3` | 0.23 s | 0.14 s | 1.15 s (5.1×) |
-| 10,000 `spawn/1` | 0.085 s | 0.048 s | 0.27 s (3.1×) |
+| | Native interpreter | Native JIT | WebAssembly, first | WebAssembly, now |
+|---|---|---|---|---|
+| Start, `-eval 'halt().'` | 0.10 s | 0.17 s | 0.25 to 0.30 s | 0.27 s |
+| Fold over 1 million small integers (`erl_eval`) | 0.85 s | 0.44 s | 4.8 s | 1.2 s (1.4×) |
+| `lists:sort/1` of 200,000 | 0.19 s | 0.11 s | 0.90 s | 0.23 s (1.2×) |
+| A map of 100,000, and `maps:fold/3` | 0.23 s | 0.14 s | 1.15 s | 0.27 s (1.2×) |
+| 10,000 `spawn/1` | 0.085 s | 0.048 s | 0.27 s | 0.10 s (1.2×) |
 
 (The factor is against the native interpreter.) Other numbers:
 
-- **Size:** `beam.wasm` 3.3 MB (1.2 MB with gzip), and 155 KB of
-  JavaScript. The Worker variant, with kernel and stdlib: 5.2 MB (3.0 MB
-  with gzip).
-- **Memory:** the Node.js process peaks at 150 MB (Node.js itself is
-  about 45 MB). In `workerd`, the WebAssembly memory is 43 MB for a
-  hello, and 61 MB with 10,000 processes; the limit of a Worker is 128
-  MB.
+- **Size:** `beam.wasm` 5.2 MB with crypto (1.9 MB with gzip), and
+  110 to 124 KB of JavaScript.
+- **Memory:** 40 MB of WebAssembly memory after the start; the Node.js
+  process peaks at 150 MB (Node.js itself is about 45 MB).
 - **Idle costs nothing:** a `timer:sleep(3000)` takes no more CPU time
   than a direct `halt()`; the schedulers wait on timers of the host.
-- **`workerd`:** a request boots a new VM and runs the code in about
-  0.7 s (processes, messages, `receive ... after`, ETS and timers
-  work). **Deno** runs the Node.js build as it is (0.44 s).
+- **Hosts:** Node.js 26, Deno 2.9 (the Node.js build as it is),
+  Cloudflare's `workerd`, and Chromium 141 (see below).
 
 Compared with the Blink spike: the start is 200 times faster (0.3 s, not
-62 s), Erlang code is about 50 to 85 times faster, and the memory is 10
+62 s), Erlang code is about 150 to 250 times faster, and the memory is 10
 times smaller.
 
 ### What was found
@@ -287,30 +304,192 @@ times smaller.
   `+S 1`).
 - **wasm32 is a 32-bit target:** small integers have 28 bits, so
   arithmetic over 2^27 makes bignums (native x86-64 has 60 bits), so the
-  tests above use small integers.
-- **About 5 times slower than native**, where WebAssembly usually costs
-  1.5 to 2.5 times. A likely cause is the dispatch of the interpreter:
-  WebAssembly has no computed `goto`, so the threaded code of the
-  interpreter becomes a table switch.
+  tests above use small integers. wasm64 has 60 bits, but it is slower
+  (see "wasm64").
 
-### Next
+### Speed: the interpreter ran in baseline code
 
-- **Sockets:** `gen_tcp` and `inet` through the network of the host
-  (`fetch` and `connect()` of Workers, `node:net` in Node.js), as a
-  driver or a NIF. `socket()` fails now.
-- **Speed:** the dispatch of the interpreter; `-O3`; later a JIT that
-  makes WebAssembly modules at run time (where the host allows it).
-- **wasm64** (`-sMEMORY64`): 60-bit small integers as on native, and more
-  than 4 GB. Node.js 26 has memory64.
-- **Workers:** keep a VM between requests (a Durable Object), or a
-  snapshot of the booted VM, so that a request does not pay the start.
-- **`beam.com build --target wasm32`:** an application (and Elixir) in
-  one Worker module.
-- **NIFs:** `crypto` (OpenSSL compiled with Emscripten, or WebCrypto).
+The first build was about 5 times slower than the native interpreter.
+80% of the time was in `process_main()` (the loop of the interpreter),
+and with V8 on TurboFan only (`--no-liftoff`) the same fold took 1.3 s,
+not 4.2 s. The reason: V8 first runs a WebAssembly function in baseline
+code (Liftoff), and uses the optimized code (TurboFan) of a hot function
+at its next call. WebAssembly has no on-stack replacement, and a
+scheduler entered `process_main()` once and never left it: the
+interpreter stayed in baseline code.
+
+The fix: `process_main()` returns at the end of each time slice (at
+`do_schedule1`, with the process and the reductions in the scheduler
+data), and the scheduler calls it again. The next call uses the
+optimized code. The interpreter is now 1.2 to 1.4 times the native
+interpreter, the usual cost of WebAssembly. A plain `switch` in place of
+the computed `goto` (`NO_JUMP_TABLE`) and `-O3` do not change the speed.
+
+### wasm64
+
+`WASM64=1 wasm/erts/build.sh` builds ERTS for `wasm64-unknown-emscripten`
+(`-sMEMORY64`): the word size is 8 and small integers have 60 bits, as on
+native. But it is slower than wasm32 in all tests (the fold 2.0 s, not
+1.2 s; sort 0.55 s, not 0.25 s; maps 0.51 s, not 0.30 s; even the fold
+with `X*X`, bignums only on wasm32: 2.6 s, not 1.75 s), and it uses more
+memory (76 MB, not 40 MB at the start). The bounds checks of 64-bit
+memory and the larger terms cost more than the bignums save. wasm32
+stays the default.
+
+## Phoenix LiveView on Cloudflare Workers (the spike works)
+
+A Phoenix 1.8 app with a LiveView (a counter, and a timer that pushes
+the seconds) runs from the WebAssembly ERTS: in Node.js, and in a Durable
+Object of Cloudflare's `workerd`, with a real browser (Chromium, with
+Playwright). Phoenix, LiveView and the `.beam` files of the app are not
+changed.
+
+```sh
+BEAM_COM=.../beam.com wasm/phoenix/setup.sh              # mix phx.new, the LiveView, a release
+BOOTSTRAP=... ELIXIR=... SERVE=1 wasm/phoenix/run.sh     # Node.js: http://localhost:4000/counter
+EMSDK=... BOOTSTRAP=... ELIXIR=... wasm/phoenix/build-worker.sh
+workerd serve wasm/phoenix/build/worker/worker.capnp     # workerd: http://localhost:8789/counter
+node wasm/phoenix/browser-test.cjs http://localhost:8789/counter
+```
+
+### The parts
+
+| Part | What |
+|---|---|
+| The risk check | libcrypto for WebAssembly; the release (`mix release`, no ERTS) boots as `bin/hello start` does; interactive mode |
+| `wasm_host` | a static NIF: `recv/0` runs on a dirty I/O scheduler and suspends its green thread until the host has an event (the normal scheduler runs meanwhile); `send/1`. Events are a JSON header, a newline and the body |
+| `wasm/phoenix/wasm_host/` | a Phoenix endpoint adapter (in place of `Bandit.PhoenixAdapter`): a pump process, a `Plug.Conn.Adapter`, and a loop for `WebSock` handlers (the LiveView socket) |
+| `wasm/erts/host/server.cjs` | a Node.js host: `node:http` and WebSockets (`ws`) |
+| `wasm/worker/worker.js` | a Durable Object: one VM for all requests and `WebSocketPair` sockets |
+| `wasm_tcp` | TCP client sockets of the host (`node:net`, `connect()` of `cloudflare:sockets`) for `gen_tcp`; `ssl` runs over them |
+| `wasm/worker/pack.erl` | packs a release into `release.bin` (in Erlang, so no toolchain); the Worker writes it into the file system of the VM before the boot |
+
+### Results
+
+| | Node.js 26 | `workerd` (Durable Object) |
+|---|---|---|
+| Boot of the release, until the endpoint is ready | 0.4 to 0.5 s | 0.5 s (first request 0.56 s) |
+| WebAssembly memory after the boot | 40 to 58 MB | 48 MB |
+| A page (`GET /counter`) | 2.5 to 4 ms | 3.5 to 4 ms |
+| LiveView socket connected (Chromium) | 170 ms | 110 to 170 ms |
+| A click (a round trip over the socket, Playwright included) | 45 to 66 ms | 50 to 67 ms |
+| 20 LiveView sockets at the same time | | 58 to 63 MB; the clicks in all 20 pages take 320 ms |
+| `gen_tcp`: HTTP/1.0 to a local server | 200 in 7 ms | 200 in 3 to 7 ms |
+| `ssl`: TLS 1.3 (`TLS_AES_256_GCM_SHA384`) | 200 in 200 ms (the first, when `ssl` loads), then 8 ms | 216 ms, then 10 ms |
+
+The Worker: the runtime `beam.wasm` is 5.2 MB (1.9 MB with gzip), and
+`release.bin` of the app is 7.5 MB (6.9 MB with gzip; 1,367 files):
+8.8 MB with gzip in all. The limit of a Worker is 10 MB with gzip (paid
+plan). The modules that the boot and a render load are 2.9 MB (2.1 MB
+with gzip) of the 7.5 MB, so there is room to leave out modules.
+
+### What was found
+
+- **Interactive mode, not embedded mode.** Embedded mode loads all the
+  modules of all applications at the boot: 1.4 s and 100 MB. Interactive
+  mode loads a module at its first use: 0.5 s and 48 MB. With
+  `-Mea min` (all allocators on `malloc`) the memory is 33 MB, but
+  `erlang:memory/0` fails (`notsup`), and `telemetry_poller` logs an
+  error for it.
+- **`setImmediate` of `workerd` waits about 1 ms**, as `setTimeout(0)`
+  does, and ERTS yields often: the boot took 3.2 s in `workerd`. A
+  `MessageChannel` message takes about 5 µs: with it, the boot takes
+  0.5 s.
+- **The Worker gets its files from the host.** With Emscripten's
+  `--embed-file`, each app needed a link with Emscripten. Now one runtime
+  (no files) and a data module (`release.bin`, made in Erlang) do the
+  same, and `beam.com` itself can run `pack.erl` (the same bytes as the
+  `escript` of OTP).
+- **`WebSockAdapter` knows only a fixed list of adapters** (Bandit,
+  Cowboy, the test adapter of Plug) and stops with "Unknown adapter" for
+  any other: `setup.sh` adds one clause to it (docs/UPSTREAM.md).
+- **The origin check of the LiveView socket works:** a page on
+  `127.0.0.1` gets 403 when the endpoint host is `localhost`.
+- **A static NIF is found through `code:priv_dir/1`:** the OTP
+  applications need a `priv` directory (empty) in the Worker, else the
+  asn1 NIF does not load and TLS cannot decode certificates.
+- **Dirty I/O schedulers:** `wasm_host:recv/0` holds one of them while it
+  waits, and interactive mode reads the `.beam` files with dirty I/O
+  NIFs: the release keeps the default number of dirty I/O schedulers (10
+  green threads cost almost nothing).
+
+## Erlang in a browser tab
+
+`wasm/browser/index.html` loads the Worker variant of `wasm/erts` (kernel
+and stdlib in the module) and runs `erl -eval` in the page. Chromium 141
+has JSPI with no flag: "hello from wasm32-unknown-emscripten, OTP 29, 43
+processes" in 436 ms.
+
+## Use cases
+
+- **Phoenix LiveView on Workers.** One Durable Object runs the app: pages,
+  LiveView sockets, PubSub and timers in one VM, near the users, with no
+  server to manage. An idle VM costs no CPU time. The data can be the
+  SQL storage of the Durable Object (SQLite), or Postgres through
+  `connect()`.
+- **Erlang and Elixir code at the edge**, as a function per request: an
+  API, a webhook, a small service. A stateless Worker boots a VM for each
+  request (about 0.5 s for kernel and stdlib, more with an app), so a
+  Durable Object that stays warm is better for most uses.
+- **Stateful objects with the actor model:** a Durable Object for each
+  room, game, document or user, with OTP processes inside it
+  (`gen_server`, supervisors, ETS) and a WebSocket for each client.
+- **Erlang in the browser:** a playground or a tutorial that runs real
+  OTP; offline apps; the same Elixir code on the server and in the page
+  (a LiveView that runs in the tab when there is no network is a
+  question for later).
+- **A sandbox:** a WebAssembly VM has no access to files, processes or the
+  network, other than what the host gives it (as `wasm_tcp`). Untrusted
+  Erlang code (a plugin, an exercise) can run in a Worker or a tab.
+- **Deno and Node.js:** a VM inside a JavaScript program (a CLI, an
+  Electron app) with no native binary for each platform.
+
+## How this could fit `beam.com`
+
+A proposal, not done:
+
+- **`beam.com build --target worker APP`** (or `--target wasm32`): the
+  native build of the release as now, then `pack.erl` (Erlang code that
+  `beam.com` has) and the Worker files. The output is a directory for
+  `wrangler deploy`: `worker.js`, `beam.mjs`, `beam.wasm`, `release.bin`
+  and a `wrangler.toml` with the Durable Object. No Emscripten, no
+  Node.js.
+- **The runtime:** `beam.wasm` and `beam.mjs` (2 MB with gzip), built by
+  the CI of BEAM.com with `wasm/erts/build.sh`, in the zip of `beam.com`
+  or downloaded at the first `--target worker` build.
+- **The host adapter as an application:** `wasm_host`, `wasm_tcp` and the
+  Phoenix adapter would be one application (Erlang, with an Elixir part
+  for Phoenix) that the build adds to the release, as `beam.com` adds its
+  own applications now. The endpoint gets the adapter at run time (as
+  `WASM_HOST=1` does in the demo), so the same release runs natively.
+- **What must be decided:** whether BEAM.com carries the Emscripten
+  toolchain in CI (the runtime changes only with OTP and ERTS), and
+  whether the upstream points (`WebSockAdapter`, the changes of ERTS)
+  go upstream first.
+
+## Next
+
+- **Leave out unused modules** in `release.bin` (a list of the modules
+  that a boot and the tests load), for smaller Workers.
+- **Data:** an Ecto adapter for the SQL storage of Durable Objects, or
+  `exqlite` over it; Postgres through `wasm_tcp` (Postgrex over
+  `gen_tcp` and `ssl`, which work now).
+- **A deploy to Cloudflare** (this spike ran `workerd` locally): the CPU
+  time and memory limits in production, and JSPI there.
+- **More Durable Objects:** PubSub between objects (a
+  `Phoenix.PubSub` adapter over Durable Object requests).
+- **A snapshot of the booted VM** (the memory after the boot), to make
+  the cold start shorter.
+- **UDP and DNS** through the host; incoming TCP is not possible on
+  Workers.
 
 ## Limits of the way
 
 - Threads switch only when one waits: a long NIF or BIF stops all the
   others (Erlang processes are still preempted by reductions).
 - The CPU time of a request in Workers applies to all the threads.
-- Nothing keeps a process between requests on Workers and Deno Deploy.
+- A stateless Worker or Deno Deploy keeps no VM between requests; a
+  Durable Object does, while it is in memory.
+- No incoming TCP or UDP on Workers: the host gives HTTP and WebSockets.
+- No ports (no `fork()` or `exec()`), and no NIFs that are not linked into
+  the runtime.

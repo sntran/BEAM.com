@@ -1160,6 +1160,50 @@ suspends the green thread), then read again.
 **Possible upstream fix.** Accept `EAGAIN` and wait with `poll()`; or no
 signal dispatcher on a platform without signals.
 
+### O22. `process_main` never returns, so V8 keeps it in baseline code
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/emu/beam_emu.c`,
+`erts/emulator/beam/erl_process.c`).
+
+**Symptom.** ERTS compiled to WebAssembly runs Erlang code 3 to 5 times
+slower than the native interpreter, and the speed does not become
+better after a long run.
+
+**Cause.** The interpreter loop (`process_main()`) is called one time
+and then runs for the full life of the scheduler. V8 compiles each
+WebAssembly function first with its baseline compiler (Liftoff), and
+uses the optimized code (TurboFan) only at the next call of the
+function. V8 has no on-stack replacement for WebAssembly. Thus the
+interpreter stays in baseline code.
+
+**Fix in the WebAssembly spike.** `process_main()` returns at the end of
+each time slice (at `do_schedule1`), and keeps the current process in
+two new fields at the end of `ErtsSchedulerData`. The scheduler thread
+calls it again in a loop, and it continues at a new label. A fold test
+went from 4.8 s to 1.2 s (the native interpreter: 0.85 s).
+
+**Possible upstream fix.** An option for the emulator loop to return to
+its caller at each schedule. It can help other engines that compile
+functions in tiers.
+
+### O23. `--disable-security-hardening-flags` also removes the safety flags
+
+**Status:** OTP 29.1.1 (`erts/configure.ac`).
+
+**Symptom.** ERTS compiled with Emscripten and
+`--disable-security-hardening-flags` fails at random with "memory access
+out of bounds" (for example, in Elixir code evaluation).
+
+**Cause.** The same configure block adds `-fno-strict-aliasing`,
+`-fno-strict-overflow` and `-fno-delete-null-pointer-checks`. ERTS needs
+these flags to be correct, not to be hard to attack. When the option
+removes the block, clang optimizes code that breaks the aliasing rules.
+
+**Workaround.** Put the three flags in `CFLAGS` again.
+
+**Possible upstream fix.** Keep the three flags out of the hardening
+block, so that the option removes only the hardening flags.
+
 ## Emscripten
 
 Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/WASM.md,
@@ -1182,6 +1226,51 @@ phase B).
 
 **Workaround.** `-Wl,--allow-multiple-definition`, with our objects
 before libc.
+
+### EM3. `MAP_FIXED` and `MAP_NORESERVE` are defined, but mmap cannot reserve
+
+**Symptom.** A wasm64 ERTS stops at start: "Failed to reserve physical
+memory for descriptors".
+
+**Cause.** `erl_mmap.h` sets `ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION`
+when the two flags are defined. The mmap of Emscripten cannot reserve
+address space without memory.
+
+**Workaround.** Do not set the macro for `__EMSCRIPTEN__`.
+
+## workerd (Cloudflare Workers)
+
+Seen with workerd from the `workerd` npm package, in the WebAssembly
+spike (docs/WASM.md, phase B).
+
+### W1. `setImmediate()` and `setTimeout(0)` wait about 1 ms
+
+**Symptom.** An emulator that yields to the event loop after each JSPI
+suspend starts in 3.2 s in workerd, and in 0.5 s in Node.
+
+**Cause.** In workerd, `setImmediate()` is a timer with the minimum
+time. Each yield waits about 1 ms.
+
+**Workaround.** Yield with a `MessageChannel` message outside Node.
+
+## websock_adapter
+
+Seen with websock_adapter 0.6.0.
+
+### WS1. The adapter list is closed
+
+**Symptom.** A Phoenix server with a new Plug adapter
+(`WasmHost.Conn`) fails at the first WebSocket upgrade: "Unknown
+adapter".
+
+**Cause.** `WebSockAdapter.upgrade/4` knows only Bandit and Cowboy, by
+a fixed list of clauses.
+
+**Workaround.** Add a clause for the new adapter in the dependency, and
+compile it again.
+
+**Possible upstream fix.** Ask the `Plug.Conn` adapter module for its
+WebSock handler, with a callback or a protocol.
 
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
