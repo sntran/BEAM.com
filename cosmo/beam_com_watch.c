@@ -295,12 +295,21 @@ static struct entry *find_entry(const char *path)
  * the system calls (with the numbers of each system, -1 and errno on an
  * error, ENOSYS on Linux). On NetBSD, sys_kevent is __kevent50 (435),
  * which takes the struct kevent of NetBSD 10 and earlier (NetBSD 11
- * keeps it in compat_100). See C29 in docs/UPSTREAM.md. */
+ * keeps it in compat_100). On macOS, sys_kevent is kevent64 (369), not
+ * kevent (363): struct kevent64_s, and a flags argument before the
+ * timeout, which is a seventh argument. See C29 in docs/UPSTREAM.md. */
 int sys_kqueue(void);
 int sys_kevent(int, const void *, int, void *, int, const struct timespec *);
 
-/* struct kevent of macOS (with #pragma pack(4), which changes nothing on
- * 64-bit systems) and OpenBSD. FreeBSD 12 and later add ext[4]. */
+/* macOS: kevent64(kq, changes, nchanges, events, nevents, flags, timeout).
+ * The watcher always gives KEVENT_FLAG_IMMEDIATE, so the kernel does not
+ * read the timeout (no seventh argument), and it waits with poll() on
+ * the kqueue. */
+typedef int kevent64_f(int, const void *, int, void *, int, unsigned);
+#define KQ_KEVENT_FLAG_IMMEDIATE 0x1
+
+/* struct kevent of OpenBSD (and of macOS, which has the same first
+ * fields in struct kevent64_s). FreeBSD 12 and later add ext[4]. */
 struct kev {
     uintptr_t ident;
     int16_t filter;
@@ -315,6 +324,12 @@ struct kev_freebsd {
     uint64_t ext[4];
 };
 
+/* struct kevent64_s of macOS: the fields of struct kev, then ext[2]. */
+struct kev_xnu {
+    struct kev k;
+    uint64_t ext[2];
+};
+
 /* NetBSD: the filter and the flags are 32 bits. */
 struct kev_netbsd {
     uintptr_t ident;
@@ -327,6 +342,7 @@ struct kev_netbsd {
 
 _Static_assert(sizeof(struct kev) == 32, "struct kevent (macOS, OpenBSD)");
 _Static_assert(sizeof(struct kev_freebsd) == 64, "struct kevent (FreeBSD)");
+_Static_assert(sizeof(struct kev_xnu) == 48, "struct kevent64_s (macOS)");
 _Static_assert(sizeof(struct kev_netbsd) == 40, "struct kevent (NetBSD)");
 _Static_assert(offsetof(struct kev_netbsd, data) == 24, "NetBSD kevent data");
 
@@ -351,7 +367,34 @@ static int kq = -1, kq_files, kq_max_files, kq_stdin;
 static size_t kev_size(void)
 {
     return IsNetbsd() ? sizeof(struct kev_netbsd)
-         : IsFreebsd() ? sizeof(struct kev_freebsd) : sizeof(struct kev);
+         : IsFreebsd() ? sizeof(struct kev_freebsd)
+         : IsXnu() ? sizeof(struct kev_xnu) : sizeof(struct kev);
+}
+
+/* kevent() without a wait (a zero timeout). */
+static int kev_now(const void *changes, int nchanges, void *events, int nevents)
+{
+    static const struct timespec zero = {0, 0};
+    kevent64_f *kevent64 = (kevent64_f *)(void *)sys_kevent;
+
+    if (IsXnu())
+        return kevent64(kq, changes, nchanges, events, nevents, KQ_KEVENT_FLAG_IMMEDIATE);
+    return sys_kevent(kq, changes, nchanges, events, nevents, &zero);
+}
+
+/* Wait at most ms milliseconds for events. -1 and errno on an error. */
+static int kev_wait(void *events, int nevents, int ms)
+{
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    struct pollfd pfd = {0, POLLIN, 0};
+    int n;
+
+    if (!IsXnu())
+        return sys_kevent(kq, NULL, 0, events, nevents, &ts);
+    pfd.fd = kq;
+    if ((n = poll(&pfd, 1, ms)) <= 0)
+        return n;
+    return kev_now(NULL, 0, events, nevents);
 }
 
 static void kev_set(void *p, int ident, int filter, unsigned flags, unsigned fflags)
@@ -392,7 +435,7 @@ static int kq_add(int fd, int filter, unsigned flags, unsigned fflags)
     struct kev_freebsd ev; /* the largest */
 
     kev_set(&ev, fd, filter, KQ_EV_ADD | flags, fflags);
-    return sys_kevent(kq, &ev, 1, NULL, 0, NULL);
+    return kev_now(&ev, 1, NULL, 0);
 }
 
 static void kq_unwatch(struct entry *e)
@@ -483,16 +526,14 @@ static void kq_events(const char *evs, int n)
 static int kq_wait(int ms)
 {
     char evs[KQ_MAX_EVENTS * sizeof(struct kev_freebsd)];
-    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
-    struct timespec settle = {0, 50000000L};
     int n, i;
 
-    n = sys_kevent(kq, NULL, 0, evs, KQ_MAX_EVENTS, &ts);
+    n = kev_wait(evs, KQ_MAX_EVENTS, ms);
     if (n < 0)
         return errno == EINTR ? 0 : -1;
     kq_events(evs, n);
     for (i = 0; n > 0 && i < 10; i++) {
-        n = sys_kevent(kq, NULL, 0, evs, KQ_MAX_EVENTS, &settle);
+        n = kev_wait(evs, KQ_MAX_EVENTS, 50);
         if (n < 0)
             return errno == EINTR ? 0 : -1;
         kq_events(evs, n);
