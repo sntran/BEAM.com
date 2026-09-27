@@ -37,12 +37,15 @@ addToLibrary({
   $jspiEnv__postset: "if (ENVIRONMENT_IS_NODE) Object.assign(ENV, process.env);",
   $jspiEnv: {},
   jspi_spawn__deps: ['$jspi', '$jspiLater', '$jspiExit', '$jspiEnv'],
+  jspi_spawn__sig: 'vp',
   jspi_spawn: (t) => {
     jspi.entry ??= WebAssembly.promising(wasmExports['jspi_thread_entry']);
-    jspiLater(() => jspi.entry(t).catch(jspiExit));
+    // A pointer argument of a wasm64 export is a BigInt.
+    jspiLater(() => jspi.entry({{{ MEMORY64 ? 'BigInt(t)' : 't' }}}).catch(jspiExit));
   },
   jspi_suspend__deps: ['$jspi'],
   jspi_suspend__async: true,
+  jspi_suspend__sig: 'ipi',
   jspi_suspend: (t, ms) => new Promise((resolve) => {
     if (jspi.early.delete(t)) return resolve(1);
     let timer = null;
@@ -50,6 +53,7 @@ addToLibrary({
     if (ms >= 0) timer = setTimeout(() => { jspi.waiters.delete(t); resolve(0); }, ms);
   }),
   jspi_resume__deps: ['$jspi'],
+  jspi_resume__sig: 'vp',
   jspi_resume: (t) => {
     const w = jspi.waiters.get(t);
     if (w) queueMicrotask(w); else jspi.early.add(t);
@@ -68,14 +72,18 @@ addToLibrary({
   };`,
   jspi_host_wait__deps: ['$jspiHost'],
   jspi_host_wait__async: true,
+  jspi_host_wait__sig: 'i',
   jspi_host_wait: () => new Promise((resolve) => {
     if (jspiHost.queue.length) resolve(jspiHost.queue[0].length);
     else jspiHost.waiter = resolve;
   }),
   jspi_host_take__deps: ['$jspiHost'],
+  jspi_host_take__sig: 'vp',
   jspi_host_take: (ptr) => { HEAPU8.set(jspiHost.queue.shift(), ptr); },
+  jspi_host_send__sig: 'vpp',
   jspi_host_send: (ptr, size) => { Module['beamHost'].onsend?.(HEAPU8.slice(ptr, ptr + size)); },
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
+  jspi_yield__sig: 'v',
   jspi_yield: () => new Promise((r) => jspiLater(r)),
 });

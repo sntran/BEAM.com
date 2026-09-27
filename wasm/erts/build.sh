@@ -11,13 +11,22 @@
 # wasm/erts/run.sh.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT=${OUT:-$HERE/build}
+# WASM64=1: wasm64 (-sMEMORY64): 64-bit terms (60-bit small integers, as
+# on native), in $HERE/build64.
+if [ "${WASM64:-0}" = 1 ]; then
+    OUT=${OUT:-$HERE/build64}
+    WASM_TARGET=wasm64-unknown-emscripten WASM_ARCH_FLAGS=-sMEMORY64 SP=sp64.S OSSL_TARGET=linux-generic64
+else
+    OUT=${OUT:-$HERE/build}
+    WASM_TARGET=wasm32-unknown-emscripten WASM_ARCH_FLAGS= SP=sp.S OSSL_TARGET=linux-generic32
+fi
+export WASM_TARGET WASM_ARCH_FLAGS
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 JOBS=${JOBS:-$(nproc)}
 : "${EMSDK:?set EMSDK}" "${BOOTSTRAP:?set BOOTSTRAP}"
 PATH=$BOOTSTRAP/bootstrap/bin:$EMSDK/upstream/emscripten:$PATH
 export PATH
-T=wasm32-unknown-emscripten
+T=$WASM_TARGET
 OTP=$OUT/otp
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
 WASM_OPENSSL=$OUT/openssl
@@ -29,7 +38,7 @@ if [ ! -f "$WASM_OPENSSL/lib/libcrypto.a" ]; then
     src=$OUT/openssl-src
     [ -d "$src" ] || git clone -q --depth 1 --branch "openssl-$OPENSSL_VERSION" \
         https://github.com/openssl/openssl.git "$src"
-    (cd "$src" && ./Configure linux-generic32 CC=emcc AR=emar RANLIB=emranlib \
+    (cd "$src" && ./Configure $OSSL_TARGET CC="emcc $WASM_ARCH_FLAGS" AR=emar RANLIB=emranlib \
         --prefix="$WASM_OPENSSL" --libdir=lib no-shared no-asm no-dso no-engine \
         no-async no-tests no-apps no-docs no-module no-afalgeng no-uplink \
         no-secure-memory no-threads no-sock no-ui-console &&
@@ -53,13 +62,13 @@ cp "$BOOTSTRAP/bootstrap/bin/yielding_c_fun" "erts/lib_src/yielding_c_fun/bin/$T
 make -C erts/lib_src -j"$JOBS" TARGET=$T TYPE=opt opt > "$OUT/lib_src.log" 2>&1
 
 # The green threads (pthreads on JSPI).
-emcc -O2 -Wall -c "$HERE/jspi_pthread.c" -o "$OUT/jspi_pthread.o"
-emcc -O2 -c "$HERE/sp.S" -o "$OUT/sp.o"
+emcc -O2 -Wall $WASM_ARCH_FLAGS -c "$HERE/jspi_pthread.c" -o "$OUT/jspi_pthread.o"
+emcc -O2 $WASM_ARCH_FLAGS -c "$HERE/$SP" -o "$OUT/sp.o"
 
 # The static NIFs: asn1 and crypto (the configured ones), and wasm_host
 # (messages with the JavaScript host). The table of static NIFs is made
 # from this list.
-emcc -O2 -Wall -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME=wasm_host \
+emcc -O2 -Wall $WASM_ARCH_FLAGS -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME=wasm_host \
     -I"$OTP/erts/emulator/beam" -I"$OTP/erts/include" -I"$OTP/erts/include/$T" \
     -c "$HERE/wasm_host_nif.c" -o "$OUT/wasm_host_nif.o"
 rm -f "$OUT/wasm_host.a"
@@ -71,7 +80,7 @@ rm -f "erts/emulator/$T/opt/emu/driver_tab.c"
 # adds -fexceptions). DEXPORT empty: no dynamic NIFs or drivers, so no
 # export of all symbols (-export-dynamic makes a JS wrapper for each). Our pthread functions come first and replace the
 # stubs of Emscripten's libc.
-LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_NAME=createBeam ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_NAME=createBeam ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
 make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
 cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
@@ -97,7 +106,7 @@ if [ "${WORKER:-0}" = 1 ]; then
             "{ok, _} = beam_lib:strip_files(filelib:wildcard(\"$F/lib/*/ebin/*.beam\")), halt()."
     fi
     WOUT=${WORKER_OUT:-$OUT/worker}
-    LDF="-O2 -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --embed-file $F@${WORKER_MOUNT:-/otp} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+    LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --embed-file $F@${WORKER_MOUNT:-/otp} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
     make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
     mkdir -p "$WOUT"

@@ -90,6 +90,20 @@ index 24468ad..660030c 100644
  	drv_data = (*driver->start)(ERTS_Port2ErlDrvPort(port), name, opts);
  	if (((SWord) drv_data) == -1)
  	    error_type = -1;
+diff --git a/erts/emulator/sys/common/erl_mmap.h b/erts/emulator/sys/common/erl_mmap.h
+index 3218f67..17545b8 100644
+--- a/erts/emulator/sys/common/erl_mmap.h
++++ b/erts/emulator/sys/common/erl_mmap.h
+@@ -56,7 +56,8 @@
+  * <http://lists.llvm.org/pipermail/cfe-commits/Week-of-Mon-20150202/122958.html>
+  */
+ #  if (defined(MAP_FIXED) && (defined(MAP_NORESERVE) || defined(__FreeBSD__)) \
+-       && !defined(ADDRESS_SANITIZER))
++       && !defined(ADDRESS_SANITIZER) && !defined(__EMSCRIPTEN__))
++/* Emscripten: mmap() is malloc(); it cannot reserve address space. */
+ #    define ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION 1
+ #  endif
+ #endif
 diff --git a/erts/emulator/sys/unix/sys.c b/erts/emulator/sys/unix/sys.c
 index 218da54..b879ad5 100644
 --- a/erts/emulator/sys/unix/sys.c
