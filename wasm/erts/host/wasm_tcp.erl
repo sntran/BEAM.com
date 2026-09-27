@@ -16,7 +16,7 @@
 -module(wasm_tcp).
 -behaviour(gen_server).
 
--export([getaddrs/2, getserv/1, connect/4, listen/2, accept/1, accept/2,
+-export([getaddrs/2, getserv/1, connect/4, listen/2, accept/1, accept/2, splice/2,
          send/2, sendfile/4, recv/2, recv/3, unrecv/2,
          close/1, shutdown/2, controlling_process/2, setopts/2, getopts/2,
          peername/1, sockname/1, getstat/2]).
@@ -45,6 +45,18 @@ listen(Port, Opts) ->
     end.
 
 accept(Socket) -> accept(Socket, infinity).
+
+%% The data of each socket goes to the other one in the host (as a proxy),
+%% no longer through Erlang: for example a connection that a listener
+%% accepted, and one to the server behind it. The data in the buffers goes
+%% first. The sockets end together.
+splice(?SOCKET(A), ?SOCKET(B)) ->
+    {ok, IdA} = call(A, id),
+    {ok, IdB} = call(B, id),
+    ok = call(A, {splice, IdB}),
+    ok = call(B, {splice, IdA}),
+    ?HOST:send_host(#{t => tcp_splice, a => IdA, b => IdB}).
+
 accept(?SOCKET(Pid), Timeout) -> call(Pid, {accept, self(), Timeout}).
 
 send(?SOCKET(Pid), Data) -> call(Pid, {send, Data}).
@@ -171,6 +183,11 @@ handle_call({accepted, Owner}, _From, #{ref := Ref, later := A} = S) ->
     {reply, ok, serve_recv(flush_active(S1))};
 handle_call(sockname, _From, S) ->
     {reply, {ok, {{0, 0, 0, 0}, 0}}, S};
+handle_call(id, _From, #{id := Id} = S) ->
+    {reply, {ok, Id}, S};
+handle_call({splice, Peer}, _From, #{buf := Buf} = S) ->
+    Buf =/= <<>> andalso ?HOST:send_host(#{t => tcp_send, id => Peer}, Buf),
+    {reply, ok, S#{spliced => Peer, buf := <<>>, active := false}};
 handle_call({connect, Host, Port, Timeout}, From, #{id := Id} = S) ->
     ?HOST:send_host(#{t => tcp_connect, id => Id, host => Host, port => Port}),
     TRef = case Timeout of
@@ -269,6 +286,12 @@ handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{connect := {From, TRef}} = 
 handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{owner := Owner} = S) ->
     Owner ! {tcp_error, ?SOCKET(self()), reason(Meta)},
     {noreply, S};
+%% Data that came before the host joined the sockets: to the peer.
+handle_info({wasm_host, <<"tcp_data">>, _, Data}, #{spliced := Peer} = S) ->
+    ?HOST:send_host(#{t => tcp_send, id => Peer}, Data),
+    {noreply, S};
+handle_info({wasm_host, <<"tcp_closed">>, _, _}, #{spliced := _} = S) ->
+    {stop, normal, S};
 handle_info({wasm_host, <<"tcp_data">>, _, Data}, #{recv_cnt := C, recv_oct := O} = S) ->
     {noreply, deliver(Data, S#{recv_cnt := C + 1, recv_oct := O + byte_size(Data)})};
 handle_info({wasm_host, <<"tcp_closed">>, _, _}, S) ->

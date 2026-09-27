@@ -17,6 +17,7 @@ const pending = new Map();  // id -> {res} or {req, socket, head} (an upgrade)
 const sockets = new Map();  // id -> ws
 const tcps = new Map();     // id -> net.Socket (wasm_tcp)
 const servers = new Map();  // id of a listener -> net.Server (wasm_tcp)
+const peers = new Map();    // id -> id: the sockets of a wasm_tcp:splice/2
 const tcpHost = process.env.TCP_HOST || '127.0.0.1';  // the address of the listeners
 const wss = new WebSocketServer({ noServer: true });
 let nextId = 1;
@@ -39,9 +40,19 @@ function request(req, body, extra) {
 function tcpEvents(id, sock) {
   tcps.set(id, sock);
   sock.setNoDelay(true);  // no Nagle: small messages (the distribution) go at once
-  sock.on('data', (d) => event({ t: 'tcp_data', id }, d));
+  sock.on('data', (d) => {
+    const peer = peers.get(id);
+    if (peer) tcps.get(peer)?.write(d);  // after wasm_tcp:splice/2: not through Erlang
+    else event({ t: 'tcp_data', id }, d);
+  });
   sock.on('error', (e) => event({ t: 'tcp_error', id, reason: (e.code || 'einval').toLowerCase() }));
-  sock.on('close', () => { tcps.delete(id); event({ t: 'tcp_closed', id }); });
+  sock.on('close', () => {
+    tcps.delete(id);
+    event({ t: 'tcp_closed', id });
+    const peer = peers.get(id);
+    peers.delete(id);
+    if (peer) { peers.delete(peer); tcps.get(peer)?.destroy(); }
+  });
 }
 
 function onsend(bytes) {
@@ -90,6 +101,7 @@ function onsend(bytes) {
       });
       break;
     }
+    case 'tcp_splice': peers.set(msg.a, msg.b); peers.set(msg.b, msg.a); break;
     case 'tcp_unlisten': servers.get(msg.id)?.close(); servers.delete(msg.id); break;
     case 'tcp_send': tcps.get(msg.id)?.write(body); break;
     case 'tcp_close': tcps.get(msg.id)?.destroy(); tcps.delete(msg.id); break;

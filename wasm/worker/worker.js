@@ -443,11 +443,10 @@ export class Vm {
     this.tcps.set(id, { send: (b) => server.send(b), close: () => server.close(), h });
     this.event({ t: 'tcp_accept', id: listener, conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
     server.addEventListener('message', (e) => {
-      this.event({ t: 'tcp_data', id }, typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data);
+      this.tcpData(id, typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data);
     });
     server.addEventListener('close', () => {
-      this.tcps.delete(id);
-      this.event({ t: 'tcp_closed', id });
+      this.tcpClosed(id);
       if (h) { h.sockets--; h.wake?.(); }
     });
     return new Response(null, { status: 101, webSocket: client });
@@ -476,12 +475,32 @@ export class Vm {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        this.event({ t: 'tcp_data', id }, value);
+        this.tcpData(id, value);
       }
     } catch (e) {}
+    this.tcpClosed(id);
+    if (h) { h.sockets--; h.wake?.(); }
+  }
+
+  // Data of a TCP socket: to Erlang, or to its peer after a splice.
+  tcpData(id, bytes) {
+    const t = this.tcps.get(id);
+    const peer = t?.peer && this.tcps.get(t.peer);
+    if (peer) this.run(() => peer.send(bytes), peer.h);
+    else this.event({ t: 'tcp_data', id }, bytes);
+  }
+
+  // The end of a TCP socket: to Erlang, and the end of its peer too.
+  tcpClosed(id) {
+    const t = this.tcps.get(id);
     this.tcps.delete(id);
     this.event({ t: 'tcp_closed', id });
-    if (h) { h.sockets--; h.wake?.(); }
+    const peer = t?.peer && this.tcps.get(t.peer);
+    if (peer) {
+      this.tcps.delete(t.peer);
+      this.run(() => peer.close(), peer.h);
+      this.event({ t: 'tcp_closed', id: t.peer });
+    }
   }
 
   onsend(bytes) {
@@ -551,6 +570,13 @@ export class Vm {
         const t = this.tcps.get(msg.id);
         this.tcps.delete(msg.id);
         if (t) this.run(() => t.close(), t.h);
+        break;
+      }
+      // wasm_tcp:splice/2: the data of each socket goes to the other one,
+      // no longer through Erlang.
+      case 'tcp_splice': {
+        const a = this.tcps.get(msg.a), b = this.tcps.get(msg.b);
+        if (a && b) { a.peer = msg.b; b.peer = msg.a; }
         break;
       }
       case 'tcp_listen':

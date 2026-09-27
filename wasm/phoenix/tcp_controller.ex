@@ -77,6 +77,30 @@ defmodule HelloWeb.TcpController do
     end
   end
 
+  @doc """
+  A test of a proxy that Erlang starts and the host runs: GET
+  /splice?port=P&host=H&upstream=U listens on P, connects each connection
+  to H:U, and joins the two sockets (:wasm_tcp.splice/2): the data no
+  longer goes through Erlang.
+  """
+  def splice(conn, %{"port" => port, "host" => host, "upstream" => upstream}) do
+    {:ok, listen} = :gen_tcp.listen(String.to_integer(port), [:binary, active: false])
+    target = {String.to_charlist(host), String.to_integer(upstream)}
+    :ok = :gen_tcp.controlling_process(listen, spawn(fn -> splice_loop(listen, target) end))
+    text(conn, "proxy on #{port} to #{host}:#{upstream}\n")
+  end
+
+  defp splice_loop(listen, {host, port} = target) do
+    {:ok, client} = :gen_tcp.accept(listen)
+
+    case :gen_tcp.connect(host, port, [:binary, active: false], 5000) do
+      {:ok, upstream} -> :ok = :wasm_tcp.splice(client, upstream)
+      _ -> :gen_tcp.close(client)
+    end
+
+    splice_loop(listen, target)
+  end
+
   defp eval_erlang(expr) do
     with {:ok, tokens, _} <- :erl_scan.string(expr),
          {:ok, exprs} <- :erl_parse.parse_exprs(tokens) do

@@ -49,6 +49,8 @@ grep -q '"/tcp"' lib/hello_web/router.ex ||
     sed -i 's|    live "/counter", CounterLive|    live "/counter", CounterLive\n    get "/tcp", TcpController, :show|' lib/hello_web/router.ex
 grep -q '"/listen"' lib/hello_web/router.ex ||
     sed -i 's|    get "/tcp", TcpController, :show|    get "/tcp", TcpController, :show\n    get "/listen", TcpController, :listen|' lib/hello_web/router.ex
+grep -q '"/splice"' lib/hello_web/router.ex ||
+    sed -i 's|    get "/tcp", TcpController, :show|    get "/tcp", TcpController, :show\n    get "/splice", TcpController, :splice|' lib/hello_web/router.ex
 grep -q '"/ssh"' lib/hello_web/router.ex ||
     sed -i 's|    get "/listen", TcpController, :listen|    get "/listen", TcpController, :listen\n    get "/ssh", TcpController, :ssh|' lib/hello_web/router.ex
 # The SSH test server (GET /ssh): the ssh application in the release.
