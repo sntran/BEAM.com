@@ -56,11 +56,16 @@ grep -q ':ssh' mix.exs ||
     sed -i 's|extra_applications: \[:logger, :runtime_tools\]|extra_applications: [:logger, :runtime_tools, :ssh]|' mix.exs
 grep -q WASM_HOST config/runtime.exs || cat >> config/runtime.exs <<'EXS'
 
-# The WebAssembly emulator: the JavaScript host serves HTTP and WebSockets.
-if System.get_env("WASM_HOST") do
+# The WebAssembly emulator. WASM_HOST=1: the JavaScript host serves HTTP and
+# WebSockets (WasmHost.PhoenixAdapter). WASM_HOST=tcp: Bandit serves them,
+# on TCP sockets of the host (:wasm_tcp).
+if System.get_env("WASM_HOST") == "1" do
   config :hello, HelloWeb.Endpoint, adapter: WasmHost.PhoenixAdapter
 end
 EXS
+sed -i 's|^if System.get_env("WASM_HOST") do$|if System.get_env("WASM_HOST") == "1" do|' config/runtime.exs
+grep -q 'WasmHost.Server.children' lib/hello/application.ex ||
+    sed -i 's|^    children = \[$|    children = WasmHost.Server.children() ++ [|' lib/hello/application.ex
 # WebSockAdapter knows only a fixed list of adapters.
 f=deps/websock_adapter/lib/websock_adapter.ex
 grep -q WasmHost.Conn "$f" ||

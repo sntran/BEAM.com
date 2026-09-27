@@ -38,6 +38,11 @@ if [ "${SERVE:-0}" = 1 ]; then
     export PHX_SERVER=true WASM_HOST=1
     host=$HERE/../erts/host/server.mjs beam=./beam.mjs
 fi
+# SERVE=tcp: Bandit serves HTTP on $PORT, with TCP sockets of the host.
+if [ "${SERVE:-0}" = tcp ]; then
+    export PHX_SERVER=true WASM_HOST=tcp HOST_PORT=${HOST_PORT:-4999}
+    host=$HERE/../erts/host/server.mjs beam=./beam.mjs
+fi
 # shellcheck disable=SC2086
 exec env ROOTDIR="$ROOT" BINDIR="$ROOT/bin" EMU=beam PROGNAME=erl "${NODE:-node}" ${NODE_FLAGS:-} "$host" $beam \
     -S 1 -SDcpu 1 -A 0 -- -root "$ROOT" -bindir "$ROOT/bin" -progname erl -- \

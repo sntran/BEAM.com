@@ -17,7 +17,7 @@
 -behaviour(gen_server).
 
 -export([getaddrs/2, getserv/1, connect/4, listen/2, accept/1, accept/2,
-         send/2, recv/2, recv/3, unrecv/2,
+         send/2, sendfile/4, recv/2, recv/3, unrecv/2,
          close/1, shutdown/2, controlling_process/2, setopts/2, getopts/2,
          peername/1, sockname/1, getstat/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -48,6 +48,23 @@ accept(Socket) -> accept(Socket, infinity).
 accept(?SOCKET(Pid), Timeout) -> call(Pid, {accept, self(), Timeout}).
 
 send(?SOCKET(Pid), Data) -> call(Pid, {send, Data}).
+
+%% file:sendfile/5 on a socket of this module: the file in parts of 64 KB.
+%% Bytes 0: to the end of the file.
+sendfile(Socket, Fd, Offset, Bytes) -> sendfile(Socket, Fd, Offset, Bytes, 0).
+
+sendfile(Socket, Fd, Offset, Bytes, Sent) ->
+    Size = case Bytes of 0 -> 65536; _ -> min(65536, Bytes - Sent) end,
+    case Size > 0 andalso file:pread(Fd, Offset + Sent, Size) of
+        false -> {ok, Sent};
+        eof -> {ok, Sent};
+        {ok, Data} ->
+            case send(Socket, Data) of
+                ok -> sendfile(Socket, Fd, Offset, Bytes, Sent + byte_size(Data));
+                Error -> Error
+            end;
+        Error -> Error
+    end.
 recv(Socket, Length) -> recv(Socket, Length, infinity).
 recv(?SOCKET(Pid), Length, Timeout) -> call(Pid, {recv, Length, Timeout}).
 unrecv(?SOCKET(Pid), Data) -> call(Pid, {unrecv, Data}).

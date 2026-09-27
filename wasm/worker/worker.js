@@ -9,6 +9,13 @@
 // - else a module release.bin in this Worker.
 // A Durable Object can hold the VM in place of the isolate: see Vm.
 //
+// The app serves HTTP in one of two ways:
+// - WASM_HOST=tcp (a text binding): its own HTTP server (Bandit, with gen_tcp
+//   of wasm_tcp) listens on PORT (4000), and each request is a TCP
+//   connection to it (bridge): the request as HTTP/1.1 bytes, the response
+//   read back, and WebSocket frames turned into messages;
+// - else: the endpoint adapter WasmHost.PhoenixAdapter gets http events.
+//
 // Workers get no TCP connections: a WebSocket to /.tcp/PORT is a connection
 // to the listener of PORT (gen_tcp:listen of wasm_tcp), and its binary
 // messages are the bytes (a client proxy, as tcp-proxy.mjs or websocat -b,
@@ -81,6 +88,8 @@ export class Vm {
     this.jobs = [];            // the wake-ups of the threads (plain)
     this.timers = new Map();   // id -> {at, f}: the timers of the threads (plain)
     this.nextTimer = 1;
+    this.env = env;
+    this.waitListen = new Map();  // port -> the resolve functions of listening()
     this.ready = this.boot(env);
   }
 
@@ -165,6 +174,7 @@ export class Vm {
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
     const tcp = upgrade && url.pathname.match(/^\/\.tcp\/(\d+)$/);
     if (tcp) return this.tcpAccept(Number(tcp[1]), request, h, finished);
+    if (this.env.WASM_HOST === 'tcp') return this.bridge(request, url, upgrade, h, finished);
     const body = upgrade || request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
     const response = new Promise((resolve) => this.pending.set(id, { resolve, upgrade, handler: h }));
     response.then(finished);
@@ -243,6 +253,174 @@ export class Vm {
     if (!h) return void this.jobs.push(fn);
     h.jobs.push(fn);
     h.wake?.();
+  }
+
+  // A listener on port, once there is one.
+  listening(port) {
+    if (this.listeners.has(port)) return Promise.resolve();
+    return new Promise((r) => this.waitListen.set(port, [...(this.waitListen.get(port) ?? []), r]));
+  }
+
+  // WASM_HOST=tcp: the request as a TCP connection to the HTTP server of the
+  // app on PORT. Bandit does the HTTP; here only the bytes are framed.
+  async bridge(request, url, upgrade, h, finished) {
+    const port = Number(this.env.PORT ?? 4000);
+    await this.listening(port);
+    const id = `b${this.nextId++}`;
+    const headers = new Headers(request.headers);
+    headers.set('host', url.host);
+    headers.delete('transfer-encoding');
+    headers.delete('sec-websocket-extensions');  // no compression: frames as they are
+    if (upgrade) {
+      headers.set('connection', 'Upgrade');
+      headers.set('sec-websocket-key', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))));
+      headers.set('sec-websocket-version', '13');
+    } else {
+      headers.set('connection', 'close');
+    }
+    const body = request.method === 'GET' || request.method === 'HEAD' || upgrade
+      ? new Uint8Array(0) : new Uint8Array(await request.arrayBuffer());
+    if (body.length || !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', String(body.length));
+    let head = `${request.method} ${url.pathname}${url.search} HTTP/1.1\r\n`;
+    for (const [k, v] of headers) head += `${k}: ${v}\r\n`;
+    head = new TextEncoder().encode(head + '\r\n');
+    const bytes = new Uint8Array(head.length + body.length);
+    bytes.set(head);
+    bytes.set(body, head.length);
+    return new Promise((resolve) => {
+      const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h };
+      if (h) h.sockets++;
+      this.tcps.set(id, { send: (b) => this.bridgeData(c, b), close: () => this.bridgeEnd(c), h });
+      this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
+      this.event({ t: 'tcp_data', id }, bytes);
+    });
+  }
+
+  // Bytes from the HTTP server of the app to the connection c of bridge().
+  bridgeData(c, data) {
+    const b = new Uint8Array(c.buf.length + data.length);
+    b.set(c.buf);
+    b.set(data, c.buf.length);
+    c.buf = b;
+    if (!c.status) {
+      const end = indexOf(c.buf, [13, 10, 13, 10]);
+      if (end < 0) return;
+      const lines = new TextDecoder().decode(c.buf.subarray(0, end)).split('\r\n');
+      c.status = Number(lines[0].split(' ')[1]);
+      const headers = new Headers();
+      for (const l of lines.slice(1)) {
+        const i = l.indexOf(':');
+        headers.append(l.slice(0, i).trim(), l.slice(i + 1).trim());
+      }
+      c.buf = c.buf.slice(end + 4);
+      if (c.status === 101 && c.upgrade) return this.bridgeUpgrade(c);
+      c.length = headers.has('content-length') ? Number(headers.get('content-length')) : null;
+      c.chunked = /chunked/i.test(headers.get('transfer-encoding') ?? '');
+      headers.delete('transfer-encoding');
+      headers.delete('connection');
+      if (c.head || c.status === 204 || c.status === 304) c.length = 0;
+      const { readable, writable } = new TransformStream();
+      c.writer = writable.getWriter();
+      c.resolve(new Response(c.length === 0 ? null : readable, { status: c.status, headers }));
+      c.finished();
+    }
+    if (c.ws) return this.bridgeFrames(c);
+    this.bridgeBody(c);
+  }
+
+  // The body of a response: by content-length, chunked, or until the end.
+  bridgeBody(c) {
+    if (c.done) return;
+    if (c.chunked) {
+      for (;;) {
+        const nl = indexOf(c.buf, [13, 10]);
+        if (nl < 0) return;
+        const size = parseInt(new TextDecoder().decode(c.buf.subarray(0, nl)), 16);
+        if (size === 0) return this.bridgeDone(c);
+        if (c.buf.length < nl + 2 + size + 2) return;
+        c.writer.write(c.buf.slice(nl + 2, nl + 2 + size));
+        c.buf = c.buf.slice(nl + 2 + size + 2);
+      }
+    }
+    if (c.buf.length) {
+      const part = c.length === null ? c.buf : c.buf.subarray(0, c.length);
+      if (part.length) c.writer.write(part.slice());
+      if (c.length !== null) c.length -= part.length;
+      c.buf = new Uint8Array(0);
+    }
+    if (c.length === 0) this.bridgeDone(c);
+  }
+
+  bridgeDone(c) {
+    if (c.done) return;
+    c.done = true;
+    c.writer?.close().catch(() => {});
+    this.tcps.delete(c.id);
+    this.event({ t: 'tcp_closed', id: c.id });
+    this.bridgeRelease(c);
+  }
+
+  // The request of c can end (once).
+  bridgeRelease(c) {
+    if (c.released) return;
+    c.released = true;
+    if (c.h) { c.h.sockets--; c.h.wake?.(); }
+  }
+
+  // The app closed the connection.
+  bridgeEnd(c) {
+    this.tcps.delete(c.id);
+    if (!c.status) {
+      c.resolve(new Response('bad gateway\n', { status: 502 }));
+      c.finished();
+    }
+    if (c.ws) { try { c.ws.close(); } catch {} this.bridgeRelease(c); }
+    else this.bridgeDone(c);
+  }
+
+  // A WebSocket: the client end to the browser, frames to the app.
+  bridgeUpgrade(c) {
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.binaryType = 'arraybuffer';
+    c.ws = server;
+    c.frames = [];  // the parts of a message in fragments
+    server.addEventListener('message', (e) => {
+      const text = typeof e.data === 'string';
+      this.event({ t: 'tcp_data', id: c.id }, frame(text ? 1 : 2, text ? new TextEncoder().encode(e.data) : new Uint8Array(e.data)));
+    });
+    server.addEventListener('close', (e) => {
+      const code = e.code && e.code !== 1005 ? e.code : 1000;
+      this.event({ t: 'tcp_data', id: c.id }, frame(8, new Uint8Array([code >> 8, code & 255])));
+    });
+    c.resolve(new Response(null, { status: 101, webSocket: client }));
+    c.finished();
+    this.bridgeFrames(c);
+  }
+
+  // WebSocket frames from the app (not masked) to messages for the client.
+  bridgeFrames(c) {
+    for (;;) {
+      const b = c.buf;
+      if (b.length < 2) return;
+      let len = b[1] & 127, at = 2;
+      if (len === 126) { if (b.length < 4) return; len = (b[2] << 8) | b[3]; at = 4; }
+      else if (len === 127) { if (b.length < 10) return; len = Number(new DataView(b.buffer, b.byteOffset).getBigUint64(2)); at = 10; }
+      if (b.length < at + len) return;
+      const fin = b[0] & 128, op = b[0] & 15, data = b.slice(at, at + len);
+      c.buf = b.slice(at + len);
+      if (op === 9) { this.event({ t: 'tcp_data', id: c.id }, frame(10, data)); continue; }
+      if (op === 10) continue;
+      if (op === 8) { c.ws.close(len >= 2 ? (data[0] << 8) | data[1] : 1000); continue; }
+      if (op !== 0) c.op = op;
+      c.frames.push(data);
+      if (!fin) continue;
+      const all = new Uint8Array(c.frames.reduce((n, f) => n + f.length, 0));
+      let i = 0;
+      for (const f of c.frames) { all.set(f, i); i += f.length; }
+      c.frames = [];
+      c.ws.send(c.op === 1 ? new TextDecoder().decode(all) : all);
+    }
   }
 
   // A connection to a listener of wasm_tcp: a WebSocket to /.tcp/PORT. In a
@@ -375,6 +553,8 @@ export class Vm {
         } else {
           this.listeners.set(msg.port, msg.id);
           this.event({ t: 'tcp_listening', id: msg.id });
+          for (const r of this.waitListen.get(msg.port) ?? []) r();
+          this.waitListen.delete(msg.port);
         }
         break;
       case 'tcp_unlisten':
@@ -382,4 +562,28 @@ export class Vm {
         break;
     }
   }
+}
+
+// The position of the bytes pat in b, or -1.
+function indexOf(b, pat) {
+  outer: for (let i = 0; i + pat.length <= b.length; i++) {
+    for (let j = 0; j < pat.length; j++) if (b[i + j] !== pat[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+// A WebSocket frame from a client (masked, as RFC 6455 asks).
+function frame(op, data) {
+  const n = data.length;
+  const ext = n < 126 ? 0 : n < 65536 ? 2 : 8;
+  const f = new Uint8Array(2 + ext + 4 + n);
+  f[0] = 128 | op;
+  if (ext === 0) f[1] = 128 | n;
+  else if (ext === 2) { f[1] = 128 | 126; f[2] = n >> 8; f[3] = n & 255; }
+  else { f[1] = 128 | 127; new DataView(f.buffer).setBigUint64(2, BigInt(n)); }
+  const mask = crypto.getRandomValues(new Uint8Array(4));
+  f.set(mask, 2 + ext);
+  for (let i = 0; i < n; i++) f[2 + ext + 4 + i] = data[i] ^ mask[i & 3];
+  return f;
 }

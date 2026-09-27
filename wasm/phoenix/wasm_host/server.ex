@@ -18,14 +18,23 @@ defmodule WasmHost.Server do
 
   @table __MODULE__
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+
+  @doc """
+  The children to start first in an application with `WASM_HOST=tcp`: the
+  pump alone, for the TCP sockets of `:wasm_tcp` (the HTTP server of the
+  app, as Bandit, listens with `:gen_tcp`).
+  """
+  def children do
+    if System.get_env("WASM_HOST") == "tcp", do: [__MODULE__], else: []
+  end
 
   @impl true
   def init(opts) do
     :ets.new(@table, [:named_table, :public, read_concurrency: true])
     # gen_tcp:connect makes sockets of the host (wasm_tcp).
     :inet_db.set_tcp_module(:wasm_tcp)
-    plug = Keyword.fetch!(opts, :plug)
+    plug = Keyword.get(opts, :plug)
     pump = spawn_link(fn -> pump(plug) end)
     # WASM_HOST_BOOT_MODULES=file: the modules that the boot loaded, for
     # pack.erl --boot-modules.
@@ -53,7 +62,7 @@ defmodule WasmHost.Server do
     meta = :json.decode(header)
 
     case meta do
-      %{"t" => "http"} ->
+      %{"t" => "http"} when plug != nil ->
         spawn(fn -> WasmHost.Conn.run(plug, meta, body) end)
 
       # A connection to a listener of wasm_tcp: its events go to the listener

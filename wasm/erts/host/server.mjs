@@ -10,7 +10,9 @@ import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 const [beamPath, ...args] = process.argv.slice(2);
-const port = Number(process.env.PORT || 4000);
+// HOST_PORT: the HTTP port of the host, when the app listens on PORT itself
+// (WASM_HOST=tcp: Bandit with gen_tcp).
+const port = Number(process.env.HOST_PORT || process.env.PORT || 4000);
 const pending = new Map();  // id -> {res} or {req, socket, head} (an upgrade)
 const sockets = new Map();  // id -> ws
 const tcps = new Map();     // id -> net.Socket (wasm_tcp)
