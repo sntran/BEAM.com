@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
@@ -922,11 +923,12 @@ static void run_in_child(char **argv)
     push(&env, "BEAM_COM_RUN_CHILD=1");
     fflush(stdout);
     fflush(stderr);
-    if ((pid = fork()) == 0) {
-        beam_com_execve(GetProgramExecutableName(), argv, env.v);
-        _exit(127);
-    }
-    if (pid < 0 || waitpid(pid, &status, 0) < 0) {
+    /* posix_spawn(), not fork() and execve(): on Windows, execve() in a
+     * child of fork() leaves that child as a relay, which exits with the
+     * wait status (the exit status << 8) of the program. Cosmopolitan's
+     * WEXITSTATUS() does not mask it: shift it again if it is there. */
+    errno = posix_spawn(&pid, GetProgramExecutableName(), NULL, NULL, argv, env.v);
+    if (errno || waitpid(pid, &status, 0) < 0) {
         fprintf(stderr, "beam.com: %s\n", strerror(errno));
         exit(1);
     }
@@ -934,7 +936,8 @@ static void run_in_child(char **argv)
         run_exec();
     if (run_file)
         unlink(run_file);
-    exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+    exit(!WIFEXITED(status) ? 1 : WEXITSTATUS(status) > 255 ? WEXITSTATUS(status) >> 8
+                                                             : WEXITSTATUS(status));
 }
 
 /* make: the name of the program that make_link() makes. */
