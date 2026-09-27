@@ -1,12 +1,34 @@
-// A Phoenix app on Cloudflare Workers: a Durable Object runs the WebAssembly
-// emulator (threads on JSPI) with the release in its memory (/app). It gives
-// each request and WebSocket frame to Erlang through wasm_host (the events of
-// wasm/phoenix/wasm_host/server.ex), and the endpoint adapter of the app
-// answers.
+// An Erlang or Elixir release on Cloudflare Workers: a Durable Object runs the
+// WebAssembly emulator (threads on JSPI, the runtime of wasm/erts, with no
+// files) and writes the release (release.bin of pack.erl) into its file
+// system at /app before the boot. It gives each request and WebSocket frame
+// to Erlang through wasm_host (the events of wasm/phoenix/wasm_host/server.ex),
+// and the endpoint adapter of the app answers; wasm_tcp sockets use connect().
 import { DurableObject } from 'cloudflare:workers';
 import { connect } from 'cloudflare:sockets';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
+import release from './release.bin';
+
+// release.bin: "BEAMFS1\n", then (length, path, length, data) for each file.
+function unpack(FS, bytes) {
+  const b = new Uint8Array(bytes);
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const text = new TextDecoder();
+  if (text.decode(b.subarray(0, 8)) !== 'BEAMFS1\n') throw new Error('release.bin: not a release');
+  let meta = null;
+  for (let i = 8; i < b.length;) {
+    const plen = view.getUint32(i); i += 4;
+    const path = text.decode(b.subarray(i, i + plen)); i += plen;
+    const dlen = view.getUint32(i); i += 4;
+    const data = b.subarray(i, i + dlen); i += dlen;
+    if (path === '.release.json') { meta = JSON.parse(text.decode(data)); continue; }
+    const full = '/app/' + path;
+    FS.mkdirTree(full.slice(0, full.lastIndexOf('/')));
+    FS.writeFile(full, data);
+  }
+  return meta;
+}
 
 export default {
   // One object for the app: all requests and sockets go to the same VM.
@@ -26,23 +48,28 @@ export class Beam extends DurableObject {
   }
 
   boot(env) {
-    const vsn = env.RELEASE_VSN;
     const t0 = Date.now();
     return new Promise((resolve, reject) => {
       this.onready = () => { console.log(`beam: ready in ${Date.now() - t0} ms, ${this.memory()}`); resolve(); };
       createBeam({
-        arguments: ['-S', '1', '-SDcpu', '1', '-A', '0', '--',
-          '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
-          '-home', '/', '-mode', 'interactive', '-config', '/app/tmp/run.runtime',
-          '-boot', `/app/releases/${vsn}/start`, '-boot_var', 'RELEASE_LIB', '/app/lib', '-noshell'],
+        // The boot arguments are set in preRun, after the release is unpacked.
+        arguments: [],
         preRun: [(m) => {
           this.beam = m;
+          const { name, vsn } = unpack(m.FS, release);
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', '--',
+            '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
+            '-home', '/', '-mode', 'interactive', '-config', '/app/tmp/run.runtime',
+            '-boot', `/app/releases/${vsn}/start`, '-boot_var', 'RELEASE_LIB', '/app/lib', '-noshell');
+          // The text bindings of the Worker are the environment of the release
+          // (SECRET_KEY_BASE, PHX_HOST, DATABASE_URL, ...).
+          const vars = Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === 'string'));
           Object.assign(m.ENV, {
             ROOTDIR: '/app', BINDIR: '/app/bin', EMU: 'beam', PROGNAME: 'erl', HOME: '/',
-            RELEASE_ROOT: '/app', RELEASE_NAME: 'hello', RELEASE_VSN: vsn, RELEASE_MODE: 'interactive',
-            RELEASE_TMP: '/app/tmp', RELEASE_SYS_CONFIG: '/app/tmp/run.runtime', RELEASE_PROG: 'hello',
-            PHX_SERVER: 'true', WASM_HOST: '1', PHX_HOST: env.PHX_HOST, SECRET_KEY_BASE: env.SECRET_KEY_BASE,
-          });
+            RELEASE_ROOT: '/app', RELEASE_NAME: name, RELEASE_VSN: vsn, RELEASE_MODE: 'interactive',
+            RELEASE_TMP: '/app/tmp', RELEASE_SYS_CONFIG: '/app/tmp/run.runtime', RELEASE_PROG: name,
+            PHX_SERVER: 'true', WASM_HOST: '1',
+          }, vars);
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
         }],
         print: (s) => console.log(s),
