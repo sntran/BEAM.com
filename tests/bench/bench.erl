@@ -1,6 +1,6 @@
-%% Benchmarks for BEAM.com: a one-file program for "beam.com build".
+%% Benchmarks for BEAM.com: a one-file program for "beam.com INPUT -o OUTPUT".
 %%
-%%   beam.com build tests/bench/bench.erl -o bench.com
+%%   beam.com tests/bench/bench.erl -o bench.com
 %%   ./bench.com [NAME...]        the benchmarks (all without NAME)
 %%   ./bench.com none              nothing (to measure the start)
 %%   ./bench.com start EXE ARG...  the start time of a program

@@ -1,4 +1,4 @@
-%% A one-file program for "beam.com build" that shows how the JIT maps
+%% A one-file program for "beam.com INPUT -o OUTPUT" that shows how the JIT maps
 %% the memory of its code: with dual mapping, the code has two views of
 %% one shared memory object, one executable (r-x) and one writable
 %% (rw-), and no page is writable and executable at the same time (W^X).

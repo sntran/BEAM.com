@@ -1,11 +1,11 @@
 name: beam.com does not run correctly
-description: beam.com, or a program that "beam.com build" made, stops, crashes or gives a wrong result.
+description: beam.com, or a program that "beam.com INPUT -o OUTPUT" made, stops, crashes or gives a wrong result.
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for the report. For a problem when you **build** a program, use the "beam.com build fails" form.
+        Thank you for the report. For a problem when you **build** a program, use the "The build of a program fails" form.
 
         Before you send it, please try the latest release, and read "Known limits" in the README (for example: no port programs on Windows, and no NIFs from shared objects).
   - type: dropdown
@@ -40,7 +40,7 @@ body:
         - sh ./beam.com (the shell script of the APE file)
         - ./beam.com (APE loader in binfmt_misc, or the kernel)
         - With the APE loader (ape-x86_64.elf ./beam.com)
-        - A native file (beam.com build --target TARGET)
+        - A native file (beam.com INPUT -o OUTPUT --target TARGET)
         - As an .exe file on Windows
         - Other (write it below)
     validations:
@@ -54,7 +54,7 @@ body:
         - beam.com (the JIT)
         - beam-emu.com (the interpreter)
         - A tool (mix.com, iex.com, elixir.com, elixirc.com, or "beam.com mix ...")
-        - A program made with "beam.com build"
+        - A program made with "beam.com INPUT -o OUTPUT"
         - A release added with zip
     validations:
       required: true
@@ -77,8 +77,8 @@ body:
   - type: textarea
     id: version
     attributes:
-      label: Output of "beam.com version"
-      description: For a tool (mix.com, iex.com, ...), run "beam.com version" with the beam.com that you copied or linked. For a program that you built, give the output for the beam.com that built it.
+      label: Output of "beam.com --version"
+      description: For a tool (mix.com, iex.com, ...), run "beam.com --version" with the beam.com that you copied or linked. For a program that you built, give the output for the beam.com that built it.
       render: text
     validations:
       required: true
@@ -88,7 +88,7 @@ body:
       label: What you did
       description: The commands, and the smallest program that shows the problem (or a link to it).
       placeholder: |
-        beam.com build hello.erl -o hello.com
+        beam.com hello.erl -o hello.com
         sh ./hello.com a b
     validations:
       required: true
@@ -111,7 +111,7 @@ body:
     attributes:
       label: Output with BEAM_COM_VERBOSE=1
       description: |
-        This shows the arguments that BEAM.com gives ERTS. For example: `BEAM_COM_VERBOSE=1 sh ./beam.com version` (PowerShell: `$env:BEAM_COM_VERBOSE = "1"`).
+        This shows the arguments that BEAM.com gives ERTS. For example: `BEAM_COM_VERBOSE=1 sh ./beam.com --version` (PowerShell: `$env:BEAM_COM_VERBOSE = "1"`).
       render: text
   - type: textarea
     id: strace

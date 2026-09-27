@@ -12,15 +12,15 @@ tests/bench/run.ps1 -Dir DIR    # Windows
 ```
 
 The script builds [`tests/bench/bench.erl`](../tests/bench/bench.erl)
-with each variant (`beam-emu.com build`, `beam.com build`), runs it, and
+with each variant (`beam-emu.com INPUT -o OUTPUT`, `beam.com INPUT -o OUTPUT`), runs it, and
 prints one Markdown table. CI runs it on each platform after the tests,
 and puts the table in the summary of the run.
 
 | Row | What it measures |
 |---|---|
 | file size | the size of the variant |
-| size of a program | a program that `build` makes (bench.erl with its applications) |
-| start: `version` | `beam.com version`: start, boot, one command, stop (the median of 10 runs) |
+| size of a program | a program that `beam.com bench.erl -o OUTPUT` makes (bench.erl with its applications) |
+| start: `--version` | `beam.com --version`: start, boot, one command, stop (the median of 10 runs) |
 | start: a program | a built program that does nothing (the median of 10 runs) |
 | fib | function calls: `fib(32)` |
 | lists | `lists:sort/1`, `map/2` and `foldl/3` on 1000000 numbers |
@@ -75,7 +75,7 @@ What this says:
   the start.
 - **The size** is 2.8 MB more for the fat file with both backends
   (37.2 MB and 40.0 MB in CI), and the same for each program that
-  `build` makes from it.
+  a build (`-o`) makes from it.
 
 So the JIT helps long-running programs and servers that run Erlang
 code, and it costs short command-line programs, which mostly start and
@@ -87,7 +87,7 @@ From the CI run of the fat JIT: two fat files (x86_64 and aarch64 in
 each), the same code with and without `JIT=1`. Each cell is
 interpreter → JIT, in milliseconds (less is better).
 
-| Platform | start: `version` | start: a program | fib | lists | binary | maps | ets | messages |
+| Platform | start: `--version` | start: a program | fib | lists | binary | maps | ets | messages |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Linux x86_64 | 142 → 222 | 110 → 179 | 70 → 30 | 249 → 116 | 249 → 133 | 83 → 68 | 70 → 64 | 111 → 117 |
 | Linux aarch64 | 110 → 175 | 87 → 143 | 139 → 12 | 411 → 104 | 290 → 91 | 102 → 81 | 111 → 90 | 156 → 154 |
@@ -130,14 +130,14 @@ The zip of `beam.com` stores the code of `kernel` and `stdlib` without
 compression, and all other files compressed. The boot loads these
 modules first, and a stored entry is read without inflating it.
 Local measurement, Linux x86_64 (x86_64-only interpreter build), the
-median of 11 runs of `beam.com version`, two runs:
+median of 11 runs of `beam.com --version`, two runs:
 
 | | all compressed | `kernel` and `stdlib` stored | difference |
 |---|---:|---:|---:|
 | file size (MB) | 27.2 | 29.1 | +1.9 MB |
 | start: `version` (ms) | 193-202 | 143-146 | about −50 ms (−27%) |
 
-The programs that `beam.com build` makes keep these entries stored, so
+The programs that `beam.com INPUT -o OUTPUT` makes keep these entries stored, so
 they start faster too. A zip with no compression at all is about 21 MB
 larger, so only these two applications are stored.
 

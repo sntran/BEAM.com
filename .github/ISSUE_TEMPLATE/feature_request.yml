@@ -12,7 +12,7 @@ body:
       label: Area
       options:
         - The runtime (ERTS, the JIT, the start of a program)
-        - beam.com build
+        - Run or build a program (beam.com INPUT, -o)
         - Elixir, the tools (mix.com, iex.com, ...) or Hex packages
         - Phoenix
         - Distributed Erlang or remote shells

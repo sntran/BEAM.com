@@ -12,10 +12,13 @@ Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.
 another name is a tool: `mix.com`, `iex.com`, `elixir.com` and
 `elixirc.com` (see "The tools" below).
 
-You do not need Erlang to make such a file. `beam.com` has the compiler:
+You do not need Erlang to run a program or to make such a file.
+`beam.com` has the compiler:
 
 ```
-$ sh ./beam.com build examples/hashsum.erl
+$ sh ./beam.com examples/hashsum.erl -- abc
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc
+$ sh ./beam.com examples/hashsum.erl -o hashsum.com
 beam.com: wrote hashsum.com (25304313 bytes)
   release: hashsum 0.1.0
   applications: beam_com_script kernel stdlib crypto
@@ -24,20 +27,17 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc
 ```
 
 ```
-$ sh ./beam.com help
-BEAM.com: Erlang/OTP 29.1.1 in one executable file, for Linux,
-macOS, Windows and the BSDs, on x86_64 and aarch64.
+$ sh ./beam.com --help
+BEAM.com: Erlang/OTP 29.1.1 and Elixir 1.20.4 in one executable file, for
+Linux, macOS, Windows and the BSDs, on x86_64 and aarch64.
 
-usage: beam.com COMMAND [ARGUMENTS]
-
-Commands:
-  build INPUT [-o OUTPUT] [-a APP]...
-                  make an executable from a .erl file with main/1, or
-                  from an application directory
-  version         show the versions, the emulator and the platform
-  help [COMMAND]  show this text, or the help of a command
+usage: beam.com [FLAGS] [INPUT] [-- ARGUMENTS]
+         run INPUT (default: the project in this directory)
+       beam.com [FLAGS] INPUT -o OUTPUT
+         make an executable of INPUT
+       beam.com --help | --version
 ...
-$ sh ./beam.com version
+$ sh ./beam.com --version
 beam.com 0.1.0
   Erlang/OTP  : 29.1.1
   ERTS        : 17.1
@@ -48,22 +48,36 @@ beam.com 0.1.0
   Applications: asn1-5.5.2 beam_com-0.1.0 ... stdlib-8.1 wasm-0.1.0
 ```
 
-The default `beam.com` has no release: it runs these commands (`beam.com`
-with no argument shows the help). When you add a release to a copy of
-`beam.com`, the release runs instead. Erlang/OTP version: **29.1.1**.
+The default `beam.com` has no release: it runs programs and makes them
+(`beam.com` with no argument runs the project of the directory, or shows
+the help). When you add a release to a copy of `beam.com`, the release
+runs instead. Erlang/OTP version: **29.1.1**.
 
 `crypto` and `ssl` work: the `crypto` and `asn1` NIFs are linked into
 `beam.com` with a static OpenSSL 4.0.2, and TLS connections verify the
 server with the certificates of the OS (on Windows too).
 
-## Build a program with `beam.com build`
+## Run and build a program
 
 ```sh
-beam.com build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]
-               [--allow-write[=PATH,...]] [--allow-net] [--allow-run[=PROGRAM,...]]
-               [--allow-all] [--target TARGET] [--main MODULE]
-               [--tool rebar|mix] [--extract-priv APP]...
+beam.com [FLAGS] [INPUT] [-- ARGUMENTS]    # run INPUT (default: the project here)
+beam.com [FLAGS] INPUT -o OUTPUT           # make the executable OUTPUT
+
+FLAGS: [-a APP]... [--allow-read[=PATH,...]] [--allow-write[=PATH,...]]
+       [--allow-net] [--allow-run[=PROGRAM,...]] [--allow-all]
+       [--target TARGET] [--main MODULE] [--tool rebar|mix]
+       [--extract-priv APP]...
 ```
+
+There is one command line, as for `npm run`: the flags can come before
+or after `INPUT`, and the arguments of the program come after `--`.
+`beam.com app.erl -- one two` runs `app.erl` with the arguments `one`
+and `two`; `beam.com app.erl -o app.com` makes `app.com`. A run makes
+the same executable in the cache of BEAM.com (`BEAM_COM_CACHE`, else
+`~/.cache/beam.com/run`), again only when a file of `INPUT` is newer,
+and runs it: the program gets the terminal, and its exit status is the
+exit status of `beam.com`. In a directory with `mix.exs`,
+`rebar.config` or `src/`, `beam.com` alone runs that project.
 
 `INPUT` is one of these:
 
@@ -85,9 +99,8 @@ beam.com build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]
 
 The builder compiles the code, selects the OTP applications that the
 program needs, makes an OTP release with `systools`, and writes a copy of
-`beam.com` with the release in its zip (`OUTPUT`, by default the name of
-`INPUT` with `.com`). The new file does not have the compiler or the
-`build` command, only what the program needs.
+`beam.com` with the release in its zip (`OUTPUT`). The new file does
+not have the compiler, only what the program needs.
 
 The applications are the ones that the `.app` file names, the ones of
 the modules that the code calls (from the imports of the compiled code),
@@ -111,7 +124,7 @@ and compiled into the program, as rebar3 does, without rebar3:
 ```
 
 - **Versions.** When `rebar.lock` has all the deps, its versions are
-  used, and nothing is resolved. Otherwise `beam.com build` takes the
+  used, and nothing is resolved. Otherwise `beam.com INPUT -o OUTPUT` takes the
   highest version of each package that matches all the requirements (of
   `rebar.config` and of the packages), the locked version first when it
   matches, and writes `rebar.lock` (the format of rebar3). A conflict
@@ -143,12 +156,13 @@ it on each platform, two times (with and without `rebar.lock`).
 
 `beam.com` has Elixir 1.20.4 (compiled with its Erlang/OTP 29.1.1, the
 beam files without debug information: 2.8 MB in the zip, with the docs
-for `h/1` in `iex`), so `beam.com build` compiles Elixir code without an
+for `h/1` in `iex`), so `beam.com INPUT -o OUTPUT` compiles Elixir code without an
 Elixir installation:
 
 ```sh
-beam.com build hello.ex             # one file; a module exports main/1
-beam.com build my_project           # a Mix project (mix.exs)
+beam.com hello.ex -o hello.com         # one file; a module exports main/1
+beam.com my_project -o my_project.com  # a Mix project (mix.exs)
+beam.com hello.ex -- Alice             # or run it
 ```
 
 - **One file** (`.ex` or `.exs`): the modules of the file, and the one
@@ -212,13 +226,13 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
   rebar3, which Mix runs as an escript: put a link named `escript` in
   `PATH`. On NetBSD, where `sh` stops at the first NUL byte of an APE
   file, make `escript` a small script instead:
-  `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`. `beam.com build` does not need Hex or rebar3 (see "Hex
+  `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`. `beam.com INPUT -o OUTPUT` does not need Hex or rebar3 (see "Hex
   packages").
 - `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
-- To build an Elixir project into one file, use `beam.com build` (see
-  "Elixir" above): the tools do not have the `build` command.
+- To build an Elixir project into one file, use `beam.com INPUT -o OUTPUT` (see
+  "Elixir" above), not a Mix task.
 - **Not supported:** `mix release` (it copies ERTS from disk, and there
-  is none: `beam.com build` makes the program instead); the options of
+  is none: `beam.com INPUT -o OUTPUT` makes the program instead); the options of
   the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
   `--name`, `--cookie`, `--pipe-to`; give the flags of `erl` in
   `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`). On
@@ -278,7 +292,7 @@ iex.com -S mix phx.server        # http://localhost:4000
   `exqlite` uses the SQLite of `beam.com` and does not download a
   compiled NIF.
 - The version of these packages must be the version of their NIF in
-  `beam.com` ("Linked NIFs" in `beam.com version`): `beam.com` always
+  `beam.com` ("Linked NIFs" in `beam.com --version`): `beam.com` always
   uses its NIF. With another version, `mix compile` stops with an error
   that tells what to put in the deps of `mix.exs` (for example
   `{:exqlite, "0.41.0"}`).
@@ -364,7 +378,7 @@ A program whose release has a node name (`-sname` or `-name` in
 example `c:l(Module)`, or `code:load_binary/3`):
 
 ```sh
-beam.com build examples/counter        # config/vm.args: -sname counter
+beam.com examples/counter -o counter.com   # config/vm.args: -sname counter
 ./counter.com &
 ./counter.com remote
 (counter@host)1> counter:incr().
@@ -446,7 +460,7 @@ as Cosmopolitan's `assimilate` does. `TARGET` is a target triple, as for
 | `x86_64-apple-darwin` | `x86_64-macos` | macOS, Intel |
 
 ```sh
-beam.com build hello.erl --target x86_64-linux -o hello
+beam.com hello.erl --target x86_64-linux -o hello
 ./hello
 ```
 
@@ -469,22 +483,22 @@ APE file of `beam.com` (or a copy of it, such as `beam.exe`). A native
 file, made with `--target` or with `--assimilate`, gives only native
 files:
 
-- Without `--target`, `build` stops with an error: the program would
+- Without `--target`, a build (`-o`) stops with an error: the program would
   run only on this system, and you did not ask for that. For example:
   `beam-elf.com: this is a native file (ELF, x86_64), not an APE file:
   a program built from it runs only on this system. Build with the APE
   file of beam.com, or give --target to make a native file`.
 - With a `--target` of the same CPU and format (for example
-  `x86_64-linux` from an assimilated file on Linux x86_64), `build`
+  `x86_64-linux` from an assimilated file on Linux x86_64), the build
   writes a native file for that target.
-- With another `--target`, `build` stops with an error.
+- With another `--target`, the build stops with an error.
 
 ### WebAssembly
 
 `beam.com` runs WebAssembly modules and WASI preview 1 programs with
 [WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) (the
 interpreter, linked into `beam.com`). The `wasm` application is in the
-zip, and `beam.com build` selects it when the code calls `wasm`:
+zip, and `beam.com INPUT -o OUTPUT` selects it when the code calls `wasm`:
 
 ```erlang
 {ok, Mod} = wasm:compile(Bytes),                 % the bytes of a .wasm file
@@ -549,11 +563,11 @@ Code in C (crypto, SQLite, WebAssembly) has the same speed in both.
 [esqlite](https://github.com/mmzeeman/esqlite) NIF. SQLite itself is
 compiled from its amalgamation with `cosmocc`; esqlite is the small NIF
 that gives Erlang code the SQLite API (`esqlite3:open/1`, `exec/2`,
-`q/2`, ...). `beam.com build` selects the `esqlite` application when the
+`q/2`, ...). `beam.com INPUT -o OUTPUT` selects the `esqlite` application when the
 code calls `esqlite3`:
 
 ```sh
-beam.com build examples/sqlite_check.erl
+beam.com examples/sqlite_check.erl -o sqlite_check.com
 ./sqlite_check.com my.db
 ```
 
@@ -578,7 +592,7 @@ and as with `deno compile`, they are stored in the program when you
 build it:
 
 ```sh
-beam.com build server.erl --allow-net --allow-read=/etc/myapp --allow-write=/var/lib/myapp
+beam.com server.erl --allow-net --allow-read=/etc/myapp --allow-write=/var/lib/myapp -o server.com
 ```
 
 Without `--allow-*` flags, there is no sandbox: the program can do all
@@ -652,18 +666,18 @@ sh ./greeter.com                    # on Windows: rename to greeter.exe
 ```
 
 Examples (CI builds each one with rebar3 and runs it on every platform,
-and also builds each one with `beam.com build` on every platform):
+and also builds each one with `beam.com INPUT -o OUTPUT` on every platform):
 
 - [`examples/hashsum.erl`](examples/hashsum.erl): a one-file program
-  (only for `beam.com build`).
+  (only for `beam.com INPUT -o OUTPUT`).
 - [`examples/wasm_check.erl`](examples/wasm_check.erl): WebAssembly and
   WASI, in a one-file program.
 - [`examples/sqlite_check.erl`](examples/sqlite_check.erl): a one-file
-  program with SQLite (only for `beam.com build`).
+  program with SQLite (only for `beam.com INPUT -o OUTPUT`).
 - [`examples/greeter`](examples/greeter): an application, a supervisor
   and a `gen_server`.
 - [`examples/calc`](examples/calc): a scanner (`.xrl`), a parser (`.yrl`)
-  and an ASN.1 module (only for `beam.com build`).
+  and an ASN.1 module (only for `beam.com INPUT -o OUTPUT`).
 - [`examples/crypto_check`](examples/crypto_check): hashes, HMAC,
   AES-GCM and random bytes with `crypto`.
 - [`examples/tls_check`](examples/tls_check): port programs, a local
@@ -791,7 +805,7 @@ There is no `releases/` directory: a release that you add brings its own.
 The code of `kernel` and `stdlib` is stored in the zip without
 compression. The boot loads these modules first, and a stored entry is
 read without inflating it: this makes the start about 50 ms (about 27%)
-faster, for 2 MB more (measured on Linux x86_64). `beam.com build`
+faster, for 2 MB more (measured on Linux x86_64). `beam.com INPUT -o OUTPUT`
 keeps these entries as they are, so the programs that it makes start
 faster too.
 
@@ -801,10 +815,11 @@ release arguments, `ERL_FLAGS`, `.args` and the command line.
 
 When the zip has `lib/beam_com` and no release (the default
 `beam.com`), BEAM.com boots `start_clean` and runs `beam_com:main/0`,
-which runs the command. With a release, only `build` does this, and the
-other arguments go to the release.
+which runs or builds the input. With a release, the arguments go to the
+release. A run ends with `execv()` of the executable in the cache (at
+exit, in `beam_com.c`): no port program, so it works on Windows too.
 
-### How `beam.com build` writes the new file
+### How `beam.com INPUT -o OUTPUT` writes the new file
 
 PKZIP keeps its index (the central directory) at the end of the file,
 and in an APE file the offsets count from the start of the file. The
@@ -826,7 +841,7 @@ smaller, and it starts as fast as before (`docs/BENCHMARKS.md`).
 
 - `BEAM_COM_VERBOSE=1` shows the arguments that BEAM.com gives ERTS.
 - The Cosmopolitan runtime flags work before all other arguments, on
-  every platform: `beam.com --strace version` logs each system call
+  every platform: `beam.com --strace --version` logs each system call
   (also on Windows and macOS), and `--ftrace` logs each C function
   call. The log goes to standard error.
 - Crash reports: when the emulator dies on a fatal signal (for
@@ -892,7 +907,7 @@ arguments and in a header that the compiler includes in each file
    adds each one to a copy of `beam.com` with `zip`.
 3. Runs `beam.com` and the examples ([`tests/run.sh`](tests/run.sh),
    [`tests/run.ps1`](tests/run.ps1)) on each platform. On each platform,
-   it also builds the examples with `beam.com build` and runs the results.
+   it also builds the examples with `beam.com INPUT -o OUTPUT` and runs the results.
 
 `beam.com`, the example executables and the APE loader are build
 artifacts of each run.
@@ -988,12 +1003,12 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   only).
 - A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
   writes a warning when `start_erl.data` names another ERTS version.
-- `beam.com build` takes only Hex packages (no git dependencies). For
+- `beam.com INPUT -o OUTPUT` takes only Hex packages (no git dependencies). For
   Elixir: no umbrella projects, no `config/runtime.exs`, no protocol
   consolidation.
 
 ## Roadmap
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md): `beam.com build` (no Erlang
+See [`docs/ROADMAP.md`](docs/ROADMAP.md): `beam.com INPUT -o OUTPUT` (no Erlang
 installation needed), SQLite, WebAssembly (WAMR, WASI) and a JIT
 probe.

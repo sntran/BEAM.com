@@ -159,8 +159,8 @@ in_place_and_moved_test() ->
                  files(Out)).
 
 chain_test() ->
-    %% A file made from a file made by the writer (beam.com build on a
-    %% program made by beam.com build).
+    %% A file made from a file made by the writer (a build with -o on a
+    %% program made by a build with -o).
     A = write(exe(prefix()), fun all/1, sample()),
     B = write(A, fun(N) -> N =/= "dir/b.bin" end, [{"x", <<"1">>}]),
     C = write(B, fun(N) -> N =/= "a.txt" end, [{"y", <<"2">>}]),

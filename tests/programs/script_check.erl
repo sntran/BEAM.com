@@ -1,6 +1,6 @@
 %% Behavior tests of one-file programs (beam_com_script): what main/1
 %% gets, and the exit status of the program. tests/run.sh and
-%% tests/run.ps1 build it with beam.com build and run it with:
+%% tests/run.ps1 build it with beam.com (-o) and run it with:
 %%
 %%   args ARG...   print the arguments, one on each line
 %%   return        main/1 returns: status 0

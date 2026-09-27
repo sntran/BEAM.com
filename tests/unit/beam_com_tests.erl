@@ -20,13 +20,23 @@ build_options_test_() ->
                    opts(["a.erl", "--target", "aarch64-linux"])),
      {"the last -o wins",
       ?_assertEqual(#{input => "a", output => "2", apps => []},
-                    opts(["-o", "1", "a", "-o", "2"]))}].
+                    opts(["-o", "1", "a", "-o", "2"]))},
+     {"the arguments of the program after --",
+      ?_assertEqual(#{input => "a.erl", apps => [], args => ["x", "-o", "--"]},
+                    opts(["a.erl", "--", "x", "-o", "--"]))},
+     {"flags before and after the input",
+      ?_assertEqual(#{input => "a.erl", output => "b.com", apps => [crypto], args => []},
+                    opts(["-a", "crypto", "a.erl", "-o", "b.com", "--"]))}].
 
 build_errors_test_() ->
-    {error, "usage: " ++ _, []} = Usage = (catch beam_com:command(["build"])),
+    %% The tests run in a directory without a project: no input is an error.
+    {error, "usage: " ++ _, ["beam.com"]} = Usage = (catch opts([])),
     [{"no input", ?_assertThrow(Usage, opts([]))},
      {"only options", ?_assertThrow(Usage, opts(["-o", "x.com"]))},
-     {"two inputs", ?_assertThrow(Usage, opts(["a.erl", "b.erl"]))},
+     {"two inputs",
+      ?_assertThrow({error, "~ts: the arguments of the program come after \"--\" (see ~ts --help)",
+                     ["b.erl", "beam.com"]},
+                    opts(["a.erl", "b.erl"]))},
      {"-o without a value",
       ?_assertThrow({error, "option ~ts needs a value", ["-o"]}, opts(["a.erl", "-o"]))},
      {"-a without a value",
@@ -55,7 +65,7 @@ build_errors_test_() ->
                     opts(["a", "--allow-net=example.com"]))},
      {"flags of Deno that the sandbox cannot enforce",
       [?_assertThrow({error, "~ts is not supported: the sandbox cannot enforce it "
-                      "(see beam.com help build)", [F]}, opts(["a", F]))
+                      "(see beam.com --help)", [F]}, opts(["a", F]))
        || F <- ["--allow-env", "--allow-env=HOME", "--allow-sys", "--allow-ffi",
                 "--deny-read=/etc"]]},
      {"an unknown --allow- flag",
@@ -79,7 +89,61 @@ build_errors_test_() ->
      [{Option ++ " without a value",
        ?_assertThrow({error, "option ~ts needs a value", [Option]}, opts(["d", Option]))}
       || Option <- ["--main", "--tool", "--extract-priv"]],
-     {"build with no input", ?_assertThrow(Usage, beam_com:command(["build"]))}].
+     {"the commands before 0.2: a hint",
+      [?_assertThrow({error, "there is no command ~ts: use \"~ts INPUT -o OUTPUT\"",
+                      ["build", "beam.com"]}, opts(["build", "a.erl"])),
+       ?_assertThrow({error, "there is no command ~ts: use \"~ts --help\"",
+                      ["help", "beam.com"]}, beam_com:command(["help"])),
+       ?_assertThrow({error, "there is no command ~ts: use \"~ts --version\"",
+                      ["version", "beam.com"]}, beam_com:command(["version", "x"]))]},
+     {"an old command with a directory of that name: still the hint",
+      fun() ->
+              Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beam_com_old_command"),
+              _ = file:del_dir_r(Dir),
+              ok = filelib:ensure_path(filename:join(Dir, "build")),
+              {ok, Cwd} = file:get_cwd(),
+              ok = file:set_cwd(Dir),
+              try
+                  ?assertThrow({error, "there is no command ~ts: use \"~ts INPUT -o OUTPUT\"",
+                                ["build", "beam.com"]}, opts(["build", "a.erl"])),
+                  ?assertMatch(#{input := "build"}, opts(["build"]))
+              after
+                  file:set_cwd(Cwd),
+                  file:del_dir_r(Dir)
+              end
+      end},
+     {"--target is only for -o",
+      ?_assertThrow({error, "--target makes a file for another system: use it with -o", []},
+                    beam_com:command(["a.erl", "--target", "x86_64-linux"]))}].
+
+run_file_test_() ->
+    A = beam_com:run_file("dir/app.erl", #{apps => []}),
+    [?_assertEqual(".com", filename:extension(A)),
+     ?_assertMatch("app-" ++ _, filename:basename(A)),
+     ?_assertEqual("run", filename:basename(filename:dirname(A))),
+     {"the same input and options: the same file",
+      ?_assertEqual(A, beam_com:run_file("dir/app.erl", #{apps => []}))},
+     {"other options (the sandbox): another file",
+      ?_assertNotEqual(A, beam_com:run_file("dir/app.erl", #{apps => [], allow => #{net => true}}))},
+     {"BEAM_COM_CACHE",
+      fun() ->
+              Old = os:getenv("BEAM_COM_CACHE"),
+              os:putenv("BEAM_COM_CACHE", "/tmp/c"),
+              try ?assertMatch("/tmp/c/run/app-" ++ _, beam_com:run_file("app.erl", #{}))
+              after case Old of false -> os:unsetenv("BEAM_COM_CACHE"); _ -> os:putenv("BEAM_COM_CACHE", Old) end
+              end
+      end}].
+
+is_project_test_() ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beam_com_is_project"),
+    Setup = fun() -> _ = file:del_dir_r(Dir), ok = file:make_dir(Dir) end,
+    Cleanup = fun(_) -> file:del_dir_r(Dir) end,
+    {setup, Setup, Cleanup,
+     fun() ->
+             ?assertNot(beam_com:is_project(Dir)),
+             ok = file:write_file(filename:join(Dir, "mix.exs"), ""),
+             ?assert(beam_com:is_project(Dir))
+     end}.
 
 %% The output of a command, and its result. A small I/O server collects
 %% what the command writes.
@@ -112,32 +176,20 @@ has(Text, Part) ->
     string:find(Text, Part) =/= nomatch.
 
 commands_test_() ->
-    UnknownRun = {error, "unknown command ~ts (see ~ts help)", ["run", "beam.com"]},
-    [{"no command prints the help",
+    [{"no command prints the help (not in a project)",
       fun() ->
               {ok, Text} = output([]),
-              ?assert(has(Text, "usage: beam.com COMMAND")),
-              ?assert(has(Text, "build INPUT")),
-              ?assert(has(Text, "version")),
-              ?assertEqual({ok, Text}, output(["help"])),
+              ?assert(has(Text, "usage: beam.com [FLAGS] [INPUT] [-- ARGUMENTS]")),
+              ?assert(has(Text, "beam.com [FLAGS] INPUT -o OUTPUT")),
+              ?assert(has(Text, "--help | --version")),
+              ?assert(has(Text, "BEAM_COM_ALLOW")),
+              ?assertNot(has(Text, "~n")),
               ?assertEqual({ok, Text}, output(["--help"])),
               ?assertEqual({ok, Text}, output(["-h"]))
       end},
-     {"the help of each command",
-      fun() ->
-              {ok, Build} = output(["help", "build"]),
-              ?assert(has(Build, "usage: beam.com build INPUT [-o OUTPUT] [-a APP]... [--allow-read[=PATH,...]]\n")),
-              ?assert(has(Build, "BEAM_COM_ALLOW (flags")),
-              ?assertNot(has(Build, "~n")),
-              {ok, Version} = output(["help", "version"]),
-              ?assert(has(Version, "usage: beam.com version")),
-              {ok, Help} = output(["help", "help"]),
-              ?assert(has(Help, "usage: beam.com help"))
-      end},
      {"version shows the versions and the platform",
       fun() ->
-              {ok, Text} = output(["version"]),
-              ?assertEqual({ok, Text}, output(["--version"])),
+              {ok, Text} = output(["--version"]),
               ERTS = erlang:system_info(version),
               ?assert(has(Text, "  ERTS        : " ++ ERTS ++ "\n")),
               ?assert(has(Text, "  Erlang/OTP  : " ++ erlang:system_info(otp_release))),
@@ -152,7 +204,7 @@ commands_test_() ->
       fun() ->
               ok = application:set_env(beam_com, otp_version, "29.1.1"),
               try
-                  {ok, Text} = output(["version"]),
+                  {ok, Text} = output(["--version"]),
                   ?assert(has(Text, "  Erlang/OTP  : 29.1.1\n")),
                   {ok, Help} = output([]),
                   ?assert(has(Help, "Erlang/OTP 29.1.1 in one"))
@@ -162,23 +214,20 @@ commands_test_() ->
       end},
      {"the linked NIFs of Elixir packages from the .app file",
       fun() ->
-              {ok, Without} = output(["version"]),
+              {ok, Without} = output(["--version"]),
               ?assertNot(has(Without, "Linked NIFs")),
               ok = application:set_env(beam_com, nifs, [{exqlite, "0.41.0"},
                                                         {bcrypt_elixir, "3.3.2"}]),
               try
-                  {ok, Text} = output(["version"]),
+                  {ok, Text} = output(["--version"]),
                   ?assert(has(Text, "  Linked NIFs : exqlite-0.41.0 bcrypt_elixir-3.3.2\n"))
               after
                   application:set_env(beam_com, nifs, [])
               end
       end},
-     {"an unknown command", ?_assertThrow(UnknownRun, beam_com:command(["run", "x"]))},
-     {"version with arguments",
-      ?_assertThrow({error, "usage: ~ts version", ["beam.com"]},
-                    beam_com:command(["version", "x"]))},
-     {"help of an unknown command",
-      ?_assertThrow(UnknownRun, beam_com:command(["help", "run"]))},
+     {"--version with arguments",
+      ?_assertThrow({error, "usage: ~ts --version", ["beam.com"]},
+                    beam_com:command(["--version", "x"]))},
      {"the name of the file",
       [?_assertEqual("beam.com", beam_com:name()),
        ?_assertEqual("beam-emu.com", beam_com:name("/opt/bin/beam-emu.com")),

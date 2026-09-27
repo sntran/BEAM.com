@@ -1,7 +1,7 @@
 %% Behavior tests of the wasm application, in beam.com itself (the NIF
 %% is static, so these tests cannot run in a normal Erlang).
 %%
-%%   beam.com build tests/programs/wasm_tests.erl
+%%   beam.com tests/programs/wasm_tests.erl -o wasm_tests.com
 %%   ./wasm_tests.com
 %%
 %% It prints one line for each test and "wasm_tests: all N passed", and
