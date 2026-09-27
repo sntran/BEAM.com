@@ -247,36 +247,67 @@ On Windows, copy `beam.com` to `mix.exe`, `iex.exe`, `elixir.exe` or
 ### Phoenix from source
 
 With the tools, a Phoenix project runs from its source, as with an
-Elixir installation, but without Erlang or Elixir on the computer:
+Elixir installation, but without Erlang, Elixir or a C compiler on the
+computer. This includes SQLite and `phx.gen.auth`:
 
 ```sh
 mix.com local.hex --force
 mix.com archive.install hex phx_new
-mix.com phx.new hello --no-ecto
+mix.com phx.new hello --database sqlite3
 cd hello
 mix.com deps.get
+mix.com phx.gen.auth Accounts User users
+mix.com deps.get
+mix.com ecto.migrate             # or ecto.setup
 iex.com -S mix phx.server        # http://localhost:4000
 ```
 
 - `beam.com` has the OTP applications that a new Phoenix app needs
   beyond Elixir: `xmerl` (for `swoosh`) and `runtime_tools`.
+- The NIFs of `exqlite` 0.41.0 (for `ecto_sqlite3`) and `bcrypt_elixir`
+  3.3.2 (for `phx.gen.auth`) are linked into `beam.com`, as static NIFs
+  (see "SQLite"). The packages from hex.pm work unchanged: ERTS finds a
+  static NIF by the name of its module, before it opens the file in
+  `priv`, so the NIF files are not needed.
+- These packages compile with `elixir_make`, which runs `make`. The
+  tools set `MAKE` (when it is not set) to a program `make` in the cache
+  of BEAM.com: a link to the file (on macOS, a script that runs it).
+  This `make` does nothing for `exqlite` and `bcrypt_elixir`, and runs
+  the `make` of `PATH` for other packages with C code (an error when
+  there is none). The tools also set `EXQLITE_USE_SYSTEM=1`, so that
+  `exqlite` uses the SQLite of `beam.com` and does not download a
+  compiled NIF.
+- The version of these packages must be the version of their NIF in
+  `beam.com` ("Linked NIFs" in `beam.com version`): `beam.com` always
+  uses its NIF. With another version, `mix compile` stops with an error
+  that tells what to put in the deps of `mix.exs` (for example
+  `{:exqlite, "0.41.0"}`).
 - The esbuild and tailwind watchers download their programs and run
   them as ports, as they do with Elixir (not on Windows, which has no
   port programs here).
 - Live reload works without `inotify-tools`: the tools set
   `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
   file watcher of the file (see "The file watcher"), on Linux and the
-  BSDs. On macOS, `file_system` compiles its own watcher, which needs the
-  command line tools of Xcode.
-- **Not yet:** a database with a NIF. `--database sqlite3` (exqlite) and
-  `phx.gen.auth` (bcrypt) load C libraries at run time, which BEAM.com
-  cannot do; linking their NIFs into `beam.com` is the next step (see
-  the ROADMAP). PostgreSQL (`--database postgres`, the default) uses
-  Postgrex, which is Elixir only.
+  BSDs. On macOS, they set `FILESYSTEM_FSMAC_EXECUTABLE_FILE`, so that
+  `file_system` does not compile its own watcher (which needs the
+  command line tools of Xcode).
+- PostgreSQL (`--database postgres`, the default) uses Postgrex, which
+  is Elixir only. Other databases with a NIF, and other packages with C
+  code, need `make` and a C compiler, and a NIF that `beam.com` can load
+  (static NIFs only).
+- Not on Windows (no port programs, so `elixir_make` cannot run) and
+  not on NetBSD (its kernel does not start an APE file by a link; set
+  `MAKE` to a script that starts `beam.com` with the APE loader and
+  `BEAM_COM_PROGRAM=make`).
 
-CI runs these steps on Linux: `phx.new` without Ecto, `deps.get`,
-`compile`, and `iex.com -S mix phx.server`, which must serve the start
-page.
+CI runs these steps on Linux: `phx.new --database sqlite3`,
+`phx.gen.auth`, `deps.get`, `ecto.migrate`, an account with a password
+(bcrypt) through `mix run`, and `iex.com -S mix phx.server`, which must
+serve the start page and make a new account (a POST of the registration
+form). With the network, the check of the tools also compiles `exqlite`
+and `bcrypt_elixir` in a small project (on all the platforms but NetBSD
+and Windows), checks that no NIF file was built or downloaded, and uses
+esqlite and exqlite in one VM.
 
 ### The file watcher
 
@@ -288,11 +319,16 @@ The file has a file watcher with the command line and the output of
 beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
 ```
 
-- On Linux it uses inotify; on the BSDs it compares the files every half
-  second (a move is then `DELETE` and `CREATE`).
+- On Linux it uses inotify. On the BSDs it compares the files (a move is
+  then `DELETE` and `CREATE`): at once when kqueue sees a change in a
+  watched directory or file, and every half second. When there are too
+  many files for the descriptors (half of the open file limit, at most
+  4096), the directories are watched first, and the interval finds the
+  other changes. When kqueue fails, only the interval is used.
 - On macOS, `file_system` uses `mac_listener` (with FSEvents) in place of
   `inotifywait`. The file is also `mac_listener`, with the same command
-  line and output, and it compares the files as on the BSDs:
+  line and output, and it compares the files as on the BSDs (with
+  kqueue, and every `--latency` seconds, at most 5):
   `beam.com mac_listener --latency=0.5 -F /absolute/dir`.
 - The tools of Elixir set `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` to a link
   named `inotifywait` to the file (on macOS,
@@ -524,6 +560,15 @@ beam.com build examples/sqlite_check.erl
 SQLite adds about 1.8 MB (two CPUs) to `beam.com` and to each program
 that it makes, also when the program does not use SQLite, because the
 NIF is in the emulator. Build with `SQLITE=0` to leave it out.
+
+The NIF of the Elixir package [exqlite](https://hex.pm/packages/exqlite)
+(for `ecto_sqlite3`, see "Phoenix from source") is also in `beam.com`.
+It uses the same SQLite as esqlite: there is one SQLite in the file.
+SQLite is compiled with the options of both NIFs (without
+`SQLITE_OMIT_AUTOINIT` and `SQLITE_OMIT_PROGRESS_CALLBACK`, which
+exqlite cannot use). The NIFs of exqlite and bcrypt_elixir add only
+about 70 KB (two CPUs) to `beam.com`: exqlite does not bring a second
+SQLite.
 
 ### Sandbox: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`
 
@@ -803,9 +848,10 @@ OTP source, applies the patches, builds a small OTP and makes
 ./build.sh
 ```
 
-The steps are `toolchain openssl otp configure sqlite wasm make release
-multicall bundle test` (`sqlite` does nothing with `SQLITE=0`, and
-`wasm` does nothing with `WASM=0`). You can run one step or more, for example `./build.sh bundle test`.
+The steps are `toolchain openssl otp configure sqlite nifs wasm make
+elixir release multicall bundle test unit` (`sqlite` does nothing with
+`SQLITE=0`, `wasm` does nothing with `WASM=0`, and `nifs`, the NIFs of
+exqlite and bcrypt_elixir from hex.pm, does nothing with `ELIXIR=0`). You can run one step or more, for example `./build.sh bundle test`.
 See the top of [`build.sh`](build.sh) for the environment variables.
 
 The OTP build runs the APE tools that it builds. If Linux cannot run
@@ -850,6 +896,12 @@ arguments and in a header that the compiler includes in each file
 
 `beam.com`, the example executables and the APE loader are build
 artifacts of each run.
+
+A run starts for each pull request (and again for each new push to it;
+the run of the older commit stops) and for each push to `main`. A change
+of the docs only (Markdown files, `docs/`, the issue forms) starts no
+run. To test a branch without a pull request, run the workflow by hand
+(Actions, "Run workflow").
 
 ### Platform status
 
@@ -914,7 +966,8 @@ workaround in BEAM.com, and a possible upstream fix for each item.
 
 - No `socket` NIF, no NIFs or drivers in shared objects
   (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
-  work (`crypto`, `asn1`, `wasm` and `esqlite`).
+  work (`crypto`, `asn1`, `wasm`, `esqlite`, and the Elixir packages
+  `exqlite` and `bcrypt_elixir`).
 - WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
   SIMD, no threads, and no component model yet.
 - Distributed Erlang is tested on Linux, macOS and the BSDs, not on

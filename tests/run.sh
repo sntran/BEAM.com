@@ -137,6 +137,30 @@ probe() {
     probe=0
 }
 
+# The versions of exqlite and bcrypt_elixir whose NIFs are in beam.com
+# ("Linked NIFs" in "beam.com version"), in exqlite_vsn and bcrypt_vsn
+# (empty when a NIF is not linked).
+linked_nifs() {
+    linked=$($runner "$dir/beam.com" version | sed -n 's/^  Linked NIFs : //p' | tr ' ' '\n')
+    exqlite_vsn=$(echo "$linked" | sed -n 's/^exqlite-//p')
+    bcrypt_vsn=$(echo "$linked" | sed -n 's/^bcrypt_elixir-//p')
+}
+
+# After mix compiled exqlite and bcrypt_elixir (the output of check is in
+# $tmp): no error, and no NIF file (neither built nor downloaded).
+no_nif_build() {
+    if grep -q -e 'rror:' -e '\*\* (' -e 'Could not compile' "$tmp" ||
+       [ -e _build/dev/lib/exqlite/priv/sqlite3_nif.so ] ||
+       [ -e _build/dev/lib/bcrypt_elixir/priv/bcrypt_nif.so ]; then
+        echo "FAIL: mix built or downloaded a NIF of exqlite or bcrypt_elixir"
+        fail=1
+        failed="$failed
+  mix: an error, or a NIF file of exqlite or bcrypt_elixir in _build"
+    else
+        echo "PASS: no NIF built for exqlite and bcrypt_elixir"
+    fi
+}
+
 greeter='said hello 3 times'
 crypto_check='sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello'
 tls_check='ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
@@ -492,6 +516,22 @@ if [ -f "$dir/beam.com" ]; then
         mv mix.exs.new mix.exs
         check mix 'jason@@telemetry' deps.get
         check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
+        # The NIFs of exqlite and bcrypt_elixir are in beam.com: the
+        # packages (of the versions in "beam.com version") compile without
+        # make and a C compiler (MAKE is the program make in the cache,
+        # which does nothing for them), with no NIF file in priv, and
+        # load_nif/2 finds the static NIFs. esqlite (in the zip) and
+        # exqlite use the same SQLite. Not on NetBSD (see the watcher).
+        linked_nifs
+        if [ "$os" != netbsd ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then
+            sed "s/{:jason, \"~> 1.4\"},/{:jason, \"~> 1.4\"}, {:exqlite, \"$exqlite_vsn\"}, {:bcrypt_elixir, \"$bcrypt_vsn\"},/" mix.exs > mix.exs.new
+            mv mix.exs.new mix.exs
+            check mix 'exqlite@@bcrypt_elixir' deps.get
+            check mix 'Generated exqlite app@@Generated bcrypt_elixir app' deps.compile
+            no_nif_build
+            check mix '^exqlite: {:row, \["3\.[0-9.]*", 2\]}$@@^bcrypt: true$' run -e '{:ok, c} = Exqlite.Sqlite3.open(":memory:"); {:ok, s} = Exqlite.Sqlite3.prepare(c, "select sqlite_version(), 1 + 1"); IO.puts("exqlite: #{inspect(Exqlite.Sqlite3.step(c, s))}"); IO.puts("bcrypt: #{Bcrypt.verify_pass("pw", Bcrypt.hash_pwd_salt("pw"))}")'
+            check elixir.com '^esqlite: \[\["3\.[0-9.]*",4\]\]$@@^exqlite: {:row, \["3\.[0-9.]*", 2\]}$' -pa _build/dev/lib/exqlite/ebin -e '{:ok, d} = :esqlite3.open(~c":memory:"); IO.puts("esqlite: #{:json.encode(:esqlite3.q(d, "select sqlite_version(), 2 + 2"))}"); {:ok, c} = Exqlite.Sqlite3.open(":memory:"); {:ok, s} = Exqlite.Sqlite3.prepare(c, "select sqlite_version(), 1 + 1"); IO.puts("exqlite: #{inspect(Exqlite.Sqlite3.step(c, s))}")'
+        fi
     fi
     cd "$here"
     rm -f "$dir/mix" "$dir/iex" "$dir/elixir" "$dir/escript" \
@@ -500,11 +540,15 @@ if [ -f "$dir/beam.com" ]; then
     dir=$dir_rel runner=$runner_rel
 fi
 
-# Phoenix from source, with the tools: a new app (mix phx.new, without
-# Ecto), its deps from hex.pm and GitHub (heroicons is a git dep), and
-# "iex.com -S mix phx.server" serves the start page. Linux only: it needs
-# git, curl and the network (the esbuild and tailwind watchers download
-# their programs).
+# Phoenix from source, with the tools: a new app (mix phx.new) with
+# SQLite (ecto_sqlite3, and so exqlite) and phx.gen.auth (bcrypt_elixir),
+# its deps from hex.pm and GitHub (heroicons is a git dep), the database
+# (ecto.migrate), an account with a password, and "iex.com -S mix
+# phx.server" serves the start page and makes an account (a POST of the
+# registration form). exqlite and bcrypt_elixir compile without make (see
+# the tools above); their versions are the ones of the NIFs in beam.com.
+# Linux only: it needs git, curl and the network (the esbuild and
+# tailwind watchers download their programs).
 if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/beam.com" ] &&
    command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
     here=$(pwd)
@@ -520,11 +564,20 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     cd "$work"
     check mix.com '' local.hex --force
     check mix.com 'phx_new' archive.install hex phx_new --force
-    check mix.com 'creating hello/mix.exs' phx.new hello --no-ecto --no-install
-    if [ -d hello ]; then
+    check mix.com 'creating hello/mix.exs' phx.new hello --database sqlite3 --no-install
+    linked_nifs
+    if [ -d hello ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then
         cd hello
-        check mix.com 'phoenix' deps.get
-        check mix.com '' compile
+        sed "s/{:ecto_sqlite3, \"[^\"]*\"},/& {:exqlite, \"$exqlite_vsn\"},/" mix.exs > mix.exs.new
+        mv mix.exs.new mix.exs
+        check mix.com 'phoenix@@exqlite' deps.get
+        check mix.com 'creating lib/hello/accounts.ex' phx.gen.auth Accounts User users --no-live
+        sed "s/{:bcrypt_elixir, \"[^\"]*\"}/{:bcrypt_elixir, \"$bcrypt_vsn\"}/" mix.exs > mix.exs.new
+        mv mix.exs.new mix.exs
+        check mix.com 'bcrypt_elixir' deps.get
+        check mix.com 'Migrated ' ecto.migrate
+        no_nif_build
+        check mix.com '^auth: true true$' run -e 'alias Hello.Accounts; e = "u#{System.unique_integer([:positive])}@example.com"; {:ok, u} = Accounts.register_user(%{email: e}); {:ok, _} = Accounts.update_user_password(u, %{password: "a long password"}); IO.puts("auth: #{Accounts.get_user_by_email_and_password(e, "a long password").id == u.id} #{Accounts.get_user_by_email_and_password(e, "wrong password") == nil}")'
         PORT=4123
         export PORT
         echo "==> iex.com -S mix phx.server"
@@ -540,7 +593,6 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
                 break
             fi
         done
-        unset PORT
         grep -v '^ *$' "$tmp.phx" | head -20
         if [ -n "$served" ]; then
             echo "PASS: iex.com -S mix phx.server (after $((i * 2)) s)"
@@ -550,6 +602,24 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
             failed="$failed
   iex.com -S mix phx.server: no start page on http://127.0.0.1:4123/"
         fi
+        # A new account: the form (with its CSRF token and cookie), then
+        # the POST, which inserts the user and redirects to the log-in page.
+        echo "==> POST /users/register"
+        curl -s -c "$tmp.cookies" http://127.0.0.1:$PORT/users/register > "$tmp.form"
+        token=$(sed -n 's/.*name="_csrf_token"[^>]* value="\([^"]*\)".*/\1/p' "$tmp.form" | head -n 1)
+        registered=$(curl -s -b "$tmp.cookies" -o /dev/null -w '%{http_code} %{redirect_url}' \
+            --data-urlencode "_csrf_token=$token" --data-urlencode 'user[email]=new@example.com' \
+            http://127.0.0.1:$PORT/users/register)
+        echo "$registered"
+        case $registered in
+            "302 "*/users/log-in) echo "PASS: POST /users/register" ;;
+            *) echo "FAIL: POST /users/register"
+               fail=1
+               failed="$failed
+  POST /users/register: $registered (expected a redirect to /users/log-in)" ;;
+        esac
+        rm -f "$tmp.cookies" "$tmp.form"
+        unset PORT
         # Stop the VM (the program of the pipeline), then the sleep.
         pkill -f "$dir/iex.com" 2>/dev/null
         kill "$phx" 2>/dev/null
@@ -569,6 +639,7 @@ fi
 if [ -f "$dir/beam.com" ]; then
     wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
     mkdir "$wdir/sub"
+    echo old > "$wdir/sub/old.txt"
     echo "==> beam.com inotifywait"
     $runner "$dir/beam.com" inotifywait -e modify -e close_write -e moved_to \
         -e moved_from -e create -e delete -e attrib --format '%w|%e|%f' \
@@ -580,6 +651,7 @@ if [ -f "$dir/beam.com" ]; then
     sleep 1
     echo b > "$wdir/new/b.txt"
     rm "$wdir/a.txt"
+    echo more >> "$wdir/sub/old.txt"
     sleep 2
     kill "$watcher" 2>/dev/null
     wait "$watcher" 2>/dev/null
@@ -587,7 +659,8 @@ if [ -f "$dir/beam.com" ]; then
     if grep -q "^$wdir/|CREATE|a.txt$" "$tmp.watch" &&
        grep -q "^$wdir/|CREATE,ISDIR|new$" "$tmp.watch" &&
        grep -q "^$wdir/new/|CREATE|b.txt$" "$tmp.watch" &&
-       grep -q "^$wdir/|DELETE|a.txt$" "$tmp.watch"; then
+       grep -q "^$wdir/|DELETE|a.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/sub/|MODIFY|old.txt$" "$tmp.watch"; then
         echo "PASS: beam.com inotifywait"
     else
         echo "FAIL: beam.com inotifywait"
@@ -603,6 +676,7 @@ fi
 # PATH"). It exits when its input closes, as file_system expects.
 if [ -f "$dir/beam.com" ]; then
     wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    echo old > "$wdir/old.txt"
     echo "==> beam.com mac_listener"
     (sleep 5) | $runner "$dir/beam.com" mac_listener --latency=0.2 -F "$wdir" \
         > "$tmp.watch" 2>&1 &
@@ -612,6 +686,7 @@ if [ -f "$dir/beam.com" ]; then
     mkdir "$wdir/new"
     sleep 1
     rm "$wdir/a.txt"
+    echo more >> "$wdir/old.txt"
     # The input closes after 5 seconds: the watcher must exit by itself.
     sleep 4
     if kill -0 "$watcher" 2>/dev/null; then
@@ -626,6 +701,7 @@ if [ -f "$dir/beam.com" ]; then
     if grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
        grep -q "^[0-9]*${tab}0x00020100=\[created,isdir\]${tab}$wdir/new$" "$tmp.watch" &&
        grep -q "^[0-9]*${tab}0x00010200=\[removed,isfile\]${tab}$wdir/a.txt$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00011000=\[modified,isfile\]${tab}$wdir/old.txt$" "$tmp.watch" &&
        [ "$exited" = yes ]; then
         echo "PASS: beam.com mac_listener"
     else
@@ -635,6 +711,56 @@ if [ -f "$dir/beam.com" ]; then
   beam.com mac_listener: missing events, or it did not exit ($exited)"
     fi
     rm -rf "$wdir"
+fi
+
+# kqueue (macOS and the BSDs): a change starts the comparison at once.
+# The interval is 5 seconds, so a change seen in 2 seconds comes from
+# kqueue. The watcher first reports probe files, so that it surely runs
+# (a slow system can take some seconds to start it); the next comparison
+# of the interval is then 4 seconds or more later. On Linux, mac_listener
+# does not use inotify, so the check is not made there.
+case $(uname -s) in Darwin|FreeBSD|NetBSD|OpenBSD) kqueue=yes ;; *) kqueue=no ;; esac
+if [ -f "$dir/beam.com" ] && [ "$kqueue" = yes ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    echo old > "$wdir/old.txt"
+    echo "==> beam.com mac_listener (kqueue)"
+    (sleep 25) | $runner "$dir/beam.com" mac_listener --latency=5 "$wdir" \
+        > "$tmp.watch" 2>&1 &
+    watcher=$!
+    i=0
+    while [ $i -lt 20 ] && ! grep -q probe "$tmp.watch"; do
+        echo "$i" > "$wdir/probe$i"
+        sleep 1
+        i=$((i + 1))
+    done
+    echo more >> "$wdir/old.txt"
+    sleep 2
+    cp "$tmp.watch" "$tmp.watch2"
+    # The input closes after 25 seconds: the watcher must exit by itself.
+    i=0
+    while [ $i -lt 40 ] && kill -0 "$watcher" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        exited=no
+    else
+        exited=yes
+    fi
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    tab=$(printf '\t')
+    if grep -q "^[0-9]*${tab}0x00011000=\[modified,isfile\]${tab}$wdir/old.txt$" "$tmp.watch2" &&
+       [ "$exited" = yes ]; then
+        echo "PASS: beam.com mac_listener (kqueue)"
+    else
+        echo "FAIL: beam.com mac_listener (kqueue)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (kqueue): no change in 2 seconds, or it did not exit ($exited)"
+    fi
+    rm -rf "$wdir" "$tmp.watch2"
 fi
 
 # Distributed Erlang and remote shells (not on Windows). epmd is in the

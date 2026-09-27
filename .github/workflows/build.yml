@@ -1,9 +1,31 @@
 name: Build and test BEAM.com
 
+# One run for each change: a pull request runs CI for its branch, and a
+# push runs it only on main (after a merge). A change of the docs only
+# (Markdown files, docs/, the issue forms) starts no run. Run the
+# workflow by hand (workflow_dispatch) to test a branch without a pull
+# request.
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "LICENSE*"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "LICENSE*"
   workflow_dispatch:
+
+# A new push to a pull request stops the run of its older commit. Runs
+# on main are not stopped, so that each merge is tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   OTP_VERSION: "29.1.1"
@@ -57,7 +79,7 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Build
-        run: ./build.sh openssl otp configure sqlite wasm make elixir release multicall bundle
+        run: ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall bundle
 
       - name: Upload ${{ matrix.out }}
         uses: actions/upload-artifact@v7

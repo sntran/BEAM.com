@@ -120,7 +120,7 @@ can be added on WAMR, or the runtime can be replaced.
   Elixir scripts that change the `erl` command (`--erl`).
 - Done: Phoenix from source with the tools (`iex.com -S mix
   phx.server`): `beam.com` has `xmerl` and `runtime_tools`, and CI runs
-  a new Phoenix app (without Ecto) on Linux.
+  a new Phoenix app on Linux.
 - Done: distributed Erlang and remote shells: `epmd` is in the file,
   and starts only for `-sname`, `-name` and `-remsh`; `beam.com` takes
   the flags of `erl` (`beam.com -sname me -remsh app`); a program whose
@@ -128,14 +128,23 @@ can be added on WAMR, or the runtime can be replaced.
 - Done: a file watcher in the file, as `inotifywait` (inotify on Linux,
   a comparison of the files on the BSDs), which the tools give to
   `file_system`: `phoenix_live_reload` without `inotify-tools`.
-- Next: the watcher with kqueue on the BSDs, and for `file_system` on
-  macOS (its `mac_listener` format) and Windows; reload of new code in a
-  running program when its file changes.
-- Next for Phoenix: the NIFs of `exqlite` (`--database sqlite3`, with
-  the SQLite that is in `beam.com`) and of `bcrypt_elixir`
+- Done: the watcher as `mac_listener` for `file_system` on macOS, and
+  kqueue on macOS and the BSDs: a change starts the comparison at once
+  (the comparison every interval stays, for the changes that kqueue
+  does not see).
+- Next: the watcher on Windows; reload of new code in a running program
+  when its file changes.
+- Done: the NIFs of `exqlite` 0.41.0 (`--database sqlite3`, with the
+  SQLite that is in `beam.com`) and of `bcrypt_elixir` 3.3.2
   (`phx.gen.auth`), linked into `beam.com` as static NIFs, so that the
-  packages from Hex work unchanged; then `config/runtime.exs` and
-  `priv/static` in `beam.com build`, for a Phoenix app in one file.
+  packages from Hex work unchanged. exqlite uses the SQLite of esqlite,
+  so both NIFs add only about 70 KB (two CPUs). The tools set `MAKE` to
+  a `make` of the file that does nothing for these two packages: they
+  compile without `make` and a C compiler. CI runs a Phoenix app with SQLite and
+  `phx.gen.auth` on Linux (`ecto.migrate`, an account with a password,
+  a registration over HTTP).
+- Next for Phoenix: `config/runtime.exs` and `priv/static` in
+  `beam.com build`, for a Phoenix app in one file.
 - Done: command line programs, for larger projects (for example an
   orchestration tool with a sandbox worker): the `main/1` of an application
   (`--main`, or the escript of `rebar.config` or `mix.exs`); behaviours
