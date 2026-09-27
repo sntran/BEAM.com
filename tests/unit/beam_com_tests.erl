@@ -96,6 +96,22 @@ build_errors_test_() ->
                       ["help", "beam.com"]}, beam_com:command(["help"])),
        ?_assertThrow({error, "there is no command ~ts: use \"~ts --version\"",
                       ["version", "beam.com"]}, beam_com:command(["version", "x"]))]},
+     {"an old command with a directory of that name: still the hint",
+      fun() ->
+              Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beam_com_old_command"),
+              _ = file:del_dir_r(Dir),
+              ok = filelib:ensure_path(filename:join(Dir, "build")),
+              {ok, Cwd} = file:get_cwd(),
+              ok = file:set_cwd(Dir),
+              try
+                  ?assertThrow({error, "there is no command ~ts: use \"~ts INPUT -o OUTPUT\"",
+                                ["build", "beam.com"]}, opts(["build", "a.erl"])),
+                  ?assertMatch(#{input := "build"}, opts(["build"]))
+              after
+                  file:set_cwd(Cwd),
+                  file:del_dir_r(Dir)
+              end
+      end},
      {"--target is only for -o",
       ?_assertThrow({error, "--target makes a file for another system: use it with -o", []},
                     beam_com:command(["a.erl", "--target", "x86_64-linux"]))}].
