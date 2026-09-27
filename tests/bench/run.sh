@@ -24,7 +24,7 @@ done
 for v in $variants; do
     chmod +x "$dir/$v"
     prog="$dir/bench.${v%.com}.com"
-    $runner "$dir/$v" build tests/bench/bench.erl -o "$prog" > /dev/null || exit 1
+    $runner "$dir/$v" tests/bench/bench.erl -o "$prog" > /dev/null || exit 1
     chmod +x "$prog"
     {
         echo "size_mb $(wc -c < "$dir/$v" | awk '{printf "%.1f", $1 / 1048576}')"

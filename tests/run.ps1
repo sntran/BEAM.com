@@ -161,8 +161,8 @@ if (Test-Path "examples") {
     }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).
-    Check "beam.com" '^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("examples/hashsum.erl", "--", "abc")
-    Check "beam.com" '^usage: hashsum TEXT' @("examples/hashsum.erl") 2
+    Check "beam.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("examples/hashsum.erl", "--", "abc")
+    Check "beam.com" '(?m)^usage: hashsum TEXT' @("examples/hashsum.erl") 2
     Check "beam.com" 'none.erl: no such file' @("none.erl") 1
     Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
     Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1
