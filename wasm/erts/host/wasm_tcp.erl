@@ -75,7 +75,7 @@ setopts(?SOCKET(Pid), Opts) -> call(Pid, {setopts, Opts}).
 getopts(?SOCKET(Pid), Opts) -> call(Pid, {getopts, Opts}).
 peername(?SOCKET(Pid)) -> call(Pid, peername).
 sockname(?SOCKET(Pid)) -> call(Pid, sockname).
-getstat(?SOCKET(_), _) -> {ok, []}.
+getstat(?SOCKET(Pid), Opts) -> call(Pid, {getstat, Opts}).
 
 call(Pid, Request) ->
     try gen_server:call(Pid, Request, infinity)
@@ -113,7 +113,8 @@ new_id(Prefix) ->
 socket(Id, Owner) ->
     #{kind => socket, id => Id, owner => Owner, ref => monitor(process, Owner),
       active => true, mode => list, packet => raw, other => #{}, buf => <<>>, recv => undefined,
-      connect => undefined, peer => undefined, closed => false}.
+      connect => undefined, peer => undefined, closed => false,
+      recv_cnt => 0, recv_oct => 0, send_cnt => 0, send_oct => 0}.
 
 options(Opts, S) -> lists:foldl(fun option/2, S, Opts).
 
@@ -177,9 +178,14 @@ handle_call({connect, Host, Port, Timeout}, From, #{id := Id} = S) ->
         _ -> erlang:send_after(Timeout, self(), connect_timeout)
     end,
     {noreply, S#{connect := {From, TRef}, peer := {Host, Port}}};
-handle_call({send, Data}, _From, #{id := Id, packet := P} = S) ->
-    ?HOST:send_host(#{t => tcp_send, id => Id}, [header(P, iolist_size(Data)), Data]),
-    {reply, ok, S};
+handle_call({send, Data}, _From, #{id := Id, packet := P, send_cnt := C, send_oct := O} = S) ->
+    Size = iolist_size(Data),
+    ?HOST:send_host(#{t => tcp_send, id => Id}, [header(P, Size), Data]),
+    {reply, ok, S#{send_cnt := C + 1, send_oct := O + Size}};
+%% The counters (the distribution checks them to see traffic).
+handle_call({getstat, Opts}, _From, S) ->
+    Stat = fun(send_pend) -> 0; (K) -> maps:get(K, S, 0) end,
+    {reply, {ok, [{K, Stat(K)} || K <- Opts]}, S};
 handle_call({recv, _, _}, _From, #{active := A} = S) when A =/= false ->
     {reply, {error, einval}, S};
 handle_call({recv, Length, Timeout}, From, S) ->
@@ -263,8 +269,8 @@ handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{connect := {From, TRef}} = 
 handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{owner := Owner} = S) ->
     Owner ! {tcp_error, ?SOCKET(self()), reason(Meta)},
     {noreply, S};
-handle_info({wasm_host, <<"tcp_data">>, _, Data}, S) ->
-    {noreply, deliver(Data, S)};
+handle_info({wasm_host, <<"tcp_data">>, _, Data}, #{recv_cnt := C, recv_oct := O} = S) ->
+    {noreply, deliver(Data, S#{recv_cnt := C + 1, recv_oct := O + byte_size(Data)})};
 handle_info({wasm_host, <<"tcp_closed">>, _, _}, S) ->
     closed(S);
 handle_info(connect_timeout, #{connect := {From, _}} = S) ->

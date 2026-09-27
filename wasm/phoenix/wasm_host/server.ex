@@ -34,8 +34,13 @@ defmodule WasmHost.Server do
     :ets.new(@table, [:named_table, :public, read_concurrency: true])
     # gen_tcp:connect makes sockets of the host (wasm_tcp).
     :inet_db.set_tcp_module(:wasm_tcp)
+    # No native resolver (inet_gethost is a port program): the hosts file.
+    :inet_db.set_lookup([:file])
+
     plug = Keyword.get(opts, :plug)
     pump = spawn_link(fn -> pump(plug) end)
+    # After the pump: a listener waits for an event of the host.
+    spawn(fn -> start_distribution() end)
     # WASM_HOST_BOOT_MODULES=file: the modules that the boot loaded, for
     # pack.erl --boot-modules.
     if path = System.get_env("WASM_HOST_BOOT_MODULES") do
@@ -54,6 +59,41 @@ defmodule WasmHost.Server do
   @doc "Sends a message (a header map and a body) to the host."
   def send_host(header, body \\ "") do
     :wasm_host.send([:json.encode(header), ?\n, body])
+  end
+
+  # Distributed Erlang over wasm_tcp (the boot has -proto_dist wasm_tcp and
+  # -erl_epmd_port: no epmd). It starts here, when wasm_tcp works:
+  # DIST_NAME=name@host, DIST_COOKIE, DIST_LISTEN=true to take connections
+  # (in Workers: WebSockets to /.tcp/DIST_PORT), DIST_CONNECT=node to connect
+  # to that node, and again when the connection ends.
+  defp start_distribution do
+    if name = System.get_env("DIST_NAME") do
+      listen = System.get_env("DIST_LISTEN") == "true"
+      # The listener takes DIST_PORT (all nodes use it: no epmd).
+      port = String.to_integer(System.get_env("DIST_PORT", "4370"))
+      Application.put_env(:kernel, :inet_dist_listen_min, port)
+      Application.put_env(:kernel, :inet_dist_listen_max, port)
+
+      {:ok, _} =
+        :net_kernel.start(String.to_atom(name), %{name_domain: :longnames, dist_listen: listen})
+
+      if cookie = System.get_env("DIST_COOKIE"), do: Node.set_cookie(String.to_atom(cookie))
+
+      if node = System.get_env("DIST_CONNECT") do
+        spawn(fn -> keep_connected(String.to_atom(node)) end)
+      end
+    end
+  end
+
+  defp keep_connected(node) do
+    if Node.connect(node) == true do
+      :erlang.monitor_node(node, true)
+      receive do: ({:nodedown, ^node} -> :ok)
+    else
+      Process.sleep(2000)
+    end
+
+    keep_connected(node)
   end
 
   defp pump(plug) do

@@ -42,7 +42,7 @@ mix.com deps.get
 # lib/, the NIF stub in src/, and the adapter at run time with WASM_HOST=1.
 mkdir -p lib/wasm_host src
 cp "$HERE"/wasm_host/*.ex lib/wasm_host/
-cp "$HERE/../erts/host/wasm_host.erl" "$HERE/../erts/host/wasm_tcp.erl" src/
+cp "$HERE/../erts/host/wasm_host.erl" "$HERE/../erts/host/wasm_tcp.erl" "$HERE/../erts/host/wasm_tcp_dist.erl" src/
 cp "$HERE/tcp_controller.ex" lib/hello_web/controllers/
 cp "$HERE/ssh_keys.ex" lib/hello_web/
 grep -q '"/tcp"' lib/hello_web/router.ex ||

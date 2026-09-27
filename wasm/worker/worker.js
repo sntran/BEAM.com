@@ -119,6 +119,12 @@ export class Vm {
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', '-mode', 'interactive', '-config', '/app/tmp/run.runtime',
             '-boot', `/app/releases/${vsn}/start`, '-boot_var', 'RELEASE_LIB', '/app/lib', '-noshell');
+          // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
+          // DIST_PORT): WasmHost.Server starts it after the boot (DIST_NAME,
+          // DIST_COOKIE, DIST_LISTEN, DIST_CONNECT), when wasm_tcp works.
+          if (env.DIST_NAME) {
+            m.arguments.push('-proto_dist', 'wasm_tcp', '-erl_epmd_port', env.DIST_PORT ?? '4370', '-start_epmd', 'false');
+          }
           // The text bindings of the Worker are the environment of the release
           // (SECRET_KEY_BASE, PHX_HOST, DATABASE_URL, ...).
           const vars = Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === 'string'));

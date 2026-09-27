@@ -15,6 +15,7 @@ if (!localPort || !url) {
 
 net.createServer((sock) => {
   sock.pause();
+  sock.setNoDelay(true);
   const ws = new WebSocket(url);
   ws.binaryType = 'nodebuffer';
   ws.on('open', () => {

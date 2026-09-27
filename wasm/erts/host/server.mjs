@@ -38,6 +38,7 @@ function request(req, body, extra) {
 // The events of a TCP socket (a connection that Erlang made or accepted).
 function tcpEvents(id, sock) {
   tcps.set(id, sock);
+  sock.setNoDelay(true);  // no Nagle: small messages (the distribution) go at once
   sock.on('data', (d) => event({ t: 'tcp_data', id }, d));
   sock.on('error', (e) => event({ t: 'tcp_error', id, reason: (e.code || 'einval').toLowerCase() }));
   sock.on('close', () => { tcps.delete(id); event({ t: 'tcp_closed', id }); });
