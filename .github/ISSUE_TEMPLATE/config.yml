@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A security problem
+    url: https://github.com/sntran/BEAM.com/security/advisories/new
+    about: Report it in private, not in a public issue.
+  - name: Known problems in Cosmopolitan and Erlang/OTP
+    url: https://github.com/sntran/BEAM.com/blob/main/docs/UPSTREAM.md
+    about: Read this list first. It has the upstream problems that BEAM.com knows, and what it does about them.

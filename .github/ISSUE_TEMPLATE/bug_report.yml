@@ -1,0 +1,127 @@
+name: beam.com does not run correctly
+description: beam.com, or a program that "beam.com build" made, stops, crashes or gives a wrong result.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. For a problem when you **build** a program, use the "beam.com build fails" form.
+
+        Before you send it, please try the latest release, and read "Known limits" in the README (for example: no port programs on Windows, and no NIFs from shared objects).
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: The system and the CPU where the problem occurs.
+      options:
+        - Linux x86_64
+        - Linux aarch64
+        - macOS arm64 (Apple Silicon)
+        - macOS x86_64
+        - Windows x86_64
+        - FreeBSD
+        - NetBSD
+        - OpenBSD
+        - Other (write it below)
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: System version
+      description: For example "Ubuntu 26.04, kernel 6.18", "macOS 26.1", "Windows 11 24H2", "FreeBSD 15.0". In WSL, a container or a VM, say so.
+    validations:
+      required: true
+  - type: dropdown
+    id: start
+    attributes:
+      label: How do you start the file?
+      options:
+        - sh ./beam.com (the shell script of the APE file)
+        - ./beam.com (APE loader in binfmt_misc, or the kernel)
+        - With the APE loader (ape-x86_64.elf ./beam.com)
+        - A native file (beam.com build --target TARGET)
+        - As an .exe file on Windows
+        - Other (write it below)
+    validations:
+      required: true
+  - type: dropdown
+    id: file
+    attributes:
+      label: Which file?
+      description: mix.com, iex.com, elixir.com and elixirc.com are beam.com under another name (a copy or a link).
+      options:
+        - beam.com (the JIT)
+        - beam-emu.com (the interpreter)
+        - A tool (mix.com, iex.com, elixir.com, elixirc.com, or "beam.com mix ...")
+        - A program made with "beam.com build"
+        - A release added with zip
+    validations:
+      required: true
+  - type: dropdown
+    id: features
+    attributes:
+      label: What does it use?
+      multiple: true
+      options:
+        - Mix, IEx or Hex packages (the tools)
+        - Phoenix
+        - Distributed Erlang (-sname, -name, -remsh, "remote")
+        - The file watcher (inotifywait, mac_listener, live reload)
+        - The sandbox (--allow-read, --allow-write, --allow-net, --allow-run)
+        - Crypto, TLS or the network
+        - SQLite
+        - WebAssembly
+        - Ports or os:cmd/1
+        - None of these
+  - type: textarea
+    id: version
+    attributes:
+      label: Output of "beam.com version"
+      description: For a tool (mix.com, iex.com, ...), run "beam.com version" with the beam.com that you copied or linked. For a program that you built, give the output for the beam.com that built it.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The commands, and the smallest program that shows the problem (or a link to it).
+      placeholder: |
+        beam.com build hello.erl -o hello.com
+        sh ./hello.com a b
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: All of the output, the exit status (`echo $?`, or `$LASTEXITCODE` in PowerShell), and the crash report if there is one.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: verbose
+    attributes:
+      label: Output with BEAM_COM_VERBOSE=1
+      description: |
+        This shows the arguments that BEAM.com gives ERTS. For example: `BEAM_COM_VERBOSE=1 sh ./beam.com version` (PowerShell: `$env:BEAM_COM_VERBOSE = "1"`).
+      render: text
+  - type: textarea
+    id: strace
+    attributes:
+      label: System calls (optional)
+      description: |
+        When the program stops, hangs or gets a wrong file or network result: the end of the log of `--strace`, which logs each system call on every platform. For example: `sh ./beam.com --strace version 2> strace.log`. Attach the file, or give the last 100 lines.
+      render: text
+  - type: textarea
+    id: more
+    attributes:
+      label: More information
+      description: Anything else, for example whether the same program works with a normal Erlang/OTP 29 installation.
