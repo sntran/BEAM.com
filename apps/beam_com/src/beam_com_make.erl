@@ -35,7 +35,7 @@ main() ->
              catch
                  throw:{error, Format, Args} ->
                      io:format(standard_error, "~ts: make: " ++ Format ++ "~n",
-                               [beam_com:name() | Args]),
+                               [name() | Args]),
                      1
              end,
     erlang:halt(Status).
@@ -55,7 +55,7 @@ run(Args, #{app_path := AppPath, cwd := Cwd, nifs := Nifs} = Env) ->
                     throw({error, "~ts ~ts has a NIF, and ~ts has the NIF of ~ts ~ts "
                            "(which it always uses). Use ~ts ~ts (in the deps of "
                            "mix.exs: {:~ts, \"~ts\"})",
-                           [App, Other, beam_com:name(), App, Vsn, App, Vsn, App, Vsn]});
+                           [App, Other, name(), App, Vsn, App, Vsn, App, Vsn]});
                 _ ->
                     %% "all" or "clean": the NIF is in beam.com.
                     ok
@@ -65,7 +65,7 @@ run(Args, #{app_path := AppPath, cwd := Cwd, nifs := Nifs} = Env) ->
                 false ->
                     throw({error, "~ts has C code (a NIF) that is not in ~ts, and there "
                            "is no make in PATH. The NIFs in ~ts: ~ts",
-                           [App, beam_com:name(), beam_com:name(),
+                           [App, name(), name(),
                             case Nifs of
                                 [] -> "none";
                                 _ -> lists:join(", ", [[atom_to_list(A), " ", V]
@@ -133,6 +133,19 @@ make_loop(Port) ->
             make_loop(Port);
         {Port, {exit_status, Status}} ->
             Status
+    end.
+
+%% The name of beam.com for the messages. This program is a link named
+%% make to it (a script on macOS, which starts the file itself).
+name() ->
+    case init:get_argument(beam_com_exe) of
+        {ok, [[Exe | _] | _]} ->
+            case file:read_link_all(Exe) of
+                {ok, Target} -> filename:rootname(filename:basename(Target)) ++ ".com";
+                {error, _} -> beam_com:name()
+            end;
+        _ ->
+            beam_com:name()
     end.
 
 nifs() ->
