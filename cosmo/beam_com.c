@@ -924,20 +924,19 @@ static void run_in_child(char **argv)
     fflush(stdout);
     fflush(stderr);
     /* posix_spawn(), not fork() and execve(): on Windows, execve() in a
-     * child of fork() leaves that child as a relay, which exits with the
-     * wait status (the exit status << 8) of the program. Cosmopolitan's
-     * WEXITSTATUS() does not mask it: shift it again if it is there. */
+     * child of fork() leaves that child as a relay. */
     errno = posix_spawn(&pid, GetProgramExecutableName(), NULL, NULL, argv, env.v);
     if (errno || waitpid(pid, &status, 0) < 0) {
         fprintf(stderr, "beam.com: %s\n", strerror(errno));
         exit(1);
     }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+    if (status == 0)
         run_exec();
     if (run_file)
         unlink(run_file);
-    exit(!WIFEXITED(status) ? 1 : WEXITSTATUS(status) > 255 ? WEXITSTATUS(status) >> 8
-                                                             : WEXITSTATUS(status));
+    /* The child gives Windows its exit status itself (beam_com_exit()),
+     * and waitpid() gives it as it is; a POSIX wait status is larger. */
+    beam_com_exit(status > 255 ? WEXITSTATUS(status) : status, 1);
 }
 
 /* make: the name of the program that make_link() makes. */
