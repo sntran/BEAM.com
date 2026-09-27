@@ -298,7 +298,10 @@ beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
   named `inotifywait` to the file (on macOS,
   `FILESYSTEM_FSMAC_EXECUTABLE_FILE` to a script `mac_listener` that runs
   the file), in the cache of BEAM.com (`BEAM_COM_CACHE`, else the user
-  cache), unless you set it. There is no watcher for Windows yet.
+  cache), unless you set it. On Linux, when the APE loader runs the file,
+  `inotifywait` is a script that runs the file with that loader (for
+  WSL2, see "One file, many programs"). There is no watcher for Windows
+  yet.
 - The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
   (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
   `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).
@@ -683,6 +686,18 @@ file (`GetProgramExecutableName()`) again, with
 runs that program. The base name of `argv[0]` is only a fallback,
 because Linux `binfmt_misc` does not keep `argv[0]`.
 
+On Linux, the APE loader runs an APE file (the shell script of the file
+starts it, or binfmt_misc). Cosmopolitan's `execve()` of an APE file
+tries the kernel first, and starts the loader only when the kernel
+refuses the file. On WSL2 the kernel does not refuse it: the
+`WSLInterop` entry of binfmt_misc gives it to Windows, and the helper
+does not start (C31 in [`docs/UPSTREAM.md`](docs/UPSTREAM.md)). So when
+`/proc/self/exe` is a loader and not the file, BEAM.com starts an APE
+file with that loader itself (`ape - FILE ARGV0 ARGV1 ...`): the helper
+programs, `epmd`, a port that starts an APE file (erl mode), and the
+file watcher of the tools. A native file (`--assimilate`, `--target`)
+is `/proc/self/exe`, and the kernel starts it.
+
 ### Crypto and TLS
 
 `build.sh` builds a static `libcrypto` (OpenSSL 4.0.2, no assembly, so
@@ -827,6 +842,7 @@ artifacts of each run.
 | --- | --- | --- | --- | --- | --- |
 | Linux x86_64 | `sh ./beam.com` (or `./beam.com` with the APE loader in binfmt_misc) | ✅ | ✅ | ✅ | ✅ |
 | Linux aarch64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| WSL2 (Linux x86_64) | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | macOS arm64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | macOS x86_64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | FreeBSD | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
@@ -840,6 +856,16 @@ On NetBSD and OpenBSD, also install it where Cosmopolitan's `execve()`
 looks for it (`/usr/bin/ape` or `~/.ape-1.10`): BEAM.com starts its
 helper programs by executing itself, and without a loader Cosmopolitan
 falls back to `sh`.
+
+On WSL2, the binfmt_misc entry `WSLInterop` gives each file that starts
+with `MZ` (an APE file too) to Windows. BEAM.com does not let the kernel
+start its own APE file (see "One file, many programs"), so you do not
+have to disable `WSLInterop` (`echo -1 > /proc/sys/fs/binfmt_misc/WSLInterop`,
+as the error message of Cosmopolitan says). Start the file with
+`sh ./beam.com`: `./beam.com` also goes to Windows. CI does not run on
+WSL2: the WSL check of `tests/run.sh` makes an entry such as
+`WSLInterop` in a user namespace of Linux (Linux 6.7 or later), and
+runs the checks there.
 
 On Windows, `os:type()` is `{unix, windows}`, and port programs do not
 work: `open_port({spawn, ...})`, `os:cmd/1` and native name lookups
@@ -883,6 +909,11 @@ workaround in BEAM.com, and a possible upstream fix for each item.
   path, or the form of Cosmopolitan (`/C/db/x.db`).
 - Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
   are resolved with Erlang's DNS client, IPv4 name servers only).
+- WSL2: start an APE file with `sh`. The kernel gives an APE file that
+  it starts itself to Windows (`WSLInterop`): `./beam.com`, and an APE
+  file that a shell starts (`os:cmd("other.com")`). BEAM.com starts its
+  own helpers, and the APE files of `open_port({spawn_executable, ...})`,
+  with the APE loader.
 - `run_erl` does not work (there is no `mkfifo()`).
 - A release that you add with `zip` brings the applications that it
   needs, when they are not in the zip of `beam.com` (pure Erlang ones

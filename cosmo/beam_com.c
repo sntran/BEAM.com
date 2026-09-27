@@ -273,6 +273,109 @@ static int read_zip_args(struct arglist *out)
 }
 
 /*
+ * --- The APE loader on Linux -------------------------------------------
+ *
+ * BEAM.com executes its own file again for the helper programs
+ * (erl_child_setup, inet_gethost, epmd), and a program can start its own
+ * file in erl mode. The Linux kernel cannot start an APE file itself:
+ * Cosmopolitan's execve() tries the kernel, and only on ENOEXEC it starts
+ * the APE loader (libc/proc/execve-sysv.c). On WSL, the binfmt_misc entry
+ * WSLInterop accepts the "MZ" of the APE file, and the kernel starts the
+ * file as a Windows program. Cosmopolitan then stops on the Windows side
+ * with "APE is running on WIN32 inside WSL" (UPSTREAM.md C31), and ERTS
+ * gets no erl_child_setup.
+ *
+ * When a loader runs this process (the shell script of the APE file
+ * starts it, or binfmt_misc, or the user), /proc/self/exe is the loader,
+ * not the program file. Then BEAM.com starts an APE file with that
+ * loader ("ape - PROG ARGV0 ARGV1 ..."), and the kernel never sees the
+ * APE file. A native file (assimilated, or made with --target) is
+ * /proc/self/exe itself, and the kernel starts it as before.
+ */
+
+/* The file starts with the magic of an APE file. */
+static int is_ape_file(const char *path)
+{
+    char buf[8];
+    int fd, ok;
+
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) == -1)
+        return 0;
+    ok = read(fd, buf, 8) == 8 &&
+         (memcmp(buf, "MZqFpD='", 8) == 0 || memcmp(buf, "jartsr='", 8) == 0);
+    close(fd);
+    return ok;
+}
+
+/* 1 when an APE loader runs this process on Linux: the program file is
+ * an APE file and /proc/self/exe is another file. buf gets the path of
+ * the loader, or "" when the loader file was removed ("PATH (deleted)"):
+ * /proc/self/exe starts it all the same. 0 also when the path that
+ * readlink() gives is not the file of /proc/self/exe: an emulator such
+ * as qemu-user runs the process (it gives the path of its guest program,
+ * which the kernel cannot start). */
+static int ape_loader(char *buf, size_t size)
+{
+    const char *exe = GetProgramExecutableName();
+    struct stat self, prog, link;
+    ssize_t n;
+
+    buf[0] = '\0';
+    if (!IsLinux() || !exe || !*exe || stat("/proc/self/exe", &self) == -1 ||
+        stat(exe, &prog) == -1 ||
+        (self.st_dev == prog.st_dev && self.st_ino == prog.st_ino) ||
+        !is_ape_file(exe))
+        return 0;
+    if ((n = readlink("/proc/self/exe", buf, size - 1)) <= 0 || buf[0] != '/') {
+        buf[0] = '\0';
+        return 0;
+    }
+    buf[n] = '\0';
+    if (n > 10 && strcmp(buf + n - 10, " (deleted)") == 0) {
+        buf[0] = '\0';
+        return 1;
+    }
+    if (stat(buf, &link) == -1 || link.st_dev != self.st_dev || link.st_ino != self.st_ino) {
+        buf[0] = '\0';
+        return 0;
+    }
+    return 1;
+}
+
+/* The execve system call, without the APE loader and sh of Cosmopolitan's
+ * execve(): it returns on each error. From
+ * libc/calls/syscall-sysv.internal.h. */
+int __sys_execve(const char *path, char *const argv[], char *const envp[]);
+
+/* execve() for the files that BEAM.com starts: an APE file starts with
+ * the loader of this process when a loader runs it (see above). When the
+ * kernel cannot start the loader, it is Cosmopolitan's execve(), as
+ * before. Returns only on error. */
+int beam_com_execve(const char *path, char *const argv[], char *const envp[])
+{
+    extern char **environ;
+    char loader[4096];
+    const char *file;
+    struct arglist args = {0};
+    int i;
+
+    if (!envp)
+        envp = environ;
+    if (ape_loader(loader, sizeof(loader)) && is_ape_file(path)) {
+        file = *loader ? loader : "/proc/self/exe";
+        push(&args, *loader ? loader : "ape");
+        push(&args, "-");
+        push(&args, (char *)path);
+        for (i = 0; argv[i]; i++)
+            push(&args, argv[i]);
+        if (getenv("BEAM_COM_VERBOSE"))
+            fprintf(stderr, "beam.com: starting %s with the APE loader %s\n", path, file);
+        __sys_execve(file, args.v, envp);
+    }
+    return execve(path, argv, envp);
+}
+
+/*
  * --- Sandbox: the permissions of --allow-* -----------------------------
  *
  * A program can give up what it does not need. The permissions are those
@@ -341,10 +444,16 @@ static void sandbox_unveil_optional(int helper, const char *path,
 }
 
 /* The APE loader that Cosmopolitan's execve() uses to start an APE file
- * on Linux, when the kernel cannot (see libc/proc/execve-sysv.c). */
+ * on Linux, when the kernel cannot (see libc/proc/execve-sysv.c), and the
+ * loader that runs this process (beam_com_execve() starts APE files with
+ * it). */
 static void sandbox_unveil_loader(int helper)
 {
     const char *home = getenv("HOME");
+    char loader[4096];
+
+    if (ape_loader(loader, sizeof(loader)) && *loader)
+        sandbox_unveil_optional(helper, loader, "rx");
 
     sandbox_unveil_optional(helper, "/usr/bin/ape", "rx");
     sandbox_unveil_optional(helper,
@@ -596,6 +705,11 @@ static void make_dirs(char *path)
  * watcher of this file runs (cosmo/beam_com_watch.c):
  *
  *   - Linux and the BSDs: a link named inotifywait to this file.
+ *   - Linux, when an APE loader runs this file (see ape_loader()): a
+ *     script inotifywait that runs this file with that loader and
+ *     BEAM_COM_PROGRAM=inotifywait. file_system runs the watcher with
+ *     "sh -c", and the kernel must not see the APE file (on WSL it gives
+ *     it to Windows).
  *   - macOS: a script mac_listener that runs this file with
  *     BEAM_COM_PROGRAM=mac_listener (the name of a link can be lost when
  *     the APE loader starts the file).
@@ -609,7 +723,7 @@ static void watch_link(void)
                *home = getenv("HOME"), *exe = GetProgramExecutableName();
     const char *var = IsXnu() ? "FILESYSTEM_FSMAC_EXECUTABLE_FILE"
                               : "FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE";
-    char *dir, *link, *tmp, *script, target[4096];
+    char *dir, *link, *tmp, *script = NULL, target[4096], loader[4096];
     ssize_t n;
     int fd, ok;
 
@@ -629,8 +743,12 @@ static void watch_link(void)
      * do not see a missing file. */
     snprintf(target, sizeof(target), "%s.%d", link, (int)getpid());
     tmp = strdup(target);
-    if (IsXnu()) {
+    if (IsXnu())
         script = join("#!/bin/sh\nBEAM_COM_PROGRAM=mac_listener exec '", exe, "' \"$@\"\n");
+    else if (ape_loader(loader, sizeof(loader)) && *loader && !strchr(loader, '\''))
+        script = join(join("#!/bin/sh\nBEAM_COM_PROGRAM=inotifywait exec '", loader, "' - '"),
+                      exe, "' inotifywait \"$@\"\n");
+    if (script) {
         fd = open(link, O_RDONLY);
         n = fd >= 0 ? read(fd, target, sizeof(target) - 1) : -1;
         if (fd >= 0)
@@ -1022,7 +1140,7 @@ int beam_com_exec_helper(const char *path, char *const argv[],
         if (strncmp(src[i], "BEAM_COM_PROGRAM=", 17) != 0)
             push(&env, src[i]);
     push(&env, join("BEAM_COM_PROGRAM=", beam_com_basename(path), ""));
-    return execve(GetProgramExecutableName(), argv, env.v);
+    return beam_com_execve(GetProgramExecutableName(), argv, env.v);
 }
 
 /*
@@ -1055,7 +1173,7 @@ static void start_epmd(struct arglist *all)
             push(&env, environ[i]);
     push(&env, "BEAM_COM_PROGRAM=epmd");
     if ((pid = fork()) == 0) {
-        execve(GetProgramExecutableName(), args, env.v);
+        beam_com_execve(GetProgramExecutableName(), args, env.v);
         _exit(127);
     }
     if (pid > 0)

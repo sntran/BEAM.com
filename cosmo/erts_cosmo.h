@@ -108,6 +108,15 @@ static inline const char *beam_com_exec_path(const char *path)
 int beam_com_exec_helper(const char *path, char *const argv[],
                          char *const envp[]) __attribute__((__weak__));
 
+/*
+ * Defined in beam_com.c. execve() that starts an APE file with the APE
+ * loader of this process when a loader runs it on Linux, so that the
+ * kernel does not see the APE file (on WSL, binfmt_misc gives it to
+ * Windows). Otherwise the same as execve(). Returns only on error.
+ */
+int beam_com_execve(const char *path, char *const argv[],
+                    char *const envp[]) __attribute__((__weak__));
+
 #ifdef __cplusplus
 }
 #endif

@@ -153,6 +153,68 @@ check_status 1 beam.com 'unknown command nosuch (see beam.com help)' nosuch
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
 check beam.com 'SYS @@Erlang/OTP  : ' --strace version
 
+# Linux: when the APE loader runs beam.com (sh starts it), the helper
+# programs start with that loader, and the kernel never gets the APE file
+# (on WSL, the binfmt_misc entry WSLInterop gives it to Windows). The
+# shell of os:cmd/1 is a child of erl_child_setup: its parent has the
+# /proc/PID/exe of the emulator (the loader). A program that starts its
+# own file (erl mode) uses the loader too. A native file starts its own
+# file with the kernel.
+loader_eval='{ok, [[E]]} = init:get_argument(beam_com_exe),
+    {ok, Self} = file:read_link("/proc/self/exe"),
+    Cs = string:trim(os:cmd("readlink /proc/$PPID/exe")),
+    io:format("child_setup: ~s~n", [if Self =:= E -> native; Cs =:= Self -> loader; true -> Cs end]),
+    {ok, _} = inet:gethostbyname("localhost"),
+    P = open_port({spawn_executable, E}, [{env, [{"BEAM_COM_ERL", "1"}]}, exit_status,
+        {args, ["-noshell", "-eval", "io:format(\"erl mode ok~n\"), halt()."]}]),
+    receive {P, {data, D}} -> io:format("~s", [D]) end,
+    halt().'
+if [ "$os" = linux ] && [ "$runner" = sh ] && [ -f "$dir/beam.com" ]; then
+    check beam.com 'child_setup: loader@@erl mode ok@@starting .*/beam.com with the APE loader' \
+        -noshell -eval "$loader_eval"
+    cp "$dir/beam.com" "$dir/beam-native.com"
+    sh "$dir/beam-native.com" --assimilate
+    runner=
+    check beam-native.com 'child_setup: native@@erl mode ok' -noshell -eval "$loader_eval"
+    runner=sh
+    if grep -q 'with the APE loader' "$tmp"; then
+        echo "FAIL: beam-native.com started a file with the APE loader"
+        failed="$failed
+  beam-native.com: started a file with the APE loader"
+        fail=1
+    fi
+
+    # WSL on Linux: since Linux 6.7, a user namespace can have its own
+    # binfmt_misc. There, an entry as WSLInterop sends each "MZ" file to
+    # a fake Windows, which fails as on WSL. beam.com, its helpers (also
+    # epmd), erl mode and the file watcher of the tools must work there.
+    printf '#!/bin/sh\necho "WSLInterop got $1" >&2\nexit 77\n' > "$tmp.win"
+    cat > "$tmp.wsl" <<WSL
+#!/bin/sh
+exec unshare -U -r -m sh -c 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc &&
+    echo ":WSLInterop:M::MZ::$tmp.win:" > /proc/sys/fs/binfmt_misc/register &&
+    exec sh "\$@"' sh "\$@"
+WSL
+    chmod +x "$tmp.win" "$tmp.wsl"
+    if "$tmp.wsl" -c true 2>/dev/null; then
+        runner=$tmp.wsl
+        check beam.com 'child_setup: loader@@erl mode ok@@wsl_names {ok,\[{"wsl_check"' -sname wsl_check \
+            -noshell -eval "io:format(\"wsl_names ~p~n\", [net_adm:names()]), $loader_eval"
+        $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
+        check beam.com '^usage: inotifywait ' elixir -e '{out, 1} = System.cmd("sh", ["-c", System.fetch_env!("FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE")], stderr_to_stdout: true); IO.write(out)'
+        runner=sh
+        if grep -q 'WSLInterop got' "$tmp"; then
+            echo "FAIL: the kernel got an APE file (WSLInterop)"
+            failed="$failed
+  WSLInterop: the kernel got an APE file"
+            fail=1
+        fi
+    else
+        echo "SKIP: WSLInterop (no user namespace with its own binfmt_misc)"
+    fi
+    rm -f "$tmp.win" "$tmp.wsl" "$dir/beam-native.com"
+fi
+
 # Releases made with rebar3 and added with zip (by CI).
 for app in greeter crypto_check tls_check; do
     if [ -f "$dir/$app.com" ]; then
