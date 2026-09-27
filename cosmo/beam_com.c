@@ -723,6 +723,41 @@ static int zip_has_elixir(void)
     return found;
 }
 
+/*
+ * Some applications of Elixir (eex, ex_unit, logger and mix) once more in
+ * the code path, as "/zip/bin/../lib/APP-VSN/ebin", for the tools. The
+ * scripts of Elixir add the applications of Elixir in this form
+ * (-elixir_root "$SCRIPT_PATH"/../lib, see elixir.erl). Before Mix
+ * compiles a project or a dependency, it removes the paths of the
+ * applications that the project does not need (Code.delete_paths/1),
+ * but code:del_path/1 normalizes the path, so a path with ".." stays.
+ * Without these paths, "mix ecto.migrate" fails when it first compiles a
+ * dependency: it then starts ecto_sql, which needs eex, and eex is not
+ * in the path any more.
+ *
+ * Not elixir and iex, which are always loaded: they have protocols, and
+ * Mix consolidates the protocols of the paths that are not in the lib
+ * directory of OTP (/zip/lib). Their beam files in the zip have no
+ * attributes (build.sh), which the consolidation needs.
+ */
+static void elixir_paths(struct arglist *out)
+{
+    static const char *apps[] = {"eex-", "ex_unit-", "logger-", "mix-"};
+    DIR *dir = opendir(BEAM_COM_ROOT "/lib");
+    struct dirent *entry;
+    size_t i;
+
+    if (!dir)
+        return;
+    while ((entry = readdir(dir)))
+        for (i = 0; i < sizeof(apps) / sizeof(apps[0]); i++)
+            if (starts_with(entry->d_name, apps[i])) {
+                push(out, "-pa");
+                push(out, join(BEAM_COM_BINDIR "/../lib/", entry->d_name, "/ebin"));
+            }
+    closedir(dir);
+}
+
 static char *join(const char *a, const char *b, const char *c)
 {
     size_t n = strlen(a) + strlen(b) + strlen(c) + 1;
@@ -1283,6 +1318,7 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
+        elixir_paths(&file);
         if (strcmp(tool, "iex") == 0) {
             push(&file, "-user");
             push(&file, "elixir");
