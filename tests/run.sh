@@ -204,6 +204,13 @@ if [ "$os" = linux ] && [ "$runner" = sh ] && [ -f "$dir/beam.com" ]; then
     cp "$dir/beam.com" "$dir/beam-native.com"
     sh "$dir/beam-native.com" --assimilate
     runner=
+    # The shell script of an APE file makes a native file (ELF) only on
+    # x86_64; on aarch64, --assimilate leaves the APE file (the APE loader
+    # runs it there). The checks of a native file need a native file.
+    magic=$(dd if="$dir/beam-native.com" bs=4 count=1 2>/dev/null | od -An -c | tr -d ' ')
+    if [ "$magic" != 177ELF ]; then
+        echo "SKIP: beam-native.com (--assimilate made no native file on $(uname -m))"
+    else
     check beam-native.com 'child_setup: native@@erl mode ok' -noshell -eval "$loader_eval"
     if grep -q 'with the APE loader' "$tmp"; then
         echo "FAIL: beam-native.com started a file with the APE loader"
@@ -224,6 +231,7 @@ if [ "$os" = linux ] && [ "$runner" = sh ] && [ -f "$dir/beam.com" ]; then
             build examples/hashsum.erl --target "$cpu-linux" -o "$dir/hashsum.native2"
         [ -f "$dir/hashsum.native2" ] && check hashsum.native2 "$hashsum" abc
         rm -f "$dir/never.com" "$dir/hashsum.native2"
+    fi
     fi
     runner=sh
 
