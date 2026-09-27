@@ -357,25 +357,41 @@ int pthread_once(pthread_once_t *o, void (*fn)(void))
 /* --- calls that wait ---------------------------------------------------- */
 
 #include <poll.h>
+#include <emscripten/emscripten.h>
 #include <emscripten/syscalls.h>
 
-/* Emscripten's poll() suspends under JSPI (its __syscall_poll is a
- * suspending import that waits on the wait queues of the files): the other
- * threads run meanwhile, so put the shadow stack pointer and the current
- * thread back after it. A zero timeout does not suspend. */
+/* poll(): a check of the files, and if none is ready, a wait (it suspends
+ * under JSPI) until one of them changes or the timeout; then check again.
+ * The wait is ours, not Emscripten's __syscall_poll, so that its timer
+ * goes through jspiSchedule (jspi_lib.js). The other threads run
+ * meanwhile, so put the shadow stack pointer and the current thread back
+ * after it. A zero timeout does not suspend. */
+int jspi_poll_wait(struct pollfd *fds, int n, int timeout);
+
 int poll(struct pollfd *fds, nfds_t n, int timeout)
 {
     struct __pthread *self = cur;
+    double end = timeout > 0 ? emscripten_get_now() + timeout : 0;
     uintptr_t sp;
     int r;
 
-    if (timeout == 0) {
+    for (;;) {
         r = __syscall_poll_nonblocking(fds, n);
-    } else {
+        if (r != 0 || timeout == 0)
+            break;
         sp = jspi_get_sp();
-        r = __syscall_poll(fds, n, timeout);
+        r = jspi_poll_wait(fds, n, timeout);
         jspi_set_sp(sp);
         cur = self;
+        if (r == 0) {
+            r = __syscall_poll_nonblocking(fds, n);
+            break;
+        }
+        if (timeout > 0) {
+            timeout = (int)(end - emscripten_get_now());
+            if (timeout <= 0)
+                timeout = 0;
+        }
     }
     if (r < 0) {
         errno = -r;

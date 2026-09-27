@@ -113,7 +113,7 @@ if [ "${WORKER:-0}" = 1 ]; then
     else
         FILES="-sEXPORTED_RUNTIME_METHODS=ENV,HEAPU8 --embed-file $F@${WORKER_MOUNT:-/otp}"
     fi
-    LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+    LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit,jspiSchedule --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
     make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
     mkdir -p "$WOUT"

@@ -339,16 +339,19 @@ stays the default.
 ## Phoenix LiveView on Cloudflare Workers (the spike works)
 
 A Phoenix 1.8 app with a LiveView (a counter, and a timer that pushes
-the seconds) runs from the WebAssembly ERTS: in Node.js, and in a Durable
-Object of Cloudflare's `workerd`, with a real browser (Chromium, with
-Playwright). Phoenix, LiveView and the `.beam` files of the app are not
-changed.
+the seconds) runs from the WebAssembly ERTS: in Node.js, and in
+Cloudflare's `workerd` (a Durable Object, or a plain Worker), with a real
+browser (Chromium, with Playwright). Phoenix, LiveView and the `.beam`
+files of the app are not changed. The next versions work too:
+`PHOENIX=main wasm/phoenix/setup.sh` takes Phoenix 1.9.0-dev and LiveView
+1.3.0-dev from their main branches (2026-09-27), and all the checks below
+pass with them, with no change of the adapter.
 
 ```sh
 npm install --prefix wasm                                # ws (the Node.js host), playwright-core (the tests)
 BEAM_COM=.../beam.com wasm/phoenix/setup.sh              # mix phx.new, the LiveView, a release
 BOOTSTRAP=... ELIXIR=... SERVE=1 wasm/phoenix/run.sh     # Node.js: http://localhost:4000/counter
-EMSDK=... BOOTSTRAP=... ELIXIR=... wasm/phoenix/build-worker.sh
+EMSDK=... BOOTSTRAP=... ELIXIR=... [MODE=plain] wasm/phoenix/build-worker.sh
 workerd serve wasm/phoenix/build/worker/worker.capnp     # workerd: http://localhost:8789/counter
 node wasm/phoenix/browser-test.mjs http://localhost:8789/counter
 ```
@@ -379,10 +382,15 @@ node wasm/phoenix/browser-test.mjs http://localhost:8789/counter
 | `ssl`: TLS 1.3 (`TLS_AES_256_GCM_SHA384`) | 200 in 200 ms (the first, when `ssl` loads), then 8 ms | 216 ms, then 10 ms |
 
 The Worker: the runtime `beam.wasm` is 5.2 MB (1.9 MB with gzip), and
-`release.bin` of the app is 7.5 MB (6.9 MB with gzip; 1,367 files):
-8.8 MB with gzip in all. The limit of a Worker is 10 MB with gzip (paid
-plan). The modules that the boot and a render load are 2.9 MB (2.1 MB
-with gzip) of the 7.5 MB, so there is room to leave out modules.
+`release.bin` of the app is 7.5 MB (1,337 files). With `MODULES=file`
+(`pack.erl --modules`), `release.bin` keeps only the `.beam` files of the
+modules that a test run loaded (394 modules: `code:all_loaded/0` after
+the pages, the LiveView, `gen_tcp` and `ssl`): 3.5 MB (536 files), and
+all the checks pass with it. Cloudflare counts only the size without
+compression, with a limit of 64 MiB on the free and the paid plans
+(its limits page, 2026-09-27), so both sizes fit. The `.beam` files are
+compressed already, one by one: stored without compression, the gzip of
+the whole is only 4% smaller, and the files take two times more memory.
 
 ### What was found
 
@@ -414,6 +422,78 @@ with gzip) of the 7.5 MB, so there is room to leave out modules.
   NIFs: the release keeps the default number of dirty I/O schedulers (10
   green threads cost almost nothing).
 
+### Three ways to run on Workers
+
+`worker.js` selects the way by its bindings (`MODE` of
+`wasm/worker/build.sh` writes the configuration):
+
+| `MODE` | Where the VM is | Set up | Cost when idle |
+|---|---|---|---|
+| `object` (default) | one Durable Object for the app | a Durable Object binding and class | billed for duration while it is in memory (it is not eligible for hibernation) |
+| `plain` | a plain Worker: one VM for each isolate, used again by the next requests to that isolate | none | none: Workers bill CPU time, not wall time |
+| `split` | as `plain`, but the runtime Worker has no application: it gets `release.bin` from a second Worker (a service binding `APP`), or from `RELEASE_URL` | a service binding | none |
+
+The results with Phoenix 1.9.0-dev, LiveView 1.3.0-dev and the small
+`release.bin` (3.5 MB), in `workerd`:
+
+| | `object` | `plain` | `split` |
+|---|---|---|---|
+| First request (the boot) | 0.66 s | 0.55 to 0.73 s | 0.60 s (`release.bin` from the other Worker in 5 ms) |
+| Next requests | 4 to 7 ms | 3 ms | 3 ms |
+| After 15 s idle | | 5.5 ms (the same VM) | |
+| `gen_tcp`, `ssl` (TLS 1.3) | 14 ms; 338 ms, then 10 to 16 ms | 11 ms; 250 to 310 ms | 12 ms; 250 to 290 ms |
+| LiveView: connect, a click | 143 ms, 69 ms | 110 to 130 ms, 66 ms | 129 ms, 67 ms |
+| 20 LiveView sockets: connect, clicks | 2.6 s, 346 ms | 2.3 to 2.8 s, 335 to 430 ms | 2.5 s, 342 ms |
+| WebAssembly memory | 48 to 58 MB | 48 to 58 MB | 48 MB |
+
+What a plain Worker needs:
+
+- **A later request resolves the promises of an earlier one.** The VM of
+  the isolate waits for its events on promises made in the first request.
+  By default, `workerd` cancels such continuations when the first request
+  is done ("A promise was resolved or rejected from a different request
+  context"), and the next request hangs. The compatibility flag
+  `no_handle_cross_request_promise_resolution` keeps them.
+- **An I/O object belongs to the request that made it.** A TCP socket or
+  a `WebSocketPair` made in the callbacks of the VM (which run in the
+  context of the first request) fails in another request: "Cannot perform
+  I/O on behalf of a different request". So each request handler runs the
+  host calls that make or use its I/O objects: a TCP socket belongs to the
+  request that was open when Erlang connected, and closes with it. This is
+  the model of Workers: a connection for each request, not a pool.
+- **The VM runs only in open requests.** The wake-ups and timers of the
+  threads go to a request handler (`Module.jspiSchedule` in
+  `jspi_lib.js`; `poll()` waits with it too). Each open request is an
+  event loop of the VM, until it has its response and its sockets are
+  closed. With no open request, the VM does not run, and its timers wait
+  for the next request: an edge function that wakes at a request and
+  sleeps after it, with its state (ETS, processes) kept while the isolate
+  is in memory. A LiveView socket keeps its request open, so its timers
+  run.
+- **Each open request keeps a timer of its own** (at most 1 s): else
+  `workerd` takes a request that waits only for the VM (busy in another
+  request) as hung ("canceled this request because it detected that your
+  Worker's code had hung"), and cancels it with the work of the VM that
+  waits in it; then the VM stops. With 20 sockets this came in some runs.
+- **A host call that throws** (as a send on a closed socket) must not stop
+  the loop of a request handler, else that request hangs.
+- An isolate can close at any time (Cloudflare decides): the next request
+  boots a new VM (0.6 s).
+
+### Cloudflare's limits (from its limits and pricing pages, 2026-09-27)
+
+- **CPU time for each request:** 10 ms on the free plan, 30 s (up to 5
+  min) on the paid plan. The boot of the VM takes about 0.5 s of CPU, so
+  a first request needs the paid plan; a warm request (3 ms) can fit in
+  10 ms, but the first request of each isolate does not.
+- **Memory:** 128 MB for each isolate, the JavaScript heap and the
+  WebAssembly memory together. One VM (48 to 58 MB, and `release.bin` in
+  its file system) fits; two VMs in one isolate would not.
+- **Size:** 64 MiB without compression, on both plans.
+- **Price:** Workers bill requests and CPU time, with no charge for idle
+  time. Durable Objects are on the free plan too, and bill duration while
+  in memory, except objects that are idle and eligible for hibernation.
+
 ## Erlang in a browser tab
 
 `wasm/browser/index.html` loads the Worker variant of `wasm/erts` (kernel
@@ -423,15 +503,16 @@ processes" in 436 ms.
 
 ## Use cases
 
-- **Phoenix LiveView on Workers.** One Durable Object runs the app: pages,
+- **Phoenix LiveView on Workers.** One Durable Object (or a plain Worker,
+  where each isolate has its own VM) runs the app: pages,
   LiveView sockets, PubSub and timers in one VM, near the users, with no
   server to manage. An idle VM costs no CPU time. The data can be the
   SQL storage of the Durable Object (SQLite), or Postgres through
   `connect()`.
 - **Erlang and Elixir code at the edge**, as a function per request: an
-  API, a webhook, a small service. A stateless Worker boots a VM for each
-  request (about 0.5 s for kernel and stdlib, more with an app), so a
-  Durable Object that stays warm is better for most uses.
+  API, a webhook, a small service, in a plain Worker (`MODE=plain`, no
+  binding to set up). The first request of an isolate boots the VM (0.6
+  s); the next ones take 3 ms, and the VM costs nothing between them.
 - **Stateful objects with the actor model:** a Durable Object for each
   room, game, document or user, with OTP processes inside it
   (`gen_server`, supervisors, ETS) and a WebSocket for each client.
@@ -439,6 +520,11 @@ processes" in 436 ms.
   OTP; offline apps; the same Elixir code on the server and in the page
   (a LiveView that runs in the tab when there is no network is a
   question for later).
+- **One runtime for many apps (`MODE=split`):** the runtime Worker has no
+  application, and boots the release that it is pointed to. The `.beam`
+  files are data for V8, not code, so the rule of Workers against code at
+  run time does not apply to them: a release can come from another Worker,
+  from R2 or from a URL.
 - **A sandbox:** a WebAssembly VM has no access to files, processes or the
   network, other than what the host gives it (as `wasm_tcp`). Untrusted
   Erlang code (a plugin, an exercise) can run in a Worker or a tab.
@@ -447,15 +533,26 @@ processes" in 436 ms.
 
 ## How this could fit `beam.com`
 
+**What it shares with `beam.com`, and what not.** The WebAssembly
+runtime does not use APE or Cosmopolitan: it is ERTS built with
+Emscripten, a second runtime next to the APE one. The Blink spike (APE in
+an emulator) was the way to keep one binary, and it was 150 to 250 times
+slower. What it shares is the goal and the release: the same `.beam`
+files and the same release run on the APE runtime and on the WebAssembly
+runtime, and `beam.com` can make the Worker (`pack.erl` is Erlang code;
+it needs no toolchain). So it fits as a build target of `beam.com` ("build
+once, run on the operating systems and on WebAssembly hosts"), not as a
+part of the APE binary.
+
 A proposal, not done:
 
 - **`beam.com build --target worker APP`** (or `--target wasm32`): the
   native build of the release as now, then `pack.erl` (Erlang code that
   `beam.com` has) and the Worker files. The output is a directory for
   `wrangler deploy`: `worker.js`, `beam.mjs`, `beam.wasm`, `release.bin`
-  and a `wrangler.toml` with the Durable Object. No Emscripten, no
-  Node.js.
-- **The runtime:** `beam.wasm` and `beam.mjs` (2 MB with gzip), built by
+  and a `wrangler.toml` for the `MODE` (`plain`, `object` or `split`). No
+  Emscripten, no Node.js.
+- **The runtime:** `beam.wasm` and `beam.mjs` (5.2 MB; 2 MB with gzip), built by
   the CI of BEAM.com with `wasm/erts/build.sh`, in the zip of `beam.com`
   or downloaded at the first `--target worker` build.
 - **The host adapter as an application:** `wasm_host`, `wasm_tcp` and the
@@ -470,8 +567,10 @@ A proposal, not done:
 
 ## Next
 
-- **Leave out unused modules** in `release.bin` (a list of the modules
-  that a boot and the tests load), for smaller Workers.
+- **The list of modules:** `pack.erl --modules` needs the list of a test
+  run; `beam.com` could make it (run the release natively with the same
+  code paths), or the runtime could get a missing module from the full
+  set at run time (from R2 or the app Worker).
 - **Data:** an Ecto adapter for the SQL storage of Durable Objects, or
   `exqlite` over it; Postgres through `wasm_tcp` (Postgrex over
   `gen_tcp` and `ssl`, which work now).
@@ -480,17 +579,25 @@ A proposal, not done:
 - **More Durable Objects:** PubSub between objects (a
   `Phoenix.PubSub` adapter over Durable Object requests).
 - **A snapshot of the booted VM** (the memory after the boot), to make
-  the cold start shorter.
-- **UDP and DNS** through the host; incoming TCP is not possible on
-  Workers.
+  the cold start shorter, and so that a first request could fit the 10 ms
+  of CPU time of the free plan.
+- **UDP and DNS** through the host.
+- **Incoming TCP over WebSockets:** Workers get no raw TCP connections
+  (only HTTP and WebSockets; not tested here, from the Cloudflare
+  documentation). A `gen_tcp:listen/2` of `wasm_tcp` could accept
+  WebSockets on a path as TCP sockets, with a small proxy on the client
+  side (as `websocat` or `cloudflared access tcp`), for a protocol such as
+  SSH or distributed Erlang.
 
 ## Limits of the way
 
 - Threads switch only when one waits: a long NIF or BIF stops all the
   others (Erlang processes are still preempted by reductions).
 - The CPU time of a request in Workers applies to all the threads.
-- A stateless Worker or Deno Deploy keeps no VM between requests; a
-  Durable Object does, while it is in memory.
+- A plain Worker keeps its VM while the isolate is in memory, and the VM
+  runs only while a request is open; a Durable Object keeps its VM while
+  it is in memory, and runs it all the time.
+- TCP sockets of a plain Worker close with the request that opened them.
 - No incoming TCP or UDP on Workers: the host gives HTTP and WebSockets.
 - No ports (no `fork()` or `exec()`), and no NIFs that are not linked into
   the runtime.

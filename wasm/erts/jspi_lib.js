@@ -20,8 +20,14 @@ addToLibrary({
   // in Node.js, else a MessageChannel message. setTimeout(0), and the
   // setImmediate of workerd, wait about 1 ms (a timer tick), and ERTS yields
   // often: its boot took 3 s so in workerd, not 0.5 s.
+  //
+  // Module.jspiSchedule (optional) takes the wake-ups and timers of the
+  // threads: {later(f), timer(f, ms) -> id, clear(id)}. A plain Worker
+  // runs them in an open request (I/O and timers belong to a request).
   $jspiLater__deps: ['$jspiQueue'],
   $jspiLater: (f) => {
+    const s = Module['jspiSchedule'];
+    if (s) return s.later(f);
     if (ENVIRONMENT_IS_NODE) return setImmediate(f);
     jspiQueue.fns.push(f);
     if (!jspiQueue.port) {
@@ -32,6 +38,8 @@ addToLibrary({
     jspiQueue.port.postMessage(0);
   },
   $jspiQueue: { fns: [], port: null },
+  $jspiTimer: (f, ms) => Module['jspiSchedule']?.timer(f, ms) ?? setTimeout(f, ms),
+  $jspiClear: (id) => { const s = Module['jspiSchedule']; if (s) s.clear(id); else clearTimeout(id); },
   // Node.js: the program gets the environment of the process.
   $jspiEnv__deps: ['$ENV'],
   $jspiEnv__postset: "if (ENVIRONMENT_IS_NODE) Object.assign(ENV, process.env);",
@@ -43,14 +51,14 @@ addToLibrary({
     // A pointer argument of a wasm64 export is a BigInt.
     jspiLater(() => jspi.entry({{{ MEMORY64 ? 'BigInt(t)' : 't' }}}).catch(jspiExit));
   },
-  jspi_suspend__deps: ['$jspi'],
+  jspi_suspend__deps: ['$jspi', '$jspiTimer', '$jspiClear'],
   jspi_suspend__async: true,
   jspi_suspend__sig: 'ipi',
   jspi_suspend: (t, ms) => new Promise((resolve) => {
     if (jspi.early.delete(t)) return resolve(1);
     let timer = null;
-    jspi.waiters.set(t, () => { if (timer) clearTimeout(timer); jspi.waiters.delete(t); resolve(1); });
-    if (ms >= 0) timer = setTimeout(() => { jspi.waiters.delete(t); resolve(0); }, ms);
+    jspi.waiters.set(t, () => { if (timer !== null) jspiClear(timer); jspi.waiters.delete(t); resolve(1); });
+    if (ms >= 0) timer = jspiTimer(() => { jspi.waiters.delete(t); resolve(0); }, ms);
   }),
   jspi_resume__deps: ['$jspi'],
   jspi_resume__sig: 'vp',
@@ -82,6 +90,27 @@ addToLibrary({
   jspi_host_take: (ptr) => { HEAPU8.set(jspiHost.queue.shift(), ptr); },
   jspi_host_send__sig: 'vpp',
   jspi_host_send: (ptr, size) => { Module['beamHost'].onsend?.(HEAPU8.slice(ptr, ptr + size)); },
+  // poll() with a timeout (jspi_pthread.c): wait until one of the files
+  // changes (1) or the timeout (0, with the timers of jspiSchedule).
+  jspi_poll_wait__deps: ['$FS', '$jspiTimer', '$jspiClear'],
+  jspi_poll_wait__async: true,
+  jspi_poll_wait__sig: 'ipii',
+  jspi_poll_wait: (fds, n, ms) => new Promise((resolve) => {
+    const regs = [];
+    let timer = null, done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      for (const r of regs) r.listeners.delete(r.entry);
+      if (timer !== null) jspiClear(timer);
+      resolve(v);
+    };
+    for (let i = 0; i < n; i++) {
+      const stream = FS.getStream(HEAP32[(fds + i * 8) >> 2]);
+      if (stream) regs.push(stream.node.addListener(() => finish(1)));
+    }
+    if (ms >= 0) timer = jspiTimer(() => finish(0), ms);
+  }),
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
   jspi_yield__sig: 'v',

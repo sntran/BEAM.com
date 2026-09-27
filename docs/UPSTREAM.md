@@ -1253,6 +1253,28 @@ time. Each yield waits about 1 ms.
 
 **Workaround.** Yield with a `MessageChannel` message outside Node.
 
+### W2. A plain Worker cannot keep one program for all its requests
+
+**Symptom.** One WebAssembly VM for each isolate (a module global),
+used by all requests: the second request hangs, then "Cannot perform
+I/O on behalf of a different request", then requests cancelled as hung.
+
+**Cause.** Three rules of the runtime (documented for Workers): a
+continuation of a promise that a later request resolves is cancelled
+when its request is done; an I/O object and a timer belong to the
+request that made them; a request that waits only for a promise that
+another request resolves is taken as hung.
+
+**Workaround.** The compatibility flag
+`no_handle_cross_request_promise_resolution`; each request handler runs
+the timers, wake-ups and I/O calls of the VM (`jspiSchedule`) and keeps
+a timer of its own. Not a bug: a Durable Object has one context and
+needs none of this.
+
+**Possible upstream change.** An API to run a long-lived task in the
+isolate (its own I/O context, as a Durable Object has), for runtimes
+that serve many requests.
+
 ## websock_adapter
 
 Seen with websock_adapter 0.6.0.

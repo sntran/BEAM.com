@@ -4,17 +4,26 @@
 %% Worker (worker.js) writes into the file system of the emulator (/app)
 %% before the boot.
 %%
-%%   escript pack.erl REL_DIR OUT_FILE LIB_DIR...
+%%   escript pack.erl [--modules FILE] REL_DIR OUT_FILE LIB_DIR...
 %%
 %% REL_DIR: _build/prod/rel/NAME. LIB_DIR: where the OTP and Elixir
 %% applications of the .rel file are (APP or APP-VSN directories with
 %% ebin), for example the lib directories of OTP and Elixir.
+%%
+%% --modules FILE: keep only the .beam files of the modules in FILE (one
+%% name for each line, as code:all_loaded/0 gives after a test run). The
+%% other files (.app, priv, the release files) stay. A module that is not
+%% in the list cannot load in the Worker (undef).
 %%
 %% The format: "BEAMFS1\n", then for each file a 32-bit big-endian length
 %% and the path (relative to /app), a 32-bit length and the data. The
 %% first file is .release.json: {"name": NAME, "vsn": VSN}.
 -mode(compile).
 
+main(["--modules", File | Args]) ->
+    {ok, B} = file:read_file(File),
+    put(modules, sets:from_list([binary_to_list(M) || M <- string:lexemes(B, "\r\n")])),
+    main(Args);
 main([RelDir, Out | LibDirs]) ->
     {ok, Data} = file:read_file(filename:join([RelDir, "releases", "start_erl.data"])),
     [_ErtsVsn, Vsn] = string:lexemes(string:trim(binary_to_list(Data)), " "),
@@ -31,7 +40,7 @@ main([RelDir, Out | LibDirs]) ->
     Size = iolist_size(Bin),
     io:format("~s: ~s ~s, ~b files, ~.1f MB~n", [Out, Name, Vsn, length(Files), Size / 1048576]);
 main(_) ->
-    io:format(standard_error, "usage: pack.erl REL_DIR OUT_FILE LIB_DIR...~n", []),
+    io:format(standard_error, "usage: pack.erl [--modules FILE] REL_DIR OUT_FILE LIB_DIR...~n", []),
     halt(2).
 
 %% releases/VSN (boot script, sys.config, runtime.exs, consolidated
@@ -58,7 +67,7 @@ app_files(RelDir, LibDirs, Name, {App, Vsn, _Type}) ->
         true ->
             Main = atom_to_list(App) =:= Name,
             [{filename:join(Dest, F), data(filename:join(InRel, F))}
-             || F <- files(InRel), keep_priv(F, Main)];
+             || F <- files(InRel), keep_priv(F, Main), keep_module(F)];
         false ->
             case [D || L <- LibDirs, D <- [filename:join(L, atom_to_list(App)), filename:join(L, AppVsn)],
                        filelib:is_dir(filename:join(D, "ebin"))] of
@@ -66,7 +75,7 @@ app_files(RelDir, LibDirs, Name, {App, Vsn, _Type}) ->
                     Ebin = filename:join(Src, "ebin"),
                     [{filename:join([Dest, "priv", ".keep"]), <<>>} |
                      [{filename:join([Dest, "ebin", F]), data(filename:join(Ebin, F))}
-                      || F <- files(Ebin)]];
+                      || F <- files(Ebin), keep_module(F)]];
                 [] ->
                     io:format(standard_error, "warning: ~s not found~n", [AppVsn]),
                     []
@@ -77,6 +86,14 @@ keep_priv(F, Main) ->
     case filename:split(F) of
         ["priv", "static" | _] when not Main -> false;
         _ -> filename:extension(F) =/= ".map"
+    end.
+
+%% With --modules: a .beam file only for a module in the list.
+keep_module(F) ->
+    case {filename:extension(F), get(modules)} of
+        {".beam", undefined} -> true;
+        {".beam", Mods} -> sets:is_element(filename:basename(F, ".beam"), Mods);
+        _ -> true
     end.
 
 %% The files under Dir, relative to it.

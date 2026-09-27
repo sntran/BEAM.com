@@ -4,6 +4,9 @@
 # and a release without ERTS (_build/prod/rel/hello).
 #
 #   BEAM_COM=/path/to/beam.com wasm/phoenix/setup.sh [DIR]
+#
+# PHOENIX=main: the installer, Phoenix and LiveView from the main branches
+# on GitHub (the next versions, before their release).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${BEAM_COM:?set BEAM_COM}"
@@ -12,7 +15,14 @@ mkdir -p "$DIR/bin"
 for t in mix iex elixir elixirc escript; do ln -sf "$BEAM_COM" "$DIR/bin/$t$( [ $t = escript ] || echo .com)"; done
 export PATH="$DIR/bin:$PATH" MIX_HOME="$DIR/.mix" HEX_HOME="$DIR/.hex" MIX_ENV=prod
 cd "$DIR"
-mix.com archive.install hex phx_new --force
+mix.com local.hex --force --if-missing
+if [ "${PHOENIX:-hex}" = main ]; then
+    [ -d phoenix-src ] || git clone -q --depth 1 https://github.com/phoenixframework/phoenix phoenix-src
+    (cd phoenix-src/installer && mix.com archive.build -o ../../phx_new.ez)
+    mix.com archive.install ./phx_new.ez --force
+else
+    mix.com archive.install hex phx_new --force
+fi
 [ -d hello ] || mix.com phx.new hello --no-ecto --no-mailer --no-dashboard --no-gettext --no-assets --no-install
 cd hello
 mkdir -p lib/hello_web/live
@@ -21,6 +31,11 @@ grep -q 'live "/counter"' lib/hello_web/router.ex ||
     sed -i 's|    get "/", PageController, :home|    get "/", PageController, :home\n    live "/counter", CounterLive|' lib/hello_web/router.ex
 grep -q 'releases:' mix.exs ||
     sed -i 's|      listeners: \[Phoenix.CodeReloader\]|      listeners: [Phoenix.CodeReloader],\n      releases: [hello: [include_erts: false, strip_beams: true]]|' mix.exs
+# The installer on main keeps the version of the last release, so it asks for
+# Phoenix from Hex.
+[ "${PHOENIX:-hex}" = main ] &&
+    sed -i -e 's|{:phoenix, "[^"]*"}|{:phoenix, github: "phoenixframework/phoenix", override: true}|' \
+        -e 's|{:phoenix_live_view, "[^"]*"}|{:phoenix_live_view, github: "phoenixframework/phoenix_live_view", override: true}|' mix.exs
 mix.com deps.get
 
 # The WebAssembly host adapter (wasm/phoenix/wasm_host): the Elixir side in
