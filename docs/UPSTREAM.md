@@ -594,8 +594,8 @@ release, as `close()` already does for `/zip` descriptors.
 **Status:** cosmocc 4.0.2 (`libc/runtime/zipos-close.c`,
 `libc/calls/close.c`, `libc/calls/fstat.c`).
 
-**Symptom.** A build of an Elixir project (`beam.com build
-examples/greeter_ex`, which reads many files of the zip at the same
+**Symptom.** A build of an Elixir project (`beam.com
+examples/greeter_ex -o greeter_ex.com`, which reads many files of the zip at the same
 time) sometimes dies with `SIGSEGV` (seen in CI on NetBSD, exit 139).
 `beam.com mix format` (many files at the same time)
 dies the same way in `__zipos_fstat()`, called by `fstat()` in
@@ -626,7 +626,7 @@ the entry before the `close` system call, and free the handle after it.
 
 **Status:** cosmocc 4.0.2 (`libc/calls/mkdirat-nt.c`).
 
-**Symptom.** On Windows, `beam.com build` of Elixir code failed:
+**Symptom.** On Windows, `beam.com INPUT -o OUTPUT` of Elixir code failed:
 `File.Error ... reason: eacces, action: "make directory (with -p)"` for
 the temporary directory, which existed.
 
@@ -727,7 +727,7 @@ it can then keep a removable volume busy while it runs.
 `libc/runtime/winmain.greg.c`).
 
 **Symptom.** On WSL2 (Debian 13, with the default binfmt_misc entry
-`WSLInterop`), `sh ./beam.com version` prints `error: APE is running on
+`WSLInterop`), `sh ./beam.com --version` prints `error: APE is running on
 WIN32 inside WSL. You need to run: sudo sh -c 'echo -1 >
 /proc/sys/fs/binfmt_misc/WSLInterop'`. Then ERTS stops, in some runs,
 with `Failed to read from erl_child_setup: 104` and a crash dump. A
@@ -1071,7 +1071,7 @@ name, which is not the file name.
 **Cause.** The output files are named after the input file, and the
 code after the ASN.1 module.
 
-**Workaround in BEAM.com.** `beam.com build` renames the `.erl` and
+**Workaround in BEAM.com.** `beam.com INPUT -o OUTPUT` renames the `.erl` and
 `.hrl` files after the module.
 
 **Possible upstream fix.** Name the output files after the ASN.1 module,

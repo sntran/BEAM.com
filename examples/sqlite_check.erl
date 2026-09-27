@@ -1,7 +1,7 @@
-%% A one-file program for "beam.com build" that uses SQLite (esqlite).
+%% A one-file program for "beam.com INPUT -o OUTPUT" that uses SQLite (esqlite).
 %% It needs a beam.com built with SQLITE=1.
 %%
-%%   beam.com build sqlite_check.erl
+%%   beam.com sqlite_check.erl -o sqlite_check.com
 %%   ./sqlite_check.com [DATABASE]   (default: an in-memory database)
 -module(sqlite_check).
 -export([main/1]).

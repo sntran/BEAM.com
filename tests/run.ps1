@@ -1,6 +1,6 @@
 # Run beam.com and the example programs on Windows, and check what they
 # print. Run it from the top of the repository to also test
-# "beam.com build".
+# "beam.com INPUT -o OUTPUT".
 # Usage: tests/run.ps1 DIR
 param([string]$Dir = ".")
 # An absolute path: some checks run in another directory.
@@ -113,13 +113,13 @@ $patterns["calc"] = '(?m)calc: 1 \+ 2 \* \(3 - 1\) - 8 / 4 = 3\r?$@@(?m)calc: as
 $apps = @("greeter", "crypto_check", "tls_check")
 
 # The commands of the default beam.com.
-Check "beam.com" 'usage: beam.com COMMAND@@build INPUT@@version' @()
-Check "beam.com" 'usage: beam.com COMMAND' @("help")
-Check "beam.com" 'usage: beam.com build INPUT' @("help", "build")
-Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-' @("version")
-Check "beam.com" 'unknown command nosuch \(see beam.com help\)' @("nosuch") 1
+Check "beam.com" 'run INPUT \(default: the project in this directory\)@@make an executable of INPUT' @()
+Check "beam.com" 'run INPUT \(default: the project in this directory\)' @("--help")
+Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-' @("--version")
+Check "beam.com" 'nosuch: not a .erl, .ex or .exs file, or a directory' @("nosuch") 1
+Check "beam.com" 'there is no command build' @("build") 1
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
-Check "beam.com" 'SYS @@Erlang/OTP  : ' @("--strace", "version")
+Check "beam.com" 'SYS @@Erlang/OTP  : ' @("--strace", "--version")
 
 # Releases made with rebar3 and added with zip (by CI).
 foreach ($app in $apps) {
@@ -128,15 +128,15 @@ foreach ($app in $apps) {
     }
 }
 
-# beam.com build, on this system: the examples of the repository.
+# beam.com INPUT -o OUTPUT, on this system: the examples of the repository.
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*hashsum.b.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.b.com")
+    Check "beam.com" 'wrote .*hashsum.b.com' @("examples/hashsum.erl", "-o", "$Dir/hashsum.b.com")
     if (Test-Path (Join-Path $Dir "hashsum.b.com")) {
         Check "hashsum.b.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
     }
-    # calc is only for beam.com build (it has .xrl, .yrl and ASN.1 files).
+    # calc is only for beam.com INPUT -o OUTPUT (it has .xrl, .yrl and ASN.1 files).
     foreach ($app in ($apps + @("calc"))) {
-        Check "beam.com" "wrote .*$app.b.com" @("build", "examples/$app", "-o", "$Dir/$app.b.com")
+        Check "beam.com" "wrote .*$app.b.com" @("examples/$app", "-o", "$Dir/$app.b.com")
         if (Test-Path (Join-Path $Dir "$app.b.com")) {
             Check "$app.b.com" $patterns[$app] @()
         }
@@ -144,7 +144,7 @@ if (Test-Path "examples") {
 }
 # One-file programs (beam_com_script) and the command line of beam.com.
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*script_check.b.com' @("build", "tests/programs/script_check.erl", "-o", "$Dir/script_check.b.com")
+    Check "beam.com" 'wrote .*script_check.b.com' @("tests/programs/script_check.erl", "-o", "$Dir/script_check.b.com")
     if (Test-Path (Join-Path $Dir "script_check.b.com")) {
         Check "script_check.b.com" '(?m)argc 4@@(?m)^arg a$@@(?m)^arg b c$@@(?m)^arg é$@@(?m)^arg 日本$' @("args", "a", "b c", "é", "日本")
         Check "script_check.b.com" '(?m)argc 4@@(?m)^arg \+S$@@(?m)^arg 1$@@(?m)^arg -extra$@@(?m)^arg x$' @("args", "+S", "1", "-extra", "x")
@@ -159,18 +159,21 @@ if (Test-Path "examples") {
         Check "script_check.b.com" '(?m)^schedulers 1$' @("info")
         Remove-Item Env:ERL_FLAGS
     }
-    Check "beam.com" 'usage: beam.com build INPUT' @("build") 1
-    Check "beam.com" 'none.erl: no such file' @("build", "none.erl") 1
-    Check "beam.com" 'unknown option -z' @("build", "x.erl", "-z") 1
-    Check "beam.com" 'option -o needs a value' @("build", "x.erl", "-o") 1
-    Check "beam.com" 'the application nosuch is not in beam.com' @("build", "examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
+    # A run: the executable in the cache, with the arguments after "--"
+    # and the exit status of the program (no port program: also here).
+    Check "beam.com" '^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("examples/hashsum.erl", "--", "abc")
+    Check "beam.com" '^usage: hashsum TEXT' @("examples/hashsum.erl") 2
+    Check "beam.com" 'none.erl: no such file' @("none.erl") 1
+    Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
+    Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1
+    Check "beam.com" 'the application nosuch is not in beam.com' @("examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
 }
 
 # The sandbox (--allow-*): Windows ignores it, so each action works; the
 # flags must still be accepted and checked.
 if (Test-Path "examples") {
-    Check "beam.com" '--allow-net takes no hosts' @("build", "tests/programs/sandbox_check.erl", "--allow-net=example.com", "-o", "$Dir/never.com") 1
-    Check "beam.com" 'wrote .*sandbox_net.com' @("build", "tests/programs/sandbox_check.erl", "-N", "--allow-read=/etc", "-o", "$Dir/sandbox_net.com")
+    Check "beam.com" '--allow-net takes no hosts' @("tests/programs/sandbox_check.erl", "--allow-net=example.com", "-o", "$Dir/never.com") 1
+    Check "beam.com" 'wrote .*sandbox_net.com' @("tests/programs/sandbox_check.erl", "-N", "--allow-read=/etc", "-o", "$Dir/sandbox_net.com")
     if (Test-Path (Join-Path $Dir "sandbox_net.com")) {
         Remove-Item (Join-Path $Dir "sandbox.tmp") -ErrorAction SilentlyContinue
         Check "sandbox_net.com" 'read: ok@@write: ok@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
@@ -180,7 +183,7 @@ if (Test-Path "examples") {
 # Hex packages (from hex.pm, so this needs the network): see tests/run.sh.
 if (Test-Path "examples") {
     Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
-    Check "beam.com" 'wrote .*rebar.lock@@wrote .*hexweb.com' @("build", "examples/hexweb", "-o", "$Dir/hexweb.com")
+    Check "beam.com" 'wrote .*rebar.lock@@wrote .*hexweb.com' @("examples/hexweb", "-o", "$Dir/hexweb.com")
     if (Test-Path (Join-Path $Dir "hexweb.com")) {
         Check "hexweb.com" 'hexweb: content-type application/json@@hexweb: hello BEAM.com; cowboy-[0-9.]+ cowlib-[0-9.]+ jsx-[0-9.]+ ranch-[0-9.]+' @()
     }
@@ -189,13 +192,13 @@ if (Test-Path "examples") {
 
 # Elixir: see tests/run.sh.
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*elixir_check.com' @("build", "tests/programs/elixir_check.ex", "-o", "$Dir/elixir_check.com")
+    Check "beam.com" 'wrote .*elixir_check.com' @("tests/programs/elixir_check.ex", "-o", "$Dir/elixir_check.com")
     if (Test-Path (Join-Path $Dir "elixir_check.com")) {
         Check "elixir_check.com" 'elixir: 1\.[0-9]+\.[0-9]+ on OTP 29@@args: \["a", "b c"\]@@sum: 5050@@upcase: BEAM.COM' @("a", "b c")
         Check "elixir_check.com" '\*\* \(RuntimeError\) boom' @("raise") 127
     }
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
-    Check "beam.com" 'wrote .*greeter_ex.com' @("build", "examples/greeter_ex", "-o", "$Dir/greeter_ex.com")
+    Check "beam.com" 'wrote .*greeter_ex.com' @("examples/greeter_ex", "-o", "$Dir/greeter_ex.com")
     if (Test-Path (Join-Path $Dir "greeter_ex.com")) {
         Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
     }
@@ -234,7 +237,7 @@ if (Test-Path (Join-Path $Dir "elixir.com")) {
 # peer commands run a shell script and a port program; they are tested
 # on the other systems.
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' @("build", "examples/toolbox", "-o", "$Dir/toolbox.com")
+    Check "beam.com" 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' @("examples/toolbox", "-o", "$Dir/toolbox.com")
     if (Test-Path (Join-Path $Dir "toolbox.com")) {
         Check "toolbox.com" '(?m)^toolbox: Hello, Ana\r?$' @("greet", "Ana")
         Check "toolbox.com" 'toolbox: usage: ' @("nosuch") 2
@@ -243,15 +246,15 @@ if (Test-Path "examples") {
         Check "toolbox.com" '(?m)^1\r?$' @("+S", "1", "-noinput", "-eval", "erlang:display(erlang:system_info(schedulers)), halt().")
         Remove-Item Env:BEAM_COM_ERL
     }
-    Check "beam.com" 'wrote .*toolbox2.com' @("build", "examples/toolbox", "--main", "toolbox_cli", "-o", "$Dir/toolbox2.com")
-    Check "beam.com" 'toolbox_english does not export main/1' @("build", "examples/toolbox", "--main", "toolbox_english", "-o", "$Dir/never.com") 1
+    Check "beam.com" 'wrote .*toolbox2.com' @("examples/toolbox", "--main", "toolbox_cli", "-o", "$Dir/toolbox2.com")
+    Check "beam.com" 'toolbox_english does not export main/1' @("examples/toolbox", "--main", "toolbox_english", "-o", "$Dir/never.com") 1
 }
 
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*wasm_check.b.com' @("build", "examples/wasm_check.erl", "-o", "$Dir/wasm_check.b.com")
+    Check "beam.com" 'wrote .*wasm_check.b.com' @("examples/wasm_check.erl", "-o", "$Dir/wasm_check.b.com")
     if (Test-Path (Join-Path $Dir "wasm_check.b.com")) {
         Check "wasm_check.b.com" $wasm @()
         if (Test-Path (Join-Path $Dir "hello_go.wasm")) {
@@ -262,7 +265,7 @@ if (Test-Path "examples") {
 
 # The behavior tests of the wasm application.
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*wasm_tests.b.com' @("build", "tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.b.com")
+    Check "beam.com" 'wrote .*wasm_tests.b.com' @("tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.b.com")
     if (Test-Path (Join-Path $Dir "wasm_tests.b.com")) {
         Check "wasm_tests.b.com" 'wasm_tests: all [0-9]+ passed' @()
     }
@@ -270,28 +273,28 @@ if (Test-Path "examples") {
 
 # The interpreter: beam-emu.com (beam.com has the JIT).
 if (Test-Path (Join-Path $Dir "beam-emu.com")) {
-    Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("version")
+    Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("--version")
     if (Test-Path "examples") {
-        Check "beam-emu.com" 'wrote .*hashsum.emu.com' @("build", "examples/hashsum.erl", "-o", "$Dir/hashsum.emu.com")
+        Check "beam-emu.com" 'wrote .*hashsum.emu.com' @("examples/hashsum.erl", "-o", "$Dir/hashsum.emu.com")
         if (Test-Path (Join-Path $Dir "hashsum.emu.com")) {
             Check "hashsum.emu.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("abc")
         }
-        Check "beam-emu.com" 'wrote .*greeter.emu.com' @("build", "examples/greeter", "-o", "$Dir/greeter.emu.com")
+        Check "beam-emu.com" 'wrote .*greeter.emu.com' @("examples/greeter", "-o", "$Dir/greeter.emu.com")
         if (Test-Path (Join-Path $Dir "greeter.emu.com")) {
             Check "greeter.emu.com" $patterns["greeter"] @()
         }
-        Check "beam-emu.com" 'wrote .*wasm_tests.emu.com' @("build", "tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.emu.com")
+        Check "beam-emu.com" 'wrote .*wasm_tests.emu.com' @("tests/programs/wasm_tests.erl", "-o", "$Dir/wasm_tests.emu.com")
         if (Test-Path (Join-Path $Dir "wasm_tests.emu.com")) {
             Check "wasm_tests.emu.com" 'wasm_tests: all [0-9]+ passed' @()
         }
-        Check "beam-emu.com" 'wrote .*script_check.emu.com' @("build", "tests/programs/script_check.erl", "-o", "$Dir/script_check.emu.com")
+        Check "beam-emu.com" 'wrote .*script_check.emu.com' @("tests/programs/script_check.erl", "-o", "$Dir/script_check.emu.com")
         if (Test-Path (Join-Path $Dir "script_check.emu.com")) {
             Check "script_check.emu.com" '(?m)argc 2@@(?m)^arg b c$@@(?m)^arg 日本$' @("args", "b c", "日本")
             Check "script_check.emu.com" 'exception error: \{boom,42\}' @("raise") 127
             Check "script_check.emu.com" 'halting 3' @("halt", "3") 3
             Check "script_check.emu.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
         }
-        Check "beam-emu.com" 'wrote .*crypto_check.emu.com' @("build", "examples/crypto_check", "-o", "$Dir/crypto_check.emu.com")
+        Check "beam-emu.com" 'wrote .*crypto_check.emu.com' @("examples/crypto_check", "-o", "$Dir/crypto_check.emu.com")
         if (Test-Path (Join-Path $Dir "crypto_check.emu.com")) {
             Check "crypto_check.emu.com" $patterns["crypto_check"] @()
         }
@@ -301,7 +304,7 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
 # SQLite (in beam.com).
 $sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*sqlite_check.b.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
+    Check "beam.com" 'wrote .*sqlite_check.b.com' @("examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
     if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
@@ -311,7 +314,7 @@ if (Test-Path "examples") {
         Check "sqlite_check.b.com" ($sqlite + [regex]::Escape($db)) @($db)
     }
     if (Test-Path (Join-Path $Dir "beam-emu.com")) {
-        Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("build", "examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")
+        Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")
         if (Test-Path (Join-Path $Dir "sqlite_check.emu.com")) {
             Check "sqlite_check.emu.com" ($sqlite + ':memory:') @()
         }

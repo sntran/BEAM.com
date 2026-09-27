@@ -2,7 +2,7 @@
 # Run beam.com and the example programs, and check what they print.
 # Usage: tests/run.sh DIR   (DIR holds beam.com and, if made, the example
 #                            releases). Run it from the top of the
-#                            repository to also test "beam.com build".
+#                            repository to also test "beam.com INPUT -o OUTPUT".
 #
 # RUNNER is the command that starts an APE file (default: sh). On NetBSD
 # and OpenBSD, sh stops at the NUL bytes of the APE header, so use the
@@ -138,10 +138,10 @@ probe() {
 }
 
 # The versions of exqlite and bcrypt_elixir whose NIFs are in beam.com
-# ("Linked NIFs" in "beam.com version"), in exqlite_vsn and bcrypt_vsn
+# ("Linked NIFs" in "beam.com --version"), in exqlite_vsn and bcrypt_vsn
 # (empty when a NIF is not linked).
 linked_nifs() {
-    linked=$($runner "$dir/beam.com" version | sed -n 's/^  Linked NIFs : //p' | tr ' ' '\n')
+    linked=$($runner "$dir/beam.com" --version | sed -n 's/^  Linked NIFs : //p' | tr ' ' '\n')
     exqlite_vsn=$(echo "$linked" | sed -n 's/^exqlite-//p')
     bcrypt_vsn=$(echo "$linked" | sed -n 's/^bcrypt_elixir-//p')
 }
@@ -174,13 +174,14 @@ calc='calc: 1 + 2 \* (3 - 1) - 8 / 4 = 3$@@calc: asn1 ber 300980044245414d810103
 
 # The commands of the default beam.com. os:type() names this system.
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
-check beam.com 'usage: beam.com COMMAND@@build INPUT@@version'
-check beam.com 'usage: beam.com COMMAND' help
-check beam.com 'usage: beam.com build INPUT' help build
-check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" version
-check_status 1 beam.com 'unknown command nosuch (see beam.com help)' nosuch
+check beam.com 'run INPUT (default: the project in this directory)@@make an executable of INPUT@@--help | --version'
+check beam.com 'run INPUT (default: the project in this directory)' --help
+check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" --version
+check_status 1 beam.com 'nosuch: not a .erl, .ex or .exs file, or a directory' nosuch
+check_status 1 beam.com 'there is no command build: use "beam.com INPUT -o OUTPUT"' build
+check_status 1 beam.com 'the arguments of the program come after "--"' x.erl y
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
-check beam.com 'SYS @@Erlang/OTP  : ' --strace version
+check beam.com 'SYS @@Erlang/OTP  : ' --strace --version
 
 # Linux: when the APE loader runs beam.com (sh starts it), the helper
 # programs start with that loader, and the kernel never gets the APE file
@@ -224,11 +225,11 @@ if [ "$os" = linux ] && [ "$runner" = sh ] && [ -f "$dir/beam.com" ]; then
     if [ -d examples ]; then
         case $(uname -m) in aarch64) cpu=aarch64 ;; *) cpu=x86_64 ;; esac
         check_status 1 beam-native.com "beam-native.com: this is a native file (ELF, $cpu), not an APE file" \
-            build examples/hashsum.erl -o "$dir/never.com"
+            examples/hashsum.erl -o "$dir/never.com"
         [ -f "$dir/never.com" ] && { echo "FAIL: beam-native.com wrote never.com"; fail=1; failed="$failed
-  beam-native.com build: wrote a file"; }
+  beam-native.com -o: wrote a file"; }
         check beam-native.com 'wrote .*hashsum.native2' \
-            build examples/hashsum.erl --target "$cpu-linux" -o "$dir/hashsum.native2"
+            examples/hashsum.erl --target "$cpu-linux" -o "$dir/hashsum.native2"
         [ -f "$dir/hashsum.native2" ] && check hashsum.native2 "$hashsum" abc
         rm -f "$dir/never.com" "$dir/hashsum.native2"
     fi
@@ -273,14 +274,14 @@ for app in greeter crypto_check tls_check; do
     fi
 done
 
-# beam.com build, on this system: the examples of the repository.
+# beam.com INPUT -o OUTPUT, on this system: the examples of the repository.
 if [ -d examples ]; then
     check beam.com 'wrote .*hashsum.b.com' \
-        build examples/hashsum.erl -o "$dir/hashsum.b.com"
+        examples/hashsum.erl -o "$dir/hashsum.b.com"
     [ -f "$dir/hashsum.b.com" ] && check hashsum.b.com "$hashsum" abc
     for app in greeter crypto_check tls_check calc; do
         check beam.com "wrote .*$app.b.com" \
-            build "examples/$app" -o "$dir/$app.b.com"
+            "examples/$app" -o "$dir/$app.b.com"
         if [ -f "$dir/$app.b.com" ]; then
             eval "check $app.b.com \"\$$app\""
         fi
@@ -290,7 +291,7 @@ fi
 # One-file programs (beam_com_script) and the command line of beam.com.
 if [ -d examples ]; then
     check beam.com 'wrote .*script_check.b.com' \
-        build tests/programs/script_check.erl -o "$dir/script_check.b.com"
+        tests/programs/script_check.erl -o "$dir/script_check.b.com"
     if [ -f "$dir/script_check.b.com" ]; then
         check script_check.b.com 'argc 4@@arg a$@@arg b c$@@arg é$@@arg 日本$' \
             args a "b c" é 日本
@@ -321,16 +322,19 @@ if [ -d examples ]; then
         check script_check.b.com 'schedulers 1$' info
         unset ERL_FLAGS
     fi
-    check_status 1 beam.com 'usage: beam.com build INPUT' build
-    check_status 1 beam.com 'none.erl: no such file' build none.erl
-    check_status 1 beam.com 'unknown option -z' build x.erl -z
-    check_status 1 beam.com 'option -o needs a value' build x.erl -o
+    # A run: the executable in the cache, with the arguments after "--"
+    # and the exit status of the program.
+    check beam.com "$hashsum" examples/hashsum.erl -- abc
+    check_status 2 beam.com '^usage: hashsum TEXT' examples/hashsum.erl
+    check_status 1 beam.com 'none.erl: no such file' none.erl
+    check_status 1 beam.com 'unknown option -z' x.erl -z
+    check_status 1 beam.com 'option -o needs a value' x.erl -o
     check_status 1 beam.com 'the application nosuch is not in beam.com' \
-        build examples/hashsum.erl -a nosuch -o "$dir/never.com"
+        examples/hashsum.erl -a nosuch -o "$dir/never.com"
     check_status 1 beam.com 'aarch64-apple-darwin: Apple Silicon has no native form' \
-        build examples/hashsum.erl --target aarch64-apple-darwin
+        examples/hashsum.erl --target aarch64-apple-darwin
     check_status 1 beam.com 'unknown target linux-x86_64' \
-        build examples/hashsum.erl --target linux-x86_64
+        examples/hashsum.erl --target linux-x86_64
 
     # --target: a file for this system only, which the kernel starts
     # directly (no shell, no APE loader).
@@ -343,7 +347,7 @@ if [ -d examples ]; then
     esac
     if [ -n "$native" ]; then
         check beam.com 'wrote .*hashsum.native' \
-            build examples/hashsum.erl --target "$native" -o "$dir/hashsum.native"
+            examples/hashsum.erl --target "$native" -o "$dir/hashsum.native"
         if [ -f "$dir/hashsum.native" ]; then
             saved_runner=$runner
             runner=
@@ -353,25 +357,25 @@ if [ -d examples ]; then
     fi
 fi
 
-# The sandbox (beam.com build --allow-*). Linux applies it with seccomp
+# The sandbox (beam.com INPUT --allow-* -o OUTPUT). Linux applies it with seccomp
 # and Landlock, OpenBSD only the paths (unveil), and the other systems
 # ignore it.
 if [ -d examples ]; then
     check_status 1 beam.com '--allow-net takes no hosts' \
-        build tests/programs/sandbox_check.erl --allow-net=example.com -o "$dir/never.com"
+        tests/programs/sandbox_check.erl --allow-net=example.com -o "$dir/never.com"
     check_status 1 beam.com '--allow-env is not supported' \
-        build tests/programs/sandbox_check.erl --allow-env -o "$dir/never.com"
+        tests/programs/sandbox_check.erl --allow-env -o "$dir/never.com"
     check_status 1 beam.com 'unknown option --allow-bogus' \
-        build tests/programs/sandbox_check.erl --allow-bogus -o "$dir/never.com"
+        tests/programs/sandbox_check.erl --allow-bogus -o "$dir/never.com"
     check beam.com 'wrote .*sandbox_net.com' \
-        build tests/programs/sandbox_check.erl -N -o "$dir/sandbox_net.com"
+        tests/programs/sandbox_check.erl -N -o "$dir/sandbox_net.com"
     check beam.com 'wrote .*sandbox_rw.com' \
-        build tests/programs/sandbox_check.erl --allow-read=/etc \
+        tests/programs/sandbox_check.erl --allow-read=/etc \
         --allow-write="$dir/sandbox-w" -o "$dir/sandbox_rw.com"
     check beam.com 'wrote .*sandbox_run.com' \
-        build tests/programs/sandbox_check.erl --allow-run=true -o "$dir/sandbox_run.com"
+        tests/programs/sandbox_check.erl --allow-run=true -o "$dir/sandbox_run.com"
     check beam.com 'wrote .*sandbox_none.com' \
-        build tests/programs/sandbox_check.erl -o "$dir/sandbox_none.com"
+        tests/programs/sandbox_check.erl -o "$dir/sandbox_none.com"
     rm -f "$dir/sandbox.tmp"
     net_extra= rw_extra=
     case $os in
@@ -427,14 +431,14 @@ hexweb='hexweb: content-type application/json@@hexweb: hello BEAM.com; cowboy-[0
 if [ -d examples ]; then
     rm -f examples/hexweb/rebar.lock
     check beam.com 'wrote .*rebar.lock@@wrote .*hexweb.com@@applications: .*cowboy.*cowlib.*ranch.*jsx' \
-        build examples/hexweb -o "$dir/hexweb.com"
+        examples/hexweb -o "$dir/hexweb.com"
     [ -f "$dir/hexweb.com" ] && check hexweb.com "$hexweb"
     if [ -f examples/hexweb/rebar.lock ]; then
-        check beam.com 'wrote .*hexweb2.com' build examples/hexweb -o "$dir/hexweb2.com"
+        check beam.com 'wrote .*hexweb2.com' examples/hexweb -o "$dir/hexweb2.com"
         if grep -q 'rebar.lock' "$tmp"; then
             echo "FAIL: the second build of hexweb wrote rebar.lock again"
             failed="$failed
-  beam.com build examples/hexweb: wrote rebar.lock again"
+  beam.com examples/hexweb: wrote rebar.lock again"
             fail=1
         fi
         rm -f examples/hexweb/rebar.lock
@@ -446,14 +450,14 @@ fi
 greeter_ex='greeter_ex: Hello from config/config.exs (1)@@greeter_ex: Hello from config/config.exs (2)@@greeter_ex: json {.*"elixir":"1\.[0-9.]*".*}@@greeter_ex: decoded 1\.'
 if [ -d examples ]; then
     check beam.com 'wrote .*elixir_check.com@@applications: .*elixir' \
-        build tests/programs/elixir_check.ex -o "$dir/elixir_check.com"
+        tests/programs/elixir_check.ex -o "$dir/elixir_check.com"
     if [ -f "$dir/elixir_check.com" ]; then
         check elixir_check.com 'elixir: 1\.[0-9]*\.[0-9]* on OTP 29@@args: \["a", "b c", "日本"\]@@sum: 5050@@upcase: BEAM.COM' a "b c" 日本
         check_status 127 elixir_check.com '\*\* (RuntimeError) boom' raise
     fi
     rm -f examples/greeter_ex/mix.lock
     check beam.com 'wrote .*mix.lock@@wrote .*greeter_ex.com@@applications: .*jason' \
-        build examples/greeter_ex -o "$dir/greeter_ex.com"
+        examples/greeter_ex -o "$dir/greeter_ex.com"
     [ -f "$dir/greeter_ex.com" ] && check greeter_ex.com "$greeter_ex"
     rm -f examples/greeter_ex/mix.lock
 fi
@@ -530,7 +534,7 @@ if [ -f "$dir/beam.com" ]; then
         check mix 'jason@@telemetry' deps.get
         check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
         # The NIFs of exqlite and bcrypt_elixir are in beam.com: the
-        # packages (of the versions in "beam.com version") compile without
+        # packages (of the versions in "beam.com --version") compile without
         # make and a C compiler (MAKE is the program make in the cache,
         # which does nothing for them), with no NIF file in priv, and
         # load_nif/2 finds the static NIFs. esqlite (in the zip) and
@@ -782,10 +786,10 @@ fi
 # running node, and so is "beam.com -remsh counter".
 if [ -d examples ] && [ -f "$dir/beam.com" ]; then
     $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
-    check beam.com 'Erlang/OTP' version
+    check beam.com 'Erlang/OTP' --version
     check_status 1 beam.com 'Cannot connect to local epmd' epmd -names
     check beam.com 'wrote .*counter.com@@applications: kernel stdlib' \
-        build examples/counter -o "$dir/counter.com"
+        examples/counter -o "$dir/counter.com"
     if [ -f "$dir/counter.com" ]; then
         $runner "$dir/counter.com" > "$tmp.counter" 2>&1 &
         counter=$!
@@ -834,7 +838,7 @@ fi
 toolbox_cache=$dir/toolbox-cache
 if [ -d examples ]; then
     check beam.com 'wrote .*toolbox.com@@applications: beam_com_script kernel stdlib' \
-        build examples/toolbox -o "$dir/toolbox.com"
+        examples/toolbox -o "$dir/toolbox.com"
     if [ -f "$dir/toolbox.com" ]; then
         rm -rf "$toolbox_cache"
         BEAM_COM_CACHE=$toolbox_cache; export BEAM_COM_CACHE
@@ -857,10 +861,10 @@ if [ -d examples ]; then
     fi
     # --main names the module; it must export main/1.
     check beam.com 'wrote .*toolbox2.com' \
-        build examples/toolbox --main toolbox_cli -o "$dir/toolbox2.com"
+        examples/toolbox --main toolbox_cli -o "$dir/toolbox2.com"
     [ -f "$dir/toolbox2.com" ] && check toolbox2.com 'toolbox: Hello, Bo$' greet Bo
     check_status 1 beam.com 'toolbox_english does not export main/1' \
-        build examples/toolbox --main toolbox_english -o "$dir/never.com"
+        examples/toolbox --main toolbox_english -o "$dir/never.com"
 fi
 
 # WebAssembly: wasm_check, and a WASI program in Go (made by CI).
@@ -868,7 +872,7 @@ wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@was
 go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
 if [ -d examples ]; then
     check beam.com 'wrote .*wasm_check.b.com' \
-        build examples/wasm_check.erl -o "$dir/wasm_check.b.com"
+        examples/wasm_check.erl -o "$dir/wasm_check.b.com"
     if [ -f "$dir/wasm_check.b.com" ]; then
         check wasm_check.b.com "$wasm"
         if [ -f "$dir/hello_go.wasm" ]; then
@@ -880,7 +884,7 @@ fi
 # The behavior tests of the wasm application.
 if [ -d examples ]; then
     check beam.com 'wrote .*wasm_tests.b.com' \
-        build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.b.com"
+        tests/programs/wasm_tests.erl -o "$dir/wasm_tests.b.com"
     [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
@@ -892,7 +896,7 @@ if [ -d examples ]; then
     # thread). OpenBSD has no memory map for the program to read; its
     # kernel does not allow RWX pages at all.
     check beam.com 'wrote .*jit_maps.b.com' \
-        build tests/programs/jit_maps.erl -o "$dir/jit_maps.b.com"
+        tests/programs/jit_maps.erl -o "$dir/jit_maps.b.com"
     if [ -f "$dir/jit_maps.b.com" ]; then
         case $os in
             linux)
@@ -904,7 +908,7 @@ if [ -d examples ]; then
                 # With the sandbox, the launcher unveils the directory of
                 # shm_open() (/dev/shm), so the JIT keeps its two views.
                 check beam.com 'wrote .*jit_maps_unveil.b.com' \
-                    build tests/programs/jit_maps.erl --allow-read=/proc \
+                    tests/programs/jit_maps.erl --allow-read=/proc \
                     -o "$dir/jit_maps_unveil.b.com"
                 [ -f "$dir/jit_maps_unveil.b.com" ] &&
                     check jit_maps_unveil.b.com 'emulator: jit@@wx pages: 0$@@dual mapped: yes' ;;
@@ -923,19 +927,19 @@ fi
 
 # The interpreter: beam-emu.com (beam.com has the JIT).
 if [ -f "$dir/beam-emu.com" ]; then
-    check beam-emu.com "Emulator    : emu@@OS type     : unix/$os" version
+    check beam-emu.com "Emulator    : emu@@OS type     : unix/$os" --version
     if [ -d examples ]; then
         check beam-emu.com 'wrote .*hashsum.emu.com' \
-            build examples/hashsum.erl -o "$dir/hashsum.emu.com"
+            examples/hashsum.erl -o "$dir/hashsum.emu.com"
         [ -f "$dir/hashsum.emu.com" ] && check hashsum.emu.com "$hashsum" abc
         check beam-emu.com 'wrote .*greeter.emu.com' \
-            build examples/greeter -o "$dir/greeter.emu.com"
+            examples/greeter -o "$dir/greeter.emu.com"
         [ -f "$dir/greeter.emu.com" ] && check greeter.emu.com "$greeter"
         check beam-emu.com 'wrote .*wasm_tests.emu.com' \
-            build tests/programs/wasm_tests.erl -o "$dir/wasm_tests.emu.com"
+            tests/programs/wasm_tests.erl -o "$dir/wasm_tests.emu.com"
         [ -f "$dir/wasm_tests.emu.com" ] && check wasm_tests.emu.com 'wasm_tests: all [0-9]* passed'
         check beam-emu.com 'wrote .*script_check.emu.com' \
-            build tests/programs/script_check.erl -o "$dir/script_check.emu.com"
+            tests/programs/script_check.erl -o "$dir/script_check.emu.com"
         if [ -f "$dir/script_check.emu.com" ]; then
             check script_check.emu.com 'argc 2@@arg b c$@@arg 日本$' args "b c" 日本
             check_status 127 script_check.emu.com 'exception error: {boom,42}' raise
@@ -943,12 +947,12 @@ if [ -f "$dir/beam-emu.com" ]; then
             check script_check.emu.com '^line 100000$@@^last line$' big
         fi
         check beam-emu.com 'wrote .*crypto_check.emu.com' \
-            build examples/crypto_check -o "$dir/crypto_check.emu.com"
+            examples/crypto_check -o "$dir/crypto_check.emu.com"
         [ -f "$dir/crypto_check.emu.com" ] && check crypto_check.emu.com "$crypto_check"
         # The sandbox with the interpreter (the sandbox checks above use
         # beam.com, the JIT, for which the launcher adds "prot_exec").
         check beam-emu.com 'wrote .*sandbox_net.emu.com' \
-            build tests/programs/sandbox_check.erl -N -o "$dir/sandbox_net.emu.com"
+            tests/programs/sandbox_check.erl -N -o "$dir/sandbox_net.emu.com"
         rm -f "$dir/sandbox.tmp"
         [ -f "$dir/sandbox_net.emu.com" ] && check sandbox_net.emu.com "$net" \
             read /etc/hosts read "$dir/beam.com" listen $net_extra
@@ -960,7 +964,7 @@ fi
 sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if [ -d examples ]; then
     check beam.com 'wrote .*sqlite_check.b.com' \
-        build examples/sqlite_check.erl -o "$dir/sqlite_check.b.com"
+        examples/sqlite_check.erl -o "$dir/sqlite_check.b.com"
     if [ -f "$dir/sqlite_check.b.com" ]; then
         check sqlite_check.b.com "$sqlite:memory:"
         rm -f "$dir/test.db"
@@ -968,7 +972,7 @@ if [ -d examples ]; then
     fi
     if [ -f "$dir/beam-emu.com" ]; then
         check beam-emu.com 'wrote .*sqlite_check.emu.com' \
-            build examples/sqlite_check.erl -o "$dir/sqlite_check.emu.com"
+            examples/sqlite_check.erl -o "$dir/sqlite_check.emu.com"
         [ -f "$dir/sqlite_check.emu.com" ] && check sqlite_check.emu.com "$sqlite:memory:"
     fi
 fi

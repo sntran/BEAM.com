@@ -1,8 +1,8 @@
-%% An example application for "beam.com build" with Hex packages (see
+%% An example application for "beam.com INPUT -o OUTPUT" with Hex packages (see
 %% rebar.config): it starts a cowboy server on 127.0.0.1, gets "/" with
 %% httpc, and decodes the JSON answer with jsx.
 %%
-%%   beam.com build examples/hexweb
+%%   beam.com examples/hexweb -o hexweb.com
 %%   ./hexweb.com
 -module(hexweb).
 -export([main/0, init/2]).
