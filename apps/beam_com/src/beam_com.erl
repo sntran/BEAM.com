@@ -167,23 +167,27 @@ build_options([[$- | _] = Option | _], _Opts) ->
 build_options([Input | Rest], Opts) when not is_map_key(input, Opts) ->
     old_command(Input),
     build_options(Rest, Opts#{input => Input});
-build_options([Arg | _], _Opts) ->
+build_options([Arg | _], #{input := Input}) ->
+    %% "beam.com build app.erl" with a directory build: still the old command.
+    is_old_command(Input) andalso old_hint(Input),
     throw({error, "~ts: the arguments of the program come after \"--\" (see ~ts --help)",
            [Arg, name()]}).
 
 %% The commands before beam.com 0.2 (help, version and build): a hint,
 %% when there is no file of that name.
-old_command(Input) when Input =:= "build"; Input =:= "help"; Input =:= "version" ->
-    case filelib:is_file(Input) of
-        true -> ok;
-        false ->
-            New = #{"build" => "~ts INPUT -o OUTPUT", "help" => "~ts --help",
-                    "version" => "~ts --version"},
-            throw({error, "there is no command ~ts: use \"" ++ maps:get(Input, New) ++ "\"",
-                   [Input, name()]})
-    end;
-old_command(_) ->
-    ok.
+old_command(Input) ->
+    case is_old_command(Input) andalso not filelib:is_file(Input) of
+        true -> old_hint(Input);
+        false -> ok
+    end.
+
+is_old_command(Input) -> lists:member(Input, ["build", "help", "version"]).
+
+old_hint(Input) ->
+    New = #{"build" => "~ts INPUT -o OUTPUT", "help" => "~ts --help",
+            "version" => "~ts --version"},
+    throw({error, "there is no command ~ts: use \"" ++ maps:get(Input, New) ++ "\"",
+           [Input, name()]}).
 
 usage() ->
     throw({error, "usage: " ++ usage_text() ++ "(see ~ts --help)", [name()]}).
