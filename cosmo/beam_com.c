@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
@@ -919,6 +920,41 @@ static void run_exec(void)
     _exit(127);
 }
 
+/*
+ * On Windows, execv() at the exit of the VM starts the program, but the
+ * program does not run: it stops with no output. There, this process
+ * starts itself again as a child (BEAM_COM_RUN_CHILD) for the build, waits
+ * for it, and then becomes the program. This process does not start the
+ * VM (as start_epmd()).
+ */
+static void run_in_child(char **argv)
+{
+    extern char **environ;
+    struct arglist env = {0};
+    int i, status;
+    pid_t pid;
+
+    for (i = 0; environ[i]; i++)
+        push(&env, environ[i]);
+    push(&env, "BEAM_COM_RUN_CHILD=1");
+    fflush(stdout);
+    fflush(stderr);
+    /* posix_spawn(), not fork() and execve(): on Windows, execve() in a
+     * child of fork() leaves that child as a relay. */
+    errno = posix_spawn(&pid, GetProgramExecutableName(), NULL, NULL, argv, env.v);
+    if (errno || waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "beam.com: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (status == 0)
+        run_exec();
+    if (run_file)
+        unlink(run_file);
+    /* The child gives Windows its exit status itself (beam_com_exit()),
+     * and waitpid() gives it as it is; a POSIX wait status is larger. */
+    beam_com_exit(status > 255 ? WEXITSTATUS(status) : status, 1);
+}
+
 /* make: the name of the program that make_link() makes. */
 static int is_make(const char *name)
 {
@@ -1584,8 +1620,14 @@ void beam_com_main(int *argcp, char ***argvp)
                     break;
             run_argc = i < argc ? argc - i - 1 : 0;
             run_argv = argv + argc - run_argc;
-            run_setup();
-            atexit(run_exec);
+            if (getenv("BEAM_COM_RUN_CHILD")) {
+                unsetenv("BEAM_COM_RUN_CHILD");
+            } else {
+                run_setup();
+                if (beam_com_is_windows())
+                    run_in_child(argv);
+                atexit(run_exec);
+            }
         }
         file = (struct arglist){0};
         push(&file, "-boot");

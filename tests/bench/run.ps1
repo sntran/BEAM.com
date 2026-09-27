@@ -27,7 +27,7 @@ $results = @{}
 foreach ($v in $variants) {
     $exe = Exe $v
     $prog = "bench." + ($v -replace '\.com$', '') + ".com"
-    & $exe build tests/bench/bench.erl -o (Join-Path $Dir $prog) | Out-Null
+    & $exe tests/bench/bench.erl -o (Join-Path $Dir $prog) | Out-Null
     $progExe = Exe $prog
     $r = [ordered]@{}
     $r["size_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $v)).Length / 1MB)
