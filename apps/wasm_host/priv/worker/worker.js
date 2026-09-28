@@ -732,9 +732,13 @@ export class Vm {
     headers.set('host', url.host);
     headers.delete('transfer-encoding');
     headers.delete('sec-websocket-extensions');  // no compression: frames as they are
-    // The Workers runtime compresses the response for each client: the app
-    // does not (the edge adds Accept-Encoding to the requests).
+    // The Workers runtime compresses the response for each client. The app
+    // gets only gzip of Accept-Encoding: Plug.Static serves the files that
+    // are gzipped already (Livebook has no other ones), and the response
+    // goes as it is (encodeBody: 'manual').
+    const gzip = /\bgzip\b/i.test(headers.get('accept-encoding') ?? '');
     headers.delete('accept-encoding');
+    if (gzip) headers.set('accept-encoding', 'gzip');
     if (upgrade) {
       headers.set('connection', 'Upgrade');
       headers.set('sec-websocket-key', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))));
