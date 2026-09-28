@@ -19,8 +19,8 @@
 #
 # Caution: each visitor can run code in its instance, with the network, and
 # instances have no password. The code of a visitor can read the vars and
-# the secrets of the Worker: give it no secret other than
-# LIVEBOOK_SECRET_KEY_BASE.
+# the secrets of the Worker: give it no secret. Livebook makes a random
+# secret_key_base in each VM.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${BEAM_COM:?set BEAM_COM}"
@@ -124,8 +124,6 @@ cat <<EOF
 
 Deploy (the iframe Worker first):
   (cd $DIR/iframe && wrangler deploy)
-  cd $DIR/worker
-  head -c 64 /dev/urandom | base64 | tr -d '\\n' | wrangler secret put LIVEBOOK_SECRET_KEY_BASE -c wrangler.durable.jsonc
-  wrangler deploy -c wrangler.durable.jsonc
+  (cd $DIR/worker && wrangler deploy -c wrangler.durable.jsonc)
 Then open https://livebook.$SUBDOMAIN.workers.dev/ and start an instance.
 EOF

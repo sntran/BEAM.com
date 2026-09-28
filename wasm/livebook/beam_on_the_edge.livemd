@@ -41,23 +41,20 @@ The system is `wasm32-unknown-emscripten`: the same ERTS as on a server, compile
 
 ### A clock for the edge
 
-On Cloudflare, the clocks of a Worker stop while code runs (a protection against timing attacks). They move again at the next I/O, such as a timer. `:timer.tc/1` thus gives 0 ms there.
+On Cloudflare, the clocks of a Worker give the time of the last I/O (a protection against timing attacks). They do not move while code runs, and a timer moves them only by its own time. So a cell cannot measure its time there: `:timer.tc/1` gives 0 ms.
 
-`Edge.measure/1` sleeps 1 ms before and after the function. Each sleep is a timer of the host, so the clock is up to date at the start and at the end. It also gives the reductions: the units of work of the VM, which do not need a clock. Code that a cell evaluates (not the code of a module) runs in the interpreter of Erlang terms, so it takes more reductions.
+`Edge.measure/1` gives two numbers. `ms` is the time, which is correct on your computer and near 0 on Cloudflare. `reductions` counts the units of work of the VM, and it needs no clock. Code that a cell evaluates (not the code of a module) runs in the interpreter of Erlang terms, so it takes more reductions.
 
 ```elixir
 defmodule Edge do
   @doc false
   def measure(fun) do
-    Process.sleep(1)
     {r0, _} = :erlang.statistics(:exact_reductions)
     t0 = System.monotonic_time(:microsecond)
     result = fun.()
-    Process.sleep(1)
     t1 = System.monotonic_time(:microsecond)
     {r1, _} = :erlang.statistics(:exact_reductions)
-    # The time of the second sleep is not part of the work.
-    {%{ms: Float.round(max(t1 - t0 - 1_000, 0) / 1_000, 1), reductions: r1 - r0}, result}
+    {%{ms: Float.round((t1 - t0) / 1_000, 1), reductions: r1 - r0}, result}
   end
 end
 

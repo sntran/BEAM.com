@@ -1391,7 +1391,9 @@ with bounds for the Free plan. `durable.js` has two new modes:
   second Worker. The iframe pages stay on a second Worker (static files
   only), because the JS outputs of Kino must run on another site than
   Livebook. On workers.dev, a Worker has one host name; with a custom
-  domain, one Worker can serve both host names.
+  domain, one Worker can serve both host names. A name such as
+  `iframe.livebook.fifo.workers.dev` does not work: the certificate of
+  workers.dev covers one label, and the TLS handshake fails.
 - The Free plan gives 13,000 GB-s a day of Durable Objects, and each
   object counts as 128 MB: about 29 object hours. The default bound, 24
   instance hours a day, keeps within it.
@@ -1399,8 +1401,16 @@ with bounds for the Free plan. `durable.js` has two new modes:
   waited in the queue, got the place at the limit of the first two,
   and the storage of an instance (5 files) was empty after its limit.
 - Caution: each visitor runs code with the network, and can read the
-  vars and secrets of the Worker. Give the Worker no secret other than
-  `LIVEBOOK_SECRET_KEY_BASE`.
+  vars and secrets of the Worker. Give the Worker no secret. Livebook
+  makes a random `secret_key_base` in each VM. The VMs restore one
+  snapshot, but their random bytes (`:crypto.strong_rand_bytes/1`,
+  `:rand`) and their `secret_key_base` were all different in 3 instances
+  (`wrangler dev`).
+- On Cloudflare (2026-09-28): the first deploy of the Workers `livebook`
+  (18.4 MB, 14.4 MB with gzip, on the Free plan) and `livebook-iframe`.
+  A new instance ran all the cells of the notebook with no error, and
+  the JS of a Kino output came through `/t/NAME/` (200, with
+  `access-control-allow-origin: *`).
 
 **Build and deploy at each push.** Workers Builds (the Git integration
 of Workers) builds and deploys the Worker `livebook` from this
@@ -1439,10 +1449,12 @@ If the token of Workers Builds cannot deploy the Worker
 
 - **The clock does not move while code runs** on Cloudflare (a
   protection against timing attacks). `:timer.tc/1` gives 0 ms there.
-  The clock moves at the next I/O, such as a timer. So `Edge.measure/1`
-  of the notebook sleeps 1 ms before and after the work, and it also
-  gives the reductions of the work. With `wrangler dev` it gives 55 ms
-  for 10,000 processes; it was not measured on Cloudflare yet.
+  It gives the time of the last I/O, and a timer is not I/O: a sleep of
+  1 ms before and after the work moved the clock by 2 ms, not to the
+  real time (10,000 processes "in 1.0 ms"). So `Edge.measure/1` of the
+  notebook also gives the reductions of the work, which need no clock.
+  With `wrangler dev` (no such rule), the time is correct: 55 ms for
+  10,000 processes.
 - Livebook needs `os_mon`, which beam.com does not have. `setup.sh`
   compiles its Erlang code from the source of the same OTP, and
   `livebook.patch` turns off its port programs.
