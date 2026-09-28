@@ -56,6 +56,10 @@ jobs:
           if bad:
               raise SystemExit(f"Not names of applications: {bad}")
           tools = checked("Tools")
+          nifs = [n.split()[0] for n in checked("More NIFs")]
+          bad = [n for n in nifs if n not in ("picosat_elixir",)]
+          if bad:
+              raise SystemExit(f"Not NIFs of the list: {bad}")
           env = {
               "OTP_APPS": " ".join(dict.fromkeys(apps)),
               "HEX": "1" if any(t.startswith("Hex") for t in tools) else "0",
@@ -64,9 +68,12 @@ jobs:
               "JIT": "0" if choice("Emulator", "").startswith("Interpreter") else "1",
               "SQLITE": "0" if choice("SQLite", "Yes") == "No" else "1",
               "WASM": "0" if choice("WebAssembly (WAMR)", "Yes") == "No" else "1",
+              "EXTRA_NIFS": " ".join(nifs),
           }
           if env["HEX"] == "1" and env["ELIXIR"] == "0":
               raise SystemExit("Hex needs Elixir")
+          if nifs and env["ELIXIR"] == "0":
+              raise SystemExit("The NIFs of hex.pm packages need Elixir")
           env["OUT_NAME"] = "beam.com" if env["JIT"] == "1" else "beam-emu.com"
           with open(os.environ["GITHUB_ENV"], "a") as f:
               for k, v in env.items():
@@ -118,7 +125,10 @@ jobs:
       - name: Check the file
         run: |
           f="build/$OUT_NAME"
-          "$f" version
+          "$f" --version
+          for n in $EXTRA_NIFS; do
+            "$f" --version | grep -q "Linked NIFs.* $n-" || { echo "The NIF of $n is not linked" >&2; exit 1; }
+          done
           if [ "$REBAR3" = 1 ]; then "$f" rebar3 version; fi
           if [ "$HEX" = 1 ]; then "$f" mix hex; fi
           for app in $OTP_APPS; do
@@ -143,7 +153,7 @@ jobs:
           {
             echo "The build is ready: [$OUT_NAME]($URL) (a zip with the file; the download needs a GitHub account, for 90 days)."
             echo
-            echo "OTP applications added: ${OTP_APPS:-none}. Hex: $HEX. rebar3: $REBAR3. Elixir: $ELIXIR. JIT: $JIT. SQLite: $SQLITE. WebAssembly: $WASM."
+            echo "OTP applications added: ${OTP_APPS:-none}. Hex: $HEX. rebar3: $REBAR3. More NIFs: ${EXTRA_NIFS:-none}. Elixir: $ELIXIR. JIT: $JIT. SQLite: $SQLITE. WebAssembly: $WASM."
             echo
             echo "The run: $RUN"
           } > answer.md
