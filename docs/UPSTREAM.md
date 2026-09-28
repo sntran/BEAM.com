@@ -1392,6 +1392,61 @@ compile it again.
 **Possible upstream fix.** Ask the `Plug.Conn` adapter module for its
 WebSock handler, with a callback or a protocol.
 
+## Livebook
+
+Seen with Livebook 0.19.10, in a Worker with its embedded runtime
+(`wasm/livebook`, `livebook.patch` holds the workarounds).
+
+### L1. The boot always starts the distribution
+
+**Symptom.** Livebook stops at start in a VM with no distribution: it
+cannot start `:net_kernel`.
+
+**Cause.** `Livebook.Application.start/2` always sets the EPMD module,
+starts the distribution and sets the cookie. The embedded runtime does
+not need them.
+
+**Workaround.** Skip these three steps when `WASM_HOST` is set.
+
+**Possible upstream fix.** An option (`LIVEBOOK_DISTRIBUTION=none`)
+for a Livebook that uses only the embedded runtime.
+
+### L2. `:erlang.memory/0` must work
+
+**Symptom.** With `+Mea min` (no allocators of ERTS: 20 MB less memory
+at start), the evaluation of a cell stops with an `ErlangError`
+(`notsup`), and the memory of the sidebar crashes.
+
+**Cause.** `Livebook.Runtime.Evaluator` and `Livebook.SystemResources`
+call `:erlang.memory/0`, which is not supported without the allocators
+of ERTS. `SystemResources` also calls `:memsup`, which is absent when
+`os_mon` has no port programs.
+
+**Workaround.** An estimate from `Process.info/2`, `:ets.info/2` and
+`:erlang.system_info(:allocated_areas)` when `:erlang.memory/0` raises,
+and the memory of the isolate (128 MB) when `:memsup` has no data.
+
+**Possible upstream fix.** Rescue `notsup` and the exit of `:memsup`,
+and show no memory data in place of a crash.
+
+### L3. A cell with a module needs ExUnit
+
+**Symptom.** In the embedded runtime of a release, each cell that
+defines a module fails: "module ExUnit.Case is not loaded and could
+not be found".
+
+**Cause.** The evaluator runs the doctests of each new module
+(`Livebook.Runtime.Evaluator.Doctests`) with `ExUnit.Case`, and the
+release of Livebook does not have `ex_unit`. The standalone runtime has
+the full Elixir, so the fault shows only with the embedded runtime.
+
+**Workaround.** Add `ex_unit: :load` to the applications of the
+release.
+
+**Possible upstream fix.** Skip the doctests when
+`Code.ensure_loaded?(ExUnit.Case)` is false, or add `ex_unit` to the
+release.
+
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
 Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and

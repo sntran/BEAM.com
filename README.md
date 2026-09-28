@@ -66,7 +66,7 @@ beam.com [FLAGS] INPUT -o OUTPUT           # make the executable OUTPUT
 FLAGS: [-a APP]... [--allow-read[=PATH,...]] [--allow-write[=PATH,...]]
        [--allow-net] [--allow-run[=PROGRAM,...]] [--allow-all]
        [--target TARGET] [--main MODULE] [--tool rebar|mix]
-       [--extract-priv APP]...
+       [--extract-priv APP]... [--cacerts FILE]
 ```
 
 There is one command line, as for `npm run`: the flags can come before
@@ -580,6 +580,14 @@ workerd serve worker/worker.capnp                          # test on this comput
   `wrangler.durable-global.jsonc` restores a spare VM in the global
   scope for the first object of an isolate. `wasm/phoenix/tenants` makes
   a Phoenix LiveView app for it.
+- `--cacerts FILE` puts the trusted root certificates of FILE (PEM)
+  into the release, for TLS. The runtime has none of its own, and the
+  builder does not copy the store of this computer.
+- With the var `BEAM_PERSIST` (a list of directories), a Durable Object
+  keeps the files of these directories in its SQLite storage, and a new
+  VM gets them back. `wasm/livebook` builds Livebook with one Durable
+  Object for each tenant, its notebooks in `/data`, and a notebook that
+  shows the BEAM.
 - Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
   (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
   SQLite storage of a Durable Object (`wrangler deploy -c

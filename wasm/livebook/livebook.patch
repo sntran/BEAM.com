@@ -1,0 +1,137 @@
+--- a/mix.exs
++++ b/mix.exs
+@@ -147,7 +147,9 @@
+       {:lazy_html, "~> 0.1.0", only: :test},
+       {:bypass, "~> 2.1", only: :test},
+       {:pythonx, "~> 0.4.2", only: :test},
+-      {:kino, "~> 0.18.0", only: :test},
++      # BEAM on Cloudflare Workers: Kino in the release (the embedded runtime
++      # has no Mix.install/2).
++      {:kino, "~> 0.18.0"},
+       # Docs
+       {:ex_doc, "~> 0.39", only: :dev, runtime: false}
+     ]
+@@ -181,7 +183,9 @@
+   ## Releases
+ 
+   # aws_credentials has runtime: false, so explicitly add is as :load
+-  @release_apps [livebook: :permanent, aws_credentials: :load]
++  # BEAM on Cloudflare Workers: the embedded runtime runs the doctests of a
++  # cell with ExUnit.
++  @release_apps [livebook: :permanent, aws_credentials: :load, ex_unit: :load]
+ 
+   defp releases do
+     [
+--- a/config/config.exs
++++ b/config/config.exs
+@@ -53,3 +53,20 @@
+ # Import environment specific config. This must remain at the bottom
+ # of this file so it overrides the configuration defined above.
+ import_config "#{Mix.env()}.exs"
++
++# BEAM on Cloudflare Workers (WebAssembly): no port programs.
++config :os_mon, start_cpu_sup: false, start_disksup: false, start_memsup: false, start_os_sup: false
++# The default poller measures :erlang.memory/0, which +Mea min does not support.
++config :telemetry_poller, :default, false
++
++# BEAM on Cloudflare Workers: the notebook of the edge, after the welcome
++# notebook in the Learn section.
++config :livebook, :learn_notebooks, [
++  %{
++    path: Path.expand("../lib/livebook/notebook/learn/beam_on_the_edge.livemd", __DIR__),
++    details: %{
++      description: "Processes, supervisors, messages and hot code upgrades in a Cloudflare Worker.",
++      cover_filename: "elixir.png"
++    }
++  }
++]
+--- a/lib/livebook/application.ex
++++ b/lib/livebook/application.ex
+@@ -12,9 +12,13 @@
+     ensure_directories!()
+     set_local_file_system!()
+ 
+-    set_epmd_module!()
+-    start_distribution!()
+-    set_cookie()
++    # BEAM on Cloudflare Workers (WebAssembly): no distribution; the
++    # embedded runtime evaluates in this VM.
++    unless System.get_env("WASM_HOST") do
++      set_epmd_module!()
++      start_distribution!()
++      set_cookie()
++    end
+ 
+     children =
+       if serverless?() do
+--- a/lib/livebook/runtime/evaluator.ex
++++ b/lib/livebook/runtime/evaluator.ex
+@@ -104,7 +104,7 @@
+       binary: binary,
+       code: code,
+       ets: ets
+-    } = Map.new(:erlang.memory())
++    } = erlang_memory()
+ 
+     %{
+       total: total,
+@@ -117,6 +117,31 @@
+     }
+   end
+ 
++  # With +Mea min (a VM in a Cloudflare Worker, where memory is scarce),
++  # :erlang.memory/0 is not supported: an estimate from the processes,
++  # the ETS tables and the allocated areas.
++  @doc false
++  def erlang_memory() do
++    Map.new(:erlang.memory())
++  rescue
++    ErlangError ->
++      areas = Map.new(:erlang.system_info(:allocated_areas), &{elem(&1, 0), elem(&1, 1)})
++
++      processes =
++        Enum.sum(for pid <- Process.list(), {:memory, m} <- [Process.info(pid, :memory)], do: m)
++
++      ets =
++        Enum.sum(for t <- :ets.all(), w = :ets.info(t, :memory), is_integer(w), do: w) *
++          :erlang.system_info(:wordsize)
++
++      atom = Map.get(areas, :atom_space, 0) + Map.get(areas, :atom_table, 0)
++      code = Map.get(areas, :loaded_code, 0) + Map.get(areas, :module_table, 0)
++      other = Enum.sum(Map.values(areas)) - atom - code
++
++      %{total: processes + ets + atom + code + other, processes: processes, atom: atom,
++        binary: 0, code: code, ets: ets}
++  end
++
+   @doc """
+   Asynchronously parses and evaluates the given code.
+ 
+--- a/lib/livebook/system_resources.ex
++++ b/lib/livebook/system_resources.ex
+@@ -63,9 +63,22 @@
+   end
+ 
+   defp measure() do
+-    memory_data = :memsup.get_system_memory_data()
+-    free_memory = free_memory(Map.new(memory_data))
+-    memory = %{total: memory_data[:total_memory], free: free_memory}
++    memory_data =
++      try do
++        :memsup.get_system_memory_data()
++      catch
++        :exit, _ -> []
++      end
++
++    memory =
++      if memory_data[:total_memory] do
++        %{total: memory_data[:total_memory], free: free_memory(Map.new(memory_data))}
++      else
++        # No memsup data (a Worker): the memory of the VM in an isolate of 128 MB.
++        total = 128 * 1024 * 1024
++        %{total: total, free: max(total - Livebook.Runtime.Evaluator.erlang_memory().total, 0)}
++      end
++
+     :ets.insert(@name, {:memory, memory})
+     memory
+   end

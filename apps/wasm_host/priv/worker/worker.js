@@ -106,7 +106,7 @@ async function snapshotKey(env, meta, host) {
 // The memory and the open files of a VM whose threads all returned
 // (erts_wasm_hibernate), as snapshot.bin. The files that the boot wrote
 // are the ones that are not views of release.bin (unpack: canOwn).
-function capture(m, release, listeners, bootPoint = false) {
+function capture(m, release, listeners, bootPoint = false, skip = () => false) {
   const PAGE = 65536;
   const heap = m.HEAPU8;
   const words = new BigUint64Array(heap.buffer, 0, heap.length / 8);
@@ -119,7 +119,7 @@ function capture(m, release, listeners, bootPoint = false) {
     for (const n of m.FS.readdir(d)) {
       if (n === '.' || n === '..') continue;
       const p = d === '/' ? '/' + n : d + '/' + n;
-      if (p === '/dev' || p === '/proc') continue;
+      if (p === '/dev' || p === '/proc' || skip(p)) continue;
       const node = m.FS.lookupPath(p).node;
       if (m.FS.isDir(node.mode)) walk(p);
       else if (m.FS.isFile(node.mode) && node.contents?.buffer !== release) {
@@ -220,6 +220,111 @@ function seed(m) {
   b.set(h);
   crypto.getRandomValues(b.subarray(h.length));
   m.beamHost.push(b);
+}
+
+// The directories of BEAM_PERSIST (a Durable Object): their files are in
+// the SQLite storage of the object, so they stay when the object leaves
+// memory. The host writes them into the file system of the VM before it
+// starts, and saves a file when the VM closes it after a write (or 1 s
+// after a write, for a file that stays open), and a delete, a rename or a
+// new directory at once. A file is in chunks of 1 MB (a row has 2 MB at
+// most).
+const CHUNK = 1 << 20;
+
+class Persist {
+  constructor(sql, dirs) {
+    this.sql = sql;
+    this.dirs = dirs.map((d) => d.replace(/\/+$/, '')).filter((d) => d.startsWith('/') && d.length > 1);
+    this.dirty = new Set();
+    sql.exec('CREATE TABLE IF NOT EXISTS beam_fs (path TEXT PRIMARY KEY, dir INTEGER, mode INTEGER, size INTEGER)');
+    sql.exec('CREATE TABLE IF NOT EXISTS beam_fs_chunk (path TEXT, n INTEGER, data BLOB, PRIMARY KEY (path, n))');
+  }
+
+  under(path) {
+    return typeof path === 'string' && this.dirs.some((d) => path === d || path.startsWith(d + '/'));
+  }
+
+  // The files of the storage, into FS (before the VM starts).
+  load(FS) {
+    for (const d of this.dirs) FS.mkdirTree(d);
+    let files = 0, bytes = 0;
+    for (const { path, dir, size } of this.sql.exec('SELECT path, dir, size FROM beam_fs ORDER BY path')) {
+      if (!this.under(path)) continue;
+      if (dir) { FS.mkdirTree(path); continue; }
+      const data = new Uint8Array(size);
+      for (const { n, data: part } of this.sql.exec('SELECT n, data FROM beam_fs_chunk WHERE path = ? ORDER BY n', path)) {
+        data.set(new Uint8Array(part), n * CHUNK);
+      }
+      FS.mkdirTree(path.slice(0, path.lastIndexOf('/')) || '/');
+      FS.writeFile(path, data, { canOwn: true });
+      files++;
+      bytes += size;
+    }
+    console.log(`beam: persist ${this.dirs.join(', ')}: ${files} files, ${bytes >> 10} KB`);
+  }
+
+  save(FS, path) {
+    this.dirty.delete(path);
+    let node;
+    try { node = FS.lookupPath(path).node; } catch { return this.remove(path); }
+    if (FS.isDir(node.mode)) return this.sql.exec('INSERT OR REPLACE INTO beam_fs VALUES (?, 1, ?, 0)', path, node.mode);
+    if (!FS.isFile(node.mode)) return;
+    const data = FS.readFile(path);
+    this.sql.exec('DELETE FROM beam_fs_chunk WHERE path = ?', path);
+    this.sql.exec('INSERT OR REPLACE INTO beam_fs VALUES (?, 0, ?, ?)', path, node.mode, data.length);
+    for (let n = 0; n * CHUNK < data.length; n++) {
+      this.sql.exec('INSERT INTO beam_fs_chunk VALUES (?, ?, ?)', path, n, data.slice(n * CHUNK, (n + 1) * CHUNK).buffer);
+    }
+  }
+
+  // A file or a directory, and all under it.
+  remove(path) {
+    for (const t of ['beam_fs', 'beam_fs_chunk']) {
+      this.sql.exec(`DELETE FROM ${t} WHERE path = ? OR substr(path, 1, ?) = ?`, path, path.length + 1, path + '/');
+    }
+  }
+
+  // A directory and all under it, or one file.
+  saveTree(FS, path) {
+    this.save(FS, path);
+    let node;
+    try { node = FS.lookupPath(path).node; } catch { return; }
+    if (!FS.isDir(node.mode)) return;
+    for (const n of FS.readdir(path)) if (n !== '.' && n !== '..') this.saveTree(FS, `${path}/${n}`);
+  }
+
+  // Wrap the functions of FS that change files (the system calls of the
+  // VM call them).
+  attach(FS) {
+    const abs = (p) => (typeof p === 'string' && !p.startsWith('/') ? `${FS.cwd()}/${p}` : p);
+    const wrap = (name, after) => {
+      const f = FS[name];
+      FS[name] = (...a) => {
+        const r = f.apply(FS, a);
+        try { after(...a); } catch (e) { console.log(`beam: persist ${name}: ${e.message}`); }
+        return r;
+      };
+    };
+    wrap('write', (stream) => {
+      if (!this.under(stream.path)) return;
+      this.dirty.add(stream.path);
+      this.flush ??= setTimeout(() => {
+        this.flush = null;
+        for (const p of [...this.dirty]) this.save(FS, p);
+      }, 1000);
+    });
+    wrap('close', (stream) => {
+      if (this.under(stream.path) && ((stream.flags & 3) !== 0 || this.dirty.has(stream.path))) this.save(FS, stream.path);
+    });
+    wrap('truncate', (path) => { if (this.under(abs(path))) this.save(FS, abs(path)); });
+    wrap('mkdir', (path) => { if (this.under(abs(path))) this.save(FS, abs(path)); });
+    wrap('unlink', (path) => { if (this.under(abs(path))) this.remove(abs(path)); });
+    wrap('rmdir', (path) => { if (this.under(abs(path))) this.remove(abs(path)); });
+    wrap('rename', (from, to) => {
+      if (this.under(abs(from))) this.remove(abs(from));
+      if (this.under(abs(to))) this.saveTree(FS, abs(to));
+    });
+  }
 }
 
 // Ecto SQLite (wasm_host_sqlite): the host runs each statement, on the
@@ -332,7 +437,7 @@ export class Vm {
       // program starts and runs its migrations. So all the objects (the
       // tenants) share it, and each one runs the program on its own storage.
       const meta = releaseMeta(release);
-      const atBoot = !this.plain && this.sql && (meta.sql ?? true);
+      const atBoot = !this.plain && this.sql && ((meta.sql ?? true) || !!env.BEAM_PERSIST);
       key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
@@ -361,9 +466,12 @@ export class Vm {
             };
             if (this.given) this.resume = start;
             else start();
-            // The copy is in the memory of the VM now: free the buffer (an
-            // isolate has 128 MB).
+            // The copy is in the memory of the VM now: free the bytes of the
+            // snapshot (an isolate has 128 MB). The closures of the VM keep
+            // this scope, so snapBytes must not keep them either.
             snap.pagesData = null;
+            snap.fs = null;
+            snapBytes = null;
             this.onready();
           } catch (e) { reject(e); }
         } : undefined,
@@ -401,10 +509,19 @@ export class Vm {
           // .release.json: the name, the version, the boot arguments and the
           // environment of the release (beam_com_wasm).
           const { name, vsn, args, env: relEnv } = unpack(m.FS, release);
+          // BEAM_PERSIST: directories in the SQLite storage of the object.
+          if (this.sql && env.BEAM_PERSIST) {
+            this.persist = new Persist(this.sql, env.BEAM_PERSIST.split(','));
+          }
           // The files that the boot of the snapshot wrote.
           for (const [p, b64] of Object.entries(snap?.fs.files ?? {})) {
+            if (this.persist?.under(p)) continue;
             m.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
             m.FS.writeFile(p, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+          }
+          if (this.persist) {
+            this.persist.load(m.FS);
+            this.persist.attach(m.FS);
           }
           // -c false (no time correction) for a snapshot: the monotonic time
           // then follows the system time, which goes on after a restore (the
@@ -520,7 +637,7 @@ export class Vm {
       for (let i = 0; i < 5; i++) await tick();
     }
     try {
-      return capture(this.beam, this.release, this.listeners, bootPoint);
+      return capture(this.beam, this.release, this.listeners, bootPoint, (p) => !!this.persist?.under(p));
     } finally {
       x.erts_wasm_resume();
     }

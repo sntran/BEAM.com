@@ -1259,6 +1259,108 @@ so 8.4 MB less in the memory of each isolate.
 - The uptime of a restored VM counts from the boot of the snapshot, so
   all the tenants of one snapshot showed the same uptime.
 
+### Livebook in a Durable Object (2026-09-28)
+
+`wasm/livebook/setup.sh` builds Livebook 0.19.10 for Workers, with the
+changes of `livebook.patch`. Its embedded runtime evaluates the cells in
+the VM of Livebook. Each tenant (`/.tenant/NAME`) has its own Durable
+Object, VM and storage. Deployed at `https://livebook.fifo.workers.dev`,
+with a password.
+
+**Memory.** An isolate has 128 MB. The first deploy stopped after a few
+cells. These changes make it stable:
+
+- `BEAM_ERL_FLAGS = "-Mea min"`: no allocators of ERTS, only `malloc`.
+  Livebook starts with 42 MB of WebAssembly memory, not 70 MB.
+- The runtime grows its memory in small steps
+  (`MEMORY_GROWTH_GEOMETRIC_STEP=0`).
+- The static files of Livebook (12 MB) are the static assets of the
+  Worker (`wasm/erts/host/static.mjs`), not files of `release.bin`.
+- After a restore, the Worker frees the bytes of the snapshot (29 MB).
+  Before, a closure of the VM kept them, and the object was reset in
+  2 of 3 runs of the notebook on Cloudflare.
+
+All the cells of the notebook take the memory from 42 MB to 66 MB
+(measured with `wrangler dev`).
+
+**The files of `/data` stay** (the var `BEAM_PERSIST`, a list of
+directories). A Durable Object keeps the files of these directories in
+its SQLite storage (the tables `beam_fs` and `beam_fs_chunk`, in chunks
+of 1 MB). Before the VM starts, the host writes them into the file
+system of the VM. The host saves a file when the VM closes it after a
+write, or 1 s after a write. It saves a delete, a rename and a new
+directory at once. The snapshot does not hold these directories.
+
+- Livebook keeps its settings (`livebook_config.v1.ets`) and its
+  autosaved notebooks in `/data`.
+- A deploy resets the objects: the new VM of the default tenant got
+  back its 4 files (115 KB), and then 5 files (123 KB).
+
+**The snapshot.** With `BEAM_PERSIST`, a Durable Object makes its
+snapshot at the boot point, as with Ecto SQLite. So the files and the
+settings of a tenant are not in it, and all the tenants share it. The
+first request of a new tenant:
+
+| | `wrangler dev` (this computer) | Cloudflare (CPU; wall) |
+|---|---|---|
+| A full boot | 2.0 s | 1,641 to 2,016 ms; 2.5 s |
+| A restore of the boot point | 0.53 to 0.62 s | 1,189 to 3,147 ms (median about 1,600 ms); 1.6 to 2.8 s |
+
+- On Cloudflare, the restore itself takes 137 to 802 ms. Then Livebook
+  starts (`runtime.exs` and its applications) and answers. At the first
+  cell, 695 modules are loaded: 415 come from the snapshot, and the VM
+  loads the others one at a time from gzip.
+- Next: the native run of the build could also record the modules of a
+  first request, so that the snapshot holds them.
+
+**Root certificates** (`--cacerts FILE`). The runtime has no
+certificates of its own, and Livebook, `Req` and `:httpc` need them for
+TLS. `beam.com --target wasm32 --cacerts FILE` puts the certificates
+of FILE into the release (`etc/cacerts.pem`, 177 KB for the bundle of
+Mozilla), and the VM reads them with `-public_key cacerts_path`, as
+beam.com does on Windows. With no option, the release has no
+certificates.
+
+- The builder does not copy the store of the computer of the build:
+  the store of the build machine of this test had 5 CAs of a TLS proxy.
+- `setup.sh` gets the bundle of Mozilla from `curl.se` and checks its
+  SHA-256. On Cloudflare, the cell that calls
+  `Req.get!("https://hex.pm/api/packages/kino")` works.
+
+**Kino and the notebook of the edge.** Kino 0.18 is in the release,
+because the embedded runtime has no `Mix.install/2`.
+`beam_on_the_edge.livemd` is in the Learn section, after the welcome
+notebook, and on the home page. It has these cells:
+
+- The system (`wasm32-unknown-emscripten`, one scheduler, 695 modules).
+- 10,000 processes (1,372 bytes each) and a ring of 1,000 processes
+  (100,000 messages).
+- A trace of messages (`Kino.Process.render_seq_trace/1`).
+- A supervisor tree, and a crash that the supervisor repairs.
+- A hot code upgrade: the same process answers "version 1, call 3",
+  then "version 2, call 4".
+- A table of the busiest processes, each second (`Kino.Frame`).
+- A TLS request to hex.pm.
+
+All the cells ran with no error on 7 new tenants on Cloudflare. Kino
+draws its JS outputs in an iframe from `livebookusercontent.com` on
+HTTPS. On `http://localhost` it uses a second port, which `wrangler
+dev` does not have, so the diagrams do not show there. The diagrams
+on Cloudflare were not checked in a browser yet.
+
+**Found on the way:**
+
+- **The clock does not move while code runs** on Cloudflare (a
+  protection against timing attacks). `:timer.tc/1` gives 0 ms there.
+- Livebook needs `os_mon`, which beam.com does not have. `setup.sh`
+  compiles its Erlang code from the source of the same OTP, and
+  `livebook.patch` turns off its port programs.
+- Livebook: the distribution at start, `:erlang.memory/0` with
+  `-Mea min`, and ExUnit for the modules of a cell (docs/UPSTREAM.md
+  L1 to L3).
+- **A WebSocket during a deploy** can fail with "This script has been
+  upgraded" (seen once).
+
 ## Erlang in a browser tab
 
 `wasm/browser/index.html` loads the Worker variant of `wasm/erts` (kernel

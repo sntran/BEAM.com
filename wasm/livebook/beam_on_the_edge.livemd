@@ -1,0 +1,265 @@
+# BEAM on the edge
+
+## About this notebook
+
+This Livebook runs in a Cloudflare Worker. The BEAM VM (ERTS) is WebAssembly, and it runs in one Durable Object. There is no server, no container and no VPS.
+
+Each cell runs in the VM of Livebook itself (the embedded runtime). The cells show the parts of Erlang and Elixir that make the BEAM different: many small processes, supervisors that restart them, messages, and code that changes while it runs.
+
+Read these limits before you start:
+
+* The VM has 128 MB of memory and one scheduler. A cell that does not stop blocks the other cells.
+* `Mix.install/2` is not available. Kino and the dependencies of Livebook are in the release.
+* The Durable Object keeps the files of `/data` (your notebooks) in its SQLite storage. The processes and their memory stop when the object stops.
+
+Run the cells in order. To run all the cells, press <kbd>Esc</kbd>, then <kbd>e</kbd> and <kbd>a</kbd> (evaluate all outdated cells).
+
+## Where this runs
+
+```elixir
+{up, _} = :erlang.statistics(:wall_clock)
+
+%{
+  system: to_string(:erlang.system_info(:system_architecture)),
+  otp: to_string(:erlang.system_info(:otp_release)),
+  elixir: System.version(),
+  schedulers: :erlang.system_info(:schedulers),
+  word_size: :erlang.system_info(:wordsize),
+  processes: length(Process.list()),
+  modules_loaded: length(:code.all_loaded()),
+  uptime_seconds: div(up, 1000)
+}
+```
+
+On Cloudflare, the clock of a Worker does not move while code runs (a protection against timing attacks). So a time that a cell measures is often 0 ms there.
+
+The system is `wasm32-unknown-emscripten`: the same ERTS as on a server, compiled to WebAssembly. The word size is 4 bytes, so a process takes half the memory of a process on a 64-bit server.
+
+## Many small processes
+
+A BEAM process is not a thread of the operating system. It has its own small heap, and the VM switches between processes itself. Change the number, and run the next cell again.
+
+```elixir
+count_input = Kino.Input.number("Processes", default: 10_000)
+```
+
+```elixir
+count = Kino.Input.read(count_input)
+
+{microseconds, pids} =
+  :timer.tc(fn ->
+    for _ <- 1..count do
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+    end
+  end)
+
+bytes =
+  pids
+  |> Enum.map(fn pid -> Process.info(pid, :memory) end)
+  |> Enum.map(fn {:memory, m} -> m end)
+  |> Enum.sum()
+
+Enum.each(pids, &send(&1, :stop))
+
+"#{count} processes in #{div(microseconds, 1000)} ms, #{div(bytes, count)} bytes each"
+```
+
+## Messages
+
+Processes share no memory. They send messages. This ring sends one message around 1,000 processes, 100 times: 100,000 messages.
+
+```elixir
+defmodule Edge.Ring do
+  def start(size) do
+    Enum.reduce(1..size, self(), fn _, next ->
+      spawn(fn -> relay(next) end)
+    end)
+  end
+
+  defp relay(next) do
+    receive do
+      :stop ->
+        send(next, :stop)
+
+      n ->
+        send(next, n)
+        relay(next)
+    end
+  end
+
+  def run(first, rounds) do
+    for n <- 1..rounds do
+      send(first, n)
+
+      receive do
+        ^n -> :ok
+      end
+    end
+
+    send(first, :stop)
+
+    receive do
+      :stop -> :ok
+    end
+  end
+end
+
+first = Edge.Ring.start(1_000)
+{microseconds, :ok} = :timer.tc(fn -> Edge.Ring.run(first, 100) end)
+"100,000 messages in #{div(microseconds, 1000)} ms"
+```
+
+Kino can draw the messages between processes. This cell traces one request and its reply:
+
+```elixir
+Kino.Process.render_seq_trace(fn ->
+  parent = self()
+
+  server =
+    spawn(fn ->
+      receive do
+        {:ping, from} -> send(from, :pong)
+      end
+    end)
+
+  send(server, {:ping, parent})
+
+  receive do
+    :pong -> :pong
+  end
+end)
+```
+
+## Let it crash
+
+A supervisor starts processes and starts them again when they stop. The code of a process does not need to handle each error: it stops, and its supervisor starts a new one from a known state.
+
+```elixir
+children =
+  for n <- 1..3 do
+    Supervisor.child_spec({Agent, fn -> 0 end}, id: :"counter_#{n}")
+  end
+
+{:ok, sup} =
+  Kino.start_child(%{
+    id: :edge_supervisor,
+    type: :supervisor,
+    start: {Supervisor, :start_link, [children, [strategy: :one_for_one]]}
+  })
+
+Kino.Process.render_sup_tree(sup)
+```
+
+Now stop one of the counters. Look at the process ids before and after:
+
+```elixir
+before = for {id, pid, _, _} <- Supervisor.which_children(sup), do: {id, pid}
+{id, victim} = Enum.random(before)
+Process.exit(victim, :kill)
+
+# The supervisor gets the exit signal and starts a new counter.
+Process.sleep(50)
+now = for {id, pid, _, _} <- Supervisor.which_children(sup), do: {id, pid}
+
+%{stopped: {id, victim}, before: before, after: now}
+```
+
+## Change the code while it runs
+
+The BEAM can load a new version of a module while processes run the old one. A process moves to the new version at its next call through the module name (`__MODULE__.loop/1`). A release upgrade uses the same mechanism.
+
+```elixir
+defmodule Edge.Greeter do
+  def loop(n) do
+    receive do
+      {:hello, from} ->
+        send(from, {:reply, "version 1, call #{n}"})
+        __MODULE__.loop(n + 1)
+    end
+  end
+end
+
+greeter = spawn(fn -> Edge.Greeter.loop(1) end)
+
+ask = fn ->
+  send(greeter, {:hello, self()})
+
+  receive do
+    {:reply, reply} -> reply
+  end
+end
+
+{greeter, ask.(), ask.()}
+```
+
+This cell compiles version 2 of the module, and asks the same process (the same process id) two times:
+
+* The first answer comes from version 1: the process waits in the `receive` of the old code.
+* Its call to `__MODULE__.loop/1` goes to version 2, so the second answer comes from the new code.
+* The process keeps its state (the call count) through the change.
+
+```elixir
+Code.compile_string("""
+defmodule Edge.Greeter do
+  def loop(n) do
+    receive do
+      {:hello, from} ->
+        send(from, {:reply, "version 2, call \#{n}"})
+        __MODULE__.loop(n + 1)
+    end
+  end
+end
+""")
+
+{greeter, Process.alive?(greeter), ask.(), ask.()}
+```
+
+## A live view of the VM
+
+Kino updates the output of a cell while the cell runs. This table shows the 10 processes with the most work (reductions), each second.
+
+```elixir
+frame = Kino.Frame.new() |> Kino.render()
+
+Kino.listen(1_000, fn _ ->
+  top =
+    Process.list()
+    |> Enum.map(fn pid ->
+      {pid, Process.info(pid, [:registered_name, :reductions, :memory, :message_queue_len])}
+    end)
+    |> Enum.reject(fn {_, info} -> info == nil end)
+    |> Enum.map(fn {pid, info} ->
+      %{
+        pid: inspect(pid),
+        name: if(info[:registered_name] == [], do: "", else: inspect(info[:registered_name])),
+        reductions: info[:reductions],
+        memory: info[:memory],
+        queue: info[:message_queue_len]
+      }
+    end)
+    |> Enum.sort_by(& &1.reductions, :desc)
+    |> Enum.take(10)
+
+  Kino.Frame.render(frame, Kino.DataTable.new(top, name: "The 10 busiest processes"))
+end)
+```
+
+## Out to the internet
+
+The Worker opens TCP connections for the VM, and the VM does TLS itself, with the root certificates of the release. `Req` is a dependency of Livebook:
+
+```elixir
+%{status: status, body: body} = Req.get!("https://hex.pm/api/packages/kino")
+{status, Map.take(body, ["name", "latest_stable_version", "html_url"])}
+```
+
+## How this works
+
+* The Worker gets the release of Livebook (`release.bin`) from a second Worker, and starts ERTS in WebAssembly with JSPI.
+* The first start of a new version makes a snapshot of the memory of the VM, after it loaded the modules of the boot and before it started Livebook. The next starts restore that snapshot, and then start Livebook.
+* The Durable Object writes the files of `/data` to its SQLite storage when the VM closes them. A new VM gets them back before it starts. So your notebooks stay after the object stops.
+* Each tenant (the cookie of `/.tenant/NAME`) has its own Durable Object: its own VM, files and storage.
