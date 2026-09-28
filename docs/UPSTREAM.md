@@ -1275,6 +1275,62 @@ needs none of this.
 isolate (its own I/O context, as a Durable Object has), for runtimes
 that serve many requests.
 
+### W3. The clock of a Worker moves only by the delay of a timer
+
+**Status:** seen on Cloudflare (2026-09-28), not in workerd on this
+computer. Documented as a Spectre mitigation.
+
+**Symptom.** The VM in a Durable Object used the CPU all the time: 32.5
+s of CPU in 34.4 s while it had no requests, then the isolate went over
+its memory limit. `:timer.tc` in the app gave 0 ms for a bcrypt hash of
+0.6 s.
+
+**Cause.** `Date.now()` and `performance.now()` do not move during work,
+at a `MessageChannel` message, or at `setTimeout(0)`. `setTimeout(5)`
+moves them by exactly 5 ms. `pthread_cond_timedwait()` of
+`jspi_pthread.c` rounds a wait of less than 1 ms down to 0 ms, and the
+timer of 0 ms does not move the clock: the thread waits again and again
+for the same time.
+
+**Workaround.** A timer waits 1 ms at least (`jspiTimer` in
+`jspi_lib.js`, and `jspiSchedule.timer` in `worker.js`). Not a bug of
+the runtime.
+
+### W4. The global scope has no random values
+
+**Status:** seen in workerd and on Cloudflare (2026-09-28). Documented.
+
+**Symptom.** A restore in the global scope (`global.js`) that also
+reseeds OpenSSL stops with "Disallowed operation called within global
+scope" in `random_get` (`getentropy()` of Emscripten), and the VM does
+not answer.
+
+**Cause.** The global scope refuses `crypto.getRandomValues()`, timers
+and I/O. `WebAssembly.instantiate()` and top-level `await` work.
+
+**Workaround.** The first request reseeds OpenSSL. The warm-up in the
+global scope gives zero bytes to the VM, and puts
+`crypto.getRandomValues` back after it.
+
+**Possible upstream change.** Random values in the global scope (a
+snapshot or a prepared isolate needs a reseed at its first request in
+any case).
+
+### W5. The memory of a WebAssembly instance does not shrink
+
+**Status:** WebAssembly 2.0; the memory control proposal is not in V8.
+
+**Symptom.** `/hash?cost=default` of `examples/notes` (argon2 with 64
+MiB) in a Durable Object: "Durable Object's isolate exceeded its memory
+limit and was reset". A later try passed, but the object was reset
+again soon after.
+
+**Cause.** The VM has 58 MB. `memory.grow` adds 64 MiB for argon2, and
+the memory stays at that size after the hash, in the 128 MB of an
+isolate.
+
+**Workaround.** Lower argon2 costs (`m_cost`), or bcrypt.
+
 ## websock_adapter
 
 Seen with websock_adapter 0.6.0.

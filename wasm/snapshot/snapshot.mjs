@@ -3,7 +3,8 @@
 // in Node.js (26, for JSPI) as worker.js does, optionally sends requests to
 // warm it up, asks all the threads of ERTS to return (erts_wasm_hibernate),
 // and writes DIR/release/snapshot.bin. worker.js restores it in place of a
-// boot.
+// boot, and global.js (wrangler.global.jsonc) in the global scope of the
+// Worker.
 //
 //   node snapshot.mjs DIR [--warm PORT:PATH]... [--after MS]
 //   node snapshot.mjs DIR --check PORT:PATH     restore it here, 3 requests

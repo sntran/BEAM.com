@@ -195,14 +195,25 @@ function restore(m, exports, snap) {
     }
   }
   exports.wasm_host_restore();
+}
+
+// The threads of a restored VM start again (erts_wasm_resume), and OpenSSL
+// gets new random bytes. The global scope of a Worker has no random
+// values: there, warm() starts the threads, and the first request sends
+// the bytes (seed()).
+function resume(m, exports) {
   const n = exports.erts_wasm_resume();
+  seed(m);
+  return n;
+}
+
+function seed(m) {
   // New random bytes for OpenSSL, before any request (wasm_host_server).
   const h = new TextEncoder().encode('{"t":"restored"}\n');
   const b = new Uint8Array(h.length + 48);
   b.set(h);
   crypto.getRandomValues(b.subarray(h.length));
   m.beamHost.push(b);
-  return n;
 }
 
 // Ecto SQLite (wasm_host_sqlite): the host runs each statement, on the
@@ -280,7 +291,10 @@ export default {
 //     fetch(request) { return this.vm.fetch(request); }
 //   }
 export class Vm {
-  constructor(env, { plain = true, sql = null } = {}) {
+  // release and snapshot: the bytes of release.bin and snapshot.bin, for a
+  // VM that the global scope of a Worker restores (global.js).
+  constructor(env, { plain = true, sql = null, release = null, snapshot = null } = {}) {
+    this.given = release && { release, snapshot };
     this.sql = sql;            // ctx.storage.sql of a Durable Object (Ecto SQLite)
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
     this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
@@ -297,7 +311,8 @@ export class Vm {
 
   async boot(env) {
     const t0 = Date.now();
-    const [release, bundled] = await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    const [release, bundled] = this.given ? [this.given.release, this.given.snapshot]
+      : await Promise.all([loadRelease(env), loadSnapshot(env)]);
     // A snapshot of the build (snapshot.bin), else one that a Worker made
     // (BEAM_SNAPSHOT = "off" turns them off).
     let snapBytes = bundled, key = null;
@@ -319,6 +334,10 @@ export class Vm {
           try {
             this.listeners = new Map(Object.entries(snap.listeners ?? {}).map(([p, id]) => [Number(p), id]));
             restore(this.beam, this.exports, snap);
+            // In the global scope (the bytes given), the first request
+            // starts the threads.
+            if (this.given) this.resume = () => resume(this.beam, this.exports);
+            else resume(this.beam, this.exports);
             // The copy is in the memory of the VM now: free the buffer (an
             // isolate has 128 MB).
             snap.pagesData = null;
@@ -329,9 +348,11 @@ export class Vm {
         arguments: [],
         jspiSchedule: this.plain ? {
           later: (f) => { this.jobs.push(f); this.handlers.at(-1)?.wake?.(); },
+          // 1 ms at least: the clock of a Worker moves only by the delay of
+          // a timer (see jspiTimer in jspi_lib.js).
           timer: (f, ms) => {
             const id = this.nextTimer++;
-            this.timers.set(id, { at: Date.now() + ms, f });
+            this.timers.set(id, { at: Date.now() + Math.max(1, ms), f });
             this.handlers.at(-1)?.wake?.();
             return id;
           },
@@ -429,6 +450,41 @@ export class Vm {
     this.waitUntil?.(put);
   }
 
+  // In the global scope of a Worker, after a restore (global.js): the
+  // threads start, and a GET request of path goes to the app. So V8
+  // compiles the functions of a request here, not in the first request
+  // (the global scope has its own time limit). No timers here: the jobs
+  // of the threads run between microtasks. The request must not use I/O
+  // of the host (SQL, sockets).
+  //
+  // The reseed of OpenSSL costs about 30 ms of CPU at its first run in an
+  // isolate. So the warm-up also reseeds, with zero bytes: the global
+  // scope has no random values, and the host gives zeros to the VM while
+  // it warms up. The random bytes of the first request then reseed OpenSSL
+  // again, before that request (seed()). A value that the warm-up makes
+  // is the same in each isolate, as a value of the snapshot is.
+  async warm(path) {
+    this.resume = () => seed(this.beam);
+    const random = crypto.getRandomValues;
+    crypto.getRandomValues = (v) => v.fill(0);
+    try {
+      this.exports.erts_wasm_resume();
+      this.event({ t: 'restored' }, new Uint8Array(48));
+      const url = new URL(path, 'http://localhost');
+      let done = false;
+      this.bridge(new Request(url), url, false, undefined, () => {})
+        .then((r) => r.arrayBuffer()).finally(() => { done = true; });
+      const idle = { jobs: [] };
+      for (let i = 0; !done && i < 100000; i++) {
+        this.runJobs(idle);
+        await null;
+      }
+      if (!done) console.log(`beam: warm ${path}: no response`);
+    } finally {
+      crypto.getRandomValues = random;
+    }
+  }
+
   memory() {
     return `memory ${this.beam.HEAPU8.length >> 20} MB`;
   }
@@ -457,6 +513,11 @@ export class Vm {
 
   async request(request, h, finished) {
     await this.ready;
+    if (this.resume) {
+      const f = this.resume;
+      this.resume = null;
+      f();
+    }
     if (this.makeKey) await this.makeSnapshot();
     const url = new URL(request.url);
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';

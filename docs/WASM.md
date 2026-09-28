@@ -378,8 +378,9 @@ without ERTS. The output is a directory:
 | File | What |
 |---|---|
 | `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | the runtime Worker (`NAME`): the BEAM, with no program |
-| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`); the runtime gets `release.bin` from it at the first request of an isolate |
-| `durable.js`, `wrangler.durable.jsonc` | the same runtime in one Durable Object (one VM for all the requests, and its SQLite storage for Ecto SQLite): `wrangler deploy -c wrangler.durable.jsonc` |
+| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`, with no public URL); the runtime gets `release.bin` from it at the first request of an isolate |
+| `durable.js`, `wrangler.durable.jsonc` | the same runtime in one Durable Object (`NAME-durable`: one VM for all the requests, and its SQLite storage for Ecto SQLite): `wrangler deploy -c wrangler.durable.jsonc` |
+| `global.js`, `wrangler.global.jsonc` | the runtime Worker `NAME` with the release and a snapshot of the build in it: its global scope restores the VM (not for Ecto SQLite). First `node wasm/snapshot/snapshot.mjs DIR --warm 4000:/`, then `wrangler deploy -c wrangler.global.jsonc`. See "On Cloudflare: the first deploy" |
 | `worker.capnp` | both Workers for `workerd` |
 | `tcp-proxy.mjs` | a local TCP port for a listener of the program (a WebSocket to `/.tcp/PORT`) |
 
@@ -424,7 +425,10 @@ without ERTS. The output is a directory:
   In `wrangler dev`, with the default costs of the packages, bcrypt takes
   about 0.6 s and argon2 0.5 to 0.75 s (argon2 also takes 64 MiB, in the
   128 MB of an isolate); with low costs, 4 ms and 6 to 40 ms. So a login
-  needs the paid plan (30 s of CPU), not the free plan (10 ms).
+  needs the paid plan (30 s of CPU), not the free plan (10 ms). On
+  Cloudflare, the default costs in a Durable Object took 1,513 ms of CPU,
+  and argon2 once went over the memory limit of the isolate (see "On
+  Cloudflare: the first deploy").
 
 Measured in `workerd` (the first request after a new `workerd`, 7 runs
 each, medians; the release directory of the Phoenix demo, 8.5 MB, 1,347
@@ -787,7 +791,8 @@ documentation (2026-09-27):**
    steps (but its output makes the boot 3 times slower).
 3. **Not possible:** a boot in the global scope of the Worker (no timers or
    random values there, and a limit of 1 s); a Worker cannot choose the
-   compiler tier of V8.
+   compiler tier of V8. But a restore of a snapshot of the build works
+   there: see "On Cloudflare: the first deploy".
 
 **Cloudflare Pages** does not help: Pages Functions are Workers, with the
 same limits and prices (Pages limits and pricing pages). A Durable Object
@@ -877,10 +882,11 @@ runtime Worker copies the memory into a new instance and the VM goes on.
 Tested with `wrangler dev` (Miniflare: its Cache API keeps the snapshot
 on the disk): the first start made it (19 MB for Cowboy, 31 MB for
 Phoenix); after a restart, the first request restored it, and LiveView
-worked on the restored VM. Not measured on Cloudflare yet: the time to
-read 20 to 34 MB from the Cache API, and the memory while the Worker
-makes a snapshot (the VM, 58 MB for Phoenix, and the copy, 31 MB, in the
-128 MB of an isolate).
+worked on the restored VM. On Cloudflare (see "On Cloudflare: the first
+deploy"): a restore from the Cache API takes 163 to 428 ms of CPU and
+345 to 742 ms in all (Cowboy, 19.3 MB); the Worker and the Durable
+Object made their snapshots (19.3 MB, and 32.3 MB with a VM of 58 MB)
+with no memory error.
 
 **Or at build time**, with Node.js 26 (a snapshot after warm-up
 requests; the Worker with the release keeps it as `snapshot.bin`, and
@@ -984,18 +990,20 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
 - **A crash dump** of the VM in the Worker fails with `SuspendError`: a
   wait inside the `setjmp` wrappers (`invoke_*`) of `erl_crash_dump.c`
   cannot suspend under JSPI. Not about the snapshot.
-- Not tested: a deploy to Cloudflare, and `performance.now()` there.
+- On Cloudflare, `performance.now()` does not move during work: see "On
+  Cloudflare: the first deploy".
 
 ### Cloudflare's limits (from its limits and pricing pages, 2026-09-28; the limits page was updated 2026-09-05)
 
 - **CPU time for each request:** 10 ms on the free plan, 30 s (up to 5
-  min) on the paid plan. The boot of the VM takes about 0.5 s of CPU, and
-  a restore from the snapshot about 0.2 s, so a first request needs the
-  paid plan; a warm request (3 ms) can fit in 10 ms, but the first
-  request of each isolate does not.
-- **Startup:** 1 s for the global scope of the Worker. To check on a
-  deploy: a restore of a bundled snapshot there, so that the first
-  request is short.
+  min) on the paid plan. Measured: a boot takes 0.4 to 1.4 s of CPU, a
+  restore from the Cache API 0.16 to 0.43 s, a restore in the global
+  scope with a warm-up about 11 ms, and a warm request 2 to 10 ms. On
+  the Free plan, no request failed for its CPU time (see "On
+  Cloudflare: the first deploy").
+- **Startup:** 1 s for the global scope of the Worker. Measured: 48 ms
+  for a restore of a bundled snapshot there, and 84 to 223 ms with a
+  warm-up request.
 - **Memory:** 128 MB for each isolate, the JavaScript heap and the
   WebAssembly memory together. One VM (48 to 58 MB, and `release.bin` in
   its file system) fits; two VMs in one isolate would not.
@@ -1003,6 +1011,126 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
 - **Price:** Workers bill requests and CPU time, with no charge for idle
   time. Durable Objects are on the free plan too, and bill duration while
   in memory, except objects that are idle and eligible for hibernation.
+
+### On Cloudflare: the first deploy (2026-09-28)
+
+**The setup.** `beam.com` of main (`26675a4`, the CI artifact), wrangler
+4.142.0, an account on the **Free plan**, the data center IAD. The
+client reached Cloudflare through a proxy (the TLS connection took 0.13
+to 0.46 s), so the times here are those of the server: `cpuTime` and
+`wallTime` of `wrangler tail --format json`.
+
+**JSPI works.** The runtime Worker and the Durable Object boot the VM
+and serve requests, as in `workerd`. The snapshot works too: the Worker
+makes it at its first request and keeps it in the Cache API, and the
+next isolates restore it. The Cache API also works in a Durable Object.
+
+**The plain Worker** (`examples/worker`, Cowboy, 7.8 MB release; VM
+memory 40 MB):
+
+| | CPU | Wall |
+|---|---|---|
+| First request of a deploy: boot, and a snapshot of 19.3 MB (2 deploys) | 435 and 553 ms | 796 and 913 ms |
+| First request of a new isolate: a restore from the Cache API (11 isolates) | 163 to 428 ms (median 277) | 345 to 742 ms (median 570) |
+| The next requests | 2 to 3 ms (the second of an isolate: 9 to 22 ms) | 2 to 4 ms |
+
+At low traffic, Cloudflare sends the requests to many isolates: 14 of
+30 requests were the first request of their VM. So the time of a cold
+start is the time that a person sees most often.
+
+**A restore in the global scope** (`global.js`, `wrangler.global.jsonc`).
+The runtime Worker has the release and a snapshot of the build
+(`snapshot.mjs`, 20.4 MB) as modules: 33.4 MB, 11.5 MB with gzip, and
+the Free plan took it. The global scope makes the VM and copies the
+memory, and the first request starts the threads and reseeds OpenSSL.
+Cloudflare measured the startup time at the deploy: 48 ms, and 84 to 223
+ms with the warm-up (the limit is 1 s).
+
+| First request of a new isolate | CPU | Wall |
+|---|---|---|
+| A restore from the Cache API, in the request (above) | 163 to 428 ms | 345 to 742 ms |
+| A restore in the global scope (9 isolates) | 72 to 136 ms (median 84) | the same |
+| and a warm-up request of `/` there (`BEAM_WARM`; 10 isolates) | 35 to 74 ms (median 40) | the same |
+| and a reseed of OpenSSL with zero bytes in the warm-up (13 isolates) | 8 to 21 ms (median 11) | the same |
+| (only a test: no reseed at the first request; 16 isolates) | 7 to 17 ms (median 10) | |
+
+- **Why the warm-up:** V8 compiles each function of the WebAssembly
+  module at its first call, in each isolate. In the global scope, a
+  GET request of `BEAM_WARM` goes to the app (with no timers there: the
+  jobs of the threads run between microtasks). Two warm-up requests
+  gave no more gain.
+- **Why the reseed in the warm-up:** the first reseed of OpenSSL in an
+  isolate costs about 30 ms of CPU. The global scope has no random
+  values, so the host gives zero bytes to the VM during the warm-up,
+  and the first request reseeds with random bytes as before. Tested: 16
+  requests to new isolates gave 16 different values of
+  `crypto:strong_rand_bytes/1`.
+- A warm-up request must not use SQL or sockets (I/O of the host). A
+  snapshot of the build has no SQL either, so the build writes no
+  `global.js` for Ecto SQLite.
+- So the first request of an isolate uses about 11 ms of CPU, near the
+  10 ms of the Free plan. A request of a path that the warm-up did not
+  use costs more (`/rand`: 9 to 21 ms).
+
+**The Durable Object** (`examples/notes`, Ecto SQLite on the storage of
+the object, 16.2 MB release; VM memory 58 MB):
+
+| | CPU | Wall (front Worker) |
+|---|---|---|
+| Boot, and a snapshot of 32.3 MB | 1,362 ms | 1,252 ms |
+| Restore from the Cache API | 142 to 206 ms | 350 to 405 ms |
+| `/`, `/notes`, `/tx` on a warm VM | 3 to 10 ms | 13 to 26 ms |
+| `/hash` (low costs) | 30 ms | |
+| `/hash?cost=default` | 1,513 ms | 1,968 ms |
+
+- `/`, `/notes` (a blob too), `/tx` and `/hash` work.
+- **The VM used the CPU all the time** (fixed): 32.5 s of CPU in 34.4 s
+  with no requests. The clock of a Worker moves only by the delay of a
+  timer, not at `setTimeout(0)`, and a wait of less than 1 ms became a
+  timer of 0 ms: a thread waited for the same time again and again
+  (docs/UPSTREAM.md W3). Now a timer waits 1 ms at least: 11 to 17 ms
+  of CPU in each 5 s with no requests. Then Cloudflare evicted the idle
+  object after about 15 s, and the next request restored a new VM.
+- **argon2 with the default costs** (64 MiB) went over the 128 MB of
+  the isolate: "Durable Object's isolate exceeded its memory limit and
+  was reset". A later try passed (1,513 ms of CPU), but the object was
+  reset again soon after: the WebAssembly memory does not shrink
+  (docs/UPSTREAM.md W5). Use lower argon2 costs, or bcrypt.
+- The tail event of a Durable Object comes late, and its wall time (and
+  CPU time) runs until the next event of the object. So it is not the
+  time of the answer: use the front Worker for that.
+
+**The Free plan.** A Worker on the Free plan cannot set `limits.cpu_ms`
+("CPU limits are not supported for the Free plan"). But no request
+failed for its CPU time: boots of 435 ms and 1,362 ms, restores of up
+to 428 ms, and argon2 with 1,513 ms all passed, in about 150 requests.
+So the 10 ms is not a hard limit for each request (Cloudflare does not
+document how it applies it); do not count on this.
+
+**Other differences from `workerd`:**
+
+- **The clock** does not move during work: `:timer.tc` in the app gave
+  0 ms for hashes of 0.6 s, and `Date.now()` in the global scope does
+  not move. A time that Erlang measures in one request is the time of
+  the I/O and timers, not of the CPU.
+- **The global scope** takes top-level `await`, `WebAssembly.instantiate()`
+  and a 64 MB allocation, but no random values, timers or I/O
+  (docs/UPSTREAM.md W4). `env` comes from `cloudflare:workers` there.
+- **Sizes:** the Free plan took Workers of 11.5 MB with gzip (33.4 MB
+  without compression).
+- **`PHX_HOST`:** the host of a Worker is `NAME.SUBDOMAIN.workers.dev`
+  (the subdomain of the account), not `NAME.workers.dev`. The build now
+  writes `NAME.SUBDOMAIN.workers.dev`, to change. (Phoenix was not
+  deployed.)
+- **The Worker with the release was public:** anyone could get
+  `release.bin` from `NAME-release.SUBDOMAIN.workers.dev`. Now it has
+  `"workers_dev": false`: the runtime Worker gets it through its service
+  binding (tested: the URL gives 404, and the runtime Worker works).
+- **The Durable Object had the name of the runtime Worker** (`NAME`), so
+  its deploy replaced that Worker. Now it is `NAME-durable`.
+
+**Not tested:** D1 (the API token had no D1 permission), Phoenix and
+LiveView, R2 (not enabled on the account), and a paid plan.
 
 ## Erlang in a browser tab
 
@@ -1068,8 +1196,10 @@ Still open:
 - **Data:** Postgres through `wasm_tcp` (Postgrex over `gen_tcp` and
   `ssl`, which work now). (SQLite on D1 and Durable Objects is done: see
   "Ecto SQLite".)
-- **A deploy to Cloudflare** (this spike ran `workerd` locally): the CPU
-  time and memory limits in production, and JSPI there.
+- **Cloudflare:** the first deploy is done (see "On Cloudflare: the
+  first deploy"). Still to test there: D1, Phoenix and LiveView, R2 for
+  the snapshots, and a paid plan. A restore in the global scope of a
+  Durable Object (its constructor) is not tried yet.
 - **More NIFs:** Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one
   crate at a time).
 - **WASI:** not now. ERTS needs threads: `wasi-threads` was withdrawn,

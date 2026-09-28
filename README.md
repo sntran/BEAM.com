@@ -569,6 +569,12 @@ workerd serve worker/worker.capnp                          # test on this comput
   its booted VM (in the Cache API, or an R2 bucket), and the next
   isolates start from it: the first request of a Phoenix app takes about
   0.2 s, not 0.6 s. The var `BEAM_SNAPSHOT = "off"` turns it off.
+- `wrangler.global.jsonc` (not for Ecto SQLite) puts the release and a
+  snapshot of the build (`node wasm/snapshot/snapshot.mjs DIR --warm
+  4000:/`, Node.js 26) into one Worker: its global scope restores the
+  VM before the first request. On Cloudflare (the Free plan), the first
+  request of a new isolate then took about 11 ms of CPU, not 163 to 428
+  ms, and the next ones 2 to 4 ms.
 - Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
   (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
   SQLite storage of a Durable Object (`wrangler deploy -c
@@ -576,8 +582,8 @@ workerd serve worker/worker.capnp                          # test on this comput
   commits alone: a rollback does not undo.
 
 See [`docs/WASM.md`](docs/WASM.md) for the details, the measurements
-(first request of a Phoenix app: 0.6 s; next requests: 3 ms) and the
-limits.
+(first request of a Phoenix app: 0.6 s; next requests: 3 ms), the first
+deploy to Cloudflare, and the limits.
 
 ### JIT, and the interpreter (`beam-emu.com`)
 

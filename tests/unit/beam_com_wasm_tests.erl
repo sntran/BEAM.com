@@ -155,6 +155,36 @@ snapshot_key_test_() ->
       ?_assertNotEqual(Key, beam_com_wasm:snapshot_key(Files, lists:keyreplace("beam.wasm", 1, Worker,
                                                                                {"beam.wasm", <<"c">>})))}].
 
+%% The files of the output directory: the global scope variant only
+%% without Ecto SQLite, the Durable Object with its own name, and the
+%% Worker with the release with no public URL.
+worker_files_test() ->
+    Root = root(),
+    Priv = filename:join([Root, "lib", "wasm_host-0.1.0", "priv", "worker"]),
+    Runtime = filename:join(Root, "runtime"),
+    [ok = filelib:ensure_path(D) || D <- [Priv, Runtime]],
+    [ok = file:write_file(filename:join(Priv, F), F)
+     || F <- ["worker.js", "durable.js", "global.js", "tcp-proxy.mjs", "app.js"]],
+    [ok = file:write_file(filename:join(Runtime, F), F) || F <- ["beam.mjs", "beam.wasm"]],
+    Files = fun(Apps) -> [{F, iolist_to_binary(D)}
+                          || {F, D} <- beam_com_wasm:worker_files(#{name => "app", apps => Apps},
+                                                                  Runtime, Root)] end,
+    Plain = Files([]),
+    Has = fun(Fs, Name, Text) -> binary:match(proplists:get_value(Name, Fs), Text) =/= nomatch end,
+    ?assertEqual(<<"global.js">>, proplists:get_value("global.js", Plain)),
+    ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"main\": \"global.js\"">>)),
+    ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
+    ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"name\": \"app-durable\"">>)),
+    ?assert(Has(Plain, "release/wrangler.jsonc", <<"\"workers_dev\": false">>)),
+    Sqlite = Files([exqlite]),
+    ?assertNot(lists:keymember("global.js", 1, Sqlite)),
+    ?assertNot(lists:keymember("wrangler.global.jsonc", 1, Sqlite)),
+    ?assert(Has(Sqlite, "wrangler.jsonc", <<"\"d1_databases\"">>)),
+    Phoenix = Files([phoenix]),
+    ?assert(Has(Phoenix, "wrangler.jsonc", <<"\"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\"">>)),
+    ?assert(Has(Phoenix, "wrangler.global.jsonc",
+                <<"\"BEAM_WARM\": \"/\", \"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\"">>)).
+
 %% A module in place of the NIF of exqlite: the exports of the original,
 %% calls to the shim, and not_supported for the others.
 sqlite_shim_test() ->

@@ -38,7 +38,12 @@ addToLibrary({
     jspiQueue.port.postMessage(0);
   },
   $jspiQueue: { fns: [], port: null },
-  $jspiTimer: (f, ms) => Module['jspiSchedule']?.timer(f, ms) ?? setTimeout(f, ms),
+  // A timer waits 1 ms at least. The clock of a Cloudflare Worker moves
+  // only by the delay of a timer (and at I/O), not during work or at
+  // setTimeout(0): a thread that waits for a time less than 1 ms away (a
+  // timed wait rounds it down to 0) would wait again and again, and the
+  // VM of a Durable Object then used the CPU all the time.
+  $jspiTimer: (f, ms) => Module['jspiSchedule']?.timer(f, ms) ?? setTimeout(f, Math.max(1, ms)),
   $jspiClear: (id) => { const s = Module['jspiSchedule']; if (s) s.clear(id); else clearTimeout(id); },
   // Node.js: the program gets the environment of the process.
   $jspiEnv__deps: ['$ENV'],

@@ -69,14 +69,20 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                            "  boot: ~ts~n"
                            "  test: workerd serve ~ts~n"
                            "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n"
-                           "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n",
+                           "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n"
+                           "~ts",
                            [beam_com:name(), Output, Name, Name, Name, Vsn, length(Files),
                             iolist_size(Bin) / 1048576,
                             case Mods of
                                 [] -> "the modules load one by one (no native run)";
                                 _ -> io_lib:format("~b modules in one batch", [length(Mods)])
                             end,
-                            filename:join(Output, "worker.capnp"), Output, Output]),
+                            filename:join(Output, "worker.capnp"), Output, Output,
+                            case lists:keymember("global.js", 1, Worker) of
+                                true -> "  (or the VM restored in the global scope: see "
+                                        "wrangler.global.jsonc)\n";
+                                false -> ""
+                            end]),
     ok.
 
 warn(true, _Format, _Args) -> ok;
@@ -322,14 +328,22 @@ worker_files(#{name := Name} = Rel, Runtime, Root) ->
     [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "worker"])),
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
+    Sqlite = lists:member(exqlite, maps:get(apps, Rel, [])),
+    %% A snapshot of the build (snapshot.mjs) has no SQL of the host: no
+    %% global.js for Ecto SQLite.
+    Global = case Sqlite of
+                 true -> [];
+                 false -> [{"global.js", Worker("global.js")},
+                           {"wrangler.global.jsonc", wrangler_global(Name, Phoenix)}]
+             end,
     [{"worker.js", Worker("worker.js")},
      {"durable.js", Worker("durable.js")},
-     {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)},
-     {"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
+     {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)}] ++ Global ++
+    [{"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
      {"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
      {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
      {"release/app.js", Worker("app.js")},
-     {"wrangler.jsonc", wrangler(Name, Phoenix, lists:member(exqlite, maps:get(apps, Rel, [])))},
+     {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
      {"release/wrangler.jsonc", wrangler_release(Name)},
      {"worker.capnp", capnp(Phoenix)}].
 
@@ -343,11 +357,7 @@ wrangler(Name, Phoenix, Sqlite) ->
                      "\", \"database_id\": \"00000000-0000-0000-0000-000000000000\" }]";
              false -> ""
          end,
-    Vars = case Phoenix of
-               true -> ",\n  // wrangler secret put SECRET_KEY_BASE (mix phx.gen.secret)\n"
-                       "  \"vars\": { \"PHX_HOST\": \"" ++ Name ++ ".workers.dev\" }";
-               false -> ""
-           end,
+    Vars = phx_vars(Name, Phoenix),
     ["// The BEAM runtime Worker. It gets the release from the Worker\n"
      "// ", Name, "-release (deploy that one first). The text \"vars\" are\n"
      "// the environment of the release.\n"
@@ -374,18 +384,25 @@ wrangler(Name, Phoenix, Sqlite) ->
      "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }]",
      D1, Vars, "\n}\n"].
 
+%% The host of a workers.dev URL has the subdomain of the account
+%% (NAME.SUBDOMAIN.workers.dev), which the build does not know.
+phx_vars(_Name, false) ->
+    "";
+phx_vars(Name, true) ->
+    ",\n  // wrangler secret put SECRET_KEY_BASE (mix phx.gen.secret). PHX_HOST:\n"
+    "  // the host of the Worker (wrangler deploy shows it).\n"
+    "  \"vars\": { \"PHX_HOST\": \"" ++ Name ++ ".SUBDOMAIN.workers.dev\" }".
+
 %% The same runtime in one Durable Object (durable.js), with its SQLite
-%% storage for Ecto SQLite.
+%% storage for Ecto SQLite. Its own name (NAME-durable), so that it does
+%% not replace the runtime Worker NAME.
 wrangler_durable(Name, Phoenix) ->
-    Vars = case Phoenix of
-               true -> ",\n  \"vars\": { \"PHX_HOST\": \"" ++ Name ++ ".workers.dev\" }";
-               false -> ""
-           end,
+    Vars = phx_vars(Name, Phoenix),
     ["// The BEAM runtime in one Durable Object (durable.js): one VM for all\n"
      "// the requests, and its SQLite storage for Ecto SQLite.\n"
      "//   wrangler deploy -c wrangler.durable.jsonc\n"
      "{\n"
-     "  \"name\": \"", Name, "\",\n"
+     "  \"name\": \"", Name, "-durable\",\n"
      "  \"main\": \"durable.js\",\n"
      "  \"compatibility_date\": \"", ?DATE, "\",\n"
      "  \"compatibility_flags\": [\"no_handle_cross_request_promise_resolution\"],\n"
@@ -401,13 +418,46 @@ wrangler_durable(Name, Phoenix) ->
      "  \"migrations\": [{ \"tag\": \"v1\", \"new_sqlite_classes\": [\"Beam\"] }]",
      Vars, "\n}\n"].
 
+%% The runtime Worker with the release and a snapshot of the build in it
+%% (global.js): the global scope restores the VM.
+wrangler_global(Name, Phoenix) ->
+    Vars = case phx_vars(Name, Phoenix) of
+               "" -> ",\n  \"vars\": { \"BEAM_WARM\": \"/\" }";
+               V -> string:replace(V, "\"vars\": { ", "\"vars\": { \"BEAM_WARM\": \"/\", ")
+           end,
+    ["// The BEAM runtime Worker with the release and a snapshot of the build\n"
+     "// (global.js): its global scope restores the VM, so the first request\n"
+     "// of an isolate is short. First make release/snapshot.bin:\n"
+     "//   node wasm/snapshot/snapshot.mjs DIR --warm 4000:/\n"
+     "//   wrangler deploy -c wrangler.global.jsonc\n"
+     "// BEAM_WARM: a path of the app for one GET request in the global\n"
+     "// scope (with no SQL or sockets); remove it for no request.\n"
+     "{\n"
+     "  \"name\": \"", Name, "\",\n"
+     "  \"main\": \"global.js\",\n"
+     "  \"compatibility_date\": \"", ?DATE, "\",\n"
+     "  \"compatibility_flags\": [\"no_handle_cross_request_promise_resolution\"],\n"
+     "  \"no_bundle\": true,\n"
+     "  \"find_additional_modules\": true,\n"
+     "  \"rules\": [\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"global.js\", \"worker.js\", \"beam.mjs\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"Data\", \"globs\": [\"release/*.bin\"] }\n"
+     "  ]",
+     Vars, "\n}\n"].
+
+%% No workers.dev URL: the runtime Worker gets the release through its
+%% service binding, and no one else may get release.bin.
 wrangler_release(Name) ->
     ["// The Worker with the release (release.bin), for the runtime Worker,\n"
-     "// and a snapshot of the build if there is one (snapshot.bin).\n"
+     "// and a snapshot of the build if there is one (snapshot.bin). It has no\n"
+     "// public URL: the runtime Worker gets them through its service binding.\n"
      "{\n"
      "  \"name\": \"", Name, "-release\",\n"
      "  \"main\": \"app.js\",\n"
      "  \"compatibility_date\": \"", ?DATE, "\",\n"
+     "  \"workers_dev\": false,\n"
+     "  \"preview_urls\": false,\n"
      "  \"no_bundle\": true,\n"
      "  \"find_additional_modules\": true,\n"
      "  \"rules\": [\n"
