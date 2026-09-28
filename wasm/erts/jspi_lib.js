@@ -33,11 +33,14 @@ addToLibrary({
     if (!jspiQueue.port) {
       const ch = new MessageChannel();
       ch.port1.onmessage = () => jspiQueue.fns.shift()?.();
+      // Keep port1: a Worker can collect a port that only its handler
+      // holds, and its messages are then lost (a boot stopped).
+      jspiQueue.recv = ch.port1;
       jspiQueue.port = ch.port2;
     }
     jspiQueue.port.postMessage(0);
   },
-  $jspiQueue: { fns: [], port: null },
+  $jspiQueue: { fns: [], port: null, recv: null },
   // A timer waits 1 ms at least. The clock of a Cloudflare Worker moves
   // only by the delay of a timer (and at I/O), not during work or at
   // setTimeout(0): a thread that waits for a time less than 1 ms away (a

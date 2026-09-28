@@ -287,8 +287,11 @@ meta(#{name := Name, vsn := Vsn, kind := Kind, files := Files} = Rel) ->
             | VmArgs],
     %% Phoenix starts its server only with PHX_SERVER.
     Env = [{'PHX_SERVER', <<"true">>} || lists:member(phoenix, maps:get(apps, Rel, []))],
+    %% sql: Ecto SQLite (exqlite), whose boot can change the database (the
+    %% migrations): worker.js then keeps a snapshot for each database.
     #{name => unicode:characters_to_binary(Name), vsn => unicode:characters_to_binary(Vsn),
-      args => [unicode:characters_to_binary(A) || A <- Args], env => maps:from_list(Env)}.
+      args => [unicode:characters_to_binary(A) || A <- Args], env => maps:from_list(Env),
+      sql => lists:member(exqlite, maps:get(apps, Rel, []))}.
 
 %% A snapshot that a Worker makes (worker.js) holds the memory of this
 %% runtime with this release: its key is the hash of both, and of the code

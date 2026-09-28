@@ -81,7 +81,7 @@ with_boot_modules_test_() ->
 meta_test_() ->
     Files = [{"releases/1/vm.args", <<"-sname a\n-s m\n">>}, {"releases/1/sys.config", <<"[].">>}],
     [{"a release of beam.com: its sys.config, and the flags of vm.args",
-      ?_assertEqual(#{name => <<"app">>, vsn => <<"1">>, env => #{},
+      ?_assertEqual(#{name => <<"app">>, vsn => <<"1">>, env => #{}, sql => false,
                       args => [<<"-mode">>, <<"interactive">>,
                                <<"-config">>, <<"/app/releases/1/sys">>,
                                <<"-boot">>, <<"/app/releases/1/start">>,
@@ -94,7 +94,11 @@ meta_test_() ->
                                <<"-config">>, <<"/app/tmp/run.runtime">> | _],
                       env := #{'PHX_SERVER' := <<"true">>}},
                     beam_com_wasm:meta(#{name => "app", vsn => "1", kind => mix, files => [],
-                                         apps => [phoenix]}))}].
+                                         apps => [phoenix]}))},
+     {"Ecto SQLite: sql",
+      ?_assertMatch(#{sql := true},
+                    beam_com_wasm:meta(#{name => "app", vsn => "1", kind => mix, files => [],
+                                         apps => [exqlite]}))}].
 
 pack_test() ->
     Bin = iolist_to_binary(beam_com_wasm:pack([{"a", <<"xy">>}, {"é", [<<"z">>]}])),

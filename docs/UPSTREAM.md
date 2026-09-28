@@ -1331,6 +1331,27 @@ isolate.
 
 **Workaround.** Lower argon2 costs (`m_cost`), or bcrypt.
 
+### W6. A `MessagePort` that only its handler holds stops getting messages
+
+**Status:** seen on Cloudflare in a Durable Object (2026-09-29), not in
+workerd on this computer.
+
+**Symptom.** The boot of a Phoenix release in a Durable Object stopped
+before `init` (no output of `-init_debug`), with little CPU, in most
+tries. A small release booted.
+
+**Cause.** `jspiLater` (jspi_lib.js) kept only `port2` of its
+`MessageChannel`, and set `port1.onmessage`. The first message came;
+the message for the next thread did not. So the runtime collected
+`port1` (it depends on when the garbage collector runs), and the
+messages to it were lost. In a browser, a port with a message handler
+stays alive while its other port lives.
+
+**Workaround.** Keep a reference to `port1` too.
+
+**Possible upstream change.** Keep a `MessagePort` alive while it has a
+message handler and its other port is alive, as the HTML standard does.
+
 ## websock_adapter
 
 Seen with websock_adapter 0.6.0.

@@ -298,8 +298,10 @@ export default {
 export class Vm {
   // release and snapshot: the bytes of release.bin and snapshot.bin, for a
   // VM that the global scope of a Worker restores (global.js).
-  constructor(env, { plain = true, sql = null, release = null, snapshot = null } = {}) {
+  // id: the id of the Durable Object (with sql).
+  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null } = {}) {
     this.given = release && { release, snapshot };
+    this.id = id;
     this.sql = sql;            // ctx.storage.sql of a Durable Object (Ecto SQLite)
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
     this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
@@ -322,7 +324,12 @@ export class Vm {
     // (BEAM_SNAPSHOT = "off" turns them off).
     let snapBytes = bundled, key = null;
     if (!snapBytes && env.BEAM_SNAPSHOT !== 'off') {
-      key = await snapshotKey(env, releaseMeta(release), this.plain ? 'worker' : 'durable');
+      // A Durable Object with Ecto SQLite (sql of .release.json; true for an
+      // older build): a snapshot for each object, because the boot ran the
+      // migrations on the storage of that object.
+      const meta = releaseMeta(release);
+      const host = this.plain ? 'worker' : this.sql && (meta.sql ?? true) ? `durable ${this.id}` : 'durable';
+      key = await snapshotKey(env, meta, host);
       snapBytes = await snapshots.get(env, key);
     }
     const snap = snapBytes && parseSnapshot(snapBytes);
