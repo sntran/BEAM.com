@@ -31,9 +31,32 @@ Run the cells in order. To run all the cells, press <kbd>Esc</kbd>, then <kbd>e<
 }
 ```
 
-On Cloudflare, the clock of a Worker does not move while code runs (a protection against timing attacks). So a time that a cell measures is often 0 ms there.
-
 The system is `wasm32-unknown-emscripten`: the same ERTS as on a server, compiled to WebAssembly. The word size is 4 bytes, so a process takes half the memory of a process on a 64-bit server.
+
+### A clock for the edge
+
+On Cloudflare, the clocks of a Worker stop while code runs (a protection against timing attacks). They move again at the next I/O, such as a timer. `:timer.tc/1` thus gives 0 ms there.
+
+`Edge.measure/1` sleeps 1 ms before and after the function. Each sleep is a timer of the host, so the clock is up to date at the start and at the end. It also gives the reductions: the units of work of the VM, which do not need a clock. Code that a cell evaluates (not the code of a module) runs in the interpreter of Erlang terms, so it takes more reductions.
+
+```elixir
+defmodule Edge do
+  @doc false
+  def measure(fun) do
+    Process.sleep(1)
+    {r0, _} = :erlang.statistics(:exact_reductions)
+    t0 = System.monotonic_time(:microsecond)
+    result = fun.()
+    Process.sleep(1)
+    t1 = System.monotonic_time(:microsecond)
+    {r1, _} = :erlang.statistics(:exact_reductions)
+    # The time of the second sleep is not part of the work.
+    {%{ms: Float.round(max(t1 - t0 - 1_000, 0) / 1_000, 1), reductions: r1 - r0}, result}
+  end
+end
+
+Edge.measure(fn -> Enum.reduce(1..1_000_000, 0, &+/2) end)
+```
 
 ## Many small processes
 
@@ -46,8 +69,8 @@ count_input = Kino.Input.number("Processes", default: 10_000)
 ```elixir
 count = Kino.Input.read(count_input)
 
-{microseconds, pids} =
-  :timer.tc(fn ->
+{cost, pids} =
+  Edge.measure(fn ->
     for _ <- 1..count do
       spawn(fn ->
         receive do
@@ -65,7 +88,7 @@ bytes =
 
 Enum.each(pids, &send(&1, :stop))
 
-"#{count} processes in #{div(microseconds, 1000)} ms, #{div(bytes, count)} bytes each"
+"#{count} processes in #{cost.ms} ms (#{cost.reductions} reductions), #{div(bytes, count)} bytes each"
 ```
 
 ## Messages
@@ -109,8 +132,8 @@ defmodule Edge.Ring do
 end
 
 first = Edge.Ring.start(1_000)
-{microseconds, :ok} = :timer.tc(fn -> Edge.Ring.run(first, 100) end)
-"100,000 messages in #{div(microseconds, 1000)} ms"
+{cost, :ok} = Edge.measure(fn -> Edge.Ring.run(first, 100) end)
+"100,000 messages in #{cost.ms} ms (#{cost.reductions} reductions)"
 ```
 
 Kino can draw the messages between processes. This cell traces one request and its reply:

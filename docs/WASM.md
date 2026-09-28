@@ -1352,6 +1352,10 @@ on Cloudflare were not checked in a browser yet.
 
 - **The clock does not move while code runs** on Cloudflare (a
   protection against timing attacks). `:timer.tc/1` gives 0 ms there.
+  The clock moves at the next I/O, such as a timer. So `Edge.measure/1`
+  of the notebook sleeps 1 ms before and after the work, and it also
+  gives the reductions of the work. With `wrangler dev` it gives 55 ms
+  for 10,000 processes; it was not measured on Cloudflare yet.
 - Livebook needs `os_mon`, which beam.com does not have. `setup.sh`
   compiles its Erlang code from the source of the same OTP, and
   `livebook.patch` turns off its port programs.
