@@ -1259,6 +1259,42 @@ load stay in `release.bin`, compressed.
 exception handling of the engine, with no JavaScript frames) with JSPI,
 for all the code of the runtime.
 
+### EM5. Profile-guided optimization writes no profile
+
+**Seen with emsdk 6.0.10.**
+
+**Symptom.** A program built with `-fprofile-generate` (or
+`-fprofile-instr-generate`) writes no `.profraw` file at exit, and prints
+this error:
+
+```
+LLVM Profile Error: Runtime and instrumentation version mismatch : expected 10, but get 11
+```
+
+**Reproducer.**
+
+```sh
+cat > t.c <<'C'
+#include <stdio.h>
+#include <stdlib.h>
+int f(int x) { return x * 3 + 1; }
+int main(void) { int s = 0; for (int i = 0; i < 1000; i++) s += f(i); printf("%d\n", s); exit(0); }
+C
+emcc -O2 -fprofile-generate=$PWD -mllvm -disable-vp -sNODERAWFS -sEXIT_RUNTIME t.c -o t.js
+node t.js
+```
+
+**Cause.** The profile runtime of Emscripten
+(`system/lib/compiler-rt/lib/profile`) has the raw format version 10, and
+its clang writes version 11.
+
+**Also.** Without `-mllvm -disable-vp`, a large program (ERTS) stops with
+"memory access out of bounds" in `__llvm_profile_instrument_target`, the
+value profile of indirect calls.
+
+**Fix upstream.** Update the profile runtime of Emscripten to the
+compiler-rt of its LLVM.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, in the WebAssembly
@@ -1372,6 +1408,22 @@ stays alive while its other port lives.
 
 **Possible upstream change.** Keep a `MessagePort` alive while it has a
 message handler and its other port is alive, as the HTML standard does.
+
+### W7. WebAssembly memory accesses have explicit bounds checks
+
+**Seen with workerd 2026-09-26 (V8 15.4), the local runtime of wrangler.**
+
+**Symptom.** The same `beam.wasm` runs 25 to 30% slower in workerd than
+in Node.js 26 (V8 14.6), and the difference does not go away over time.
+
+**Cause.** Node.js with `--wasm-enforce-bounds-checks` gives the same
+times as workerd. So workerd does not use the trap handler of V8 (guard
+pages around the memory), and V8 checks the bounds of each load and store
+in code. A host of many isolates can have a reason for this: each memory
+with guard pages reserves a large virtual address range.
+
+**Fix upstream.** None for an application. We did not measure the
+Workers of Cloudflare itself.
 
 ## websock_adapter
 
