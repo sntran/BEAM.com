@@ -409,7 +409,12 @@ export class Vm {
           // -c false (no time correction) for a snapshot: the monotonic time
           // then follows the system time, which goes on after a restore (the
           // OS monotonic time of a new instance starts again at 0).
-          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...(this.makeKey || this.bootKey ? ['-c', 'false'] : []), '--',
+          // BEAM_ERL_FLAGS: more flags of the emulator, as beam takes them
+          // (-Mea min: no allocators of ERTS, only malloc; the VM of
+          // Livebook starts with 40 MB, not 70 MB, but :erlang.memory/0 is
+          // not supported).
+          const flags = (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean);
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...flags, ...(this.makeKey || this.bootKey ? ['-c', 'false'] : []), '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
