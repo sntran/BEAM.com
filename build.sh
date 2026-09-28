@@ -24,6 +24,12 @@
 #   BCRYPT_ELIXIR_VERSION  Version of the hex.pm package bcrypt_elixir
 #                    (default 3.3.2), whose NIF is linked into beam.com (for
 #                    phx.gen.auth). Only with ELIXIR=1.
+#   ARGON2_ELIXIR_VERSION  Version of the hex.pm package argon2_elixir
+#                    (default 4.1.3), whose NIF is linked into beam.com (for
+#                    phx.gen.auth --hashing-lib argon2). Only with ELIXIR=1.
+#   EXTRA_NIFS       More hex.pm packages whose NIFs are linked (a custom
+#                    build), separated by spaces: picosat_elixir (for Ash).
+#                    Only with ELIXIR=1.
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
@@ -78,6 +84,13 @@ EXQLITE_VERSION=${EXQLITE_VERSION:-0.41.0}
 EXQLITE_SHA256=${EXQLITE_SHA256:-a7e9b6bed529ab72aa07ed2a925ac109c27e6877a7a8af252361c396a4192855}
 BCRYPT_ELIXIR_VERSION=${BCRYPT_ELIXIR_VERSION:-3.3.2}
 BCRYPT_ELIXIR_SHA256=${BCRYPT_ELIXIR_SHA256:-471be5151874ae7931911057d1467d908955f93554f7a6cd1b7d804cac8cef53}
+ARGON2_ELIXIR_VERSION=${ARGON2_ELIXIR_VERSION:-4.1.3}
+ARGON2_ELIXIR_SHA256=${ARGON2_ELIXIR_SHA256:-7c295b8d8e0eaf6f43641698f962526cdf87c6feb7d14bd21e599271b510608c}
+PICOSAT_ELIXIR_VERSION=${PICOSAT_ELIXIR_VERSION:-0.2.3}
+PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d53e984e8cd99c832383b7ab78c16c66}
+# More packages whose NIFs are linked (custom builds), from the list of
+# hex_nif_recipe(): for example "picosat_elixir". Only with ELIXIR=1.
+EXTRA_NIFS=${EXTRA_NIFS:-}
 WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 ELIXIR=${ELIXIR:-1}
@@ -314,7 +327,66 @@ step_sqlite() {
 
 # The NIFs of Elixir packages are linked when their package is enabled.
 use_exqlite() { [ "$SQLITE" = 1 ] && [ "$ELIXIR" = 1 ]; }
-use_bcrypt() { [ "$ELIXIR" = 1 ]; }
+# The packages of hex_nif_recipe() whose NIFs are linked.
+hex_nif_packages() {
+    [ "$ELIXIR" = 1 ] || return 0
+    # shellcheck disable=SC2086
+    echo bcrypt_elixir argon2_elixir $EXTRA_NIFS
+}
+
+# hex_nif_recipe NAME: the version, the SHA-256 of the tarball and the
+# name of the NIF (STATIC_ERLANG_NIF_LIBNAME, and the name of its archive)
+# of a package, or an error for a package that is not in the list.
+hex_nif_recipe() {
+    case $1 in
+        bcrypt_elixir) echo "$BCRYPT_ELIXIR_VERSION $BCRYPT_ELIXIR_SHA256 bcrypt_nif" ;;
+        argon2_elixir) echo "$ARGON2_ELIXIR_VERSION $ARGON2_ELIXIR_SHA256 argon2_nif" ;;
+        picosat_elixir) echo "$PICOSAT_ELIXIR_VERSION $PICOSAT_ELIXIR_SHA256 picosat_nif" ;;
+        *) echo "EXTRA_NIFS: no recipe for the package $1" >&2
+           return 1 ;;
+    esac
+}
+
+# build_hex_nif NAME OUT CC AR CFLAGS: build the NIF of the package NAME
+# (in $HEXNIFS) as OUT/NIF.a, with the compiler CC and the archiver AR.
+# CFLAGS has the include directories of ERTS. The C files and flags are
+# those of the Makefile of the package.
+build_hex_nif() {
+    name=$1 out=$2 cc=$3 ar=$4 cflags=$5
+    set -- $(hex_nif_recipe "$name")
+    vsn=$1 sha=$2 lib=$3
+    fetch_hex "$name" "$vsn" "$sha"
+    log "Building the $name NIF as a static NIF ($cc)"
+    src=$HEXNIFS/$name-$vsn
+    obj=$out/$name
+    rm -rf "$obj" "$out/$lib.a" "$out/.aarch64/$lib.a"
+    mkdir -p "$obj"
+    nif="-DSTATIC_ERLANG_NIF_LIBNAME=$lib $cflags"
+    case $name in
+        bcrypt_elixir)
+            set -- "c_src/bcrypt_nif.c:$nif -Ic_src" "c_src/blowfish.c:-Ic_src" ;;
+        argon2_elixir)
+            # The reference implementation of Argon2, with threads for the
+            # lanes where there are threads (ARGON2_THREADS=0: none).
+            a="-Iargon2/include -Iargon2/src"
+            if [ "${ARGON2_THREADS:-1}" = 1 ]; then a="$a -pthread"; else a="$a -DARGON2_NO_THREADS"; fi
+            set -- "c_src/argon2_nif.c:$nif $a"
+            for f in argon2 core blake2/blake2b thread encoding ref; do
+                set -- "$@" "argon2/src/$f.c:$a"
+            done ;;
+        picosat_elixir)
+            # NGETRUSAGE: no getrusage() (only for its statistics; the
+            # header sys/unistd.h is not everywhere).
+            p="-std=c99 -DNDEBUG -DNGETRUSAGE"
+            set -- "c_src/picosat_nif.c:$nif $p" "c_src/picosat.c:$p" ;;
+    esac
+    for f in "$@"; do
+        c=${f%%:*}
+        # shellcheck disable=SC2086
+        (cd "$src" && "$cc" -O2 ${f#*:} -c "$c" -o "$obj/$(basename "$c" .c).o")
+    done
+    "$ar" rcs "$out/$lib.a" "$obj"/*.o
+}
 
 # Fetch the source of a hex.pm package into $HEXNIFS/NAME-VSN, and check
 # the SHA-256 of its tarball.
@@ -332,11 +404,11 @@ fetch_hex() {
     rm -f "$HEXNIFS/$1-$2.tar"
 }
 
-# The NIFs of the Elixir packages exqlite (for ecto_sqlite3) and
-# bcrypt_elixir (for phx.gen.auth) as static NIFs. ERTS finds a static
-# NIF by the name of its module (Elixir.Exqlite.Sqlite3NIF and
-# Elixir.Bcrypt.Base), before it opens the file that load_nif/2 gets
-# (priv/sqlite3_nif and priv/bcrypt_nif): so these files are not needed.
+# The NIFs of the Elixir packages exqlite (for ecto_sqlite3),
+# bcrypt_elixir and argon2_elixir (for phx.gen.auth), and those of
+# EXTRA_NIFS, as static NIFs. ERTS finds a static NIF by the name of its
+# module (for example Elixir.Bcrypt.Base), before it opens the file that
+# load_nif/2 gets (priv/bcrypt_nif): so these files are not needed.
 step_nifs() {
     t=$(target)
     erl_flags="-I$ERL_TOP/erts/emulator/beam -I$ERL_TOP/erts/include
@@ -364,18 +436,9 @@ step_nifs() {
         rm -f sqlite3_nif.a .aarch64/sqlite3_nif.a
         "$AR" rcs sqlite3_nif.a sqlite3_nif.o
     fi
-    if use_bcrypt; then
-        fetch_hex bcrypt_elixir "$BCRYPT_ELIXIR_VERSION" "$BCRYPT_ELIXIR_SHA256"
-        log "Building the bcrypt_elixir NIF as a static NIF"
-        cd "$HEXNIFS/bcrypt_elixir-$BCRYPT_ELIXIR_VERSION"
-        # shellcheck disable=SC2086
-        "$CC" -O2 -DSTATIC_ERLANG_NIF_LIBNAME=bcrypt_nif -Ic_src $erl_flags \
-            -c c_src/bcrypt_nif.c -o bcrypt_nif.o
-        # shellcheck disable=SC2086
-        "$CC" -O2 -Ic_src -c c_src/blowfish.c -o blowfish.o
-        rm -f bcrypt_nif.a .aarch64/bcrypt_nif.a
-        "$AR" rcs bcrypt_nif.a bcrypt_nif.o blowfish.o
-    fi
+    for p in $(hex_nif_packages); do
+        build_hex_nif "$p" "$HEXNIFS/static" "$CC" "$AR" "$erl_flags"
+    done
     return 0
 }
 
@@ -383,7 +446,9 @@ step_nifs() {
 # for the env of the beam_com application (beam_com_make).
 hex_nifs() {
     use_exqlite && echo "exqlite $EXQLITE_VERSION"
-    use_bcrypt && echo "bcrypt_elixir $BCRYPT_ELIXIR_VERSION"
+    for p in $(hex_nif_packages); do
+        echo "$p $(hex_nif_recipe "$p" | cut -d' ' -f1)"
+    done
     return 0
 }
 
@@ -493,14 +558,16 @@ step_wasm() {
 # The STATIC_NIFS value for the emulator Makefile. Empty: the configured
 # static NIFs (crypto and asn1).
 static_nifs() {
-    [ "$SQLITE" = 1 ] || [ "$WASM" = 1 ] || use_bcrypt || return 0
+    [ "$SQLITE" = 1 ] || [ "$WASM" = 1 ] || [ "$ELIXIR" = 1 ] || return 0
     t=$(target)
     printf '%s' "$ERL_TOP/lib/asn1/priv/lib/$t/asn1rt_nif.a" \
         " $ERL_TOP/lib/crypto/priv/lib/$t/crypto.a"
     [ "$SQLITE" = 1 ] && printf ' %s' "$ESQLITE/esqlite3_nif.a"
     # After esqlite3_nif.a, which has the SQLite that exqlite uses.
     use_exqlite && printf ' %s' "$HEXNIFS/exqlite-$EXQLITE_VERSION/sqlite3_nif.a"
-    use_bcrypt && printf ' %s' "$HEXNIFS/bcrypt_elixir-$BCRYPT_ELIXIR_VERSION/bcrypt_nif.a"
+    for p in $(hex_nif_packages); do
+        printf ' %s' "$HEXNIFS/static/$(hex_nif_recipe "$p" | cut -d' ' -f3).a"
+    done
     [ "$WASM" = 1 ] && printf ' %s' "$WAMR/wasm.a"
     return 0
 }
@@ -567,8 +634,8 @@ step_multicall() {
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
-    # know it.
-    rm -f "$t/opt/$FLAVOR/driver_tab.c"
+    # know it (neither for driver_tab.c nor for its object).
+    rm -f "$t/opt/$FLAVOR/driver_tab.c" "$objdir/driver_tab.o"
     nifs=$(static_nifs)
     # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
     # __wrap_mkdir() and __wrap_chown() in cosmo/beam_com.c.

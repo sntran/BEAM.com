@@ -137,16 +137,17 @@ probe() {
     probe=0
 }
 
-# The versions of exqlite and bcrypt_elixir whose NIFs are in beam.com
-# ("Linked NIFs" in "beam.com --version"), in exqlite_vsn and bcrypt_vsn
-# (empty when a NIF is not linked).
+# The versions of exqlite, bcrypt_elixir and argon2_elixir whose NIFs are
+# in beam.com ("Linked NIFs" in "beam.com --version"), in exqlite_vsn,
+# bcrypt_vsn and argon2_vsn (empty when a NIF is not linked).
 linked_nifs() {
     linked=$($runner "$dir/beam.com" --version | sed -n 's/^  Linked NIFs : //p' | tr ' ' '\n')
     exqlite_vsn=$(echo "$linked" | sed -n 's/^exqlite-//p')
     bcrypt_vsn=$(echo "$linked" | sed -n 's/^bcrypt_elixir-//p')
+    argon2_vsn=$(echo "$linked" | sed -n 's/^argon2_elixir-//p')
 }
 
-# After mix compiled exqlite and bcrypt_elixir (the output of check is in
+# After mix compiled exqlite, bcrypt_elixir and argon2_elixir (the output of check is in
 # $tmp, and check has seen the exit status 0): no error of the compile or
 # of make, and no NIF file (neither built nor downloaded). Not every
 # "error" line: the app can log errors at run time (for example
@@ -156,13 +157,14 @@ no_nif_build() {
     if grep -q -e 'Could not compile' -e '== Compilation error' -e ': make: ' \
             -e 'Compilation failed' "$tmp" ||
        [ -e _build/dev/lib/exqlite/priv/sqlite3_nif.so ] ||
-       [ -e _build/dev/lib/bcrypt_elixir/priv/bcrypt_nif.so ]; then
-        echo "FAIL: mix built or downloaded a NIF of exqlite or bcrypt_elixir"
+       [ -e _build/dev/lib/bcrypt_elixir/priv/bcrypt_nif.so ] ||
+       [ -e _build/dev/lib/argon2_elixir/priv/argon2_nif.so ]; then
+        echo "FAIL: mix built or downloaded a NIF of exqlite, bcrypt_elixir or argon2_elixir"
         fail=1
         failed="$failed
-  mix: an error, or a NIF file of exqlite or bcrypt_elixir in _build"
+  mix: an error, or a NIF file of exqlite, bcrypt_elixir or argon2_elixir in _build"
     else
-        echo "PASS: no NIF built for exqlite and bcrypt_elixir"
+        echo "PASS: no NIF built for exqlite, bcrypt_elixir and argon2_elixir"
     fi
 }
 
@@ -575,20 +577,21 @@ if [ -f "$dir/beam.com" ]; then
         mv mix.exs.new mix.exs
         check mix 'jason@@telemetry' deps.get
         check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
-        # The NIFs of exqlite and bcrypt_elixir are in beam.com: the
+        # The NIFs of exqlite, bcrypt_elixir and argon2_elixir are in beam.com: the
         # packages (of the versions in "beam.com --version") compile without
         # make and a C compiler (MAKE is the program make in the cache,
         # which does nothing for them), with no NIF file in priv, and
         # load_nif/2 finds the static NIFs. esqlite (in the zip) and
         # exqlite use the same SQLite. Not on NetBSD (see the watcher).
         linked_nifs
-        if [ "$os" != netbsd ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then
-            sed "s/{:jason, \"~> 1.4\"},/{:jason, \"~> 1.4\"}, {:exqlite, \"$exqlite_vsn\"}, {:bcrypt_elixir, \"$bcrypt_vsn\"},/" mix.exs > mix.exs.new
+        if [ "$os" != netbsd ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ] &&
+           [ -n "$argon2_vsn" ]; then
+            sed "s/{:jason, \"~> 1.4\"},/{:jason, \"~> 1.4\"}, {:exqlite, \"$exqlite_vsn\"}, {:bcrypt_elixir, \"$bcrypt_vsn\"}, {:argon2_elixir, \"$argon2_vsn\"},/" mix.exs > mix.exs.new
             mv mix.exs.new mix.exs
-            check mix 'exqlite@@bcrypt_elixir' deps.get
-            check mix 'Generated exqlite app@@Generated bcrypt_elixir app' deps.compile
+            check mix 'exqlite@@bcrypt_elixir@@argon2_elixir' deps.get
+            check mix 'Generated exqlite app@@Generated bcrypt_elixir app@@Generated argon2_elixir app' deps.compile
             no_nif_build
-            check mix '^exqlite: {:row, \["3\.[0-9.]*", 2\]}$@@^bcrypt: true$' run -e '{:ok, c} = Exqlite.Sqlite3.open(":memory:"); {:ok, s} = Exqlite.Sqlite3.prepare(c, "select sqlite_version(), 1 + 1"); IO.puts("exqlite: #{inspect(Exqlite.Sqlite3.step(c, s))}"); IO.puts("bcrypt: #{Bcrypt.verify_pass("pw", Bcrypt.hash_pwd_salt("pw"))}")'
+            check mix '^exqlite: {:row, \["3\.[0-9.]*", 2\]}$@@^bcrypt: true$@@^argon2: true$' run -e '{:ok, c} = Exqlite.Sqlite3.open(":memory:"); {:ok, s} = Exqlite.Sqlite3.prepare(c, "select sqlite_version(), 1 + 1"); IO.puts("exqlite: #{inspect(Exqlite.Sqlite3.step(c, s))}"); IO.puts("bcrypt: #{Bcrypt.verify_pass("pw", Bcrypt.hash_pwd_salt("pw"))}"); IO.puts("argon2: #{Argon2.verify_pass("pw", Argon2.hash_pwd_salt("pw"))}")'
             check elixir.com '^esqlite: \[\["3\.[0-9.]*",4\]\]$@@^exqlite: {:row, \["3\.[0-9.]*", 2\]}$' -pa _build/dev/lib/exqlite/ebin -e '{:ok, d} = :esqlite3.open(~c":memory:"); IO.puts("esqlite: #{:json.encode(:esqlite3.q(d, "select sqlite_version(), 2 + 2"))}"); {:ok, c} = Exqlite.Sqlite3.open(":memory:"); {:ok, s} = Exqlite.Sqlite3.prepare(c, "select sqlite_version(), 1 + 1"); IO.puts("exqlite: #{inspect(Exqlite.Sqlite3.step(c, s))}")'
         fi
     fi

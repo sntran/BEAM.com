@@ -802,11 +802,12 @@ static void watch_link(void)
 /*
  * elixir_make runs make (the MAKE variable, else make) in a package that
  * has C code, a NIF. The NIFs of some packages are linked into this file
- * (exqlite and bcrypt_elixir, see build.sh), so these packages need no
- * make and no C compiler. For the tools of Elixir, MAKE names the program
- * make in the cache of BEAM.com (cache_program()): this file, which then
- * runs apps/beam_com/src/beam_com_make.erl. It does nothing for these
- * packages, and runs the make of PATH for the other ones.
+ * (exqlite, bcrypt_elixir and argon2_elixir, see build.sh), so these
+ * packages need no make and no C compiler. For the tools of Elixir, MAKE
+ * names the program make in the cache of BEAM.com (cache_program()): this
+ * file, which then runs apps/beam_com/src/beam_com_make.erl. It does
+ * nothing for these packages, and runs the make of PATH for the other
+ * ones.
  *
  * exqlite first downloads a compiled NIF (with cc_precompiler), unless
  * EXQLITE_USE_SYSTEM is set: then it runs make. The SQLite of this file

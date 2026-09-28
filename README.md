@@ -278,15 +278,17 @@ iex.com -S mix phx.server        # http://localhost:4000
 
 - `beam.com` has the OTP applications that a new Phoenix app needs
   beyond Elixir: `xmerl` (for `swoosh`) and `runtime_tools`.
-- The NIFs of `exqlite` 0.41.0 (for `ecto_sqlite3`) and `bcrypt_elixir`
-  3.3.2 (for `phx.gen.auth`) are linked into `beam.com`, as static NIFs
+- The NIFs of `exqlite` 0.41.0 (for `ecto_sqlite3`), `bcrypt_elixir`
+  3.3.2 (for `phx.gen.auth`) and `argon2_elixir` 4.1.3 (for
+  `phx.gen.auth --hashing-lib argon2`) are linked into `beam.com`, as static NIFs
   (see "SQLite"). The packages from hex.pm work unchanged: ERTS finds a
   static NIF by the name of its module, before it opens the file in
   `priv`, so the NIF files are not needed.
 - These packages compile with `elixir_make`, which runs `make`. The
   tools set `MAKE` (when it is not set) to a program `make` in the cache
   of BEAM.com: a link to the file (on macOS, a script that runs it).
-  This `make` does nothing for `exqlite` and `bcrypt_elixir`, and runs
+  This `make` does nothing for `exqlite`, `bcrypt_elixir` and
+  `argon2_elixir`, and runs
   the `make` of `PATH` for other packages with C code (an error when
   there is none). The tools also set `EXQLITE_USE_SYSTEM=1`, so that
   `exqlite` uses the SQLite of `beam.com` and does not download a
@@ -318,8 +320,8 @@ CI runs these steps on Linux: `phx.new --database sqlite3`,
 `phx.gen.auth`, `deps.get`, `ecto.migrate`, an account with a password
 (bcrypt) through `mix run`, and `iex.com -S mix phx.server`, which must
 serve the start page and make a new account (a POST of the registration
-form). With the network, the check of the tools also compiles `exqlite`
-and `bcrypt_elixir` in a small project (on all the platforms but NetBSD
+form). With the network, the check of the tools also compiles `exqlite`,
+`bcrypt_elixir` and `argon2_elixir` in a small project (on all the platforms but NetBSD
 and Windows), checks that no NIF file was built or downloaded, and uses
 esqlite and exqlite in one VM.
 
@@ -618,7 +620,7 @@ SQLite is compiled with the options of both NIFs (without
 `SQLITE_OMIT_AUTOINIT` and `SQLITE_OMIT_PROGRESS_CALLBACK`, which
 exqlite cannot use). The NIFs of exqlite and bcrypt_elixir add only
 about 70 KB (two CPUs) to `beam.com`: exqlite does not bring a second
-SQLite.
+SQLite. The NIF of argon2_elixir adds about 60 KB (two CPUs).
 
 ### Sandbox: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`
 
@@ -924,6 +926,11 @@ or rebar3. A custom build can have more:
   named `rebar3.com` (or `beam.com rebar3`) runs it, and `mix.com` uses
   it for the dependencies that are rebar3 projects (`MIX_REBAR3`), so
   `mix local.rebar` is not needed either.
+- `EXTRA_NIFS="picosat_elixir"`: the NIFs of more hex.pm packages,
+  linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
+  "Phoenix from source"). The list is in `hex_nif_recipe()` of
+  `build.sh`: `picosat_elixir` (the SAT solver of Ash). Only with
+  `ELIXIR=1`.
 
 With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and
 `iex.com -S mix phx.server` work as with a normal Elixir installation.

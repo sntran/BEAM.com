@@ -39,6 +39,13 @@ body:
       options:
         - label: Hex (for mix.com; needs Elixir)
         - label: rebar3 (the tool rebar3.com, and for the rebar3 dependencies of mix.com)
+  - type: checkboxes
+    id: nifs
+    attributes:
+      label: More NIFs
+      description: NIFs of hex.pm packages, linked into beam.com (needs Elixir). The default beam.com has those of exqlite, bcrypt_elixir and argon2_elixir.
+      options:
+        - label: picosat_elixir (for Ash)
   - type: dropdown
     id: elixir
     attributes:
