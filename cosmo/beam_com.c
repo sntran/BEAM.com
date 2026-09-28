@@ -845,12 +845,13 @@ static void rebar3_link(void)
  * The flags of beam.com (apps/beam_com/src/beam_com.erl), which are not
  * flags of erl: -h, --help, --version, "--" (the arguments of the program
  * follow), -o and -a, the sandbox (-R, -W, -N, -A, --allow-*, --deny-*),
- * and --main, --tool, --extract-priv, --target.
+ * and --main, --tool, --extract-priv, --target, --cacerts.
  */
 static int beam_com_flag(const char *arg)
 {
     static const char *flags[] = {"-h", "--help", "--version", "--", "-o", "-a", "-R", "-W",
-                                  "-N", "-A", "--main", "--tool", "--extract-priv", "--target"};
+                                  "-N", "-A", "--main", "--tool", "--extract-priv", "--target",
+                                  "--cacerts"};
     size_t i;
 
     for (i = 0; i < sizeof(flags) / sizeof(flags[0]); i++)

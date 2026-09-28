@@ -32,10 +32,11 @@
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, compress_beams/2]).
+         strip_beams/1, compress_beams/2, with_cacerts/2]).
 -endif.
 
 -define(HOST_APP, wasm_host).
+-define(CACERTS, "etc/cacerts.pem").
 
 %% A release directory (with releases/start_erl.data) as the input.
 release_dir(Dir, Root) ->
@@ -55,8 +56,8 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                  {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"],
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
      || A <- lists:usort(Apps), lists:member(A, native_nifs() -- runtime_nifs(Runtime))],
-    Files1 = with_sqlite(with_host(Files0, Root), Root),
-    Meta = meta(Rel#{apps => Apps}),
+    Files1 = with_cacerts(with_sqlite(with_host(Files0, Root), Root), Opts),
+    Meta = meta(Rel#{apps => Apps, cacerts => lists:keymember(?CACERTS, 1, Files1)}),
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
     Worker = worker_files(Rel#{apps => Apps}, Runtime, Root),
@@ -315,6 +316,26 @@ compress_beams(Files, Mods) ->
                       (F, N) -> {F, N}
                    end, 0, Files).
 
+%% --cacerts FILE: the trusted root certificates of the runtime (TLS,
+%% Req, httpc), a PEM file. The runtime has no certificates of its own.
+%% The builder does not copy the store of the computer of the build,
+%% because that store can have a local CA (of a proxy, for example).
+with_cacerts(Files, #{cacerts := File}) ->
+    Pem = case file:read_file(File) of
+              {ok, Data} -> Data;
+              {error, Reason} ->
+                  throw({error, "--cacerts ~ts: ~ts", [File, file:format_error(Reason)]})
+          end,
+    case [C || {'Certificate', _, not_encrypted} = C <- pem_decode(Pem)] of
+        [] -> throw({error, "--cacerts ~ts: no certificate", [File]});
+        Certs -> Files ++ [{?CACERTS, public_key:pem_encode(Certs)}]
+    end;
+with_cacerts(Files, _Opts) ->
+    Files.
+
+pem_decode(Pem) ->
+    try public_key:pem_decode(Pem) catch _:_ -> [] end.
+
 map_boot(Fun, Data) ->
     {script, Id, Cmds} = binary_to_term(iolist_to_binary(Data)),
     term_to_binary({script, Id, Fun(Cmds)}).
@@ -331,7 +352,13 @@ meta(#{name := Name, vsn := Vsn, kind := Kind, files := Files} = Rel) ->
                  beam_com -> [A || lists:keymember(Dir ++ "sys.config", 1, Files),
                                    A <- ["-config", "/app/" ++ Dir ++ "sys"]]
              end,
-    Args = ["-mode", "interactive" | Config]
+    %% public_key:cacerts_get/0 reads the file of --cacerts (see
+    %% with_cacerts/2), as beam.com does on Windows.
+    Certs = case maps:get(cacerts, Rel, false) of
+                true -> ["-public_key", "cacerts_path", "\"/app/" ++ ?CACERTS ++ "\""];
+                false -> []
+            end,
+    Args = ["-mode", "interactive" | Config] ++ Certs
         ++ ["-boot", "/app/" ++ Dir ++ "start", "-boot_var", "RELEASE_LIB", "/app/lib"
             | VmArgs],
     %% Phoenix starts its server only with PHX_SERVER.
@@ -456,6 +483,10 @@ wrangler_durable(Name, Phoenix) ->
     ["// The BEAM runtime in one Durable Object (durable.js): one VM for all\n"
      "// the requests, and its SQLite storage for Ecto SQLite.\n"
      "//   wrangler deploy -c wrangler.durable.jsonc\n"
+     "// Vars: BEAM_TENANTS (\"cookie\" or \"host\"): an object for each tenant;\n"
+     "// BEAM_PERSIST (\"/data,...\"): directories whose files stay in the\n"
+     "// storage of the object; BEAM_ERL_FLAGS (\"-Mea min\"): more flags of\n"
+     "// the emulator (-Mea min: less memory, no :erlang.memory/0).\n"
      "{\n"
      "  \"name\": \"", Name, "-durable\",\n"
      "  \"main\": \"durable.js\",\n"
@@ -654,6 +685,7 @@ native_run(Files, #{name := Name, vsn := Vsn, args := Args, env := Env}, Tmp, Op
     %% script with these paths.
     RunArgs = [case A of
                    "/app/" ++ R -> filename:join(Tmp, R);
+                   "\"/app/" ++ R -> "\"" ++ filename:join(Tmp, R);
                    _ -> A
                end || B <- Args, A <- [binary_to_list(B)]],
     Final = boot_arg(RunArgs, filename:join(Dir, "native"))

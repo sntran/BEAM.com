@@ -156,11 +156,14 @@ build_options(["--tool", Tool | _], _Opts) ->
     throw({error, "--tool is rebar or mix, not ~ts", [Tool]});
 build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
+build_options(["--cacerts", File | Rest], Opts) ->
+    build_options(Rest, Opts#{cacerts => File});
 build_options(["--target", Target | Rest], Opts) ->
     build_options(Rest, Opts#{target => beam_com_build:check_target(Target)});
 build_options([Option], _Opts) when Option =:= "-o"; Option =:= "-a";
                                     Option =:= "--target"; Option =:= "--main";
-                                    Option =:= "--tool"; Option =:= "--extract-priv" ->
+                                    Option =:= "--tool"; Option =:= "--extract-priv";
+                                    Option =:= "--cacerts" ->
     throw({error, "option ~ts needs a value", [Option]});
 build_options([[$- | _] = Option | _], _Opts) ->
     throw({error, "unknown option ~ts", [Option]});
@@ -248,6 +251,9 @@ help([]) ->
      "            or wasm32 (wasm32-unknown-emscripten): OUTPUT is a directory\n"
      "            with Cloudflare Workers. INPUT can also be a release\n"
      "            directory (_build/prod/rel/NAME)\n"
+     "  --cacerts FILE\n"
+     "            with --target wasm32: the trusted root certificates of the\n"
+     "            runtime (TLS), a PEM file; by default, none\n"
      "  --main MODULE\n"
      "            for an application: the module whose main/1 runs, with the\n"
      "            arguments, after the start (as an escript); found in\n"

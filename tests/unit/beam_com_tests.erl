@@ -88,7 +88,8 @@ build_errors_test_() ->
                     opts(["d", "--tool", "make"]))},
      [{Option ++ " without a value",
        ?_assertThrow({error, "option ~ts needs a value", [Option]}, opts(["d", Option]))}
-      || Option <- ["--main", "--tool", "--extract-priv"]],
+      || Option <- ["--main", "--tool", "--extract-priv", "--cacerts"]],
+     {"--cacerts", ?_assertMatch(#{cacerts := "roots.pem"}, opts(["d", "--cacerts", "roots.pem"]))},
      {"the commands before 0.2: a hint",
       [?_assertThrow({error, "there is no command ~ts: use \"~ts INPUT -o OUTPUT\"",
                       ["build", "beam.com"]}, opts(["build", "a.erl"])),

@@ -98,7 +98,34 @@ meta_test_() ->
      {"Ecto SQLite: sql",
       ?_assertMatch(#{sql := true},
                     beam_com_wasm:meta(#{name => "app", vsn => "1", kind => mix, files => [],
-                                         apps => [exqlite]}))}].
+                                         apps => [exqlite]}))},
+     {"--cacerts: public_key reads the file of the release",
+      ?_assertMatch(#{args := [<<"-mode">>, <<"interactive">>, <<"-public_key">>,
+                               <<"cacerts_path">>, <<"\"/app/etc/cacerts.pem\"">> | _]},
+                    beam_com_wasm:meta(#{name => "app", vsn => "1", kind => beam_com, files => [],
+                                         cacerts => true}))}].
+
+with_cacerts_test_() ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beam_com_wasm_cacerts"),
+    ok = filelib:ensure_path(Dir),
+    #{cert := Der} = public_key:pkix_test_root_cert("beam_com test root", []),
+    Cert = {'Certificate', Der, not_encrypted},
+    Pem = filename:join(Dir, "roots.pem"),
+    ok = file:write_file(Pem, [<<"a comment\n">>, public_key:pem_encode([Cert, Cert])]),
+    Empty = filename:join(Dir, "empty.pem"),
+    ok = file:write_file(Empty, <<"no certificate here\n">>),
+    Absent = filename:join(Dir, "absent.pem"),
+    [{"no --cacerts: no file (not the store of this computer)",
+      ?_assertEqual([{"a", <<>>}], beam_com_wasm:with_cacerts([{"a", <<>>}], #{}))},
+     {"--cacerts FILE: its certificates in etc/cacerts.pem",
+      ?_assertEqual([{"a", <<>>}, {"etc/cacerts.pem", public_key:pem_encode([Cert, Cert])}],
+                    beam_com_wasm:with_cacerts([{"a", <<>>}], #{cacerts => Pem}))},
+     {"a file with no certificate",
+      ?_assertThrow({error, "--cacerts ~ts: no certificate", [Empty]},
+                    beam_com_wasm:with_cacerts([], #{cacerts => Empty}))},
+     {"a file that is not there",
+      ?_assertThrow({error, "--cacerts ~ts: ~ts", [Absent, _]},
+                    beam_com_wasm:with_cacerts([], #{cacerts => Absent}))}].
 
 pack_test() ->
     Bin = iolist_to_binary(beam_com_wasm:pack([{"a", <<"xy">>}, {"é", [<<"z">>]}])),
