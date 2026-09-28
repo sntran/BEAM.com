@@ -43,7 +43,24 @@ init([]) ->
     spawn(fun start_distribution/0),
     %% The host can take requests now.
     send_host(#{t => ready}),
+    boot_point(os:getenv("WASM_HOST_BOOT_POINT")),
     {ok, #{pump => Pump}}.
+
+%% The boot point: with WASM_HOST_BOOT_POINT=wait, the boot waits here,
+%% after the modules of the boot are loaded and before the configuration
+%% (runtime.exs) and the applications of the program. The host can make a
+%% snapshot of this VM, which holds no state of a database and no secret,
+%% so that other VMs (other tenants) can use it too. The event "go" then
+%% gives the environment of this VM (a JSON object), and the boot goes on.
+boot_point("wait") ->
+    send_host(#{t => boot_point}),
+    receive
+        {go, Env} ->
+            maps:foreach(fun(K, V) -> os:putenv(binary_to_list(K), unicode:characters_to_list(V)) end,
+                         Env)
+    end;
+boot_point(_) ->
+    ok.
 
 handle_call(_Request, _From, State) -> {reply, ok, State}.
 handle_cast(_Request, State) -> {noreply, State}.
@@ -114,6 +131,8 @@ event(Event) ->
         %% crypto:strong_rand_bytes/1 differs in each isolate).
         #{<<"t">> := <<"restored">>} ->
             try crypto:rand_seed(Body) catch error:undef -> ok end;
+        #{<<"t">> := <<"go">>} ->
+            ?MODULE ! {go, json:decode(Body)};
         #{<<"t">> := T, <<"id">> := Id} = Meta ->
             case lists:member(T, ?EVENTS) andalso ets:lookup(?TABLE, Id) of
                 [{Id, Pid}] -> Pid ! {wasm_host, T, Meta, Body};

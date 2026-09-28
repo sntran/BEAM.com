@@ -168,7 +168,7 @@ worker_files_test() ->
     Runtime = filename:join(Root, "runtime"),
     [ok = filelib:ensure_path(D) || D <- [Priv, Runtime]],
     [ok = file:write_file(filename:join(Priv, F), F)
-     || F <- ["worker.js", "durable.js", "global.js", "tcp-proxy.mjs", "app.js"]],
+     || F <- ["worker.js", "durable.js", "global.js", "durable-global.js", "tcp-proxy.mjs", "app.js"]],
     [ok = file:write_file(filename:join(Runtime, F), F) || F <- ["beam.mjs", "beam.wasm"]],
     Files = fun(Apps) -> [{F, iolist_to_binary(D)}
                           || {F, D} <- beam_com_wasm:worker_files(#{name => "app", apps => Apps},
@@ -182,9 +182,15 @@ worker_files_test() ->
     ?assert(Has(Plain, "release/wrangler.jsonc", <<"\"workers_dev\": false">>)),
     ?assert(Has(Plain, "wrangler.jsonc", <<"\"version_metadata\": { \"binding\": \"BEAM_VERSION\" }">>)),
     ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"version_metadata\"">>)),
+    ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"main\": \"durable-global.js\"">>)),
+    ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
     Sqlite = Files([exqlite]),
-    ?assertNot(lists:keymember("global.js", 1, Sqlite)),
-    ?assertNot(lists:keymember("wrangler.global.jsonc", 1, Sqlite)),
+    %% Ecto SQLite: a snapshot at the boot point, and no warm-up request.
+    ?assertEqual(<<"durable-global.js">>, proplists:get_value("durable-global.js", Sqlite)),
+    ?assert(Has(Sqlite, "wrangler.global.jsonc", <<"--boot-point">>)),
+    ?assert(Has(Sqlite, "wrangler.global.jsonc", <<"\"d1_databases\"">>)),
+    ?assertNot(Has(Sqlite, "wrangler.global.jsonc", <<"BEAM_WARM">>)),
+    ?assertNot(Has(Sqlite, "wrangler.durable-global.jsonc", <<"BEAM_WARM">>)),
     ?assert(Has(Sqlite, "wrangler.jsonc", <<"\"d1_databases\"">>)),
     Phoenix = Files([phoenix]),
     ?assert(Has(Phoenix, "wrangler.jsonc", <<"\"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\"">>)),

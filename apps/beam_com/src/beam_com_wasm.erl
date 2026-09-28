@@ -80,7 +80,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                             filename:join(Output, "worker.capnp"), Output, Output,
                             case lists:keymember("global.js", 1, Worker) of
                                 true -> "  (or the VM restored in the global scope: see "
-                                        "wrangler.global.jsonc)\n";
+                                        "wrangler.global.jsonc and wrangler.durable-global.jsonc)\n";
                                 false -> ""
                             end]),
     ok.
@@ -332,13 +332,12 @@ worker_files(#{name := Name} = Rel, Runtime, Root) ->
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
     Sqlite = lists:member(exqlite, maps:get(apps, Rel, [])),
-    %% A snapshot of the build (snapshot.mjs) has no SQL of the host: no
-    %% global.js for Ecto SQLite.
-    Global = case Sqlite of
-                 true -> [];
-                 false -> [{"global.js", Worker("global.js")},
-                           {"wrangler.global.jsonc", wrangler_global(Name, Phoenix)}]
-             end,
+    %% The VM restored in the global scope: a runtime Worker, or a spare VM
+    %% for the Durable Objects.
+    Global = [{"global.js", Worker("global.js")},
+              {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
+              {"durable-global.js", Worker("durable-global.js")},
+              {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)}],
     [{"worker.js", Worker("worker.js")},
      {"durable.js", Worker("durable.js")},
      {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)}] ++ Global ++
@@ -428,18 +427,12 @@ wrangler_durable(Name, Phoenix) ->
 
 %% The runtime Worker with the release and a snapshot of the build in it
 %% (global.js): the global scope restores the VM.
-wrangler_global(Name, Phoenix) ->
-    Vars = case phx_vars(Name, Phoenix) of
-               "" -> ",\n  \"vars\": { \"BEAM_WARM\": \"/\" }";
-               V -> string:replace(V, "\"vars\": { ", "\"vars\": { \"BEAM_WARM\": \"/\", ")
-           end,
+wrangler_global(Name, Phoenix, Sqlite) ->
     ["// The BEAM runtime Worker with the release and a snapshot of the build\n"
      "// (global.js): its global scope restores the VM, so the first request\n"
-     "// of an isolate is short. First make release/snapshot.bin:\n"
-     "//   node wasm/snapshot/snapshot.mjs DIR --warm 4000:/\n"
+     "// of an isolate is short. First make release/snapshot.bin:\n",
+     snapshot_command(Sqlite),
      "//   wrangler deploy -c wrangler.global.jsonc\n"
-     "// BEAM_WARM: a path of the app for one GET request in the global\n"
-     "// scope (with no SQL or sockets); remove it for no request.\n"
      "{\n"
      "  \"name\": \"", Name, "\",\n"
      "  \"main\": \"global.js\",\n"
@@ -452,7 +445,61 @@ wrangler_global(Name, Phoenix) ->
      "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"release/*.bin\"] }\n"
      "  ]",
-     Vars, "\n}\n"].
+     d1(Name, Sqlite), global_vars(Name, Phoenix, Sqlite), "\n}\n"].
+
+%% The Durable Objects with a spare VM that the global scope restored
+%% (durable-global.js).
+wrangler_durable_global(Name, Phoenix, Sqlite) ->
+    ["// The BEAM runtime in Durable Objects (durable-global.js): the global\n"
+     "// scope of an isolate restores a spare VM from the snapshot of the\n"
+     "// build, and the first object of the isolate takes it. First make\n"
+     "// release/snapshot.bin:\n",
+     snapshot_command(Sqlite),
+     "//   wrangler deploy -c wrangler.durable-global.jsonc\n"
+     "// BEAM_TENANTS (\"cookie\" or \"host\"): an object for each tenant (durable.js).\n"
+     "{\n"
+     "  \"name\": \"", Name, "-durable\",\n"
+     "  \"main\": \"durable-global.js\",\n"
+     "  \"compatibility_date\": \"", ?DATE, "\",\n"
+     "  \"compatibility_flags\": [\"no_handle_cross_request_promise_resolution\"],\n"
+     "  \"no_bundle\": true,\n"
+     "  \"find_additional_modules\": true,\n"
+     "  \"rules\": [\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"durable-global.js\", \"durable.js\", \"worker.js\", \"beam.mjs\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"Data\", \"globs\": [\"release/*.bin\"] }\n"
+     "  ],\n",
+     ?VERSION,
+     ",\n  \"durable_objects\": { \"bindings\": [{ \"name\": \"BEAM\", \"class_name\": \"Beam\" }] },\n"
+     "  \"migrations\": [{ \"tag\": \"v1\", \"new_sqlite_classes\": [\"Beam\"] }]",
+     global_vars(Name, Phoenix, Sqlite), "\n}\n"].
+
+%% Ecto SQLite: a snapshot at the boot point, before the program and its
+%% migrations (a snapshot of the build has no database).
+snapshot_command(true) ->
+    "//   node wasm/snapshot/snapshot.mjs DIR --boot-point\n";
+snapshot_command(false) ->
+    "//   node wasm/snapshot/snapshot.mjs DIR --warm 4000:/\n"
+    "// BEAM_WARM: a path of the app for one GET request in the global\n"
+    "// scope (with no SQL or sockets); remove it for no request.\n".
+
+d1(_Name, false) -> "";
+d1(Name, true) ->
+    ",\n  \"d1_databases\": [{ \"binding\": \"DB\", \"database_name\": \"" ++ Name ++
+    "\", \"database_id\": \"00000000-0000-0000-0000-000000000000\" }]".
+
+%% BEAM_WARM, not with the boot point (the program is not started).
+global_vars(Name, Phoenix, Sqlite) ->
+    Warm = case Sqlite of
+               true -> "";
+               false -> "\"BEAM_WARM\": \"/\""
+           end,
+    case {phx_vars(Name, Phoenix), Warm} of
+        {"", ""} -> "";
+        {"", W} -> ",\n  \"vars\": { " ++ W ++ " }";
+        {V, ""} -> V;
+        {V, W} -> string:replace(V, "\"vars\": { ", "\"vars\": { " ++ W ++ ", ")
+    end.
 
 %% No workers.dev URL: the runtime Worker gets the release through its
 %% service binding, and no one else may get release.bin.
