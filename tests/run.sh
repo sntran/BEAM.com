@@ -464,7 +464,7 @@ if [ -d examples ]; then
     check beam.com 'wrote .*worker (the Workers worker and worker-release)@@release: worker 0.1.0@@boot: [0-9]* modules in one batch' \
         examples/worker -o "$dir/worker" --target wasm32
     unset BEAM_COM_WASM_RUNTIME
-    if [ -n "$in_zip" ] && [ "$(head -c 4 "$dir/worker/beam.wasm" | od -An -c | tr -d ' ')" != '\0asm' ]; then
+    if [ -n "$in_zip" ] && [ "$(dd if="$dir/worker/beam.wasm" bs=4 count=1 2>/dev/null | od -An -c | tr -d ' ')" != '\0asm' ]; then
         echo "FAIL: the runtime of the zip is not a WebAssembly module"
         failed="$failed
   beam.com --target wasm32: beam.wasm"
@@ -480,7 +480,7 @@ if [ -d examples ]; then
             fail=1
         fi
     done
-    if [ "$(head -c 7 "$dir/worker/release/release.bin" 2>/dev/null)" != BEAMFS1 ]; then
+    if [ "$(dd if="$dir/worker/release/release.bin" bs=7 count=1 2>/dev/null)" != BEAMFS1 ]; then
         echo "FAIL: release.bin does not start with BEAMFS1"
         failed="$failed
   beam.com --target wasm32: release.bin"
