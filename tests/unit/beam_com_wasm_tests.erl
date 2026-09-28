@@ -197,6 +197,32 @@ worker_files_test() ->
     ?assert(Has(Phoenix, "wrangler.global.jsonc",
                 <<"\"BEAM_WARM\": \"/\", \"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\"">>)).
 
+%% release.bin: no debug information in the code, and the modules that the
+%% boot does not load compressed (the loader of ERTS reads gzip).
+strip_and_compress_test() ->
+    Beam = fun(M) ->
+                   {ok, M, B} = compile:forms([{attribute, 1, module, M}, {attribute, 2, export, [{f, 0}]},
+                                               {function, 3, f, 0, [{clause, 3, [], [], [{atom, 3, ok}]}]}],
+                                              [binary, debug_info]),
+                   B
+           end,
+    A = Beam(a), B = Beam(b),
+    Gz = zlib:gzip(A),
+    Files = [{"lib/x-1/ebin/a.beam", A}, {"lib/x-1/ebin/b.beam", B}, {"lib/x-1/ebin/c.beam", Gz},
+             {"lib/x-1/ebin/x.app", <<"app">>}],
+    Stripped = beam_com_wasm:strip_beams(Files),
+    Chunk = fun(Bin, C) -> {ok, {_, [{_, V}]}} = beam_lib:chunks(Bin, [C], [allow_missing_chunks]), V end,
+    ?assertEqual(missing_chunk, Chunk(proplists:get_value("lib/x-1/ebin/a.beam", Stripped), "Dbgi")),
+    ?assertMatch(<<_/binary>>, Chunk(A, "Dbgi")),
+    ?assertEqual(Gz, proplists:get_value("lib/x-1/ebin/c.beam", Stripped)),
+    ?assertEqual(<<"app">>, proplists:get_value("lib/x-1/ebin/x.app", Stripped)),
+    {Packed, 1} = beam_com_wasm:compress_beams(Stripped, [a]),
+    ?assertMatch(<<"FOR1", _/binary>>, proplists:get_value("lib/x-1/ebin/a.beam", Packed)),
+    ?assertMatch(<<31, 139, _/binary>>, proplists:get_value("lib/x-1/ebin/b.beam", Packed)),
+    {module, b} = code:load_binary(b, "b.beam", proplists:get_value("lib/x-1/ebin/b.beam", Packed)),
+    ?assertEqual(ok, b:f()),
+    ?assertEqual({Stripped, 0}, beam_com_wasm:compress_beams(Stripped, [])).
+
 %% A module in place of the NIF of exqlite: the exports of the original,
 %% calls to the shim, and not_supported for the others.
 sqlite_shim_test() ->

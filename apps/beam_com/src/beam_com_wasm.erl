@@ -31,7 +31,8 @@
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
-         runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1]).
+         runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
+         strip_beams/1, compress_beams/2]).
 -endif.
 
 -define(HOST_APP, wasm_host).
@@ -59,20 +60,24 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
     Worker = worker_files(Rel#{apps => Apps}, Runtime, Root),
+    %% release.bin: the code without its debug information and docs, and
+    %% the modules that the boot does not load compressed (a smaller
+    %% release.bin in the memory of the isolate).
+    {Packed, Compressed} = compress_beams(strip_beams(Files), Mods),
     Bin = pack([{".release.json", json:encode(Meta#{snapshot_key => snapshot_key(Files, Worker)})}
-                | Files]),
+                | Packed]),
     [ok = filelib:ensure_path(filename:join(Output, D)) || D <- ["", "release"]],
     [write_file(filename:join(Output, F), D) || {F, D} <- Worker],
     write_file(filename:join([Output, "release", "release.bin"]), Bin),
     Quiet orelse io:format("~ts: wrote ~ts (the Workers ~ts and ~ts-release)~n"
-                           "  release: ~ts ~ts, ~b files, ~.1f MB~n"
+                           "  release: ~ts ~ts, ~b files, ~.1f MB (~b modules compressed)~n"
                            "  boot: ~ts~n"
                            "  test: workerd serve ~ts~n"
                            "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n"
                            "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n"
                            "~ts",
                            [beam_com:name(), Output, Name, Name, Name, Vsn, length(Files),
-                            iolist_size(Bin) / 1048576,
+                            iolist_size(Bin) / 1048576, Compressed,
                             case Mods of
                                 [] -> "the modules load one by one (no native run)";
                                 _ -> io_lib:format("~b modules in one batch", [length(Mods)])
@@ -265,6 +270,50 @@ with_boot_modules(Files, Mods) ->
              true -> map_boot(Boot, D);
              false -> D
          end} || {P, D} <- Files].
+
+%% The chunks that the loader uses, the line numbers and the attributes,
+%% as beam_com_build:strip/1 and "mix release" (strip_beams). Only the
+%% files with debug information, docs or the checker chunk of Elixir: a
+%% file of "mix release" is stripped and compressed already.
+strip_beams(Files) ->
+    Keep = ["Atom", "AtU8", "Attr", "Code", "StrT", "ImpT", "ExpT", "FunT",
+            "LitT", "Line", "Type", "Meta", "Recs"],
+    [{P, case filename:extension(P) =:= ".beam" andalso is_binary(D) andalso strip_beam(D, Keep) of
+             false -> D;
+             S -> S
+         end} || {P, D} <- Files].
+
+strip_beam(<<"FOR1", _/binary>> = D, Keep) ->
+    case beam_lib:chunks(D, ["Dbgi", "Docs", "ExCk"], [allow_missing_chunks]) of
+        {ok, {_, Extra}} ->
+            case [C || {_, X} = C <- Extra, is_binary(X)] of
+                [] -> false;
+                _ ->
+                    {ok, {_, Chunks}} = beam_lib:chunks(D, Keep, [allow_missing_chunks]),
+                    {ok, S} = beam_lib:build_module([C || {_, X} = C <- Chunks, is_binary(X)]),
+                    S
+            end;
+        {error, _, _} -> false
+    end;
+strip_beam(_, _) ->
+    false.
+
+%% The modules that the boot does not load, compressed with gzip: the
+%% loader of ERTS reads them so (as the files of "mix release"). The
+%% modules of the boot stay as they are, for a shorter boot. With no list
+%% of the boot modules (no native run), none.
+compress_beams(Files, []) ->
+    {Files, 0};
+compress_beams(Files, Mods) ->
+    Boot = sets:from_list([atom_to_list(M) || M <- Mods], [{version, 2}]),
+    lists:mapfoldl(fun({P, <<"FOR1", _/binary>> = D} = F, N) ->
+                           case filename:extension(P) =:= ".beam"
+                               andalso not sets:is_element(filename:basename(P, ".beam"), Boot) of
+                               true -> {{P, zlib:gzip(D)}, N + 1};
+                               false -> {F, N}
+                           end;
+                      (F, N) -> {F, N}
+                   end, 0, Files).
 
 map_boot(Fun, Data) ->
     {script, Id, Cmds} = binary_to_term(iolist_to_binary(Data)),
