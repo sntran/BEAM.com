@@ -7,7 +7,7 @@
 %%   beam.com --help | --version
 -module(beam_com).
 
--export([main/0, name/0]).
+-export([main/0, name/0, cache_dir/0]).
 
 -ifdef(TEST).
 -export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
@@ -244,7 +244,10 @@ help([]) ->
      "            (with -o) a native file for one system, not an APE file:\n"
      "            x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,\n"
      "            x86_64-unknown-freebsd or x86_64-apple-darwin (also\n"
-     "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos)\n"
+     "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos);\n"
+     "            or wasm32 (wasm32-unknown-emscripten): OUTPUT is a directory\n"
+     "            with Cloudflare Workers. INPUT can also be a release\n"
+     "            directory (_build/prod/rel/NAME)\n"
      "  --main MODULE\n"
      "            for an application: the module whose main/1 runs, with the\n"
      "            arguments, after the start (as an escript); found in\n"

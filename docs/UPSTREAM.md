@@ -1049,8 +1049,12 @@ dump.
 emulator keeps the socket to a helper that was never started, and the
 first write fails.
 
-**Fix in BEAM.com.** When `fork()` fails, the emulator runs without
-`erl_child_setup` (as on Windows): `open_port/2` for a program returns
+The same happens when `socketpair(AF_UNIX)` fails (an emulator without
+sockets, such as Blink in WebAssembly): "Could not open unix domain
+socket in spawn_init" and an abort.
+
+**Fix in BEAM.com.** When `socketpair()` or `fork()` fails, the emulator
+runs without `erl_child_setup` (as on Windows): `open_port/2` for a program returns
 the error of `fork()`. The launcher also makes kernel use its own DNS
 client then, because the native resolver is a port program and kernel
 halts when it cannot start it.
@@ -1118,6 +1122,177 @@ With clean paths (as in beam.com) the start fails:
 **Possible upstream fix.** In OTP, compare the normalized names in
 `del_path/1`. In ecto_sql, run `app.config` (or `loadpaths`) before the
 start of `ecto_sql` in `ecto.migrate`.
+
+### O20. A driver's start function is called with the wrong type
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/io.c`, `erts_open_driver()`).
+
+**Symptom.** ERTS compiled to WebAssembly stops at the first
+`open_port/2` of a normal driver: "function signature mismatch".
+
+**Cause.** `erts_driver_t` has one type for `start`, with 3 arguments
+(`SysDriverOpts *`), and `erts_open_driver()` calls every driver so. The
+start function of a normal driver (`ErlDrvEntry`, `inet_drv` and the
+others) has 2 arguments. This is undefined behavior in C; native code
+accepts it, but WebAssembly checks the type of each indirect call.
+
+**Fix in the WebAssembly spike.** Call the start of a driver that is not
+a system driver (`fd`, `spawn`, `forker`) with 2 arguments.
+
+**Possible upstream fix.** Keep a flag or a second pointer for the
+system drivers, and call each kind with its own type.
+
+### O21. The signal dispatcher thread needs a blocking `read()`
+
+**Status:** OTP 29.1.1 (`erts/emulator/sys/unix/sys.c`,
+`signal_dispatcher_thread_func()`).
+
+**Symptom.** With Emscripten: "signal-dispatcher thread got unexpected
+error: eagain".
+
+**Cause.** The thread reads the signal pipe with a blocking `read()`,
+and stops ERTS on any error but `EINTR`. The pipes of Emscripten do not
+block.
+
+**Fix in the WebAssembly spike.** On `EAGAIN`, wait with `poll()` (which
+suspends the green thread), then read again.
+
+**Possible upstream fix.** Accept `EAGAIN` and wait with `poll()`; or no
+signal dispatcher on a platform without signals.
+
+### O22. `process_main` never returns, so V8 keeps it in baseline code
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/emu/beam_emu.c`,
+`erts/emulator/beam/erl_process.c`).
+
+**Symptom.** ERTS compiled to WebAssembly runs Erlang code 3 to 5 times
+slower than the native interpreter, and the speed does not become
+better after a long run.
+
+**Cause.** The interpreter loop (`process_main()`) is called one time
+and then runs for the full life of the scheduler. V8 compiles each
+WebAssembly function first with its baseline compiler (Liftoff), and
+uses the optimized code (TurboFan) only at the next call of the
+function. V8 has no on-stack replacement for WebAssembly. Thus the
+interpreter stays in baseline code.
+
+**Fix in the WebAssembly spike.** `process_main()` returns at the end of
+each time slice (at `do_schedule1`), and keeps the current process in
+two new fields at the end of `ErtsSchedulerData`. The scheduler thread
+calls it again in a loop, and it continues at a new label. A fold test
+went from 4.8 s to 1.2 s (the native interpreter: 0.85 s).
+
+**Possible upstream fix.** An option for the emulator loop to return to
+its caller at each schedule. It can help other engines that compile
+functions in tiers.
+
+### O23. `--disable-security-hardening-flags` also removes the safety flags
+
+**Status:** OTP 29.1.1 (`erts/configure.ac`).
+
+**Symptom.** ERTS compiled with Emscripten and
+`--disable-security-hardening-flags` fails at random with "memory access
+out of bounds" (for example, in Elixir code evaluation).
+
+**Cause.** The same configure block adds `-fno-strict-aliasing`,
+`-fno-strict-overflow` and `-fno-delete-null-pointer-checks`. ERTS needs
+these flags to be correct, not to be hard to attack. When the option
+removes the block, clang optimizes code that breaks the aliasing rules.
+
+**Workaround.** Put the three flags in `CFLAGS` again.
+
+**Possible upstream fix.** Keep the three flags out of the hardening
+block, so that the option removes only the hardening flags.
+
+## Emscripten
+
+Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/WASM.md,
+phase B).
+
+### EM1. `mallopt()` links but is not declared
+
+**Symptom.** The configure of ERTS finds `mallopt()` (a link test), and
+`utils.c` then fails: "call to undeclared function 'mallopt'".
+
+**Workaround.** `HAVE_MALLOPT` off in the generated `config.h`.
+
+### EM2. The pthread stubs of libc cannot be replaced one by one
+
+**Symptom.** A pthread library of its own (the green threads) gives
+"duplicate symbol: pthread_mutex_init" and others at link time.
+
+**Cause.** Without `-pthread`, the stubs are in one object of libc
+(`library_pthread_stub.o`), which the link takes for other symbols.
+
+**Workaround.** `-Wl,--allow-multiple-definition`, with our objects
+before libc.
+
+### EM3. `MAP_FIXED` and `MAP_NORESERVE` are defined, but mmap cannot reserve
+
+**Symptom.** A wasm64 ERTS stops at start: "Failed to reserve physical
+memory for descriptors".
+
+**Cause.** `erl_mmap.h` sets `ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION`
+when the two flags are defined. The mmap of Emscripten cannot reserve
+address space without memory.
+
+**Workaround.** Do not set the macro for `__EMSCRIPTEN__`.
+
+## workerd (Cloudflare Workers)
+
+Seen with workerd from the `workerd` npm package, in the WebAssembly
+spike (docs/WASM.md, phase B).
+
+### W1. `setImmediate()` and `setTimeout(0)` wait about 1 ms
+
+**Symptom.** An emulator that yields to the event loop after each JSPI
+suspend starts in 3.2 s in workerd, and in 0.5 s in Node.
+
+**Cause.** In workerd, `setImmediate()` is a timer with the minimum
+time. Each yield waits about 1 ms.
+
+**Workaround.** Yield with a `MessageChannel` message outside Node.
+
+### W2. A plain Worker cannot keep one program for all its requests
+
+**Symptom.** One WebAssembly VM for each isolate (a module global),
+used by all requests: the second request hangs, then "Cannot perform
+I/O on behalf of a different request", then requests cancelled as hung.
+
+**Cause.** Three rules of the runtime (documented for Workers): a
+continuation of a promise that a later request resolves is cancelled
+when its request is done; an I/O object and a timer belong to the
+request that made them; a request that waits only for a promise that
+another request resolves is taken as hung.
+
+**Workaround.** The compatibility flag
+`no_handle_cross_request_promise_resolution`; each request handler runs
+the timers, wake-ups and I/O calls of the VM (`jspiSchedule`) and keeps
+a timer of its own. Not a bug: a Durable Object has one context and
+needs none of this.
+
+**Possible upstream change.** An API to run a long-lived task in the
+isolate (its own I/O context, as a Durable Object has), for runtimes
+that serve many requests.
+
+## websock_adapter
+
+Seen with websock_adapter 0.6.0.
+
+### WS1. The adapter list is closed
+
+**Symptom.** A Phoenix server with a new Plug adapter
+(`WasmHost.Conn`) fails at the first WebSocket upgrade: "Unknown
+adapter".
+
+**Cause.** `WebSockAdapter.upgrade/4` knows only Bandit and Cowboy, by
+a fixed list of clauses.
+
+**Workaround.** Add a clause for the new adapter in the dependency, and
+compile it again.
+
+**Possible upstream fix.** Ask the `Plug.Conn` adapter module for its
+WebSock handler, with a callback or a protocol.
 
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
@@ -1200,3 +1375,60 @@ linked, and runs the real `make` for the other ones. They also set
 application or environment setting with a list of applications) that
 skips the native build, for runtimes that have the NIFs built in
 (static NIFs).
+
+## Blink (the x86-64 emulator)
+
+Seen with Blink at commit `f006a4f` (github.com/jart/blink), in the
+WebAssembly spike (docs/WASM.md). `wasm/blink/blink.patch` has the fixes
+of B1 to B3.
+
+### B1. Blink does not take the command line of the APE loader
+
+**Symptom.** Under Blink, `beam.com` fails to start itself again (for
+example for `erl_child_setup`): "blink: command not found: -".
+
+**Cause.** Under Blink, `/proc/self/exe` is Blink, so `beam.com` thinks
+an APE loader runs it, and starts `blink - PROGRAM ARGV0 ARGS...`, the
+command line of the APE loader. Blink takes `-` as the program.
+
+**Fix in the spike.** Blink takes `- PROGRAM ARGV0 ARGS...` as `-0`
+(`argv[0]` given).
+
+**Possible upstream fix.** The same in Blink; or Blink gives the guest
+path for `/proc/self/exe`.
+
+### B2. The Emscripten build of Blink calls `emscripten_sleep()`
+
+**Symptom.** With pthreads, the WebAssembly build stops at the first
+`poll()` without an event: "Please compile your program with async
+support".
+
+**Cause.** For the browser, Blink gives the event loop back in `poll()`
+and `read()` with `emscripten_sleep()`, which needs Asyncify. Also, the
+`poll()` of Emscripten does not wait for its timeout.
+
+**Fix in the spike.** With pthreads (and `PROXY_TO_PTHREAD`), Blink does
+not run on the main thread and can block: `poll()` waits for its timeout
+in short `usleep()` steps.
+
+### B3. Blink does not exit with guest threads in WebAssembly
+
+**Symptom.** After `exit_group()`, Node.js does not exit, and the output
+that Emscripten holds is lost. Native Blink also stops for some time at
+the exit of `beam.com` ("kill9'd thread after 10 tries").
+
+**Cause.** Blink stops the other threads with `pthread_kill()`, and the
+Workers of Emscripten get no signals.
+
+**Fix in the spike.** In the Emscripten build, `exit_group()` calls
+`emscripten_force_exit()`.
+
+### B4. A static glibc program crashes in `exit()`
+
+**Symptom.** A static program of glibc 2.39 (Ubuntu 24.04, `gcc
+-static`) jumps to an address on the stack in `exit()` and gets SIGSEGV,
+under native Blink and in WebAssembly. Programs of Cosmopolitan are not
+affected.
+
+**Not fixed.** Not needed for BEAM.com.
+

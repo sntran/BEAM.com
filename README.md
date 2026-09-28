@@ -543,6 +543,42 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `preopens`.
 
+### Cloudflare Workers: `--target wasm32` (an experiment)
+
+`--target wasm32` makes Cloudflare Workers of a program, in place of an
+executable. It runs on a second runtime: ERTS built with Emscripten for
+WebAssembly (not APE). The program is not changed: its servers (Bandit,
+Cowboy) listen with `gen_tcp` as usual.
+
+```sh
+beam.com examples/worker -o worker --target wasm32         # an app, or a Mix or rebar3 project
+beam.com _build/prod/rel/hello -o worker --target wasm32   # or a release directory (mix release)
+workerd serve worker/worker.capnp                          # test on this computer
+(cd worker/release && wrangler deploy) && (cd worker && wrangler deploy)
+```
+
+- The directory has two Workers: the runtime (`beam.wasm`) and the
+  release (`release.bin`). The runtime boots the release at the first
+  request of an isolate, and keeps the VM for the next requests.
+- The runtime (`beam.wasm`, ERTS built with Emscripten) is in the zip of
+  `beam.com`.
+- The build runs the release once on this computer, to find the modules
+  of its boot (a shorter cold start). `BEAM_COM_WASM_NATIVE_RUN=0` turns
+  that off.
+- At the first request of a new deploy, the Worker makes a snapshot of
+  its booted VM (in the Cache API, or an R2 bucket), and the next
+  isolates start from it: the first request of a Phoenix app takes about
+  0.2 s, not 0.6 s. The var `BEAM_SNAPSHOT = "off"` turns it off.
+- Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
+  (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
+  SQLite storage of a Durable Object (`wrangler deploy -c
+  wrangler.durable.jsonc`: one VM for all the requests). Each statement
+  commits alone: a rollback does not undo.
+
+See [`docs/WASM.md`](docs/WASM.md) for the details, the measurements
+(first request of a Phoenix app: 0.6 s; next requests: 3 ms) and the
+limits.
+
 ### JIT, and the interpreter (`beam-emu.com`)
 
 `beam.com` runs Erlang code with BeamAsm, the JIT of OTP, in one fat

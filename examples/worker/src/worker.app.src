@@ -1,0 +1,7 @@
+{application, worker,
+ [{description, "A Cowboy server for the WebAssembly runtime of beam.com"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {worker, []}},
+  {applications, [kernel, stdlib, cowboy]},
+  {env, []}]}.

@@ -447,6 +447,48 @@ if [ -d examples ]; then
     fi
 fi
 
+# --target wasm32: the Workers of examples/worker (cowboy, from hex.pm).
+# The runtime of the zip (the step wasm_runtime of build.sh), else a
+# stand-in; the build runs the release natively to find the modules of
+# the boot.
+if [ -d examples ]; then
+    in_zip=$($runner "$dir/beam.com" -noshell -eval \
+        'io:format("~ts", [filelib:wildcard("/zip/lib/wasm_host-*/priv/runtime/beam.wasm")]), halt().' 2>/dev/null)
+    if [ -z "$in_zip" ]; then
+        mkdir -p "$dir/wasm-runtime"
+        printf 'stand-in' > "$dir/wasm-runtime/beam.wasm"
+        printf 'stand-in' > "$dir/wasm-runtime/beam.mjs"
+        BEAM_COM_WASM_RUNTIME=$dir/wasm-runtime
+        export BEAM_COM_WASM_RUNTIME
+    fi
+    check beam.com 'wrote .*worker (the Workers worker and worker-release)@@release: worker 0.1.0@@boot: [0-9]* modules in one batch' \
+        examples/worker -o "$dir/worker" --target wasm32
+    unset BEAM_COM_WASM_RUNTIME
+    if [ -n "$in_zip" ] && [ "$(dd if="$dir/worker/beam.wasm" bs=4 count=1 2>/dev/null | od -An -c | tr -d ' ')" != '\0asm' ]; then
+        echo "FAIL: the runtime of the zip is not a WebAssembly module"
+        failed="$failed
+  beam.com --target wasm32: beam.wasm"
+        fail=1
+    fi
+    for f in worker.js beam.mjs beam.wasm wrangler.jsonc worker.capnp tcp-proxy.mjs \
+             durable.js wrangler.durable.jsonc \
+             release/app.js release/release.bin release/wrangler.jsonc; do
+        if [ ! -f "$dir/worker/$f" ]; then
+            echo "FAIL: --target wasm32 did not write $f"
+            failed="$failed
+  beam.com --target wasm32: no $f"
+            fail=1
+        fi
+    done
+    if [ "$(dd if="$dir/worker/release/release.bin" bs=7 count=1 2>/dev/null)" != BEAMFS1 ]; then
+        echo "FAIL: release.bin does not start with BEAMFS1"
+        failed="$failed
+  beam.com --target wasm32: release.bin"
+        fail=1
+    fi
+    rm -f examples/worker/rebar.lock
+fi
+
 # Elixir: a one-file program, and a Mix project with a Hex package in
 # Elixir (jason, from hex.pm) and config/config.exs.
 greeter_ex='greeter_ex: Hello from config/config.exs (1)@@greeter_ex: Hello from config/config.exs (2)@@greeter_ex: json {.*"elixir":"1\.[0-9.]*".*}@@greeter_ex: decoded 1\.'

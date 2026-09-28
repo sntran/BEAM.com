@@ -5,7 +5,7 @@
 #
 # Usage: ./build.sh [step...]
 #   Steps: toolchain openssl otp configure sqlite nifs wasm make elixir
-#          release multicall bundle test unit
+#          release multicall wasm_runtime bundle test unit
 #   With no step, all steps run in order.
 #
 # Environment:
@@ -33,6 +33,13 @@
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
+#   WASM_RUNTIME     The WebAssembly runtime for --target wasm32 (beam.wasm
+#                    and beam.mjs: ERTS built with Emscripten, 5 MB, 2 MB in
+#                    the zip): a directory with them, or "none" (not in the
+#                    zip; BEAM_COM_WASM_RUNTIME gives it at build time).
+#                    Default: the one of the step wasm_runtime, when it ran
+#   EMSDK            An emsdk for the step wasm_runtime (default: one in
+#                    $BUILD/emsdk, installed there at EMSDK_VERSION, 6.0.10)
 #   ELIXIR           0: leave out Elixir (the elixir, eex, ex_unit, iex,
 #                    logger and mix applications and bin/mix in the zip,
 #                    for "beam.com INPUT -o OUTPUT" of Elixir code and the tools
@@ -63,6 +70,7 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
+EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 SQLITE=${SQLITE:-1}
 # esqlite (Apache-2.0), with the SQLite amalgamation (public domain) of
 # sqlite.org instead of the older copy in esqlite.
@@ -576,6 +584,40 @@ check_static_nifs() {
     done
 }
 
+# The WebAssembly runtime of --target wasm32 (Cloudflare Workers): ERTS
+# built with Emscripten (wasm/erts/build.sh, the variant for Workers), from
+# a clone of the same OTP, with this build of OTP as its bootstrap. The
+# step bundle puts it in the zip (WASM_RUNTIME).
+step_wasm_runtime() {
+    [ "${WASM_RUNTIME:-}" = none ] && return 0
+    emsdk=${EMSDK:-$BUILD/emsdk}
+    if [ ! -x "$emsdk/upstream/emscripten/emcc" ]; then
+        log "Installing emsdk $EMSDK_VERSION"
+        [ -d "$emsdk" ] || git clone -q --depth 1 https://github.com/emscripten-core/emsdk.git "$emsdk"
+        "$emsdk/emsdk" install "$EMSDK_VERSION" > "$BUILD/emsdk.log" 2>&1
+        "$emsdk/emsdk" activate "$EMSDK_VERSION" >> "$BUILD/emsdk.log" 2>&1
+    fi
+    log "Building the WebAssembly runtime"
+    EMSDK=$emsdk BOOTSTRAP=$ERL_TOP OUT=$BUILD/wasm OTP_VERSION=$OTP_VERSION \
+        OPENSSL_VERSION=$OPENSSL_VERSION WASM_NODE=0 WORKER=1 WORKER_ROOTFS=none \
+        WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD HEX_NIFS="$(hex_nif_packages)" \
+        "$ROOT/wasm/erts/build.sh"
+}
+
+# The NIFs of the packages HEX_NIFS for the WebAssembly runtime
+# (wasm/erts/build.sh runs this step): in HEX_NIF_OUT, with the compiler
+# HEX_NIF_CC, the archiver HEX_NIF_AR and the flags HEX_NIF_CFLAGS (the
+# include directories of its ERTS), and "NAME VSN" lines in HEX_NIF_LIST.
+# No threads for argon2 there: the green threads run one at a time.
+step_hex_nifs() {
+    mkdir -p "$HEX_NIF_OUT"
+    for p in $HEX_NIFS; do
+        ARGON2_THREADS=0 build_hex_nif "$p" "$HEX_NIF_OUT" "$HEX_NIF_CC" "$HEX_NIF_AR" \
+            "$HEX_NIF_CFLAGS"
+        echo "$p $(hex_nif_recipe "$p" | cut -d' ' -f1)" >> "$HEX_NIF_LIST"
+    done
+}
+
 step_make() {
     log "Building OTP (small build)"
     cd "$ERL_TOP"
@@ -736,6 +778,22 @@ step_bundle() {
     cp "$ROOT/apps/beam_com_script/src/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
 
+    # The host of the WebAssembly runtime (--target wasm32): Erlang code
+    # that a Worker release gets, and the files of the Workers. With
+    # WASM_RUNTIME=dir (beam.wasm and beam.mjs of wasm/erts/build.sh,
+    # WORKER=1), the runtime too (5 MB).
+    wh=$STAGE/lib/wasm_host-0.1.0
+    mkdir -p "$wh/ebin" "$wh/priv/worker"
+    "$ERL_TOP/bin/erlc" -o "$wh/ebin" "$ROOT"/apps/wasm_host/src/*.erl
+    cp "$ROOT/apps/wasm_host/src/wasm_host.app.src" "$wh/ebin/wasm_host.app"
+    cp "$ROOT"/apps/wasm_host/priv/worker/* "$wh/priv/worker/"
+    runtime=${WASM_RUNTIME:-$BUILD/wasm-runtime}
+    if [ "$runtime" != none ] && [ -f "$runtime/beam.wasm" ]; then
+        mkdir -p "$wh/priv/runtime"
+        cp "$runtime/beam.wasm" "$runtime/beam.mjs" "$wh/priv/runtime/"
+        [ ! -f "$runtime/nifs" ] || cp "$runtime/nifs" "$wh/priv/runtime/"
+    fi
+
     # There is no release: beam.com runs its command line (run, -o,
     # --help, --version). A release that is added to the zip runs instead.
 
@@ -807,7 +865,7 @@ step_test() {
 
 if [ $# -eq 0 ]; then
     set -- toolchain openssl otp configure sqlite nifs wasm make elixir release \
-        multicall bundle test unit
+        multicall wasm_runtime bundle test unit
 fi
 mkdir -p "$BUILD"
 for s in "$@"; do

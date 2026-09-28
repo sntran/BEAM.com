@@ -1,0 +1,655 @@
+diff --git a/erts/emulator/beam/beam_common.c b/erts/emulator/beam/beam_common.c
+index 0622939..f972ddb 100644
+--- a/erts/emulator/beam/beam_common.c
++++ b/erts/emulator/beam/beam_common.c
+@@ -177,6 +177,10 @@ void erts_dirty_process_main(ErtsSchedulerData *esdp)
+ 	ERTS_UNREQ_PROC_MAIN_LOCK(c_p);
+ 	ERTS_VERIFY_UNUSED_TEMP_ALLOC(c_p);
+ 	c_p = erts_schedule(esdp, c_p, reds_used);
++#ifdef __EMSCRIPTEN__
++	if (!c_p) /* erts_wasm_hibernate() */
++	    return;
++#endif
+ 
+ 	if (start_time >= 0) {
+ 	    start_time = erts_get_monotonic_time(esdp);
+diff --git a/erts/emulator/beam/emu/beam_emu.c b/erts/emulator/beam/emu/beam_emu.c
+index b490e43..336255c 100644
+--- a/erts/emulator/beam/emu/beam_emu.c
++++ b/erts/emulator/beam/emu/beam_emu.c
+@@ -350,6 +350,18 @@ void process_main(ErtsSchedulerData *esdp)
+     reg = (esdp->registers)->x_reg_array.d;
+     freg = (esdp->registers)->f_reg_array.d;
+ 
++#ifdef __EMSCRIPTEN__
++    /* WebAssembly: this function returns after each time slice, and the
++     * scheduler calls it again. V8 moves a function to optimized code
++     * only at its next call (no on-stack replacement for WebAssembly),
++     * and a scheduler never left this loop: the interpreter stayed in
++     * baseline code, about 3 times slower. */
++    c_p = esdp->wasm_c_p;
++    reds_used = esdp->wasm_reds_used;
++    esdp->wasm_c_p = NULL;
++    goto do_schedule_wasm;
++#endif
++
+     c_p = NULL;
+     reds_used = 0;
+ 
+@@ -364,6 +376,12 @@ void process_main(ErtsSchedulerData *esdp)
+ 	reds_used = REDS_IN(c_p) - (CONTEXT_REDS + FCALLS);
+     ASSERT(reds_used >= 0);
+  do_schedule1:
++#ifdef __EMSCRIPTEN__
++    esdp->wasm_c_p = c_p;
++    esdp->wasm_reds_used = reds_used;
++    return;
++ do_schedule_wasm:
++#endif
+ 
+     if (start_time != 0) {
+         check_monitor_long_schedule(c_p, start_time, start_time_i);
+@@ -373,6 +391,13 @@ void process_main(ErtsSchedulerData *esdp)
+     ERTS_UNREQ_PROC_MAIN_LOCK(c_p);
+     ERTS_VERIFY_UNUSED_TEMP_ALLOC(c_p);
+     c_p = erts_schedule(NULL, c_p, reds_used);
++#ifdef __EMSCRIPTEN__
++    if (!c_p) { /* erts_wasm_hibernate() */
++        esdp->wasm_c_p = NULL;
++        esdp->wasm_reds_used = 0;
++        return;
++    }
++#endif
+     ERTS_VERIFY_UNUSED_TEMP_ALLOC(c_p);
+     start_time = 0;
+ #ifdef DEBUG
+diff --git a/erts/emulator/beam/erl_async.c b/erts/emulator/beam/erl_async.c
+index b1115e8..2d39c21 100644
+--- a/erts/emulator/beam/erl_async.c
++++ b/erts/emulator/beam/erl_async.c
+@@ -125,6 +125,15 @@ static ErtsAsyncData *async;
+ 
+ static void *async_main(void *);
+ 
++#ifdef __EMSCRIPTEN__
++/* A snapshot (erts_wasm_hibernate() in erl_process.c): the async thread
++ * returns when it waits, and starts again in async_main(). */
++extern int erts_wasm_hibernating;
++void jspi_park(void *(*fn)(void *), void *arg);
++static struct { int parked; erts_tse_t *tse; } async_wasm;
++void erts_wasm_async_wake(void) { if (async_wasm.tse) erts_tse_set(async_wasm.tse); }
++#endif
++
+ static ERTS_INLINE ErtsAsyncQ *
+ async_q(int i)
+ {
+@@ -311,6 +320,10 @@ static ERTS_INLINE ErtsAsync *async_get(ErtsThrQ_t *q,
+ 	    }
+ 
+             erts_tse_return(tse);
++#ifdef __EMSCRIPTEN__
++	    if (erts_wasm_hibernating && !saved_fin_deq)
++		return NULL;
++#endif
+ 	}
+     }
+ }
+@@ -416,12 +429,28 @@ static erts_tse_t *async_thread_init(ErtsAsyncQ *aq)
+ static void *async_main(void* arg)
+ {
+     ErtsAsyncQ *aq = (ErtsAsyncQ *) arg;
++#ifdef __EMSCRIPTEN__
++    erts_tse_t *tse;
++    if (async_wasm.parked) {
++        async_wasm.parked = 0;
++        tse = async_wasm.tse;
++    } else
++        tse = async_wasm.tse = async_thread_init(aq);
++#else
+     erts_tse_t *tse = async_thread_init(aq);
++#endif
+     ERTS_MSACC_DECLARE_CACHE();
+ 
+     while (1) {
+ 	ErtsThrQPrepEnQ_t *prep_enq;
+ 	ErtsAsync *a = async_get(&aq->thr_q, tse, &prep_enq);
++#ifdef __EMSCRIPTEN__
++	if (!a) {
++	    async_wasm.parked = 1;
++	    jspi_park(async_main, arg);
++	    return NULL;
++	}
++#endif
+ 	if (is_nil(a->port))
+ 	    break; /* Time to die */
+ 
+diff --git a/erts/emulator/beam/erl_process.c b/erts/emulator/beam/erl_process.c
+index 0201ea3..36468ce 100644
+--- a/erts/emulator/beam/erl_process.c
++++ b/erts/emulator/beam/erl_process.c
+@@ -3167,6 +3167,28 @@ thr_prgr_fin_wait(void *vssi)
+ static void init_aux_work_data(ErtsAuxWorkData *awdp, ErtsSchedulerData *esdp,
+                                char *dawwp);
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * A snapshot of the VM (WebAssembly): erts_wasm_hibernate() wakes all the
++ * threads, and each one returns to the host at the place where it waits
++ * when it has nothing to do (jspi_park(): its function and argument, to
++ * start it again). With no thread left, the host can copy the memory: no
++ * stack of a thread is in it. erts_wasm_resume() starts each thread again
++ * at that place, in this instance or in a new one with the copied memory.
++ */
++#include <emscripten/emscripten.h>
++int erts_wasm_hibernating;
++void jspi_park(void *(*fn)(void *), void *arg);
++int jspi_resume_all(void);
++void erts_wasm_sys_wake(void);
++void erts_wasm_sys_msg_wake(void);
++void erts_wasm_async_wake(void);
++static struct { int parked; ErtsThrPrgrData *tpd; int thr_prgr_active; } aux_wasm;
++static struct { int parked; struct erts_poll_thread *psi; ErtsThrPrgrData *tpd; } poll_wasm;
++static void *aux_thread(void *vix);
++static void *poll_thread(void *vbpt);
++#endif
++
+ void
+ erts_aux_thread_poke(void)
+ {
+@@ -3190,6 +3212,14 @@ aux_thread(void *vix)
+            || (erts_no_schedulers < ix
+                && ix < erts_no_aux_work_threads));
+     ASSERT(0 < id && id <= 1 + erts_no_dirty_alloc_instances);
++#ifdef __EMSCRIPTEN__
++    if (ix == 0 && aux_wasm.parked) {
++        aux_wasm.parked = 0;
++        tpd = aux_wasm.tpd;
++        thr_prgr_active = aux_wasm.thr_prgr_active;
++        goto wasm_resume;
++    }
++#endif
+     
+ #ifdef ERTS_ENABLE_LOCK_CHECK
+     {
+@@ -3233,6 +3263,9 @@ aux_thread(void *vix)
+ 
+     ERTS_MSACC_SET_STATE_CACHED(ERTS_MSACC_STATE_OTHER);
+ 
++#ifdef __EMSCRIPTEN__
++ wasm_resume:
++#endif
+     while (1) {
+ 	erts_aint32_t flgs;
+ 
+@@ -3296,6 +3329,15 @@ aux_thread(void *vix)
+         }
+ 
+ 	flgs = sched_prep_spin_wait(ssi);
++#ifdef __EMSCRIPTEN__
++        if (erts_wasm_hibernating && ix == 0) {
++            aux_wasm.parked = 1;
++            aux_wasm.tpd = tpd;
++            aux_wasm.thr_prgr_active = thr_prgr_active;
++            jspi_park(aux_thread, vix);
++            return NULL;
++        }
++#endif
+     }
+     return NULL;
+ }
+@@ -3344,6 +3386,14 @@ poll_thread(void *vbpt)
+     ErtsThrPrgrData *tpd;
+     ERTS_MSACC_DECLARE_CACHE();
+ 
++#ifdef __EMSCRIPTEN__
++    if (poll_wasm.parked) {
++        poll_wasm.parked = 0;
++        psi = poll_wasm.psi;
++        tpd = poll_wasm.tpd;
++        goto wasm_resume;
++    }
++#endif
+ #ifdef ERTS_ENABLE_LOCK_CHECK
+     {
+ 	char buf[] = "poll_thread";
+@@ -3364,12 +3414,26 @@ poll_thread(void *vbpt)
+     tpd = erts_thr_progress_register_managed_thread(NULL, &callbacks, 0, !0);
+ 
+     psi = erts_create_pollset_thread(bpt->id, tpd);
++#ifdef __EMSCRIPTEN__
++    poll_wasm.psi = psi;
++    poll_wasm.tpd = tpd;
++#endif
+ 
+     ERTS_MSACC_SET_STATE_CACHED(ERTS_MSACC_STATE_OTHER);
+ 
++#ifdef __EMSCRIPTEN__
++ wasm_resume:
++#endif
+     while (1) {
+         erts_check_io_interrupt(psi, 0);
+         erts_check_io(psi, ERTS_POLL_INF_TIMEOUT, true);
++#ifdef __EMSCRIPTEN__
++        if (erts_wasm_hibernating) {
++            poll_wasm.parked = 1;
++            jspi_park(poll_thread, vbpt);
++            return NULL;
++        }
++#endif
+     }
+     return NULL;
+ }
+@@ -8736,6 +8800,12 @@ sched_thread_func(void *vesdp)
+     Uint no = esdp->no;
+     erts_tse_t *tse;
+ 
++#ifdef __EMSCRIPTEN__
++    if (esdp->wasm_parked) {
++        esdp->wasm_parked = 0;
++        goto wasm_resume;
++    }
++#endif
+     /* Perform platform-specific scheduler initialization, e.g. setting up an
+      * alternate signal stack. Must be done before anything else. */
+     erts_sys_scheduler_init();
+@@ -8796,6 +8866,21 @@ sched_thread_func(void *vesdp)
+     erts_utils_sched_spec_data_init();
+     erts_nif_sched_init(esdp);
+ 
++#ifdef __EMSCRIPTEN__
++    /* process_main() returns after each time slice (see beam_emu.c). */
++    esdp->wasm_c_p = NULL;
++    esdp->wasm_reds_used = 0;
++ wasm_resume:
++    for (;;) {
++        process_main(esdp);
++        /* erts_schedule() gave no process: erts_wasm_hibernate(). */
++        if (erts_wasm_hibernating && !esdp->wasm_c_p) {
++            esdp->wasm_parked = 1;
++            jspi_park(sched_thread_func, esdp);
++            return NULL;
++        }
++    }
++#endif
+     process_main(esdp);
+ 
+     /* No schedulers should *ever* terminate */
+@@ -8812,6 +8897,13 @@ sched_dirty_cpu_thread_func(void *vesdp)
+     ErtsSchedulerData *esdp = vesdp;
+     Uint no = esdp->dirty_no;
+ 
++#ifdef __EMSCRIPTEN__
++    if (esdp->wasm_parked) {
++        esdp->wasm_parked = 0;
++        goto wasm_resume;
++    }
++#endif
++
+     /* Perform platform-specific scheduler tweaks, e.g. setting up an alternate
+      * signal stack. Must be done before anything else. */
+     erts_sys_scheduler_init();
+@@ -8847,7 +8939,17 @@ sched_dirty_cpu_thread_func(void *vesdp)
+ 
+     erts_nif_sched_init(esdp);
+ 
++#ifdef __EMSCRIPTEN__
++ wasm_resume:
++#endif
+     erts_dirty_process_main(esdp);
++#ifdef __EMSCRIPTEN__
++    if (erts_wasm_hibernating) {
++        esdp->wasm_parked = 1;
++        jspi_park(sched_dirty_cpu_thread_func, esdp);
++        return NULL;
++    }
++#endif
+     /* No schedulers should *ever* terminate */
+     erts_exit(ERTS_ABORT_EXIT,
+ 	     "Dirty CPU scheduler thread number %beu terminated\n",
+@@ -8862,6 +8964,13 @@ sched_dirty_io_thread_func(void *vesdp)
+     ErtsSchedulerData *esdp = vesdp;
+     Uint no = esdp->dirty_no;
+ 
++#ifdef __EMSCRIPTEN__
++    if (esdp->wasm_parked) {
++        esdp->wasm_parked = 0;
++        goto wasm_resume;
++    }
++#endif
++
+     /* Perform platform-specific scheduler initialization, e.g. setting up an
+      * alternate signal stack. Must be done before anything else. */
+     erts_sys_scheduler_init();
+@@ -8897,7 +9006,17 @@ sched_dirty_io_thread_func(void *vesdp)
+ 
+     erts_nif_sched_init(esdp);
+ 
++#ifdef __EMSCRIPTEN__
++ wasm_resume:
++#endif
+     erts_dirty_process_main(esdp);
++#ifdef __EMSCRIPTEN__
++    if (erts_wasm_hibernating) {
++        esdp->wasm_parked = 1;
++        jspi_park(sched_dirty_io_thread_func, esdp);
++        return NULL;
++    }
++#endif
+     /* No schedulers should *ever* terminate */
+     erts_exit(ERTS_ABORT_EXIT,
+ 	     "Dirty I/O scheduler thread number %beu terminated\n",
+@@ -9941,6 +10060,14 @@ Process *erts_schedule(ErtsSchedulerData *esdp, Process *p, int calls)
+ 	    flags |= ERTS_RUNQ_FLG_EXEC;
+             ERTS_MSACC_UPDATE_CACHE();
+ 	    non_empty_runq(rq);
++#ifdef __EMSCRIPTEN__
++	    /* The scheduler returns to the host (a snapshot). The next
++	     * erts_schedule(.., NULL, 0) locks rq and goes on here. */
++	    if (erts_wasm_hibernating) {
++		erts_runq_unlock(rq);
++		return NULL;
++	    }
++#endif
+ 
+ 	    goto check_activities_to_run;
+ 	} else if (is_normal_sched &&
+@@ -15370,3 +15497,32 @@ erts_debug_proc_monitor_link_foreach(Process *proc,
+ 
+     }
+ }
++
++#ifdef __EMSCRIPTEN__
++EMSCRIPTEN_KEEPALIVE void
++erts_wasm_hibernate(void)
++{
++    int ix;
++    erts_wasm_hibernating = 1;
++    for (ix = 0; ix < erts_no_schedulers; ix++)
++        ssi_wake(ERTS_SCHED_SLEEP_INFO_IX(ix));
++    for (ix = 0; ix < erts_no_dirty_cpu_schedulers; ix++)
++        ssi_wake(ERTS_DIRTY_CPU_SCHED_SLEEP_INFO_IX(ix));
++    for (ix = 0; ix < erts_no_dirty_io_schedulers; ix++)
++        ssi_wake(ERTS_DIRTY_IO_SCHED_SLEEP_INFO_IX(ix));
++    ssi_wake(ERTS_SCHED_SLEEP_INFO_IX(-1)); /* the aux thread */
++    if (poll_wasm.psi)
++        erts_check_io_interrupt(poll_wasm.psi, 1);
++    erts_wasm_sys_wake();
++    erts_wasm_sys_msg_wake();
++    erts_wasm_async_wake();
++}
++
++/* The number of threads started again. */
++EMSCRIPTEN_KEEPALIVE int
++erts_wasm_resume(void)
++{
++    erts_wasm_hibernating = 0;
++    return jspi_resume_all();
++}
++#endif
+diff --git a/erts/emulator/beam/erl_process.h b/erts/emulator/beam/erl_process.h
+index 185922e..c456392 100644
+--- a/erts/emulator/beam/erl_process.h
++++ b/erts/emulator/beam/erl_process.h
+@@ -747,6 +747,13 @@ struct ErtsSchedulerData_ {
+     erts_alloc_verify_func_t verify_unused_temp_alloc;
+     Allctr_t *verify_unused_temp_alloc_data;
+ #endif
++#ifdef __EMSCRIPTEN__
++    /* process_main() returns after each time slice (see beam_emu.c): the
++     * process and the reductions for the next erts_schedule(). */
++    struct process *wasm_c_p;
++    int wasm_reds_used;
++    int wasm_parked;  /* returned for a snapshot (erts_wasm_hibernate) */
++#endif
+ };
+ 
+ typedef union {
+diff --git a/erts/emulator/beam/erl_trace.c b/erts/emulator/beam/erl_trace.c
+index 01f415b..386bdbd 100644
+--- a/erts/emulator/beam/erl_trace.c
++++ b/erts/emulator/beam/erl_trace.c
+@@ -2653,12 +2653,32 @@ sys_msg_dispatcher_wait(void *vwait_p)
+ 
+ static ErtsSysMsgQ *local_sys_message_queue = NULL;
+ 
++#ifdef __EMSCRIPTEN__
++extern int erts_wasm_hibernating;
++void jspi_park(void *(*fn)(void *), void *arg);
++static struct { int parked; ErtsThrPrgrData *tpd; } sys_msg_wasm;
++/* erts_wasm_hibernate(): the dispatcher returns. */
++void erts_wasm_sys_msg_wake(void) { erts_cnd_signal(&smq_cnd); }
++#endif
++
+ static void *
+ sys_msg_dispatcher_func(void *unused)
+ {
+     ErtsThrPrgrCallbacks callbacks;
+     ErtsThrPrgrData *tpd;
++#ifdef __EMSCRIPTEN__
++    /* Static: the callbacks keep its address, and after a snapshot the
++     * thread starts again in another frame. */
++    static int wait;
++    if (sys_msg_wasm.parked) {
++        sys_msg_wasm.parked = 0;
++        tpd = sys_msg_wasm.tpd;
++        wait = 0;
++        goto wasm_resume;
++    }
++#else
+     int wait = 0;
++#endif
+ 
+ #ifdef ERTS_ENABLE_LOCK_CHECK
+     erts_lc_set_thread_name("system message dispatcher");
+@@ -2673,6 +2693,10 @@ sys_msg_dispatcher_func(void *unused)
+     callbacks.finalize_wait = sys_msg_dispatcher_fin_wait;
+ 
+     tpd = erts_thr_progress_register_managed_thread(NULL, &callbacks, 0, 0);
++#ifdef __EMSCRIPTEN__
++    sys_msg_wasm.tpd = tpd;
++ wasm_resume:
++#endif
+ 
+     while (1) {
+ 	int end_wait = 0;
+@@ -2707,6 +2731,17 @@ sys_msg_dispatcher_func(void *unused)
+                 erts_cnd_wait(&smq_cnd, &smq_mtx);
+             if (sys_message_queue)
+                 break;
++#ifdef __EMSCRIPTEN__
++            if (erts_wasm_hibernating) {
++                erts_mtx_unlock(&smq_mtx);
++                erts_thr_progress_finalize_wait(tpd);
++                if (end_wait)
++                    erts_thr_progress_active(tpd, 1);
++                sys_msg_wasm.parked = 1;
++                jspi_park(sys_msg_dispatcher_func, NULL);
++                return NULL;
++            }
++#endif
+             wait = 1;
+ 	    erts_mtx_unlock(&smq_mtx);
+             /*
+diff --git a/erts/emulator/beam/io.c b/erts/emulator/beam/io.c
+index 24468ad..660030c 100644
+--- a/erts/emulator/beam/io.c
++++ b/erts/emulator/beam/io.c
+@@ -710,6 +710,16 @@ erts_open_driver(erts_driver_t* driver,	/* Pointer to driver. */
+         }
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++	/* WebAssembly checks the type of an indirect call: only the system
++	 * drivers take the options. */
++	if (driver->entry != &fd_driver_entry
++	    && driver->entry != &spawn_driver_entry
++	    && driver->entry != &forker_driver_entry)
++	    drv_data = ((ErlDrvData (*)(ErlDrvPort, char *)) driver->start)(
++		ERTS_Port2ErlDrvPort(port), name);
++	else
++#endif
+ 	drv_data = (*driver->start)(ERTS_Port2ErlDrvPort(port), name, opts);
+ 	if (((SWord) drv_data) == -1)
+ 	    error_type = -1;
+diff --git a/erts/emulator/sys/common/erl_mmap.h b/erts/emulator/sys/common/erl_mmap.h
+index 3218f67..17545b8 100644
+--- a/erts/emulator/sys/common/erl_mmap.h
++++ b/erts/emulator/sys/common/erl_mmap.h
+@@ -56,7 +56,8 @@
+  * <http://lists.llvm.org/pipermail/cfe-commits/Week-of-Mon-20150202/122958.html>
+  */
+ #  if (defined(MAP_FIXED) && (defined(MAP_NORESERVE) || defined(__FreeBSD__)) \
+-       && !defined(ADDRESS_SANITIZER))
++       && !defined(ADDRESS_SANITIZER) && !defined(__EMSCRIPTEN__))
++/* Emscripten: mmap() is malloc(); it cannot reserve address space. */
+ #    define ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION 1
+ #  endif
+ #endif
+diff --git a/erts/emulator/sys/unix/sys.c b/erts/emulator/sys/unix/sys.c
+index 218da54..a050910 100644
+--- a/erts/emulator/sys/unix/sys.c
++++ b/erts/emulator/sys/unix/sys.c
+@@ -58,6 +58,9 @@
+ #define ERTS_WANT_BREAK_HANDLING
+ #define WANT_NONBLOCKING    /* must define this to pull in defs from sys.h */
+ #include "sys.h"
++#ifdef __EMSCRIPTEN__
++#include <poll.h>
++#endif
+ #include "erl_thr_progress.h"
+ 
+ #if defined(__APPLE__) && defined(__MACH__) && !defined(__DARWIN__)
+@@ -1102,6 +1105,16 @@ erl_debug(char* fmt, ...)
+ 
+ static erts_tid_t sig_dispatcher_tid;
+ 
++#ifdef __EMSCRIPTEN__
++extern int erts_wasm_hibernating;
++void jspi_park(void *(*fn)(void *), void *arg);
++int jspi_main_may_return(void);
++static void smp_sig_notify(int signum);
++static void *signal_dispatcher_thread_func(void *unused);
++/* erts_wasm_hibernate(): the signal dispatcher returns (signal -1). */
++void erts_wasm_sys_wake(void) { smp_sig_notify(-1); }
++#endif
++
+ static void
+ smp_sig_notify(int signum)
+ {
+@@ -1134,6 +1147,15 @@ signal_dispatcher_thread_func(void *unused)
+         do {
+             res = read(sig_notify_fds[0], (void *) &sb.buf[i], sizeof(int) - i);
+             i += res > 0 ? res : 0;
++#ifdef __EMSCRIPTEN__
++            /* The pipes of Emscripten do not block: wait with poll(), which
++             * suspends this (green) thread. */
++            if (res < 0 && errno == EAGAIN) {
++                struct pollfd pfd = {sig_notify_fds[0], POLLIN, 0};
++                poll(&pfd, 1, -1);
++                errno = EINTR;
++            }
++#endif
+         } while ((i < sizeof(int) && res >= 0) || (res < 0 && errno == EINTR));
+ 
+ 	if (res < 0) {
+@@ -1160,6 +1182,15 @@ signal_dispatcher_thread_func(void *unused)
+          *         signal dispatcher itself explicitly is blocking all
+          *         blockable threads).
+          */
++#ifdef __EMSCRIPTEN__
++        if (sb.signum == -1) {
++            if (erts_wasm_hibernating) {
++                jspi_park(signal_dispatcher_thread_func, NULL);
++                return NULL;
++            }
++            continue;
++        }
++#endif
+         switch (sb.signum) {
+             case 0: continue;
+             case SIGINT:
+@@ -1274,6 +1305,12 @@ erts_sys_main_thread(void)
+        Most probably erts has closed this pipe and is about to exit. */
+ #endif /* #ifdef __DARWIN__ */
+ 
++#ifdef __EMSCRIPTEN__
++    /* The main thread has nothing to do. Where the runtime stays after
++     * main() (not Node.js), it returns: no wait of it in a snapshot. */
++    if (jspi_main_may_return())
++        return;
++#endif
+     while (1) {
+ #ifdef DEBUG
+ 	int res =
+diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
+index bdd6528..dfc3a7d 100644
+--- a/erts/emulator/sys/unix/sys_drivers.c
++++ b/erts/emulator/sys/unix/sys_drivers.c
+@@ -197,6 +197,10 @@ erl_sys_late_init(void)
+ 
+ /* II.I Spawn prototypes */
+ static ErlDrvData spawn_start(ErlDrvPort, char*, SysDriverOpts*);
++#ifdef __EMSCRIPTEN__
++/* WebAssembly: no fork(), so no erl_child_setup: port programs fail. */
++static int no_forker;
++#endif
+ static ErlDrvSSizeT spawn_control(ErlDrvData, unsigned int, char *,
+                                   ErlDrvSizeT, char **, ErlDrvSizeT);
+ 
+@@ -481,6 +485,12 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+     char *wd, *cwd;
+     int ifd[2], ofd[2], stderrfd;
+ 
++#ifdef __EMSCRIPTEN__
++    if (no_forker) {
++        errno = no_forker;
++        return ERL_DRV_ERROR_ERRNO;
++    }
++#endif
+     if (pipe(ifd) < 0) return ERL_DRV_ERROR_ERRNO;
+     errno = EMFILE;		/* default for next three conditions */
+     if (ifd[0] >= sys_max_files() || pipe(ofd) < 0) {
+@@ -1599,6 +1609,11 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+     char *child_setup_prog;
+ 
+     forker_port = erts_drvport2id(port_num);
++#ifdef __EMSCRIPTEN__
++    forker_fd = -1;
++    no_forker = ENOSYS;
++    return (ErlDrvData)port_num;
++#endif
+ 
+     res = erts_sys_explicit_8bit_getenv("BINDIR", bindir, &bindirsz);
+     if (res == 0) {
+diff --git a/erts/lib_src/pthread/ethread.c b/erts/lib_src/pthread/ethread.c
+index 7a1baea..92177b2 100644
+--- a/erts/lib_src/pthread/ethread.c
++++ b/erts/lib_src/pthread/ethread.c
+@@ -110,6 +110,12 @@ static void *thr_wrapper(void *vtwd)
+ 			result has been set! */
+     if (twd->name)
+         ethr_setname(twd->name);
++#ifdef __EMSCRIPTEN__
++    {
++        extern void jspi_set_name(const char *name);
++        jspi_set_name(twd->name);
++    }
++#endif
+ 
+     ethr_atomic32_set(&twd->result, result);
+ 
+@@ -117,6 +123,14 @@ static void *thr_wrapper(void *vtwd)
+ 
+     res = result == 0 ? (*thr_func)(arg) : NULL;
+ 
++#ifdef __EMSCRIPTEN__
++    {
++        /* Returned for a snapshot (jspi_pthread.c): it starts again. */
++        extern int jspi_self_parked(void);
++        if (jspi_self_parked())
++            return res;
++    }
++#endif
+     thr_exit_cleanup();
+     return res;
+ }
