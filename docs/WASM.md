@@ -816,7 +816,8 @@ Bandit) runs natively on a SQLite file, and on Workers with D1 or with a
 Durable Object. Tested with `wrangler dev`: inserts with `RETURNING`,
 `Repo.aggregate/2`, a query with `ORDER BY`, blobs, a transaction, the
 migration at the boot, and the data after a restart, also on a VM
-restored from a snapshot.
+restored from a snapshot. On Cloudflare too, with D1 and with a Durable
+Object (see "On Cloudflare: the first deploy").
 
 How it works: a statement runs on the host at its first `columns/2` or
 step, after the binds, and all its rows come back at once (JSON: a blob as
@@ -871,9 +872,14 @@ runtime Worker copies the memory into a new instance and the VM goes on.
   binding `SNAPSHOTS`. With no store (`workerd` with no cache), the Worker
   makes none.
 - The key: the hash of `beam.wasm`, `beam.mjs`, `worker.js` and the
-  release (`snapshot_key` in `.release.json`, from the build), and of the
-  text bindings. So a new deploy, or a new secret, gives a new snapshot,
-  and the snapshot has the real environment of the deploy.
+  release (`snapshot_key` in `.release.json`, from the build), of the
+  text bindings, of the host (a Worker or a Durable Object), and of the
+  version of the deploy (the binding `BEAM_VERSION`, `version_metadata`
+  in the `wrangler.jsonc` files). So a new deploy, or a new secret, gives
+  a new snapshot, and the snapshot has the real environment of the
+  deploy. The version is necessary: the Workers of an account share the
+  Cache API, and a boot runs the migrations on the database of its own
+  Worker (see "On Cloudflare: the first deploy").
 - The snapshot is made before the first request: the state of the app is
   the state after its boot, with no request in it.
 - The VM that makes it runs with `-c false` (see "Time" below).
@@ -1129,8 +1135,33 @@ document how it applies it); do not count on this.
 - **The Durable Object had the name of the runtime Worker** (`NAME`), so
   its deploy replaced that Worker. Now it is `NAME-durable`.
 
-**Not tested:** D1 (the API token had no D1 permission), Phoenix and
-LiveView, R2 (not enabled on the account), and a paid plan.
+**D1** (the runtime Worker `notes` with its release Worker, and a D1
+database in the region ENAM):
+
+| | CPU | Wall |
+|---|---|---|
+| Boot, the migration on D1, and a snapshot of 32.1 MB | 963 ms | 2,107 ms |
+| Restore from the Cache API (8 isolates) | 215 to 506 ms | 526 to 1,076 ms |
+| `/` on a warm VM (an insert and a count: 2 statements) | 12 to 49 ms | 68 to 97 ms |
+| `/notes`, `/tx` on a warm VM | 5 to 17 ms | 31 to 45 ms |
+| `/hash` (low costs) | 19 to 48 ms | |
+| `/hash?cost=default` | 1,240 and 1,318 ms | 1,264 and 1,342 ms |
+
+- All the routes work. Each statement is a call to D1 (about 25 to 45
+  ms), so a request with SQL takes longer on D1 than in a Durable Object
+  (13 to 26 ms), which has its SQLite on the same machine.
+- argon2 with the default costs passed twice in the plain Worker, with
+  no memory error.
+- **A snapshot of another Worker** (fixed): the first deploy of `notes`
+  restored the snapshot that the Durable Object Worker had made (with
+  the same release and no vars, so the same key). That VM had run its
+  migration on the storage of the object, so D1 had no table: "no such
+  table: notes". The Workers of an account share the Cache API. Now the
+  key also has the host and the version of the deploy (`BEAM_VERSION`):
+  each deploy boots once, and runs its migrations on its own database.
+
+**Not tested:** Phoenix and LiveView, R2 (not enabled on the account),
+and a paid plan.
 
 ## Erlang in a browser tab
 
@@ -1197,7 +1228,7 @@ Still open:
   `ssl`, which work now). (SQLite on D1 and Durable Objects is done: see
   "Ecto SQLite".)
 - **Cloudflare:** the first deploy is done (see "On Cloudflare: the
-  first deploy"). Still to test there: D1, Phoenix and LiveView, R2 for
+  first deploy"). Still to test there: Phoenix and LiveView, R2 for
   the snapshots, and a paid plan. A restore in the global scope of a
   Durable Object (its constructor) is not tried yet.
 - **More NIFs:** Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one

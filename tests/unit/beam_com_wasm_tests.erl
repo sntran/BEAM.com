@@ -176,6 +176,8 @@ worker_files_test() ->
     ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
     ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"name\": \"app-durable\"">>)),
     ?assert(Has(Plain, "release/wrangler.jsonc", <<"\"workers_dev\": false">>)),
+    ?assert(Has(Plain, "wrangler.jsonc", <<"\"version_metadata\": { \"binding\": \"BEAM_VERSION\" }">>)),
+    ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"version_metadata\"">>)),
     Sqlite = Files([exqlite]),
     ?assertNot(lists:keymember("global.js", 1, Sqlite)),
     ?assertNot(lists:keymember("wrangler.global.jsonc", 1, Sqlite)),

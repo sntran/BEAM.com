@@ -348,6 +348,9 @@ worker_files(#{name := Name} = Rel, Runtime, Root) ->
      {"worker.capnp", capnp(Phoenix)}].
 
 -define(DATE, "2026-09-01").
+%% The version of the deploy is in the key of the snapshot (worker.js).
+-define(VERSION, "  // The version of the deploy: a new deploy makes a new snapshot.\n"
+                 "  \"version_metadata\": { \"binding\": \"BEAM_VERSION\" }").
 
 wrangler(Name, Phoenix, Sqlite) ->
     D1 = case Sqlite of
@@ -381,7 +384,8 @@ wrangler(Name, Phoenix, Sqlite) ->
      "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
      "  ],\n"
-     "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }]",
+     "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }],\n",
+     ?VERSION,
      D1, Vars, "\n}\n"].
 
 %% The host of a workers.dev URL has the subdomain of the account
@@ -413,8 +417,9 @@ wrangler_durable(Name, Phoenix) ->
      "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
      "  ],\n"
-     "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }],\n"
-     "  \"durable_objects\": { \"bindings\": [{ \"name\": \"BEAM\", \"class_name\": \"Beam\" }] },\n"
+     "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }],\n",
+     ?VERSION,
+     ",\n  \"durable_objects\": { \"bindings\": [{ \"name\": \"BEAM\", \"class_name\": \"Beam\" }] },\n"
      "  \"migrations\": [{ \"tag\": \"v1\", \"new_sqlite_classes\": [\"Beam\"] }]",
      Vars, "\n}\n"].
 

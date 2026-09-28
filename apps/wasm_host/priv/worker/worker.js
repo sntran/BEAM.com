@@ -69,8 +69,12 @@ function releaseMeta(bytes) {
 // The snapshots that the Worker makes itself (see Vm.makeSnapshot): in the
 // R2 bucket of the binding SNAPSHOTS, else in the Cache API (of each data
 // center). The key: the runtime, worker.js and the release (snapshot_key of
-// .release.json, from the build), and the text bindings, which the boot
-// reads (a new secret gives a new snapshot).
+// .release.json, from the build), the text bindings, which the boot
+// reads (a new secret gives a new snapshot), the host (a Worker or a
+// Durable Object) and the version of the deploy (the binding BEAM_VERSION,
+// version_metadata). The Workers of an account share the Cache API, and
+// the boot of a snapshot ran its migrations on the database of its own
+// Worker: so each deploy boots once, on its own database.
 const snapshots = {
   url: (key) => `https://beam-snapshot.invalid/${key}`,
   async get(env, key) {
@@ -92,9 +96,10 @@ const snapshots = {
   },
 };
 
-async function snapshotKey(env, meta) {
+async function snapshotKey(env, meta, host) {
   const vars = Object.entries(env).filter(([, v]) => typeof v === 'string').sort(([a], [b]) => (a < b ? -1 : 1));
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([meta.snapshot_key, vars])));
+  const id = JSON.stringify([meta.snapshot_key, vars, host, env.BEAM_VERSION?.id ?? null]);
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(id));
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
@@ -317,7 +322,7 @@ export class Vm {
     // (BEAM_SNAPSHOT = "off" turns them off).
     let snapBytes = bundled, key = null;
     if (!snapBytes && env.BEAM_SNAPSHOT !== 'off') {
-      key = await snapshotKey(env, releaseMeta(release));
+      key = await snapshotKey(env, releaseMeta(release), this.plain ? 'worker' : 'durable');
       snapBytes = await snapshots.get(env, key);
     }
     const snap = snapBytes && parseSnapshot(snapBytes);
