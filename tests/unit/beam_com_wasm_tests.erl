@@ -175,3 +175,12 @@ sqlite_shim_test() ->
     after
         code:purge(Mod), code:delete(Mod)
     end.
+
+%% The file nifs of the runtime: the hex.pm packages whose NIFs it has.
+runtime_nifs_test() ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beam_com_wasm_nifs"),
+    ok = filelib:ensure_path(Dir),
+    _ = file:delete(filename:join(Dir, "nifs")),
+    ?assertEqual([], beam_com_wasm:runtime_nifs(Dir)),
+    ok = file:write_file(filename:join(Dir, "nifs"), <<"bcrypt_elixir 3.3.2\nargon2_elixir 4.1.3\n">>),
+    ?assertEqual([bcrypt_elixir, argon2_elixir], beam_com_wasm:runtime_nifs(Dir)).

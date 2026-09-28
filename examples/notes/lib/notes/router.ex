@@ -28,6 +28,18 @@ defmodule Notes.Router do
     send_resp(conn, 200, "note #{n} in a transaction\n")
   end
 
+  # The password hashes of phx.gen.auth (bcrypt, the default, and argon2):
+  # NIFs in beam.com and in the WebAssembly runtime.
+  # ?cost=default: the default costs of the packages (slow, and argon2
+  # takes 64 MiB).
+  get "/hash" do
+    conn = fetch_query_params(conn)
+    {b, a} = if conn.params["cost"] == "default", do: {[], []}, else: {[log_rounds: 4], [t_cost: 1, m_cost: 12]}
+    {bcrypt_us, bcrypt} = :timer.tc(fn -> Bcrypt.verify_pass("pw", Bcrypt.hash_pwd_salt("pw", b)) end)
+    {argon2_us, argon2} = :timer.tc(fn -> Argon2.verify_pass("pw", Argon2.hash_pwd_salt("pw", a)) end)
+    send_resp(conn, 200, "bcrypt: #{bcrypt} (#{div(bcrypt_us, 1000)} ms)\nargon2: #{argon2} (#{div(argon2_us, 1000)} ms)\n")
+  end
+
   match _ do
     send_resp(conn, 404, "not found\n")
   end

@@ -412,9 +412,19 @@ without ERTS. The output is a directory:
   (a program that must not start on the build computer), and when the run
   fails, the Worker loads the modules one by one (with a warning). No run
   on Windows (no port programs).
-- **NIFs:** the runtime has the NIFs of `crypto` and `asn1` only. A
-  release with `esqlite`, `wasm` or `bcrypt_elixir` gets a warning.
-  `exqlite` (Ecto SQLite) works through the host: see "Ecto SQLite".
+- **NIFs:** the runtime has the NIFs of `crypto` and `asn1`, and those
+  of the hex.pm packages of `beam.com` (`bcrypt_elixir` and
+  `argon2_elixir`, and the `EXTRA_NIFS` of a custom build), from the same
+  recipes as the native file (`build_hex_nif` in `build.sh`, with `emcc`;
+  argon2 with no threads). The file `nifs` next to `beam.wasm` lists
+  them. A release with a NIF that the runtime does not have (`esqlite`,
+  `wasm`) gets a warning. `exqlite` (Ecto SQLite) works through the host:
+  see "Ecto SQLite".
+- **Password hashes** (`phx.gen.auth`): `examples/notes` has `/hash`.
+  In `wrangler dev`, with the default costs of the packages, bcrypt takes
+  about 0.6 s and argon2 0.5 to 0.75 s (argon2 also takes 64 MiB, in the
+  128 MB of an isolate); with low costs, 4 ms and 6 to 40 ms. So a login
+  needs the paid plan (30 s of CPU), not the free plan (10 ms).
 
 Measured in `workerd` (the first request after a new `workerd`, 7 runs
 each, medians; the release directory of the Phoenix demo, 8.5 MB, 1,347
@@ -952,7 +962,7 @@ MB) and `snapshot.bin` (33.5 MB): under the 64 MiB of a Worker. The runtime
 gets both with a fetch, and frees the snapshot after the copy: the live
 memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
 
-**What is still open** (not in `beam.com` yet):
+**What is still open:**
 
 - **The state is shared.** Every isolate starts from the same state (a
   snapshot of the build here; the Worker makes its own before any
@@ -976,12 +986,16 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
   cannot suspend under JSPI. Not about the snapshot.
 - Not tested: a deploy to Cloudflare, and `performance.now()` there.
 
-### Cloudflare's limits (from its limits and pricing pages, 2026-09-27)
+### Cloudflare's limits (from its limits and pricing pages, 2026-09-28; the limits page was updated 2026-09-05)
 
 - **CPU time for each request:** 10 ms on the free plan, 30 s (up to 5
-  min) on the paid plan. The boot of the VM takes about 0.5 s of CPU, so
-  a first request needs the paid plan; a warm request (3 ms) can fit in
-  10 ms, but the first request of each isolate does not.
+  min) on the paid plan. The boot of the VM takes about 0.5 s of CPU, and
+  a restore from the snapshot about 0.2 s, so a first request needs the
+  paid plan; a warm request (3 ms) can fit in 10 ms, but the first
+  request of each isolate does not.
+- **Startup:** 1 s for the global scope of the Worker. To check on a
+  deploy: a restore of a bundled snapshot there, so that the first
+  request is short.
 - **Memory:** 128 MB for each isolate, the JavaScript heap and the
   WebAssembly memory together. One VM (48 to 58 MB, and `release.bin` in
   its file system) fits; two VMs in one isolate would not.
@@ -1051,15 +1065,24 @@ Still open:
 
 - **A smaller `release.bin`:** only the modules of the boot at first, and
   the others from the app Worker when the code server asks for them.
-- **Data:** an Ecto adapter for the SQL storage of Durable Objects, or
-  `exqlite` over it; Postgres through `wasm_tcp` (Postgrex over
-  `gen_tcp` and `ssl`, which work now).
+- **Data:** Postgres through `wasm_tcp` (Postgrex over `gen_tcp` and
+  `ssl`, which work now). (SQLite on D1 and Durable Objects is done: see
+  "Ecto SQLite".)
 - **A deploy to Cloudflare** (this spike ran `workerd` locally): the CPU
   time and memory limits in production, and JSPI there.
+- **More NIFs:** C NIFs that compile with rebar3 hooks (as `jiffy`), and
+  Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one crate at a
+  time).
+- **WASI:** not now. ERTS needs threads: `wasi-threads` was withdrawn,
+  and its successor (shared-everything-threads) is in no host yet;
+  Workers have no threads, and their WASI is an experimental JavaScript
+  shim. WASI 0.3 (2026-06) has async components, but not the stack
+  switching of the green threads (JSPI here). Later, with stack switching
+  in Wasmtime and other hosts, the same `beam.wasm` could run there.
 - **More Durable Objects:** PubSub between objects (a
   `Phoenix.PubSub` adapter over Durable Object requests).
-- **The snapshot in `beam.com`:** see "What is still open" in "A snapshot
-  of the booted VM".
+- **The snapshot:** see "What is still open" in "A snapshot of the
+  booted VM".
 - **UDP and DNS** through the host.
 - **Incoming TCP:** the `connect()` handler of Workers (Spectrum, private
   beta; a paid product) when it is available; distributed Erlang over `wasm_tcp` (it needs
@@ -1078,4 +1101,4 @@ Still open:
 - No incoming TCP on Workers other than through a WebSocket and a client
   proxy (for now); no UDP.
 - No ports (no `fork()` or `exec()`), and no NIFs that are not linked into
-  the runtime.
+  the runtime (the list: the file `nifs` of the runtime).

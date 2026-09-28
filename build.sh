@@ -600,7 +600,22 @@ step_wasm_runtime() {
     log "Building the WebAssembly runtime"
     EMSDK=$emsdk BOOTSTRAP=$ERL_TOP OUT=$BUILD/wasm OTP_VERSION=$OTP_VERSION \
         OPENSSL_VERSION=$OPENSSL_VERSION WASM_NODE=0 WORKER=1 WORKER_ROOTFS=none \
-        WORKER_OUT=$BUILD/wasm-runtime "$ROOT/wasm/erts/build.sh"
+        WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD HEX_NIFS="$(hex_nif_packages)" \
+        "$ROOT/wasm/erts/build.sh"
+}
+
+# The NIFs of the packages HEX_NIFS for the WebAssembly runtime
+# (wasm/erts/build.sh runs this step): in HEX_NIF_OUT, with the compiler
+# HEX_NIF_CC, the archiver HEX_NIF_AR and the flags HEX_NIF_CFLAGS (the
+# include directories of its ERTS), and "NAME VSN" lines in HEX_NIF_LIST.
+# No threads for argon2 there: the green threads run one at a time.
+step_hex_nifs() {
+    mkdir -p "$HEX_NIF_OUT"
+    for p in $HEX_NIFS; do
+        ARGON2_THREADS=0 build_hex_nif "$p" "$HEX_NIF_OUT" "$HEX_NIF_CC" "$HEX_NIF_AR" \
+            "$HEX_NIF_CFLAGS"
+        echo "$p $(hex_nif_recipe "$p" | cut -d' ' -f1)" >> "$HEX_NIF_LIST"
+    done
 }
 
 step_make() {
@@ -776,6 +791,7 @@ step_bundle() {
     if [ "$runtime" != none ] && [ -f "$runtime/beam.wasm" ]; then
         mkdir -p "$wh/priv/runtime"
         cp "$runtime/beam.wasm" "$runtime/beam.mjs" "$wh/priv/runtime/"
+        [ ! -f "$runtime/nifs" ] || cp "$runtime/nifs" "$wh/priv/runtime/"
     fi
 
     # There is no release: beam.com runs its command line (run, -o,

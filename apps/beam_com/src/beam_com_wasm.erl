@@ -31,12 +31,10 @@
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
-         runtime_dir/1, meta/1, worker_files/3, snapshot_key/2]).
+         runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1]).
 -endif.
 
 -define(HOST_APP, wasm_host).
-%% The applications whose NIFs are only in the native beam.com.
--define(NATIVE_NIFS, [esqlite, wasm, bcrypt_elixir]).
 
 %% A release directory (with releases/start_erl.data) as the input.
 release_dir(Dir, Root) ->
@@ -55,7 +53,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     Apps = [A || {"lib/" ++ P, _} <- Files0, [D, "ebin", F] <- [string:split(P, "/", all)],
                  {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"],
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
-     || A <- lists:usort(Apps), lists:member(A, ?NATIVE_NIFS)],
+     || A <- lists:usort(Apps), lists:member(A, native_nifs() -- runtime_nifs(Runtime))],
     Files1 = with_sqlite(with_host(Files0, Root), Root),
     Meta = meta(Rel#{apps => Apps}),
     Mods = boot_modules(Files1, Meta, Opts),
@@ -96,6 +94,27 @@ runtime_dir(Root) ->
         [] -> throw({error, "the WebAssembly runtime (beam.wasm and beam.mjs) is not in "
                      "~ts: set BEAM_COM_WASM_RUNTIME to its directory, or put it in ~ts",
                      [beam_com:name(), lists:last(Dirs)]})
+    end.
+
+%% The applications whose NIFs are in the native beam.com: esqlite, wasm,
+%% and the hex.pm packages of the env nifs of beam_com (build.sh), but
+%% exqlite, whose module the runtime replaces (with_sqlite/2).
+native_nifs() ->
+    _ = application:load(beam_com),
+    Hex = case application:get_env(beam_com, nifs) of
+              {ok, Nifs} when is_list(Nifs) -> [A || {A, _} <- Nifs];
+              _ -> []
+          end,
+    [esqlite, wasm | Hex] -- [exqlite].
+
+%% The hex.pm packages whose NIFs are in the WebAssembly runtime: the file
+%% nifs next to beam.wasm ("NAME VSN" on each line).
+runtime_nifs(Runtime) ->
+    case file:read_file(filename:join(Runtime, "nifs")) of
+        {ok, Data} ->
+            [binary_to_atom(N) || L <- binary:split(Data, <<"\n">>, [global]),
+                                  [N | _] <- [string:lexemes(L, " ")]];
+        {error, _} -> []
     end.
 
 %% The files of a release directory, and the applications of its .rel
