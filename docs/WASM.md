@@ -380,7 +380,8 @@ without ERTS. The output is a directory:
 | `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | the runtime Worker (`NAME`): the BEAM, with no program |
 | `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`, with no public URL); the runtime gets `release.bin` from it at the first request of an isolate |
 | `durable.js`, `wrangler.durable.jsonc` | the same runtime in one Durable Object (`NAME-durable`: one VM for all the requests, and its SQLite storage for Ecto SQLite): `wrangler deploy -c wrangler.durable.jsonc` |
-| `global.js`, `wrangler.global.jsonc` | the runtime Worker `NAME` with the release and a snapshot of the build in it: its global scope restores the VM (not for Ecto SQLite). First `node wasm/snapshot/snapshot.mjs DIR --warm 4000:/`, then `wrangler deploy -c wrangler.global.jsonc`. See "On Cloudflare: the first deploy" |
+| `global.js`, `wrangler.global.jsonc` | the runtime Worker `NAME` with the release and a snapshot of the build in it: its global scope restores the VM. First `node wasm/snapshot/snapshot.mjs DIR --warm 4000:/` (with Ecto SQLite: `--boot-point`), then `wrangler deploy -c wrangler.global.jsonc`. See "On Cloudflare: the first deploy" |
+| `durable-global.js`, `wrangler.durable-global.jsonc` | the Durable Objects (`NAME-durable`) with the release and a snapshot of the build: the global scope restores a spare VM for the first object of an isolate. See "Tenants, a boot point, a spare VM, a smaller release" |
 | `worker.capnp` | both Workers for `workerd` |
 | `tcp-proxy.mjs` | a local TCP port for a listener of the program (a WebSocket to `/.tcp/PORT`) |
 
@@ -1163,6 +1164,101 @@ database in the region ENAM):
 **Not tested:** Phoenix and LiveView, R2 (not enabled on the account),
 and a paid plan.
 
+### Tenants, a boot point, a spare VM, a smaller release (2026-09-28)
+
+After the first deploy: Phoenix LiveView with one Durable Object for each
+tenant, and the next steps for its cold start. Measured on Cloudflare
+(Free plan, IAD), with the times of `wrangler tail` as before.
+
+**Tenants** (`durable.js`, the var `BEAM_TENANTS`). Each tenant has its
+own Durable Object: its own VM, state and SQLite storage. With
+`"cookie"`, `GET /.tenant/NAME` sets the cookie `beam_tenant`, and the
+cookie names the object (for a workers.dev URL, which has no
+subdomains); with `"host"`, the first label of the host names it
+(`NAME.example.com`). The front Worker gives the name to the app in the
+header `x-beam-tenant`, and removes that header from the request of a
+client. `wasm/phoenix/tenants/setup.sh` makes a LiveView app with a
+counter that all the visitors of a tenant share (`Phoenix.PubSub` in the
+VM of the tenant).
+
+- Deployed at `https://live.fifo.workers.dev` (`/.tenant/NAME`).
+- A click of the counter (an event over the LiveView WebSocket, to its
+  reply): 42 to 67 ms from a client in the same region. A second visitor
+  of the same tenant got the new count; a visitor of another tenant did
+  not.
+- 12 new tenants at the same time: all answered, with no memory error.
+  Cloudflare puts the objects in different isolates.
+
+**A spare VM for Durable Objects** (`durable-global.js`,
+`wrangler.durable-global.jsonc`). As `global.js` for a plain Worker: the
+Worker has the release and a snapshot of the build as modules, and the
+global scope of each isolate restores a spare VM and warms it up
+(`BEAM_WARM`). The first object of the isolate takes it (`Vm.adopt`: its
+jobs and timers move from the requests to a `MessageChannel` and
+`setTimeout`). Another object in the same isolate restores the snapshot
+of the Cache API.
+
+**A snapshot at the boot point** (`WASM_HOST_BOOT_POINT`,
+`snapshot.mjs --boot-point`). A snapshot after the boot holds the state
+of the database that the boot used: the migrations ran on the storage of
+one object, and other tenants that restored it had no tables (a fault
+of the first version, as with D1). `wasm_host_server` can wait after the
+modules of the boot are loaded, before `runtime.exs` and the program,
+until the host sends `go` with the environment. A snapshot of that point
+holds no database state and no secret. A Durable Object with Ecto SQLite
+(`sql` in `.release.json`) makes its snapshot there, all the objects
+share it, and each one runs the program and its migrations on its own
+storage. The build snapshot of an app with Ecto SQLite uses it too
+(`global.js` and `durable-global.js`, with no warm-up request).
+
+| A new tenant (its first request) | CPU | Wall (front Worker) |
+|---|---|---|
+| Phoenix, a restore from the Cache API | 142 to 435 ms | 1,187 to 1,484 ms |
+| Phoenix, the spare VM of the global scope (startup 135 ms) | 52 to 61 ms | 650 to 1,077 ms |
+| `notes` (Ecto SQLite), a full boot for each tenant | 629 to 1,138 ms | about 1,400 ms |
+| `notes`, the snapshot of the boot point from the Cache API | 248 to 368 ms | 1,015 to 1,115 ms |
+| the same, with the smaller `release.bin` (below) | 318 to 441 ms | 709 to 1,157 ms |
+| `notes`, the snapshot of the boot point in the global scope | 217 to 267 ms | 870 to 956 ms |
+
+- With the boot point, the first request of a tenant starts the program
+  (about 200 ms of CPU for `notes`, and 270 ms in Node.js for Phoenix,
+  which then evaluates `runtime.exs` again). So an app with no database
+  uses a full snapshot and a warm-up.
+- The rest of the wall time is mostly Cloudflare: a new isolate for a
+  Worker of 46.5 MB, and the network to the object.
+
+**A smaller `release.bin`.** The builder strips the debug information,
+the docs and the checker chunk of Elixir from the `.beam` files that
+have them (the dependencies that it compiles; `mix release` strips its
+own), and compresses with gzip the modules that the boot does not load.
+The loader of ERTS reads them so. `examples/notes`: 16.6 MB to 8.2 MB,
+so 8.4 MB less in the memory of each isolate.
+
+- Tried first: those modules in a `lazy.bin` of the Worker with the
+  release, fetched when the VM opens their file (the import
+  `__syscall_openat` as `WebAssembly.Suspending`). It does not work:
+  ERTS opens files under `setjmp` (the `invoke_*` frames of
+  Emscripten), where JSPI cannot suspend (docs/UPSTREAM.md EM4).
+
+**Found on the way:**
+
+- **A lost `MessagePort`** (fixed, docs/UPSTREAM.md W6): the boot of the
+  Phoenix release in a Durable Object stopped before `init` in most
+  tries. `jspiLater` kept only one port of its `MessageChannel`, and the
+  runtime collected the other one with its handler.
+- **The wait for the threads of a snapshot** used 5,000 steps of
+  `setTimeout(0)`: on Cloudflare they do not wait, so the snapshot at the
+  boot point failed ("no snapshot at the boot point"). Now the steps are
+  1 ms.
+- **A deploy resets the objects:** a request during the rollout can get
+  "Durable Object reset because its code was updated" (a 500). Seen
+  once in 10 deploys.
+- **One hang:** the object that made the snapshot of the boot point did
+  not answer its first request once (a new VM answered the next one).
+  Not seen again in 10 tries.
+- The uptime of a restored VM counts from the boot of the snapshot, so
+  all the tenants of one snapshot showed the same uptime.
+
 ## Erlang in a browser tab
 
 `wasm/browser/index.html` loads the Worker variant of `wasm/erts` (kernel
@@ -1228,9 +1324,13 @@ Still open:
   `ssl`, which work now). (SQLite on D1 and Durable Objects is done: see
   "Ecto SQLite".)
 - **Cloudflare:** the first deploy is done (see "On Cloudflare: the
-  first deploy"). Still to test there: Phoenix and LiveView, R2 for
-  the snapshots, and a paid plan. A restore in the global scope of a
-  Durable Object (its constructor) is not tried yet.
+  first deploy", and "Tenants, a boot point, a spare VM, a smaller
+  release"). Still to test there: R2 for the snapshots, a paid plan, and
+  more load on one tenant.
+- **Lazy modules:** a runtime built with `-sSUPPORT_LONGJMP=wasm` (no
+  `invoke_*` frames) could load the modules that the boot does not load
+  from the Worker with the release (docs/UPSTREAM.md EM4). It would also
+  let a crash dump suspend.
 - **More NIFs:** Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one
   crate at a time).
 - **WASI:** not now. ERTS needs threads: `wasi-threads` was withdrawn,

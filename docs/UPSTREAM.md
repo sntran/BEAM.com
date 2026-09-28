@@ -1238,6 +1238,27 @@ address space without memory.
 
 **Workaround.** Do not set the macro for `__EMSCRIPTEN__`.
 
+### EM4. An import called under `setjmp` cannot suspend (JSPI)
+
+**Status:** Emscripten with `-sJSPI` and the default
+`SUPPORT_LONGJMP=emscripten` (the runtime of docs/WASM.md, 2026-09-28).
+
+**Symptom.** The import `__syscall_openat` as `WebAssembly.Suspending`
+(to fetch a file at its first open): "SuspendError: trying to suspend JS
+frames" in `invoke_iiii`, and the boot stopped ("cannot get bootfile"),
+also for opens that did not suspend.
+
+**Cause.** A call from a function with `setjmp` goes through a
+JavaScript trampoline (`invoke_*`), and JSPI cannot suspend a stack with
+JavaScript frames. ERTS opens files under `setjmp`.
+
+**Workaround.** None for a file open: the modules that the boot does not
+load stay in `release.bin`, compressed.
+
+**Possible upstream change.** `-sSUPPORT_LONGJMP=wasm` (the WebAssembly
+exception handling of the engine, with no JavaScript frames) with JSPI,
+for all the code of the runtime.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, in the WebAssembly

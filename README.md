@@ -575,6 +575,11 @@ workerd serve worker/worker.capnp                          # test on this comput
   VM before the first request. On Cloudflare (the Free plan), the first
   request of a new isolate then took about 11 ms of CPU, not 163 to 428
   ms, and the next ones 2 to 4 ms.
+- Tenants: with the var `BEAM_TENANTS`, `durable.js` gives each tenant
+  its own Durable Object (its own VM and SQLite storage), and
+  `wrangler.durable-global.jsonc` restores a spare VM in the global
+  scope for the first object of an isolate. `wasm/phoenix/tenants` makes
+  a Phoenix LiveView app for it.
 - Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
   (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
   SQLite storage of a Durable Object (`wrangler deploy -c
