@@ -14,7 +14,7 @@
 # DIR/livebook (the Hex package of Livebook with the changes of
 # livebook.patch), its release, the Workers (DIR/worker) and the iframe
 # Worker (DIR/iframe), and prints the commands to deploy. It needs curl,
-# patch and Node.js 26.
+# patch and Node.js 22 or later.
 #
 # Caution: each visitor can run code in its instance, with the network, and
 # instances have no password. The code of a visitor can read the vars and

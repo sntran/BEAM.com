@@ -592,7 +592,9 @@ workerd serve worker/worker.capnp                          # test on this comput
   and a time limit: a registry limits the instances at one time, keeps
   a queue, and deletes the storage of an instance at its limit.
   `wasm/livebook` builds a public Livebook of this kind, with a notebook
-  that shows the BEAM.
+  that shows the BEAM. Workers Builds can build and deploy it at each
+  push (`build.sh`, `deploy.sh`), with the `beam.com` of `main` that CI
+  publishes as the prerelease `edge`.
 - Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
   (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
   SQLite storage of a Durable Object (`wrangler deploy -c

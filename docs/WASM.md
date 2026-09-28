@@ -1389,6 +1389,40 @@ with bounds for the Free plan. `durable.js` has two new modes:
   vars and secrets of the Worker. Give the Worker no secret other than
   `LIVEBOOK_SECRET_KEY_BASE`.
 
+**Build and deploy at each push.** Workers Builds (the Git integration
+of Workers) builds and deploys the Worker `livebook` from this
+repository. There are two triggers:
+
+- A push to `main` that changes `wasm/livebook/*` (the build watch
+  path) starts a build with the last `beam.com` of `main`.
+- A merge to `main` that changes `beam.com`: CI builds and tests it, the
+  job `edge` publishes it as the prerelease `edge` (with its SHA-256),
+  and then calls the Deploy Hook of the Worker (the secret
+  `LIVEBOOK_DEPLOY_HOOK` of the repository).
+
+`wasm/livebook/build.sh` downloads that `beam.com`, checks its SHA-256,
+and runs `setup.sh`. `deploy.sh` deploys the release, the iframe
+Worker and the Worker of the instances with the token of Workers
+Builds. The limits of Workers Builds (2026-09-28): Ubuntu 24.04 on
+x86_64, 20 minutes, 8 GB, 2 vCPU and 3,000 build minutes a month on the
+Free plan, and no cache. A build from nothing took 1 min 27 s on 2 CPUs
+of this computer. The dry runs of the three deploys passed.
+
+The settings of the Worker `livebook` (Settings > Build):
+
+| Setting | Value |
+|---|---|
+| Git repository and branch | `sntran/beam.com`, `main` |
+| Root directory | `wasm/livebook` |
+| Build command | `sh build.sh` |
+| Deploy command | `sh deploy.sh` |
+| Build watch paths | include `wasm/livebook/*` |
+| Build variables | `SUBDOMAIN` (the workers.dev subdomain), `INSTANCES` (5) |
+
+If the token of Workers Builds cannot deploy the Workers
+`livebook-release` and `livebook-iframe`, give the build an API token
+with the permission "Workers Scripts: Edit".
+
 **Found on the way:**
 
 - **The clock does not move while code runs** on Cloudflare (a
