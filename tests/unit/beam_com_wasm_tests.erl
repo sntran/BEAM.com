@@ -211,6 +211,15 @@ worker_files_test() ->
     ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"version_metadata\"">>)),
     ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"main\": \"durable-global.js\"">>)),
     ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
+    %% A Worker name has no "_": the app humans_must_die.
+    Game = [{F, iolist_to_binary(D)}
+            || {F, D} <- beam_com_wasm:worker_files(#{name => "humans_must_die", apps => [phoenix]},
+                                                    Runtime, Root)],
+    ?assert(Has(Game, "wrangler.durable.jsonc", <<"\"name\": \"humans-must-die-durable\"">>)),
+    ?assert(Has(Game, "wrangler.durable.jsonc", <<"\"service\": \"humans-must-die-release\"">>)),
+    ?assert(Has(Game, "release/wrangler.jsonc", <<"\"name\": \"humans-must-die-release\"">>)),
+    ?assert(Has(Game, "wrangler.jsonc", <<"humans-must-die.SUBDOMAIN.workers.dev">>)),
+    ?assertEqual("my-app2", beam_com_wasm:worker_name("My_App2")),
     Sqlite = Files([exqlite]),
     %% Ecto SQLite: a snapshot at the boot point, and no warm-up request.
     ?assertEqual(<<"durable-global.js">>, proplists:get_value("durable-global.js", Sqlite)),

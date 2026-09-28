@@ -32,7 +32,7 @@
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, compress_beams/2, with_cacerts/2]).
+         strip_beams/1, compress_beams/2, with_cacerts/2, worker_name/1]).
 -endif.
 
 -define(HOST_APP, wasm_host).
@@ -77,7 +77,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                            "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n"
                            "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n"
                            "~ts",
-                           [beam_com:name(), Output, Name, Name, Name, Vsn, length(Files),
+                           [beam_com:name(), Output, worker_name(Name), worker_name(Name), Name, Vsn, length(Files),
                             iolist_size(Bin) / 1048576, Compressed,
                             case Mods of
                                 [] -> "the modules load one by one (no native run)";
@@ -401,9 +401,15 @@ pack(Files) ->
     ["BEAMFS1\n" | [[<<(byte_size(P)):32>>, P, <<(iolist_size(D)):32>>, D]
                     || {P0, D} <- Files, P <- [unicode:characters_to_binary(P0)]]].
 
+%% The name of a Worker for an app: a Worker name and a workers.dev host
+%% name have only a-z, 0-9 and "-" (humans_must_die: humans-must-die).
+worker_name(App) ->
+    string:lowercase(re:replace(App, "[^A-Za-z0-9-]", "-", [global, {return, list}])).
+
 %% The files of DIR: the runtime Worker, the Worker with the release, and
 %% the configuration of workerd.
-worker_files(#{name := Name} = Rel, Runtime, Root) ->
+worker_files(#{name := App} = Rel, Runtime, Root) ->
+    Name = worker_name(App),
     [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "worker"])),
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
