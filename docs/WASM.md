@@ -1379,6 +1379,19 @@ with bounds for the Free plan. `durable.js` has two new modes:
   10 s. `BEAM_INSTANCE_HOURS` bounds the instance hours of a UTC day.
 - At the limit, the alarm deletes the storage of the object
   (`deleteAll()`) and stops it. A later request gets 410.
+- A cron trigger each 30 minutes calls `sweep()` of the registry. It
+  deletes the storage of each instance past its limit (if its alarm did
+  not), and once the storage of each object that `BEAM_RETIRE` names:
+  objects of an earlier mode, which the registry did not make (the
+  cookie tenants of the first deploy). Tested with `wrangler dev
+  --test-scheduled`: the sweep deleted 2 expired instances and 2
+  retired objects, and a second sweep found nothing.
+- One Worker holds Livebook: `release.bin` is a module of the runtime
+  Worker (`worker.js` imports it when there is no binding `APP`), not a
+  second Worker. The iframe pages stay on a second Worker (static files
+  only), because the JS outputs of Kino must run on another site than
+  Livebook. On workers.dev, a Worker has one host name; with a custom
+  domain, one Worker can serve both host names.
 - The Free plan gives 13,000 GB-s a day of Durable Objects, and each
   object counts as 128 MB: about 29 object hours. The default bound, 24
   instance hours a day, keeps within it.
@@ -1401,9 +1414,8 @@ repository. There are two triggers:
   `LIVEBOOK_DEPLOY_HOOK` of the repository).
 
 `wasm/livebook/build.sh` downloads that `beam.com`, checks its SHA-256,
-and runs `setup.sh`. `deploy.sh` deploys the release, the iframe
-Worker and the Worker of the instances with the token of Workers
-Builds. The limits of Workers Builds (2026-09-28): Ubuntu 24.04 on
+and runs `setup.sh`. `deploy.sh` deploys the iframe Worker and then the
+Worker of Livebook with the token of Workers Builds. The limits of Workers Builds (2026-09-28): Ubuntu 24.04 on
 x86_64, 20 minutes, 8 GB, 2 vCPU and 3,000 build minutes a month on the
 Free plan, and no cache. A build from nothing took 1 min 27 s on 2 CPUs
 of this computer. The dry runs of the three deploys passed.
@@ -1417,11 +1429,11 @@ The settings of the Worker `livebook` (Settings > Build):
 | Build command | `sh build.sh` |
 | Deploy command | `sh deploy.sh` |
 | Build watch paths | include `wasm/livebook/*` |
-| Build variables | `SUBDOMAIN` (the workers.dev subdomain), `INSTANCES` (5) |
+| Build variables | `SUBDOMAIN` (the workers.dev subdomain), `INSTANCES` (5), `RETIRE` (objects of an earlier mode) |
 
-If the token of Workers Builds cannot deploy the Workers
-`livebook-release` and `livebook-iframe`, give the build an API token
-with the permission "Workers Scripts: Edit".
+If the token of Workers Builds cannot deploy the Worker
+`livebook-iframe`, give the build an API token with the permission
+"Workers Scripts: Edit".
 
 **Found on the way:**
 

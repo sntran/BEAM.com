@@ -12,9 +12,10 @@
 # SUBDOMAIN is the workers.dev subdomain of the account (for the URL of the
 # iframe Worker), and INSTANCES the instances at one time (5). It makes
 # DIR/livebook (the Hex package of Livebook with the changes of
-# livebook.patch), its release, the Workers (DIR/worker) and the iframe
-# Worker (DIR/iframe), and prints the commands to deploy. It needs curl,
-# patch and Node.js 22 or later.
+# livebook.patch), its release, the Worker (DIR/worker, with the release
+# in it) and the iframe Worker (DIR/iframe), and prints the commands to
+# deploy. RETIRE ("a,b,c") names objects of an earlier mode to delete once.
+# It needs curl, patch and Node.js 22 or later.
 #
 # Caution: each visitor can run code in its instance, with the network, and
 # instances have no password. The code of a visitor can read the vars and
@@ -96,24 +97,32 @@ cat > iframe/wrangler.jsonc <<'JSON'
   "assets": { "directory": "static", "html_handling": "none" }
 }
 JSON
+# One Worker for Livebook: release.bin is a module of the runtime Worker
+# (worker.js imports it when there is no binding APP), not a second Worker.
+mv worker/release/release.bin worker/release.bin
+rm -rf worker/release
 # Instances (BEAM_TENANTS "path", BEAM_INSTANCES), with -Mea min (no
-# allocators of ERTS: 20 MB less memory), /data in the storage, and the logs
-# of the Worker in Cloudflare (observability).
-IFRAME_URL="https://livebook-iframe.$SUBDOMAIN.workers.dev/iframe/$IFRAME" INSTANCES="$INSTANCES" "$NODE" -e '
+# allocators of ERTS: 20 MB less memory), /data in the storage, a sweep
+# each 30 minutes, and the logs of the Worker in Cloudflare
+# (observability). RETIRE: objects of an earlier mode, which the sweep
+# deletes once (BEAM_RETIRE).
+IFRAME_URL="https://livebook-iframe.$SUBDOMAIN.workers.dev/iframe/$IFRAME" INSTANCES="$INSTANCES" \
+RETIRE="${RETIRE:-}" "$NODE" -e '
 const fs = require("fs"), p = "worker/wrangler.durable.jsonc";
 const vars = { LIVEBOOK_PORT: "4000", LIVEBOOK_DEFAULT_RUNTIME: "embedded", LIVEBOOK_TOKEN_ENABLED: "false",
   LIVEBOOK_IFRAME_URL: process.env.IFRAME_URL, BEAM_TENANTS: "path", BEAM_INSTANCES: process.env.INSTANCES,
   BEAM_INSTANCE_TTL: "1800", BEAM_INSTANCE_HOURS: "24", BEAM_INSTANCES_PER_IP: "2",
   BEAM_INSTANCE_TITLE: "Livebook on the edge",
   BEAM_ERL_FLAGS: "-Mea min", BEAM_PERSIST: "/data", LIVEBOOK_DATA_PATH: "/data", LIVEBOOK_HOME: "/data" };
+if (process.env.RETIRE) vars.BEAM_RETIRE = process.env.RETIRE;
 fs.writeFileSync(p, fs.readFileSync(p, "utf8")
   .replace(/"name": "livebook-durable"/, "\"name\": \"livebook\"")
+  .replace(/\n\s*"services": \[[^\]]*\],/, "")
   .replace(/"vars": \{[^}]*\}/, "\"vars\": " + JSON.stringify(vars))
-  .replace(/\n}\s*$/, ",\n  \"observability\": { \"enabled\": true }\n}\n"));'
+  .replace(/\n}\s*$/, ",\n  \"triggers\": { \"crons\": [\"*/30 * * * *\"] },\n  \"observability\": { \"enabled\": true }\n}\n"));'
 cat <<EOF
 
-Deploy (the release and the iframe Worker first):
-  (cd $DIR/worker/release && wrangler deploy)
+Deploy (the iframe Worker first):
   (cd $DIR/iframe && wrangler deploy)
   cd $DIR/worker
   head -c 64 /dev/urandom | base64 | tr -d '\\n' | wrangler secret put LIVEBOOK_SECRET_KEY_BASE -c wrangler.durable.jsonc

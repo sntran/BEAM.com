@@ -25,7 +25,11 @@
 // - BEAM_INSTANCE_HOURS: the hours of instances in each UTC day (24), a
 //   bound for the Durable Objects of the Free plan;
 // - BEAM_INSTANCES_PER_IP: the instances at one time for one address (2).
-// The VM gets BEAM_INSTANCE_EXPIRES (Unix seconds).
+// The VM gets BEAM_INSTANCE_EXPIRES (Unix seconds). A cron trigger (each
+// 30 minutes) calls sweep(): the registry deletes the storage of each
+// instance past its limit (if its alarm did not), and once the storage of
+// each object that BEAM_RETIRE names ("a,b,c": objects of an earlier mode,
+// which the registry did not make).
 //
 //   wrangler deploy -c wrangler.durable.jsonc
 import { DurableObject } from 'cloudflare:workers';
@@ -98,15 +102,15 @@ export class Beam extends DurableObject {
     const hours = Number(env.BEAM_INSTANCE_HOURS ?? 24);
     const perAddress = Number(env.BEAM_INSTANCES_PER_IP ?? 2);
     this.tables();
-    sql.exec('DELETE FROM beam_instances WHERE expires <= ?', now);
     // A visitor that did not refresh its page for 60 s left the queue.
     sql.exec('DELETE FROM beam_queue WHERE seen < ?', now - 60000);
+    // The rows of the instances past their limit stay until sweep().
     const one = (q, ...a) => [...sql.exec(q, ...a)][0];
-    const mine = one('SELECT name, expires FROM beam_instances WHERE ticket = ?', ticket);
+    const mine = one('SELECT name, expires FROM beam_instances WHERE ticket = ? AND expires > ?', ticket, now);
     if (mine) return { name: mine.name, expires: mine.expires, running: true };
-    const count = one('SELECT count(*) AS n FROM beam_instances').n;
-    const next = one('SELECT min(expires) AS t FROM beam_instances').t;
-    if (one('SELECT count(*) AS n FROM beam_instances WHERE address = ?', address).n >= perAddress) {
+    const count = one('SELECT count(*) AS n FROM beam_instances WHERE expires > ?', now).n;
+    const next = one('SELECT min(expires) AS t FROM beam_instances WHERE expires > ?', now).t;
+    if (one('SELECT count(*) AS n FROM beam_instances WHERE address = ? AND expires > ?', address, now).n >= perAddress) {
       return { limit: 'address', next };
     }
     const day = new Date(now).toISOString().slice(0, 10);
@@ -130,6 +134,28 @@ export class Beam extends DurableObject {
     return { name, expires };
   }
 
+  // The registry: deletes the storage of the instances past their limit,
+  // and of the objects that BEAM_RETIRE names (once). Gives the counts.
+  async sweep() {
+    const env = this.env, sql = this.ctx.storage.sql, now = Date.now();
+    this.tables();
+    const stub = (name) => env.BEAM.get(env.BEAM.idFromName(name));
+    let expired = 0, retired = 0;
+    for (const { name } of [...sql.exec('SELECT name FROM beam_instances WHERE expires <= ?', now)]) {
+      await stub(name).expire();
+      sql.exec('DELETE FROM beam_instances WHERE name = ?', name);
+      expired++;
+    }
+    const done = new Set([...sql.exec('SELECT name FROM beam_retired')].map((r) => r.name));
+    for (const name of (env.BEAM_RETIRE ?? '').split(',').map((n) => n.trim()).filter(valid)) {
+      if (done.has(name)) continue;
+      await stub(name).expire();
+      sql.exec('INSERT INTO beam_retired VALUES (?, ?)', name, now);
+      retired++;
+    }
+    return { expired, retired };
+  }
+
   // The registry: the instances in use, for the page of /.
   async usage() {
     this.tables();
@@ -142,6 +168,7 @@ export class Beam extends DurableObject {
     sql.exec('CREATE TABLE IF NOT EXISTS beam_instances (name TEXT PRIMARY KEY, ticket TEXT, address TEXT, expires INTEGER)');
     sql.exec('CREATE TABLE IF NOT EXISTS beam_queue (ticket TEXT PRIMARY KEY, since INTEGER, seen INTEGER)');
     sql.exec('CREATE TABLE IF NOT EXISTS beam_budget (day TEXT PRIMARY KEY, seconds INTEGER)');
+    sql.exec('CREATE TABLE IF NOT EXISTS beam_retired (name TEXT PRIMARY KEY, time INTEGER)');
   }
 }
 
@@ -220,6 +247,13 @@ At the end, the instance stops, and its files are deleted.</p>
 }
 
 export default {
+  // The cron trigger of the instances (see sweep()).
+  async scheduled(controller, env, ctx) {
+    if (!env.BEAM_INSTANCES) return;
+    const registry = env.BEAM.get(env.BEAM.idFromName(REGISTRY));
+    ctx.waitUntil(registry.sweep().then((r) => console.log(`beam: sweep: ${r.expired} expired, ${r.retired} retired`)));
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
     if (env.BEAM_TENANTS === 'path') {

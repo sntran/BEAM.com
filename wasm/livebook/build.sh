@@ -7,8 +7,9 @@
 #   Deploy command:  sh deploy.sh
 #   Build watch paths: include wasm/livebook/*
 #   Build variables: SUBDOMAIN (the workers.dev subdomain of the account),
-#     and optionally INSTANCES and BEAM_COM_URL (another beam.com; the
-#     default is the prerelease "edge" of beam.com, from its branch main).
+#     and optionally INSTANCES, RETIRE (see setup.sh) and BEAM_COM_URL
+#     (another beam.com; the default is the prerelease "edge" of
+#     beam.com, from its branch main).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${SUBDOMAIN:?set the build variable SUBDOMAIN}"
@@ -21,4 +22,4 @@ if curl -sfL -o "$HERE/build/beam/beam.com.sha256" "$URL.sha256"; then
 fi
 chmod +x "$HERE/build/beam/beam.com"
 "$HERE/build/beam/beam.com" --version
-BEAM_COM="$HERE/build/beam/beam.com" SUBDOMAIN="$SUBDOMAIN" sh "$HERE/setup.sh" "$HERE/build"
+BEAM_COM="$HERE/build/beam/beam.com" sh "$HERE/setup.sh" "$HERE/build"
