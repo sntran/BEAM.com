@@ -12,9 +12,9 @@
 //
 //   node wasm/snapshot/snapshot.mjs DIR --warm 4000:/      (or --boot-point)
 //   (cd DIR && wrangler deploy -c wrangler.durable-global.jsonc)
-import { DurableObject, env } from 'cloudflare:workers';
+import { env } from 'cloudflare:workers';
 import { Vm } from './worker.js';
-import front from './durable.js';
+import front, { Beam as Base } from './durable.js';
 import release from './release/release.bin';
 import snapshot from './release/snapshot.bin';
 
@@ -22,16 +22,14 @@ let spare = new Vm(env, { release, snapshot });
 await spare.ready;
 if (env.BEAM_WARM) await spare.warm(env.BEAM_WARM);
 
-export class Beam extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    const sql = ctx.storage.sql, id = ctx.id.toString();
-    this.vm = spare ? spare.adopt({ sql, id }) : new Vm(env, { plain: false, sql, id, release, snapshot: null });
+// The tenants and the instances of durable.js; the first object of the
+// isolate takes the spare VM.
+export class Beam extends Base {
+  makeVm(vars) {
+    const sql = this.ctx.storage.sql, id = this.ctx.id.toString();
+    const vm = spare ? spare.adopt({ sql, id, vars }) : new Vm(this.env, { plain: false, sql, id, release, snapshot: null, vars });
     spare = null;
-  }
-
-  fetch(request) {
-    return this.vm.fetch(request);
+    return vm;
   }
 }
 

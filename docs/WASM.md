@@ -1263,9 +1263,10 @@ so 8.4 MB less in the memory of each isolate.
 
 `wasm/livebook/setup.sh` builds Livebook 0.19.10 for Workers, with the
 changes of `livebook.patch`. Its embedded runtime evaluates the cells in
-the VM of Livebook. Each tenant (`/.tenant/NAME`) has its own Durable
-Object, VM and storage. Deployed at `https://livebook.fifo.workers.dev`,
-with a password.
+the VM of Livebook. Each tenant has its own Durable Object, VM and
+storage. The first deploy at `https://livebook.fifo.workers.dev` had a
+password and cookie tenants (`/.tenant/NAME`); `setup.sh` now makes
+public instances (below).
 
 **Memory.** An isolate has 128 MB. The first deploy stopped after a few
 cells. These changes make it stable:
@@ -1342,11 +1343,51 @@ notebook, and on the home page. It has these cells:
 - A table of the busiest processes, each second (`Kino.Frame`).
 - A TLS request to hex.pm.
 
-All the cells ran with no error on 7 new tenants on Cloudflare. Kino
-draws its JS outputs in an iframe from `livebookusercontent.com` on
-HTTPS. On `http://localhost` it uses a second port, which `wrangler
-dev` does not have, so the diagrams do not show there. The diagrams
-on Cloudflare were not checked in a browser yet.
+All the cells ran with no error on 7 new tenants on Cloudflare. But the
+diagrams of Kino did not show there, for two causes:
+
+- Kino draws its JS outputs in an iframe of another site. On HTTPS,
+  Livebook 0.19.10 loads it from `livebookusercontent.com/iframe/v6.html`,
+  and that host does not have `v6` (docs/UPSTREAM.md L4). `setup.sh` now
+  makes a third Worker, `livebook-iframe`, with the iframe pages of the
+  release, and sets `LIVEBOOK_IFRAME_URL`.
+- The iframe gets the JS of the output from Livebook. A request from an
+  iframe of another site has no `SameSite=Lax` cookie, so the cookie of
+  the tenant was absent, and the request went to another object (404).
+  Path tenants (below) put the name of the tenant in the URL.
+
+With both changes, `wrangler dev` (with a second port for the iframe
+Worker) shows the trace of messages and the supervisor tree. A
+`Kino.DataTable` that a cell makes again each second stays in its load
+state, so the live table of the notebook is Markdown now.
+
+**Public instances (2026-09-28).** A public Livebook with no password,
+with bounds for the Free plan. `durable.js` has two new modes:
+
+- `BEAM_TENANTS = "path"`: `/t/NAME/...` names the object. The front
+  Worker removes the prefix, looks up a static asset (the binding
+  `ASSETS`), and else gives the request to the object. The VM gets
+  `BEAM_TENANT` and `BEAM_TENANT_PATH` at the boot point, and
+  `livebook.patch` makes `BEAM_TENANT_PATH` the base path of Livebook
+  (`LIVEBOOK_BASE_URL_PATH`).
+- `BEAM_INSTANCES`: the page of `/` has a button that starts an
+  instance (a POST, so a crawler starts none). The object `.registry`
+  gives a random name (100 bits), a time limit (`BEAM_INSTANCE_TTL`,
+  1,800 s) and an alarm. At most `BEAM_INSTANCES` instances run at one
+  time (5 in `setup.sh`), 2 for one address (a hash of the address and
+  the day), and the others wait in a queue: a page that refreshes each
+  10 s. `BEAM_INSTANCE_HOURS` bounds the instance hours of a UTC day.
+- At the limit, the alarm deletes the storage of the object
+  (`deleteAll()`) and stops it. A later request gets 410.
+- The Free plan gives 13,000 GB-s a day of Durable Objects, and each
+  object counts as 128 MB: about 29 object hours. The default bound, 24
+  instance hours a day, keeps within it.
+- Tested with `wrangler dev` (2 instances, 150 s): the third visitor
+  waited in the queue, got the place at the limit of the first two,
+  and the storage of an instance (5 files) was empty after its limit.
+- Caution: each visitor runs code with the network, and can read the
+  vars and secrets of the Worker. Give the Worker no secret other than
+  `LIVEBOOK_SECRET_KEY_BASE`.
 
 **Found on the way:**
 

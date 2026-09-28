@@ -11,6 +11,7 @@ Read these limits before you start:
 * The VM has 128 MB of memory and one scheduler. A cell that does not stop blocks the other cells.
 * `Mix.install/2` is not available. Kino and the dependencies of Livebook are in the release.
 * The Durable Object keeps the files of `/data` (your notebooks) in its SQLite storage. The processes and their memory stop when the object stops.
+* This instance has a time limit. At the limit, it stops, and its files are deleted. The next cell shows the minutes that are left.
 
 Run the cells in order. To run all the cells, press <kbd>Esc</kbd>, then <kbd>e</kbd> and <kbd>a</kbd> (evaluate all outdated cells).
 
@@ -27,7 +28,12 @@ Run the cells in order. To run all the cells, press <kbd>Esc</kbd>, then <kbd>e<
   word_size: :erlang.system_info(:wordsize),
   processes: length(Process.list()),
   modules_loaded: length(:code.all_loaded()),
-  uptime_seconds: div(up, 1000)
+  uptime_seconds: div(up, 1000),
+  instance_minutes_left:
+    case System.get_env("BEAM_INSTANCE_EXPIRES") do
+      nil -> nil
+      expires -> div(String.to_integer(expires) - System.os_time(:second), 60)
+    end
 }
 ```
 
@@ -243,31 +249,32 @@ end
 
 ## A live view of the VM
 
-Kino updates the output of a cell while the cell runs. This table shows the 10 processes with the most work (reductions), each second.
+Kino updates the output of a cell while the cell runs. This table shows the 10 processes with the most work (reductions), and it changes each second.
 
 ```elixir
 frame = Kino.Frame.new() |> Kino.render()
 
 Kino.listen(1_000, fn _ ->
-  top =
+  rows =
     Process.list()
     |> Enum.map(fn pid ->
       {pid, Process.info(pid, [:registered_name, :reductions, :memory, :message_queue_len])}
     end)
     |> Enum.reject(fn {_, info} -> info == nil end)
-    |> Enum.map(fn {pid, info} ->
-      %{
-        pid: inspect(pid),
-        name: if(info[:registered_name] == [], do: "", else: inspect(info[:registered_name])),
-        reductions: info[:reductions],
-        memory: info[:memory],
-        queue: info[:message_queue_len]
-      }
-    end)
-    |> Enum.sort_by(& &1.reductions, :desc)
+    |> Enum.sort_by(fn {_, info} -> info[:reductions] end, :desc)
     |> Enum.take(10)
+    |> Enum.map(fn {pid, info} ->
+      name = if info[:registered_name] == [], do: "", else: "`#{inspect(info[:registered_name])}`"
+      "| `#{inspect(pid)}` | #{name} | #{info[:reductions]} | #{info[:memory]} | #{info[:message_queue_len]} |"
+    end)
 
-  Kino.Frame.render(frame, Kino.DataTable.new(top, name: "The 10 busiest processes"))
+  table =
+    Enum.join(
+      ["| Process | Name | Reductions | Memory (bytes) | Queue |", "|---|---|--:|--:|--:|" | rows],
+      "\n"
+    )
+
+  Kino.Frame.render(frame, Kino.Markdown.new(table))
 end)
 ```
 
@@ -285,4 +292,5 @@ The Worker opens TCP connections for the VM, and the VM does TLS itself, with th
 * The Worker gets the release of Livebook (`release.bin`) from a second Worker, and starts ERTS in WebAssembly with JSPI.
 * The first start of a new version makes a snapshot of the memory of the VM, after it loaded the modules of the boot and before it started Livebook. The next starts restore that snapshot, and then start Livebook.
 * The Durable Object writes the files of `/data` to its SQLite storage when the VM closes them. A new VM gets them back before it starts. So your notebooks stay after the object stops.
-* Each tenant (the cookie of `/.tenant/NAME`) has its own Durable Object: its own VM, files and storage.
+* Each visitor starts an instance: its own Durable Object, VM, files and storage, at a random path (`/t/NAME`). A registry object limits the instances at one time, keeps a queue, and gives each instance its time limit.
+* Kino draws its diagrams in an iframe of a second site (a third Worker), apart from the pages of Livebook.

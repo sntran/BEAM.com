@@ -5,7 +5,8 @@
 // written unpacked (Cloudflare compresses). cache_manifest.json stays in the
 // release too, because Phoenix reads it at start. The priv/static of
 // phoenix, phoenix_html and phoenix_live_view (the sources of app.js) are
-// removed. The configurations of wrangler get "assets".
+// removed. The configurations of wrangler get "assets", with the binding
+// ASSETS: path tenants (durable.js) look up an asset after the prefix.
 //
 //   node static.mjs DIR APP
 import fs from 'node:fs';
@@ -54,6 +55,6 @@ for (const f of fs.readdirSync(dir).filter((f) => /^wrangler.*\.jsonc$/.test(f))
   const p = path.join(dir, f);
   const s = fs.readFileSync(p, 'utf8');
   if (s.includes('"assets"')) continue;
-  fs.writeFileSync(p, s.replace(/\n}\s*$/, ',\n  "assets": { "directory": "static" }\n}\n'));
+  fs.writeFileSync(p, s.replace(/\n}\s*$/, ',\n  "assets": { "directory": "static", "binding": "ASSETS" }\n}\n'));
 }
 console.log(`${file}: ${fs.statSync(file).size >> 10} KB; static: ${moved >> 10} KB; removed: ${removed >> 10} KB`);

@@ -45,6 +45,21 @@
 +    }
 +  }
 +]
+--- a/lib/livebook.ex
++++ b/lib/livebook.ex
+@@ -127,7 +127,11 @@
+       config :livebook, LivebookWeb.Endpoint, http: [ip: ip], url: [host: host]
+     end
+ 
+-    if base_url_path = Livebook.Config.base_url_path!("LIVEBOOK_BASE_URL_PATH") do
++    # BEAM on Cloudflare Workers: the path of a tenant (/t/NAME) is the base
++    # path of an instance.
++    if base_url_path =
++         Livebook.Config.base_url_path!("LIVEBOOK_BASE_URL_PATH") ||
++           Livebook.Config.base_url_path!("BEAM_TENANT_PATH") do
+       config :livebook, LivebookWeb.Endpoint, url: [path: base_url_path]
+     end
+ 
 --- a/lib/livebook/application.ex
 +++ b/lib/livebook/application.ex
 @@ -12,9 +12,13 @@

@@ -585,9 +585,14 @@ workerd serve worker/worker.capnp                          # test on this comput
   builder does not copy the store of this computer.
 - With the var `BEAM_PERSIST` (a list of directories), a Durable Object
   keeps the files of these directories in its SQLite storage, and a new
-  VM gets them back. `wasm/livebook` builds Livebook with one Durable
-  Object for each tenant, its notebooks in `/data`, and a notebook that
-  shows the BEAM.
+  VM gets them back.
+- `BEAM_TENANTS = "path"` names the object in the path (`/t/NAME/...`),
+  and gives the app its base path (`BEAM_TENANT_PATH`). With
+  `BEAM_INSTANCES`, each visitor starts an instance with a random name
+  and a time limit: a registry limits the instances at one time, keeps
+  a queue, and deletes the storage of an instance at its limit.
+  `wasm/livebook` builds a public Livebook of this kind, with a notebook
+  that shows the BEAM.
 - Only the NIFs of `crypto` and `asn1` are in the runtime. Ecto SQLite
   (`ecto_sqlite3`) works through the host: the SQL runs on D1, or on the
   SQLite storage of a Durable Object (`wrangler deploy -c

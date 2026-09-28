@@ -405,7 +405,11 @@ export class Vm {
   // release and snapshot: the bytes of release.bin and snapshot.bin, for a
   // VM that the global scope of a Worker restores (global.js).
   // id: the id of the Durable Object (with sql).
-  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null } = {}) {
+  // vars: more environment of the VM for this object only (the tenant, for
+  // example). They are not part of the key of the snapshot, so the object
+  // makes its snapshot at the boot point, and "go" gives them.
+  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {} } = {}) {
+    this.vars = vars;
     this.given = release && { release, snapshot };
     this.handles = new Map();  // id -> setTimeout handle: timers after adopt()
     this.id = id;
@@ -437,7 +441,8 @@ export class Vm {
       // program starts and runs its migrations. So all the objects (the
       // tenants) share it, and each one runs the program on its own storage.
       const meta = releaseMeta(release);
-      const atBoot = !this.plain && this.sql && ((meta.sql ?? true) || !!env.BEAM_PERSIST);
+      const atBoot = !this.plain && this.sql
+        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || Object.keys(this.vars).length > 0);
       key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
@@ -542,7 +547,7 @@ export class Vm {
           }
           // The text bindings of the Worker are the environment of the release
           // (SECRET_KEY_BASE, PHX_HOST, DATABASE_URL, ...).
-          const vars = Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === 'string'));
+          const vars = { ...Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === 'string')), ...this.vars };
           // The environment that "go" gives to a VM of a boot point snapshot.
           this.envVars = { ...relEnv, ...vars };
           Object.assign(m.ENV, {
@@ -646,9 +651,11 @@ export class Vm {
   // A VM that the global scope restored (plain: its jobs ran between
   // microtasks) becomes the VM of a Durable Object: its jobs run on a
   // MessageChannel, and its timers on setTimeout (durable-global.js).
-  adopt({ sql = null, id = null } = {}) {
+  adopt({ sql = null, id = null, vars = {} } = {}) {
     this.sql = sql;
     this.id = id;
+    this.vars = vars;
+    this.envVars = { ...this.envVars, ...vars };
     this.plain = false;
     for (const f of this.jobs.splice(0)) this.post(f);
     for (const [tid, t] of this.timers) {

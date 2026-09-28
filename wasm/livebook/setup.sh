@@ -1,20 +1,32 @@
 #!/bin/sh
 # Livebook on Cloudflare Workers (docs/WASM.md, "Livebook in a Durable
-# Object"): Livebook with its embedded runtime, one Durable Object for each
-# tenant. The files of /data (the notebooks and the settings) stay in the
-# SQLite storage of the object (BEAM_PERSIST). The Learn section has the
-# notebook beam_on_the_edge.livemd, after the welcome notebook.
+# Object"): a public Livebook with its embedded runtime. Each visitor starts
+# an instance of its own (a Durable Object at /t/NAME, durable.js), with a
+# time limit. A registry limits the instances at one time and keeps a
+# queue. The files of /data (the notebooks and the settings) stay in the
+# SQLite storage of the object (BEAM_PERSIST) until the limit. The Learn
+# section has the notebook beam_on_the_edge.livemd.
 #
-#   BEAM_COM=/path/to/beam.com wasm/livebook/setup.sh [DIR]
+#   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME wasm/livebook/setup.sh [DIR]
 #
-# It makes DIR/livebook (the Hex package of Livebook with the changes of
-# livebook.patch), its release, and the Workers (DIR/worker), and prints the
-# commands to deploy. It needs curl, patch and Node.js 26.
+# SUBDOMAIN is the workers.dev subdomain of the account (for the URL of the
+# iframe Worker), and INSTANCES the instances at one time (5). It makes
+# DIR/livebook (the Hex package of Livebook with the changes of
+# livebook.patch), its release, the Workers (DIR/worker) and the iframe
+# Worker (DIR/iframe), and prints the commands to deploy. It needs curl,
+# patch and Node.js 26.
+#
+# Caution: each visitor can run code in its instance, with the network, and
+# instances have no password. The code of a visitor can read the vars and
+# the secrets of the Worker: give it no secret other than
+# LIVEBOOK_SECRET_KEY_BASE.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${BEAM_COM:?set BEAM_COM}"
 DIR=${1:-$HERE/build}
 NODE=${NODE:-node}
+SUBDOMAIN=${SUBDOMAIN:-SUBDOMAIN}
+INSTANCES=${INSTANCES:-5}
 VSN=${LIVEBOOK_VSN:-0.19.10}
 mkdir -p "$DIR/bin"
 for t in mix iex elixir elixirc escript; do ln -sf "$BEAM_COM" "$DIR/bin/$t$( [ $t = escript ] || echo .com)"; done
@@ -68,22 +80,43 @@ rm -rf worker
 "$BEAM_COM" livebook/_build/prod/rel/livebook -o worker --target wasm32 --cacerts cacert.pem
 # The static files of Livebook (12 MB) as the static assets of the Worker.
 "$NODE" "$HERE/../erts/host/static.mjs" worker livebook
-# One Durable Object for each tenant (BEAM_TENANTS), with -Mea min (no
-# allocators of ERTS: 40 MB less memory), and /data in its storage.
-"$NODE" -e '
+# The iframe pages of Livebook on their own site: Kino draws its JS outputs
+# there. livebookusercontent.com does not have the page of this version.
+rm -rf iframe && mkdir -p iframe/static/iframe
+cp worker/static/iframe/*.html iframe/static/iframe/
+IFRAME=$(cd iframe/static/iframe && ls v*.html | sort -V | tail -1)
+printf '/iframe/*\n  Access-Control-Allow-Origin: *\n  Content-Type: text/html; charset=utf-8\n  Cache-Control: public, max-age=31536000\n' \
+    > iframe/static/_headers
+cat > iframe/wrangler.jsonc <<'JSON'
+// The iframe pages of Livebook, on their own site: the JS outputs of Kino
+// run there, apart from the pages and the cookies of Livebook.
+{
+  "name": "livebook-iframe",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "static", "html_handling": "none" }
+}
+JSON
+# Instances (BEAM_TENANTS "path", BEAM_INSTANCES), with -Mea min (no
+# allocators of ERTS: 20 MB less memory), /data in the storage, and the logs
+# of the Worker in Cloudflare (observability).
+IFRAME_URL="https://livebook-iframe.$SUBDOMAIN.workers.dev/iframe/$IFRAME" INSTANCES="$INSTANCES" "$NODE" -e '
 const fs = require("fs"), p = "worker/wrangler.durable.jsonc";
-const vars = { LIVEBOOK_PORT: "4000", LIVEBOOK_DEFAULT_RUNTIME: "embedded", BEAM_TENANTS: "cookie",
+const vars = { LIVEBOOK_PORT: "4000", LIVEBOOK_DEFAULT_RUNTIME: "embedded", LIVEBOOK_TOKEN_ENABLED: "false",
+  LIVEBOOK_IFRAME_URL: process.env.IFRAME_URL, BEAM_TENANTS: "path", BEAM_INSTANCES: process.env.INSTANCES,
+  BEAM_INSTANCE_TTL: "1800", BEAM_INSTANCE_HOURS: "24", BEAM_INSTANCES_PER_IP: "2",
+  BEAM_INSTANCE_TITLE: "Livebook on the edge",
   BEAM_ERL_FLAGS: "-Mea min", BEAM_PERSIST: "/data", LIVEBOOK_DATA_PATH: "/data", LIVEBOOK_HOME: "/data" };
 fs.writeFileSync(p, fs.readFileSync(p, "utf8")
   .replace(/"name": "livebook-durable"/, "\"name\": \"livebook\"")
-  .replace(/"vars": \{[^}]*\}/, "\"vars\": " + JSON.stringify(vars)));'
+  .replace(/"vars": \{[^}]*\}/, "\"vars\": " + JSON.stringify(vars))
+  .replace(/\n}\s*$/, ",\n  \"observability\": { \"enabled\": true }\n}\n"));'
 cat <<EOF
 
-Deploy (the release first):
+Deploy (the release and the iframe Worker first):
   (cd $DIR/worker/release && wrangler deploy)
+  (cd $DIR/iframe && wrangler deploy)
   cd $DIR/worker
   head -c 64 /dev/urandom | base64 | tr -d '\\n' | wrangler secret put LIVEBOOK_SECRET_KEY_BASE -c wrangler.durable.jsonc
-  wrangler secret put LIVEBOOK_PASSWORD -c wrangler.durable.jsonc   # 12 characters or more
   wrangler deploy -c wrangler.durable.jsonc
-Then open https://livebook.SUBDOMAIN.workers.dev/.tenant/NAME (a tenant).
+Then open https://livebook.$SUBDOMAIN.workers.dev/ and start an instance.
 EOF

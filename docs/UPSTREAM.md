@@ -1447,6 +1447,24 @@ release.
 `Code.ensure_loaded?(ExUnit.Case)` is false, or add `ex_unit` to the
 release.
 
+### L4. The public iframe page of the version is absent
+
+**Symptom.** On HTTPS, the JS outputs of Kino (the diagrams of
+`Kino.Process`, `Kino.DataTable`) do not show. Only the value of the
+cell shows.
+
+**Cause.** With no `LIVEBOOK_IFRAME_URL`, Livebook 0.19.10 on HTTPS
+loads `https://livebookusercontent.com/iframe/v6.html`, and that host
+answers 404 for `v6` (it has `v1` to `v5`, checked 2026-09-28).
+
+**Workaround.** Serve the iframe pages of the release (`priv/static/
+iframe`) from a Worker on another site, with
+`Access-Control-Allow-Origin: *`, and set `LIVEBOOK_IFRAME_URL` to it
+(`wasm/livebook/setup.sh` makes the Worker `livebook-iframe`).
+
+**Possible upstream fix.** Publish each new iframe page on
+`livebookusercontent.com` before a release uses it.
+
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
 Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and
