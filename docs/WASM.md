@@ -1070,9 +1070,8 @@ Still open:
   "Ecto SQLite".)
 - **A deploy to Cloudflare** (this spike ran `workerd` locally): the CPU
   time and memory limits in production, and JSPI there.
-- **More NIFs:** C NIFs that compile with rebar3 hooks (as `jiffy`), and
-  Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one crate at a
-  time).
+- **More NIFs:** Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one
+  crate at a time).
 - **WASI:** not now. ERTS needs threads: `wasi-threads` was withdrawn,
   and its successor (shared-everything-threads) is in no host yet;
   Workers have no threads, and their WASI is an experimental JavaScript
