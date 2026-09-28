@@ -378,8 +378,10 @@ without ERTS. The output is a directory:
 | File | What |
 |---|---|
 | `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | the runtime Worker (`NAME`): the BEAM, with no program |
-| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`); the runtime gets `release.bin` from it at the first request of an isolate |
-| `durable.js`, `wrangler.durable.jsonc` | the same runtime in one Durable Object (one VM for all the requests, and its SQLite storage for Ecto SQLite): `wrangler deploy -c wrangler.durable.jsonc` |
+| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | the Worker with the release (`NAME-release`, with no public URL); the runtime gets `release.bin` from it at the first request of an isolate |
+| `durable.js`, `wrangler.durable.jsonc` | the same runtime in one Durable Object (`NAME-durable`: one VM for all the requests, and its SQLite storage for Ecto SQLite): `wrangler deploy -c wrangler.durable.jsonc` |
+| `global.js`, `wrangler.global.jsonc` | the runtime Worker `NAME` with the release and a snapshot of the build in it: its global scope restores the VM. First `node wasm/snapshot/snapshot.mjs DIR --warm 4000:/` (with Ecto SQLite: `--boot-point`), then `wrangler deploy -c wrangler.global.jsonc`. See "On Cloudflare: the first deploy" |
+| `durable-global.js`, `wrangler.durable-global.jsonc` | the Durable Objects (`NAME-durable`) with the release and a snapshot of the build: the global scope restores a spare VM for the first object of an isolate. See "Tenants, a boot point, a spare VM, a smaller release" |
 | `worker.capnp` | both Workers for `workerd` |
 | `tcp-proxy.mjs` | a local TCP port for a listener of the program (a WebSocket to `/.tcp/PORT`) |
 
@@ -424,7 +426,10 @@ without ERTS. The output is a directory:
   In `wrangler dev`, with the default costs of the packages, bcrypt takes
   about 0.6 s and argon2 0.5 to 0.75 s (argon2 also takes 64 MiB, in the
   128 MB of an isolate); with low costs, 4 ms and 6 to 40 ms. So a login
-  needs the paid plan (30 s of CPU), not the free plan (10 ms).
+  needs the paid plan (30 s of CPU), not the free plan (10 ms). On
+  Cloudflare, the default costs in a Durable Object took 1,513 ms of CPU,
+  and argon2 once went over the memory limit of the isolate (see "On
+  Cloudflare: the first deploy").
 
 Measured in `workerd` (the first request after a new `workerd`, 7 runs
 each, medians; the release directory of the Phoenix demo, 8.5 MB, 1,347
@@ -787,7 +792,8 @@ documentation (2026-09-27):**
    steps (but its output makes the boot 3 times slower).
 3. **Not possible:** a boot in the global scope of the Worker (no timers or
    random values there, and a limit of 1 s); a Worker cannot choose the
-   compiler tier of V8.
+   compiler tier of V8. But a restore of a snapshot of the build works
+   there: see "On Cloudflare: the first deploy".
 
 **Cloudflare Pages** does not help: Pages Functions are Workers, with the
 same limits and prices (Pages limits and pricing pages). A Durable Object
@@ -811,7 +817,8 @@ Bandit) runs natively on a SQLite file, and on Workers with D1 or with a
 Durable Object. Tested with `wrangler dev`: inserts with `RETURNING`,
 `Repo.aggregate/2`, a query with `ORDER BY`, blobs, a transaction, the
 migration at the boot, and the data after a restart, also on a VM
-restored from a snapshot.
+restored from a snapshot. On Cloudflare too, with D1 and with a Durable
+Object (see "On Cloudflare: the first deploy").
 
 How it works: a statement runs on the host at its first `columns/2` or
 step, after the binds, and all its rows come back at once (JSON: a blob as
@@ -866,9 +873,14 @@ runtime Worker copies the memory into a new instance and the VM goes on.
   binding `SNAPSHOTS`. With no store (`workerd` with no cache), the Worker
   makes none.
 - The key: the hash of `beam.wasm`, `beam.mjs`, `worker.js` and the
-  release (`snapshot_key` in `.release.json`, from the build), and of the
-  text bindings. So a new deploy, or a new secret, gives a new snapshot,
-  and the snapshot has the real environment of the deploy.
+  release (`snapshot_key` in `.release.json`, from the build), of the
+  text bindings, of the host (a Worker or a Durable Object), and of the
+  version of the deploy (the binding `BEAM_VERSION`, `version_metadata`
+  in the `wrangler.jsonc` files). So a new deploy, or a new secret, gives
+  a new snapshot, and the snapshot has the real environment of the
+  deploy. The version is necessary: the Workers of an account share the
+  Cache API, and a boot runs the migrations on the database of its own
+  Worker (see "On Cloudflare: the first deploy").
 - The snapshot is made before the first request: the state of the app is
   the state after its boot, with no request in it.
 - The VM that makes it runs with `-c false` (see "Time" below).
@@ -877,10 +889,11 @@ runtime Worker copies the memory into a new instance and the VM goes on.
 Tested with `wrangler dev` (Miniflare: its Cache API keeps the snapshot
 on the disk): the first start made it (19 MB for Cowboy, 31 MB for
 Phoenix); after a restart, the first request restored it, and LiveView
-worked on the restored VM. Not measured on Cloudflare yet: the time to
-read 20 to 34 MB from the Cache API, and the memory while the Worker
-makes a snapshot (the VM, 58 MB for Phoenix, and the copy, 31 MB, in the
-128 MB of an isolate).
+worked on the restored VM. On Cloudflare (see "On Cloudflare: the first
+deploy"): a restore from the Cache API takes 163 to 428 ms of CPU and
+345 to 742 ms in all (Cowboy, 19.3 MB); the Worker and the Durable
+Object made their snapshots (19.3 MB, and 32.3 MB with a VM of 58 MB)
+with no memory error.
 
 **Or at build time**, with Node.js 26 (a snapshot after warm-up
 requests; the Worker with the release keeps it as `snapshot.bin`, and
@@ -984,18 +997,20 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
 - **A crash dump** of the VM in the Worker fails with `SuspendError`: a
   wait inside the `setjmp` wrappers (`invoke_*`) of `erl_crash_dump.c`
   cannot suspend under JSPI. Not about the snapshot.
-- Not tested: a deploy to Cloudflare, and `performance.now()` there.
+- On Cloudflare, `performance.now()` does not move during work: see "On
+  Cloudflare: the first deploy".
 
 ### Cloudflare's limits (from its limits and pricing pages, 2026-09-28; the limits page was updated 2026-09-05)
 
 - **CPU time for each request:** 10 ms on the free plan, 30 s (up to 5
-  min) on the paid plan. The boot of the VM takes about 0.5 s of CPU, and
-  a restore from the snapshot about 0.2 s, so a first request needs the
-  paid plan; a warm request (3 ms) can fit in 10 ms, but the first
-  request of each isolate does not.
-- **Startup:** 1 s for the global scope of the Worker. To check on a
-  deploy: a restore of a bundled snapshot there, so that the first
-  request is short.
+  min) on the paid plan. Measured: a boot takes 0.4 to 1.4 s of CPU, a
+  restore from the Cache API 0.16 to 0.43 s, a restore in the global
+  scope with a warm-up about 11 ms, and a warm request 2 to 10 ms. On
+  the Free plan, no request failed for its CPU time (see "On
+  Cloudflare: the first deploy").
+- **Startup:** 1 s for the global scope of the Worker. Measured: 48 ms
+  for a restore of a bundled snapshot there, and 84 to 223 ms with a
+  warm-up request.
 - **Memory:** 128 MB for each isolate, the JavaScript heap and the
   WebAssembly memory together. One VM (48 to 58 MB, and `release.bin` in
   its file system) fits; two VMs in one isolate would not.
@@ -1003,6 +1018,451 @@ memory (58 MB) and `release.bin` stay, in the 128 MB of an isolate.
 - **Price:** Workers bill requests and CPU time, with no charge for idle
   time. Durable Objects are on the free plan too, and bill duration while
   in memory, except objects that are idle and eligible for hibernation.
+
+### On Cloudflare: the first deploy (2026-09-28)
+
+**The setup.** `beam.com` of main (`26675a4`, the CI artifact), wrangler
+4.142.0, an account on the **Free plan**, the data center IAD. The
+client reached Cloudflare through a proxy (the TLS connection took 0.13
+to 0.46 s), so the times here are those of the server: `cpuTime` and
+`wallTime` of `wrangler tail --format json`.
+
+**JSPI works.** The runtime Worker and the Durable Object boot the VM
+and serve requests, as in `workerd`. The snapshot works too: the Worker
+makes it at its first request and keeps it in the Cache API, and the
+next isolates restore it. The Cache API also works in a Durable Object.
+
+**The plain Worker** (`examples/worker`, Cowboy, 7.8 MB release; VM
+memory 40 MB):
+
+| | CPU | Wall |
+|---|---|---|
+| First request of a deploy: boot, and a snapshot of 19.3 MB (2 deploys) | 435 and 553 ms | 796 and 913 ms |
+| First request of a new isolate: a restore from the Cache API (11 isolates) | 163 to 428 ms (median 277) | 345 to 742 ms (median 570) |
+| The next requests | 2 to 3 ms (the second of an isolate: 9 to 22 ms) | 2 to 4 ms |
+
+At low traffic, Cloudflare sends the requests to many isolates: 14 of
+30 requests were the first request of their VM. So the time of a cold
+start is the time that a person sees most often.
+
+**A restore in the global scope** (`global.js`, `wrangler.global.jsonc`).
+The runtime Worker has the release and a snapshot of the build
+(`snapshot.mjs`, 20.4 MB) as modules: 33.4 MB, 11.5 MB with gzip, and
+the Free plan took it. The global scope makes the VM and copies the
+memory, and the first request starts the threads and reseeds OpenSSL.
+Cloudflare measured the startup time at the deploy: 48 ms, and 84 to 223
+ms with the warm-up (the limit is 1 s).
+
+| First request of a new isolate | CPU | Wall |
+|---|---|---|
+| A restore from the Cache API, in the request (above) | 163 to 428 ms | 345 to 742 ms |
+| A restore in the global scope (9 isolates) | 72 to 136 ms (median 84) | the same |
+| and a warm-up request of `/` there (`BEAM_WARM`; 10 isolates) | 35 to 74 ms (median 40) | the same |
+| and a reseed of OpenSSL with zero bytes in the warm-up (13 isolates) | 8 to 21 ms (median 11) | the same |
+| (only a test: no reseed at the first request; 16 isolates) | 7 to 17 ms (median 10) | |
+
+- **Why the warm-up:** V8 compiles each function of the WebAssembly
+  module at its first call, in each isolate. In the global scope, a
+  GET request of `BEAM_WARM` goes to the app (with no timers there: the
+  jobs of the threads run between microtasks). Two warm-up requests
+  gave no more gain.
+- **Why the reseed in the warm-up:** the first reseed of OpenSSL in an
+  isolate costs about 30 ms of CPU. The global scope has no random
+  values, so the host gives zero bytes to the VM during the warm-up,
+  and the first request reseeds with random bytes as before. Tested: 16
+  requests to new isolates gave 16 different values of
+  `crypto:strong_rand_bytes/1`.
+- A warm-up request must not use SQL or sockets (I/O of the host). A
+  snapshot of the build has no SQL either, so the build writes no
+  `global.js` for Ecto SQLite.
+- So the first request of an isolate uses about 11 ms of CPU, near the
+  10 ms of the Free plan. A request of a path that the warm-up did not
+  use costs more (`/rand`: 9 to 21 ms).
+
+**The Durable Object** (`examples/notes`, Ecto SQLite on the storage of
+the object, 16.2 MB release; VM memory 58 MB):
+
+| | CPU | Wall (front Worker) |
+|---|---|---|
+| Boot, and a snapshot of 32.3 MB | 1,362 ms | 1,252 ms |
+| Restore from the Cache API | 142 to 206 ms | 350 to 405 ms |
+| `/`, `/notes`, `/tx` on a warm VM | 3 to 10 ms | 13 to 26 ms |
+| `/hash` (low costs) | 30 ms | |
+| `/hash?cost=default` | 1,513 ms | 1,968 ms |
+
+- `/`, `/notes` (a blob too), `/tx` and `/hash` work.
+- **The VM used the CPU all the time** (fixed): 32.5 s of CPU in 34.4 s
+  with no requests. The clock of a Worker moves only by the delay of a
+  timer, not at `setTimeout(0)`, and a wait of less than 1 ms became a
+  timer of 0 ms: a thread waited for the same time again and again
+  (docs/UPSTREAM.md W3). Now a timer waits 1 ms at least: 11 to 17 ms
+  of CPU in each 5 s with no requests. Then Cloudflare evicted the idle
+  object after about 15 s, and the next request restored a new VM.
+- **argon2 with the default costs** (64 MiB) went over the 128 MB of
+  the isolate: "Durable Object's isolate exceeded its memory limit and
+  was reset". A later try passed (1,513 ms of CPU), but the object was
+  reset again soon after: the WebAssembly memory does not shrink
+  (docs/UPSTREAM.md W5). Use lower argon2 costs, or bcrypt.
+- The tail event of a Durable Object comes late, and its wall time (and
+  CPU time) runs until the next event of the object. So it is not the
+  time of the answer: use the front Worker for that.
+
+**The Free plan.** A Worker on the Free plan cannot set `limits.cpu_ms`
+("CPU limits are not supported for the Free plan"). But no request
+failed for its CPU time: boots of 435 ms and 1,362 ms, restores of up
+to 428 ms, and argon2 with 1,513 ms all passed, in about 150 requests.
+So the 10 ms is not a hard limit for each request (Cloudflare does not
+document how it applies it); do not count on this.
+
+**Other differences from `workerd`:**
+
+- **The clock** does not move during work: `:timer.tc` in the app gave
+  0 ms for hashes of 0.6 s, and `Date.now()` in the global scope does
+  not move. A time that Erlang measures in one request is the time of
+  the I/O and timers, not of the CPU.
+- **The global scope** takes top-level `await`, `WebAssembly.instantiate()`
+  and a 64 MB allocation, but no random values, timers or I/O
+  (docs/UPSTREAM.md W4). `env` comes from `cloudflare:workers` there.
+- **Sizes:** the Free plan took Workers of 11.5 MB with gzip (33.4 MB
+  without compression).
+- **`PHX_HOST`:** the host of a Worker is `NAME.SUBDOMAIN.workers.dev`
+  (the subdomain of the account), not `NAME.workers.dev`. The build now
+  writes `NAME.SUBDOMAIN.workers.dev`, to change. (Phoenix was not
+  deployed.)
+- **The Worker with the release was public:** anyone could get
+  `release.bin` from `NAME-release.SUBDOMAIN.workers.dev`. Now it has
+  `"workers_dev": false`: the runtime Worker gets it through its service
+  binding (tested: the URL gives 404, and the runtime Worker works).
+- **The Durable Object had the name of the runtime Worker** (`NAME`), so
+  its deploy replaced that Worker. Now it is `NAME-durable`.
+
+**D1** (the runtime Worker `notes` with its release Worker, and a D1
+database in the region ENAM):
+
+| | CPU | Wall |
+|---|---|---|
+| Boot, the migration on D1, and a snapshot of 32.1 MB | 963 ms | 2,107 ms |
+| Restore from the Cache API (8 isolates) | 215 to 506 ms | 526 to 1,076 ms |
+| `/` on a warm VM (an insert and a count: 2 statements) | 12 to 49 ms | 68 to 97 ms |
+| `/notes`, `/tx` on a warm VM | 5 to 17 ms | 31 to 45 ms |
+| `/hash` (low costs) | 19 to 48 ms | |
+| `/hash?cost=default` | 1,240 and 1,318 ms | 1,264 and 1,342 ms |
+
+- All the routes work. Each statement is a call to D1 (about 25 to 45
+  ms), so a request with SQL takes longer on D1 than in a Durable Object
+  (13 to 26 ms), which has its SQLite on the same machine.
+- argon2 with the default costs passed twice in the plain Worker, with
+  no memory error.
+- **A snapshot of another Worker** (fixed): the first deploy of `notes`
+  restored the snapshot that the Durable Object Worker had made (with
+  the same release and no vars, so the same key). That VM had run its
+  migration on the storage of the object, so D1 had no table: "no such
+  table: notes". The Workers of an account share the Cache API. Now the
+  key also has the host and the version of the deploy (`BEAM_VERSION`):
+  each deploy boots once, and runs its migrations on its own database.
+
+**Not tested:** Phoenix and LiveView, R2 (not enabled on the account),
+and a paid plan.
+
+### Tenants, a boot point, a spare VM, a smaller release (2026-09-28)
+
+After the first deploy: Phoenix LiveView with one Durable Object for each
+tenant, and the next steps for its cold start. Measured on Cloudflare
+(Free plan, IAD), with the times of `wrangler tail` as before.
+
+**Tenants** (`durable.js`, the var `BEAM_TENANTS`). Each tenant has its
+own Durable Object: its own VM, state and SQLite storage. With
+`"cookie"`, `GET /.tenant/NAME` sets the cookie `beam_tenant`, and the
+cookie names the object (for a workers.dev URL, which has no
+subdomains); with `"host"`, the first label of the host names it
+(`NAME.example.com`). The front Worker gives the name to the app in the
+header `x-beam-tenant`, and removes that header from the request of a
+client. `wasm/phoenix/tenants/setup.sh` makes a LiveView app with a
+counter that all the visitors of a tenant share (`Phoenix.PubSub` in the
+VM of the tenant).
+
+- Deployed at `https://live.fifo.workers.dev` (`/.tenant/NAME`).
+- A click of the counter (an event over the LiveView WebSocket, to its
+  reply): 42 to 67 ms from a client in the same region. A second visitor
+  of the same tenant got the new count; a visitor of another tenant did
+  not.
+- 12 new tenants at the same time: all answered, with no memory error.
+  Cloudflare puts the objects in different isolates.
+
+**A spare VM for Durable Objects** (`durable-global.js`,
+`wrangler.durable-global.jsonc`). As `global.js` for a plain Worker: the
+Worker has the release and a snapshot of the build as modules, and the
+global scope of each isolate restores a spare VM and warms it up
+(`BEAM_WARM`). The first object of the isolate takes it (`Vm.adopt`: its
+jobs and timers move from the requests to a `MessageChannel` and
+`setTimeout`). Another object in the same isolate restores the snapshot
+of the Cache API.
+
+**A snapshot at the boot point** (`WASM_HOST_BOOT_POINT`,
+`snapshot.mjs --boot-point`). A snapshot after the boot holds the state
+of the database that the boot used: the migrations ran on the storage of
+one object, and other tenants that restored it had no tables (a fault
+of the first version, as with D1). `wasm_host_server` can wait after the
+modules of the boot are loaded, before `runtime.exs` and the program,
+until the host sends `go` with the environment. A snapshot of that point
+holds no database state and no secret. A Durable Object with Ecto SQLite
+(`sql` in `.release.json`) makes its snapshot there, all the objects
+share it, and each one runs the program and its migrations on its own
+storage. The build snapshot of an app with Ecto SQLite uses it too
+(`global.js` and `durable-global.js`, with no warm-up request).
+
+| A new tenant (its first request) | CPU | Wall (front Worker) |
+|---|---|---|
+| Phoenix, a restore from the Cache API | 142 to 435 ms | 1,187 to 1,484 ms |
+| Phoenix, the spare VM of the global scope (startup 135 ms) | 52 to 61 ms | 650 to 1,077 ms |
+| `notes` (Ecto SQLite), a full boot for each tenant | 629 to 1,138 ms | about 1,400 ms |
+| `notes`, the snapshot of the boot point from the Cache API | 248 to 368 ms | 1,015 to 1,115 ms |
+| the same, with the smaller `release.bin` (below) | 318 to 441 ms | 709 to 1,157 ms |
+| `notes`, the snapshot of the boot point in the global scope | 217 to 267 ms | 870 to 956 ms |
+
+- With the boot point, the first request of a tenant starts the program
+  (about 200 ms of CPU for `notes`, and 270 ms in Node.js for Phoenix,
+  which then evaluates `runtime.exs` again). So an app with no database
+  uses a full snapshot and a warm-up.
+- The rest of the wall time is mostly Cloudflare: a new isolate for a
+  Worker of 46.5 MB, and the network to the object.
+
+**A smaller `release.bin`.** The builder strips the debug information,
+the docs and the checker chunk of Elixir from the `.beam` files that
+have them (the dependencies that it compiles; `mix release` strips its
+own), and compresses with gzip the modules that the boot does not load.
+The loader of ERTS reads them so. `examples/notes`: 16.6 MB to 8.2 MB,
+so 8.4 MB less in the memory of each isolate.
+
+- Tried first: those modules in a `lazy.bin` of the Worker with the
+  release, fetched when the VM opens their file (the import
+  `__syscall_openat` as `WebAssembly.Suspending`). It does not work:
+  ERTS opens files under `setjmp` (the `invoke_*` frames of
+  Emscripten), where JSPI cannot suspend (docs/UPSTREAM.md EM4).
+
+**Found on the way:**
+
+- **A lost `MessagePort`** (fixed, docs/UPSTREAM.md W6): the boot of the
+  Phoenix release in a Durable Object stopped before `init` in most
+  tries. `jspiLater` kept only one port of its `MessageChannel`, and the
+  runtime collected the other one with its handler.
+- **The wait for the threads of a snapshot** used 5,000 steps of
+  `setTimeout(0)`: on Cloudflare they do not wait, so the snapshot at the
+  boot point failed ("no snapshot at the boot point"). Now the steps are
+  1 ms.
+- **A deploy resets the objects:** a request during the rollout can get
+  "Durable Object reset because its code was updated" (a 500). Seen
+  once in 10 deploys.
+- **One hang:** the object that made the snapshot of the boot point did
+  not answer its first request once (a new VM answered the next one).
+  Not seen again in 10 tries.
+- The uptime of a restored VM counts from the boot of the snapshot, so
+  all the tenants of one snapshot showed the same uptime.
+
+### Livebook in a Durable Object (2026-09-28)
+
+`wasm/livebook/setup.sh` builds Livebook 0.19.10 for Workers, with the
+changes of `livebook.patch`. Its embedded runtime evaluates the cells in
+the VM of Livebook. Each tenant has its own Durable Object, VM and
+storage. The first deploy at `https://livebook.fifo.workers.dev` had a
+password and cookie tenants (`/.tenant/NAME`); `setup.sh` now makes
+public instances (below).
+
+**Memory.** An isolate has 128 MB. The first deploy stopped after a few
+cells. These changes make it stable:
+
+- `BEAM_ERL_FLAGS = "-Mea min"`: no allocators of ERTS, only `malloc`.
+  Livebook starts with 42 MB of WebAssembly memory, not 70 MB.
+- The runtime grows its memory in small steps
+  (`MEMORY_GROWTH_GEOMETRIC_STEP=0`).
+- The static files of Livebook (12 MB) are the static assets of the
+  Worker (`wasm/erts/host/static.mjs`), not files of `release.bin`.
+- After a restore, the Worker frees the bytes of the snapshot (29 MB).
+  Before, a closure of the VM kept them, and the object was reset in
+  2 of 3 runs of the notebook on Cloudflare.
+
+All the cells of the notebook take the memory from 42 MB to 66 MB
+(measured with `wrangler dev`).
+
+**The files of `/data` stay** (the var `BEAM_PERSIST`, a list of
+directories). A Durable Object keeps the files of these directories in
+its SQLite storage (the tables `beam_fs` and `beam_fs_chunk`, in chunks
+of 1 MB). Before the VM starts, the host writes them into the file
+system of the VM. The host saves a file when the VM closes it after a
+write, or 1 s after a write. It saves a delete, a rename and a new
+directory at once. The snapshot does not hold these directories.
+
+- Livebook keeps its settings (`livebook_config.v1.ets`) and its
+  autosaved notebooks in `/data`.
+- A deploy resets the objects: the new VM of the default tenant got
+  back its 4 files (115 KB), and then 5 files (123 KB).
+
+**The snapshot.** With `BEAM_PERSIST`, a Durable Object makes its
+snapshot at the boot point, as with Ecto SQLite. So the files and the
+settings of a tenant are not in it, and all the tenants share it. The
+first request of a new tenant:
+
+| | `wrangler dev` (this computer) | Cloudflare (CPU; wall) |
+|---|---|---|
+| A full boot | 2.0 s | 1,641 to 2,016 ms; 2.5 s |
+| A restore of the boot point | 0.53 to 0.62 s | 1,189 to 3,147 ms (median about 1,600 ms); 1.6 to 2.8 s |
+
+- On Cloudflare, the restore itself takes 137 to 802 ms. Then Livebook
+  starts (`runtime.exs` and its applications) and answers. At the first
+  cell, 695 modules are loaded: 415 come from the snapshot, and the VM
+  loads the others one at a time from gzip.
+- Next: the native run of the build could also record the modules of a
+  first request, so that the snapshot holds them.
+
+**Root certificates** (`--cacerts FILE`). The runtime has no
+certificates of its own, and Livebook, `Req` and `:httpc` need them for
+TLS. `beam.com --target wasm32 --cacerts FILE` puts the certificates
+of FILE into the release (`etc/cacerts.pem`, 177 KB for the bundle of
+Mozilla), and the VM reads them with `-public_key cacerts_path`, as
+beam.com does on Windows. With no option, the release has no
+certificates.
+
+- The builder does not copy the store of the computer of the build:
+  the store of the build machine of this test had 5 CAs of a TLS proxy.
+- `setup.sh` gets the bundle of Mozilla from `curl.se` and checks its
+  SHA-256. On Cloudflare, the cell that calls
+  `Req.get!("https://hex.pm/api/packages/kino")` works.
+
+**Kino and the notebook of the edge.** Kino 0.18 is in the release,
+because the embedded runtime has no `Mix.install/2`.
+`beam_on_the_edge.livemd` is in the Learn section, after the welcome
+notebook, and on the home page. It has these cells:
+
+- The system (`wasm32-unknown-emscripten`, one scheduler, 695 modules).
+- 10,000 processes (1,372 bytes each) and a ring of 1,000 processes
+  (100,000 messages).
+- A trace of messages (`Kino.Process.render_seq_trace/1`).
+- A supervisor tree, and a crash that the supervisor repairs.
+- A hot code upgrade: the same process answers "version 1, call 3",
+  then "version 2, call 4".
+- A table of the busiest processes, each second (`Kino.Frame`).
+- A TLS request to hex.pm.
+
+All the cells ran with no error on 7 new tenants on Cloudflare. But the
+diagrams of Kino did not show there, for two causes:
+
+- Kino draws its JS outputs in an iframe of another site. On HTTPS,
+  Livebook 0.19.10 loads it from `livebookusercontent.com/iframe/v6.html`,
+  and that host does not have `v6` (docs/UPSTREAM.md L4). `setup.sh` now
+  makes a third Worker, `livebook-iframe`, with the iframe pages of the
+  release, and sets `LIVEBOOK_IFRAME_URL`.
+- The iframe gets the JS of the output from Livebook. A request from an
+  iframe of another site has no `SameSite=Lax` cookie, so the cookie of
+  the tenant was absent, and the request went to another object (404).
+  Path tenants (below) put the name of the tenant in the URL.
+
+With both changes, `wrangler dev` (with a second port for the iframe
+Worker) shows the trace of messages and the supervisor tree. A
+`Kino.DataTable` that a cell makes again each second stays in its load
+state, so the live table of the notebook is Markdown now.
+
+**Public instances (2026-09-28).** A public Livebook with no password,
+with bounds for the Free plan. `durable.js` has two new modes:
+
+- `BEAM_TENANTS = "path"`: `/t/NAME/...` names the object. The front
+  Worker removes the prefix, looks up a static asset (the binding
+  `ASSETS`), and else gives the request to the object. The VM gets
+  `BEAM_TENANT` and `BEAM_TENANT_PATH` at the boot point, and
+  `livebook.patch` makes `BEAM_TENANT_PATH` the base path of Livebook
+  (`LIVEBOOK_BASE_URL_PATH`).
+- `BEAM_INSTANCES`: the page of `/` has a button that starts an
+  instance (a POST, so a crawler starts none). The object `.registry`
+  gives a random name (100 bits), a time limit (`BEAM_INSTANCE_TTL`,
+  1,800 s) and an alarm. At most `BEAM_INSTANCES` instances run at one
+  time (5 in `setup.sh`), 2 for one address (a hash of the address and
+  the day), and the others wait in a queue: a page that refreshes each
+  10 s. `BEAM_INSTANCE_HOURS` bounds the instance hours of a UTC day.
+- At the limit, the alarm deletes the storage of the object
+  (`deleteAll()`) and stops it. A later request gets 410.
+- A cron trigger each 30 minutes calls `sweep()` of the registry. It
+  deletes the storage of each instance past its limit (if its alarm did
+  not), and once the storage of each object that `BEAM_RETIRE` names:
+  objects of an earlier mode, which the registry did not make (the
+  cookie tenants of the first deploy). Tested with `wrangler dev
+  --test-scheduled`: the sweep deleted 2 expired instances and 2
+  retired objects, and a second sweep found nothing.
+- One Worker holds Livebook: `release.bin` is a module of the runtime
+  Worker (`worker.js` imports it when there is no binding `APP`), not a
+  second Worker. The iframe pages stay on a second Worker (static files
+  only), because the JS outputs of Kino must run on another site than
+  Livebook. On workers.dev, a Worker has one host name; with a custom
+  domain, one Worker can serve both host names. A name such as
+  `iframe.livebook.fifo.workers.dev` does not work: the certificate of
+  workers.dev covers one label, and the TLS handshake fails.
+- The Free plan gives 13,000 GB-s a day of Durable Objects, and each
+  object counts as 128 MB: about 29 object hours. The default bound, 24
+  instance hours a day, keeps within it.
+- Tested with `wrangler dev` (2 instances, 150 s): the third visitor
+  waited in the queue, got the place at the limit of the first two,
+  and the storage of an instance (5 files) was empty after its limit.
+- Caution: each visitor runs code with the network, and can read the
+  vars and secrets of the Worker. Give the Worker no secret. Livebook
+  makes a random `secret_key_base` in each VM. The VMs restore one
+  snapshot, but their random bytes (`:crypto.strong_rand_bytes/1`,
+  `:rand`) and their `secret_key_base` were all different in 3 instances
+  (`wrangler dev`).
+- On Cloudflare (2026-09-28): the first deploy of the Workers `livebook`
+  (18.4 MB, 14.4 MB with gzip, on the Free plan) and `livebook-iframe`.
+  A new instance ran all the cells of the notebook with no error, and
+  the JS of a Kino output came through `/t/NAME/` (200, with
+  `access-control-allow-origin: *`).
+
+**Build and deploy at each push.** Workers Builds (the Git integration
+of Workers) builds and deploys the Worker `livebook` from this
+repository. There are two triggers:
+
+- A push to `main` that changes `wasm/livebook/*` (the build watch
+  path) starts a build with the last `beam.com` of `main`.
+- A merge to `main` that changes `beam.com`: CI builds and tests it, the
+  job `edge` publishes it as the prerelease `edge` (with its SHA-256),
+  and then calls the Deploy Hook of the Worker (the secret
+  `LIVEBOOK_DEPLOY_HOOK` of the repository).
+
+`wasm/livebook/build.sh` downloads that `beam.com`, checks its SHA-256,
+and runs `setup.sh`. `deploy.sh` deploys the iframe Worker and then the
+Worker of Livebook with the token of Workers Builds. The limits of Workers Builds (2026-09-28): Ubuntu 24.04 on
+x86_64, 20 minutes, 8 GB, 2 vCPU and 3,000 build minutes a month on the
+Free plan, and no cache. A build from nothing took 1 min 27 s on 2 CPUs
+of this computer. The dry runs of the three deploys passed.
+
+The settings of the Worker `livebook` (Settings > Build):
+
+| Setting | Value |
+|---|---|
+| Git repository and branch | `sntran/beam.com`, `main` |
+| Root directory | `wasm/livebook` |
+| Build command | `sh build.sh` |
+| Deploy command | `sh deploy.sh` |
+| Build watch paths | include `wasm/livebook/*` |
+| Build variables | `SUBDOMAIN` (the workers.dev subdomain), `INSTANCES` (5), `RETIRE` (objects of an earlier mode) |
+
+If the token of Workers Builds cannot deploy the Worker
+`livebook-iframe`, give the build an API token with the permission
+"Workers Scripts: Edit".
+
+**Found on the way:**
+
+- **The clock does not move while code runs** on Cloudflare (a
+  protection against timing attacks). `:timer.tc/1` gives 0 ms there.
+  It gives the time of the last I/O, and a timer is not I/O: a sleep of
+  1 ms before and after the work moved the clock by 2 ms, not to the
+  real time (10,000 processes "in 1.0 ms"). So `Edge.measure/1` of the
+  notebook also gives the reductions of the work, which need no clock.
+  With `wrangler dev` (no such rule), the time is correct: 55 ms for
+  10,000 processes.
+- Livebook needs `os_mon`, which beam.com does not have. `setup.sh`
+  compiles its Erlang code from the source of the same OTP, and
+  `livebook.patch` turns off its port programs.
+- Livebook: the distribution at start, `:erlang.memory/0` with
+  `-Mea min`, and ExUnit for the modules of a cell (docs/UPSTREAM.md
+  L1 to L3).
+- **A WebSocket during a deploy** can fail with "This script has been
+  upgraded" (seen once).
 
 ## Erlang in a browser tab
 
@@ -1068,8 +1528,14 @@ Still open:
 - **Data:** Postgres through `wasm_tcp` (Postgrex over `gen_tcp` and
   `ssl`, which work now). (SQLite on D1 and Durable Objects is done: see
   "Ecto SQLite".)
-- **A deploy to Cloudflare** (this spike ran `workerd` locally): the CPU
-  time and memory limits in production, and JSPI there.
+- **Cloudflare:** the first deploy is done (see "On Cloudflare: the
+  first deploy", and "Tenants, a boot point, a spare VM, a smaller
+  release"). Still to test there: R2 for the snapshots, a paid plan, and
+  more load on one tenant.
+- **Lazy modules:** a runtime built with `-sSUPPORT_LONGJMP=wasm` (no
+  `invoke_*` frames) could load the modules that the boot does not load
+  from the Worker with the release (docs/UPSTREAM.md EM4). It would also
+  let a crash dump suspend.
 - **More NIFs:** Rustler NIFs (Rust for `wasm32-unknown-emscripten`, one
   crate at a time).
 - **WASI:** not now. ERTS needs threads: `wasi-threads` was withdrawn,

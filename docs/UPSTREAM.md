@@ -1238,6 +1238,27 @@ address space without memory.
 
 **Workaround.** Do not set the macro for `__EMSCRIPTEN__`.
 
+### EM4. An import called under `setjmp` cannot suspend (JSPI)
+
+**Status:** Emscripten with `-sJSPI` and the default
+`SUPPORT_LONGJMP=emscripten` (the runtime of docs/WASM.md, 2026-09-28).
+
+**Symptom.** The import `__syscall_openat` as `WebAssembly.Suspending`
+(to fetch a file at its first open): "SuspendError: trying to suspend JS
+frames" in `invoke_iiii`, and the boot stopped ("cannot get bootfile"),
+also for opens that did not suspend.
+
+**Cause.** A call from a function with `setjmp` goes through a
+JavaScript trampoline (`invoke_*`), and JSPI cannot suspend a stack with
+JavaScript frames. ERTS opens files under `setjmp`.
+
+**Workaround.** None for a file open: the modules that the boot does not
+load stay in `release.bin`, compressed.
+
+**Possible upstream change.** `-sSUPPORT_LONGJMP=wasm` (the WebAssembly
+exception handling of the engine, with no JavaScript frames) with JSPI,
+for all the code of the runtime.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, in the WebAssembly
@@ -1275,6 +1296,83 @@ needs none of this.
 isolate (its own I/O context, as a Durable Object has), for runtimes
 that serve many requests.
 
+### W3. The clock of a Worker moves only by the delay of a timer
+
+**Status:** seen on Cloudflare (2026-09-28), not in workerd on this
+computer. Documented as a Spectre mitigation.
+
+**Symptom.** The VM in a Durable Object used the CPU all the time: 32.5
+s of CPU in 34.4 s while it had no requests, then the isolate went over
+its memory limit. `:timer.tc` in the app gave 0 ms for a bcrypt hash of
+0.6 s.
+
+**Cause.** `Date.now()` and `performance.now()` do not move during work,
+at a `MessageChannel` message, or at `setTimeout(0)`. `setTimeout(5)`
+moves them by exactly 5 ms. `pthread_cond_timedwait()` of
+`jspi_pthread.c` rounds a wait of less than 1 ms down to 0 ms, and the
+timer of 0 ms does not move the clock: the thread waits again and again
+for the same time.
+
+**Workaround.** A timer waits 1 ms at least (`jspiTimer` in
+`jspi_lib.js`, and `jspiSchedule.timer` in `worker.js`). Not a bug of
+the runtime.
+
+### W4. The global scope has no random values
+
+**Status:** seen in workerd and on Cloudflare (2026-09-28). Documented.
+
+**Symptom.** A restore in the global scope (`global.js`) that also
+reseeds OpenSSL stops with "Disallowed operation called within global
+scope" in `random_get` (`getentropy()` of Emscripten), and the VM does
+not answer.
+
+**Cause.** The global scope refuses `crypto.getRandomValues()`, timers
+and I/O. `WebAssembly.instantiate()` and top-level `await` work.
+
+**Workaround.** The first request reseeds OpenSSL. The warm-up in the
+global scope gives zero bytes to the VM, and puts
+`crypto.getRandomValues` back after it.
+
+**Possible upstream change.** Random values in the global scope (a
+snapshot or a prepared isolate needs a reseed at its first request in
+any case).
+
+### W5. The memory of a WebAssembly instance does not shrink
+
+**Status:** WebAssembly 2.0; the memory control proposal is not in V8.
+
+**Symptom.** `/hash?cost=default` of `examples/notes` (argon2 with 64
+MiB) in a Durable Object: "Durable Object's isolate exceeded its memory
+limit and was reset". A later try passed, but the object was reset
+again soon after.
+
+**Cause.** The VM has 58 MB. `memory.grow` adds 64 MiB for argon2, and
+the memory stays at that size after the hash, in the 128 MB of an
+isolate.
+
+**Workaround.** Lower argon2 costs (`m_cost`), or bcrypt.
+
+### W6. A `MessagePort` that only its handler holds stops getting messages
+
+**Status:** seen on Cloudflare in a Durable Object (2026-09-29), not in
+workerd on this computer.
+
+**Symptom.** The boot of a Phoenix release in a Durable Object stopped
+before `init` (no output of `-init_debug`), with little CPU, in most
+tries. A small release booted.
+
+**Cause.** `jspiLater` (jspi_lib.js) kept only `port2` of its
+`MessageChannel`, and set `port1.onmessage`. The first message came;
+the message for the next thread did not. So the runtime collected
+`port1` (it depends on when the garbage collector runs), and the
+messages to it were lost. In a browser, a port with a message handler
+stays alive while its other port lives.
+
+**Workaround.** Keep a reference to `port1` too.
+
+**Possible upstream change.** Keep a `MessagePort` alive while it has a
+message handler and its other port is alive, as the HTML standard does.
+
 ## websock_adapter
 
 Seen with websock_adapter 0.6.0.
@@ -1293,6 +1391,79 @@ compile it again.
 
 **Possible upstream fix.** Ask the `Plug.Conn` adapter module for its
 WebSock handler, with a callback or a protocol.
+
+## Livebook
+
+Seen with Livebook 0.19.10, in a Worker with its embedded runtime
+(`wasm/livebook`, `livebook.patch` holds the workarounds).
+
+### L1. The boot always starts the distribution
+
+**Symptom.** Livebook stops at start in a VM with no distribution: it
+cannot start `:net_kernel`.
+
+**Cause.** `Livebook.Application.start/2` always sets the EPMD module,
+starts the distribution and sets the cookie. The embedded runtime does
+not need them.
+
+**Workaround.** Skip these three steps when `WASM_HOST` is set.
+
+**Possible upstream fix.** An option (`LIVEBOOK_DISTRIBUTION=none`)
+for a Livebook that uses only the embedded runtime.
+
+### L2. `:erlang.memory/0` must work
+
+**Symptom.** With `+Mea min` (no allocators of ERTS: 20 MB less memory
+at start), the evaluation of a cell stops with an `ErlangError`
+(`notsup`), and the memory of the sidebar crashes.
+
+**Cause.** `Livebook.Runtime.Evaluator` and `Livebook.SystemResources`
+call `:erlang.memory/0`, which is not supported without the allocators
+of ERTS. `SystemResources` also calls `:memsup`, which is absent when
+`os_mon` has no port programs.
+
+**Workaround.** An estimate from `Process.info/2`, `:ets.info/2` and
+`:erlang.system_info(:allocated_areas)` when `:erlang.memory/0` raises,
+and the memory of the isolate (128 MB) when `:memsup` has no data.
+
+**Possible upstream fix.** Rescue `notsup` and the exit of `:memsup`,
+and show no memory data in place of a crash.
+
+### L3. A cell with a module needs ExUnit
+
+**Symptom.** In the embedded runtime of a release, each cell that
+defines a module fails: "module ExUnit.Case is not loaded and could
+not be found".
+
+**Cause.** The evaluator runs the doctests of each new module
+(`Livebook.Runtime.Evaluator.Doctests`) with `ExUnit.Case`, and the
+release of Livebook does not have `ex_unit`. The standalone runtime has
+the full Elixir, so the fault shows only with the embedded runtime.
+
+**Workaround.** Add `ex_unit: :load` to the applications of the
+release.
+
+**Possible upstream fix.** Skip the doctests when
+`Code.ensure_loaded?(ExUnit.Case)` is false, or add `ex_unit` to the
+release.
+
+### L4. The public iframe page of the version is absent
+
+**Symptom.** On HTTPS, the JS outputs of Kino (the diagrams of
+`Kino.Process`, `Kino.DataTable`) do not show. Only the value of the
+cell shows.
+
+**Cause.** With no `LIVEBOOK_IFRAME_URL`, Livebook 0.19.10 on HTTPS
+loads `https://livebookusercontent.com/iframe/v6.html`, and that host
+answers 404 for `v6` (it has `v1` to `v5`, checked 2026-09-28).
+
+**Workaround.** Serve the iframe pages of the release (`priv/static/
+iframe`) from a Worker on another site, with
+`Access-Control-Allow-Origin: *`, and set `LIVEBOOK_IFRAME_URL` to it
+(`wasm/livebook/setup.sh` makes the Worker `livebook-iframe`).
+
+**Possible upstream fix.** Publish each new iframe page on
+`livebookusercontent.com` before a release uses it.
 
 ## Elixir packages with NIFs (exqlite, elixir_make)
 

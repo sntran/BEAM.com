@@ -309,3 +309,37 @@ jobs:
         run: |
           cat bench.md
           { echo "### Benchmarks: ${{ matrix.name }}"; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"
+
+  # The beam.com of main at a fixed URL: the prerelease "edge", with its
+  # SHA-256. Then the Deploy Hook of the Livebook Worker (the secret
+  # LIVEBOOK_DEPLOY_HOOK, when it is set) builds wasm/livebook with it and
+  # deploys it (Workers Builds, see wasm/livebook/build.sh).
+  edge:
+    name: Publish the edge binary
+    needs: [test, test-bsd]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOOK: ${{ secrets.LIVEBOOK_DEPLOY_HOOK }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: beam.com
+          path: bin
+
+      - name: Publish the prerelease edge
+        run: |
+          cd bin
+          sha256sum beam.com > beam.com.sha256
+          gh release delete edge --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create edge beam.com beam.com.sha256 --repo "$GITHUB_REPOSITORY" \
+            --prerelease --target "$GITHUB_SHA" --title edge \
+            --notes "beam.com of main at $GITHUB_SHA. The next merge replaces it."
+
+      - name: Build the Livebook Worker again
+        if: env.HOOK != ''
+        run: curl -fsS -X POST "$HOOK" > /dev/null

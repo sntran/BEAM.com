@@ -3,9 +3,12 @@
 // in Node.js (26, for JSPI) as worker.js does, optionally sends requests to
 // warm it up, asks all the threads of ERTS to return (erts_wasm_hibernate),
 // and writes DIR/release/snapshot.bin. worker.js restores it in place of a
-// boot.
+// boot, and global.js (wrangler.global.jsonc) in the global scope of the
+// Worker.
 //
 //   node snapshot.mjs DIR [--warm PORT:PATH]... [--after MS]
+//   node snapshot.mjs DIR --boot-point   a snapshot at the boot point: before
+//                                        runtime.exs and the program (Ecto SQLite)
 //   node snapshot.mjs DIR --check PORT:PATH     restore it here, 3 requests
 //
 // The environment of the boot (SECRET_KEY_BASE, PHX_HOST, ...) is in the
@@ -15,12 +18,13 @@ import path from 'node:path';
 
 const argv = process.argv.slice(2);
 const dir = argv.shift();
-const opts = { warm: [], env: {}, after: 1500, check: null };
+const opts = { warm: [], env: {}, after: 1500, check: null, bootPoint: false };
 while (argv.length) {
   const a = argv.shift();
   if (a === '--warm') opts.warm.push(argv.shift());
   else if (a === '--after') opts.after = Number(argv.shift());
   else if (a === '--check') opts.check = argv.shift();
+  else if (a === '--boot-point') opts.bootPoint = true;
   else if (a === '--env') { const [k, ...v] = argv.shift().split('='); opts.env[k] = v.join('='); }
   else throw new Error(`unknown option ${a}`);
 }
@@ -88,6 +92,7 @@ function onsend(bytes) {
   const msg = JSON.parse(new TextDecoder().decode(bytes.subarray(0, nl)));
   const body = bytes.subarray(nl + 1);
   if (msg.t === 'ready') log('ready');
+  else if (msg.t === 'boot_point') { log('boot point'); atBootPoint(); }
   else if (msg.t === 'tcp_listen') {
     listeners[msg.port] = msg.id;
     push({ t: 'tcp_listening', id: msg.id });
@@ -100,10 +105,12 @@ function push(h, body = new Uint8Array()) {
   m.beamHost.push(b);
 }
 let conn = 0;
-function request(spec) {
+async function request(spec) {
   const [port, p] = spec.split(/:(.*)/s);
   const id = `s${++conn}`;
   const t = performance.now();
+  // After a restore at the boot point, the program starts its listener.
+  for (let i = 0; !listeners[port] && i < 2000; i++) await new Promise((r) => setTimeout(r, 5));
   return new Promise((resolve, reject) => {
     if (!listeners[port]) return reject(new Error(`nothing listens on ${port}`));
     let bytes = Buffer.alloc(0);
@@ -125,12 +132,16 @@ function request(spec) {
   });
 }
 
+let atBootPoint = () => {};
+let relMeta = null;  // .release.json, for --check
+const bootPointReached = new Promise((r) => { atBootPoint = r; });
+
 const env = (m, meta) => Object.assign(m.ENV, {
   ROOTDIR: '/app', BINDIR: '/app/bin', EMU: 'beam', PROGNAME: 'erl', HOME: '/',
   RELEASE_ROOT: '/app', RELEASE_NAME: meta.name, RELEASE_VSN: meta.vsn, RELEASE_MODE: 'interactive',
   RELEASE_TMP: '/app/tmp', RELEASE_SYS_CONFIG: '/app/tmp/run.runtime', RELEASE_PROG: meta.name,
   WASM_HOST: '1',
-}, meta.env, opts.env);
+}, meta.env, opts.env, opts.bootPoint && !opts.check ? { WASM_HOST_BOOT_POINT: 'wait' } : {});
 
 const common = {
   arguments: [],
@@ -160,8 +171,9 @@ if (!opts.check) {
     }],
     onExit: (code) => { log(`the VM stopped (${code})`); process.exit(1); },
   });
-  await new Promise((r) => setTimeout(r, opts.after));
-  for (const w of opts.warm) {
+  if (opts.bootPoint) await bootPointReached;
+  else await new Promise((r) => setTimeout(r, opts.after));
+  for (const w of opts.bootPoint ? [] : opts.warm) {
     const r = await request(w);
     log(`warm-up ${w}: ${r.status} in ${r.ms.toFixed(1)} ms`);
   }
@@ -183,7 +195,7 @@ if (!opts.check) {
   }
   const data = Buffer.alloc(pages.length * PAGE);
   pages.forEach((p, i) => data.set(heap.subarray(p * PAGE, (p + 1) * PAGE), i * PAGE));
-  const head = Buffer.from(JSON.stringify({ size: heap.length, pages, fs: fsState(m.FS, since), listeners }));
+  const head = Buffer.from(JSON.stringify({ size: heap.length, pages, fs: fsState(m.FS, since), listeners, boot_point: opts.bootPoint }));
   const len = Buffer.alloc(4);
   len.writeUInt32BE(head.length);
   fs.writeFileSync(out, Buffer.concat([Buffer.from('BEAMSNP1'), len, head, data]));
@@ -207,7 +219,7 @@ if (!opts.check) {
     noInitialRun: true,
     preRun: [(mod) => {
       m = mod;
-      const meta = unpack(m.FS, release);
+      const meta = relMeta = unpack(m.FS, release);
       for (const [p, b64] of Object.entries(snap.fs.files)) {
         m.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
         m.FS.writeFile(p, Buffer.from(b64, 'base64'));
@@ -238,6 +250,8 @@ if (!opts.check) {
       exports.wasm_host_restore();
       log(`restored: ${exports.erts_wasm_resume()} threads`);
       push({ t: 'restored' }, crypto.getRandomValues(new Uint8Array(48)));
+      // A snapshot of the boot point: the boot goes on, with this environment.
+      if (snap.boot_point) push({ t: 'go' }, new TextEncoder().encode(JSON.stringify({ ...relMeta.env, ...opts.env })));
       (async () => {
         for (let i = 0; i < 3; i++) {
           const r = await request(opts.check);

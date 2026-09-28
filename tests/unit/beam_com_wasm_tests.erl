@@ -81,7 +81,7 @@ with_boot_modules_test_() ->
 meta_test_() ->
     Files = [{"releases/1/vm.args", <<"-sname a\n-s m\n">>}, {"releases/1/sys.config", <<"[].">>}],
     [{"a release of beam.com: its sys.config, and the flags of vm.args",
-      ?_assertEqual(#{name => <<"app">>, vsn => <<"1">>, env => #{},
+      ?_assertEqual(#{name => <<"app">>, vsn => <<"1">>, env => #{}, sql => false,
                       args => [<<"-mode">>, <<"interactive">>,
                                <<"-config">>, <<"/app/releases/1/sys">>,
                                <<"-boot">>, <<"/app/releases/1/start">>,
@@ -94,7 +94,38 @@ meta_test_() ->
                                <<"-config">>, <<"/app/tmp/run.runtime">> | _],
                       env := #{'PHX_SERVER' := <<"true">>}},
                     beam_com_wasm:meta(#{name => "app", vsn => "1", kind => mix, files => [],
-                                         apps => [phoenix]}))}].
+                                         apps => [phoenix]}))},
+     {"Ecto SQLite: sql",
+      ?_assertMatch(#{sql := true},
+                    beam_com_wasm:meta(#{name => "app", vsn => "1", kind => mix, files => [],
+                                         apps => [exqlite]}))},
+     {"--cacerts: public_key reads the file of the release",
+      ?_assertMatch(#{args := [<<"-mode">>, <<"interactive">>, <<"-public_key">>,
+                               <<"cacerts_path">>, <<"\"/app/etc/cacerts.pem\"">> | _]},
+                    beam_com_wasm:meta(#{name => "app", vsn => "1", kind => beam_com, files => [],
+                                         cacerts => true}))}].
+
+with_cacerts_test_() ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beam_com_wasm_cacerts"),
+    ok = filelib:ensure_path(Dir),
+    #{cert := Der} = public_key:pkix_test_root_cert("beam_com test root", []),
+    Cert = {'Certificate', Der, not_encrypted},
+    Pem = filename:join(Dir, "roots.pem"),
+    ok = file:write_file(Pem, [<<"a comment\n">>, public_key:pem_encode([Cert, Cert])]),
+    Empty = filename:join(Dir, "empty.pem"),
+    ok = file:write_file(Empty, <<"no certificate here\n">>),
+    Absent = filename:join(Dir, "absent.pem"),
+    [{"no --cacerts: no file (not the store of this computer)",
+      ?_assertEqual([{"a", <<>>}], beam_com_wasm:with_cacerts([{"a", <<>>}], #{}))},
+     {"--cacerts FILE: its certificates in etc/cacerts.pem",
+      ?_assertEqual([{"a", <<>>}, {"etc/cacerts.pem", public_key:pem_encode([Cert, Cert])}],
+                    beam_com_wasm:with_cacerts([{"a", <<>>}], #{cacerts => Pem}))},
+     {"a file with no certificate",
+      ?_assertThrow({error, "--cacerts ~ts: no certificate", [Empty]},
+                    beam_com_wasm:with_cacerts([], #{cacerts => Empty}))},
+     {"a file that is not there",
+      ?_assertThrow({error, "--cacerts ~ts: ~ts", [Absent, _]},
+                    beam_com_wasm:with_cacerts([], #{cacerts => Absent}))}].
 
 pack_test() ->
     Bin = iolist_to_binary(beam_com_wasm:pack([{"a", <<"xy">>}, {"é", [<<"z">>]}])),
@@ -154,6 +185,70 @@ snapshot_key_test_() ->
      {"another runtime: another key",
       ?_assertNotEqual(Key, beam_com_wasm:snapshot_key(Files, lists:keyreplace("beam.wasm", 1, Worker,
                                                                                {"beam.wasm", <<"c">>})))}].
+
+%% The files of the output directory: the global scope variant only
+%% without Ecto SQLite, the Durable Object with its own name, and the
+%% Worker with the release with no public URL.
+worker_files_test() ->
+    Root = root(),
+    Priv = filename:join([Root, "lib", "wasm_host-0.1.0", "priv", "worker"]),
+    Runtime = filename:join(Root, "runtime"),
+    [ok = filelib:ensure_path(D) || D <- [Priv, Runtime]],
+    [ok = file:write_file(filename:join(Priv, F), F)
+     || F <- ["worker.js", "durable.js", "global.js", "durable-global.js", "tcp-proxy.mjs", "app.js"]],
+    [ok = file:write_file(filename:join(Runtime, F), F) || F <- ["beam.mjs", "beam.wasm"]],
+    Files = fun(Apps) -> [{F, iolist_to_binary(D)}
+                          || {F, D} <- beam_com_wasm:worker_files(#{name => "app", apps => Apps},
+                                                                  Runtime, Root)] end,
+    Plain = Files([]),
+    Has = fun(Fs, Name, Text) -> binary:match(proplists:get_value(Name, Fs), Text) =/= nomatch end,
+    ?assertEqual(<<"global.js">>, proplists:get_value("global.js", Plain)),
+    ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"main\": \"global.js\"">>)),
+    ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
+    ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"name\": \"app-durable\"">>)),
+    ?assert(Has(Plain, "release/wrangler.jsonc", <<"\"workers_dev\": false">>)),
+    ?assert(Has(Plain, "wrangler.jsonc", <<"\"version_metadata\": { \"binding\": \"BEAM_VERSION\" }">>)),
+    ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"version_metadata\"">>)),
+    ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"main\": \"durable-global.js\"">>)),
+    ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
+    Sqlite = Files([exqlite]),
+    %% Ecto SQLite: a snapshot at the boot point, and no warm-up request.
+    ?assertEqual(<<"durable-global.js">>, proplists:get_value("durable-global.js", Sqlite)),
+    ?assert(Has(Sqlite, "wrangler.global.jsonc", <<"--boot-point">>)),
+    ?assert(Has(Sqlite, "wrangler.global.jsonc", <<"\"d1_databases\"">>)),
+    ?assertNot(Has(Sqlite, "wrangler.global.jsonc", <<"BEAM_WARM">>)),
+    ?assertNot(Has(Sqlite, "wrangler.durable-global.jsonc", <<"BEAM_WARM">>)),
+    ?assert(Has(Sqlite, "wrangler.jsonc", <<"\"d1_databases\"">>)),
+    Phoenix = Files([phoenix]),
+    ?assert(Has(Phoenix, "wrangler.jsonc", <<"\"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\"">>)),
+    ?assert(Has(Phoenix, "wrangler.global.jsonc",
+                <<"\"BEAM_WARM\": \"/\", \"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\"">>)).
+
+%% release.bin: no debug information in the code, and the modules that the
+%% boot does not load compressed (the loader of ERTS reads gzip).
+strip_and_compress_test() ->
+    Beam = fun(M) ->
+                   {ok, M, B} = compile:forms([{attribute, 1, module, M}, {attribute, 2, export, [{f, 0}]},
+                                               {function, 3, f, 0, [{clause, 3, [], [], [{atom, 3, ok}]}]}],
+                                              [binary, debug_info]),
+                   B
+           end,
+    A = Beam(a), B = Beam(b),
+    Gz = zlib:gzip(A),
+    Files = [{"lib/x-1/ebin/a.beam", A}, {"lib/x-1/ebin/b.beam", B}, {"lib/x-1/ebin/c.beam", Gz},
+             {"lib/x-1/ebin/x.app", <<"app">>}],
+    Stripped = beam_com_wasm:strip_beams(Files),
+    Chunk = fun(Bin, C) -> {ok, {_, [{_, V}]}} = beam_lib:chunks(Bin, [C], [allow_missing_chunks]), V end,
+    ?assertEqual(missing_chunk, Chunk(proplists:get_value("lib/x-1/ebin/a.beam", Stripped), "Dbgi")),
+    ?assertMatch(<<_/binary>>, Chunk(A, "Dbgi")),
+    ?assertEqual(Gz, proplists:get_value("lib/x-1/ebin/c.beam", Stripped)),
+    ?assertEqual(<<"app">>, proplists:get_value("lib/x-1/ebin/x.app", Stripped)),
+    {Packed, 1} = beam_com_wasm:compress_beams(Stripped, [a]),
+    ?assertMatch(<<"FOR1", _/binary>>, proplists:get_value("lib/x-1/ebin/a.beam", Packed)),
+    ?assertMatch(<<31, 139, _/binary>>, proplists:get_value("lib/x-1/ebin/b.beam", Packed)),
+    {module, b} = code:load_binary(b, "b.beam", proplists:get_value("lib/x-1/ebin/b.beam", Packed)),
+    ?assertEqual(ok, b:f()),
+    ?assertEqual({Stripped, 0}, beam_com_wasm:compress_beams(Stripped, [])).
 
 %% A module in place of the NIF of exqlite: the exports of the original,
 %% calls to the shim, and not_supported for the others.

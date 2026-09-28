@@ -69,8 +69,12 @@ function releaseMeta(bytes) {
 // The snapshots that the Worker makes itself (see Vm.makeSnapshot): in the
 // R2 bucket of the binding SNAPSHOTS, else in the Cache API (of each data
 // center). The key: the runtime, worker.js and the release (snapshot_key of
-// .release.json, from the build), and the text bindings, which the boot
-// reads (a new secret gives a new snapshot).
+// .release.json, from the build), the text bindings, which the boot
+// reads (a new secret gives a new snapshot), the host (a Worker or a
+// Durable Object) and the version of the deploy (the binding BEAM_VERSION,
+// version_metadata). The Workers of an account share the Cache API, and
+// the boot of a snapshot ran its migrations on the database of its own
+// Worker: so each deploy boots once, on its own database.
 const snapshots = {
   url: (key) => `https://beam-snapshot.invalid/${key}`,
   async get(env, key) {
@@ -92,16 +96,17 @@ const snapshots = {
   },
 };
 
-async function snapshotKey(env, meta) {
+async function snapshotKey(env, meta, host) {
   const vars = Object.entries(env).filter(([, v]) => typeof v === 'string').sort(([a], [b]) => (a < b ? -1 : 1));
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([meta.snapshot_key, vars])));
+  const id = JSON.stringify([meta.snapshot_key, vars, host, env.BEAM_VERSION?.id ?? null]);
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(id));
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
 // The memory and the open files of a VM whose threads all returned
 // (erts_wasm_hibernate), as snapshot.bin. The files that the boot wrote
 // are the ones that are not views of release.bin (unpack: canOwn).
-function capture(m, release, listeners) {
+function capture(m, release, listeners, bootPoint = false, skip = () => false) {
   const PAGE = 65536;
   const heap = m.HEAPU8;
   const words = new BigUint64Array(heap.buffer, 0, heap.length / 8);
@@ -114,7 +119,7 @@ function capture(m, release, listeners) {
     for (const n of m.FS.readdir(d)) {
       if (n === '.' || n === '..') continue;
       const p = d === '/' ? '/' + n : d + '/' + n;
-      if (p === '/dev' || p === '/proc') continue;
+      if (p === '/dev' || p === '/proc' || skip(p)) continue;
       const node = m.FS.lookupPath(p).node;
       if (m.FS.isDir(node.mode)) walk(p);
       else if (m.FS.isFile(node.mode) && node.contents?.buffer !== release) {
@@ -136,6 +141,7 @@ function capture(m, release, listeners) {
   }).filter(Boolean);
   const head = new TextEncoder().encode(JSON.stringify({
     size: heap.length, pages, fs: { files, streams }, listeners: Object.fromEntries(listeners),
+    boot_point: bootPoint,
   }));
   const out = new Uint8Array(12 + head.length + pages.length * PAGE);
   out.set(new TextEncoder().encode('BEAMSNP1'));
@@ -195,14 +201,130 @@ function restore(m, exports, snap) {
     }
   }
   exports.wasm_host_restore();
+}
+
+// The threads of a restored VM start again (erts_wasm_resume), and OpenSSL
+// gets new random bytes. The global scope of a Worker has no random
+// values: there, warm() starts the threads, and the first request sends
+// the bytes (seed()).
+function resume(m, exports) {
   const n = exports.erts_wasm_resume();
+  seed(m);
+  return n;
+}
+
+function seed(m) {
   // New random bytes for OpenSSL, before any request (wasm_host_server).
   const h = new TextEncoder().encode('{"t":"restored"}\n');
   const b = new Uint8Array(h.length + 48);
   b.set(h);
   crypto.getRandomValues(b.subarray(h.length));
   m.beamHost.push(b);
-  return n;
+}
+
+// The directories of BEAM_PERSIST (a Durable Object): their files are in
+// the SQLite storage of the object, so they stay when the object leaves
+// memory. The host writes them into the file system of the VM before it
+// starts, and saves a file when the VM closes it after a write (or 1 s
+// after a write, for a file that stays open), and a delete, a rename or a
+// new directory at once. A file is in chunks of 1 MB (a row has 2 MB at
+// most).
+const CHUNK = 1 << 20;
+
+class Persist {
+  constructor(sql, dirs) {
+    this.sql = sql;
+    this.dirs = dirs.map((d) => d.replace(/\/+$/, '')).filter((d) => d.startsWith('/') && d.length > 1);
+    this.dirty = new Set();
+    sql.exec('CREATE TABLE IF NOT EXISTS beam_fs (path TEXT PRIMARY KEY, dir INTEGER, mode INTEGER, size INTEGER)');
+    sql.exec('CREATE TABLE IF NOT EXISTS beam_fs_chunk (path TEXT, n INTEGER, data BLOB, PRIMARY KEY (path, n))');
+  }
+
+  under(path) {
+    return typeof path === 'string' && this.dirs.some((d) => path === d || path.startsWith(d + '/'));
+  }
+
+  // The files of the storage, into FS (before the VM starts).
+  load(FS) {
+    for (const d of this.dirs) FS.mkdirTree(d);
+    let files = 0, bytes = 0;
+    for (const { path, dir, size } of this.sql.exec('SELECT path, dir, size FROM beam_fs ORDER BY path')) {
+      if (!this.under(path)) continue;
+      if (dir) { FS.mkdirTree(path); continue; }
+      const data = new Uint8Array(size);
+      for (const { n, data: part } of this.sql.exec('SELECT n, data FROM beam_fs_chunk WHERE path = ? ORDER BY n', path)) {
+        data.set(new Uint8Array(part), n * CHUNK);
+      }
+      FS.mkdirTree(path.slice(0, path.lastIndexOf('/')) || '/');
+      FS.writeFile(path, data, { canOwn: true });
+      files++;
+      bytes += size;
+    }
+    console.log(`beam: persist ${this.dirs.join(', ')}: ${files} files, ${bytes >> 10} KB`);
+  }
+
+  save(FS, path) {
+    this.dirty.delete(path);
+    let node;
+    try { node = FS.lookupPath(path).node; } catch { return this.remove(path); }
+    if (FS.isDir(node.mode)) return this.sql.exec('INSERT OR REPLACE INTO beam_fs VALUES (?, 1, ?, 0)', path, node.mode);
+    if (!FS.isFile(node.mode)) return;
+    const data = FS.readFile(path);
+    this.sql.exec('DELETE FROM beam_fs_chunk WHERE path = ?', path);
+    this.sql.exec('INSERT OR REPLACE INTO beam_fs VALUES (?, 0, ?, ?)', path, node.mode, data.length);
+    for (let n = 0; n * CHUNK < data.length; n++) {
+      this.sql.exec('INSERT INTO beam_fs_chunk VALUES (?, ?, ?)', path, n, data.slice(n * CHUNK, (n + 1) * CHUNK).buffer);
+    }
+  }
+
+  // A file or a directory, and all under it.
+  remove(path) {
+    for (const t of ['beam_fs', 'beam_fs_chunk']) {
+      this.sql.exec(`DELETE FROM ${t} WHERE path = ? OR substr(path, 1, ?) = ?`, path, path.length + 1, path + '/');
+    }
+  }
+
+  // A directory and all under it, or one file.
+  saveTree(FS, path) {
+    this.save(FS, path);
+    let node;
+    try { node = FS.lookupPath(path).node; } catch { return; }
+    if (!FS.isDir(node.mode)) return;
+    for (const n of FS.readdir(path)) if (n !== '.' && n !== '..') this.saveTree(FS, `${path}/${n}`);
+  }
+
+  // Wrap the functions of FS that change files (the system calls of the
+  // VM call them).
+  attach(FS) {
+    const abs = (p) => (typeof p === 'string' && !p.startsWith('/') ? `${FS.cwd()}/${p}` : p);
+    const wrap = (name, after) => {
+      const f = FS[name];
+      FS[name] = (...a) => {
+        const r = f.apply(FS, a);
+        try { after(...a); } catch (e) { console.log(`beam: persist ${name}: ${e.message}`); }
+        return r;
+      };
+    };
+    wrap('write', (stream) => {
+      if (!this.under(stream.path)) return;
+      this.dirty.add(stream.path);
+      this.flush ??= setTimeout(() => {
+        this.flush = null;
+        for (const p of [...this.dirty]) this.save(FS, p);
+      }, 1000);
+    });
+    wrap('close', (stream) => {
+      if (this.under(stream.path) && ((stream.flags & 3) !== 0 || this.dirty.has(stream.path))) this.save(FS, stream.path);
+    });
+    wrap('truncate', (path) => { if (this.under(abs(path))) this.save(FS, abs(path)); });
+    wrap('mkdir', (path) => { if (this.under(abs(path))) this.save(FS, abs(path)); });
+    wrap('unlink', (path) => { if (this.under(abs(path))) this.remove(abs(path)); });
+    wrap('rmdir', (path) => { if (this.under(abs(path))) this.remove(abs(path)); });
+    wrap('rename', (from, to) => {
+      if (this.under(abs(from))) this.remove(abs(from));
+      if (this.under(abs(to))) this.saveTree(FS, abs(to));
+    });
+  }
 }
 
 // Ecto SQLite (wasm_host_sqlite): the host runs each statement, on the
@@ -280,7 +402,17 @@ export default {
 //     fetch(request) { return this.vm.fetch(request); }
 //   }
 export class Vm {
-  constructor(env, { plain = true, sql = null } = {}) {
+  // release and snapshot: the bytes of release.bin and snapshot.bin, for a
+  // VM that the global scope of a Worker restores (global.js).
+  // id: the id of the Durable Object (with sql).
+  // vars: more environment of the VM for this object only (the tenant, for
+  // example). They are not part of the key of the snapshot, so the object
+  // makes its snapshot at the boot point, and "go" gives them.
+  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {} } = {}) {
+    this.vars = vars;
+    this.given = release && { release, snapshot };
+    this.handles = new Map();  // id -> setTimeout handle: timers after adopt()
+    this.id = id;
     this.sql = sql;            // ctx.storage.sql of a Durable Object (Ecto SQLite)
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
     this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
@@ -297,17 +429,28 @@ export class Vm {
 
   async boot(env) {
     const t0 = Date.now();
-    const [release, bundled] = await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    const [release, bundled] = this.given
+      ? [this.given.release, this.given.snapshot]
+      : await Promise.all([loadRelease(env), loadSnapshot(env)]);
     // A snapshot of the build (snapshot.bin), else one that a Worker made
     // (BEAM_SNAPSHOT = "off" turns them off).
     let snapBytes = bundled, key = null;
     if (!snapBytes && env.BEAM_SNAPSHOT !== 'off') {
-      key = await snapshotKey(env, releaseMeta(release));
+      // A Durable Object with Ecto SQLite (sql of .release.json): the
+      // snapshot is made at the boot point (wasm_host_server), before the
+      // program starts and runs its migrations. So all the objects (the
+      // tenants) share it, and each one runs the program on its own storage.
+      const meta = releaseMeta(release);
+      const atBoot = !this.plain && this.sql
+        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || Object.keys(this.vars).length > 0);
+      key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
+      if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
     }
     const snap = snapBytes && parseSnapshot(snapBytes);
+    this.bootPointSnap = !!snap?.boot_point;
     // No snapshot yet: this VM makes it, before its first request.
-    this.makeKey = !snap && !snapshots.unavailable && key;
+    this.makeKey = !snap && !snapshots.unavailable && !this.bootKey && key;
     this.release = release;
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
@@ -319,38 +462,81 @@ export class Vm {
           try {
             this.listeners = new Map(Object.entries(snap.listeners ?? {}).map(([p, id]) => [Number(p), id]));
             restore(this.beam, this.exports, snap);
-            // The copy is in the memory of the VM now: free the buffer (an
-            // isolate has 128 MB).
+            // In the global scope (the bytes given), the first request
+            // starts the threads. A snapshot of the boot point then goes on
+            // with the boot (go).
+            const start = () => {
+              resume(this.beam, this.exports);
+              if (snap.boot_point) this.go();
+            };
+            if (this.given) this.resume = start;
+            else start();
+            // The copy is in the memory of the VM now: free the bytes of the
+            // snapshot (an isolate has 128 MB). The closures of the VM keep
+            // this scope, so snapBytes must not keep them either.
             snap.pagesData = null;
+            snap.fs = null;
+            snapBytes = null;
             this.onready();
           } catch (e) { reject(e); }
         } : undefined,
         // The boot arguments are set in preRun, after the release is unpacked.
         arguments: [],
+        // A plain Worker runs the jobs and timers of the threads in its
+        // open requests. After adopt() (a Durable Object), they run on a
+        // MessageChannel and on setTimeout.
         jspiSchedule: this.plain ? {
-          later: (f) => { this.jobs.push(f); this.handlers.at(-1)?.wake?.(); },
+          later: (f) => {
+            if (!this.plain) return this.post(f);
+            this.jobs.push(f);
+            this.handlers.at(-1)?.wake?.();
+          },
+          // 1 ms at least: the clock of a Worker moves only by the delay of
+          // a timer (see jspiTimer in jspi_lib.js).
           timer: (f, ms) => {
             const id = this.nextTimer++;
-            this.timers.set(id, { at: Date.now() + ms, f });
+            if (!this.plain) {
+              this.handles.set(id, setTimeout(() => { this.handles.delete(id); f(); }, Math.max(1, ms)));
+              return id;
+            }
+            this.timers.set(id, { at: Date.now() + Math.max(1, ms), f });
             this.handlers.at(-1)?.wake?.();
             return id;
           },
-          clear: (id) => { this.timers.delete(id); },
+          clear: (id) => {
+            this.timers.delete(id);
+            clearTimeout(this.handles.get(id));
+            this.handles.delete(id);
+          },
         } : undefined,
         preRun: [(m) => {
           this.beam = m;
           // .release.json: the name, the version, the boot arguments and the
           // environment of the release (beam_com_wasm).
           const { name, vsn, args, env: relEnv } = unpack(m.FS, release);
+          // BEAM_PERSIST: directories in the SQLite storage of the object.
+          if (this.sql && env.BEAM_PERSIST) {
+            this.persist = new Persist(this.sql, env.BEAM_PERSIST.split(','));
+          }
           // The files that the boot of the snapshot wrote.
           for (const [p, b64] of Object.entries(snap?.fs.files ?? {})) {
+            if (this.persist?.under(p)) continue;
             m.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
             m.FS.writeFile(p, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+          }
+          if (this.persist) {
+            this.persist.load(m.FS);
+            this.persist.attach(m.FS);
           }
           // -c false (no time correction) for a snapshot: the monotonic time
           // then follows the system time, which goes on after a restore (the
           // OS monotonic time of a new instance starts again at 0).
-          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...(this.makeKey ? ['-c', 'false'] : []), '--',
+          // BEAM_ERL_FLAGS: more flags of the emulator, as beam takes them
+          // (-Mea min: no allocators of ERTS, only malloc; the VM of
+          // Livebook starts with 40 MB, not 70 MB, but :erlang.memory/0 is
+          // not supported).
+          const flags = (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean);
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...flags, ...(this.makeKey || this.bootKey ? ['-c', 'false'] : []), '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
@@ -361,13 +547,15 @@ export class Vm {
           }
           // The text bindings of the Worker are the environment of the release
           // (SECRET_KEY_BASE, PHX_HOST, DATABASE_URL, ...).
-          const vars = Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === 'string'));
+          const vars = { ...Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === 'string')), ...this.vars };
+          // The environment that "go" gives to a VM of a boot point snapshot.
+          this.envVars = { ...relEnv, ...vars };
           Object.assign(m.ENV, {
             ROOTDIR: '/app', BINDIR: '/app/bin', EMU: 'beam', PROGNAME: 'erl', HOME: '/',
             RELEASE_ROOT: '/app', RELEASE_NAME: name, RELEASE_VSN: vsn, RELEASE_MODE: 'interactive',
             RELEASE_TMP: '/app/tmp', RELEASE_SYS_CONFIG: '/app/tmp/run.runtime', RELEASE_PROG: name,
             WASM_HOST: '1',
-          }, relEnv, vars);
+          }, relEnv, vars, this.bootKey ? { WASM_HOST_BOOT_POINT: 'wait' } : {});
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
         }],
         print: (s) => console.log(s),
@@ -389,44 +577,141 @@ export class Vm {
   async makeSnapshot() {
     const key = this.makeKey;
     this.makeKey = null;
-    const x = this.exports;
     // Not before the app is up (its server listens), and not while the host
     // has I/O of the VM (a SQL call, a socket): that I/O would not be in
     // the snapshot, and a restored VM would wait for it forever.
-    const tick = () => new Promise((r) => setTimeout(r, 1));
     const port = Number(this.env.PORT ?? 4000);
     await Promise.race([this.listening(port), new Promise((r) => setTimeout(r, 10000))]);
+    const bytes = await this.snapshot(false);
+    if (bytes === 'busy') this.makeKey = key;
+    else if (bytes) this.store(key, bytes);
+  }
+
+  // The boot point (wasm_host_server): the snapshot of a VM that loaded the
+  // modules of its boot and did not start the program; then the boot goes
+  // on (go).
+  async bootPoint() {
+    const key = this.bootKey;
+    this.bootKey = null;
+    if (key) {
+      const bytes = await this.snapshot(true);
+      if (bytes && bytes !== 'busy') this.store(key, bytes);
+      else console.log(`beam: no snapshot at the boot point (${bytes})`);
+    }
+    this.go();
+  }
+
+  go() {
+    this.event({ t: 'go' }, new TextEncoder().encode(JSON.stringify(this.envVars ?? {})));
+  }
+
+  store(key, bytes) {
+    console.log(`beam: snapshot ${bytes.length >> 10} KB (${key.slice(0, 12)})`);
+    const put = snapshots.put(this.env, key, bytes).catch((e) => console.log(`beam: snapshot not stored: ${e.message}`));
+    this.waitUntil?.(put);
+  }
+
+  // All the threads return (erts_wasm_hibernate), the memory is copied, and
+  // the threads go on: about 1 ms of the VM, and the time of the copy.
+  // 'busy': not a quiet moment (I/O of the host); null: no snapshot.
+  async snapshot(bootPoint) {
+    const x = this.exports;
+    const tick = () => new Promise((r) => setTimeout(r, 1));
     const busy = () => this.sqlPending > 0 || this.tcps.size > 0;
     // Data in a pipe (an event of the host that Erlang did not take yet,
     // or a wake-up of ERTS) would not be in the snapshot either.
     const unread = () => this.beam.FS.streams.some((st) => st?.node?.pipe?.buckets.some((b) => b.offset > b.roffset));
     for (let attempt = 0; ; attempt++) {
       for (let i = 0; busy() && i < 2000; i++) await tick();
-      if (busy()) { this.makeKey = key; return; }
+      if (busy()) return 'busy';
       x.erts_wasm_hibernate();
+      // 1 ms steps (5 s at most): on Cloudflare, setTimeout(0) does not wait
+      // and does not move the clock, so 5000 steps of 0 ms ended at once.
       for (let i = 0; x.jspi_live_threads() > 0; i++) {
         if (i > 5000) {
           x.jspi_report_live();
           x.erts_wasm_resume();
-          return;
+          return null;
         }
-        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 1));
       }
       if (!busy() && !unread()) break;
       // Not a quiet moment: go on, and try again.
       x.erts_wasm_resume();
-      if (attempt >= 20) { this.makeKey = key; return; }
+      if (attempt >= 20) return 'busy';
       for (let i = 0; i < 5; i++) await tick();
     }
-    let bytes;
     try {
-      bytes = capture(this.beam, this.release, this.listeners);
+      return capture(this.beam, this.release, this.listeners, bootPoint, (p) => !!this.persist?.under(p));
     } finally {
       x.erts_wasm_resume();
     }
-    console.log(`beam: snapshot ${bytes.length >> 10} KB (${key.slice(0, 12)})`);
-    const put = snapshots.put(this.env, key, bytes).catch((e) => console.log(`beam: snapshot not stored: ${e.message}`));
-    this.waitUntil?.(put);
+  }
+
+  // A VM that the global scope restored (plain: its jobs ran between
+  // microtasks) becomes the VM of a Durable Object: its jobs run on a
+  // MessageChannel, and its timers on setTimeout (durable-global.js).
+  adopt({ sql = null, id = null, vars = {} } = {}) {
+    this.sql = sql;
+    this.id = id;
+    this.vars = vars;
+    this.envVars = { ...this.envVars, ...vars };
+    this.plain = false;
+    for (const f of this.jobs.splice(0)) this.post(f);
+    for (const [tid, t] of this.timers) {
+      this.handles.set(tid, setTimeout(() => { this.handles.delete(tid); t.f(); }, Math.max(1, t.at - Date.now())));
+    }
+    this.timers.clear();
+    return this;
+  }
+
+  // A job after the pending I/O and timers (a macrotask), as jspiLater.
+  post(f) {
+    if (!this.queue) {
+      const ch = new MessageChannel();
+      const fns = [];
+      ch.port1.onmessage = () => fns.shift()?.();
+      // Both ports: a port that only its handler holds can be collected.
+      this.queue = { ch, fns };
+    }
+    this.queue.fns.push(f);
+    this.queue.ch.port2.postMessage(0);
+  }
+
+  // In the global scope of a Worker, after a restore (global.js): the
+  // threads start, and a GET request of path goes to the app. So V8
+  // compiles the functions of a request here, not in the first request
+  // (the global scope has its own time limit). No timers here: the jobs
+  // of the threads run between microtasks. The request must not use I/O
+  // of the host (SQL, sockets).
+  //
+  // The reseed of OpenSSL costs about 30 ms of CPU at its first run in an
+  // isolate. So the warm-up also reseeds, with zero bytes: the global
+  // scope has no random values, and the host gives zeros to the VM while
+  // it warms up. The random bytes of the first request then reseed OpenSSL
+  // again, before that request (seed()). A value that the warm-up makes
+  // is the same in each isolate, as a value of the snapshot is.
+  async warm(path) {
+    if (this.bootPointSnap) return console.log('beam: no warm-up: the program starts at the first request');
+    this.resume = () => seed(this.beam);
+    const random = crypto.getRandomValues;
+    crypto.getRandomValues = (v) => v.fill(0);
+    try {
+      this.exports.erts_wasm_resume();
+      this.event({ t: 'restored' }, new Uint8Array(48));
+      const url = new URL(path, 'http://localhost');
+      let done = false;
+      this.bridge(new Request(url), url, false, undefined, () => {})
+        .then((r) => r.arrayBuffer()).finally(() => { done = true; });
+      const idle = { jobs: [] };
+      for (let i = 0; !done && i < 100000; i++) {
+        this.runJobs(idle);
+        await null;
+      }
+      if (!done) console.log(`beam: warm ${path}: no response`);
+    } finally {
+      crypto.getRandomValues = random;
+    }
   }
 
   memory() {
@@ -457,6 +742,11 @@ export class Vm {
 
   async request(request, h, finished) {
     await this.ready;
+    if (this.resume) {
+      const f = this.resume;
+      this.resume = null;
+      f();
+    }
     if (this.makeKey) await this.makeSnapshot();
     const url = new URL(request.url);
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
@@ -571,9 +861,13 @@ export class Vm {
     headers.set('host', url.host);
     headers.delete('transfer-encoding');
     headers.delete('sec-websocket-extensions');  // no compression: frames as they are
-    // The Workers runtime compresses the response for each client: the app
-    // does not (the edge adds Accept-Encoding to the requests).
+    // The Workers runtime compresses the response for each client. The app
+    // gets only gzip of Accept-Encoding: Plug.Static serves the files that
+    // are gzipped already (Livebook has no other ones), and the response
+    // goes as it is (encodeBody: 'manual').
+    const gzip = /\bgzip\b/i.test(headers.get('accept-encoding') ?? '');
     headers.delete('accept-encoding');
+    if (gzip) headers.set('accept-encoding', 'gzip');
     if (upgrade) {
       headers.set('connection', 'Upgrade');
       headers.set('sec-websocket-key', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))));
@@ -810,6 +1104,9 @@ export class Vm {
     switch (msg.t) {
       case 'ready':
         this.onready();
+        break;
+      case 'boot_point':
+        this.run(() => this.bootPoint());
         break;
       case 'tcp_connect': {
         const h = this.handlers.at(-1);
