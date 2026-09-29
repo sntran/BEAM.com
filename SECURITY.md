@@ -9,6 +9,22 @@ Do not open a public issue for it.
 Give the version (`beam.com --version`), the system, and the steps that
 show the problem.
 
+## Versions
+
+Only the newest release gets security fixes. The prerelease `edge` is
+the build of `main`, for tests.
+
+## Check a release
+
+Each release has `SHA256SUMS` and a signed provenance of its files: the
+workflow and the commit that built them. Check a file with the GitHub
+CLI:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify beam.com --repo sntran/BEAM.com
+```
+
 ## What is in scope
 
 - `beam.com` and the programs that it makes: the builder, the runner of
@@ -28,7 +44,8 @@ itself goes to that project. BEAM.com takes their fixes in a new release.
   of its program through `/.tcp/PORT`. Protect that path before you
   deploy a listener (see [`docs/WORKERS.md`](docs/WORKERS.md)).
 - The public Livebook of `wasm/livebook` and the REPL of
-  `examples/worker` run the code of each visitor. Give them no secret,
+  `examples/worker` run the code of each visitor. On Deno Deploy, all
+  the visitors of an isolate share one VM. Give them no secret,
   and give them `BEAM_CONNECT` (the hosts that the VM can connect to).
   The REPL is a restricted shell with an allowlist of functions, but that
   is no sandbox.
