@@ -81,7 +81,7 @@
     'binary:encode_hex(crypto:hash(sha256, <<"abc">>)).',
     '[io:format("~p~n", [X * X]) || X <- lists:seq(1, 5)], ok.',
     'io:get_line("Your name? ").',
-    'regs().',
+    'gen_tcp:connect("example.com", 80, []).',
     'b().',
   ];
 

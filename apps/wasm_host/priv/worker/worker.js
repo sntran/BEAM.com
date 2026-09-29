@@ -175,6 +175,21 @@ function parseSnapshot(bytes) {
   return { ...head, pagesData: b.subarray(12 + len) };
 }
 
+// BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
+// "host", "host:port", or "*.domain" (the subdomains of domain). The host
+// resolves a name, so the VM cannot reach another address through it.
+// With no BEAM_CONNECT, the VM can connect to all hosts.
+function connectAllowed(list, host, port) {
+  if (list === undefined) return true;
+  const name = String(host).toLowerCase().replace(/\.$/, '');
+  return list.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean).some((rule) => {
+    const i = rule.lastIndexOf(':');
+    const [pattern, p] = i > 0 && !rule.includes(']') ? [rule.slice(0, i), rule.slice(i + 1)] : [rule, undefined];
+    if (p !== undefined && Number(p) !== port) return false;
+    return pattern.startsWith('*.') ? name.endsWith(pattern.slice(1)) : name === pattern;
+  });
+}
+
 // The memory and the open files of the snapshot, in a new instance (before
 // main(), which does not run): then the threads start again.
 function restore(m, exports, snap) {
@@ -1073,6 +1088,7 @@ export class Vm {
     let socket;
     if (h) h.sockets++;
     try {
+      if (!connectAllowed(this.env.BEAM_CONNECT, host, port)) throw new Error('not in BEAM_CONNECT');
       socket = connect({ hostname: host, port });
       const writer = socket.writable.getWriter();
       this.tcps.set(id, { send: (b) => writer.write(b), close: () => socket.close().catch(() => {}), h });

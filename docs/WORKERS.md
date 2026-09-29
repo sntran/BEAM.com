@@ -221,6 +221,8 @@ example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
+| `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. |
+| `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 
 ## Measured
 
