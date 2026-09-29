@@ -185,7 +185,4 @@ sys_config(Dir) ->
     end.
 
 temp(What) ->
-    Base = hd([D || V <- ["TMPDIR", "TMP", "TEMP"],
-                    D <- [os:getenv(V)], D =/= false, D =/= ""] ++ ["/tmp"]),
-    filename:join(Base, lists:concat(["beam_com_ex_", What, "_", os:getpid(), "_",
-                                      erlang:unique_integer([positive])])).
+    beam_com_build:temp_dir("ex_" ++ What).

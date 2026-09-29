@@ -79,10 +79,8 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
     AppX = with_extract(App, Extract),
     DepFiles = lists:append([app_files(D) || #{name := N} = D <- Deps,
                                              lists:member(N, Apps)]),
-    Tmp = filename:absname(filename:join(filename:dirname(Output),
-                                         "." ++ filename:basename(Output)
-                                         ++ ".tmp")),
-    _ = file:del_dir_r(Tmp),
+    Tmp = new_dir(filename:absname(filename:dirname(Output)),
+                  "." ++ filename:basename(Output) ++ ".tmp."),
     Release = try release(AppX, Apps, Base, Tmp, Root)
               after file:del_dir_r(Tmp)
               end,
@@ -126,8 +124,7 @@ write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
                _ ->
                    beam_com_zip:write(Bin, Keep, New)
            end,
-    write_file(Output, Data),
-    _ = file:change_mode(Output, 8#755),
+    write_output(Output, Data),
     maps:get(quiet, Opts, false) orelse io:format("~ts: wrote ~ts (~b bytes)~n"
               "  release: ~s ~s~n"
               "  applications: ~s~n",
@@ -791,12 +788,26 @@ asn1(File, Gen) ->
             ok = file:rename(Base ++ ".hrl", New ++ ".hrl")
     end.
 
-%% A new directory for temporary files.
+%% A new directory for temporary files, in TMPDIR (or /tmp).
 temp_dir(What) ->
     Base = hd([D || V <- ["TMPDIR", "TMP", "TEMP"],
                     D <- [os:getenv(V)], D =/= false, D =/= ""] ++ ["/tmp"]),
-    filename:join(Base, lists:concat(["beam_com_", What, "_", os:getpid(), "_",
-                                      erlang:unique_integer([positive])])).
+    new_dir(Base, "beam_com_" ++ What ++ "_").
+
+%% A new directory in Parent, with a random name, that only this user
+%% can use. The build puts code of the program in it, and /tmp is
+%% shared: the directory must not exist before (another user could have
+%% made it), so make_dir/1 must make it.
+new_dir(Parent, Prefix) ->
+    Dir = filename:join(Parent, Prefix ++ binary_to_list(
+                                           binary:encode_hex(crypto:strong_rand_bytes(12), lowercase))),
+    case file:make_dir(Dir) of
+        ok ->
+            _ = file:change_mode(Dir, 8#700),
+            Dir;
+        {error, Reason} ->
+            throw({error, "~ts: ~ts", [Dir, file:format_error(Reason)]})
+    end.
 
 %% Compile the files of one application. The modules that other files
 %% of it name as a behaviour or a parse transform are compiled first and
@@ -1039,6 +1050,30 @@ read_file(File) ->
         {ok, Bin} -> {ok, Bin};
         {error, Reason} ->
             throw({error, "~ts: ~ts", [File, file:format_error(Reason)]})
+    end.
+
+%% The output file: a new file next to it, then a rename. The rename
+%% replaces a link at Output, and does not write through it.
+write_output(Output, Data) ->
+    New = filename:join(filename:dirname(Output),
+                        "." ++ filename:basename(Output) ++ "." ++
+                            binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(8), lowercase))),
+    case file:open(New, [write, exclusive, raw, binary]) of
+        {ok, F} ->
+            try
+                ok = file:write(F, Data)
+            after
+                file:close(F)
+            end;
+        {error, Reason} ->
+            throw({error, "~ts: ~ts", [New, file:format_error(Reason)]})
+    end,
+    _ = file:change_mode(New, 8#755),
+    case file:rename(New, Output) of
+        ok -> ok;
+        {error, Reason2} ->
+            _ = file:delete(New),
+            throw({error, "~ts: ~ts", [Output, file:format_error(Reason2)]})
     end.
 
 write_file(File, Data) ->
