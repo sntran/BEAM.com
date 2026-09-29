@@ -35,7 +35,13 @@ concurrency:
 jobs:
   pages:
     name: Build and publish the site
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # After a build: only a successful push to main of this repository (the
+    # branch filter of workflow_run also matches a "main" of a fork).
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -48,8 +54,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download the edge beam.com
         id: edge
         run: |
@@ -60,13 +65,13 @@ jobs:
           # The key of the cache of Livebook: the versions of OTP and Elixir.
           echo "versions=$(bin/beam.com --version | grep -E "Erlang/OTP|Elixir" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
 
       - name: Cache the release of Livebook
         id: livebook
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             livebook-build/livebook/_build/prod/rel/livebook
@@ -80,9 +85,9 @@ jobs:
       - name: Build the site
         run: LIVEBOOK_DIR="$PWD/livebook-build" sh docs/site.sh bin/beam.com site
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: site
 
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

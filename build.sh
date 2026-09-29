@@ -71,12 +71,20 @@ OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
+# The pins of the sources of the default versions: the commit of each
+# git tag (a tag can move), and the SHA-256 of each download (a release
+# asset can change). For another version, give its pin too.
+OTP_COMMIT=${OTP_COMMIT:-ad05823719d77c8faee87348ea39513d4e2f99c5}
+COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44}
+OPENSSL_COMMIT=${OPENSSL_COMMIT:-f089acdf4bc7ba94a79f4bf6eb7362c3e7d14aa9}
+EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
 # esqlite (Apache-2.0), with the SQLite amalgamation (public domain) of
 # sqlite.org instead of the older copy in esqlite.
 ESQLITE_COMMIT=${ESQLITE_COMMIT:-5c8d590d8eb70de17dd2c64dfc7502f4fd2fcba8}
 SQLITE_VERSION=${SQLITE_VERSION:-3.53.4}
 SQLITE_YEAR=${SQLITE_YEAR:-2026}
+SQLITE_SHA256=${SQLITE_SHA256:-1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d}
 # The NIFs of Elixir packages (with the SHA-256 of the hex.pm tarball).
 # The tools of Elixir compile these packages without a C compiler (see
 # apps/beam_com/src/beam_com_make.erl).
@@ -93,8 +101,13 @@ PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d
 EXTRA_NIFS=${EXTRA_NIFS:-}
 WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
+WAMR_COMMIT=${WAMR_COMMIT:-25bd7eb63e828e4bd242cc9b38d260b4b31c6605}
 ELIXIR=${ELIXIR:-1}
 ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
+ELIXIR_COMMIT=${ELIXIR_COMMIT:-759443e724f55bf58e71c0603644e99058918d52}
+# rebar3 of a custom build (REBAR3=1).
+REBAR3_VERSION=${REBAR3_VERSION:-3.27.1}
+REBAR3_SHA256=${REBAR3_SHA256:-708407032479514dd68b581a0b09a68b5a781fb6f53dcf4ad81ce4ef6b92940f}
 ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 OTP_APPS=${OTP_APPS:-}
 HEX=${HEX:-0}
@@ -143,6 +156,25 @@ export PATH
 
 log() { printf '\n==> %s\n' "$*"; }
 
+# The SHA-256 of a download: FILE EXPECTED NAME.
+check_sha256() {
+    sum=$(sha256sum "$1" | cut -d' ' -f1)
+    if [ "$sum" != "$2" ]; then
+        echo "Bad SHA-256 of $3: $sum (expected $2)" >&2
+        exit 1
+    fi
+}
+
+# The commit of a clone: DIR EXPECTED NAME. A tag can move to another
+# commit.
+check_commit() {
+    head=$(git -C "$1" rev-parse HEAD)
+    if [ "$head" != "$2" ]; then
+        echo "The clone of $3 is at $head, not at the pinned commit $2" >&2
+        exit 1
+    fi
+}
+
 step_toolchain() {
     if [ -x "$COSMOCC/bin/cosmocc" ]; then
         log "Using cosmocc in $COSMOCC"
@@ -152,6 +184,7 @@ step_toolchain() {
     mkdir -p "$COSMOCC"
     url=https://github.com/jart/cosmopolitan/releases/download/$COSMOCC_VERSION/cosmocc-$COSMOCC_VERSION.zip
     curl -fsSL -o "$BUILD/cosmocc.zip" "$url"
+    check_sha256 "$BUILD/cosmocc.zip" "$COSMOCC_SHA256" "cosmocc-$COSMOCC_VERSION.zip"
     (cd "$COSMOCC" && unzip -q "$BUILD/cosmocc.zip")
     rm -f "$BUILD/cosmocc.zip"
 }
@@ -167,6 +200,7 @@ step_openssl() {
         git clone -q --depth 1 --branch "openssl-$OPENSSL_VERSION" \
             https://github.com/openssl/openssl.git "$src"
     fi
+    check_commit "$src" "$OPENSSL_COMMIT" "OpenSSL $OPENSSL_VERSION"
     log "Building a static libcrypto with $CC"
     cd "$src"
     # Only libcrypto is used (by the crypto NIF). No assembly code, so
@@ -191,6 +225,7 @@ step_otp() {
         git clone -q --depth 1 --branch "OTP-$OTP_VERSION" \
             https://github.com/erlang/otp.git "$ERL_TOP"
     fi
+    check_commit "$ERL_TOP" "$OTP_COMMIT" "Erlang/OTP $OTP_VERSION"
     if [ ! -f "$ERL_TOP/.beam_com_patched" ]; then
         log "Applying patches"
         for p in "$ROOT"/patches/otp/*.patch; do
@@ -291,6 +326,7 @@ step_sqlite() {
         log "Downloading SQLite $SQLITE_VERSION"
         curl -fsSL -o "$BUILD/$amalgamation.zip" \
             "https://sqlite.org/$SQLITE_YEAR/$amalgamation.zip"
+        check_sha256 "$BUILD/$amalgamation.zip" "$SQLITE_SHA256" "$amalgamation.zip"
         (cd "$BUILD" && unzip -q -o "$amalgamation.zip")
         cp "$BUILD/$amalgamation/sqlite3.c" "$BUILD/$amalgamation/sqlite3.h" \
             "$ESQLITE/c_src/sqlite3/"
@@ -528,6 +564,7 @@ step_wasm() {
         git clone -q --depth 1 --branch "WAMR-$WAMR_VERSION" \
             https://github.com/bytecodealliance/wasm-micro-runtime.git "$WAMR"
     fi
+    check_commit "$WAMR" "$WAMR_COMMIT" "WAMR $WAMR_VERSION"
     log "Building WAMR and the wasm NIF as a static NIF"
     t=$(target)
     obj=$WAMR/obj
@@ -614,13 +651,16 @@ step_wasm_runtime() {
     emsdk=${EMSDK:-$BUILD/emsdk}
     if [ ! -x "$emsdk/upstream/emscripten/emcc" ]; then
         log "Installing emsdk $EMSDK_VERSION"
-        [ -d "$emsdk" ] || git clone -q --depth 1 https://github.com/emscripten-core/emsdk.git "$emsdk"
+        [ -d "$emsdk" ] || git clone -q --depth 1 --branch "$EMSDK_VERSION" \
+            https://github.com/emscripten-core/emsdk.git "$emsdk"
+        check_commit "$emsdk" "$EMSDK_COMMIT" "emsdk $EMSDK_VERSION"
         "$emsdk/emsdk" install "$EMSDK_VERSION" > "$BUILD/emsdk.log" 2>&1
         "$emsdk/emsdk" activate "$EMSDK_VERSION" >> "$BUILD/emsdk.log" 2>&1
     fi
     log "Building the WebAssembly runtime"
     EMSDK=$emsdk BOOTSTRAP=$ERL_TOP OUT=$BUILD/wasm OTP_VERSION=$OTP_VERSION \
-        OPENSSL_VERSION=$OPENSSL_VERSION WASM_NODE=0 WORKER=1 WORKER_ROOTFS=none \
+        OTP_COMMIT=$OTP_COMMIT OPENSSL_VERSION=$OPENSSL_VERSION OPENSSL_COMMIT=$OPENSSL_COMMIT \
+        WASM_NODE=0 WORKER=1 WORKER_ROOTFS=none \
         WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD \
         HEX_NIFS="$(hex_nif_packages)$(use_exqlite && echo " exqlite")" \
         "$ROOT/wasm/erts/build.sh"
@@ -687,11 +727,12 @@ step_elixir() {
     [ "$ELIXIR" = 1 ] || return 0
     log "Building Elixir $ELIXIR_VERSION"
     src=$BUILD/elixir-$ELIXIR_VERSION
-    if [ ! -f "$src/Makefile" ]; then
-        curl -fsSL -o "$BUILD/elixir.tar.gz" \
-            "https://github.com/elixir-lang/elixir/archive/refs/tags/v$ELIXIR_VERSION.tar.gz"
-        tar -xzf "$BUILD/elixir.tar.gz" -C "$BUILD"
+    if [ ! -d "$src/.git" ]; then
+        rm -rf "$src"
+        git clone -q --depth 1 --branch "v$ELIXIR_VERSION" \
+            https://github.com/elixir-lang/elixir.git "$src"
     fi
+    check_commit "$src" "$ELIXIR_COMMIT" "Elixir $ELIXIR_VERSION"
     (cd "$src" && PATH="$ERL_TOP/bin:$PATH" make compile)
 }
 
@@ -768,13 +809,13 @@ step_bundle() {
         cp -R "$hexdir/ebin" "$STAGE/lib/$(basename "$hexdir")/"
     fi
 
-    # rebar3 (REBAR3=1, a custom build): the newest release, an escript,
+    # rebar3 (REBAR3=1, a custom build): REBAR3_VERSION, an escript,
     # as bin/rebar3. beam.com runs it as the tool rebar3 (rebar3.com, or
     # "beam.com rebar3"), and gives it to mix (MIX_REBAR3).
     if [ "$REBAR3" = 1 ]; then
         curl -fsSL -o "$STAGE/bin/rebar3" \
-            https://github.com/erlang/rebar3/releases/latest/download/rebar3
-        head -c 2 "$STAGE/bin/rebar3" | grep -q '#!' || { echo "Not an escript: rebar3" >&2; exit 1; }
+            "https://github.com/erlang/rebar3/releases/download/$REBAR3_VERSION/rebar3"
+        check_sha256 "$STAGE/bin/rebar3" "$REBAR3_SHA256" "rebar3 $REBAR3_VERSION"
     fi
 
     # WebAssembly: the wasm application (its NIF is in the emulator).
@@ -827,6 +868,12 @@ step_bundle() {
     mkdir -p "$STAGE/licenses/otp"
     cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT"/licenses/*.txt "$STAGE/licenses/"
     cp "$ERL_TOP"/LICENSES/*.txt "$STAGE/licenses/otp/"
+    # The license texts of the Elixir source (LICENSES/), when Elixir is
+    # in the zip.
+    if [ "$ELIXIR" = 1 ] && [ -d "$BUILD/elixir-$ELIXIR_VERSION/LICENSES" ]; then
+        mkdir -p "$STAGE/licenses/elixir"
+        cp "$BUILD/elixir-$ELIXIR_VERSION"/LICENSES/* "$STAGE/licenses/elixir/"
+    fi
 
     # There is no release: beam.com runs its command line (run, -o,
     # --help, --version). A release that is added to the zip runs instead.

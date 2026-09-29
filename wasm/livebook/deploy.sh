@@ -5,5 +5,5 @@
 # secret.
 set -eu
 B=$(cd "$(dirname "$0")" && pwd)/build
-(cd "$B/iframe" && npx --yes wrangler@4 deploy)
-cd "$B/worker" && npx --yes wrangler@4 deploy -c wrangler.durable.jsonc
+(cd "$B/iframe" && npx --yes wrangler@4.144.0 deploy)
+cd "$B/worker" && npx --yes wrangler@4.144.0 deploy -c wrangler.durable.jsonc

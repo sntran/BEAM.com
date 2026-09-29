@@ -38,6 +38,11 @@ if [ ! -f "$WASM_OPENSSL/lib/libcrypto.a" ]; then
     src=$OUT/openssl-src
     [ -d "$src" ] || git clone -q --depth 1 --branch "openssl-$OPENSSL_VERSION" \
         https://github.com/openssl/openssl.git "$src"
+    # The commit of the tag, when build.sh gives it (a tag can move).
+    if [ -n "${OPENSSL_COMMIT:-}" ] && [ "$(git -C "$src" rev-parse HEAD)" != "$OPENSSL_COMMIT" ]; then
+        echo "The clone of OpenSSL is not at the pinned commit $OPENSSL_COMMIT" >&2
+        exit 1
+    fi
     (cd "$src" && ./Configure $OSSL_TARGET CC="emcc $WASM_ARCH_FLAGS" AR=emar RANLIB=emranlib \
         --prefix="$WASM_OPENSSL" --libdir=lib no-shared no-asm no-dso no-engine \
         no-async no-tests no-apps no-docs no-module no-afalgeng no-uplink \
@@ -47,6 +52,10 @@ fi
 
 if [ ! -d "$OTP" ]; then
     git clone -q --depth 1 --branch "OTP-$OTP_VERSION" https://github.com/erlang/otp.git "$OTP"
+    if [ -n "${OTP_COMMIT:-}" ] && [ "$(git -C "$OTP" rev-parse HEAD)" != "$OTP_COMMIT" ]; then
+        echo "The clone of Erlang/OTP is not at the pinned commit $OTP_COMMIT" >&2
+        exit 1
+    fi
     git -C "$OTP" apply "$HERE/otp.patch"
 fi
 cd "$OTP"
