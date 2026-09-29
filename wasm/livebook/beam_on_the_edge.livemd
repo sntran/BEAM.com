@@ -261,17 +261,22 @@ Kino.listen(1_000, fn _ ->
     |> Enum.sort_by(fn {_, info} -> info[:reductions] end, :desc)
     |> Enum.take(10)
     |> Enum.map(fn {pid, info} ->
-      name = if info[:registered_name] == [], do: "", else: "`#{inspect(info[:registered_name])}`"
-      "| `#{inspect(pid)}` | #{name} | #{info[:reductions]} | #{info[:memory]} | #{info[:message_queue_len]} |"
+      %{
+        process: inspect(pid),
+        name: if(info[:registered_name] == [], do: "", else: inspect(info[:registered_name])),
+        reductions: info[:reductions],
+        memory: info[:memory],
+        queue: info[:message_queue_len]
+      }
     end)
 
-  table =
-    Enum.join(
-      ["| Process | Name | Reductions | Memory (bytes) | Queue |", "|---|---|--:|--:|--:|" | rows],
-      "\n"
+  Kino.Frame.render(
+    frame,
+    Kino.DataTable.new(rows,
+      name: "The busiest processes",
+      keys: [:process, :name, :reductions, :memory, :queue]
     )
-
-  Kino.Frame.render(frame, Kino.Markdown.new(table))
+  )
 end)
 ```
 
