@@ -1,0 +1,139 @@
+# Hosts and storage
+
+## One build, three hosts
+
+`beam.com INPUT -o DIR --target wasm32` writes one directory. The same files run on three hosts:
+
+| Host | Start | How it runs the VM |
+|---|---|---|
+| Cloudflare Workers | `wrangler deploy` | In an isolate, or in a Durable Object (one VM for all the requests). |
+| Deno and Deno Deploy | `deno serve deno.js` | One VM in each isolate. |
+| A web page | `browser.js` | One VM in the tab, as this Livebook. |
+
+The host gives the VM what WebAssembly does not have: TCP sockets, the clock, a place for snapshots, and storage. The runtime tells the program its host:
+
+```elixir
+System.get_env("BEAM_HOST", "native")
+```
+
+## Where the data goes
+
+A program keeps its data where its host keeps data. For Ecto SQLite (the adapter `ecto_sqlite3`, with the driver `exqlite`), the runtime selects the place:
+
+| Host | The SQL runs in | The data stays in |
+|---|---|---|
+| A Cloudflare Durable Object | The SQLite storage of the object | The object |
+| A Cloudflare Worker with D1 | D1 | D1 |
+| Deno Deploy | SQLite in the VM | Deno KV, shared by all the isolates |
+| A web page | SQLite in the VM | The memory of the tab |
+
+The program does not change. `beam.com` puts a module in place of the NIF of `exqlite` in the release. That module sends each call to the host, or to SQLite in the VM. The function `:wasm_host_sqlite.backend/0` tells which one:
+
+```elixir
+if Code.ensure_loaded?(:wasm_host_sqlite) do
+  :wasm_host_sqlite.backend()
+else
+  :not_in_the_webassembly_runtime
+end
+```
+
+## SQLite in the VM
+
+The runtime has SQLite, with the NIF of `exqlite`. An application uses it through Ecto. This notebook has no Ecto, so the next cell calls the NIF (`:wasm_host_exqlite`) directly, with a small module.
+
+Caution: `:wasm_host_exqlite` is a part of the runtime, not an API for your program. A program uses `exqlite` or `ecto_sqlite3`, and beam.com gives them this NIF.
+
+```elixir
+defmodule Db do
+  @nif :wasm_host_exqlite
+  # SQLITE_OPEN_READWRITE (0x2) and SQLITE_OPEN_CREATE (0x4)
+  @read_write_create 0x6
+
+  def open(path \\ ":memory:") do
+    {:ok, db} = @nif.open(String.to_charlist(path), @read_write_create)
+    db
+  end
+
+  def execute(db, sql), do: :ok = @nif.execute(db, sql)
+
+  @doc "The rows of a query, with its parameters (integers, floats and text)."
+  def query(db, sql, params \\ []) do
+    {:ok, stmt} = @nif.prepare(db, sql)
+
+    params
+    |> Enum.with_index(1)
+    |> Enum.each(fn
+      {v, i} when is_integer(v) -> 0 = @nif.bind_integer(stmt, i, v)
+      {v, i} when is_float(v) -> 0 = @nif.bind_float(stmt, i, v)
+      {v, i} when is_binary(v) -> 0 = @nif.bind_text(stmt, i, v)
+    end)
+
+    {:ok, columns} = @nif.columns(db, stmt)
+    rows = fetch(db, stmt, [])
+    :ok = @nif.release(db, stmt)
+    Enum.map(rows, fn row -> Enum.zip(columns, row) |> Map.new() end)
+  end
+
+  defp fetch(db, stmt, acc) do
+    case @nif.multi_step(db, stmt, 100) do
+      {:rows, rows} -> fetch(db, stmt, acc ++ rows)
+      {:done, rows} -> acc ++ rows
+    end
+  end
+end
+
+db = Db.open()
+Db.query(db, "select sqlite_version() as version")
+```
+
+The database is in the memory of the VM. This cell makes a table with 10,000 rows in one transaction, and queries it:
+
+```elixir
+Db.execute(db, "create table if not exists events (id integer primary key, kind text, value real)")
+Db.execute(db, "delete from events")
+
+{microseconds, :ok} =
+  :timer.tc(fn ->
+    Db.execute(db, "begin")
+
+    for i <- 1..10_000 do
+      Db.query(db, "insert into events (kind, value) values (?1, ?2)", [
+        Enum.at(["click", "view", "buy"], rem(i, 3)),
+        i / 10
+      ])
+    end
+
+    Db.execute(db, "commit")
+  end)
+
+summary =
+  Db.query(db, """
+  select kind, count(*) as n, round(avg(value), 1) as average
+  from events group by kind order by n desc
+  """)
+
+%{insert_ms: div(microseconds, 1000), summary: summary}
+```
+
+```elixir
+Kino.DataTable.new(Db.query(db, "select * from events order by value desc limit 50"), name: "The last events")
+```
+
+## SQLite on Deno KV
+
+On Deno Deploy, each isolate has its own VM. A database in one VM is not in the others. So the host keeps the pages of the database in Deno KV, which all the isolates share, and SQLite runs in each VM:
+
+* The host keeps each database as blocks of 4 KiB. Each block has a version, so a read sees the database as it was at its start.
+* SQLite writes a transaction as one batch. The host commits the batch in one atomic operation of KV. The operation checks that nobody changed the database after the read.
+* A write takes a lock in KV, and its commit removes the lock. When another isolate has the lock, SQLite waits and tries again.
+* A write transaction is three operations of KV: the read of the version, the lock, and the commit.
+
+On Deno Deploy, a write of the Phoenix demo of beam.com takes about 25 ms more than in memory. 100 clicks from four browsers at the same time all go into the counter.
+
+## Files and other storage
+
+* The files of the VM are in memory (see "Inside the WebAssembly VM").
+* A Cloudflare Durable Object can keep the files of some directories in its SQLite storage (`BEAM_PERSIST`). This is how the Livebook of beam.com on Cloudflare keeps your notebooks.
+* In this page, nothing stays after you close the tab. To keep a notebook, download it: the menu of the notebook, then "Export".
+
+Read more in the documentation: [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html).

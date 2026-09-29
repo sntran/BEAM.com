@@ -1,0 +1,116 @@
+# Building programs with beam.com
+
+## About this notebook
+
+`beam.com` runs a program, and makes an executable of it. The command line of beam.com does not run in this page, so the commands here are text. The cells look at the result of such a build: the release of Livebook that runs this notebook.
+
+## Get beam.com
+
+```sh
+curl -fLO https://github.com/sntran/BEAM.com/releases/latest/download/beam.com
+sh ./beam.com --version
+```
+
+The file runs on Linux, macOS, Windows, FreeBSD, NetBSD and OpenBSD, on x86_64 and aarch64. On Windows, save it as `beam.exe`. Nothing is installed, and nothing is extracted: the OTP applications and Elixir are in the zip of the file.
+
+## Run a program, and make an executable
+
+One command line runs a program, or makes an executable of it with `-o`:
+
+```sh
+beam.com hashsum.erl -- abc            # run hashsum.erl with the argument abc
+beam.com hashsum.erl -o hashsum.com    # make hashsum.com
+./hashsum.com abc                      # the same program, on each system
+```
+
+The input can be:
+
+* one `.erl` file with `main/1`, as for `escript`;
+* one `.ex` or `.exs` file in which one module has `main/1`;
+* an application directory, or a rebar3 project, with Hex packages;
+* a Mix project;
+* a release directory (from `mix release` or rebar3), for `--target wasm32`.
+
+The builder compiles the code, selects the OTP applications that the program needs, makes an OTP release, and writes a copy of beam.com with the release in its zip. The new file has no compiler: it has only what the program needs.
+
+## The same compiler, in this notebook
+
+The compiler of Elixir and Erlang is in this release too. This cell compiles a module with a `main/1`, as a file for `beam.com` would have, and calls it:
+
+```elixir
+source = """
+defmodule Hashsum do
+  def main(args) do
+    for arg <- args do
+      hash = :crypto.hash(:sha256, arg) |> Base.encode16(case: :lower)
+      "\#{hash}  \#{arg}"
+    end
+  end
+end
+"""
+
+[{module, _bytecode}] = Code.compile_string(source)
+module.main(["abc", "beam.com"])
+```
+
+With beam.com on a computer, the same module in `hashsum.ex` runs with `beam.com hashsum.ex -- abc beam.com`.
+
+## Elixir and its tools
+
+A copy or a link of the file with the name of a tool is that tool:
+
+```sh
+ln -s beam.com mix.com && ln -s beam.com iex.com
+./mix.com local.hex --force && ./mix.com archive.install hex phx_new --force
+./mix.com phx.new hello --database sqlite3
+cd hello && ../mix.com deps.get && ../mix.com ecto.migrate
+../iex.com -S mix phx.server
+```
+
+`beam.com` has the NIFs of `exqlite`, `bcrypt_elixir` and `argon2_elixir` in it. So a Phoenix app with SQLite and `phx.gen.auth` runs with no C compiler.
+
+## For the edge: --target wasm32
+
+```sh
+beam.com examples/worker -o worker --target wasm32
+cd worker
+npx wrangler deploy          # Cloudflare Workers
+deno serve -A deno.js        # or Deno
+```
+
+The output directory has the WebAssembly runtime (`beam.wasm`), the release (`release.bin`), and the host of each platform: `worker.js` for Workers, `deno.js` for Deno, and `browser.js` for a web page.
+
+This Livebook is such an output. Its release is at `/app` of the VM:
+
+```elixir
+releases = File.ls!("/app/releases") |> Enum.reject(&String.ends_with?(&1, ".data"))
+
+apps =
+  Application.loaded_applications()
+  |> Enum.map(fn {name, _description, vsn} -> %{application: name, version: to_string(vsn)} end)
+  |> Enum.sort_by(& &1.application)
+
+Kino.Layout.tabs(
+  "Release": %{releases: releases, applications: length(apps), boot: :init.get_argument(:boot)},
+  "Applications": Kino.DataTable.new(apps)
+)
+```
+
+The release has Livebook, Phoenix, Kino and their dependencies, and `wasm_host`: the application of beam.com that joins the VM to its host (the sockets of `wasm_tcp`, and the SQL of Ecto SQLite).
+
+## A release from a project
+
+For a Phoenix app, make the release with Mix, then give it to beam.com:
+
+```sh
+MIX_ENV=prod mix.com release
+beam.com _build/prod/rel/my_app -o my_app_edge --target wasm32
+```
+
+The Livebook of this page comes from the same steps: `wasm/livebook/setup.sh` of beam.com gets Livebook from Hex, makes its release with `mix.com`, and runs `beam.com --target wasm32`. Then `wasm/livebook/page.sh` makes the files of this page.
+
+## Read more
+
+* [Run and build programs](https://sntran.github.io/BEAM.com/programs.html)
+* [Elixir, Mix and Phoenix](https://sntran.github.io/BEAM.com/elixir.html)
+* [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html)

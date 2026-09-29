@@ -70,7 +70,7 @@ jobs:
           path: |
             livebook-build/livebook/_build/prod/rel/livebook
             livebook-build/cacert.pem
-          key: livebook-${{ steps.edge.outputs.versions }}-${{ hashFiles('wasm/livebook/setup.sh', 'wasm/livebook/livebook.patch', 'wasm/livebook/beam_on_the_edge.livemd') }}
+          key: livebook-${{ steps.edge.outputs.versions }}-${{ hashFiles('wasm/livebook/setup.sh', 'wasm/livebook/livebook.patch', 'docs/notebooks/**') }}
 
       - name: Build the release of Livebook
         if: steps.livebook.outputs.cache-hit != 'true'

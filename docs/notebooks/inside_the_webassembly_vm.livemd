@@ -1,0 +1,142 @@
+# Inside the WebAssembly VM
+
+## About this notebook
+
+The WebAssembly runtime of beam.com is the Erlang runtime system (ERTS) of the same OTP as the native `beam.com`, compiled with Emscripten. This notebook looks at the parts that differ from a native VM: the threads, the scheduler, the memory, the clock, the files and the snapshots. Each cell asks the VM that runs this Livebook.
+
+## The threads
+
+ERTS needs threads: the schedulers, the dirty schedulers and some helper threads. A Cloudflare Worker and a web page give one thread, and no shared memory. So the runtime has green threads on JSPI (JavaScript Promise Integration, a standard WebAssembly feature):
+
+* Each thread of ERTS has its own stack in the engine. All of them run on one thread of the host, in one linear memory.
+* A thread that must wait (a lock, a condition, a sleep, `poll()`) calls a JSPI import. The host runs the other threads until the wait ends.
+* So threads switch only when one of them waits.
+
+```elixir
+%{
+  host: System.get_env("BEAM_HOST", "native"),
+  os: :os.type(),
+  schedulers: :erlang.system_info(:schedulers),
+  dirty_cpu_schedulers: :erlang.system_info(:dirty_cpu_schedulers),
+  dirty_io_schedulers: :erlang.system_info(:dirty_io_schedulers),
+  logical_processors: :erlang.system_info(:logical_processors),
+  emulator: :erlang.system_info(:emu_flavor)
+}
+```
+
+The VM has one scheduler, because there is one thread of the host. The emulator is `:emu`, the interpreter of BEAM code: WebAssembly has no JIT of Erlang code.
+
+## One scheduler, and preemption
+
+One scheduler does not mean one process at a time in the program's view. The scheduler runs each process for a slice of work (reductions), and then runs the next one. A process that never stops does not stop the others.
+
+This cell starts three processes that never stop. Then it measures how late a timer of 20 ms comes, five times.
+
+```elixir
+late = fn ->
+  t = System.monotonic_time(:millisecond)
+  Process.send_after(self(), :tick, 20)
+
+  receive do
+    :tick -> System.monotonic_time(:millisecond) - t - 20
+  end
+end
+
+busy =
+  for _ <- 1..3 do
+    spawn(fn ->
+      Stream.repeatedly(fn -> :erlang.phash2(:rand.uniform()) end) |> Stream.run()
+    end)
+  end
+
+delays = for _ <- 1..5, do: late.()
+Enum.each(busy, &Process.exit(&1, :kill))
+"The timer came #{Enum.join(delays, ", ")} ms late"
+```
+
+Caution: preemption applies to Erlang code. A NIF or a BIF that works for a long time without a wait stops all the threads, because the threads switch only at a wait. Most long BIFs of OTP (for example `:crypto.hash/2` on a large binary) do their work in parts, so they do not stop the others.
+
+## Memory
+
+The runtime is `wasm32`: a word is 4 bytes, and each pointer and small integer takes half the memory of a 64-bit VM.
+
+```elixir
+pid =
+  spawn(fn ->
+    receive do
+      _ -> :ok
+    end
+  end)
+
+{:memory, bytes} = Process.info(pid, :memory)
+send(pid, :stop)
+
+memory =
+  try do
+    :erlang.memory() |> Map.new(fn {k, v} -> {k, "#{div(v, 1024)} KB"} end)
+  rescue
+    # A VM with "-Mea min" (all memory from malloc) has no :erlang.memory/0.
+    _ -> :not_available
+  end
+
+%{word_size: :erlang.system_info(:wordsize), idle_process_bytes: bytes, vm: memory}
+```
+
+A Cloudflare Worker has 128 MB for the isolate, with the runtime and the VM. The Workers configurations of beam.com can give the VM `-Mea min`: the VM then gets all its memory from `malloc`. It uses less memory, but `:erlang.memory/0` does not work. A web page has more memory.
+
+## The files
+
+The runtime has the file system of Emscripten, in memory. The release is at `/app`. It comes from `release.bin`, which the host loads before the VM starts.
+
+```elixir
+%{
+  root: File.ls!("/"),
+  release: File.ls!("/app"),
+  applications: "/app/lib" |> File.ls!() |> length(),
+  code_root: to_string(:code.root_dir())
+}
+```
+
+A program can write files, for example in `/tmp`. They stay in memory, so they go when the VM stops. On Cloudflare, a Durable Object can keep the files of some directories in its storage (the variable `BEAM_PERSIST`).
+
+```elixir
+path = Path.join(System.tmp_dir!(), "hello.txt")
+File.write!(path, "written at #{DateTime.utc_now()}\n")
+File.read!(path)
+```
+
+## The clock
+
+The VM reads the clock of the host. The hosts differ:
+
+* In a web page and in Deno, the clock moves as on a computer.
+* In a Cloudflare Worker, the clock moves only at I/O. Code that does no I/O measures 0 ms.
+
+```elixir
+{microseconds, _} = :timer.tc(fn -> Enum.reduce(1..300_000, 0, &+/2) end)
+
+%{
+  host: System.get_env("BEAM_HOST", "native"),
+  measured_ms: div(microseconds, 1000),
+  time_correction: :erlang.system_info(:time_correction)
+}
+```
+
+## Snapshots
+
+A boot of Livebook takes about 1 second. So the host keeps a snapshot: a copy of the memory of the booted VM, with its files. The next start copies the snapshot back, and the VM continues from that point. In this page, the snapshot goes to the Cache API of the site, and a next visit starts in about 0.3 seconds. On Cloudflare, the snapshot goes to the Cache API of the Worker (or to R2), so a new isolate does not boot.
+
+A snapshot has some rules:
+
+* A JSPI stack that waits cannot be copied. So each thread of ERTS returns to the host when it has no work, and the host copies the memory only when no stack is left.
+* The VM runs with no time correction (`time_correction` above is `false`). After a restore, its monotonic time jumps forward to the new time, and the timers that are due fire.
+* The key of a snapshot has the runtime, the release and the environment. A new deploy, or a new value of a variable, gives a new snapshot.
+
+## How the runtime was made
+
+The runtime is built from the source of OTP by `wasm/erts/build.sh` of beam.com, with the changes of `wasm/erts/otp.patch`. For example, the loop of the interpreter returns to the host at the end of each time slice. The engine (V8) then uses its optimized code for that loop, and Erlang code runs about 4 times faster.
+
+Read more in the documentation:
+
+* [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html), with "How it works".
+* [The record of the WebAssembly work](https://sntran.github.io/BEAM.com/wasm-log.html), with all the measurements.
