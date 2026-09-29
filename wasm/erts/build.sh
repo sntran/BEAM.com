@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build ERTS (the interpreter) for WebAssembly with Emscripten, with the
-# threads of ERTS as green threads on JSPI (see docs/WASM.md, phase B):
+# threads of ERTS as green threads on JSPI (see docs/WORKERS.md, "How it works"):
 #
 #   EMSDK=/path/to/emsdk BOOTSTRAP=/path/to/otp wasm/erts/build.sh
 #

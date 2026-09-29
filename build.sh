@@ -794,6 +794,13 @@ step_bundle() {
         [ ! -f "$runtime/nifs" ] || cp "$runtime/nifs" "$wh/priv/runtime/"
     fi
 
+    # The license of beam.com, and the notices and the license texts of
+    # the software in the file (NOTICE). The programs that beam.com makes
+    # keep them too (beam_com_build:keep/2 keeps the top-level entries).
+    mkdir -p "$STAGE/licenses/otp"
+    cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT"/licenses/*.txt "$STAGE/licenses/"
+    cp "$ERL_TOP"/LICENSES/*.txt "$STAGE/licenses/otp/"
+
     # There is no release: beam.com runs its command line (run, -o,
     # --help, --version). A release that is added to the zip runs instead.
 
@@ -816,7 +823,7 @@ step_bundle() {
     # its start time; see docs/BENCHMARKS.md). beam.com INPUT -o OUTPUT keeps the
     # entries as they are, so the programs get the same.
     (cd "$STAGE" &&
-     zip -q -r -9 "$OUT" bin lib -x 'lib/kernel-*/ebin/*' -x 'lib/stdlib-*/ebin/*' &&
+     zip -q -r -9 "$OUT" bin lib licenses -x 'lib/kernel-*/ebin/*' -x 'lib/stdlib-*/ebin/*' &&
      zip -q -r -0 "$OUT" lib/kernel-*/ebin lib/stdlib-*/ebin)
     ls -l "$OUT"
 }
@@ -851,13 +858,17 @@ step_test() {
     # The program keeps the code of kernel and stdlib stored (step_bundle).
     unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/kernel-[^/]*/ebin/code.beam$'
     unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/stdlib-[^/]*/ebin/lists.beam$'
+    # beam.com and the program keep the license texts (step_bundle).
+    unzip -l "$OUT" | grep -q ' licenses/NOTICE$'
+    unzip -l "$OUT" | grep -q ' licenses/otp/MIT.txt$'
+    unzip -l "$BUILD/hashsum.com" | grep -q ' licenses/LICENSE$'
     if [ "$WASM" = 1 ]; then
-        "$OUT" "$ROOT/examples/wasm_check.erl" -o "$BUILD/wasm_check.com"
+        "$OUT" "$ROOT/tests/programs/wasm_check.erl" -o "$BUILD/wasm_check.com"
         "$BUILD/wasm_check.com" | tee "$BUILD/test.out"
         grep -q '^wasm: wasi exit code 7' "$BUILD/test.out"
     fi
     if [ "$SQLITE" = 1 ]; then
-        "$OUT" "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
+        "$OUT" "$ROOT/tests/programs/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
         "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
         grep -q '^sqlite: json \["alpha","beta","gamma"\]' "$BUILD/test.out"
     fi

@@ -2,7 +2,7 @@
 %% calc_lexer.xrl (leex), calc_parser.yrl (yecc) and asn1/Greeting.asn1
 %% (the ASN.1 compiler). a build (-o) makes the .erl files itself.
 %%
-%%   beam.com examples/calc -o calc.com
+%%   beam.com tests/programs/calc -o calc.com
 %%   ./calc.com
 -module(calc).
 -export([main/0, eval/1]).

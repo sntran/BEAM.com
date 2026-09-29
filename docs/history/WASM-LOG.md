@@ -1,9 +1,18 @@
-# ERTS on WebAssembly: a spike
+# ERTS on WebAssembly: the record
 
-The goal: `beam.com build --target wasm32` makes one WebAssembly file of
-an application with **all of OTP**, which runs where there are no threads:
-Cloudflare Workers, Deno Deploy, the browser. This file records the
-spike: what was tried, what works, and what blocks.
+This file records how the WebAssembly runtime of `--target wasm32` was
+made: what was tried, what works, and what blocks, with the measurements
+of each step. It is a record, in the order of the work. For the use of
+`--target wasm32` today, see [`../WORKERS.md`](../WORKERS.md).
+
+The goal was one WebAssembly runtime for an application with **all of
+OTP**, which runs where there are no threads: Cloudflare Workers, Deno
+Deploy, the browser.
+
+Some directories that this file names are not in the repository now:
+`wasm/jspi`, `wasm/blink`, `wasm/browser` and `wasm/phoenix` (the spikes),
+and `examples/wasm_check.erl` (now in `tests/programs/`). The commit
+`f2333d9` has them. `examples/phoenix_demo` replaces `wasm/phoenix`.
 
 ## Why not the other ways
 
@@ -334,8 +343,8 @@ A second search for speed, with the Node.js variant of `wasm/erts/build.sh`
 (emsdk 6.0.10, OTP 29.1.1) in Node.js 26.10 (V8 14.6), and the Worker
 variant in the local workerd of wrangler (V8 15.4). The benchmark:
 
-- `game`: one tick of a world of level 6 of a Phoenix game (Humans Must
-  Die): 13 systems over 40,962 cells, float columns as binaries.
+- `game`: one tick of the world of a Phoenix game: 13 systems over 40,962
+  cells, float columns as binaries.
 - `fib`, `floats`, `sort`, `maps`, `binary`, `etf` (`term_to_binary` and
   back), `messages` (50,000 round trips): small workloads.
 
@@ -383,14 +392,14 @@ What was found:
   change over time. Node.js with `--wasm-enforce-bounds-checks` gives the
   same times, so workerd checks the bounds of each memory access in code,
   and does not use the trap handler of V8 with guard pages (UPSTREAM.md,
-  workerd W7). The host decides this; the build cannot change it.
+  workerd CF7). The host decides this; the build cannot change it.
 - Profile-guided optimization does not work with emsdk 6.0.10: the
   profile runtime and the instrumentation have different versions
   (UPSTREAM.md, Emscripten EM5).
 
 So the speed of an application in a Worker now comes from its own code:
-fewer allocations and fewer reads of boxed floats. See the float columns
-of Humans Must Die, which went from 290 ms to 160 ms for one tick in
+fewer allocations and fewer reads of boxed floats. In the game above,
+float columns as binaries made one tick go from 290 ms to 160 ms in
 `wrangler dev`.
 
 ### wasm64
@@ -1184,14 +1193,14 @@ the object, 16.2 MB release; VM memory 58 MB):
   with no requests. The clock of a Worker moves only by the delay of a
   timer, not at `setTimeout(0)`, and a wait of less than 1 ms became a
   timer of 0 ms: a thread waited for the same time again and again
-  (docs/UPSTREAM.md W3). Now a timer waits 1 ms at least: 11 to 17 ms
+  (docs/UPSTREAM.md CF3). Now a timer waits 1 ms at least: 11 to 17 ms
   of CPU in each 5 s with no requests. Then Cloudflare evicted the idle
   object after about 15 s, and the next request restored a new VM.
 - **argon2 with the default costs** (64 MiB) went over the 128 MB of
   the isolate: "Durable Object's isolate exceeded its memory limit and
   was reset". A later try passed (1,513 ms of CPU), but the object was
   reset again soon after: the WebAssembly memory does not shrink
-  (docs/UPSTREAM.md W5). Use lower argon2 costs, or bcrypt.
+  (docs/UPSTREAM.md CF5). Use lower argon2 costs, or bcrypt.
 - The tail event of a Durable Object comes late, and its wall time (and
   CPU time) runs until the next event of the object. So it is not the
   time of the answer: use the front Worker for that.
@@ -1211,13 +1220,13 @@ document how it applies it); do not count on this.
   the I/O and timers, not of the CPU.
 - **The global scope** takes top-level `await`, `WebAssembly.instantiate()`
   and a 64 MB allocation, but no random values, timers or I/O
-  (docs/UPSTREAM.md W4). `env` comes from `cloudflare:workers` there.
+  (docs/UPSTREAM.md CF4). `env` comes from `cloudflare:workers` there.
 - **Sizes:** the Free plan took Workers of 11.5 MB with gzip (33.4 MB
   without compression).
 - **`PHX_HOST`:** the host of a Worker is `NAME.SUBDOMAIN.workers.dev`
   (the subdomain of the account), not `NAME.workers.dev`. The build now
-  writes `NAME.SUBDOMAIN.workers.dev`, to change. (Phoenix was not
-  deployed.)
+  writes `NAME.SUBDOMAIN.workers.dev`: change `SUBDOMAIN` to the
+  subdomain of the account. (Phoenix was not deployed at that time.)
 - **The Worker with the release was public:** anyone could get
   `release.bin` from `NAME-release.SUBDOMAIN.workers.dev`. Now it has
   `"workers_dev": false`: the runtime Worker gets it through its service
@@ -1250,8 +1259,8 @@ database in the region ENAM):
   key also has the host and the version of the deploy (`BEAM_VERSION`):
   each deploy boots once, and runs its migrations on its own database.
 
-**Not tested:** Phoenix and LiveView, R2 (not enabled on the account),
-and a paid plan.
+**Not tested in this deploy:** Phoenix and LiveView (see the next
+section), R2 (not enabled on the account), and a paid plan.
 
 ### Tenants, a boot point, a spare VM, a smaller release (2026-09-28)
 
@@ -1270,7 +1279,7 @@ client. `wasm/phoenix/tenants/setup.sh` makes a LiveView app with a
 counter that all the visitors of a tenant share (`Phoenix.PubSub` in the
 VM of the tenant).
 
-- Deployed at `https://live.fifo.workers.dev` (`/.tenant/NAME`).
+- Deployed to a workers.dev subdomain (`/.tenant/NAME`).
 - A click of the counter (an event over the LiveView WebSocket, to its
   reply): 42 to 67 ms from a client in the same region. A second visitor
   of the same tenant got the new count; a visitor of another tenant did
@@ -1331,7 +1340,7 @@ so 8.4 MB less in the memory of each isolate.
 
 **Found on the way:**
 
-- **A lost `MessagePort`** (fixed, docs/UPSTREAM.md W6): the boot of the
+- **A lost `MessagePort`** (fixed, docs/UPSTREAM.md CF6): the boot of the
   Phoenix release in a Durable Object stopped before `init` in most
   tries. `jspiLater` kept only one port of its `MessageChannel`, and the
   runtime collected the other one with its handler.

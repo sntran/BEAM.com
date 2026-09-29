@@ -1,15 +1,6 @@
-# PhoenixDemo
+# A Phoenix demo on Cloudflare Workers
 
-To start your Phoenix server:
-
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
-
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
-
-Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
-
-## The demo on Cloudflare Workers
+Live: <https://phoenix.fifo.workers.dev>
 
 This is a standard Phoenix LiveView app from `mix phx.new --database sqlite3`
 and `mix phx.gen.auth Accounts User users --live`. beam.com runs it on
@@ -61,10 +52,9 @@ LiveView pages fail there: the NIF of `lazy_html` (a test dependency) needs
 `dlopen()`, which that VM does not have. Run the tests with a standard
 Erlang/OTP and Elixir.
 
-## Learn more
+Run it on this computer, with the tools of beam.com (see docs/ELIXIR.md):
 
-* Official website: https://www.phoenixframework.org/
-* Guides: https://phoenix.hexdocs.pm/overview.html
-* Docs: https://phoenix.hexdocs.pm
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+```sh
+mix.com setup
+iex.com -S mix phx.server        # http://localhost:4000
+```

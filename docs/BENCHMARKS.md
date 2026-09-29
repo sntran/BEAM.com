@@ -1,8 +1,8 @@
 # Benchmarks
 
-The benchmarks show what a feature costs and what it gives, so that we
-and the users of BEAM.com can decide if it is worth it: file size, start
-time, and the speed of typical work.
+The benchmarks show what a feature costs and what it gives: file size,
+start time, and the speed of typical work. They help to decide if a
+feature is worth its cost.
 
 ## How to run them
 
@@ -12,8 +12,8 @@ tests/bench/run.ps1 -Dir DIR    # Windows
 ```
 
 The script builds [`tests/bench/bench.erl`](../tests/bench/bench.erl)
-with each variant (`beam-emu.com INPUT -o OUTPUT`, `beam.com INPUT -o OUTPUT`), runs it, and
-prints one Markdown table. CI runs it on each platform after the tests,
+with each variant (`beam-emu.com bench.erl -o OUTPUT` and
+`beam.com bench.erl -o OUTPUT`), runs it, and prints one Markdown table. CI runs it on each platform after the tests,
 and puts the table in the summary of the run.
 
 | Row | What it measures |
@@ -137,8 +137,8 @@ median of 11 runs of `beam.com --version`, two runs:
 | file size (MB) | 27.2 | 29.1 | +1.9 MB |
 | start: `version` (ms) | 193-202 | 143-146 | about −50 ms (−27%) |
 
-The programs that `beam.com INPUT -o OUTPUT` makes keep these entries stored, so
-they start faster too. A zip with no compression at all is about 21 MB
+The programs that `beam.com INPUT -o OUTPUT` makes keep these entries
+stored, so they start faster too. A zip with no compression at all is about 21 MB
 larger, so only these two applications are stored.
 
 ## What each feature costs
@@ -162,3 +162,9 @@ one-file program that prints one line, in Erlang (27.2 MB, 182 ms) and
 in Elixir (29.1 MB, 223 ms), the median of 7 starts. Before the code of
 the programs was stripped, the same programs were 34.9 MB (188 ms) and
 39.0 MB (225 ms).
+
+## The WebAssembly runtime
+
+For the speed and the cold start of `--target wasm32`, see "Measured" in
+[`WORKERS.md`](WORKERS.md), and the full tables in
+[`history/WASM-LOG.md`](history/WASM-LOG.md).

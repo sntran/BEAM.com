@@ -1,5 +1,5 @@
 // A snapshot of the booted VM for the Workers of beam.com --target wasm32
-// (docs/WASM.md, "A snapshot of the booted VM"). It boots the release of DIR
+// (docs/WORKERS.md, "Snapshots"). It boots the release of DIR
 // in Node.js (26, for JSPI) as worker.js does, optionally sends requests to
 // warm it up, asks all the threads of ERTS to return (erts_wasm_hibernate),
 // and writes DIR/release/snapshot.bin. worker.js restores it in place of a

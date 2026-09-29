@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        CI builds beam.com with these choices, puts the file on this issue (a download of the run, for 90 days, with a GitHub account), and closes the issue. The build takes about 30 to 40 minutes.
+        CI builds beam.com with these choices, puts the file on this issue (a download of the run, for 90 days, with a GitHub account), and closes the issue. The build takes about 30 to 50 minutes. The file is built from the main branch, with the WebAssembly runtime of --target wasm32.
 
         The default beam.com has kernel, stdlib, sasl, compiler, parsetools, crypto, asn1, public_key, ssl, inets, xmerl and runtime_tools, and Elixir with its tools.
   - type: checkboxes

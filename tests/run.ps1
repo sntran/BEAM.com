@@ -128,7 +128,8 @@ foreach ($app in $apps) {
     }
 }
 
-# beam.com INPUT -o OUTPUT, on this system: the examples of the repository.
+# beam.com INPUT -o OUTPUT, on this system: an example and the check
+# programs of the repository.
 if (Test-Path "examples") {
     Check "beam.com" 'wrote .*hashsum.b.com' @("examples/hashsum.erl", "-o", "$Dir/hashsum.b.com")
     if (Test-Path (Join-Path $Dir "hashsum.b.com")) {
@@ -136,7 +137,8 @@ if (Test-Path "examples") {
     }
     # calc is only for beam.com INPUT -o OUTPUT (it has .xrl, .yrl and ASN.1 files).
     foreach ($app in ($apps + @("calc"))) {
-        Check "beam.com" "wrote .*$app.b.com" @("examples/$app", "-o", "$Dir/$app.b.com")
+        $src = if ($app -eq "greeter") { "examples/$app" } else { "tests/programs/$app" }
+        Check "beam.com" "wrote .*$app.b.com" @($src, "-o", "$Dir/$app.b.com")
         if (Test-Path (Join-Path $Dir "$app.b.com")) {
             Check "$app.b.com" $patterns[$app] @()
         }
@@ -254,7 +256,7 @@ if (Test-Path "examples") {
 $wasm = 'wasm: add\(40, 2\) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@wasm: wasi exit code 7'
 $go = 'go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*wasm_check.b.com' @("examples/wasm_check.erl", "-o", "$Dir/wasm_check.b.com")
+    Check "beam.com" 'wrote .*wasm_check.b.com' @("tests/programs/wasm_check.erl", "-o", "$Dir/wasm_check.b.com")
     if (Test-Path (Join-Path $Dir "wasm_check.b.com")) {
         Check "wasm_check.b.com" $wasm @()
         if (Test-Path (Join-Path $Dir "hello_go.wasm")) {
@@ -294,7 +296,7 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
             Check "script_check.emu.com" 'halting 3' @("halt", "3") 3
             Check "script_check.emu.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
         }
-        Check "beam-emu.com" 'wrote .*crypto_check.emu.com' @("examples/crypto_check", "-o", "$Dir/crypto_check.emu.com")
+        Check "beam-emu.com" 'wrote .*crypto_check.emu.com' @("tests/programs/crypto_check", "-o", "$Dir/crypto_check.emu.com")
         if (Test-Path (Join-Path $Dir "crypto_check.emu.com")) {
             Check "crypto_check.emu.com" $patterns["crypto_check"] @()
         }
@@ -304,7 +306,7 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
 # SQLite (in beam.com).
 $sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if (Test-Path "examples") {
-    Check "beam.com" 'wrote .*sqlite_check.b.com' @("examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
+    Check "beam.com" 'wrote .*sqlite_check.b.com' @("tests/programs/sqlite_check.erl", "-o", "$Dir/sqlite_check.b.com")
     if (Test-Path (Join-Path $Dir "sqlite_check.b.com")) {
         Check "sqlite_check.b.com" ($sqlite + ':memory:') @()
         Remove-Item (Join-Path $Dir "test.db") -ErrorAction SilentlyContinue
@@ -314,7 +316,7 @@ if (Test-Path "examples") {
         Check "sqlite_check.b.com" ($sqlite + [regex]::Escape($db)) @($db)
     }
     if (Test-Path (Join-Path $Dir "beam-emu.com")) {
-        Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("examples/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")
+        Check "beam-emu.com" 'wrote .*sqlite_check.emu.com' @("tests/programs/sqlite_check.erl", "-o", "$Dir/sqlite_check.emu.com")
         if (Test-Path (Join-Path $Dir "sqlite_check.emu.com")) {
             Check "sqlite_check.emu.com" ($sqlite + ':memory:') @()
         }

@@ -9,7 +9,7 @@
 %% transactions: BEGIN, COMMIT, ROLLBACK and the savepoints only change
 %% transaction_status/1, because neither backend lets SQL control a
 %% transaction: each statement commits alone, and a rollback does not undo
-%% (see docs/WASM.md). A PRAGMA that sets a value does nothing; a PRAGMA
+%% (see docs/WORKERS.md). A PRAGMA that sets a value does nothing; a PRAGMA
 %% with no value gives the value that was set.
 -module(wasm_host_sqlite).
 

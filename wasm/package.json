@@ -1,7 +1,7 @@
 {
   "name": "beam-wasm",
   "private": true,
-  "description": "Node.js parts of the WebAssembly spike: the host (HTTP and WebSockets through wasm_host) and the browser tests",
+  "description": "Node.js parts of the WebAssembly runtime: the Node.js host (wasm/erts), tcp-proxy.mjs of the Workers, and the snapshot tool",
   "type": "module",
   "dependencies": { "ws": "^8.22.0" },
   "devDependencies": { "playwright-core": "^1.63.0" }

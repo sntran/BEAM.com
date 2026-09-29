@@ -55,8 +55,9 @@ const vars = {
   DATABASE_PATH: "/data/phoenix_demo.db",
   // No allocators of ERTS: a smaller VM.
   BEAM_ERL_FLAGS: "-Mea min",
-  // beam.com sets PHX_SERVER only when it finds the app phoenix, and it
-  // does not find phoenix-1.9.0-dev (a version with "-"). So set it here.
+  // beam.com sets PHX_SERVER for a release with phoenix. A beam.com
+  // older than the fix of split_dir (sntran/BEAM.com#43) does not find
+  // phoenix-1.9.0-dev (a version with "-"), so set it here too.
   PHX_SERVER: "true",
 };
 let text = fs.readFileSync(p, "utf8")

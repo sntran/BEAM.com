@@ -197,10 +197,16 @@ worker_files_test() ->
     [ok = file:write_file(filename:join(Priv, F), F)
      || F <- ["worker.js", "durable.js", "global.js", "durable-global.js", "tcp-proxy.mjs", "app.js"]],
     [ok = file:write_file(filename:join(Runtime, F), F) || F <- ["beam.mjs", "beam.wasm"]],
+    ok = filelib:ensure_path(filename:join([Root, "licenses", "otp"])),
+    [ok = file:write_file(filename:join([Root, "licenses" | F]), "text")
+     || F <- [["NOTICE"], ["otp", "MIT.txt"]]],
     Files = fun(Apps) -> [{F, iolist_to_binary(D)}
                           || {F, D} <- beam_com_wasm:worker_files(#{name => "app", apps => Apps},
                                                                   Runtime, Root)] end,
     Plain = Files([]),
+    %% The license texts of the zip, with the texts of OTP.
+    ?assertEqual(<<"text">>, proplists:get_value("licenses/NOTICE", Plain)),
+    ?assertEqual(<<"text">>, proplists:get_value("licenses/otp/MIT.txt", Plain)),
     Has = fun(Fs, Name, Text) -> binary:match(proplists:get_value(Name, Fs), Text) =/= nomatch end,
     ?assertEqual(<<"global.js">>, proplists:get_value("global.js", Plain)),
     ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"main\": \"global.js\"">>)),
@@ -211,14 +217,14 @@ worker_files_test() ->
     ?assert(Has(Plain, "wrangler.durable.jsonc", <<"\"version_metadata\"">>)),
     ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"main\": \"durable-global.js\"">>)),
     ?assert(Has(Plain, "wrangler.durable-global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
-    %% A Worker name has no "_": the app humans_must_die.
-    Game = [{F, iolist_to_binary(D)}
-            || {F, D} <- beam_com_wasm:worker_files(#{name => "humans_must_die", apps => [phoenix]},
+    %% A Worker name has no "_": the app my_phoenix_app.
+    Named = [{F, iolist_to_binary(D)}
+            || {F, D} <- beam_com_wasm:worker_files(#{name => "my_phoenix_app", apps => [phoenix]},
                                                     Runtime, Root)],
-    ?assert(Has(Game, "wrangler.durable.jsonc", <<"\"name\": \"humans-must-die-durable\"">>)),
-    ?assert(Has(Game, "wrangler.durable.jsonc", <<"\"service\": \"humans-must-die-release\"">>)),
-    ?assert(Has(Game, "release/wrangler.jsonc", <<"\"name\": \"humans-must-die-release\"">>)),
-    ?assert(Has(Game, "wrangler.jsonc", <<"humans-must-die.SUBDOMAIN.workers.dev">>)),
+    ?assert(Has(Named, "wrangler.durable.jsonc", <<"\"name\": \"my-phoenix-app-durable\"">>)),
+    ?assert(Has(Named, "wrangler.durable.jsonc", <<"\"service\": \"my-phoenix-app-release\"">>)),
+    ?assert(Has(Named, "release/wrangler.jsonc", <<"\"name\": \"my-phoenix-app-release\"">>)),
+    ?assert(Has(Named, "wrangler.jsonc", <<"my-phoenix-app.SUBDOMAIN.workers.dev">>)),
     ?assertEqual("my-app2", beam_com_wasm:worker_name("My_App2")),
     Sqlite = Files([exqlite]),
     %% Ecto SQLite: a snapshot at the boot point, and no warm-up request.
