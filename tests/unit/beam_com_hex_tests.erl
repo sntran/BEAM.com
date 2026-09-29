@@ -89,6 +89,15 @@ package(Name, Vsn, Files, Reqs, Tools) ->
                             [{D, [{<<"app">>, D}, {<<"optional">>, false},
                                   {<<"requirement">>, list_to_binary(R)},
                                   {<<"repository">>, <<"hexpm">>}]} || {D, R} <- Reqs]}]]),
+        hex_tar(Meta, Contents)
+    after
+        rm(Tmp)
+    end.
+
+%% A Hex tarball of this metadata and contents, with its checksum.
+hex_tar(Meta, Contents) ->
+    Tmp = tmp(),
+    try
         Version = <<"3">>,
         Sum = binary:encode_hex(crypto:hash(sha256, [Version, Meta, Contents])),
         TarFile = filename:join(Tmp, "p.tar"),
@@ -136,8 +145,90 @@ unpack_test_() ->
                end},
               {"not a tarball",
                ?_assertThrow({error, "~ts: not a Hex tarball", [Out]},
-                             beam_com_hex:unpack(<<"junk">>, undefined, Out))}]
+                             beam_com_hex:unpack(<<"junk">>, undefined, Out))},
+              {"a link in the contents",
+               fun() ->
+                       Src = filename:join(Dir, "link-src"),
+                       ok = filelib:ensure_path(Src),
+                       ok = file:make_symlink("/etc/passwd", filename:join(Src, "evil")),
+                       C = filename:join(Dir, "link.tar.gz"),
+                       {ok, T} = erl_tar:open(C, [write, compressed]),
+                       ok = erl_tar:add(T, filename:join(Src, "evil"), "evil", []),
+                       ok = erl_tar:close(T),
+                       {ok, Contents} = file:read_file(C),
+                       Bad = hex_tar(<<"{<<\"name\">>, <<\"u\">>}.\n">>, Contents),
+                       ?assertThrow({error, "~ts: the package has a file that is not a "
+                                     "regular file: ~ts", [Out, "evil"]},
+                                    beam_com_hex:unpack(Bad, undefined, Out))
+               end},
+              {"a name out of the package",
+               fun() ->
+                       C = filename:join(Dir, "up.tar.gz"),
+                       {ok, T} = erl_tar:open(C, [write, compressed]),
+                       ok = erl_tar:add(T, <<"x">>, "../up", []),
+                       ok = erl_tar:close(T),
+                       {ok, Contents} = file:read_file(C),
+                       Bad = hex_tar(<<"{<<\"name\">>, <<\"u\">>}.\n">>, Contents),
+                       ?assertThrow({error, "~ts: the package has an unsafe file name: ~ts",
+                                     [Out, "../up"]},
+                                    beam_com_hex:unpack(Bad, undefined, Out)),
+                       ?assertNot(filelib:is_file(filename:join(Dir, "up")))
+               end}]
      end}.
+
+%% metadata.config: the same terms as file:consult/1, with no new atom.
+consult_test_() ->
+    Terms = [{<<"name">>, <<"pkg">>},
+             {<<"description">>, <<"Été, \"quoted\" \\ and\ttab"/utf8>>},
+             {<<"build_tools">>, [<<"rebar3">>, <<"mix">>]},
+             {<<"requirements">>,
+              [[{<<"name">>, <<"jason">>}, {<<"app">>, <<"jason">>},
+                {<<"optional">>, false}, {<<"requirement">>, <<"~> 1.0">>}]]},
+             {<<"files">>, [<<"lib">>, <<>>]},
+             {<<"count">>, -12},
+             {"a string", {nested, {tuple, []}}}],
+    Text = unicode:characters_to_binary([io_lib:format("~tp.~n", [T]) || T <- Terms]),
+    [{"the terms of io_lib:format ~tp",
+      ?_assertEqual(Terms, beam_com_hex:consult(Text))},
+     {"comments, escapes and segments",
+      ?_assertEqual([<<"a\nb", 195, 169, "c">>, "x\x{e9}y", [true, false]],
+                    beam_com_hex:consult(<<"% a comment\n<<\"a\\nb\", \"\\351\"/utf8, "
+                                           "\"c\">>.\n\"x\\x{e9}y\" .\n[true,false].">>))},
+     {"an atom that does not exist is refused, and not made",
+      fun() ->
+              Name = "beam_com_hex_test_no_such_atom_" ++ integer_to_list(erlang:unique_integer([positive])),
+              Count = erlang:system_info(atom_count),
+              ?assertThrow({error, "metadata.config is not a list of terms", []},
+                           beam_com_hex:consult(list_to_binary(["{<<\"x\">>, ", Name, "}."]))),
+              ?assertThrow({error, "metadata.config is not a list of terms", []},
+                           beam_com_hex:consult(list_to_binary(["'", Name, " quoted'."]))),
+              ?assertEqual(Count, erlang:system_info(atom_count))
+      end},
+     {"deep nesting",
+      ?_assertThrow({error, "metadata.config is not a list of terms", []},
+                    beam_com_hex:consult(list_to_binary([lists:duplicate(100, $[),
+                                                         lists:duplicate(100, $]), "."])))},
+     {"text that is not a term",
+      [?_assertThrow({error, "metadata.config is not a list of terms", []},
+                     beam_com_hex:consult(B))
+       || B <- [<<"{a">>, <<"fun() -> ok end.">>, <<"1 + 2.">>, <<"<<1>>.">>, <<"x">>]]},
+     {"not UTF-8",
+      ?_assertThrow({error, "metadata.config is not UTF-8", []},
+                    beam_com_hex:consult(<<255, 254>>))}].
+
+meta_requirements_test_() ->
+    Req = fun(App) -> {<<"p">>, [{<<"app">>, App}, {<<"requirement">>, <<"~> 1.0">>}]} end,
+    [{"an app name",
+      ?_assertEqual([{p_app, <<"p">>, "~> 1.0"}],
+                    beam_com_hex:meta_requirements([{<<"requirements">>, [Req(<<"p_app">>)]}]))},
+     {"not an app name",
+      [?_assertThrow({error, _, _},
+                     beam_com_hex:meta_requirements([{<<"requirements">>, [Req(A)]}]))
+       || A <- [<<"Elixir.X">>, <<"1a">>, <<"a-b">>, <<>>, 42]]},
+     {"too many requirements",
+      ?_assertThrow({error, "a package has more than ~b requirements", [256]},
+                    beam_com_hex:meta_requirements(
+                      [{<<"requirements">>, lists:duplicate(257, Req(<<"p">>))}]))}].
 
 %%% Resolution, with a registry in memory.
 

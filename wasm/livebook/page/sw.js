@@ -14,8 +14,14 @@ let statics = null;
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+// Only the page index.html (the tab of the VM) can say "boot": another
+// page of this origin cannot take the requests of Livebook.
+const isBootPage = (href) => {
+  const u = new URL(href);
+  return u.origin === BOOT.origin && (u.pathname === BOOT.pathname || u.pathname === `${BOOT.pathname}index.html`);
+};
 self.addEventListener('message', (e) => {
-  if (e.data?.type === 'boot') bootId = e.source.id;
+  if (e.data?.type === 'boot' && e.source?.url && isBootPage(e.source.url)) bootId = e.source.id;
 });
 
 async function staticFiles() {
@@ -31,7 +37,7 @@ async function bootClient() {
     if (c) return c;
   }
   const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  const c = all.find((w) => { const u = new URL(w.url); return u.origin === BOOT.origin && (u.pathname === BOOT.pathname || u.pathname === `${BOOT.pathname}index.html`); });
+  const c = all.find((w) => isBootPage(w.url));
   bootId = c?.id ?? null;
   return c;
 }

@@ -27,10 +27,12 @@
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
          rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
          unpack/3, resolve/3,
-         registry/0]).
+         registry/0, consult/1, meta_requirements/1]).
 -endif.
 
 -define(API, "https://hex.pm/api").
+%% The requirements of one package, at most (see app_name/1).
+-define(MAX_REQUIREMENTS, 256).
 -define(REPO, "https://repo.hex.pm").
 
 %% Fetch the deps of the application in Dir, and unpack each one into
@@ -299,10 +301,11 @@ lock_text(Packages) ->
 lock_text(mix, Packages) ->
     Map = maps:from_list(
             [{atom_to_binary(N),
-              {hex, binary_to_atom(Pkg), list_to_binary(Vsn),
+              {hex, app_name(Pkg), list_to_binary(Vsn),
                string:lowercase(iolist_to_binary(I)),
-               [binary_to_atom(T) || T <- Tools],
-               [{DN, list_to_binary(DR), [{hex, binary_to_atom(DP)}, {repo, <<"hexpm">>},
+               [binary_to_existing_atom(T) || T <- Tools,
+                                              lists:member(T, [<<"mix">>, <<"rebar3">>, <<"make">>])],
+               [{DN, list_to_binary(DR), [{hex, app_name(DP)}, {repo, <<"hexpm">>},
                                           {optional, false}]}
                 || {DN, DP, DR} <- Reqs],
                <<"hexpm">>, string:lowercase(iolist_to_binary(O))}}
@@ -451,6 +454,7 @@ unpack(Tar, Inner, Dir) ->
         throw({error, "~ts: the inner checksum does not match", [Dir]}),
     Inner =:= undefined orelse string:uppercase(to_list(Inner)) =:= Sum orelse
         throw({error, "~ts: the checksum does not match rebar.lock", [Dir]}),
+    safe_entries(Contents, Dir),
     _ = file:del_dir_r(Dir),
     ok = filelib:ensure_path(Dir),
     case erl_tar:extract({binary, Contents}, [compressed, {cwd, Dir}]) of
@@ -458,6 +462,27 @@ unpack(Tar, Inner, Dir) ->
         {error, E} -> throw({error, "~ts: ~p", [Dir, E]})
     end,
     #{inner => list_to_binary(Sum), metadata => consult(Meta)}.
+
+%% The files of contents.tar.gz: regular files and directories, with
+%% relative names in the package. A Hex package has no links, and a link
+%% or a name such as "../x" could write outside Dir.
+safe_entries(Contents, Dir) ->
+    Entries = case erl_tar:table({binary, Contents}, [compressed, verbose]) of
+                  {ok, E} -> E;
+                  {error, _} -> throw({error, "~ts: not a Hex tarball (contents)", [Dir]})
+              end,
+    lists:foreach(
+      fun({Name, Type, _, _, _, _, _}) ->
+              lists:member(Type, [regular, directory]) orelse
+                  throw({error, "~ts: the package has a file that is not a regular file: ~ts",
+                         [Dir, Name]}),
+              safe_name(Name) orelse
+                  throw({error, "~ts: the package has an unsafe file name: ~ts", [Dir, Name]})
+      end, Entries).
+
+safe_name(Name) ->
+    filename:pathtype(Name) =:= relative andalso
+        not lists:member("..", filename:split(Name)).
 
 to_list(B) when is_binary(B) -> binary_to_list(B);
 to_list(L) -> L.
@@ -475,11 +500,25 @@ mix_only(_, _) ->
 
 %% The requirements in metadata.config: [{AppName, Package, Requirement}]
 %% of the deps that are not optional.
+%% An app name becomes an atom only when it is a valid name, and a
+%% package has at most ?MAX_REQUIREMENTS requirements.
+
 meta_requirements(Meta) ->
-    [{binary_to_atom(proplists:get_value(<<"app">>, R, Pkg)), Pkg,
+    Reqs = requirement_list(proplists:get_value(<<"requirements">>, Meta, [])),
+    length(Reqs) =< ?MAX_REQUIREMENTS orelse
+        throw({error, "a package has more than ~b requirements", [?MAX_REQUIREMENTS]}),
+    [{app_name(proplists:get_value(<<"app">>, R, Pkg)), Pkg,
       binary_to_list(proplists:get_value(<<"requirement">>, R))}
-     || {Pkg, R} <- requirement_list(proplists:get_value(<<"requirements">>, Meta, [])),
+     || {Pkg, R} <- Reqs,
         proplists:get_value(<<"optional">>, R, false) =/= true].
+
+app_name(Name) when is_binary(Name), byte_size(Name) =< 255 ->
+    case re:run(Name, "^[a-z][a-z0-9_]*$", [{capture, none}]) of
+        match -> binary_to_atom(Name);
+        nomatch -> throw({error, "~ts is not an application name", [Name]})
+    end;
+app_name(Name) ->
+    throw({error, "~tp is not an application name", [Name]}).
 
 %% Two layouts: [{Name, Props}] and [[{<<"name">>, Name} | Props]].
 requirement_list(Reqs) ->
@@ -488,16 +527,119 @@ requirement_list(Reqs) ->
          Props when is_list(Props) -> {proplists:get_value(<<"name">>, Props), Props}
      end || R <- Reqs].
 
+%% The terms of metadata.config. The file comes from the package, so it
+%% is read without erl_scan: erl_scan makes an atom of each name, and a
+%% package could fill the atom table. This reader takes binaries
+%% (<<"text">> and <<"text"/utf8>>), strings, integers, lists, tuples,
+%% and only the atoms that exist already.
 consult(Bin) ->
-    {ok, Tokens, _} = erl_scan:string(unicode:characters_to_list(Bin)),
-    terms(Tokens, []).
+    Chars = case unicode:characters_to_list(Bin) of
+                L when is_list(L) -> L;
+                _ -> throw({error, "metadata.config is not UTF-8", []})
+            end,
+    try consult_terms(Chars, [])
+    catch error:_ -> throw({error, "metadata.config is not a list of terms", []})
+    end.
 
-terms([], Acc) -> lists:append(lists:reverse(Acc));
-terms(Tokens, Acc) ->
-    {Term, Rest} = lists:splitwith(fun(T) -> element(1, T) =/= dot end, Tokens),
-    [Dot | Rest1] = Rest,
-    {ok, T} = erl_parse:parse_term(Term ++ [Dot]),
-    terms(Rest1, [[T] | Acc]).
+consult_terms(Chars, Acc) ->
+    case skip(Chars) of
+        [] -> lists:reverse(Acc);
+        Rest ->
+            {T, Rest1} = term(Rest, 0),
+            [$. | Rest2] = skip(Rest1),
+            consult_terms(Rest2, [T | Acc])
+    end.
+
+-define(MAX_DEPTH, 64).
+
+term(Chars, Depth) when Depth < ?MAX_DEPTH ->
+    case skip(Chars) of
+        "<<" ++ Rest -> bin(skip(Rest));
+        [$" | Rest] -> quoted(Rest, $", []);
+        [$[ | Rest] -> seq(Rest, $], Depth, []);
+        [${ | Rest] ->
+            {Items, Rest1} = seq(Rest, $}, Depth, []),
+            {list_to_tuple(Items), Rest1};
+        [$' | Rest] ->
+            {Name, Rest1} = quoted(Rest, $', []),
+            {list_to_existing_atom(Name), skip(Rest1)};
+        [C | _] = Rest when C >= $a, C =< $z ->
+            {Name, Rest1} = lists:splitwith(fun name_char/1, Rest),
+            {list_to_existing_atom(Name), skip(Rest1)};
+        [C | _] = Rest when C =:= $-; C >= $0, C =< $9 ->
+            {Sign, Rest1} = case Rest of
+                                [$- | R] -> {-1, R};
+                                R -> {1, R}
+                            end,
+            {Digits, Rest2} = lists:splitwith(fun(D) -> D >= $0 andalso D =< $9 end, Rest1),
+            {Sign * list_to_integer(Digits), skip(Rest2)}
+    end.
+
+%% A list or a tuple: terms with commas, up to the closing character.
+seq(Chars, Close, Depth, Acc) ->
+    case skip(Chars) of
+        [Close | Rest] when Acc =:= [] -> {[], skip(Rest)};
+        Rest ->
+            {T, Rest1} = term(Rest, Depth + 1),
+            case skip(Rest1) of
+                [$, | Rest2] -> seq(Rest2, Close, Depth, [T | Acc]);
+                [Close | Rest2] -> {lists:reverse([T | Acc]), skip(Rest2)}
+            end
+    end.
+
+%% A binary of strings: <<>>, <<"text">>, <<"text"/utf8>>, and segments
+%% with commas.
+bin(">>" ++ Rest) ->
+    {<<>>, skip(Rest)};
+bin(Chars) ->
+    bin(Chars, []).
+
+bin([$" | Rest], Acc) ->
+    {Text, Rest1} = quoted(Rest, $", []),
+    {Seg, Rest2} = case skip(Rest1) of
+                       "/utf8" ++ R -> {unicode:characters_to_binary(Text), skip(R)};
+                       R -> {<< <<C:8>> || C <- Text >>, R}
+                   end,
+    case Rest2 of
+        [$, | R2] -> bin(skip(R2), [Seg | Acc]);
+        ">>" ++ R2 -> {iolist_to_binary(lists:reverse([Seg | Acc])), skip(R2)}
+    end.
+
+%% The text of a quoted string or atom, with the escapes of Erlang.
+quoted([Q | Rest], Q, Acc) -> {lists:reverse(Acc), Rest};
+quoted([$\\, $x, ${ | Rest], Q, Acc) ->
+    {Hex, [$} | Rest1]} = lists:splitwith(fun(C) -> C =/= $} end, Rest),
+    quoted(Rest1, Q, [list_to_integer(Hex, 16) | Acc]);
+quoted([$\\, $x, H1, H2 | Rest], Q, Acc) ->
+    quoted(Rest, Q, [list_to_integer([H1, H2], 16) | Acc]);
+quoted([$\\, C | Rest], Q, Acc) when C >= $0, C =< $7 ->
+    {Octal, Rest1} = lists:splitwith(fun(D) -> D >= $0 andalso D =< $7 end, [C | Rest]),
+    {Oct, More} = lists:split(min(3, length(Octal)), Octal),
+    quoted(More ++ Rest1, Q, [list_to_integer(Oct, 8) | Acc]);
+quoted([$\\, C | Rest], Q, Acc) ->
+    quoted(Rest, Q, [escape(C) | Acc]);
+quoted([C | Rest], Q, Acc) ->
+    quoted(Rest, Q, [C | Acc]).
+
+escape($n) -> $\n;
+escape($t) -> $\t;
+escape($r) -> $\r;
+escape($s) -> $\s;
+escape($e) -> $\e;
+escape($d) -> $\d;
+escape($b) -> $\b;
+escape($f) -> $\f;
+escape($v) -> $\v;
+escape(C) -> C.
+
+name_char(C) ->
+    (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+        orelse (C >= $0 andalso C =< $9) orelse C =:= $_ orelse C =:= $@.
+
+%% White space and comments.
+skip([C | Rest]) when C =:= $\s; C =:= $\t; C =:= $\n; C =:= $\r -> skip(Rest);
+skip([$% | Rest]) -> skip(lists:dropwhile(fun(C) -> C =/= $\n end, Rest));
+skip(Chars) -> Chars.
 
 %% The packages in the order to compile them.
 order(Packages) ->
@@ -547,9 +689,11 @@ api_release(Pkg, Vsn) ->
         _ -> ok
     end,
     Reqs = maps:get(<<"requirements">>, Info, #{}),
+    map_size(Reqs) =< ?MAX_REQUIREMENTS orelse
+        throw({error, "a package has more than ~b requirements", [?MAX_REQUIREMENTS]}),
     #{checksum => binary_to_list(maps:get(<<"checksum">>, Info)),
       requirements =>
-          [{binary_to_atom(maps:get(<<"app">>, R, P)), P,
+          [{app_name(maps:get(<<"app">>, R, P)), P,
             binary_to_list(maps:get(<<"requirement">>, R))}
            || P := R <- Reqs, maps:get(<<"optional">>, R, false) =/= true]}.
 

@@ -654,7 +654,12 @@ export class MemoryStore {
 // system: stdin is empty, and there are no preopens. A Cloudflare Worker
 // cannot compile WebAssembly at run time, so there compile gives an error.
 // A module or an instance has an id; they stay until the VM stops.
-const ERRNO = { SUCCESS: 0, BADF: 8, NOSYS: 52, SPIPE: 70 };
+const ERRNO = { SUCCESS: 0, BADF: 8, FAULT: 21, NOSYS: 52, SPIPE: 70 };
+// The limits of the WebAssembly host: the bytes of a module, the bytes of
+// a read of the memory, the output of a program that the host keeps for
+// each call, and the modules and instances that it keeps at one time.
+const WASM_MAX_MODULE = 64 << 20, WASM_MAX_READ = 16 << 20, WASM_MAX_OUTPUT = 1 << 20, WASM_MAX_HANDLES = 1024;
+const isOffset = (n) => Number.isSafeInteger(n) && n >= 0;
 
 class WasiExit {
   constructor(code) { this.code = code; }
@@ -721,13 +726,14 @@ class Wasi {
     this.args = args.map((a) => new TextEncoder().encode(`${a}\0`));
     this.env = env.map(([k, v]) => new TextEncoder().encode(`${k}=${v}\0`));
     this.out = []; this.err = [];
+    this.kept = 0;  // the bytes of out and err
     this.memory = null;
   }
 
   take() {
     const join = (parts) => { const n = parts.reduce((a, p) => a + p.length, 0), b = new Uint8Array(n); let o = 0; for (const p of parts) { b.set(p, o); o += p.length; } return b; };
     const r = { stdout: b64(join(this.out)), stderr: b64(join(this.err)) };
-    this.out = []; this.err = [];
+    this.out = []; this.err = []; this.kept = 0;
     return r;
   }
 
@@ -745,7 +751,13 @@ class Wasi {
         let total = 0;
         for (let i = 0; i < n; i++) {
           const ptr = dv().getUint32(iovs + i * 8, true), len = dv().getUint32(iovs + i * 8 + 4, true);
-          (fd === 1 ? this.out : this.err).push(mem().slice(ptr, ptr + len));
+          if (ptr + len > this.memory.buffer.byteLength) return ERRNO.FAULT;
+          // Past WASM_MAX_OUTPUT, the output of this call is dropped.
+          const keep = Math.min(len, WASM_MAX_OUTPUT - this.kept);
+          if (keep > 0) {
+            (fd === 1 ? this.out : this.err).push(mem().slice(ptr, ptr + keep));
+            this.kept += keep;
+          }
           total += len;
         }
         dv().setUint32(written, total, true);
@@ -795,8 +807,14 @@ export class WasmHost {
 
   async op(op, q) {
     switch (op) {
+      case 'release':
+        this.modules.delete(q.id);
+        this.instances.delete(q.id);
+        return { ok: true };
       case 'compile': {
+        if (this.modules.size + this.instances.size >= WASM_MAX_HANDLES) return { error: 'too many modules and instances' };
         const bytes = unb64(q.bytes);
+        if (bytes.length > WASM_MAX_MODULE) return { error: 'the module is too large' };
         const module = await WebAssembly.compile(bytes);
         const id = `m${this.next++}`;
         this.modules.set(id, { module, sig: wasmSignatures(bytes) });
@@ -805,6 +823,7 @@ export class WasmHost {
       case 'instantiate': {
         const m = this.modules.get(q.module);
         if (!m) return { error: 'unknown module' };
+        if (this.modules.size + this.instances.size >= WASM_MAX_HANDLES) return { error: 'too many modules and instances' };
         const wasi = new Wasi(q.args, q.env);
         const instance = await WebAssembly.instantiate(m.module, wasi.imports(m.module));
         wasi.memory = Object.values(instance.exports).find((e) => e instanceof WebAssembly.Memory) ?? null;
@@ -836,15 +855,17 @@ export class WasmHost {
       case 'memory_size': return memory ? { ok: memory.buffer.byteLength } : { error: 'not_found' };
       case 'memory_grow':
         if (!memory) return { error: 'not_found' };
+        if (!isOffset(q.pages)) return { error: 'out_of_bounds' };
         try { return { ok: memory.grow(q.pages) }; } catch { return { error: 'out_of_bounds' }; }
       case 'read':
         if (!memory) return { error: 'not_found' };
+        if (!isOffset(q.offset) || !isOffset(q.length) || q.length > WASM_MAX_READ) return { error: 'out_of_bounds' };
         if (q.offset + q.length > memory.buffer.byteLength) return { error: 'out_of_bounds' };
         return { ok: b64(new Uint8Array(memory.buffer, q.offset, q.length)) };
       case 'write': {
         if (!memory) return { error: 'not_found' };
         const data = unb64(q.data);
-        if (q.offset + data.length > memory.buffer.byteLength) return { error: 'out_of_bounds' };
+        if (!isOffset(q.offset) || q.offset + data.length > memory.buffer.byteLength) return { error: 'out_of_bounds' };
         new Uint8Array(memory.buffer).set(data, q.offset);
         return { ok: true };
       }
@@ -920,9 +941,11 @@ export class Vm {
       // snapshot is made at the boot point (wasm_host_server), before the
       // program starts and runs its migrations. So all the objects (the
       // tenants) share it, and each one runs the program on its own storage.
+      // Tenants (BEAM_TENANTS) share the snapshot too, so it is made at the
+      // boot point, before the program has the state of one tenant.
       const meta = releaseMeta(release);
       const atBoot = !this.plain && (this.sql || this.hostFiles)
-        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || Object.keys(this.vars).length > 0);
+        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || Object.keys(this.vars).length > 0);
       key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
@@ -1066,8 +1089,9 @@ export class Vm {
     const port = Number(this.env.PORT ?? 4000);
     await Promise.race([this.listening(port), new Promise((r) => setTimeout(r, 10000))]);
     const bytes = await this.snapshot(false);
-    if (bytes === 'busy') this.makeKey = key;
-    else if (bytes) this.store(key, bytes);
+    // No second try: after this, the VM has served requests, and the
+    // snapshot could hold their state. The next new VM tries again.
+    if (bytes && bytes !== 'busy') this.store(key, bytes);
   }
 
   // The boot point (wasm_host_server): the snapshot of a VM that loaded the
@@ -1236,7 +1260,10 @@ export class Vm {
       this.resume = null;
       f();
     }
-    if (this.makeKey) await this.makeSnapshot();
+    // The first request makes the snapshot, and the other requests wait for
+    // it, so that the snapshot has the state of no request.
+    if (this.makeKey) this.snapping = this.makeSnapshot().finally(() => { this.snapping = null; });
+    if (this.snapping) await this.snapping;
     const url = new URL(request.url);
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
     const tcp = upgrade && url.pathname.match(/^\/\.tcp\/(\d+)$/);

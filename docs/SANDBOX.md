@@ -51,6 +51,28 @@ client, because the native resolver is a port program.
 | OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
 | macOS, Windows, FreeBSD, NetBSD | no: the flags are ignored |
 
+## Limits
+
+The sandbox limits what a program can do, but it is not a complete
+wall. Know these limits before you depend on it:
+
+- Caution: on macOS, Windows, FreeBSD and NetBSD, the flags have no
+  effect, and the program prints no warning. A program runs there with
+  all the rights of its user.
+- `--allow-write` also lets the program change the mode and the times
+  of the other files of the user (`chmod`, `utime`). Landlock does not
+  control these calls.
+- `--allow-run` gives execute access to the directories of the
+  libraries (`/lib`, `/usr/lib`, `/usr/libexec`, ...), and some
+  programs are in these directories. On Linux, the programs that it
+  starts keep the sandbox. On OpenBSD, the rules of `unveil()` do not
+  apply after `exec`, so a program that it starts has no path limits.
+- The paths of `--allow-run` come from `PATH` when the program starts,
+  and the APE loader from `HOME` and `TMPDIR`. Give the programs as
+  absolute paths, and do not put a writable directory in `PATH`.
+- The JIT can write in `/dev/shm` on Linux, and in `/tmp` on the other
+  systems, also without `--allow-write`.
+
 `BEAM_COM_ALLOW` gives permissions to a program that has none in its
 file, to try a sandbox without a new build: the flags without
 `--allow-`, separated by `;`, for example

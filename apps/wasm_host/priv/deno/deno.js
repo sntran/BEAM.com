@@ -102,12 +102,24 @@ class KvStore {
       return { version: r.value?.version ?? 0, size: r.value?.size ?? 0, stamp: r.versionstamp };
     });
   }
+  // A block keeps its last two versions. When a newer version of the block
+  // names another version before it (p) than the one found, two later
+  // commits dropped the block of this version: the read fails (an I/O
+  // error of SQLite), and it does not give the data of another version.
   block(name, n, version) {
     return retry(async () => {
+      let found = null;
       const it = this.kv.list({ start: this.key(name, 'b', n, 0), end: this.key(name, 'b', n, version + 1) },
                               { reverse: true, limit: 1 });
-      for await (const e of it) return { data: e.value.d, v: e.key.at(-1), prev: e.value.p };
-      return null;
+      for await (const e of it) found = { data: e.value.d, v: e.key.at(-1), prev: e.value.p };
+      const newer = this.kv.list({ prefix: this.key(name, 'b', n), start: this.key(name, 'b', n, version + 1) },
+                                 { limit: 1 });
+      for await (const e of newer) {
+        if ((e.value.p || 0) !== (found?.v ?? 0)) {
+          throw new Error(`${name}: block ${n} of version ${version} is gone: the transaction is too old`);
+        }
+      }
+      return found;
     });
   }
   // With release, the commit also removes the write lock. It does not
@@ -261,21 +273,23 @@ async function asset(request) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, info) {
     const file = await asset(request);
     if (file) return file;
     if (!vm) {
       const v = vm = new Vm(env, { plain: false, sql, vars, files });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
-    // The scheme of the client (Cloudflare gives it in x-forwarded-proto,
-    // Deno Deploy only in the URL): Plug.SSL and force_ssl read it.
-    let r = request;
-    if (!request.headers.has('x-forwarded-proto')) {
-      const headers = new Headers(request.headers);
-      headers.set('x-forwarded-proto', new URL(request.url).protocol.slice(0, -1));
-      r = new Request(request, { headers });
-    }
+    // The scheme of the client (Deno gives it in the URL; Plug.SSL and
+    // force_ssl read x-forwarded-proto), and the address of the client
+    // (the VM reads cf-connecting-ip, as on Workers). A client sends
+    // these headers too: the values of Deno replace them.
+    const headers = new Headers(request.headers);
+    headers.set('x-forwarded-proto', new URL(request.url).protocol.slice(0, -1));
+    headers.delete('cf-connecting-ip');
+    const addr = info?.remoteAddr;
+    if (addr?.hostname) headers.set('cf-connecting-ip', addr.hostname);
+    const r = new Request(request, { headers });
     // The upgrade needs the request that Deno gave.
     return Promise.resolve(vm.fetch(r)).then((res) => (res?.[UPGRADE] ? res[UPGRADE](request) : res));
   },

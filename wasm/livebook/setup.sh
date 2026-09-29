@@ -40,6 +40,15 @@ NODE=${NODE:-node}
 SUBDOMAIN=${SUBDOMAIN:-SUBDOMAIN}
 INSTANCES=${INSTANCES:-5}
 VSN=${LIVEBOOK_VSN:-0.19.10}
+# The pins of the downloads: the SHA-256 of the Hex package of Livebook,
+# the commit of the OTP tag (for the files of os_mon), and the dated CA
+# bundle of curl with its SHA-256. For another version, give its pin.
+LIVEBOOK_SHA256=${LIVEBOOK_SHA256:-0ebd5c52181f1f350eeaf97d9a9af22298734f800e93f403a2c472afffaa080c}
+CACERT_DATE=${CACERT_DATE:-2026-09-25}
+CACERT_SHA256=${CACERT_SHA256:-a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505}
+check_sha256() {  # FILE EXPECTED
+    [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$2" ] || { echo "Bad SHA-256 of $1" >&2; exit 1; }
+}
 mkdir -p "$DIR/bin"
 for t in mix iex elixir elixirc escript; do ln -sf "$BEAM_COM" "$DIR/bin/$t$( [ $t = escript ] || echo .com)"; done
 export PATH="$DIR/bin:$PATH" MIX_HOME="$DIR/.mix" HEX_HOME="$DIR/.hex" MIX_ENV=prod
@@ -49,7 +58,12 @@ cd "$DIR"
 # with OTP_APPS=os_mon has it). Its Erlang code, from the source of the OTP
 # of beam.com. The patch turns off its port programs.
 OTP=$("$BEAM_COM" --version | sed -n 's/^ *Erlang\/OTP *: *//p')
-OS_MON=https://raw.githubusercontent.com/erlang/otp/OTP-$OTP/lib/os_mon
+# The files of the commit of the tag, not of the tag (a tag can move).
+if [ -z "${OTP_COMMIT:-}" ] && [ "$OTP" = 29.1.1 ]; then
+    OTP_COMMIT=ad05823719d77c8faee87348ea39513d4e2f99c5
+fi
+: "${OTP_COMMIT:?set OTP_COMMIT, the commit of the tag OTP-$OTP}"
+OS_MON=https://raw.githubusercontent.com/erlang/otp/$OTP_COMMIT/lib/os_mon
 if [ ! -f otp/os_mon.done ]; then
     rm -rf otp && mkdir -p otp/os_mon/src otp/os_mon/include otp/os_mon/ebin
     for f in cpu_sup disksup memsup nteventlog os_mon os_mon_mib os_mon_sysinfo os_sup; do
@@ -74,6 +88,7 @@ export ERL_LIBS="$DIR/otp"
 # only the notebooks of beam.com in the Learn section).
 if [ ! -d livebook ]; then
     curl -sSfL -o livebook.tar "https://repo.hex.pm/tarballs/livebook-$VSN.tar"
+    check_sha256 livebook.tar "$LIVEBOOK_SHA256"
     mkdir livebook
     tar -xOf livebook.tar contents.tar.gz | tar -xzf - -C livebook
     (cd livebook && patch -p1 < "$HERE/livebook.patch")
@@ -94,9 +109,8 @@ elixir.com "$HERE/../../docs/notebooks/build.exs" \
 
 # The trusted root certificates of the runtime (TLS): the bundle of Mozilla
 # that curl publishes, not the store of this computer.
-curl -sSfL -o cacert.pem https://curl.se/ca/cacert.pem
-curl -sSfL -o cacert.pem.sha256 https://curl.se/ca/cacert.pem.sha256
-sha256sum -c cacert.pem.sha256
+curl -sSfL -o cacert.pem "https://curl.se/ca/cacert-$CACERT_DATE.pem"
+check_sha256 cacert.pem "$CACERT_SHA256"
 
 rm -rf worker
 "$BEAM_COM" livebook/_build/prod/rel/livebook -o worker --target wasm32 --cacerts cacert.pem

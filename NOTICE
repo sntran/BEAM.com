@@ -21,7 +21,8 @@ Erlang/OTP 29.1.1 (ERTS and the OTP applications in the zip)
 Elixir 1.20.4 (the elixir, eex, ex_unit, iex, logger and mix
 applications)
   Copyright The Elixir Team.
-  Apache License 2.0 (LICENSE).
+  Apache License 2.0 (LICENSE), and the license texts of its source in
+  licenses/elixir/.
   https://github.com/elixir-lang/elixir
 
 Cosmopolitan Libc 4.0.2 (the C runtime of the APE file)
@@ -78,7 +79,11 @@ The WebAssembly runtime (beam.wasm and beam.mjs in the zip, for
     Exceptions (licenses/llvm.txt). https://llvm.org
 
 Custom builds (build.sh) can also contain:
-  - Hex (HEX=1) and rebar3 (REBAR3=1): Apache License 2.0.
+  - Hex (HEX=1) and rebar3 (REBAR3=1): Apache License 2.0. The rebar3
+    escript also contains its dependencies, each with its own license
+    (for example certifi: MPL-2.0); see
+    https://github.com/erlang/rebar3/tree/main/vendor.
   - picosat_elixir (EXTRA_NIFS): Apache License 2.0, with PicoSAT (MIT
-    License, Copyright 2006-2015 Armin Biere, Johannes Kepler University).
+    License, Copyright 2006-2015 Armin Biere, Johannes Kepler University;
+    licenses/picosat.txt).
   - More OTP applications (OTP_APPS): as Erlang/OTP above.

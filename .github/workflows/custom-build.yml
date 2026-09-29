@@ -25,12 +25,21 @@ env:
 
 jobs:
   build:
-    if: contains(github.event.issue.labels.*.name, 'custom-build') && github.event.issue.state == 'open'
+    # Only a member of the repository starts a build: a build takes 90
+    # minutes of a runner, and it writes the caches of main. A member
+    # opens the issue, or adds the label to the issue of another user
+    # (only a user who can triage can label the issue of another user).
+    if: >-
+      contains(github.event.issue.labels.*.name, 'custom-build') &&
+      github.event.issue.state == 'open' && (
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) || (
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'custom-build' &&
+          github.event.sender.login != github.event.issue.user.login))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Read the choices of the issue
         id: choices
         env:
@@ -93,16 +102,16 @@ jobs:
           done
 
       - name: Cache cosmocc
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
-          key: cosmocc-${{ env.COSMOCC_VERSION }}
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
 
       - name: Download cosmocc
         run: ./build.sh toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
@@ -118,13 +127,13 @@ jobs:
       # The WebAssembly runtime of --target wasm32, as in build.yml (the
       # caches of main are shared).
       - name: Cache emsdk
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/emsdk
-          key: emsdk-${{ env.EMSDK_VERSION }}
+          key: emsdk-${{ env.EMSDK_VERSION }}-checked
 
       - name: Cache OpenSSL for WebAssembly
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
@@ -161,7 +170,7 @@ jobs:
 
       - name: Upload
         id: upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.OUT_NAME }}-issue-${{ github.event.issue.number }}
           path: build/${{ env.OUT_NAME }}

@@ -28,6 +28,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The token of a job can read the repository. Only the jobs that publish
+# (edge and release) can write, and each one says so.
+permissions:
+  contents: read
+
 env:
   OTP_VERSION: "29.1.1"
   COSMOCC_VERSION: "4.0.2"
@@ -53,19 +58,19 @@ jobs:
       AR: ${{ matrix.ar || 'cosmoar' }}
       OUT: ${{ github.workspace }}/build/${{ matrix.out }}
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Cache cosmocc
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
-          key: cosmocc-${{ env.COSMOCC_VERSION }}
+          # "checked": the cache of a download with its SHA-256 checked.
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
 
       - name: Download cosmocc
         run: ./build.sh toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ matrix.cc || 'cosmocc' }}
@@ -83,13 +88,13 @@ jobs:
       # The WebAssembly runtime of --target wasm32 (the step wasm_runtime):
       # Emscripten, and OpenSSL built with it.
       - name: Cache emsdk
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/emsdk
-          key: emsdk-${{ env.EMSDK_VERSION }}
+          key: emsdk-${{ env.EMSDK_VERSION }}-checked
 
       - name: Cache OpenSSL for WebAssembly
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
@@ -98,13 +103,13 @@ jobs:
         run: ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall wasm_runtime bundle
 
       - name: Upload ${{ matrix.out }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.out }}
           path: build/${{ matrix.out }}
           if-no-files-found: error
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         if: matrix.out == 'beam.com'
         with:
           go-version: stable
@@ -118,7 +123,7 @@ jobs:
 
       - name: Upload the WASI example
         if: matrix.out == 'beam.com'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hello_go.wasm
           path: build/hello_go.wasm
@@ -127,7 +132,7 @@ jobs:
       - name: Upload the APE loader
         if: matrix.out == 'beam.com'
         # NetBSD and OpenBSD cannot run APE files through sh.
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ape-loader
           path: build/cosmocc/bin/ape-x86_64.elf
@@ -153,7 +158,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-logs-${{ matrix.out }}
           path: |
@@ -169,14 +174,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: beam.com
 
       # A normal Erlang/OTP and rebar3, as a user has them.
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: "3"
@@ -193,7 +197,7 @@ jobs:
           done
 
       - name: Upload the example releases
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: examples
           path: |
@@ -217,9 +221,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: bin
           merge-multiple: true
@@ -262,23 +265,22 @@ jobs:
           # Cosmopolitan supports OpenBSD 7.3 or earlier.
           - { name: OpenBSD 7.3, vm: openbsd }
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: bin
           merge-multiple: true
 
       - name: Run on FreeBSD
         if: matrix.vm == 'freebsd'
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1
         with:
           run: |
             sh tests/run.sh bin && sh tests/bench/run.sh bin > bench.md
 
       - name: Run on NetBSD
         if: matrix.vm == 'netbsd'
-        uses: vmactions/netbsd-vm@v1
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1
         with:
           run: |
             echo "== Through sh (known to fail: NUL bytes in the APE header)"
@@ -293,7 +295,7 @@ jobs:
 
       - name: Run on OpenBSD
         if: matrix.vm == 'openbsd'
-        uses: vmactions/openbsd-vm@v1
+        uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945 # v1
         with:
           release: "7.3"
           run: |
@@ -322,19 +324,29 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # One publish at a time, and only the run of the newest commit of main
+    # publishes: an older run that ends later does not replace edge.
+    concurrency:
+      group: edge
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       HOOK: ${{ secrets.LIVEBOOK_DEPLOY_HOOK }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: beam.com
           path: bin
 
       - name: Publish the prerelease edge
         run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main is at $head now: the run of that commit publishes edge"
+            exit 0
+          fi
           cd bin
           sha256sum beam.com > beam.com.sha256
           gh release delete edge --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
@@ -357,12 +369,13 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Check the version
         run: |
           vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' apps/beam_com/src/beam_com.app.src)
@@ -371,21 +384,36 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: beam.com
           path: bin
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: beam-emu.com
           path: bin
+
+      # The provenance of the files (a signed statement of the workflow and
+      # the commit that built them): gh attestation verify FILE --repo
+      # sntran/BEAM.com.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: |
+            bin/beam.com
+            bin/beam-emu.com
 
       - name: Publish the release
         run: |
           cd bin
           sha256sum beam.com beam-emu.com > SHA256SUMS
-          cat > notes.md <<EOF
+          # The section of this version in CHANGELOG.md, then the files.
+          awk -v v="## ${TAG#v}" '$0 == v {on = 1; next} /^## / {on = 0} on' \
+            ../CHANGELOG.md > notes.md
+          cat >> notes.md <<EOF
+
+          ---
+
           Erlang/OTP $OTP_VERSION and Elixir in one executable file, for Linux,
           macOS, Windows and the BSDs, on x86_64 and aarch64.
 
@@ -393,6 +421,8 @@ jobs:
           - \`beam-emu.com\`: with the BEAM interpreter. It is smaller and
             starts faster, but Erlang code runs slower.
           - \`SHA256SUMS\`: check the files with \`sha256sum -c SHA256SUMS\`.
+            To check where they come from: \`gh attestation verify beam.com
+            --repo $GITHUB_REPOSITORY\`.
 
           On Windows, copy the file to a name that ends with \`.exe\`.
           EOF

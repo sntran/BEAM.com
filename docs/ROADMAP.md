@@ -24,10 +24,16 @@ systems.
 - Native files for one system (`--target`), distributed Erlang with
   `epmd` in the file, a file watcher for `phoenix_live_reload`, and
   crash reports.
-- Cloudflare Workers (`--target wasm32`): a second runtime (ERTS on
-  WebAssembly with green threads on JSPI), Durable Objects, Ecto SQLite
-  on D1 and Durable Objects, snapshots of the booted VM, tenants and
-  instances. See [`WORKERS.md`](WORKERS.md).
+- `--target wasm32`: a second runtime (ERTS on WebAssembly with green
+  threads on JSPI). One output runs on Cloudflare Workers (Durable
+  Objects, Ecto SQLite on D1 and Durable Objects, snapshots of the
+  booted VM, tenants and instances), on Deno and Deno Deploy (SQLite
+  with its pages in Deno KV), and in a web page. The `wasm` API runs
+  WebAssembly modules there on the engine of the host. See
+  [`WORKERS.md`](WORKERS.md).
+- The documentation as notebooks: the site is Livebook in the browser,
+  with Phoenix, Elixir and Erlang/OTP in the tab. See
+  [`NOTEBOOKS.md`](NOTEBOOKS.md).
 
 ## Next
 
@@ -42,8 +48,19 @@ systems.
   scripts that change the `erl` command (`--erl`).
 - The file watcher on Windows, and a reload of new code in a running
   program when its file changes.
-- A check of `beam_com_hex` against the security fix of hex_core 0.19
-  (BEAM.com has its own Hex client).
+- The signature of the Hex registry: the Hex client checks the
+  checksums of each package, but not yet the signed registry of
+  repo.hex.pm.
+
+### Sandbox
+
+- One warning when a program has permissions and its system cannot
+  apply them (macOS, Windows, FreeBSD, NetBSD).
+- `--allow-run`: read access, not execute access, to the directories
+  of the libraries, and the absolute paths of the programs in the file
+  (not from `PATH` at start).
+- `--allow-write` without the change of the mode of any file of the
+  user, and a private directory for the maps of the JIT.
 
 ### WebAssembly in Erlang code
 
@@ -57,6 +74,13 @@ systems.
 
 - A test in CI that runs the Workers in `workerd` (CI builds them, and
   checks the files, but does not run them yet).
+- Host tenants for the public Livebook (a domain with a wildcard), so
+  that each instance has its own origin in the browser.
+- `BEAM_CONNECT`: rules with IPv6 addresses (`[::1]:443`) and with a
+  trailing dot, and a log line for a rule that does not parse.
+- SQLite on Deno KV: a lease for each read transaction, so that a long
+  read keeps its versions of the blocks (today it fails with an I/O
+  error when two later commits changed its blocks).
 - Postgres through `wasm_tcp` (Postgrex over `gen_tcp` and `ssl`).
 - Modules that load when the code server asks for them: this needs a
   runtime built with `-sSUPPORT_LONGJMP=wasm` (see EM4 in
