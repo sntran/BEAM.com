@@ -11,12 +11,12 @@ defmodule PhoenixDemoWeb.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_scope_for_user
-    plug :put_cloudflare_request
+    plug :put_country
   end
 
   # Cloudflare gives the country of the visitor in the cf-ipcountry header.
-  # The home page shows it.
-  defp put_cloudflare_request(conn, _opts) do
+  # The home page shows it. Other hosts do not give it.
+  defp put_country(conn, _opts) do
     case get_req_header(conn, "cf-ipcountry") do
       [country | _] -> put_session(conn, :cf_country, country)
       [] -> conn

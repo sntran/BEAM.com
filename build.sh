@@ -783,10 +783,15 @@ step_bundle() {
     # WASM_RUNTIME=dir (beam.wasm and beam.mjs of wasm/erts/build.sh,
     # WORKER=1), the runtime too (5 MB).
     wh=$STAGE/lib/wasm_host-0.1.0
-    mkdir -p "$wh/ebin" "$wh/priv/worker"
+    # The hosts of worker.js: Workers (priv/worker), Deno (priv/deno) and a
+    # web page (priv/browser).
+    mkdir -p "$wh/ebin" "$wh/priv"
     "$ERL_TOP/bin/erlc" -o "$wh/ebin" "$ROOT"/apps/wasm_host/src/*.erl
     cp "$ROOT/apps/wasm_host/src/wasm_host.app.src" "$wh/ebin/wasm_host.app"
-    cp "$ROOT"/apps/wasm_host/priv/worker/* "$wh/priv/worker/"
+    for host in worker deno browser; do
+        rm -rf "$wh/priv/$host"
+        cp -R "$ROOT/apps/wasm_host/priv/$host" "$wh/priv/$host"
+    done
     runtime=${WASM_RUNTIME:-$BUILD/wasm-runtime}
     if [ "$runtime" != none ] && [ -f "$runtime/beam.wasm" ]; then
         mkdir -p "$wh/priv/runtime"

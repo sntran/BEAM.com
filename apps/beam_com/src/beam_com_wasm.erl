@@ -431,7 +431,19 @@ worker_files(#{name := App} = Rel, Runtime, Root) ->
      {"release/app.js", Worker("app.js")},
      {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
      {"release/wrangler.jsonc", wrangler_release(Name)},
-     {"worker.capnp", capnp(Phoenix)}] ++ licenses(Root).
+     {"worker.capnp", capnp(Phoenix)}] ++ hosts(Root) ++ licenses(Root).
+
+%% The other hosts of worker.js: Deno (deno.js, deno.json, deno/) and a web
+%% page (browser.js, browser/). Each one gives worker.js the parts of the
+%% Workers runtime that it uses, so one DIR runs on all of them. The
+%% configurations of Workers upload none of these files.
+hosts(Root) ->
+    [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv"])),
+    [{F, read(filename:join(Dir, F))}
+     || Host <- ["deno", "browser"],
+        Dir <- [filename:join(Priv, Host)],
+        F <- filelib:wildcard("**", Dir),
+        filelib:is_regular(filename:join(Dir, F))].
 
 %% The license texts of the zip (licenses/NOTICE names the software in
 %% beam.wasm), in the directory licenses/ of DIR. Wrangler uploads the

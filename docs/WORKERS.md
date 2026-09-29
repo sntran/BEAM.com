@@ -33,7 +33,10 @@ application directory, a rebar3 or Mix project), or a release directory
 without ERTS. For a Phoenix app, build a release with `mix release` and
 `include_erts: false`, and give its directory: then `runtime.exs` and the
 config providers run in the Worker. See
-[`examples/phoenix_demo/scripts/cloudflare.sh`](../examples/phoenix_demo/scripts/cloudflare.sh).
+[`examples/phoenix_demo/scripts/wasm.sh`](../examples/phoenix_demo/scripts/wasm.sh).
+
+The same directory also runs on Deno and Deno Deploy, and in a web page:
+see "Deno and Deno Deploy" and "In a web page" below.
 
 ## What the build writes
 
@@ -47,6 +50,8 @@ config providers run in the Worker. See
 | `worker.capnp` | Both Workers for `workerd`. |
 | `tcp-proxy.mjs` | A local TCP port for a listener of the program (see "Incoming TCP"). |
 | `licenses/` | The license texts of the software in `beam.wasm`. Wrangler uploads them with the runtime (about 80 KB). |
+| `deno.js`, `deno.json`, `deno/` | The same runtime on Deno and Deno Deploy (see below). |
+| `browser.js`, `browser/` | The same runtime in a web page (see below). |
 
 The build also runs the release one time on this computer, to find the
 modules of its boot. The Worker then loads them in one batch, and the
@@ -248,23 +253,23 @@ In `workerd` on a computer, a Phoenix app answers its first request in
   count on this. Password hashes with the default costs (bcrypt 0.6 s,
   argon2 1.5 s of CPU) need the paid plan.
 
-## Deno and Deno Deploy (a prototype)
+## Deno and Deno Deploy
 
-The same `worker.js` runs on Deno 2.9 and on Deno Deploy, with no change.
-JSPI works in Deno with no flag. The files in
-[`apps/wasm_host/priv/deno`](../apps/wasm_host/priv/deno) give the parts
-of the Workers runtime that `worker.js` uses:
+The output of `--target wasm32` also runs on Deno 2.9 and on Deno Deploy,
+with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
+`deno.json` and `deno/` give the parts of the Workers runtime that
+`worker.js` uses:
 
 | Workers | Deno |
 |---|---|
 | `connect()` of `cloudflare:sockets` | `Deno.connect` (`deno/sockets.js`). TLS stays in `ssl` of OTP. |
-| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files |
+| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files. `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
 | `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
 | `caches.default` | `caches.open('beam')` |
 | The SQL storage of a Durable Object | `node:sqlite`, in memory (`BEAM_SQLITE` = a file path gives a file) |
+| The static assets (`static/`, from `wasm/erts/host/static.mjs`) | `deno.js` serves them before the VM |
 
-To use it, copy `deno.js`, `deno.json` and `deno/` into the output of
-`--target wasm32`, next to `worker.js`. Then run it in that directory:
+Run it in the output directory:
 
 ```sh
 deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
@@ -276,8 +281,13 @@ variables of the release in the app. Then deploy the directory:
 ```sh
 deno deploy create . --org ORG --app APP --source local \
   --runtime-mode dynamic --entrypoint deno.js
+deno deploy env load FILE --org ORG --app APP    # a .env file of the variables
 deno deploy . --org ORG --app APP --prod
 ```
+
+The configurations of Workers upload none of the Deno files, and Deno
+does not read the configurations of Workers. So one directory deploys to
+both.
 
 Differences from Workers:
 
@@ -288,7 +298,7 @@ Differences from Workers:
 - Each isolate has its own VM and its own database in memory. Two
   requests can go to two isolates. So the data of one isolate is not in
   the other, and nothing survives a new deploy. An app that must keep
-  its data needs a database outside the isolate, for example Postgres.
+  its data needs a database outside the isolate.
 - The environment of the release is the variables of the process,
   without those of Deno and of the host (`DENO_*`, `OTEL_*`, `K8S_*`,
   `CDN_LOOP`). Some of those change for each isolate, and the key of a
@@ -303,6 +313,44 @@ On Deno Deploy (September 2026), the Phoenix demo of
 (release 12 MB) and makes a snapshot of 25 MB. On this computer, the
 restore of that snapshot takes 0.15 s. The login flow, LiveView,
 PubSub and Presence work.
+
+## In a web page
+
+The output also runs in a browser tab with JSPI (Chrome 137 or later).
+`browser.js` gives `worker.js` the parts of the Workers runtime that it
+uses: a `WebSocketPair` of two ends in the page, and the Cache API of the
+site for the snapshot. A page has no TCP connections (a connection of
+Erlang gets `econnrefused`) and no SQL storage.
+
+The page needs an import map before its first module, and then calls
+`start()`:
+
+```html
+<script type="importmap">{ "imports": {
+  "cloudflare:sockets": "./browser/sockets.js",
+  "./beam.wasm": "./browser/beam-wasm.js",
+  "./release.bin": "./browser/none.js",
+  "./snapshot.bin": "./browser/none.js" } }</script>
+<script type="module">
+  import { start } from './browser.js';
+  const beam = await start({ release: './release/release.bin' });
+  const response = await beam.fetch('/');     // a Response of the app
+  const socket = await beam.socket('/ws');    // a WebSocket of the app
+</script>
+```
+
+The app runs in the page as in a Durable Object. The REPL of
+[`examples/worker`](../examples/worker) runs so on GitHub Pages
+([`pages.sh`](../examples/worker/pages.sh)). In Chromium, its VM is
+ready in about 1.0 s at the first visit, and in 0.4 to 0.5 s at the next
+visits (a restore of the snapshot).
+
+## The host
+
+The runtime gives the app the variable `BEAM_HOST`: `cloudflare`,
+`deno-deploy`, `deno` or `browser`. On Deno Deploy, `BEAM_REGION` is the
+region of the isolate. It goes to the VM after the boot point, so it is
+not in the key of the snapshot.
 
 ## Limits
 

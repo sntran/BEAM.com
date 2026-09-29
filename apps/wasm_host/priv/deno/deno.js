@@ -10,8 +10,8 @@
 // boot point, before its migrations. The database is in memory, one for
 // each isolate (BEAM_SQLITE = a file path gives a file).
 //
-// A prototype: put deno.js, deno.json and deno/ next to worker.js in the
-// output of "beam.com INPUT -o DIR --target wasm32", then in DIR:
+// "beam.com INPUT -o DIR --target wasm32" writes deno.js, deno.json and
+// deno/ into DIR, next to worker.js. In DIR:
 //   deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
 // or "deno deploy" with the entrypoint deno.js.
 
@@ -116,6 +116,12 @@ const env = Object.fromEntries(Object.entries(Deno.env.toObject())
 // deploy makes a new snapshot.
 const deployment = Deno.env.get('DENO_DEPLOY_BUILD_ID');
 if (deployment) env.BEAM_VERSION = { id: deployment };
+// The host, for the app. The region of Deno Deploy changes for each
+// isolate: so it goes to the VM after the boot point (vars), not into the
+// key of the snapshot.
+env.BEAM_HOST ??= Deno.env.get('DENO_DEPLOY') ? 'deno-deploy' : 'deno';
+const region = Deno.env.get('DENO_REGION');
+const vars = region ? { BEAM_REGION: region } : {};
 let sql = null;
 if (env.BEAM_SQLITE !== 'off') {
   const { DatabaseSync } = await import('node:sqlite');
@@ -123,10 +129,42 @@ if (env.BEAM_SQLITE !== 'off') {
 }
 let vm;  // the VM of this isolate
 
+// The static assets of the app (static/, from wasm/erts/host/static.mjs),
+// as the assets of a Worker: served before the VM.
+const TYPES = {
+  css: 'text/css', js: 'text/javascript', mjs: 'text/javascript', json: 'application/json',
+  html: 'text/html; charset=utf-8', txt: 'text/plain; charset=utf-8', svg: 'image/svg+xml',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  ico: 'image/x-icon', woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', map: 'application/json',
+  wasm: 'application/wasm',
+};
+const assets = new Set();
+const STATIC = new URL('./static/', import.meta.url);
+(function walk(dir, prefix) {
+  let entries;
+  try { entries = [...Deno.readDirSync(dir)]; } catch { return; }
+  for (const e of entries) {
+    if (e.isDirectory) walk(new URL(`${e.name}/`, dir), `${prefix}${e.name}/`);
+    else if (e.isFile) assets.add(`${prefix}${e.name}`);
+  }
+})(STATIC, '/');
+
+async function asset(request) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return null;
+  let path;
+  try { path = decodeURIComponent(new URL(request.url).pathname); } catch { return null; }
+  if (!assets.has(path)) return null;
+  const file = await Deno.open(new URL(`.${path}`, STATIC));
+  const type = TYPES[path.split('.').pop().toLowerCase()] ?? 'application/octet-stream';
+  return new Response(request.method === 'HEAD' ? null : file.readable, { headers: { 'content-type': type } });
+}
+
 export default {
-  fetch(request) {
+  async fetch(request) {
+    const file = await asset(request);
+    if (file) return file;
     if (!vm) {
-      const v = vm = new Vm(env, { plain: false, sql });
+      const v = vm = new Vm(env, { plain: false, sql, vars });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
     // The scheme of the client (Cloudflare gives it in x-forwarded-proto,

@@ -13,7 +13,7 @@ defmodule PhoenixDemo.MixProject do
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader],
       # RELEASE_ERTS=false: a release with no ERTS, for beam.com (see
-      # scripts/cloudflare.sh).
+      # scripts/wasm.sh).
       releases: [phoenix_demo: [include_erts: System.get_env("RELEASE_ERTS") != "false"]]
     ]
   end

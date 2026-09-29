@@ -1,29 +1,40 @@
 #!/bin/sh
-# Builds the demo for Cloudflare Workers with beam.com (https://github.com/sntran/BEAM.com).
-# The result is one Worker. It holds the runtime (BEAM in WebAssembly) and the
-# release. One Durable Object runs the server, and its SQLite storage keeps the
-# database.
+# Builds the demo for Cloudflare Workers and Deno Deploy with beam.com
+# (https://github.com/sntran/BEAM.com). The result is one directory for both.
+# It holds the runtime (BEAM in WebAssembly) and the release. On Workers, one
+# Durable Object runs the server, and its SQLite storage keeps the database.
+# On Deno Deploy, each isolate runs the server, with a database in memory.
 #
-#   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME scripts/cloudflare.sh [DIR]
+#   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME scripts/wasm.sh [DIR]
 #
-# Then deploy from DIR (default: _build/cloudflare). The first deploy also
-# sets the secret SECRET_KEY_BASE, from a file with one line
-# SECRET_KEY_BASE=... (make it with `mix phx.gen.secret`):
+# Then deploy from DIR (default: _build/wasm). The first deploy also sets the
+# secret SECRET_KEY_BASE, from a file with one line SECRET_KEY_BASE=... (make
+# it with `mix phx.gen.secret`):
 #
 #   npx wrangler deploy -c wrangler.durable.jsonc --secrets-file FILE
+#
+# For Deno Deploy (DENO_ORG given), DIR/deno.env has the variables of the app:
+#
+#   deno deploy create . --org ORG --app APP --source local \
+#     --runtime-mode dynamic --entrypoint deno.js
+#   deno deploy env load deno.env --org ORG --app APP
+#   deno deploy env add SECRET_KEY_BASE VALUE --secret --org ORG --app APP
+#   deno deploy . --org ORG --app APP --prod
 #
 # Variables:
 # - SUBDOMAIN: the workers.dev subdomain of the account, for PHX_HOST.
 # - WORKER: the name of the Worker (phoenix).
+# - DENO_ORG, DENO_APP: the organization and the app on Deno Deploy (DENO_APP
+#   defaults to WORKER), for PHX_HOST there.
 set -eu
 : "${BEAM_COM:?set BEAM_COM to the path of beam.com}"
 : "${SUBDOMAIN:?set SUBDOMAIN to the workers.dev subdomain of the account}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-DIR=${1:-$ROOT/_build/cloudflare}
+DIR=${1:-$ROOT/_build/wasm}
 WORKER=${WORKER:-phoenix}
 
 # beam.com runs Mix when its name is mix.com.
-BIN=$ROOT/_build/cloudflare-bin
+BIN=$ROOT/_build/wasm-bin
 mkdir -p "$BIN"
 ln -sf "$BEAM_COM" "$BIN/mix.com"
 export PATH="$BIN:$PATH" MIX_ENV=prod
@@ -70,4 +81,14 @@ text = /"vars": \{[^}]*\}/.test(text)
 if (!text.includes("\"observability\""))
   text = text.replace(/\n}\s*$/, ",\n  \"observability\": { \"enabled\": true }\n}\n");
 fs.writeFileSync(p, text);' "$DIR"
-echo "Built $DIR. Deploy: (cd $DIR && npx wrangler deploy -c wrangler.durable.jsonc)"
+# The same variables for Deno Deploy, with its host name.
+if [ -n "${DENO_ORG:-}" ]; then
+    cat > "$DIR/deno.env" <<ENV
+PHX_HOST=${DENO_APP:-$WORKER}.$DENO_ORG.deno.net
+DATABASE_PATH=/data/phoenix_demo.db
+BEAM_ERL_FLAGS="-Mea min"
+PHX_SERVER=true
+ENV
+fi
+echo "Built $DIR. Deploy to Workers: (cd $DIR && npx wrangler deploy -c wrangler.durable.jsonc)"
+echo "Deploy to Deno Deploy: see the top of scripts/wasm.sh"

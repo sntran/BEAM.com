@@ -5,7 +5,7 @@ defmodule PhoenixDemoWeb.DemoLiveTest do
 
   test "the home page shows the facts of the VM", %{conn: conn} do
     {:ok, _view, html} = live(conn, ~p"/")
-    assert html =~ "Phoenix LiveView on Cloudflare Workers"
+    assert html =~ "Phoenix LiveView on this server"
     assert html =~ to_string(:erlang.system_info(:system_architecture))
     assert html =~ "Visitors online"
   end

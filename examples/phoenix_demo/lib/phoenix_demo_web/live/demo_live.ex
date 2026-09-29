@@ -3,13 +3,18 @@ defmodule PhoenixDemoWeb.DemoLive do
   The home page: facts that only a live BEAM process can give.
 
     * The clock of the server, pushed each second over the WebSocket.
-    * The facts of the VM: on Cloudflare, the architecture is
-      `wasm32-unknown-emscripten`.
+    * The facts of the VM: on Cloudflare Workers and on Deno Deploy, the
+      architecture is `wasm32-unknown-emscripten`.
     * The round-trip time of the WebSocket, measured in the browser.
     * The visitors online now (Phoenix.Presence).
     * A counter that all visitors share (Phoenix.PubSub), in the database.
-    * The Cloudflare data center (from `/cdn-cgi/trace`, in the browser) and
-      the country of the request (the `cf-ipcountry` header).
+    * The place of the server: the Cloudflare data center (from
+      `/cdn-cgi/trace`, in the browser) or the region of Deno Deploy
+      (`BEAM_REGION`), and the country of the request (the `cf-ipcountry`
+      header of Cloudflare).
+
+  The runtime of beam.com gives the host in `BEAM_HOST`: `cloudflare`,
+  `deno-deploy` or `deno`. With no `BEAM_HOST`, the VM runs natively.
   """
   use PhoenixDemoWeb, :live_view
 
@@ -18,6 +23,34 @@ defmodule PhoenixDemoWeb.DemoLive do
 
   @topic "demo"
   @counter "clicks"
+
+  # The words of the page for each host.
+  @hosts %{
+    "cloudflare" => %{
+      name: "Cloudflare Workers",
+      where: "BEAM runs in WebAssembly in a Durable Object.",
+      place: "Cloudflare data center",
+      store: "it stays in SQLite in the Durable Object"
+    },
+    "deno-deploy" => %{
+      name: "Deno Deploy",
+      where: "BEAM runs in WebAssembly in a Deno isolate.",
+      place: "Deno Deploy region",
+      store: "it is in SQLite in the memory of this isolate"
+    },
+    "deno" => %{
+      name: "Deno",
+      where: "BEAM runs in WebAssembly in Deno.",
+      place: "Region",
+      store: "it is in SQLite in the memory of this isolate"
+    },
+    "native" => %{
+      name: "this server",
+      where: "BEAM runs natively.",
+      place: "Region",
+      store: "it stays in SQLite"
+    }
+  }
 
   @impl true
   def mount(_params, session, socket) do
@@ -29,7 +62,9 @@ defmodule PhoenixDemoWeb.DemoLive do
 
     {:ok,
      assign(socket,
-       page_title: "LiveView on Cloudflare Workers",
+       page_title: "LiveView on #{host().name}",
+       host: host(),
+       region: System.get_env("BEAM_REGION"),
        country: session["cf_country"],
        pid: inspect(self()),
        clicks: Counters.get(@counter),
@@ -59,6 +94,8 @@ defmodule PhoenixDemoWeb.DemoLive do
 
   defp online, do: @topic |> Presence.list() |> map_size()
 
+  defp host, do: Map.get(@hosts, System.get_env("BEAM_HOST", "native"), @hosts["native"])
+
   defp now, do: DateTime.utc_now() |> Calendar.strftime("%H:%M:%S UTC")
 
   defp vm do
@@ -86,9 +123,9 @@ defmodule PhoenixDemoWeb.DemoLive do
     <Layouts.app flash={@flash} current_scope={@current_scope}>
       <div class="space-y-6">
         <.header>
-          Phoenix LiveView on Cloudflare Workers
+          Phoenix LiveView on {@host.name}
           <:subtitle>
-            BEAM runs in WebAssembly in a Durable Object. This page is a LiveView:
+            {@host.where} This page is a LiveView:
             the server pushes each change over a WebSocket.
           </:subtitle>
         </.header>
@@ -118,7 +155,7 @@ defmodule PhoenixDemoWeb.DemoLive do
             <div>
               <h2 class="card-title">Shared counter: <span id="clicks">{@clicks}</span></h2>
               <p class="text-sm opacity-70">
-                All visitors share it, and it stays in SQLite in the Durable Object.
+                All visitors share it, and {@host.store}.
               </p>
             </div>
             <.button id="click" phx-click="click" class="btn btn-primary">+1</.button>
@@ -131,8 +168,16 @@ defmodule PhoenixDemoWeb.DemoLive do
             <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm">
               <dt class="opacity-70">Architecture</dt>
               <dd id="arch" class="font-mono">{@vm.arch}</dd>
-              <dt class="opacity-70">Cloudflare data center</dt>
-              <dd id="colo" class="font-mono" phx-hook=".Colo" phx-update="ignore">-</dd>
+              <dt class="opacity-70">{@host.place}</dt>
+              <dd
+                id="colo"
+                class="font-mono"
+                phx-hook=".Colo"
+                phx-update="ignore"
+                data-region={@region}
+              >
+                {@region || "-"}
+              </dd>
               <dt class="opacity-70">Country of the request</dt>
               <dd id="country" class="font-mono">{@country || "-"}</dd>
               <dt class="opacity-70">This LiveView process</dt>
@@ -159,9 +204,11 @@ defmodule PhoenixDemoWeb.DemoLive do
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".Colo">
         // Cloudflare answers /cdn-cgi/trace on each host that it serves, with
-        // the data center of the connection in the line "colo=".
+        // the data center of the connection in the line "colo=". Another host
+        // gives its region in data-region.
         export default {
           mounted() {
+            if (this.el.dataset.region) return
             fetch("/cdn-cgi/trace")
               .then((r) => (r.ok ? r.text() : ""))
               .then((t) => { this.el.textContent = (t.match(/^colo=(.+)$/m) || [])[1] || "-" })

@@ -554,7 +554,9 @@ export class Vm {
             ROOTDIR: '/app', BINDIR: '/app/bin', EMU: 'beam', PROGNAME: 'erl', HOME: '/',
             RELEASE_ROOT: '/app', RELEASE_NAME: name, RELEASE_VSN: vsn, RELEASE_MODE: 'interactive',
             RELEASE_TMP: '/app/tmp', RELEASE_SYS_CONFIG: '/app/tmp/run.runtime', RELEASE_PROG: name,
-            WASM_HOST: '1',
+            // The host of the runtime, for the app: cloudflare, or the value
+            // of deno.js (deno, deno-deploy) or browser.js (browser).
+            WASM_HOST: '1', BEAM_HOST: 'cloudflare',
           }, relEnv, vars, this.bootKey ? { WASM_HOST_BOOT_POINT: 'wait' } : {});
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
         }],

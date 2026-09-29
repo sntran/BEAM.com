@@ -197,6 +197,13 @@ worker_files_test() ->
     [ok = file:write_file(filename:join(Priv, F), F)
      || F <- ["worker.js", "durable.js", "global.js", "durable-global.js", "tcp-proxy.mjs", "app.js"]],
     [ok = file:write_file(filename:join(Runtime, F), F) || F <- ["beam.mjs", "beam.wasm"]],
+    %% The other hosts of worker.js, with their subdirectories.
+    Hosts = filename:join([Root, "lib", "wasm_host-0.1.0", "priv"]),
+    [begin
+         ok = filelib:ensure_dir(filename:join(Hosts, F)),
+         ok = file:write_file(filename:join(Hosts, F), F)
+     end || F <- ["deno/deno.js", "deno/deno.json", "deno/deno/sockets.js",
+                  "browser/browser.js", "browser/browser/none.js"]],
     ok = filelib:ensure_path(filename:join([Root, "licenses", "otp"])),
     [ok = file:write_file(filename:join([Root, "licenses" | F]), "text")
      || F <- [["NOTICE"], ["otp", "MIT.txt"]]],
@@ -208,6 +215,12 @@ worker_files_test() ->
     ?assertEqual(<<"text">>, proplists:get_value("licenses/NOTICE", Plain)),
     ?assertEqual(<<"text">>, proplists:get_value("licenses/otp/MIT.txt", Plain)),
     Has = fun(Fs, Name, Text) -> binary:match(proplists:get_value(Name, Fs), Text) =/= nomatch end,
+    %% The files of Deno and of a web page, next to worker.js.
+    ?assertEqual(<<"deno/deno.js">>, proplists:get_value("deno.js", Plain)),
+    ?assertEqual(<<"deno/deno.json">>, proplists:get_value("deno.json", Plain)),
+    ?assertEqual(<<"deno/deno/sockets.js">>, proplists:get_value("deno/sockets.js", Plain)),
+    ?assertEqual(<<"browser/browser.js">>, proplists:get_value("browser.js", Plain)),
+    ?assertEqual(<<"browser/browser/none.js">>, proplists:get_value("browser/none.js", Plain)),
     ?assertEqual(<<"global.js">>, proplists:get_value("global.js", Plain)),
     ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"main\": \"global.js\"">>)),
     ?assert(Has(Plain, "wrangler.global.jsonc", <<"\"BEAM_WARM\": \"/\"">>)),
