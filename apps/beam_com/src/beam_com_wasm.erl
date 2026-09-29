@@ -27,7 +27,7 @@
 -module(beam_com_wasm).
 
 -export([release_dir/2, write/3]).
--export([sqlite_shim/2]).
+-export([sqlite_shim/1]).
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
@@ -224,21 +224,18 @@ with_host(Files, Root) ->
          end} || {P, D} <- Files, not lists:prefix(Dir ++ "/", P)] ++ Host.
 
 %% Ecto SQLite (exqlite): its NIF module in place of the one of exqlite,
-%% which calls the shim of wasm_host (the host runs the SQL).
-with_sqlite(Files, Root) ->
+%% which calls wasm_host_sqlite:dispatch/2: the host runs the SQL, or
+%% SQLite in the VM (wasm_host_exqlite) when the host does not.
+with_sqlite(Files, _Root) ->
     [case lists:suffix("/ebin/Elixir.Exqlite.Sqlite3NIF.beam", P) of
-         true ->
-             [Shim] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "ebin",
-                                                      "wasm_host_sqlite.beam"])),
-             {ok, {_, [{exports, Exports}]}} = beam_lib:chunks(Shim, [exports]),
-             {P, sqlite_shim(iolist_to_binary(D), Exports)};
+         true -> {P, sqlite_shim(iolist_to_binary(D))};
          false -> {P, D}
      end || {P, D} <- Files].
 
 %% A module 'Elixir.Exqlite.Sqlite3NIF' with the exports of the original
-%% (Beam): each one calls wasm_host_sqlite, or fails (not_supported) when
-%% the shim does not have it. No on_load (no NIF to load).
-sqlite_shim(Beam, Shim) ->
+%% (Beam): each one calls wasm_host_sqlite:dispatch(F, Args). No on_load
+%% (no NIF to load).
+sqlite_shim(Beam) ->
     Mod = 'Elixir.Exqlite.Sqlite3NIF',
     {ok, {Mod, [{exports, Exports0}]}} = beam_lib:chunks(Beam, [exports]),
     Exports = [FA || {F, _} = FA <- Exports0, F =/= module_info],
@@ -246,11 +243,9 @@ sqlite_shim(Beam, Shim) ->
                   {function, 1, F, 0, [{clause, 1, [], [], [{atom, 1, ok}]}]};
              ({F, A}) ->
                   Vars = [{var, 1, list_to_atom("A" ++ integer_to_list(I))} || I <- lists:seq(1, A)],
-                  Body = case lists:member({F, A}, Shim) of
-                             true -> {call, 1, {remote, 1, {atom, 1, wasm_host_sqlite}, {atom, 1, F}}, Vars};
-                             false -> {call, 1, {remote, 1, {atom, 1, erlang}, {atom, 1, nif_error}},
-                                       [{atom, 1, not_supported}]}
-                         end,
+                  Args = lists:foldr(fun(V, T) -> {cons, 1, V, T} end, {nil, 1}, Vars),
+                  Body = {call, 1, {remote, 1, {atom, 1, wasm_host_sqlite}, {atom, 1, dispatch}},
+                          [{atom, 1, F}, Args]},
                   {function, 1, F, A, [{clause, 1, Vars, [], [Body]}]}
           end,
     Forms = [{attribute, 1, module, Mod}, {attribute, 1, export, Exports}

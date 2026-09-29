@@ -279,7 +279,8 @@ strip_and_compress_test() ->
     ?assertEqual({Stripped, 0}, beam_com_wasm:compress_beams(Stripped, [])).
 
 %% A module in place of the NIF of exqlite: the exports of the original,
-%% calls to the shim, and not_supported for the others.
+%% calls to wasm_host_sqlite:dispatch/2 (with no NIF of exqlite: the host),
+%% and not_supported for the functions that the backend does not have.
 sqlite_shim_test() ->
     Mod = 'Elixir.Exqlite.Sqlite3NIF',
     Forms = [{attribute, 1, module, Mod},
@@ -288,7 +289,7 @@ sqlite_shim_test() ->
              {function, 1, open, 2, [{clause, 1, [{var, 1, '_'}, {var, 1, '_'}], [], [{atom, 1, native}]}]},
              {function, 1, made_up, 1, [{clause, 1, [{var, 1, '_'}], [], [{atom, 1, native}]}]}],
     {ok, Mod, Original} = compile:forms(Forms, [binary]),
-    Bin = beam_com_wasm:sqlite_shim(Original, [{open, 2}]),
+    Bin = beam_com_wasm:sqlite_shim(Original),
     {module, Mod} = code:load_binary(Mod, "shim", Bin),
     try
         ?assertEqual(ok, Mod:load_nif()),

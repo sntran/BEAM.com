@@ -3,7 +3,8 @@
 # (https://github.com/sntran/BEAM.com). The result is one directory for both.
 # It holds the runtime (BEAM in WebAssembly) and the release. On Workers, one
 # Durable Object runs the server, and its SQLite storage keeps the database.
-# On Deno Deploy, each isolate runs the server, with a database in memory.
+# On Deno Deploy, each isolate runs the server, and SQLite in the VM keeps
+# the pages of the database in Deno KV.
 #
 #   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME scripts/wasm.sh [DIR]
 #
@@ -17,6 +18,8 @@
 #
 #   deno deploy create . --org ORG --app APP --source local \
 #     --runtime-mode dynamic --entrypoint deno.js
+#   deno deploy database provision DB --kind denokv --org ORG
+#   deno deploy database assign DB --org ORG --app APP
 #   deno deploy env load deno.env --org ORG --app APP
 #   deno deploy env add SECRET_KEY_BASE VALUE --secret --org ORG --app APP
 #   deno deploy . --org ORG --app APP --prod

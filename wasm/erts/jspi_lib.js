@@ -121,6 +121,17 @@ addToLibrary({
     }
     if (ms >= 0) timer = jspiTimer(() => finish(0), ms);
   }),
+  // The files of the host for SQLite (sqlite_vfs.c): Module.beamHost.files
+  // (worker.js) takes each operation, and gives a promise of an integer.
+  // A path is a C string in buf; data is n bytes at buf. The memory can
+  // grow during the wait: heap() gives the current view of it.
+  jspi_host_files__sig: 'i',
+  jspi_host_files: () => Module['beamHost']?.files ? 1 : 0,
+  jspi_file_wait__deps: ['$UTF8ToString'],
+  jspi_file_wait__async: true,
+  jspi_file_wait__sig: 'iiidpi',
+  jspi_file_wait: (op, id, offset, buf, n) =>
+    Module['beamHost'].files.call(op, id, offset, buf, n, { heap: () => HEAPU8, string: UTF8ToString }),
   // The main thread of ERTS may return from main() where the runtime stays
   // after it (not Node.js, which exits then): no wait of it in a snapshot.
   jspi_main_may_return__sig: 'i',

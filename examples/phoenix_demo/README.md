@@ -8,8 +8,8 @@ and `mix phx.gen.auth Accounts User users --live`. beam.com makes one
 directory from it that runs on both hosts. It holds the release and BEAM in
 WebAssembly. On Cloudflare Workers, one Durable Object runs the release, and
 its SQLite storage keeps the database. On Deno Deploy, each isolate runs the
-release, with a database in memory: the data of one isolate is not in the
-others, and a new deploy starts with no data.
+release, and SQLite in the VM keeps the pages of the database in Deno KV: all
+the isolates see the same data, and a new deploy keeps it.
 
 The app uses Phoenix 1.9.0-dev and LiveView 1.3.0-dev, from the `main` branches
 on GitHub, because no 1.9 pre-release is on Hex. The installer of the `main`
@@ -58,6 +58,8 @@ app (`DENO_ORG` and `DENO_APP` give its host name):
 ```sh
 deno deploy create . --org ORG --app APP --source local \
   --runtime-mode dynamic --entrypoint deno.js
+deno deploy database provision DB --kind denokv --org ORG   # the database
+deno deploy database assign DB --org ORG --app APP
 deno deploy env load deno.env --org ORG --app APP
 deno deploy env add SECRET_KEY_BASE VALUE --secret --org ORG --app APP
 deno deploy . --org ORG --app APP --prod

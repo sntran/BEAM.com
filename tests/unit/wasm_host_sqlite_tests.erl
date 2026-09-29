@@ -75,3 +75,19 @@ connection_test_() ->
                       end)},
               ?_assertEqual(ok, wasm_host_sqlite:close(C))]
      end}.
+
+%% With no NIF of exqlite (a native run), the backend is this module: the
+%% host runs the SQL. A function that it does not have is not_supported.
+dispatch_test() ->
+    persistent_term:erase(wasm_host_sqlite),
+    ?assertNot(wasm_host_exqlite:available()),
+    ?assertEqual(wasm_host_sqlite, wasm_host_sqlite:backend()),
+    ?assertEqual(wasm_host_sqlite, wasm_host_sqlite:backend()),   % kept
+    ?assertEqual({ok, false}, {ok, wasm_host_sqlite:dispatch(erlang_allocator_enabled, [])}),
+    ?assertError(not_supported, wasm_host_sqlite:dispatch(made_up, [x])).
+
+%% The functions of the NIF, with no NIF.
+exqlite_stubs_test() ->
+    [?assertError(not_loaded, apply(wasm_host_exqlite, F, lists:duplicate(A, x)))
+     || {F, A} <- wasm_host_exqlite:module_info(exports),
+        F =/= available, F =/= module_info].

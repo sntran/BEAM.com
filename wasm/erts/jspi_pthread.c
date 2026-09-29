@@ -378,6 +378,20 @@ int pthread_once(pthread_once_t *o, void (*fn)(void))
 #include <emscripten/emscripten.h>
 #include <emscripten/syscalls.h>
 
+/* The files of the host (sqlite_vfs.c): an operation of the host, which
+ * the calling thread waits for (jspi_lib.js, Module.beamHost.files). */
+int jspi_file_wait(int op, int id, double offset, void *buf, int n);
+
+int jspi_host_file(int op, int id, double offset, void *buf, int n)
+{
+    struct __pthread *self = cur;
+    uintptr_t sp = jspi_get_sp();
+    int r = jspi_file_wait(op, id, offset, buf, n);
+    jspi_set_sp(sp);
+    cur = self;
+    return r;
+}
+
 /* poll(): a check of the files, and if none is ready, a wait (it suspends
  * under JSPI) until one of them changes or the timeout; then check again.
  * The wait is ours, not Emscripten's __syscall_poll, so that its timer

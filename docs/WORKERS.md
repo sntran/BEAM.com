@@ -111,16 +111,20 @@ npx wrangler deploy -c wrangler.global.jsonc
   certificates of its own, and the builder does not copy the store of
   the build computer.
 
-## Ecto SQLite: D1 and Durable Objects
+## Ecto SQLite: D1, Durable Objects and Deno KV
 
-The runtime has no SQLite: the host runs the SQL. A release with
-`exqlite` (the driver of `ecto_sqlite3`) gets a module in place of its
-NIF, which sends each statement to the Worker:
+A release with `exqlite` (the driver of `ecto_sqlite3`) gets a module in
+place of its NIF. That module sends each call to one of two places:
 
-- In a Durable Object, to its SQLite storage (on the same machine).
-- Else to the D1 database of the binding `DB` (`BEAM_D1` names another
-  binding). `wrangler.jsonc` has the binding: run `wrangler d1 create
-  NAME`, then put its id there.
+- The host runs the SQL. On Workers, in a Durable Object, the host sends
+  each statement to the SQLite storage of the object (on the same
+  machine). Else the host sends it to the D1 database of the binding
+  `DB` (`BEAM_D1` names another binding). `wrangler.jsonc` has the
+  binding: run `wrangler d1 create NAME`, then put its id there.
+- The NIF of exqlite in the runtime (SQLite in the VM) runs the SQL, when
+  the host does not. With the files of the host (Deno KV, see "Deno and
+  Deno Deploy"), SQLite keeps the pages of its databases there. Else
+  its databases are in the memory of the VM.
 
 The app is not changed: [`examples/notes`](../examples/notes) runs on a
 SQLite file on a computer, and on Workers with D1 or with a Durable
@@ -192,8 +196,9 @@ to the Worker, and a remote shell into the VM at the edge works.
 
 ## NIFs
 
-The runtime has the NIFs of `crypto` and `asn1`, and those of
-`bcrypt_elixir` and `argon2_elixir` (for `phx.gen.auth`). The file
+The runtime has the NIFs of `crypto` and `asn1`, those of
+`bcrypt_elixir` and `argon2_elixir` (for `phx.gen.auth`), and that of
+`exqlite` (see "Ecto SQLite"). The file
 `nifs` next to `beam.wasm` lists them. A release with another NIF (for
 example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 
@@ -222,6 +227,7 @@ example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. |
+| `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
 | `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 
 ## Measured
@@ -268,7 +274,7 @@ with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
 | The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files. `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
 | `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
 | `caches.default` | `caches.open('beam')` |
-| The SQL storage of a Durable Object | `node:sqlite`, in memory (`BEAM_SQLITE` = a file path gives a file) |
+| The SQL storage of a Durable Object | SQLite in the VM, with its pages in Deno KV (see below) |
 | The static assets (`static/`, from `wasm/erts/host/static.mjs`) | `deno.js` serves them before the VM |
 
 Run it in the output directory:
@@ -297,10 +303,9 @@ Differences from Workers:
   does. So the VM runs as in a Durable Object: its timers run between
   requests, and an app with Ecto SQLite makes its snapshot at the boot
   point.
-- Each isolate has its own VM and its own database in memory. Two
-  requests can go to two isolates. So the data of one isolate is not in
-  the other, and nothing survives a new deploy. An app that must keep
-  its data needs a database outside the isolate.
+- Each isolate has its own VM. Two requests can go to two isolates. So
+  the state of the processes of one isolate is not in the other. The
+  database is shared through Deno KV (see below).
 - The environment of the release is the variables of the process,
   without those of Deno and of the host (`DENO_*`, `OTEL_*`, `K8S_*`,
   `CDN_LOOP`). Some of those change for each isolate, and the key of a
@@ -315,6 +320,51 @@ On Deno Deploy (September 2026), the Phoenix demo of
 (release 12 MB) and makes a snapshot of 25 MB. On this computer, the
 restore of that snapshot takes 0.15 s. The login flow, LiveView,
 PubSub and Presence work.
+
+### Ecto SQLite on Deno KV
+
+On Deno, SQLite runs in the VM (the NIF of exqlite), and the host keeps
+the pages of each database in Deno KV. All the isolates of an app use the
+same KV, so they see the same data, and the data stays after a new
+deploy. On Deno Deploy, assign a KV database to the app:
+
+```sh
+deno deploy database provision NAME --kind denokv --org ORG
+deno deploy database assign NAME --org ORG --app APP
+```
+
+The variable `BEAM_SQLITE` selects the database:
+
+| `BEAM_SQLITE` | The database |
+|---|---|
+| not set, or `kv` | SQLite in the VM, with its pages in Deno KV: `Deno.openKv(BEAM_KV)`. `BEAM_KV` is the path of a local KV file. On Deno Deploy, do not set it. With no KV, the host uses `memory`. |
+| `memory` | `node:sqlite` in the isolate runs the SQL, with a database in memory for each isolate. |
+| a file path | `node:sqlite` runs the SQL on that file. |
+| `off` | SQLite in the VM, with its databases in the memory of the VM. |
+
+How the pages go to Deno KV:
+
+- The host keeps each database as blocks of 4 KiB. Each block has a
+  version, so a read sees the database as it was at its start, also when
+  another isolate commits meanwhile.
+- SQLite writes a transaction as one batch (`SQLITE_ENABLE_BATCH_ATOMIC_WRITE`).
+  The host commits the batch in one atomic operation of KV, which checks
+  that the database did not change after the read.
+- A write takes a write lock in KV for 10 s. When another isolate has the
+  lock, or when the read is not of the last version, SQLite gets
+  `SQLITE_BUSY`. Then its busy handler tries again from a new read (the
+  `busy_timeout` of `ecto_sqlite3`, 2000 ms by default).
+- A journal stays in the memory of the VM. The database in KV changes
+  only in one commit, so a new VM needs no journal.
+- There is no WAL. `journal_mode: :wal` of `ecto_sqlite3` keeps the mode
+  `delete`.
+
+`BEAM_SQLITE_DEBUG=1` logs each operation of the host on the files.
+
+Test of the Phoenix demo with a local KV file (September 2026): two Deno
+processes on one KV, four LiveView clients, 100 clicks at the same time.
+The counter got all the 100 clicks, with no error, and it kept its value
+after a restart.
 
 ## In a web page
 
@@ -366,6 +416,10 @@ not in the key of the snapshot.
   Objects. The next request boots or restores a new VM.
 - Argon2 with its default costs (64 MiB) can go over the 128 MB of an
   isolate. Use lower costs, or bcrypt.
+- On Deno KV, one transaction of SQLite writes at most 160 blocks of 4 KiB
+  (640 KiB), because an atomic operation of KV has limits. A larger
+  transaction gets `SQLITE_FULL`, and it changes nothing. Each read of a
+  block that is not in the cache of the isolate is a read of KV.
 
 ## How it works
 

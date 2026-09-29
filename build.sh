@@ -342,6 +342,9 @@ hex_nif_recipe() {
         bcrypt_elixir) echo "$BCRYPT_ELIXIR_VERSION $BCRYPT_ELIXIR_SHA256 bcrypt_nif" ;;
         argon2_elixir) echo "$ARGON2_ELIXIR_VERSION $ARGON2_ELIXIR_SHA256 argon2_nif" ;;
         picosat_elixir) echo "$PICOSAT_ELIXIR_VERSION $PICOSAT_ELIXIR_SHA256 picosat_nif" ;;
+        # Only for the WebAssembly runtime (step_wasm_runtime): the native
+        # beam.com links exqlite in step_nifs.
+        exqlite) echo "$EXQLITE_VERSION $EXQLITE_SHA256 sqlite3_nif" ;;
         *) echo "EXTRA_NIFS: no recipe for the package $1" >&2
            return 1 ;;
     esac
@@ -379,6 +382,24 @@ build_hex_nif() {
             # header sys/unistd.h is not everywhere).
             p="-std=c99 -DNDEBUG -DNGETRUSAGE"
             set -- "c_src/picosat_nif.c:$nif $p" "c_src/picosat.c:$p" ;;
+        exqlite)
+            # The WebAssembly runtime: the NIF is the module wasm_host_exqlite
+            # (the module Exqlite.Sqlite3NIF of a release sends the SQL to
+            # the host or to this NIF, see wasm_host_sqlite), with the
+            # SQLite of exqlite and the VFS of the host files
+            # (wasm/erts/sqlite_vfs.c). The options of its Makefile, and a
+            # batch atomic write for a commit of the host.
+            sed 's/^ERL_NIF_INIT(Elixir\.Exqlite\.Sqlite3NIF,/ERL_NIF_INIT(wasm_host_exqlite,/' \
+                "$src/c_src/sqlite3_nif.c" > "$src/c_src/wasm_sqlite3_nif.c"
+            grep -q '^ERL_NIF_INIT(wasm_host_exqlite,' "$src/c_src/wasm_sqlite3_nif.c"
+            q="-DNDEBUG=1 -Ic_src -DSQLITE_THREADSAFE=1 -DSQLITE_USE_URI=1
+               -DSQLITE_LIKE_DOESNT_MATCH_BLOBS=1 -DSQLITE_DQS=0 -DHAVE_USLEEP=1
+               -DSQLITE_ENABLE_FTS3=1 -DSQLITE_ENABLE_FTS4=1 -DSQLITE_ENABLE_FTS5=1
+               -DSQLITE_ENABLE_GEOPOLY=1 -DSQLITE_ENABLE_MATH_FUNCTIONS=1 -DSQLITE_ENABLE_RBU=1
+               -DSQLITE_ENABLE_RTREE=1 -DSQLITE_OMIT_DEPRECATED=1 -DSQLITE_ENABLE_DBSTAT_VTAB=1
+               -DSQLITE_ENABLE_BATCH_ATOMIC_WRITE=1 -DSQLITE_EXTRA_INIT=beam_vfs_init"
+            set -- "c_src/wasm_sqlite3_nif.c:$nif $q" "c_src/sqlite3.c:$q" \
+                "$ROOT/wasm/erts/sqlite_vfs.c:$q" ;;
     esac
     for f in "$@"; do
         c=${f%%:*}
@@ -600,7 +621,8 @@ step_wasm_runtime() {
     log "Building the WebAssembly runtime"
     EMSDK=$emsdk BOOTSTRAP=$ERL_TOP OUT=$BUILD/wasm OTP_VERSION=$OTP_VERSION \
         OPENSSL_VERSION=$OPENSSL_VERSION WASM_NODE=0 WORKER=1 WORKER_ROOTFS=none \
-        WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD HEX_NIFS="$(hex_nif_packages)" \
+        WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD \
+        HEX_NIFS="$(hex_nif_packages)$(use_exqlite && echo " exqlite")" \
         "$ROOT/wasm/erts/build.sh"
 }
 
@@ -842,6 +864,11 @@ step_unit() {
     fi
     ELIXIR_LIB=$BUILD/elixir-$ELIXIR_VERSION/lib \
         "$ERL_TOP/bin/escript" "$ROOT/tests/unit/run.escript" "$BUILD/unit"
+    # The JavaScript of the WebAssembly host (Node.js 20.6 or later).
+    if command -v node >/dev/null 2>&1; then
+        log "Running the tests of the WebAssembly host"
+        node --test "$ROOT"/tests/host/*.test.mjs
+    fi
 }
 
 step_test() {

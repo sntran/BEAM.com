@@ -406,6 +406,242 @@ export default {
   },
 };
 
+// The files of the host for SQLite in the VM (exqlite, the NIF of the
+// runtime, with wasm/erts/sqlite_vfs.c): the main database files. A store
+// keeps their blocks of 4 KiB, each with the version of the database that
+// wrote it:
+//   meta(name) -> {version, size, stamp}: version 0 and size 0 for no file
+//   block(name, n, version) -> {data, v, prev}: the newest block n at or
+//     before version, or null
+//   commit(name, stamp, {version, size, blocks: [{n, data, prev, drop}]})
+//     -> the new stamp, or null when another commit came first
+//   lock(name, stamp, owner, ms) -> true, or false when another owner has
+//     the write lock or the stamp is not the last one
+//   unlock(name, owner)
+//   remove(name)
+// A transaction reads one version of the database: the version at its
+// shared lock. Its writes go to the store in one commit, which fails when
+// another VM committed first (SQLITE_BUSY, and nothing changes). A block
+// keeps its last two versions, for the reads of an older transaction.
+const BLOCK = 4096;
+const FOP = { OPEN: 1, CLOSE: 2, READ: 3, WRITE: 4, TRUNCATE: 5, SYNC: 6, SIZE: 7, LOCK: 8, UNLOCK: 9,
+  DELETE: 10, ACCESS: 11, BEGIN_BATCH: 12, COMMIT_BATCH: 13, ROLLBACK_BATCH: 14 };
+const SQLITE_BUSY = 5, SQLITE_IOERR = 10, SQLITE_FULL = 13;
+
+export class HostFiles {
+  // maxBlocks: the blocks of one commit (a commit of the store has limits).
+  // lease: the time of the write lock of a database (ms). The lock only
+  // makes a conflict less frequent; the commit checks the version.
+  constructor(store, { maxBlocks = 160, lease = 10000, debug = false } = {}) {
+    this.store = store;
+    this.debug = debug;
+    this.maxBlocks = maxBlocks;
+    this.lease = lease;
+    this.owner = crypto.randomUUID();
+    this.files = new Map();  // id -> {db, snap, dirty, size}
+    this.dbs = new Map();    // name -> {name, version, cache}: blocks of one version
+    this.next = 1;
+  }
+
+  // An operation of sqlite_vfs.c (jspi_file_wait): an integer.
+  async call(op, id, offset, buf, n, mem) {
+    try {
+      const r = await this.op(op, id, offset, buf, n, mem);
+      if (this.debug) console.log(`beam: SQLite file: op ${op} file ${id} at ${offset} n ${n}: ${r}`);
+      return r;
+    } catch (e) {
+      console.log(`beam: SQLite file: ${e.message}`);
+      return op === FOP.READ ? -1 : SQLITE_IOERR;
+    }
+  }
+
+  db(name) {
+    let d = this.dbs.get(name);
+    if (!d) this.dbs.set(name, d = { name, version: -1, cache: new Map() });
+    return d;
+  }
+
+  async op(op, id, offset, buf, n, mem) {
+    switch (op) {
+      case FOP.OPEN: {
+        const fid = this.next++;
+        this.files.set(fid, { db: this.db(mem.string(buf)), snap: null, dirty: new Map(), size: null });
+        return fid;
+      }
+      case FOP.ACCESS: return (await this.store.meta(mem.string(buf))).size > 0 ? 1 : 0;
+      case FOP.DELETE: {
+        const name = mem.string(buf);
+        await this.store.remove(name);
+        this.dbs.delete(name);
+        return 0;
+      }
+    }
+    const f = this.files.get(id);
+    if (!f) return op === FOP.READ ? -1 : SQLITE_IOERR;
+    switch (op) {
+      case FOP.CLOSE: await this.release(f, id); this.files.delete(id); return 0;
+      case FOP.LOCK:
+        if (n === 1) await this.begin(f);
+        else if (n >= 2 && !f.leased) return this.reserve(f, id);
+        return 0;
+      case FOP.UNLOCK:
+        if (n < 2) await this.release(f, id);
+        if (n === 0) { f.snap = null; f.dirty.clear(); f.size = null; }
+        return 0;
+      case FOP.READ: return this.read(f, offset, buf, n, mem);
+      case FOP.WRITE: await this.write(f, offset, buf, n, mem); return 0;
+      case FOP.TRUNCATE:
+        if (!f.snap) await this.begin(f);
+        f.size = offset;
+        for (const k of f.dirty.keys()) if (k * BLOCK >= offset) f.dirty.delete(k);
+        return 0;
+      case FOP.SIZE:
+        if (!f.snap) await this.begin(f);
+        new DataView(mem.heap().buffer).setFloat64(buf, f.size ?? f.snap.size, true);
+        return 0;
+      case FOP.BEGIN_BATCH: return 0;
+      case FOP.SYNC: case FOP.COMMIT_BATCH: return this.commit(f);
+      case FOP.ROLLBACK_BATCH: f.dirty.clear(); f.size = null; return 0;
+    }
+    return SQLITE_IOERR;
+  }
+
+  // A shared lock: the last version of the database. The cache of the
+  // blocks keeps one version.
+  async begin(f) {
+    f.snap = await this.store.meta(f.db.name);
+    f.dirty.clear();
+    f.size = null;
+    if (f.db.version !== f.snap.version) {
+      f.db.cache.clear();
+      f.db.version = f.snap.version;
+    }
+  }
+
+  // A reserved lock starts a write. It fails with SQLITE_BUSY when another
+  // file has the write lock, or when the version of the read is not the
+  // last one. Then the busy handler of SQLite tries again from a new read.
+  async reserve(f, id) {
+    if (!f.snap) await this.begin(f);
+    if (!await this.store.lock(f.db.name, f.snap.stamp, `${this.owner}:${id}`, this.lease)) return SQLITE_BUSY;
+    f.leased = true;
+    return 0;
+  }
+
+  async release(f, id) {
+    if (!f.leased) return;
+    f.leased = false;
+    await this.store.unlock(f.db.name, `${this.owner}:${id}`);
+  }
+
+  // Block k as this transaction sees it (zeros for no block).
+  async block(f, k) {
+    const d = f.dirty.get(k);
+    if (d) return d;
+    const db = f.db, same = db.version === f.snap.version;
+    let b = same ? db.cache.get(k) : undefined;
+    if (!b) {
+      b = (await this.store.block(db.name, k, f.snap.version)) ?? { data: null, v: 0, prev: 0 };
+      if (same && db.version === f.snap.version) db.cache.set(k, b);
+    }
+    return b.data ?? new Uint8Array(BLOCK);
+  }
+
+  async read(f, offset, buf, n, mem) {
+    if (!f.snap) await this.begin(f);
+    const end = Math.min(offset + n, f.size ?? f.snap.size);
+    for (let pos = offset; pos < end;) {
+      const k = Math.floor(pos / BLOCK), at = pos - k * BLOCK, len = Math.min(BLOCK - at, end - pos);
+      const data = await this.block(f, k);
+      mem.heap().set(data.subarray(at, at + len), buf + (pos - offset));
+      pos += len;
+    }
+    return Math.max(0, end - offset);
+  }
+
+  async write(f, offset, buf, n, mem) {
+    if (!f.snap) await this.begin(f);
+    for (let pos = offset; pos < offset + n;) {
+      const k = Math.floor(pos / BLOCK), at = pos - k * BLOCK, len = Math.min(BLOCK - at, offset + n - pos);
+      const data = new Uint8Array(await this.block(f, k));
+      data.set(mem.heap().subarray(buf + (pos - offset), buf + (pos - offset) + len), at);
+      f.dirty.set(k, data);
+      pos += len;
+    }
+    f.size = Math.max(f.size ?? f.snap.size, offset + n);
+  }
+
+  // The writes of the transaction, in one commit of the store.
+  async commit(f) {
+    if (!f.snap) return 0;
+    const size = f.size ?? f.snap.size;
+    if (!f.dirty.size && size === f.snap.size) return 0;
+    const db = f.db, version = f.snap.version + 1;
+    if (f.dirty.size > this.maxBlocks) {
+      console.log(`beam: SQLite: a commit of ${f.dirty.size} blocks of 4 KiB (at most ${this.maxBlocks})`);
+      f.dirty.clear();
+      f.size = null;
+      return SQLITE_FULL;
+    }
+    const same = db.version === f.snap.version;
+    const blocks = [...f.dirty].map(([n, data]) => {
+      const old = same ? db.cache.get(n) : undefined;
+      return { n, data, prev: old?.v ?? 0, drop: old?.prev || 0 };
+    });
+    const stamp = await this.store.commit(db.name, f.snap.stamp, { version, size, blocks });
+    f.dirty.clear();
+    f.size = null;
+    if (stamp === null) {
+      db.cache.clear();
+      db.version = -1;
+      return SQLITE_BUSY;
+    }
+    if (!same) db.cache.clear();
+    db.version = version;
+    for (const b of blocks) db.cache.set(b.n, { data: b.data, v: version, prev: b.prev });
+    f.snap = { version, size, stamp };
+    return 0;
+  }
+}
+
+// A store of HostFiles in memory: for a page, and for the tests.
+export class MemoryStore {
+  constructor() { this.dbs = new Map(); }
+  get(name) {
+    let d = this.dbs.get(name);
+    if (!d) this.dbs.set(name, d = { version: 0, size: 0, stamp: 0, blocks: new Map() });
+    return d;
+  }
+  async meta(name) { const d = this.get(name); return { version: d.version, size: d.size, stamp: d.stamp }; }
+  async block(name, n, version) {
+    const vs = this.get(name).blocks.get(n) ?? [];
+    for (let i = vs.length - 1; i >= 0; i--) if (vs[i].v <= version) return vs[i];
+    return null;
+  }
+  async commit(name, stamp, { version, size, blocks }) {
+    const d = this.get(name);
+    if (d.stamp !== stamp) return null;
+    for (const b of blocks) {
+      const vs = (d.blocks.get(b.n) ?? []).filter((x) => !b.drop || x.v !== b.drop);
+      vs.push({ data: b.data, v: version, prev: b.prev });
+      d.blocks.set(b.n, vs);
+    }
+    Object.assign(d, { version, size, stamp: d.stamp + 1 });
+    return d.stamp;
+  }
+  async lock(name, stamp, owner, ms) {
+    const d = this.get(name), now = Date.now();
+    if (d.stamp !== stamp || (d.lock && d.lock.owner !== owner && d.lock.until > now)) return false;
+    d.lock = { owner, until: now + ms };
+    return true;
+  }
+  async unlock(name, owner) {
+    const d = this.get(name);
+    if (d.lock?.owner === owner) d.lock = null;
+  }
+  async remove(name) { this.dbs.delete(name); }
+}
+
 // A VM and its release. In a Worker (plain), the VM runs only in the handlers
 // of open requests (serve). A Durable Object has one context for all its
 // requests, and runs the VM all the time:
@@ -423,8 +659,12 @@ export class Vm {
   // vars: more environment of the VM for this object only (the tenant, for
   // example). They are not part of the key of the snapshot, so the object
   // makes its snapshot at the boot point, and "go" gives them.
-  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {} } = {}) {
+  // files: a store of HostFiles (for example the Deno KV of deno.js):
+  // SQLite in the VM keeps its databases there, when the host does not run
+  // the SQL itself (sql, or a D1 binding).
+  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {}, files = null } = {}) {
     this.vars = vars;
+    this.hostFiles = files && new HostFiles(files, { debug: env.BEAM_SQLITE_DEBUG === '1' });
     this.given = release && { release, snapshot };
     this.handles = new Map();  // id -> setTimeout handle: timers after adopt()
     this.id = id;
@@ -456,7 +696,7 @@ export class Vm {
       // program starts and runs its migrations. So all the objects (the
       // tenants) share it, and each one runs the program on its own storage.
       const meta = releaseMeta(release);
-      const atBoot = !this.plain && this.sql
+      const atBoot = !this.plain && (this.sql || this.hostFiles)
         && ((meta.sql ?? true) || !!env.BEAM_PERSIST || Object.keys(this.vars).length > 0);
       key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
@@ -572,8 +812,9 @@ export class Vm {
             // The host of the runtime, for the app: cloudflare, or the value
             // of deno.js (deno, deno-deploy) or browser.js (browser).
             WASM_HOST: '1', BEAM_HOST: 'cloudflare',
-          }, relEnv, vars, this.bootKey ? { WASM_HOST_BOOT_POINT: 'wait' } : {});
+          }, relEnv, vars, { WASM_HOST_SQL: this.hostSql() }, this.bootKey ? { WASM_HOST_BOOT_POINT: 'wait' } : {});
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
+          if (this.hostFiles) m.beamHost.files = this.hostFiles;
         }],
         print: (s) => console.log(s),
         printErr: (s) => console.log(s),
@@ -619,7 +860,7 @@ export class Vm {
   }
 
   go() {
-    this.event({ t: 'go' }, new TextEncoder().encode(JSON.stringify(this.envVars ?? {})));
+    this.event({ t: 'go' }, new TextEncoder().encode(JSON.stringify({ ...this.envVars, WASM_HOST_SQL: this.hostSql() })));
   }
 
   store(key, bytes) {
@@ -663,6 +904,12 @@ export class Vm {
     } finally {
       x.erts_wasm_resume();
     }
+  }
+
+  // "1" when the host runs the SQL of Ecto SQLite (the storage of a Durable
+  // Object, or D1), else "0": SQLite in the VM (wasm_host_sqlite).
+  hostSql() {
+    return this.sql || this.env[this.env.BEAM_D1 ?? 'DB'] ? '1' : '0';
   }
 
   // A VM that the global scope restored (plain: its jobs ran between
