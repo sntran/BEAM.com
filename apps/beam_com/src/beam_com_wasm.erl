@@ -27,12 +27,12 @@
 -module(beam_com_wasm).
 
 -export([release_dir/2, write/3]).
--export([sqlite_shim/1]).
+-export([sqlite_shim/1, wasm_shim/0]).
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, compress_beams/2, with_cacerts/2, worker_name/1]).
+         strip_beams/1, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1]).
 -endif.
 
 -define(HOST_APP, wasm_host).
@@ -56,7 +56,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                  {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"],
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
      || A <- lists:usort(Apps), lists:member(A, native_nifs() -- runtime_nifs(Runtime))],
-    Files1 = with_cacerts(with_sqlite(with_host(Files0, Root), Root), Opts),
+    Files1 = with_cacerts(with_wasm(with_sqlite(with_host(Files0, Root), Root)), Opts),
     Meta = meta(Rel#{apps => Apps, cacerts => lists:keymember(?CACERTS, 1, Files1)}),
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
@@ -110,16 +110,17 @@ runtime_dir(Root) ->
                      [beam_com:name(), lists:last(Dirs)]})
     end.
 
-%% The applications whose NIFs are in the native beam.com: esqlite, wasm,
-%% and the hex.pm packages of the env nifs of beam_com (build.sh), but
-%% exqlite, whose module the runtime replaces (with_sqlite/2).
+%% The applications whose NIFs are in the native beam.com: esqlite, and
+%% the hex.pm packages of the env nifs of beam_com (build.sh), but
+%% exqlite and wasm, whose modules the runtime replaces (with_sqlite/2,
+%% with_wasm/1).
 native_nifs() ->
     _ = application:load(beam_com),
     Hex = case application:get_env(beam_com, nifs) of
               {ok, Nifs} when is_list(Nifs) -> [A || {A, _} <- Nifs];
               _ -> []
           end,
-    [esqlite, wasm | Hex] -- [exqlite].
+    [esqlite | Hex] -- [exqlite].
 
 %% The hex.pm packages whose NIFs are in the WebAssembly runtime: the file
 %% nifs next to beam.wasm ("NAME VSN" on each line).
@@ -251,6 +252,41 @@ sqlite_shim(Beam) ->
     Forms = [{attribute, 1, module, Mod}, {attribute, 1, export, Exports}
              | [Fun(FA) || FA <- Exports]],
     {ok, Mod, Bin} = compile:forms(Forms, [binary, return_errors]),
+    Bin.
+
+%% WebAssembly (the API of the application wasm of beam.com, whose NIF is
+%% WAMR): the module wasm calls wasm_host_wasm, and the engine of the host
+%% runs the modules. It takes the place of the module of the application
+%% wasm when the release has it, else it goes into wasm_host, so that the
+%% code of any release can call wasm:run/2.
+with_wasm(Files) ->
+    Shim = wasm_shim(),
+    case [P || {P, _} <- Files, lists:suffix("/ebin/wasm.beam", P)] of
+        [] ->
+            [Host] = [filename:dirname(P) || {P, _} <- Files,
+                                             lists:suffix("/ebin/wasm_host.app", P)],
+            Files ++ [{Host ++ "/wasm.beam", Shim}];
+        _ ->
+            [case lists:suffix("/ebin/wasm.beam", P) of
+                 true -> {P, Shim};
+                 false -> {P, D}
+             end || {P, D} <- Files]
+    end.
+
+%% The module wasm: each function of the application wasm calls the same
+%% function of wasm_host_wasm.
+wasm_shim() ->
+    Exports = [{compile, 1}, {instantiate, 1}, {instantiate, 2}, {instantiate, 3},
+               {call_function, 3}, {function_exists, 2}, {start, 1}, {run, 2},
+               {memory_size, 1}, {memory_grow, 2}, {read_binary, 3}, {write_binary, 3}],
+    Fun = fun({F, A}) ->
+                  Vars = [{var, 1, list_to_atom("A" ++ integer_to_list(I))} || I <- lists:seq(1, A)],
+                  Body = {call, 1, {remote, 1, {atom, 1, wasm_host_wasm}, {atom, 1, F}}, Vars},
+                  {function, 1, F, A, [{clause, 1, Vars, [], [Body]}]}
+          end,
+    Forms = [{attribute, 1, module, wasm}, {attribute, 1, export, Exports}
+             | [Fun(FA) || FA <- Exports]],
+    {ok, wasm, Bin} = compile:forms(Forms, [binary, return_errors]),
     Bin.
 
 %% The boot script loads Mods in one batch, after kernel starts.

@@ -647,6 +647,226 @@ export class MemoryStore {
   async remove(name) { this.dbs.delete(name); }
 }
 
+// WebAssembly for the VM (wasm_host_wasm.erl, the API of the application
+// wasm of beam.com): the engine of the host compiles the modules and runs
+// them, with WASI preview 1 for programs. The standard output and error of
+// a program go back to the caller with each reply. There is no file
+// system: stdin is empty, and there are no preopens. A Cloudflare Worker
+// cannot compile WebAssembly at run time, so there compile gives an error.
+// A module or an instance has an id; they stay until the VM stops.
+const ERRNO = { SUCCESS: 0, BADF: 8, NOSYS: 52, SPIPE: 70 };
+
+class WasiExit {
+  constructor(code) { this.code = code; }
+}
+
+function b64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function unb64(text) {
+  const s = atob(text), b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+  return b;
+}
+
+// The types of the exported functions of a module: name -> {params,
+// results}, with the value types as bytes (0x7f i32, 0x7e i64, 0x7d f32,
+// 0x7c f64). The JavaScript API does not give them, and an i64 needs a
+// BigInt.
+export function wasmSignatures(bytes) {
+  let at = 8;
+  const u = () => { let r = 0, s = 0, b; do { b = bytes[at++]; r |= (b & 0x7f) << s; s += 7; } while (b & 0x80); return r >>> 0; };
+  const name = () => { const n = u(); const t = new TextDecoder().decode(bytes.subarray(at, at + n)); at += n; return t; };
+  const limits = () => { const f = u(); u(); if (f & 1) u(); };
+  const types = [], funcs = [], out = {};
+  let exports = [];
+  while (at < bytes.length) {
+    const id = bytes[at++], size = u(), end = at + size;
+    if (id === 1) {
+      for (let n = u(); n > 0; n--) {
+        if (bytes[at++] !== 0x60) return out;  // not a plain function type
+        const params = [], results = [];
+        for (let k = u(); k > 0; k--) params.push(bytes[at++]);
+        for (let k = u(); k > 0; k--) results.push(bytes[at++]);
+        types.push({ params, results });
+      }
+    } else if (id === 2) {
+      for (let n = u(); n > 0; n--) {
+        name(); name();
+        const kind = bytes[at++];
+        if (kind === 0) funcs.push(u());
+        else if (kind === 1) { at++; limits(); }
+        else if (kind === 2) limits();
+        else if (kind === 3) at += 2;
+        else if (kind === 4) { at++; u(); }
+      }
+    } else if (id === 3) {
+      for (let n = u(); n > 0; n--) funcs.push(u());
+    } else if (id === 7) {
+      for (let n = u(); n > 0; n--) exports.push({ name: name(), kind: bytes[at++], index: u() });
+    }
+    at = end;
+  }
+  for (const e of exports) if (e.kind === 0 && types[funcs[e.index]]) out[e.name] = types[funcs[e.index]];
+  return out;
+}
+
+// WASI preview 1, the functions that a small program needs. The others
+// give ENOSYS.
+class Wasi {
+  constructor(args = [], env = []) {
+    this.args = args.map((a) => new TextEncoder().encode(`${a}\0`));
+    this.env = env.map(([k, v]) => new TextEncoder().encode(`${k}=${v}\0`));
+    this.out = []; this.err = [];
+    this.memory = null;
+  }
+
+  take() {
+    const join = (parts) => { const n = parts.reduce((a, p) => a + p.length, 0), b = new Uint8Array(n); let o = 0; for (const p of parts) { b.set(p, o); o += p.length; } return b; };
+    const r = { stdout: b64(join(this.out)), stderr: b64(join(this.err)) };
+    this.out = []; this.err = [];
+    return r;
+  }
+
+  imports(module) {
+    const dv = () => new DataView(this.memory.buffer), mem = () => new Uint8Array(this.memory.buffer);
+    const strings = (list, ptrs, buf) => { let o = buf; list.forEach((s, i) => { dv().setUint32(ptrs + i * 4, o, true); mem().set(s, o); o += s.length; }); return ERRNO.SUCCESS; };
+    const sizes = (list, count, size) => { dv().setUint32(count, list.length, true); dv().setUint32(size, list.reduce((a, s) => a + s.length, 0), true); return ERRNO.SUCCESS; };
+    const f = {
+      args_sizes_get: (c, s) => sizes(this.args, c, s),
+      args_get: (p, b) => strings(this.args, p, b),
+      environ_sizes_get: (c, s) => sizes(this.env, c, s),
+      environ_get: (p, b) => strings(this.env, p, b),
+      fd_write: (fd, iovs, n, written) => {
+        if (fd !== 1 && fd !== 2) return ERRNO.BADF;
+        let total = 0;
+        for (let i = 0; i < n; i++) {
+          const ptr = dv().getUint32(iovs + i * 8, true), len = dv().getUint32(iovs + i * 8 + 4, true);
+          (fd === 1 ? this.out : this.err).push(mem().slice(ptr, ptr + len));
+          total += len;
+        }
+        dv().setUint32(written, total, true);
+        return ERRNO.SUCCESS;
+      },
+      fd_read: (fd, iovs, n, read) => { if (fd !== 0) return ERRNO.BADF; dv().setUint32(read, 0, true); return ERRNO.SUCCESS; },
+      fd_close: (fd) => (fd <= 2 ? ERRNO.SUCCESS : ERRNO.BADF),
+      fd_seek: () => ERRNO.SPIPE,
+      fd_fdstat_get: (fd, buf) => {
+        if (fd > 2) return ERRNO.BADF;
+        dv().setUint8(buf, 2);  // a character device
+        dv().setUint16(buf + 2, 0, true);
+        dv().setBigUint64(buf + 8, 0xffffffffffffffffn, true);
+        dv().setBigUint64(buf + 16, 0xffffffffffffffffn, true);
+        return ERRNO.SUCCESS;
+      },
+      fd_fdstat_set_flags: () => ERRNO.SUCCESS,
+      fd_prestat_get: () => ERRNO.BADF,
+      fd_prestat_dir_name: () => ERRNO.BADF,
+      proc_exit: (code) => { throw new WasiExit(code); },
+      clock_res_get: (id, ptr) => { dv().setBigUint64(ptr, 1000n, true); return ERRNO.SUCCESS; },
+      clock_time_get: (id, precision, ptr) => {
+        const ns = id === 0 ? BigInt(Date.now()) * 1000000n : BigInt(Math.round(performance.now() * 1e6));
+        dv().setBigUint64(ptr, ns, true);
+        return ERRNO.SUCCESS;
+      },
+      random_get: (buf, len) => { for (let o = 0; o < len; o += 65536) crypto.getRandomValues(mem().subarray(buf + o, buf + Math.min(len, o + 65536))); return ERRNO.SUCCESS; },
+      sched_yield: () => ERRNO.SUCCESS,
+    };
+    const imports = {};
+    for (const i of WebAssembly.Module.imports(module)) {
+      if (i.module !== 'wasi_snapshot_preview1' && i.module !== 'wasi_unstable') {
+        throw new Error(`the module imports ${i.module}.${i.name}: only WASI is supported`);
+      }
+      (imports[i.module] ??= {})[i.name] = f[i.name] ?? (() => ERRNO.NOSYS);
+    }
+    return imports;
+  }
+}
+
+export class WasmHost {
+  constructor() {
+    this.modules = new Map();
+    this.instances = new Map();
+    this.next = 1;
+  }
+
+  async op(op, q) {
+    switch (op) {
+      case 'compile': {
+        const bytes = unb64(q.bytes);
+        const module = await WebAssembly.compile(bytes);
+        const id = `m${this.next++}`;
+        this.modules.set(id, { module, sig: wasmSignatures(bytes) });
+        return { ok: id };
+      }
+      case 'instantiate': {
+        const m = this.modules.get(q.module);
+        if (!m) return { error: 'unknown module' };
+        const wasi = new Wasi(q.args, q.env);
+        const instance = await WebAssembly.instantiate(m.module, wasi.imports(m.module));
+        wasi.memory = Object.values(instance.exports).find((e) => e instanceof WebAssembly.Memory) ?? null;
+        const id = `i${this.next++}`;
+        this.instances.set(id, { instance, wasi, sig: m.sig });
+        return { ok: id };
+      }
+    }
+    const inst = this.instances.get(q.instance);
+    if (!inst) return { error: 'unknown instance' };
+    const exports = inst.instance.exports, memory = inst.wasi.memory;
+    switch (op) {
+      case 'exists': return { ok: typeof exports[q.name] === 'function' };
+      case 'call': {
+        const fn = exports[q.name];
+        if (typeof fn !== 'function') return { error: 'not_found' };
+        const type = inst.sig[q.name];
+        const args = q.args.map((a, i) => toWasm(a, type?.params[i]));
+        try {
+          const r = fn(...args);
+          const list = r === undefined ? [] : type && type.results.length > 1 ? [...r] : [r];
+          return { ok: list.map(fromWasm), ...inst.wasi.take() };
+        } catch (e) {
+          if (e instanceof WasiExit) return { exit: e.code, ...inst.wasi.take() };
+          if (e instanceof WebAssembly.RuntimeError) return { trap: e.message, ...inst.wasi.take() };
+          return { error: String(e?.message ?? e), ...inst.wasi.take() };
+        }
+      }
+      case 'memory_size': return memory ? { ok: memory.buffer.byteLength } : { error: 'not_found' };
+      case 'memory_grow':
+        if (!memory) return { error: 'not_found' };
+        try { return { ok: memory.grow(q.pages) }; } catch { return { error: 'out_of_bounds' }; }
+      case 'read':
+        if (!memory) return { error: 'not_found' };
+        if (q.offset + q.length > memory.buffer.byteLength) return { error: 'out_of_bounds' };
+        return { ok: b64(new Uint8Array(memory.buffer, q.offset, q.length)) };
+      case 'write': {
+        if (!memory) return { error: 'not_found' };
+        const data = unb64(q.data);
+        if (q.offset + data.length > memory.buffer.byteLength) return { error: 'out_of_bounds' };
+        new Uint8Array(memory.buffer).set(data, q.offset);
+        return { ok: true };
+      }
+    }
+    return { error: `unknown operation ${op}` };
+  }
+}
+
+// A value of Erlang (JSON) for a parameter of type t, and back.
+function toWasm(v, t) {
+  const n = v === 'nan' ? NaN : v === 'infinity' ? Infinity : v === '-infinity' ? -Infinity : v?.i !== undefined ? v.i : v;
+  return t === 0x7e ? BigInt(n) : Number(n);
+}
+
+function fromWasm(v) {
+  if (typeof v === 'bigint') return v >= -9007199254740991n && v <= 9007199254740991n ? Number(v) : { i: v.toString() };
+  if (Number.isNaN(v)) return 'nan';
+  if (v === Infinity) return 'infinity';
+  if (v === -Infinity) return '-infinity';
+  return v;
+}
+
 // A VM and its release. In a Worker (plain), the VM runs only in the handlers
 // of open requests (serve). A Durable Object has one context for all its
 // requests, and runs the VM all the time:
@@ -1114,6 +1334,22 @@ export class Vm {
     this.event({ t: 'sql_reply', id: msg.id }, new TextEncoder().encode(JSON.stringify(reply)));
   }
 
+  // One operation of wasm_host_wasm (WasmHost). It keeps the request h open
+  // until the answer, as a D1 call does.
+  async wasmRequest(msg, body, h) {
+    if (h) h.sockets++;
+    let reply;
+    try {
+      this.wasm ??= new WasmHost();
+      reply = await this.wasm.op(msg.op, JSON.parse(new TextDecoder().decode(body)));
+    } catch (e) {
+      reply = { error: String(e?.message ?? e) };
+    } finally {
+      if (h) { h.sockets--; h.wake?.(); }
+    }
+    this.event({ t: 'wasm_reply', id: msg.id }, new TextEncoder().encode(JSON.stringify(reply)));
+  }
+
   // A listener on port, once there is one.
   listening(port) {
     if (this.listeners.has(port)) return Promise.resolve();
@@ -1405,6 +1641,11 @@ export class Vm {
       case 'sql': {
         const h = this.handlers.at(-1);
         this.run(() => this.sqlQuery(msg, body, h), h);
+        break;
+      }
+      case 'wasm': {
+        const h = this.handlers.at(-1);
+        this.run(() => this.wasmRequest(msg, body, h), h);
         break;
       }
       case 'tcp_send': {
