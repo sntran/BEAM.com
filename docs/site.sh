@@ -8,7 +8,8 @@
 #   [LIVEBOOK_DIR=DIR] sh docs/site.sh BEAM_COM OUT
 set -eu
 BEAM_COM=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-OUT=$2
+mkdir -p "$2"
+OUT=$(cd "$2" && pwd)
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SITE=$ROOT/docs/site
 BIN=$(mktemp -d)

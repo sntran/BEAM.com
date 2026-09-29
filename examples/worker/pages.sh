@@ -11,7 +11,9 @@
 # The page needs a browser with JSPI (Chrome 137 or later).
 set -eu
 BEAM_COM=$1
-OUT=$2
+# OUT as an absolute path: the copies below run in another directory.
+mkdir -p "$2"
+OUT=$(cd "$2" && pwd)
 HERE=$(cd "$(dirname "$0")" && pwd)
 BUILD=$(mktemp -d)
 trap 'rm -rf "$BUILD"' EXIT
