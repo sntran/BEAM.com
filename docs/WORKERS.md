@@ -376,13 +376,14 @@ times are from a client in the US, over one LiveView socket:
 | First request of a new isolate (boot and migrations) | 8.2 s | 4.5 s |
 | `GET /`, median | 46 ms | 36 to 48 ms |
 | A LiveView event with no SQL, median | 16 ms | 15 to 16 ms |
-| A click (one write transaction), median | 18 ms | 57 to 60 ms |
+| A click (one write transaction), median | 18 ms | 41 to 48 ms |
 
 The first request has one measurement for each, and its time changes
 with the work of the new isolate (a boot, or a restore of a snapshot).
-A write transaction adds about 40 ms: it reads the version, takes the
-write lock, commits, and releases the lock in KV. Four clients sent 100
-clicks at the same time in 4.8 s, and the counter got all of them.
+A write transaction adds about 25 to 30 ms: three operations of KV (the
+version, the lock, and the commit). With a separate unlock, a write was
+six operations and added about 40 ms. Four clients sent 100 clicks at
+the same time in 4.2 s, and the counter got all of them.
 
 ## In a web page
 
