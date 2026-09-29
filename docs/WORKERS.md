@@ -248,6 +248,62 @@ In `workerd` on a computer, a Phoenix app answers its first request in
   count on this. Password hashes with the default costs (bcrypt 0.6 s,
   argon2 1.5 s of CPU) need the paid plan.
 
+## Deno and Deno Deploy (a prototype)
+
+The same `worker.js` runs on Deno 2.9 and on Deno Deploy, with no change.
+JSPI works in Deno with no flag. The files in
+[`apps/wasm_host/priv/deno`](../apps/wasm_host/priv/deno) give the parts
+of the Workers runtime that `worker.js` uses:
+
+| Workers | Deno |
+|---|---|
+| `connect()` of `cloudflare:sockets` | `Deno.connect` (`deno/sockets.js`). TLS stays in `ssl` of OTP. |
+| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files |
+| `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
+| `caches.default` | `caches.open('beam')` |
+| The SQL storage of a Durable Object | `node:sqlite`, in memory (`BEAM_SQLITE` = a file path gives a file) |
+
+To use it, copy `deno.js`, `deno.json` and `deno/` into the output of
+`--target wasm32`, next to `worker.js`. Then run it in that directory:
+
+```sh
+deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
+```
+
+For Deno Deploy, make an app with the entrypoint `deno.js`, and set the
+variables of the release in the app. Then deploy the directory:
+
+```sh
+deno deploy create . --org ORG --app APP --source local \
+  --runtime-mode dynamic --entrypoint deno.js
+deno deploy . --org ORG --app APP --prod
+```
+
+Differences from Workers:
+
+- A Deno isolate keeps its VM between requests, as a Durable Object
+  does. So the VM runs as in a Durable Object: its timers run between
+  requests, and an app with Ecto SQLite makes its snapshot at the boot
+  point.
+- Each isolate has its own VM and its own database in memory. Two
+  requests can go to two isolates. So the data of one isolate is not in
+  the other, and nothing survives a new deploy. An app that must keep
+  its data needs a database outside the isolate, for example Postgres.
+- The environment of the release is the variables of the process,
+  without those of Deno and of the host (`DENO_*`, `OTEL_*`, `K8S_*`,
+  `CDN_LOOP`). Some of those change for each isolate, and the key of a
+  snapshot holds the environment. `BEAM_ENV` = `NAME,NAME` gives the
+  exact list of names.
+- Deno Deploy gives the scheme of the client only in the URL. `deno.js`
+  adds `x-forwarded-proto`, which `force_ssl` of Phoenix reads.
+- The clock moves while code runs.
+
+On Deno Deploy (September 2026), the Phoenix demo of
+[`examples/phoenix_demo`](../examples/phoenix_demo) boots in 1.0 s
+(release 12 MB) and makes a snapshot of 25 MB. On this computer, the
+restore of that snapshot takes 0.15 s. The login flow, LiveView,
+PubSub and Presence work.
+
 ## Limits
 
 - Threads switch only when one waits: a long NIF or BIF stops the other

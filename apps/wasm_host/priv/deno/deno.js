@@ -1,47 +1,67 @@
 // The BEAM on Deno (Deno Deploy): worker.js of the Workers, with the parts of
 // the Workers runtime that it uses given by Deno: connect() of
-// cloudflare:sockets (deno/sockets.js), the module imports of beam.wasm and
-// release.bin (deno.json), WebSocketPair, caches.default, and the SQL
-// storage of a Durable Object (node:sqlite).
+// cloudflare:sockets (deno/sockets.js), the module imports of beam.wasm,
+// release.bin and snapshot.bin (deno.json), WebSocketPair, caches.default,
+// and the SQL storage of a Durable Object (node:sqlite).
+//
+// A Deno isolate keeps its VM between requests, as a Durable Object does.
+// So the VM runs as in a Durable Object (plain: false): its timers run
+// between requests, and an app with Ecto SQLite makes its snapshot at the
+// boot point, before its migrations. The database is in memory, one for
+// each isolate (BEAM_SQLITE = a file path gives a file).
 //
 // A prototype: put deno.js, deno.json and deno/ next to worker.js in the
 // output of "beam.com INPUT -o DIR --target wasm32", then in DIR:
 //   deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
-import { AsyncLocalStorage } from 'node:async_hooks';
+// or "deno deploy" with the entrypoint deno.js.
 
-const current = new AsyncLocalStorage();  // the request of this call
-
-// WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket).
-// The client end holds the response of the upgrade, and the server end is
-// the socket of Deno, with accept() of Workers.
+// WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket),
+// and only with the request. The VM can make the pair outside the call of
+// the request (a Durable Object runs the VM all the time). So the server
+// end is a socket with no connection yet. fetch() connects it when it
+// gets the response of the upgrade (upgrade).
 const UPGRADE = Symbol('upgrade');
 globalThis.WebSocketPair = class {
   constructor() {
-    const { socket, response } = Deno.upgradeWebSocket(current.getStore());
-    const queue = [];
-    let open = socket.readyState === 1;
-    socket.addEventListener('open', () => { open = true; for (const m of queue.splice(0)) socket.send(m); });
-    const server = new Proxy(socket, {
-      get(s, k) {
-        if (k === 'accept') return () => {};
-        if (k === 'send') return (m) => (open ? s.send(m) : queue.push(m));
-        const v = Reflect.get(s, k);
-        return typeof v === 'function' ? v.bind(s) : v;
+    const listeners = { message: [], close: [], error: [] };
+    const queue = [];  // the messages before the socket opens
+    let socket = null, closed = null;
+    const server = {
+      binaryType: 'arraybuffer',
+      accept() {},
+      addEventListener(type, f) { listeners[type]?.push(f); },
+      send(m) { if (socket?.readyState === 1) socket.send(m); else if (!closed) queue.push(m); },
+      close(code, reason) {
+        if (socket) { try { socket.close(code, reason); } catch {} } else closed = [code, reason];
       },
-      set(s, k, v) { return Reflect.set(s, k, v); },
-    });
-    this[0] = { [UPGRADE]: response };
+    };
+    const connect = (request) => {
+      const { socket: s, response } = Deno.upgradeWebSocket(request);
+      socket = s;
+      s.binaryType = server.binaryType;
+      for (const type of Object.keys(listeners)) {
+        s.addEventListener(type, (e) => { for (const f of listeners[type]) f(e); });
+      }
+      s.addEventListener('open', () => {
+        for (const m of queue.splice(0)) s.send(m);
+        if (closed) s.close(...closed);
+      });
+      return response;
+    };
+    this[0] = { [UPGRADE]: connect };
     this[1] = server;
   }
 };
 
-// new Response(null, { status: 101, webSocket }) of Workers: the response
-// of the upgrade.
+// new Response(null, { status: 101, webSocket }) of Workers: a response
+// that fetch() changes to the response of the upgrade (Deno refuses the
+// status 101 here).
 const NativeResponse = Response;
 globalThis.Response = class extends NativeResponse {
   constructor(body, init) {
-    if (init?.webSocket?.[UPGRADE]) return init.webSocket[UPGRADE];
-    super(body, init);
+    const connect = init?.webSocket?.[UPGRADE];
+    super(connect ? null : body, connect ? { status: 200 } : init);
+    if (connect) this[UPGRADE] = connect;
   }
 };
 
@@ -84,8 +104,18 @@ class SqlStorage {
 }
 
 const { Vm } = await import('./worker.js');
-const env = Deno.env.toObject();
-const ctx = { waitUntil: (p) => { p?.catch?.((e) => console.error(e)); } };
+// The environment of the release, as the "vars" of a Worker: the
+// variables of the process, without those of Deno and of the host. Some
+// of those change for each isolate, and the key of a snapshot holds the
+// environment. BEAM_ENV = "NAME,NAME" gives the exact list.
+const HOST_VAR = /^(DENO_|OTEL_|K8S_|CDN_LOOP$)/;
+const names = Deno.env.get('BEAM_ENV')?.split(',').map((n) => n.trim()).filter(Boolean);
+const env = Object.fromEntries(Object.entries(Deno.env.toObject())
+  .filter(([k]) => (names ? names.includes(k) || k.startsWith('BEAM_') : !HOST_VAR.test(k))));
+// The version of the deploy (as version_metadata of a Worker): a new
+// deploy makes a new snapshot.
+const deployment = Deno.env.get('DENO_DEPLOY_BUILD_ID');
+if (deployment) env.BEAM_VERSION = { id: deployment };
 let sql = null;
 if (env.BEAM_SQLITE !== 'off') {
   const { DatabaseSync } = await import('node:sqlite');
@@ -96,9 +126,18 @@ let vm;  // the VM of this isolate
 export default {
   fetch(request) {
     if (!vm) {
-      const v = vm = new Vm(env, { sql });
+      const v = vm = new Vm(env, { plain: false, sql });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
-    return current.run(request, () => vm.fetch(request, ctx));
+    // The scheme of the client (Cloudflare gives it in x-forwarded-proto,
+    // Deno Deploy only in the URL): Plug.SSL and force_ssl read it.
+    let r = request;
+    if (!request.headers.has('x-forwarded-proto')) {
+      const headers = new Headers(request.headers);
+      headers.set('x-forwarded-proto', new URL(request.url).protocol.slice(0, -1));
+      r = new Request(request, { headers });
+    }
+    // The upgrade needs the request that Deno gave.
+    return Promise.resolve(vm.fetch(r)).then((res) => (res?.[UPGRADE] ? res[UPGRADE](request) : res));
   },
 };
