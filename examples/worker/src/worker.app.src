@@ -1,5 +1,5 @@
 {application, worker,
- [{description, "An Erlang REPL on the web, for the WebAssembly runtime of beam.com"},
+ [{description, "The Erlang shell on the web, for the WebAssembly runtime of beam.com"},
   {vsn, "0.1.0"},
   {registered, []},
   {mod, {worker, []}},

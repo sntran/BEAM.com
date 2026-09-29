@@ -1,4 +1,4 @@
-%% An Erlang REPL on the web, from one Cowboy app that runs natively, on
+%% The Erlang shell on the web, from one Cowboy app that runs natively, on
 %% Cloudflare Workers, on Deno Deploy and in a web page. "/" is the page
 %% (priv/index.html), "/ws" is the WebSocket of a session, and "/hello"
 %% is a text with a count of the requests of this VM. It listens on PORT
@@ -12,16 +12,19 @@
 %% Caution: the REPL runs the code of each visitor in the VM, with the
 %% network of the host. Give the VM no secret.
 %%
-%% The messages of the WebSocket are JSON. The page sends {"eval": TEXT}
-%% or {"interrupt": true}. The server sends {"hello": FACTS} once, then
-%% {"output": TEXT} for the output of io, and {"value": TEXT} or
-%% {"error": TEXT} at the end of each evaluation.
+%% Each WebSocket is a session of the Erlang shell (worker_shell): the
+%% shell of stdlib, as a restricted shell. The messages are JSON. The page
+%% sends {"input": LINE} or {"interrupt": true}. The server sends
+%% {"hello": FACTS} once, then {"output": TEXT} for the output of the
+%% shell, and {"prompt": TEXT} when the shell waits for a line.
 -module(worker).
 -behaviour(application).
 -export([start/2, stop/1, init/2, websocket_init/1, websocket_handle/2, websocket_info/2,
          terminate/3]).
 
 start(_Type, _Args) ->
+    %% The shells of the sessions refuse q(), halt() and init:stop().
+    application:set_env(stdlib, restricted_shell, worker_shell),
     Port = list_to_integer(os:getenv("PORT", "4000")),
     Dispatch = cowboy_router:compile(
                  [{'_', [{"/", cowboy_static, {priv_file, worker, "index.html"}},
@@ -43,58 +46,37 @@ init(Req, hello) ->
                           counters:get(Count, 1)]),
     {ok, cowboy_req:reply(200, #{<<"content-type">> => <<"text/plain">>}, Body, Req), hello};
 init(Req, ws) ->
-    {cowboy_websocket, Req, #{bindings => erl_eval:new_bindings(), running => none},
-     #{idle_timeout => 600000, max_frame_size => 65536}}.
+    {cowboy_websocket, Req, none, #{idle_timeout => 600000, max_frame_size => 65536}}.
 
-websocket_init(State) ->
+websocket_init(none) ->
     Facts = #{otp => list_to_binary(erlang:system_info(otp_release)),
               arch => list_to_binary(erlang:system_info(system_architecture)),
               host => list_to_binary(os:getenv("BEAM_HOST", "native")),
               processes => erlang:system_info(process_count)},
-    {[frame(#{hello => Facts})], State}.
+    {[frame(#{hello => Facts})], worker_shell:start()}.
 
-websocket_handle({text, Text}, State) ->
+websocket_handle({text, Text}, Session) ->
     try json:decode(Text) of
-        #{<<"eval">> := Source} when is_binary(Source) -> eval(Source, State);
-        #{<<"interrupt">> := true} -> interrupt(State);
-        _ -> {[frame(#{error => <<"** unknown message\n">>})], State}
+        #{<<"input">> := Line} when is_binary(Line) -> worker_shell:input(Session, Line);
+        #{<<"interrupt">> := true} -> worker_shell:interrupt(Session);
+        _ -> ok
     catch
-        _:_ -> {[frame(#{error => <<"** not JSON\n">>})], State}
-    end;
-websocket_handle(_Frame, State) ->
-    {[], State}.
+        _:_ -> ok
+    end,
+    {[], Session};
+websocket_handle(_Frame, Session) ->
+    {[], Session}.
 
-eval(_Source, #{running := {_, _}} = State) ->
-    {[frame(#{error => <<"** an evaluation runs: wait, or interrupt it\n">>})], State};
-eval(Source, #{bindings := Bindings} = State) ->
-    case worker_repl:parse(Source) of
-        {ok, Exprs} ->
-            Ref = make_ref(),
-            Pid = worker_repl:start(Ref, Exprs, Bindings),
-            {[], State#{running := {Ref, Pid}}};
-        {error, Message} ->
-            {[frame(#{error => Message})], State}
-    end.
+websocket_info({shell, Session, {output, Text}}, Session) ->
+    {[frame(#{output => Text})], Session};
+websocket_info({shell, Session, {prompt, Text}}, Session) ->
+    {[frame(#{prompt => Text})], Session};
+websocket_info({shell, Session, down}, Session) ->
+    {[{close, 1000, <<"the shell stopped">>}], Session};
+websocket_info(_Info, Session) ->
+    {[], Session}.
 
-interrupt(#{running := {Ref, Pid}} = State) ->
-    Pid ! {Ref, interrupt},
-    {[], State};
-interrupt(State) ->
-    {[], State}.
-
-websocket_info({Ref, output, Text}, #{running := {Ref, _}} = State) ->
-    {[frame(#{output => Text})], State};
-websocket_info({Ref, result, {value, Text, Bindings}}, #{running := {Ref, _}} = State) ->
-    {[frame(#{value => Text})], State#{bindings := Bindings, running := none}};
-websocket_info({Ref, result, {error, Text, Bindings}}, #{running := {Ref, _}} = State) ->
-    {[frame(#{error => Text})], State#{bindings := Bindings, running := none}};
-websocket_info(_Info, State) ->
-    {[], State}.
-
-terminate(_Reason, _Req, #{running := {Ref, Pid}}) ->
-    Pid ! {Ref, interrupt},
-    ok;
-terminate(_Reason, _Req, _State) ->
+terminate(_Reason, _Req, _Session) ->
     ok.
 
 frame(Map) ->

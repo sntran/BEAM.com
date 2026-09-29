@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Erlang REPL</title>
+<title>Erlang Shell</title>
 <link rel="icon" href="data:,">
-<meta name="description" content="An Erlang REPL from beam.com: natively, on Cloudflare Workers, on Deno Deploy, or in this page.">
+<meta name="description" content="The Erlang shell from beam.com: natively, on Cloudflare Workers, on Deno Deploy, or in this page.">
 <!-- For the page mode (data-beam="page" on <html>): the files of
      "beam.com examples/worker -o DIR --target wasm32" next to this page. -->
 <script type="importmap">{ "imports": {
@@ -16,12 +16,12 @@
 <style>
   :root {
     --bg: #fafaf9; --panel: #ffffff; --text: #1c1917; --muted: #78716c; --line: #e7e5e4;
-    --accent: #a2003e; --value: #1d4ed8; --error: #b91c1c; --output: #44403c;
+    --accent: #a2003e; --error: #b91c1c; --output: #1c1917; --prompt: #a2003e;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #0c0a09; --panel: #1c1917; --text: #f5f5f4; --muted: #a8a29e; --line: #292524;
-      --accent: #f472b6; --value: #93c5fd; --error: #fca5a5; --output: #d6d3d1;
+      --accent: #f472b6; --error: #fca5a5; --output: #e7e5e4; --prompt: #f472b6;
     }
   }
   * { box-sizing: border-box; }
@@ -31,20 +31,17 @@
   h1 { font-size: 1.5rem; margin: 0 0 4px; }
   h1 span { color: var(--accent); }
   .facts { color: var(--muted); font-size: 0.875rem; margin: 0 0 16px; min-height: 1.3em; }
+  .mono { font: 13.5px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   #log { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
          padding: 12px 14px; height: 55vh; min-height: 240px; overflow: auto;
-         font: 13.5px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap;
-         word-break: break-word; }
-  #log .in { color: var(--text); }
-  #log .in::before { content: "> "; color: var(--accent); }
-  #log .out { color: var(--output); }
-  #log .val { color: var(--value); }
+         white-space: pre-wrap; word-break: break-word; color: var(--output); margin: 0; }
+  #log .prompt { color: var(--prompt); }
   #log .err { color: var(--error); }
   #log .note { color: var(--muted); font-style: italic; }
-  form { display: flex; gap: 8px; margin-top: 10px; }
+  form { display: flex; gap: 8px; margin-top: 10px; align-items: flex-start; }
+  #prompt { color: var(--prompt); padding: 9px 0 0; white-space: pre; min-width: 2ch; }
   textarea { flex: 1; min-width: 0; resize: vertical; min-height: 2.6em; padding: 8px 10px;
-             border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text);
-             font: 14px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+             border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
   button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line);
            background: var(--panel); color: var(--text); cursor: pointer; }
   button.run { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -57,87 +54,106 @@
 </head>
 <body>
 <main>
-  <h1><span>Erlang</span> REPL</h1>
+  <h1><span>Erlang</span> shell</h1>
   <p class="facts" id="facts">Connecting…</p>
-  <div id="log" aria-live="polite"></div>
+  <pre id="log" class="mono" aria-live="polite"></pre>
   <form id="form">
-    <textarea id="input" rows="2" spellcheck="false" autocomplete="off"
-              placeholder="lists:seq(1, 10)." aria-label="Erlang expression" disabled></textarea>
+    <span id="prompt" class="mono"></span>
+    <textarea id="input" class="mono" rows="2" spellcheck="false" autocomplete="off"
+              placeholder="lists:seq(1, 10)." aria-label="A line for the shell" disabled></textarea>
     <button type="submit" class="run" id="run" disabled>Run</button>
     <button type="button" id="stop" disabled>Stop</button>
   </form>
   <div class="examples" id="examples"></div>
-  <p class="hint">Enter runs, Shift+Enter adds a line, ↑ and ↓ go through the history.
-    <code>help().</code> shows the commands. From
-    <a href="https://github.com/sntran/BEAM.com">beam.com</a>.</p>
+  <p class="hint">An expression ends with a dot. Enter sends the line, Shift+Enter adds a
+    line, ↑ and ↓ go through the history. <code>help().</code> shows the commands of the
+    shell. From <a href="https://github.com/sntran/BEAM.com">beam.com</a>.</p>
 </main>
 <script type="module">
   const $ = (id) => document.getElementById(id);
-  const log = $('log'), input = $('input'), run = $('run'), stop = $('stop');
+  const log = $('log'), input = $('input'), run = $('run'), stop = $('stop'), prompt = $('prompt');
   const examples = [
     'erlang:system_info(system_architecture).',
     'Pids = [spawn(fun() -> receive stop -> ok end end) || _ <- lists:seq(1, 10000)], length(processes()).',
     '[P ! stop || P <- Pids], ok.',
-    'Fib = fun F(0) -> 0; F(1) -> 1; F(N) -> F(N - 1) + F(N - 2) end, Fib(25).',
+    'fib(0) -> 0; fib(1) -> 1; fib(N) -> fib(N - 1) + fib(N - 2).',
+    'fib(25).',
     'binary:encode_hex(crypto:hash(sha256, <<"abc">>)).',
-    '[io:format("~p~n", [X * X]) || X <- lists:seq(1, 5)], done.',
-    'maps:from_list([{N, N * N} || N <- lists:seq(1, 8)]).',
+    '[io:format("~p~n", [X * X]) || X <- lists:seq(1, 5)], ok.',
+    'io:get_line("Your name? ").',
+    'regs().',
     'b().',
   ];
 
-  function line(text, cls) {
-    const div = document.createElement('div');
-    div.className = cls;
-    div.textContent = text.replace(/\n$/, '');
-    log.append(div);
+  // Output of the shell: its error lines ("** ..." and "* 1:5: ...") in red.
+  // The shell can write one line in more than one part.
+  let lineStart = true, errorLine = false;
+  function write(text, cls) {
+    for (const part of text.split(/(?<=\n)/)) {
+      if (!part) continue;
+      if (lineStart) errorLine = !cls && /^\*{1,2} /.test(part);
+      const span = document.createElement('span');
+      span.className = cls ?? (errorLine ? 'err' : '');
+      span.textContent = part;
+      log.append(span);
+      lineStart = part.endsWith('\n');
+    }
     log.scrollTop = log.scrollHeight;
   }
 
-  let socket = null, busy = false;
+  let socket = null, waiting = false;
   const history = [];
   let at = 0;
 
   function ready(on) {
-    busy = !on;
-    input.disabled = run.disabled = !on || !socket;
+    waiting = on;
+    input.disabled = run.disabled = !on;
     stop.disabled = on || !socket;
     if (on) input.focus();
   }
 
   function send(text) {
-    text = text.trim();
-    if (!text || busy || !socket) return;
-    line(text, 'in');
-    history.push(text);
-    at = history.length;
+    if (!waiting || !socket) return;
+    const lines = text.replace(/\r/g, '').split('\n');
+    if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+    write(prompt.textContent, 'prompt');
+    write(`${lines[0]}\n`, 'in');
+    if (text.trim()) { history.push(text); at = history.length; }
     input.value = '';
+    prompt.textContent = '';
     ready(false);
-    socket.send(JSON.stringify({ eval: text }));
+    // The shell gets one line at a time; the next lines wait for its prompts.
+    queue.push(...lines.slice(1));
+    socket.send(JSON.stringify({ input: lines[0] }));
   }
+  const queue = [];
 
-  function attach(ws, label) {
+  function attach(ws, where) {
     socket = ws;
     ws.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (m.hello) {
         const f = m.hello;
-        $('facts').textContent = `Erlang/OTP ${f.otp} on ${f.arch}, ${label(f.host)}, ${f.processes} processes`;
-        ready(true);
+        $('facts').textContent = `Erlang/OTP ${f.otp} on ${f.arch}, ${where(f.host)}, ${f.processes} processes`;
       } else if (m.output !== undefined) {
-        line(m.output, 'out');
-      } else if (m.value !== undefined) {
-        line(m.value, 'val');
-        ready(true);
-      } else if (m.error !== undefined) {
-        line(m.error, 'err');
-        ready(true);
+        write(m.output);
+      } else if (m.prompt !== undefined) {
+        if (queue.length) {
+          write(m.prompt, 'prompt');
+          const next = queue.shift();
+          write(`${next}\n`, 'in');
+          socket.send(JSON.stringify({ input: next }));
+        } else {
+          prompt.textContent = m.prompt;
+          ready(true);
+        }
       }
     });
     ws.addEventListener('close', () => {
       socket = null;
       ready(false);
       stop.disabled = true;
-      line('The session ended. Reload the page for a new one.', 'note');
+      write('\nThe session ended. Reload the page for a new one.\n', 'note');
     });
   }
 
@@ -178,12 +194,12 @@
   for (const text of examples) {
     const b = document.createElement('button');
     b.type = 'button';
+    b.className = 'mono';
     b.textContent = text.length > 44 ? `${text.slice(0, 42)}…` : text;
     b.title = text;
     b.addEventListener('click', () => send(text));
     $('examples').append(b);
   }
-  line('Type an Erlang expression, or click an example.', 'note');
   connect();
 </script>
 </body>

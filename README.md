@@ -135,7 +135,7 @@ deno serve -A deno.js                            # or on Deno
 | [`examples/greeter_ex`](examples/greeter_ex) | A Mix project with a Hex package in Elixir. |
 | [`examples/toolbox`](examples/toolbox) | A command line program: its entry, `priv` files, and a second VM from its own file. |
 | [`examples/counter`](examples/counter) | Distributed Erlang: a remote shell into a running program. |
-| [`examples/worker`](examples/worker) | An Erlang REPL on the web (Cowboy): natively, on Workers, on Deno, and in a web page ([`pages.sh`](examples/worker/pages.sh)). |
+| [`examples/worker`](examples/worker) | The Erlang shell (`shell` of stdlib) on the web, with Cowboy: natively, on Workers, on Deno, and in a web page ([`pages.sh`](examples/worker/pages.sh)). |
 | [`examples/notes`](examples/notes) | Ecto SQLite on a computer, and on Workers with D1 or a Durable Object. |
 | [`examples/phoenix_demo`](examples/phoenix_demo) | Phoenix LiveView with `phx.gen.auth` in a Durable Object. |
 
