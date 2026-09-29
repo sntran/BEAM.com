@@ -1,7 +1,7 @@
 {application, wasm_host,
  [{description, "The host of the WebAssembly runtime of beam.com: TCP sockets and distribution"},
   {vsn, "0.1.0"},
-  {modules, [wasm_host, wasm_host_app, wasm_host_server, wasm_host_sqlite, wasm_tcp,
+  {modules, [wasm_host, wasm_host_app, wasm_host_exqlite, wasm_host_server, wasm_host_sqlite, wasm_tcp,
               wasm_tcp_dist]},
   {registered, [wasm_host_sup, wasm_host_server]},
   {mod, {wasm_host_app, []}},

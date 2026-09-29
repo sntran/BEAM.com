@@ -476,6 +476,7 @@ if [ -d examples ]; then
     for f in worker.js beam.mjs beam.wasm wrangler.jsonc worker.capnp tcp-proxy.mjs \
              durable.js wrangler.durable.jsonc global.js wrangler.global.jsonc \
              durable-global.js wrangler.durable-global.jsonc \
+             deno.js deno.json deno/sockets.js browser.js browser/beam-wasm.js \
              release/app.js release/release.bin release/wrangler.jsonc; do
         if [ ! -f "$dir/worker/$f" ]; then
             echo "FAIL: --target wasm32 did not write $f"

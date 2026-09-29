@@ -27,5 +27,8 @@ itself goes to that project. BEAM.com takes their fixes in a new release.
 - In a Worker, anyone who can reach the Worker can reach the listeners
   of its program through `/.tcp/PORT`. Protect that path before you
   deploy a listener (see [`docs/WORKERS.md`](docs/WORKERS.md)).
-- The public Livebook of `wasm/livebook` runs the code of each visitor,
-  with the network. Give that Worker no secret.
+- The public Livebook of `wasm/livebook` and the REPL of
+  `examples/worker` run the code of each visitor. Give them no secret,
+  and give them `BEAM_CONNECT` (the hosts that the VM can connect to).
+  The REPL is a restricted shell with an allowlist of functions, but that
+  is no sandbox.

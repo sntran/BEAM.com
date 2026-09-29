@@ -103,6 +103,15 @@ answer. It is built from `main`, and the answer names the commit.
 5. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
    gets `beam.com`, `beam-emu.com` and `SHA256SUMS`.
 
+[Another workflow](../.github/workflows/pages.yml) publishes the site of
+BEAM.com on GitHub Pages ([`site.sh`](site.sh)): these docs as ExDoc
+makes them, the Erlang shell of `examples/worker` at `repl/`, and
+Livebook at `livebook/` ([`page.sh`](../wasm/livebook/page.sh)). It uses
+the `edge` binary, and runs after each change of the docs on `main` and
+after each run of CI on `main`. The release of Livebook stays in the
+cache of the workflow until its files or the versions of `beam.com`
+change.
+
 A run starts for each pull request (and again for each new push to it;
 the run of the older commit stops), for each push to `main`, and for each
 tag `v*`. A change of the docs only (Markdown files, `docs/`, the issue

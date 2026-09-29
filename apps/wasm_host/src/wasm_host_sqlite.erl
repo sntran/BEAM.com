@@ -1,6 +1,7 @@
 %% The NIF of exqlite (Exqlite.Sqlite3NIF, for Ecto SQLite: ecto_sqlite3)
-%% in the WebAssembly runtime, where there is no SQLite: the host runs the
-%% SQL (worker.js: the SQLite storage of a Durable Object, or D1).
+%% in the WebAssembly runtime when the host runs the SQL (worker.js: the
+%% SQLite storage of a Durable Object, D1, or node:sqlite in Deno). Else
+%% dispatch/2 sends the calls to SQLite in the VM (wasm_host_exqlite).
 %% "beam.com INPUT -o DIR --target wasm32" puts a module
 %% 'Elixir.Exqlite.Sqlite3NIF' in the release that calls this one.
 %%
@@ -21,6 +22,7 @@
          bind_integer/3, bind_float/3, bind_null/2, reset/1, errmsg/1, errstr/1,
          erlang_allocator_enabled/0]).
 -export([table/0, params/1, wire/1, unwire/1, local/1]).
+-export([dispatch/2, backend/0]).
 
 -define(TABLE, wasm_host_sqlite).
 -define(TIMEOUT, 60000).
@@ -29,6 +31,41 @@
 %% wasm_host_server).
 table() ->
     ets:new(?TABLE, [named_table, public, {read_concurrency, true}]).
+
+%% --- the backend -----------------------------------------------------------
+
+%% A call of the module Exqlite.Sqlite3NIF of a release (beam_com_wasm):
+%% to the backend of this VM, or not_supported when it does not have it.
+dispatch(F, Args) ->
+    B = backend(),
+    case erlang:function_exported(B, F, length(Args)) of
+        true -> apply(B, F, Args);
+        false -> erlang:nif_error(not_supported)
+    end.
+
+%% The backend: this module when the host runs the SQL (worker.js sets
+%% WASM_HOST_SQL=1: D1, the storage of a Durable Object, node:sqlite in
+%% Deno), else SQLite in the VM (wasm_host_exqlite) when the runtime has
+%% it, else this module.
+backend() ->
+    case persistent_term:get(?MODULE, undefined) of
+        undefined ->
+            B = case os:getenv("WASM_HOST_SQL") =/= "1" andalso exqlite_available() of
+                    true -> wasm_host_exqlite;
+                    false -> ?MODULE
+                end,
+            persistent_term:put(?MODULE, B),
+            B;
+        B ->
+            B
+    end.
+
+exqlite_available() ->
+    try wasm_host_exqlite:available() of
+        Available -> Available =:= true
+    catch
+        error:undef -> false
+    end.
 
 %% --- connections ---------------------------------------------------------
 

@@ -20,21 +20,22 @@ With `beam.com` you can:
 - **Use Elixir and its tools** from one file: `mix.com`, `iex.com`,
   `elixir.com`. A Phoenix app with SQLite and `phx.gen.auth` runs from
   its source, with no C compiler.
-- **Deploy to Cloudflare Workers**: `beam.com INPUT -o DIR --target
-  wasm32` makes Workers of the same program, with a second runtime:
-  ERTS compiled to WebAssembly.
+- **Deploy to Cloudflare Workers, Deno Deploy or a web page**:
+  `beam.com INPUT -o DIR --target wasm32` makes one directory that runs
+  the same program on all three, with a second runtime: ERTS compiled to
+  WebAssembly.
 
 The file has the compiler, `crypto` and `ssl` (with OpenSSL), SQLite, and
 a WebAssembly runtime (WAMR). It is about 50 MB.
 
 ## Live demos
 
-These run on the Free plan of Cloudflare Workers, from the WebAssembly
-runtime of `beam.com`:
+These run from the WebAssembly runtime of `beam.com`, on the free plans:
 
-- <https://phoenix.fifo.workers.dev>: a Phoenix LiveView app with
-  `phx.gen.auth`, Ecto SQLite, PubSub and Presence
-  ([`examples/phoenix_demo`](examples/phoenix_demo)).
+- <https://phoenix.fifo.workers.dev> (Cloudflare Workers) and
+  <https://beam-phoenix.one.deno.net> (Deno Deploy): a Phoenix LiveView
+  app with `phx.gen.auth`, Ecto SQLite, PubSub and Presence, from one
+  build ([`examples/phoenix_demo`](examples/phoenix_demo)).
 - <https://livebook.fifo.workers.dev>: Livebook, with an instance for
   each visitor ([`wasm/livebook`](wasm/livebook)).
 
@@ -99,20 +100,27 @@ cd hello && ../mix.com deps.get && ../mix.com ecto.migrate
 ../iex.com -S mix phx.server                     # http://localhost:4000
 ```
 
-Make Cloudflare Workers of a program:
+Make Cloudflare Workers of a program. The same directory runs on Deno:
 
 ```sh
 beam.com examples/worker -o worker --target wasm32
-cd worker && npx workerd serve worker.capnp      # test on this computer
+cd worker
+npx workerd serve worker.capnp                   # test on this computer (Workers)
+deno serve -A deno.js                            # or on Deno
 ```
 
 ## Documentation
+
+The site <https://sntran.github.io/BEAM.com/> has these pages, the
+Erlang shell in your browser at
+[`repl/`](https://sntran.github.io/BEAM.com/repl/), and Livebook in your
+browser at [`livebook/`](https://sntran.github.io/BEAM.com/livebook/).
 
 | File | What |
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |
 | [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, the file watcher. |
-| [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers (`--target wasm32`): Durable Objects, Ecto SQLite, snapshots, tenants, limits. |
+| [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages (`--target wasm32`): Durable Objects, Ecto SQLite, snapshots, tenants, limits. |
 | [`docs/LIBRARIES.md`](docs/LIBRARIES.md) | Crypto and TLS, SQLite, and WebAssembly in Erlang code. |
 | [`docs/SANDBOX.md`](docs/SANDBOX.md) | `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`: a program that gives up what it does not need. |
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | The status of each system, and the known limits. |
@@ -132,7 +140,7 @@ cd worker && npx workerd serve worker.capnp      # test on this computer
 | [`examples/greeter_ex`](examples/greeter_ex) | A Mix project with a Hex package in Elixir. |
 | [`examples/toolbox`](examples/toolbox) | A command line program: its entry, `priv` files, and a second VM from its own file. |
 | [`examples/counter`](examples/counter) | Distributed Erlang: a remote shell into a running program. |
-| [`examples/worker`](examples/worker) | A Cowboy app as Cloudflare Workers. |
+| [`examples/worker`](examples/worker) | The Erlang shell (`shell` of stdlib) on the web, with Cowboy: natively, on Workers, on Deno, and in a web page ([`pages.sh`](examples/worker/pages.sh)). |
 | [`examples/notes`](examples/notes) | Ecto SQLite on a computer, and on Workers with D1 or a Durable Object. |
 | [`examples/phoenix_demo`](examples/phoenix_demo) | Phoenix LiveView with `phx.gen.auth` in a Durable Object. |
 

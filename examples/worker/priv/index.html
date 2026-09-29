@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Erlang Shell</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="The Erlang shell from beam.com: natively, on Cloudflare Workers, on Deno Deploy, or in this page.">
+<!-- For the page mode (data-beam="page" on <html>): the files of
+     "beam.com examples/worker -o DIR --target wasm32" next to this page. -->
+<script type="importmap">{ "imports": {
+  "cloudflare:sockets": "./browser/sockets.js",
+  "./beam.wasm": "./browser/beam-wasm.js",
+  "./release.bin": "./browser/none.js",
+  "./snapshot.bin": "./browser/none.js" } }</script>
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #ffffff; --text: #1c1917; --muted: #78716c; --line: #e7e5e4;
+    --accent: #a2003e; --error: #b91c1c; --output: #1c1917; --prompt: #a2003e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c0a09; --panel: #1c1917; --text: #f5f5f4; --muted: #a8a29e; --line: #292524;
+      --accent: #f472b6; --error: #fca5a5; --output: #e7e5e4; --prompt: #f472b6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 56rem; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  h1 span { color: var(--accent); }
+  .facts { color: var(--muted); font-size: 0.875rem; margin: 0 0 16px; min-height: 1.3em; }
+  .mono { font: 13.5px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+         padding: 12px 14px; height: 55vh; min-height: 240px; overflow: auto;
+         white-space: pre-wrap; word-break: break-word; color: var(--output); margin: 0; }
+  #log .prompt { color: var(--prompt); }
+  #log .err { color: var(--error); }
+  #log .note { color: var(--muted); font-style: italic; }
+  form { display: flex; gap: 8px; margin-top: 10px; align-items: flex-start; }
+  #prompt { color: var(--prompt); padding: 9px 0 0; white-space: pre; min-width: 2ch; }
+  textarea { flex: 1; min-width: 0; resize: vertical; min-height: 2.6em; padding: 8px 10px;
+             border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button.run { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .examples button { font-size: 0.8125rem; padding: 3px 10px; }
+  .hint { color: var(--muted); font-size: 0.8125rem; margin-top: 8px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>Erlang</span> shell</h1>
+  <p class="facts" id="facts">Connecting…</p>
+  <pre id="log" class="mono" aria-live="polite"></pre>
+  <form id="form">
+    <span id="prompt" class="mono"></span>
+    <textarea id="input" class="mono" rows="2" spellcheck="false" autocomplete="off"
+              placeholder="lists:seq(1, 10)." aria-label="A line for the shell" disabled></textarea>
+    <button type="submit" class="run" id="run" disabled>Run</button>
+    <button type="button" id="stop" disabled>Stop</button>
+  </form>
+  <div class="examples" id="examples"></div>
+  <p class="hint">An expression ends with a dot. Enter sends the line, Shift+Enter adds a
+    line, ↑ and ↓ go through the history. <code>help().</code> shows the commands of the
+    shell. From <a href="https://github.com/sntran/BEAM.com">beam.com</a>.</p>
+</main>
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const log = $('log'), input = $('input'), run = $('run'), stop = $('stop'), prompt = $('prompt');
+  const examples = [
+    'erlang:system_info(system_architecture).',
+    'Pids = [spawn(fun() -> receive stop -> ok end end) || _ <- lists:seq(1, 10000)], erlang:system_info(process_count).',
+    '[P ! stop || P <- Pids], ok.',
+    'fib(0) -> 0; fib(1) -> 1; fib(N) -> fib(N - 1) + fib(N - 2).',
+    'fib(25).',
+    'binary:encode_hex(crypto:hash(sha256, <<"abc">>)).',
+    '[io:format("~p~n", [X * X]) || X <- lists:seq(1, 5)], ok.',
+    'io:get_line("Your name? ").',
+    'gen_tcp:connect("example.com", 80, []).',
+    'b().',
+  ];
+
+  // Output of the shell: its error lines ("** ..." and "* 1:5: ...") in red.
+  // The shell can write one line in more than one part.
+  let lineStart = true, errorLine = false;
+  function write(text, cls) {
+    for (const part of text.split(/(?<=\n)/)) {
+      if (!part) continue;
+      if (lineStart) errorLine = !cls && /^\*{1,2} /.test(part);
+      const span = document.createElement('span');
+      span.className = cls ?? (errorLine ? 'err' : '');
+      span.textContent = part;
+      log.append(span);
+      lineStart = part.endsWith('\n');
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  let socket = null, waiting = false;
+  const history = [];
+  let at = 0;
+
+  function ready(on) {
+    waiting = on;
+    input.disabled = run.disabled = !on;
+    stop.disabled = on || !socket;
+    if (on) input.focus();
+  }
+
+  function send(text) {
+    if (!waiting || !socket) return;
+    const lines = text.replace(/\r/g, '').split('\n');
+    if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+    write(prompt.textContent, 'prompt');
+    write(`${lines[0]}\n`, 'in');
+    if (text.trim()) { history.push(text); at = history.length; }
+    input.value = '';
+    prompt.textContent = '';
+    ready(false);
+    // The shell gets one line at a time; the next lines wait for its prompts.
+    queue.push(...lines.slice(1));
+    socket.send(JSON.stringify({ input: lines[0] }));
+  }
+  const queue = [];
+
+  function attach(ws, where) {
+    socket = ws;
+    ws.addEventListener('message', (e) => {
+      const m = JSON.parse(e.data);
+      if (m.hello) {
+        const f = m.hello;
+        $('facts').textContent = `Erlang/OTP ${f.otp} on ${f.arch}, ${where(f.host)}, ${f.processes} processes`;
+      } else if (m.output !== undefined) {
+        write(m.output);
+      } else if (m.prompt !== undefined) {
+        if (queue.length) {
+          write(m.prompt, 'prompt');
+          const next = queue.shift();
+          write(`${next}\n`, 'in');
+          socket.send(JSON.stringify({ input: next }));
+        } else {
+          prompt.textContent = m.prompt;
+          ready(true);
+        }
+      }
+    });
+    ws.addEventListener('close', () => {
+      socket = null;
+      ready(false);
+      stop.disabled = true;
+      write('\nThe session ended. Reload the page for a new one.\n', 'note');
+    });
+  }
+
+  const hosts = {
+    native: 'natively', cloudflare: 'on Cloudflare Workers', deno: 'on Deno',
+    'deno-deploy': 'on Deno Deploy', browser: 'in this page',
+  };
+  const where = (host) => hosts[host] ?? host;
+
+  async function connect() {
+    if (document.documentElement.dataset.beam === 'page') {
+      // The VM in this page: the runtime (5 MB) and the release.
+      $('facts').textContent = 'Loading the runtime and the release…';
+      const t0 = performance.now();
+      try {
+        const { start } = await import('./browser.js');
+        const beam = await start({ release: './release.bin' });
+        attach(await beam.socket('/ws'), (host) => `${where(host)} (ready in ${Math.round(performance.now() - t0)} ms)`);
+      } catch (e) {
+        $('facts').textContent = `The VM did not start: ${e.message}. A browser with JSPI (Chrome 137 or later) can run it.`;
+      }
+    } else {
+      const url = new URL('ws', location.href);
+      url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      attach(new WebSocket(url), where);
+    }
+  }
+
+  $('form').addEventListener('submit', (e) => { e.preventDefault(); send(input.value); });
+  stop.addEventListener('click', () => socket?.send(JSON.stringify({ interrupt: true })));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input.value); }
+    else if (e.key === 'ArrowUp' && !input.value.includes('\n') && at > 0) { e.preventDefault(); input.value = history[--at]; }
+    else if (e.key === 'ArrowDown' && !input.value.includes('\n') && at < history.length) {
+      e.preventDefault(); at++; input.value = history[at] ?? '';
+    }
+  });
+  for (const text of examples) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mono';
+    b.textContent = text.length > 44 ? `${text.slice(0, 42)}…` : text;
+    b.title = text;
+    b.addEventListener('click', () => send(text));
+    $('examples').append(b);
+  }
+  connect();
+</script>
+</body>
+</html>

@@ -33,7 +33,10 @@ application directory, a rebar3 or Mix project), or a release directory
 without ERTS. For a Phoenix app, build a release with `mix release` and
 `include_erts: false`, and give its directory: then `runtime.exs` and the
 config providers run in the Worker. See
-[`examples/phoenix_demo/scripts/cloudflare.sh`](../examples/phoenix_demo/scripts/cloudflare.sh).
+[`examples/phoenix_demo/scripts/wasm.sh`](../examples/phoenix_demo/scripts/wasm.sh).
+
+The same directory also runs on Deno and Deno Deploy, and in a web page:
+see "Deno and Deno Deploy" and "In a web page" below.
 
 ## What the build writes
 
@@ -47,6 +50,8 @@ config providers run in the Worker. See
 | `worker.capnp` | Both Workers for `workerd`. |
 | `tcp-proxy.mjs` | A local TCP port for a listener of the program (see "Incoming TCP"). |
 | `licenses/` | The license texts of the software in `beam.wasm`. Wrangler uploads them with the runtime (about 80 KB). |
+| `deno.js`, `deno.json`, `deno/` | The same runtime on Deno and Deno Deploy (see below). |
+| `browser.js`, `browser/` | The same runtime in a web page (see below). |
 
 The build also runs the release one time on this computer, to find the
 modules of its boot. The Worker then loads them in one batch, and the
@@ -106,16 +111,20 @@ npx wrangler deploy -c wrangler.global.jsonc
   certificates of its own, and the builder does not copy the store of
   the build computer.
 
-## Ecto SQLite: D1 and Durable Objects
+## Ecto SQLite: D1, Durable Objects and Deno KV
 
-The runtime has no SQLite: the host runs the SQL. A release with
-`exqlite` (the driver of `ecto_sqlite3`) gets a module in place of its
-NIF, which sends each statement to the Worker:
+A release with `exqlite` (the driver of `ecto_sqlite3`) gets a module in
+place of its NIF. That module sends each call to one of two places:
 
-- In a Durable Object, to its SQLite storage (on the same machine).
-- Else to the D1 database of the binding `DB` (`BEAM_D1` names another
-  binding). `wrangler.jsonc` has the binding: run `wrangler d1 create
-  NAME`, then put its id there.
+- The host runs the SQL. On Workers, in a Durable Object, the host sends
+  each statement to the SQLite storage of the object (on the same
+  machine). Else the host sends it to the D1 database of the binding
+  `DB` (`BEAM_D1` names another binding). `wrangler.jsonc` has the
+  binding: run `wrangler d1 create NAME`, then put its id there.
+- The NIF of exqlite in the runtime (SQLite in the VM) runs the SQL, when
+  the host does not. With the files of the host (Deno KV, see "Deno and
+  Deno Deploy"), SQLite keeps the pages of its databases there. Else
+  its databases are in the memory of the VM.
 
 The app is not changed: [`examples/notes`](../examples/notes) runs on a
 SQLite file on a computer, and on Workers with D1 or with a Durable
@@ -187,8 +196,9 @@ to the Worker, and a remote shell into the VM at the edge works.
 
 ## NIFs
 
-The runtime has the NIFs of `crypto` and `asn1`, and those of
-`bcrypt_elixir` and `argon2_elixir` (for `phx.gen.auth`). The file
+The runtime has the NIFs of `crypto` and `asn1`, those of
+`bcrypt_elixir` and `argon2_elixir` (for `phx.gen.auth`), and that of
+`exqlite` (see "Ecto SQLite"). The file
 `nifs` next to `beam.wasm` lists them. A release with another NIF (for
 example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 
@@ -216,6 +226,9 @@ example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
+| `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. |
+| `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
+| `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 
 ## Measured
 
@@ -248,6 +261,200 @@ In `workerd` on a computer, a Phoenix app answers its first request in
   count on this. Password hashes with the default costs (bcrypt 0.6 s,
   argon2 1.5 s of CPU) need the paid plan.
 
+## Deno and Deno Deploy
+
+The output of `--target wasm32` also runs on Deno 2.9 and on Deno Deploy,
+with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
+`deno.json` and `deno/` give the parts of the Workers runtime that
+`worker.js` uses:
+
+| Workers | Deno |
+|---|---|
+| `connect()` of `cloudflare:sockets` | `Deno.connect` (`deno/sockets.js`). TLS stays in `ssl` of OTP. |
+| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files. `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
+| `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
+| `caches.default` | `caches.open('beam')` |
+| The SQL storage of a Durable Object | SQLite in the VM, with its pages in Deno KV (see below) |
+| The static assets (`static/`, from `wasm/erts/host/static.mjs`) | `deno.js` serves them before the VM |
+
+Run it in the output directory:
+
+```sh
+deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
+```
+
+For Deno Deploy, make an app with the entrypoint `deno.js`, and set the
+variables of the release in the app. Then deploy the directory:
+
+```sh
+deno deploy create . --org ORG --app APP --source local \
+  --runtime-mode dynamic --entrypoint deno.js
+deno deploy env load FILE --org ORG --app APP    # a .env file of the variables
+deno deploy . --org ORG --app APP --prod
+```
+
+The configurations of Workers upload none of the Deno files, and Deno
+does not read the configurations of Workers. So one directory deploys to
+both.
+
+Differences from Workers:
+
+- A Deno isolate keeps its VM between requests, as a Durable Object
+  does. So the VM runs as in a Durable Object: its timers run between
+  requests, and an app with Ecto SQLite makes its snapshot at the boot
+  point.
+- Each isolate has its own VM. Two requests can go to two isolates. So
+  the state of the processes of one isolate is not in the other. The
+  database is shared through Deno KV (see below).
+- The environment of the release is the variables of the process,
+  without those of Deno and of the host (`DENO_*`, `OTEL_*`, `K8S_*`,
+  `CDN_LOOP`). Some of those change for each isolate, and the key of a
+  snapshot holds the environment. `BEAM_ENV` = `NAME,NAME` gives the
+  exact list of names.
+- Deno Deploy gives the scheme of the client only in the URL. `deno.js`
+  adds `x-forwarded-proto`, which `force_ssl` of Phoenix reads.
+- The clock moves while code runs.
+
+On Deno Deploy (September 2026), the Phoenix demo of
+[`examples/phoenix_demo`](../examples/phoenix_demo) boots in 1.0 s
+(release 12 MB) and makes a snapshot of 25 MB. On this computer, the
+restore of that snapshot takes 0.15 s. The login flow, LiveView,
+PubSub and Presence work.
+
+### Ecto SQLite on Deno KV
+
+On Deno, SQLite runs in the VM (the NIF of exqlite), and the host keeps
+the pages of each database in Deno KV. All the isolates of an app use the
+same KV, so they see the same data, and the data stays after a new
+deploy. On Deno Deploy, assign a KV database to the app:
+
+```sh
+deno deploy database provision NAME --kind denokv --org ORG
+deno deploy database assign NAME --org ORG --app APP
+```
+
+The variable `BEAM_SQLITE` selects the database:
+
+| `BEAM_SQLITE` | The database |
+|---|---|
+| not set, or `kv` | SQLite in the VM, with its pages in Deno KV: `Deno.openKv(BEAM_KV)`. `BEAM_KV` is the path of a local KV file. On Deno Deploy, do not set it. With no KV, the host uses `memory`. |
+| `memory` | `node:sqlite` in the isolate runs the SQL, with a database in memory for each isolate. |
+| a file path | `node:sqlite` runs the SQL on that file. |
+| `off` | SQLite in the VM, with its databases in the memory of the VM. |
+
+How the pages go to Deno KV:
+
+- The host keeps each database as blocks of 4 KiB. Each block has a
+  version, so a read sees the database as it was at its start, also when
+  another isolate commits meanwhile.
+- SQLite writes a transaction as one batch (`SQLITE_ENABLE_BATCH_ATOMIC_WRITE`).
+  The host commits the batch in one atomic operation of KV, which checks
+  that the database did not change after the read.
+- A write takes a write lock in KV for 10 s, and its commit removes the
+  lock. So a write transaction is three operations of KV: the read of the
+  version, the lock, and the commit. When another isolate has the lock,
+  or when the read is not of the last version, SQLite gets
+  `SQLITE_BUSY`. Then its busy handler tries again from a new read (the
+  `busy_timeout` of `ecto_sqlite3`, 2000 ms by default).
+- A journal stays in the memory of the VM. The database in KV changes
+  only in one commit, so a new VM needs no journal.
+- There is no WAL. `journal_mode: :wal` of `ecto_sqlite3` keeps the mode
+  `delete`.
+
+`BEAM_SQLITE_DEBUG=1` logs each operation of the host on the files.
+
+Test of the Phoenix demo with a local KV file (September 2026): two Deno
+processes on one KV, four LiveView clients, 100 clicks at the same time.
+The counter got all the 100 clicks, with no error, and it kept its value
+after a restart.
+
+On Deno Deploy (September 2026), the same demo with a KV database. The
+times are from a client in the US, over one LiveView socket:
+
+| | Database in memory | SQLite on Deno KV |
+|---|---|---|
+| First request of a new isolate (boot and migrations) | 8.2 s | 4.5 s |
+| `GET /`, median | 46 ms | 36 to 48 ms |
+| A LiveView event with no SQL, median | 16 ms | 15 to 16 ms |
+| A click (one write transaction), median | 18 ms | 41 to 48 ms |
+
+The first request has one measurement for each, and its time changes
+with the work of the new isolate (a boot, or a restore of a snapshot).
+A write transaction adds about 25 to 30 ms: three operations of KV (the
+version, the lock, and the commit). With a separate unlock, a write was
+six operations and added about 40 ms. Four clients sent 100 clicks at
+the same time in 4.2 s, and the counter got all of them.
+
+## In a web page
+
+The output also runs in a browser tab with JSPI (Chrome 137 or later).
+`browser.js` gives `worker.js` the parts of the Workers runtime that it
+uses: a `WebSocketPair` of two ends in the page, and the Cache API of the
+site for the snapshot. A page has no TCP connections (a connection of
+Erlang gets `econnrefused`) and no SQL storage.
+
+The page needs an import map before its first module, and then calls
+`start()`:
+
+```html
+<script type="importmap">{ "imports": {
+  "cloudflare:sockets": "./browser/sockets.js",
+  "./beam.wasm": "./browser/beam-wasm.js",
+  "./release.bin": "./browser/none.js",
+  "./snapshot.bin": "./browser/none.js" } }</script>
+<script type="module">
+  import { start } from './browser.js';
+  const beam = await start({ release: './release/release.bin' });
+  const response = await beam.fetch('/');     // a Response of the app
+  const socket = await beam.socket('/ws');    // a WebSocket of the app
+</script>
+```
+
+The app runs in the page as in a Durable Object. The shell of
+[`examples/worker`](../examples/worker) runs so at `repl/` of the site of
+BEAM.com on GitHub Pages ([`pages.sh`](../examples/worker/pages.sh)). In Chromium, its VM is
+ready in about 1.0 s at the first visit, and in 0.4 to 0.5 s at the next
+visits (a restore of the snapshot).
+
+### Livebook in a web page
+
+Livebook runs so at `livebook/` of the same site
+([`wasm/livebook/page.sh`](../wasm/livebook/page.sh)): Livebook,
+Phoenix, Elixir and the code of a notebook run in the tab. A web app with
+pages and a LiveView socket needs more than `beam.fetch` in the page:
+
+- The VM runs in a Web Worker (`vm.js`), so its work does not stop the
+  page.
+- A service worker (`sw.js`) takes each request of the Livebook frame
+  (`app/`). A static file of Livebook comes from the site. Another request
+  goes to the VM.
+- A service worker cannot take a WebSocket. The pages of Livebook get
+  `ws-shim.js`, whose `WebSocket` sends the socket of LiveView to the VM
+  through the page.
+- A page drops the `Set-Cookie` headers of a `Response`. So `vm.js` keeps
+  the cookies of Livebook, and each request gets them.
+- The iframe page of Kino (`app/iframe/vN.html`) is on the same site, so
+  the service worker also takes its requests for the JS of Kino.
+
+Caution: the JS outputs of Kino run on the origin of the site
+(`sntran.github.io`), and not on a separate origin. A notebook from
+another person can run JS there. Open only notebooks that you trust.
+
+The notebooks stay in the memory of the tab, and a tab of the site runs
+one VM. A notebook has no network: `Mix.install` works only for the
+packages in the release (Kino). In headless Chromium (September 2026), on
+a local server, the first visit showed Livebook in 1.9 s. The next
+visits restored the VM from the snapshot in 0.25 s and showed Livebook
+in 1.0 s. Livebook evaluated a cell in about 0.2 s, and 10,000 processes
+started in 80 ms.
+
+## The host
+
+The runtime gives the app the variable `BEAM_HOST`: `cloudflare`,
+`deno-deploy`, `deno` or `browser`. On Deno Deploy, `BEAM_REGION` is the
+region of the isolate. It goes to the VM after the boot point, so it is
+not in the key of the snapshot.
+
 ## Limits
 
 - Threads switch only when one waits: a long NIF or BIF stops the other
@@ -260,6 +467,10 @@ In `workerd` on a computer, a Phoenix app answers its first request in
   Objects. The next request boots or restores a new VM.
 - Argon2 with its default costs (64 MiB) can go over the 128 MB of an
   isolate. Use lower costs, or bcrypt.
+- On Deno KV, one transaction of SQLite writes at most 160 blocks of 4 KiB
+  (640 KiB), because an atomic operation of KV has limits. A larger
+  transaction gets `SQLITE_FULL`, and it changes nothing. Each read of a
+  block that is not in the cache of the isolate is a read of KV.
 
 ## How it works
 
