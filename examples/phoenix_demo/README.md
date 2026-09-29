@@ -1,7 +1,7 @@
 # A Phoenix demo on Cloudflare Workers and Deno Deploy
 
 Live: <https://phoenix.fifo.workers.dev> (Cloudflare Workers) and
-<https://beam-phoenix.one.deno.net> (Deno Deploy).
+<https://phoenix.one.deno.net> (Deno Deploy).
 
 This is a standard Phoenix LiveView app from `mix phx.new --database sqlite3`
 and `mix phx.gen.auth Accounts User users --live`. beam.com makes one
