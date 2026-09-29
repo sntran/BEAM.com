@@ -10,15 +10,11 @@ defmodule PhoenixDemoWeb.DemoLiveTest do
     assert html =~ "Visitors online"
   end
 
-  test "the page shows the Cloudflare data center of the request", %{conn: conn} do
-    conn =
-      conn
-      |> put_req_header("cf-ray", "8f2d3a1b2c3d4e5f-SJC")
-      |> put_req_header("cf-ipcountry", "US")
-
+  test "the page shows the country of the request from Cloudflare", %{conn: conn} do
+    conn = put_req_header(conn, "cf-ipcountry", "US")
     {:ok, view, _html} = live(conn, ~p"/")
-    assert view |> element("#colo") |> render() =~ "SJC"
-    assert view |> element("#colo") |> render() =~ "visitor in US"
+    assert view |> element("#country") |> render() =~ "US"
+    assert view |> has_element?("#colo[phx-hook]")
   end
 
   test "a click in one view updates the counter in all views", %{conn: conn} do

@@ -21,7 +21,8 @@ The home page (`PhoenixDemoWeb.DemoLive`) shows what only a live BEAM process
 on Cloudflare can show:
 
 - The architecture of the VM: `wasm32-unknown-emscripten`.
-- The Cloudflare data center of the request, from its `cf-ray` header.
+- The Cloudflare data center (from `/cdn-cgi/trace`) and the country of the
+  request (the `cf-ipcountry` header).
 - A server clock that the server pushes each second over the WebSocket.
 - The round-trip time of the WebSocket, measured in the browser.
 - The visitors online now (Phoenix.Presence): open a second tab.

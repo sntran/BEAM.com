@@ -8,6 +8,8 @@ defmodule PhoenixDemoWeb.DemoLive do
     * The round-trip time of the WebSocket, measured in the browser.
     * The visitors online now (Phoenix.Presence).
     * A counter that all visitors share (Phoenix.PubSub), in the database.
+    * The Cloudflare data center (from `/cdn-cgi/trace`, in the browser) and
+      the country of the request (the `cf-ipcountry` header).
   """
   use PhoenixDemoWeb, :live_view
 
@@ -28,7 +30,6 @@ defmodule PhoenixDemoWeb.DemoLive do
     {:ok,
      assign(socket,
        page_title: "LiveView on Cloudflare Workers",
-       colo: session["cf_colo"],
        country: session["cf_country"],
        pid: inspect(self()),
        clicks: Counters.get(@counter),
@@ -131,9 +132,9 @@ defmodule PhoenixDemoWeb.DemoLive do
               <dt class="opacity-70">Architecture</dt>
               <dd id="arch" class="font-mono">{@vm.arch}</dd>
               <dt class="opacity-70">Cloudflare data center</dt>
-              <dd id="colo" class="font-mono">
-                {@colo || "-"} {@country && "(visitor in #{@country})"}
-              </dd>
+              <dd id="colo" class="font-mono" phx-hook=".Colo" phx-update="ignore">-</dd>
+              <dt class="opacity-70">Country of the request</dt>
+              <dd id="country" class="font-mono">{@country || "-"}</dd>
               <dt class="opacity-70">This LiveView process</dt>
               <dd class="font-mono">{@pid}</dd>
               <dt class="opacity-70">Processes in the VM</dt>
@@ -155,6 +156,19 @@ defmodule PhoenixDemoWeb.DemoLive do
           to try the authentication of <code>phx.gen.auth</code>.
         </p>
       </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".Colo">
+        // Cloudflare answers /cdn-cgi/trace on each host that it serves, with
+        // the data center of the connection in the line "colo=".
+        export default {
+          mounted() {
+            fetch("/cdn-cgi/trace")
+              .then((r) => (r.ok ? r.text() : ""))
+              .then((t) => { this.el.textContent = (t.match(/^colo=(.+)$/m) || [])[1] || "-" })
+              .catch(() => { this.el.textContent = "-" })
+          }
+        }
+      </script>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".Ping">
         export default {

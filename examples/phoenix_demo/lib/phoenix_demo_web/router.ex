@@ -14,18 +14,12 @@ defmodule PhoenixDemoWeb.Router do
     plug :put_cloudflare_request
   end
 
-  # Cloudflare names the data center of a request in its cf-ray header (for
-  # example "8f2d3a1b2c3d4e5f-SJC"), and the country of the visitor in
-  # cf-ipcountry. The home page shows them.
+  # Cloudflare gives the country of the visitor in the cf-ipcountry header.
+  # The home page shows it.
   defp put_cloudflare_request(conn, _opts) do
-    case get_req_header(conn, "cf-ray") do
-      [ray | _] ->
-        conn
-        |> put_session(:cf_colo, ray |> String.split("-") |> List.last())
-        |> put_session(:cf_country, conn |> get_req_header("cf-ipcountry") |> List.first())
-
-      [] ->
-        conn
+    case get_req_header(conn, "cf-ipcountry") do
+      [country | _] -> put_session(conn, :cf_country, country)
+      [] -> conn
     end
   end
 
