@@ -17,6 +17,11 @@ Live demos, on the Free plan of Workers:
 - <https://livebook.fifo.workers.dev>: Livebook, with an instance for each
   visitor ([`wasm/livebook`](../wasm/livebook)).
 
+Other projects run the BEAM in WebAssembly in other ways: ERTS with the
+threads of the browser (Popcorn 0.4, and a build of Anton Vasetenkov),
+AtomVM, or BEAM code compiled to WebAssembly. See "Related work" in
+[`history/WASM-LOG.md`](history/WASM-LOG.md).
+
 ## Quick start
 
 ```sh

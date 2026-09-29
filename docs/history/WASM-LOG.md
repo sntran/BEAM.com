@@ -23,6 +23,45 @@ and `examples/wasm_check.erl` (now in `tests/programs/`). The commit
 - **Ahead-of-time compilation of Erlang to WebAssembly** (the way of
   Firefly, formerly Lumen) needs a new runtime with all the BIFs.
 
+## Related work
+
+We found these projects on 2026-09-29, after the runtime of this record
+worked. We did not look for them before we started, and we should have.
+They are here so that a reader can compare, and because some of their
+work can make ours better.
+
+| Project | The VM | How | Where it runs |
+|---|---|---|---|
+| [Erlang/OTP WASM](https://www.antvaset.com/erlang-otp-wasm), Anton Vasetenkov | ERTS 14.2.3 (OTP 26.2.3) | Emscripten threads on a `SharedArrayBuffer` | A web page: it runs an escript. We found no source code and no date. |
+| [Popcorn](https://github.com/software-mansion/popcorn) 0.4 (prerelease, 2026-09-04), Software Mansion | ERTS of OTP 29 | Emscripten threads (`-sUSE_PTHREADS`, 8 threads) and [14 patches to OTP](https://github.com/software-mansion/popcorn/tree/main/popcorn/patches): no sockets, no distribution, no dynamic loading, no OS processes | A Web Worker of a web page with the headers COOP and COEP. HTTP goes through the `fetch` of the browser. |
+| Popcorn 0.3 and earlier, [FissionVM](https://github.com/software-mansion-labs/FissionVM) | [AtomVM](https://github.com/atomvm/AtomVM), a small VM with a part of OTP | Emscripten | A web page |
+| [beamflare](https://hex.pm/packages/beamflare) (2026-09-21) | AtomVM | WebAssembly | Cloudflare Workers |
+| [elixir_wasm](https://github.com/elixir-ai-tools/elixir_wasm) | No VM: BEAM code compiled to WebAssembly GC | `beam_disasm`, then WAT, then Binaryen | Cloudflare Workers with Durable Objects, web pages, Node.js |
+| [Firefly](https://github.com/GetFirefly/firefly), formerly Lumen (archived 2024-06-10) | A new runtime in Rust | Erlang compiled ahead of time | WebAssembly and native |
+
+The difference from this runtime: Anton Vasetenkov's build and Popcorn
+0.4 run ERTS with the threads of the browser. So they need shared
+memory, which a web page has only with the headers COOP and COEP, and
+which Cloudflare Workers and Deno Deploy do not have. This runtime runs
+the threads of ERTS as green threads on JSPI, in one thread of the host,
+so it runs on Workers and Deno Deploy too, and keeps TCP, TLS and
+distributed Erlang through the host. The cost: JSPI is only in Chrome
+and Edge 137 and later, and shared memory is in all the main browsers.
+
+What we can learn from them:
+
+- Popcorn solved some of the same problems. Its patch 0008 changes the
+  call of the start function of a driver, as item 1 of Phase B does. Its
+  patch 0014 turns off the jump table of the emulator (`NO_JUMP_TABLE`),
+  which we measured with no change of speed (Phase B).
+- Popcorn's patch 0013 gives each module an xxh3 checksum in place of MD5.
+  It can make the load of code faster. We did not measure it yet.
+- Popcorn gives a variant of the runtime without crypto, for a smaller
+  download, and gives two forms of each archive (gzip and Brotli).
+- elixir_wasm compiles BEAM code to WebAssembly GC, with no VM. It is
+  5 to 23 times slower than the BEAM on its workloads, and it needs no
+  download of a VM.
+
 ## The way: green threads on JSPI
 
 ERTS needs threads (the schedulers, the dirty schedulers, the aux and poll
