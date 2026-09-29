@@ -1,5 +1,6 @@
 #!/bin/sh
-# The REPL as a static site (GitHub Pages): the VM runs in the page. It
+# The shell as a static site: the VM runs in the page. docs/site.sh puts
+# it at repl/ of the site of BEAM.com (GitHub Pages). It
 # builds this example with --target wasm32, and writes into OUT the page
 # (priv/index.html in its page mode), browser.js, worker.js, the runtime
 # and the release.

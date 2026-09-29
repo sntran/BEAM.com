@@ -111,6 +111,10 @@ deno serve -A deno.js                            # or on Deno
 
 ## Documentation
 
+The site <https://sntran.github.io/BEAM.com/> has these pages, and the
+Erlang shell in your browser at
+[`repl/`](https://sntran.github.io/BEAM.com/repl/).
+
 | File | What |
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |

@@ -341,9 +341,9 @@ The page needs an import map before its first module, and then calls
 </script>
 ```
 
-The app runs in the page as in a Durable Object. The REPL of
-[`examples/worker`](../examples/worker) runs so on GitHub Pages
-([`pages.sh`](../examples/worker/pages.sh)). In Chromium, its VM is
+The app runs in the page as in a Durable Object. The shell of
+[`examples/worker`](../examples/worker) runs so at `repl/` of the site of
+BEAM.com on GitHub Pages ([`pages.sh`](../examples/worker/pages.sh)). In Chromium, its VM is
 ready in about 1.0 s at the first visit, and in 0.4 to 0.5 s at the next
 visits (a restore of the snapshot).
 

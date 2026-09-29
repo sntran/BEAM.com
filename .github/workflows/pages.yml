@@ -1,0 +1,63 @@
+name: Publish the site
+
+# The site of BEAM.com on GitHub Pages (docs/site.sh): the documentation
+# (ExDoc), and the Erlang shell of examples/worker in the page at repl/.
+# It uses the beam.com of main (the prerelease "edge"). It runs after each
+# change of the pages on main, after each run of the build on main (a new
+# edge), and by hand. Pages must use "GitHub Actions" as its source
+# (Settings > Pages).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "docs/**"
+      - "examples/worker/**"
+      - ".github/workflows/pages.yml"
+  workflow_run:
+    workflows: ["Build and test BEAM.com"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# One publish at a time; a newer one waits.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    name: Build and publish the site
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the edge beam.com
+        run: |
+          mkdir -p bin
+          gh release download edge --repo "$GITHUB_REPOSITORY" --dir bin --pattern 'beam.com*'
+          (cd bin && sha256sum -c beam.com.sha256)
+          chmod +x bin/beam.com
+
+      - name: Build the site
+        run: sh docs/site.sh bin/beam.com site
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
