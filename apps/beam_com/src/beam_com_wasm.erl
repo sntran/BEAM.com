@@ -402,7 +402,7 @@ pack(Files) ->
                     || {P0, D} <- Files, P <- [unicode:characters_to_binary(P0)]]].
 
 %% The name of a Worker for an app: a Worker name and a workers.dev host
-%% name have only a-z, 0-9 and "-" (humans_must_die: humans-must-die).
+%% name have only a-z, 0-9 and "-" (my_phoenix_app: my-phoenix-app).
 worker_name(App) ->
     string:lowercase(re:replace(App, "[^A-Za-z0-9-]", "-", [global, {return, list}])).
 
@@ -429,7 +429,15 @@ worker_files(#{name := App} = Rel, Runtime, Root) ->
      {"release/app.js", Worker("app.js")},
      {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
      {"release/wrangler.jsonc", wrangler_release(Name)},
-     {"worker.capnp", capnp(Phoenix)}].
+     {"worker.capnp", capnp(Phoenix)}] ++ licenses(Root).
+
+%% The license texts of the zip (licenses/NOTICE names the software in
+%% beam.wasm), in the directory licenses/ of DIR. Wrangler does not upload
+%% them: no rule of the configurations names a .txt file.
+licenses(Root) ->
+    Dir = filename:join(Root, "licenses"),
+    [{"licenses/" ++ F, read(filename:join(Dir, F))}
+     || F <- filelib:wildcard("**", Dir), filelib:is_regular(filename:join(Dir, F))].
 
 -define(DATE, "2026-09-01").
 %% The version of the deploy is in the key of the snapshot (worker.js).

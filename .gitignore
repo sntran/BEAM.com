@@ -1,2 +1,9 @@
 build/
 erl_crash.dump
+# The output of rebar3 and Mix in examples/ and tests/.
+_build/
+deps/
+*.db
+# The tests write these lock files (tests/run.sh).
+/examples/hexweb/rebar.lock
+/examples/greeter_ex/mix.lock

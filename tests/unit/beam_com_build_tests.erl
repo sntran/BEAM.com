@@ -54,7 +54,7 @@ keep_test() ->
     Yes = ["lib/", "lib/kernel-11.0.4/", "lib/kernel-11.0.4/ebin/",
            "lib/kernel-11.0.4/ebin/kernel.app", "lib/ssl-11.7.7/priv/x/y",
            "bin/start_clean.boot", "usr/share/zoneinfo/UTC", ".cosmo",
-           ".symtab.amd64"],
+           ".symtab.amd64", "licenses/NOTICE", "licenses/otp/MIT.txt"],
     No = ["lib/kernel-11.0.4/include/file.hrl", "lib/kernel-11.0.4/src/x.erl",
           "lib/kernel-11.0.40/ebin/kernel.app", "lib/stdlib-8.1/ebin/lists.beam",
           "lib/beam_com/ebin/beam_com.beam", "releases/", "releases/start_erl.data",
