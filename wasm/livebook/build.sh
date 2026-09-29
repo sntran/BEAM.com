@@ -1,6 +1,6 @@
 #!/bin/sh
 # The build command of Workers Builds: Cloudflare builds and deploys the
-# Worker "livebook" at each push (docs/WASM.md, "Build and deploy at each
+# Worker "livebook" at each push (docs/history/WASM-LOG.md, "Build and deploy at each
 # push"). The settings of the Worker (Settings > Build):
 #   Root directory:  wasm/livebook
 #   Build command:   sh build.sh

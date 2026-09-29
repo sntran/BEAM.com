@@ -1,15 +1,26 @@
 # Notes for upstream contributions
 
-This file records what did not work when we built Erlang/OTP with
-Cosmopolitan, how BEAM.com works around it, and what a fix upstream
-could be. Keep it up to date when a new problem or workaround comes.
+This file records what did not work when Erlang/OTP was built with
+Cosmopolitan and with Emscripten, and when it ran in other projects: how
+BEAM.com works around each problem, and what a fix upstream could be.
+Keep it up to date when a new problem or workaround comes.
 
-Status words:
+The groups, and the prefix of their ids: Cosmopolitan (C), WAMR (W),
+Erlang/OTP (O), Emscripten (EM), workerd and Cloudflare Workers (CF),
+websock_adapter (WS), Livebook (L), Elixir packages with NIFs (E) and
+Blink (B).
+
+Status words of the Cosmopolitan items:
 
 - **3.3.2**: seen with cosmocc 3.3.2 (an older local toolchain).
-- **4.0.2**: seen in CI with cosmocc 4.0.2 (the newest release).
+- **4.0.2**: seen in CI with cosmocc 4.0.2 (the release that BEAM.com
+  uses).
 - **HEAD**: checked in the Cosmopolitan source, commit `3293fad0`
   (2026-07-19), which is still version 4.0.2.
+
+An item that is not a problem now says so in a line
+**Status: obsolete** (the part that needed it is not in BEAM.com now) or
+**Status: fixed upstream**. No item has been sent upstream yet.
 
 The reproducers are small C files. Compile them with `cosmocc` (the fat
 x86_64 + aarch64 compiler) unless the text says something else.
@@ -270,7 +281,7 @@ document that `argv[0]` is not kept with `binfmt_misc`.
 
 ### C12. Windows: `mmap(MAP_FIXED)` in a `PROT_NONE` reservation fails
 
-**Status:** 4.0.2 in CI (`windows-latest`). The cause is our best
+**Status:** 4.0.2 in CI (`windows-latest`). The cause is the best
 explanation from the ERTS code; a small reproducer is still to do.
 
 **Effect.** ERTS (64-bit) reserves a large address range with
@@ -963,7 +974,7 @@ does not close `fds[0]`, the end of the emulator. `erl_child_setup`
 exits when it reads EOF on fd 3, which comes only when all copies of
 `fds[0]` are closed. Upstream, `erl_child_setup` calls `closefrom(4)`
 first, which closes the copy. On macOS under Cosmopolitan the copy
-stayed open anyway. (We did not find why: Cosmopolitan's `closefrom()`
+stayed open anyway. (The cause is not known: Cosmopolitan's `closefrom()`
 closes each fd up to `RLIMIT_NOFILE` on XNU, and the `execve()` of an
 APE file on XNU goes through the APE loader.)
 
@@ -1206,7 +1217,7 @@ block, so that the option removes only the hardening flags.
 
 ## Emscripten
 
-Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/WASM.md,
+Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/history/WASM-LOG.md,
 phase B).
 
 ### EM1. `mallopt()` links but is not declared
@@ -1224,7 +1235,7 @@ phase B).
 **Cause.** Without `-pthread`, the stubs are in one object of libc
 (`library_pthread_stub.o`), which the link takes for other symbols.
 
-**Workaround.** `-Wl,--allow-multiple-definition`, with our objects
+**Workaround.** `-Wl,--allow-multiple-definition`, with the objects of BEAM.com
 before libc.
 
 ### EM3. `MAP_FIXED` and `MAP_NORESERVE` are defined, but mmap cannot reserve
@@ -1241,7 +1252,7 @@ address space without memory.
 ### EM4. An import called under `setjmp` cannot suspend (JSPI)
 
 **Status:** Emscripten with `-sJSPI` and the default
-`SUPPORT_LONGJMP=emscripten` (the runtime of docs/WASM.md, 2026-09-28).
+`SUPPORT_LONGJMP=emscripten` (the runtime of docs/history/WASM-LOG.md, 2026-09-28).
 
 **Symptom.** The import `__syscall_openat` as `WebAssembly.Suspending`
 (to fetch a file at its first open): "SuspendError: trying to suspend JS
@@ -1297,10 +1308,10 @@ compiler-rt of its LLVM.
 
 ## workerd (Cloudflare Workers)
 
-Seen with workerd from the `workerd` npm package, in the WebAssembly
-spike (docs/WASM.md, phase B).
+Seen with workerd from the `workerd` npm package, and on Cloudflare
+(see docs/WORKERS.md and docs/history/WASM-LOG.md).
 
-### W1. `setImmediate()` and `setTimeout(0)` wait about 1 ms
+### CF1. `setImmediate()` and `setTimeout(0)` wait about 1 ms
 
 **Symptom.** An emulator that yields to the event loop after each JSPI
 suspend starts in 3.2 s in workerd, and in 0.5 s in Node.
@@ -1310,7 +1321,7 @@ time. Each yield waits about 1 ms.
 
 **Workaround.** Yield with a `MessageChannel` message outside Node.
 
-### W2. A plain Worker cannot keep one program for all its requests
+### CF2. A plain Worker cannot keep one program for all its requests
 
 **Symptom.** One WebAssembly VM for each isolate (a module global),
 used by all requests: the second request hangs, then "Cannot perform
@@ -1332,7 +1343,7 @@ needs none of this.
 isolate (its own I/O context, as a Durable Object has), for runtimes
 that serve many requests.
 
-### W3. The clock of a Worker moves only by the delay of a timer
+### CF3. The clock of a Worker moves only by the delay of a timer
 
 **Status:** seen on Cloudflare (2026-09-28), not in workerd on this
 computer. Documented as a Spectre mitigation.
@@ -1353,7 +1364,7 @@ for the same time.
 `jspi_lib.js`, and `jspiSchedule.timer` in `worker.js`). Not a bug of
 the runtime.
 
-### W4. The global scope has no random values
+### CF4. The global scope has no random values
 
 **Status:** seen in workerd and on Cloudflare (2026-09-28). Documented.
 
@@ -1373,7 +1384,7 @@ global scope gives zero bytes to the VM, and puts
 snapshot or a prepared isolate needs a reseed at its first request in
 any case).
 
-### W5. The memory of a WebAssembly instance does not shrink
+### CF5. The memory of a WebAssembly instance does not shrink
 
 **Status:** WebAssembly 2.0; the memory control proposal is not in V8.
 
@@ -1388,7 +1399,7 @@ isolate.
 
 **Workaround.** Lower argon2 costs (`m_cost`), or bcrypt.
 
-### W6. A `MessagePort` that only its handler holds stops getting messages
+### CF6. A `MessagePort` that only its handler holds stops getting messages
 
 **Status:** seen on Cloudflare in a Durable Object (2026-09-29), not in
 workerd on this computer.
@@ -1409,7 +1420,7 @@ stays alive while its other port lives.
 **Possible upstream change.** Keep a `MessagePort` alive while it has a
 message handler and its other port is alive, as the HTML standard does.
 
-### W7. WebAssembly memory accesses have explicit bounds checks
+### CF7. WebAssembly memory accesses have explicit bounds checks
 
 **Seen with workerd 2026-09-26 (V8 15.4), the local runtime of wrangler.**
 
@@ -1422,7 +1433,7 @@ pages around the memory), and V8 checks the bounds of each load and store
 in code. A host of many isolates can have a reason for this: each memory
 with guard pages reserves a large virtual address range.
 
-**Fix upstream.** None for an application. We did not measure the
+**Fix upstream.** None for an application. The test did not measure the
 Workers of Cloudflare itself.
 
 ## websock_adapter
@@ -1430,6 +1441,9 @@ Workers of Cloudflare itself.
 Seen with websock_adapter 0.6.0.
 
 ### WS1. The adapter list is closed
+
+**Status: obsolete.** Bandit now runs unchanged over `wasm_tcp`, so the
+Worker needs no Plug adapter of its own.
 
 **Symptom.** A Phoenix server with a new Plug adapter
 (`WasmHost.Conn`) fails at the first WebSocket upgrade: "Unknown
@@ -1602,8 +1616,12 @@ skips the native build, for runtimes that have the NIFs built in
 ## Blink (the x86-64 emulator)
 
 Seen with Blink at commit `f006a4f` (github.com/jart/blink), in the
-WebAssembly spike (docs/WASM.md). `wasm/blink/blink.patch` has the fixes
-of B1 to B3.
+WebAssembly spike (docs/history/WASM-LOG.md). The patch
+`wasm/blink/blink.patch` had the fixes of B1 to B3.
+
+**Status: obsolete** for BEAM.com: the Blink spike ended, and its
+directory is not in the repository now (the commit `f2333d9` has it).
+The items stay for the Blink project.
 
 ### B1. Blink does not take the command line of the APE loader
 

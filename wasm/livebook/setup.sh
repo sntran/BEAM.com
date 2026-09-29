@@ -1,5 +1,5 @@
 #!/bin/sh
-# Livebook on Cloudflare Workers (docs/WASM.md, "Livebook in a Durable
+# Livebook on Cloudflare Workers (docs/history/WASM-LOG.md, "Livebook in a Durable
 # Object"): a public Livebook with its embedded runtime. Each visitor starts
 # an instance of its own (a Durable Object at /t/NAME, durable.js), with a
 # time limit. A registry limits the instances at one time and keeps a

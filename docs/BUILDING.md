@@ -1,0 +1,119 @@
+# Build BEAM.com
+
+You do not need to build BEAM.com to use it: download `beam.com` from
+the releases (see the README). This file is for a change of BEAM.com, or
+for a custom build.
+
+## Build
+
+You need Linux (x86_64), `git`, `make`, `perl`, `curl`, `zip` and
+`unzip`. The script downloads the sources, applies the patches, builds a
+small OTP and makes `build/beam.com`:
+
+```sh
+./build.sh
+```
+
+The script downloads:
+
+- cosmocc 4.0.2 (the compiler and Cosmopolitan Libc);
+- the source of Erlang/OTP 29.1.1, OpenSSL 4.0.2, SQLite 3.53.4,
+  esqlite, WAMR 2.4.5 and Elixir 1.20.4;
+- the hex.pm packages whose NIFs it links (exqlite, bcrypt_elixir and
+  argon2_elixir), with a check of their SHA-256;
+- emsdk 6.0.10, for the WebAssembly runtime of `--target wasm32`.
+
+The steps, in order:
+
+| Step | What it does |
+|---|---|
+| `toolchain` | Downloads cosmocc. |
+| `openssl` | Builds a static `libcrypto`. |
+| `otp` | Clones OTP and applies `patches/otp/*.patch`. |
+| `configure` | Configures OTP for Cosmopolitan. |
+| `sqlite` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
+| `nifs` | Builds the NIFs of exqlite, bcrypt_elixir and argon2_elixir (nothing with `ELIXIR=0`). |
+| `wasm` | Builds WAMR and the wasm NIF (nothing with `WASM=0`). |
+| `make` | Builds a small OTP: the emulator and the OTP applications. |
+| `elixir` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
+| `release` | Installs an OTP release tree, for its boot scripts. |
+| `multicall` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher) and the static NIFs. |
+| `wasm_runtime` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
+| `bundle` | Writes `build/beam.com`: the emulator and its zip. |
+| `test` | Runs `beam.com`, and builds and runs a program with it. |
+| `unit` | Runs the unit tests of the Erlang code, with coverage. |
+
+You can run one step or more, for example `./build.sh bundle test`. See
+the top of [`build.sh`](../build.sh) for the environment variables: the
+versions, `JIT=0` (the interpreter, `beam-emu.com`), `SQLITE=0`,
+`WASM=0`, `ELIXIR=0` and `WASM_RUNTIME=none`.
+
+The OTP build runs the APE tools that it builds. If Linux cannot run
+APE files directly, register the APE loader with `binfmt_misc` (see
+[the workflow](../.github/workflows/build.yml)).
+
+## A custom build
+
+The default `beam.com` has a fixed set of OTP applications, and no Hex
+or rebar3. A custom build can have more:
+
+- `OTP_APPS="ssh mnesia"`: more OTP applications in the zip (their Erlang
+  code; the C code of an application, as the port programs of `os_mon`,
+  is not built).
+- `HEX=1`: Hex in the zip (the newest, from `mix local.hex`). The tools
+  of Elixir have it in their code path, so `mix.com deps.get` needs no
+  `mix local.hex`. Only with `ELIXIR=1`.
+- `REBAR3=1`: rebar3 in the zip (the newest release). A copy or a link
+  named `rebar3.com` (or `beam.com rebar3`) runs it, and `mix.com` uses
+  it for the dependencies that are rebar3 projects (`MIX_REBAR3`), so
+  `mix local.rebar` is not needed either.
+- `EXTRA_NIFS="picosat_elixir"`: the NIFs of more hex.pm packages,
+  linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
+  "Phoenix from source" in [`ELIXIR.md`](ELIXIR.md)). The list is in
+  `hex_nif_recipe()` of `build.sh`: `picosat_elixir` (the SAT solver of
+  Ash). Only with `ELIXIR=1`.
+
+With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and
+`iex.com -S mix phx.server` work as with a normal Elixir installation.
+
+You do not need to build it yourself: open an issue with the form **A
+custom build of beam.com**. CI builds the file with your choices
+([the workflow](../.github/workflows/custom-build.yml)), puts it on the
+issue (a download of the run, with a GitHub account, for 90 days), and
+closes the issue. A custom build has no WebAssembly runtime, so it
+cannot make Workers (`--target wasm32`).
+
+## Continuous integration
+
+[The workflow](../.github/workflows/build.yml) has these jobs:
+
+1. **Build** and **Build the interpreter**: `beam.com` (the JIT) and
+   `beam-emu.com` (the interpreter), on Ubuntu with cosmocc. The first
+   job also runs the unit tests.
+2. **Add a rebar3 release**: a release of `examples/greeter` and of two
+   check programs, made with a normal Erlang/OTP and rebar3, and added to
+   copies of `beam.com` with `zip`.
+3. **Run on ...**: the behavior tests ([`tests/run.sh`](../tests/run.sh),
+   [`tests/run.ps1`](../tests/run.ps1)) and the benchmarks on Linux
+   (x86_64, aarch64), macOS (arm64, x86_64), Windows, FreeBSD, NetBSD and
+   OpenBSD 7.3. See [`TESTING.md`](TESTING.md).
+4. **Publish the edge binary**: after a merge to `main`, the prerelease
+   `edge` gets the new `beam.com`.
+5. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
+   gets `beam.com`, `beam-emu.com` and `SHA256SUMS`.
+
+A run starts for each pull request (and again for each new push to it;
+the run of the older commit stops), for each push to `main`, and for each
+tag `v*`. A change of the docs only (Markdown files, `docs/`, the issue
+forms) starts no run. To test a branch without a pull request, run the
+workflow by hand (Actions, "Run workflow").
+
+## Make a release
+
+1. Set the version in `apps/beam_com/src/beam_com.app.src`, and merge the
+   change to `main`.
+2. Push a tag with the same version: `git tag v0.1.0 && git push origin
+   v0.1.0`.
+3. CI builds and tests the files on all the platforms, and then publishes
+   the release of the tag. The job stops when the tag and the version
+   differ.

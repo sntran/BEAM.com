@@ -6,7 +6,7 @@
 // BEAM_WARM (a path, as "/") also sends one GET request to the app there,
 // so that V8 compiles the code of a request before the first request.
 // That request must not use I/O of the host (SQL, sockets). Measured on
-// Cloudflare: see docs/WASM.md.
+// Cloudflare: see docs/WORKERS.md.
 //
 //   node wasm/snapshot/snapshot.mjs DIR --warm 4000:/
 //   (cd DIR && wrangler deploy -c wrangler.global.jsonc)
