@@ -15,7 +15,12 @@
 split_dir_test() ->
     ?assertEqual({kernel, "11.0.4"}, beam_com_build:split_dir("kernel-11.0.4")),
     ?assertEqual({beam_com, none}, beam_com_build:split_dir("beam_com")),
-    ?assertEqual({'my-app', "1.0"}, beam_com_build:split_dir("my-app-1.0")).
+    ?assertEqual({'my-app', "1.0"}, beam_com_build:split_dir("my-app-1.0")),
+    %% A version with "-": a pre-release, or a Mix dependency from Git.
+    ?assertEqual({phoenix, "1.9.0-dev"}, beam_com_build:split_dir("phoenix-1.9.0-dev")),
+    ?assertEqual({ecto, "3.0.0-rc.1"}, beam_com_build:split_dir("ecto-3.0.0-rc.1")),
+    ?assertEqual({'my-app', "1.0-rc"}, beam_com_build:split_dir("my-app-1.0-rc")),
+    ?assertEqual({foo, "main"}, beam_com_build:split_dir("foo-main")).
 
 default_output_test() ->
     ?assertEqual("hello.com", beam_com_build:default_output("src/hello.erl")),
