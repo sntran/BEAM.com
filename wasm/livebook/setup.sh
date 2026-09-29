@@ -21,6 +21,17 @@
 # instances have no password. The code of a visitor can read the vars and
 # the secrets of the Worker: give it no secret. Livebook makes a random
 # secret_key_base in each VM.
+#
+# The same DIR/worker runs on Deno Deploy (deno.js, with release.bin and
+# static/ in it). Deno has no Durable Objects: all the visitors of an
+# isolate share one Livebook and see the sessions of the others. The app
+# "livebook" of beam.com on Deno Deploy has these variables:
+#   LIVEBOOK_PORT=4000 LIVEBOOK_DEFAULT_RUNTIME=embedded
+#   LIVEBOOK_TOKEN_ENABLED=false LIVEBOOK_DATA_PATH=/tmp LIVEBOOK_HOME=/tmp
+#   LIVEBOOK_IFRAME_URL=https://livebook-iframe.SUBDOMAIN.workers.dev/iframe/vN.html
+#   BEAM_SQLITE=off BEAM_CONNECT=example.com:80,hex.pm:443
+# Caution: there, a visitor can run code for all the others, with the
+# hosts of BEAM_CONNECT. Give the app no secret, and keep BEAM_CONNECT short.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${BEAM_COM:?set BEAM_COM}"

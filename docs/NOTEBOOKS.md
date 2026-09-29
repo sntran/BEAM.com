@@ -14,8 +14,9 @@ needs a browser with JSPI (Chrome or Edge 137 or later).
 | Building programs with beam.com | The command line of beam.com, and the release that runs the Livebook. | [Run in your browser](https://sntran.github.io/BEAM.com/livebook/#/learn/notebooks/building-programs) · [source](notebooks/building_programs.livemd) |
 
 The same notebooks are in the Learn section of the Livebook of beam.com
-on Cloudflare (<https://livebook.fifo.workers.dev>). There, a notebook
-can also connect to the internet.
+on Cloudflare (<https://livebook.fifo.workers.dev>, an instance for each
+visitor) and on Deno Deploy (<https://livebook.one.deno.net>). There, a
+notebook can also connect to the hosts that `BEAM_CONNECT` allows.
 
 ## Add a notebook
 

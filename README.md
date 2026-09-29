@@ -33,11 +33,13 @@ a WebAssembly runtime (WAMR). It is about 50 MB.
 These run from the WebAssembly runtime of `beam.com`, on the free plans:
 
 - <https://phoenix.fifo.workers.dev> (Cloudflare Workers) and
-  <https://beam-phoenix.one.deno.net> (Deno Deploy): a Phoenix LiveView
+  <https://phoenix.one.deno.net> (Deno Deploy): a Phoenix LiveView
   app with `phx.gen.auth`, Ecto SQLite, PubSub and Presence, from one
   build ([`examples/phoenix_demo`](examples/phoenix_demo)).
-- <https://livebook.fifo.workers.dev>: Livebook, with an instance for
-  each visitor ([`wasm/livebook`](wasm/livebook)).
+- <https://livebook.fifo.workers.dev> (Cloudflare Workers, an instance
+  for each visitor) and <https://livebook.one.deno.net> (Deno Deploy):
+  Livebook, with the notebooks of beam.com
+  ([`wasm/livebook`](wasm/livebook)).
 
 ## Download
 
