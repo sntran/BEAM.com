@@ -629,6 +629,30 @@ What was found:
 - Anyone who can reach the Worker can reach its listeners: the path needs
   protection (Cloudflare Access, a token) in a real deploy.
 
+### The Origin of a WebSocket (2026-09-29)
+
+Phoenix compares the `Origin` of a WebSocket with the host of the config of
+its endpoint (`PHX_HOST` in `runtime.exs`). So a page of the app on another
+name of the same Worker got 403 on `/live/websocket`, and LiveView did not
+connect: `wrangler dev` on `localhost`, a custom domain, a preview URL, and a
+host tenant (`NAME.example.com`). The page looked normal, but nothing on it
+worked. This happened in several demos, and each one worked around it: with
+`PHX_HOST=localhost` for `wrangler dev`, or with `check_origin: false`.
+
+Now the runtime Worker (`worker.js`, `appOrigin()`) gives the app the
+origin of `PHX_HOST` when the `Origin` of the request is the origin of the
+request itself: the page comes from the app. The browser sets `Origin`, so
+the `Origin` of another site goes as it is, and the app refuses it as before.
+This is the check of `check_origin: :conn` of Phoenix, with no change to the
+app. With no `PHX_HOST`, nothing changes.
+
+When the app refuses a WebSocket (403), the Worker logs a line with the path,
+the `Origin`, and `PHX_HOST`.
+
+Tested with the Phoenix demo (`examples/phoenix_demo`) in `wrangler dev`,
+with `PHX_HOST=phoenix.fifo.workers.dev`: the login flow works on
+`localhost`, and the `Origin` of another site or another port gets 403.
+
 ### Bandit, unchanged
 
 The first adapter of the spike (`WasmHost.PhoenixAdapter`, `WasmHost.Conn`,

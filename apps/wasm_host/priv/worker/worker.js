@@ -851,6 +851,19 @@ export class Vm {
     return new Promise((r) => this.waitListen.set(port, [...(this.waitListen.get(port) ?? []), r]));
   }
 
+  // The Origin that the app gets. Phoenix compares the Origin of a
+  // WebSocket with the host of its config (PHX_HOST), so a page of the app on
+  // another name of the Worker (wrangler dev, a custom domain, a preview URL,
+  // a host tenant) got 403, and LiveView did not connect. A request from a
+  // page of its own origin comes from the app itself: the app gets the origin
+  // of PHX_HOST. The browser sets Origin, so the Origin of another site goes
+  // as it is, and the app refuses it as before (check_origin: :conn of
+  // Phoenix does the same check).
+  appOrigin(origin, url) {
+    const host = this.env.PHX_HOST;
+    return origin && host && origin === url.origin ? `https://${host}` : origin;
+  }
+
   // The request as a TCP connection to the HTTP server of the
   // app on PORT. Bandit does the HTTP; here only the bytes are framed.
   async bridge(request, url, upgrade, h, finished) {
@@ -859,6 +872,8 @@ export class Vm {
     const id = `b${this.nextId++}`;
     const headers = new Headers(request.headers);
     headers.set('host', url.host);
+    const origin = this.appOrigin(headers.get('origin'), url);
+    if (origin) headers.set('origin', origin);
     headers.delete('transfer-encoding');
     headers.delete('sec-websocket-extensions');  // no compression: frames as they are
     // The Workers runtime compresses the response for each client. The app
@@ -885,7 +900,7 @@ export class Vm {
     bytes.set(head);
     bytes.set(body, head.length);
     return new Promise((resolve) => {
-      const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h };
+      const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname };
       if (h) h.sockets++;
       this.tcps.set(id, { send: (b) => this.bridgeData(c, b), close: () => this.bridgeEnd(c), h });
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
@@ -911,6 +926,10 @@ export class Vm {
       }
       c.buf = c.buf.slice(end + 4);
       if (c.status === 101 && c.upgrade) return this.bridgeUpgrade(c);
+      if (c.upgrade && c.status === 403) {
+        console.log(`beam: the app refused the WebSocket of ${c.path} (403) from the origin ${c.origin}. ` +
+          `A Phoenix app compares the Origin with the host of its config (PHX_HOST=${this.env.PHX_HOST ?? ''}): see check_origin.`);
+      }
       c.length = headers.has('content-length') ? Number(headers.get('content-length')) : null;
       c.chunked = /chunked/i.test(headers.get('transfer-encoding') ?? '');
       headers.delete('transfer-encoding');
