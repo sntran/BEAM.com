@@ -302,6 +302,7 @@ Kino.nothing()
 
 The other notebooks of this section:
 
+* [The Erlang shell](erlang_shell.livemd): the Erlang shell and IEx in a terminal, in this VM.
 * [Inside the WebAssembly VM](inside_the_webassembly_vm.livemd): the threads, the memory, the clock and the snapshots of the runtime.
 * [The anatomy of beam.com](anatomy_of_beam_com.livemd): one file that is a shell script, a Windows program, an ELF program and a zip.
 * [WebAssembly programs](webassembly_programs.livemd): a module in WebAssembly text, and a C program with WASI.

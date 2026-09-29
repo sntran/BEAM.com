@@ -40,6 +40,9 @@ These run from the WebAssembly runtime of `beam.com`, on the free plans:
   for each visitor) and <https://livebook.one.deno.net> (Deno Deploy):
   Livebook, with the notebooks of beam.com
   ([`wasm/livebook`](wasm/livebook)).
+- <https://beam.one.deno.net> (Deno Deploy): the Erlang shell, with the
+  VM on the server and a restricted shell for all the visitors
+  ([`examples/worker`](examples/worker)).
 
 ## Download
 

@@ -1,0 +1,339 @@
+# The Erlang shell
+
+## About this notebook
+
+The Erlang shell is the read-eval-print loop (REPL) of Erlang: the module `shell` of stdlib. In a terminal, `beam.com` starts it with no arguments. This notebook starts the Erlang shell and IEx, the shell of Elixir, in the VM of this Livebook, each with a terminal in the output of a cell.
+
+The same shell of beam.com also runs:
+
+* as a web page of its own, with its VM in the page: [`repl/`](https://sntran.github.io/BEAM.com/repl/) of this site. It is a much smaller download than Livebook;
+* on Deno Deploy, with the VM on the server: <https://beam.one.deno.net>. There, the shell is a restricted shell, because all the visitors share the VM;
+* on Cloudflare Workers and natively, from the same source ([`examples/worker`](../../examples/worker)).
+
+Here, the shell is not restricted. It runs in the VM of this tab, as the cells do.
+
+## How a shell talks to a terminal
+
+A shell reads its input and writes its output through its group leader, with the I/O protocol of Erlang: the messages `{io_request, From, ReplyAs, Request}` and `{io_reply, ReplyAs, Reply}`. `Repl.Session` is a process that is the group leader of a shell:
+
+* A read (`get_until` for the Erlang shell, `get_line` for IEx) waits for a line from the terminal. The session sends the prompt to the terminal.
+* A write (`put_chars`) goes to the terminal.
+* An interrupt stops the evaluator: the process that evaluates an expression for the shell. The shell prints the exit and starts a new evaluator.
+
+```elixir
+defmodule Repl.Session do
+  @moduledoc """
+  A shell (the Erlang shell or IEx) with this process as its group leader:
+  the process gives the shell the lines of the terminal, and sends the
+  owner {:repl, session, {:output, text}} and {:repl, session, {:prompt, text}}.
+  """
+
+  def start(kind) do
+    owner = self()
+    spawn(fn -> init(owner, kind) end)
+  end
+
+  def input(session, line), do: send(session, {:input, String.to_charlist(line) ++ ~c"\n"})
+  def interrupt(session), do: send(session, :interrupt)
+
+  defp init(owner, kind) do
+    Process.monitor(owner)
+    Process.group_leader(self(), self())
+
+    shell =
+      case kind do
+        :erlang ->
+          :shell.start(false, false)
+
+        :elixir ->
+          {:ok, _} = Application.ensure_all_started(:iex)
+          spawn(fn -> IEx.Server.run([]) end)
+      end
+
+    Process.monitor(shell)
+    loop(%{owner: owner, shell: shell, buffer: [], pending: nil})
+  end
+
+  defp loop(s) do
+    receive do
+      {:io_request, from, reply_as, request} -> loop(request(from, reply_as, request, s))
+      {:input, line} -> loop(take(%{s | buffer: s.buffer ++ line}))
+      :interrupt -> loop(interrupt_evaluation(s))
+      {:DOWN, _, :process, pid, _} when pid == s.owner -> Process.exit(s.shell, :kill)
+      {:DOWN, _, :process, pid, _} when pid == s.shell -> send(s.owner, {:repl, self(), :down})
+      _ -> loop(s)
+    end
+  end
+
+  # The requests of the I/O protocol that read wait for a line.
+  defp request(from, reply_as, {:get_until, enc, prompt, m, f, xs}, s),
+    do: wait(from, reply_as, {:until, enc, prompt, m, f, xs, []}, s)
+
+  defp request(from, reply_as, {:get_until, prompt, m, f, xs}, s),
+    do: wait(from, reply_as, {:until, :latin1, prompt, m, f, xs, []}, s)
+
+  defp request(from, reply_as, {:get_line, enc, prompt}, s),
+    do: wait(from, reply_as, {:line, enc, prompt}, s)
+
+  defp request(from, reply_as, {:get_line, prompt}, s),
+    do: wait(from, reply_as, {:line, :latin1, prompt}, s)
+
+  defp request(from, reply_as, request, s) do
+    send(from, {:io_reply, reply_as, simple(request, s)})
+    s
+  end
+
+  defp simple({:put_chars, enc, chars}, s) do
+    send(s.owner, {:repl, self(), {:output, :unicode.characters_to_binary(chars, enc)}})
+    :ok
+  end
+
+  defp simple({:put_chars, enc, m, f, a}, s), do: simple({:put_chars, enc, apply(m, f, a)}, s)
+  defp simple({:put_chars, chars}, s), do: simple({:put_chars, :latin1, chars}, s)
+  defp simple({:put_chars, m, f, a}, s), do: simple({:put_chars, :latin1, m, f, a}, s)
+
+  defp simple({:requests, requests}, s),
+    do: Enum.reduce_while(requests, :ok, fn r, _ -> r |> simple(s) |> then(&if(&1 == :ok, do: {:cont, :ok}, else: {:halt, &1})) end)
+
+  defp simple(:getopts, _s), do: [binary: false, encoding: :unicode, echo: false]
+  defp simple({:setopts, _}, _s), do: :ok
+  defp simple({:get_geometry, :columns}, _s), do: 80
+  defp simple({:get_geometry, :rows}, _s), do: 24
+  defp simple(_, _s), do: {:error, :request}
+
+  defp wait(from, reply_as, read, %{pending: nil} = s), do: take(%{s | pending: {from, reply_as, read, true}})
+
+  defp wait(from, reply_as, _read, s) do
+    send(from, {:io_reply, reply_as, {:error, :busy}})
+    s
+  end
+
+  # Gives the input to the read that waits, or sends the prompt.
+  defp take(%{pending: nil} = s), do: s
+
+  defp take(%{pending: {from, reply_as, read, first}} = s) do
+    case read(read, s.buffer) do
+      {:done, reply, rest} ->
+        send(from, {:io_reply, reply_as, reply})
+        %{s | pending: nil, buffer: rest}
+
+      {:more, read1, rest} ->
+        send(s.owner, {:repl, self(), {:prompt, prompt(read, first)}})
+        %{s | pending: {from, reply_as, read1, false}, buffer: rest}
+    end
+  end
+
+  defp read({:until, enc, prompt, m, f, xs, cont}, buffer) when buffer != [] do
+    case apply(m, f, [cont, buffer | xs]) do
+      {:done, result, rest} -> {:done, result, if(rest == :eof, do: [], else: rest)}
+      {:more, cont} -> {:more, {:until, enc, prompt, m, f, xs, cont}, []}
+    end
+  end
+
+  defp read({:until, _, _, _, _, _, _} = read, []), do: {:more, read, []}
+
+  defp read({:line, enc, _prompt} = read, buffer) do
+    case :string.split(buffer, ~c"\n") do
+      [line, rest] -> {:done, encode(line ++ ~c"\n", enc), rest}
+      _ -> {:more, read, buffer}
+    end
+  end
+
+  defp encode(chars, :unicode), do: :unicode.characters_to_binary(chars) |> :unicode.characters_to_list()
+  defp encode(chars, _), do: chars
+
+  # The prompt of a read, and the prompt of the next lines of an expression.
+  defp prompt(read, first) do
+    prompt = read |> elem(2) |> :io_lib.format_prompt(:unicode) |> :unicode.characters_to_list()
+
+    if first or elem(read, 0) == :line,
+      do: :unicode.characters_to_binary(prompt),
+      else: :unicode.characters_to_binary(:shell.default_multiline_prompt(prompt))
+  end
+
+  # The shell runs an expression in an evaluator: for the Erlang shell a
+  # process linked to it, for IEx a process of IEx.Evaluator. The shell
+  # prints the exit, and starts a new evaluator.
+  defp interrupt_evaluation(s) do
+    {:links, links} = Process.info(s.shell, :links)
+
+    iex =
+      for pid <- Process.list(),
+          Process.info(pid, :group_leader) == {:group_leader, self()},
+          {:dictionary, d} = Process.info(pid, :dictionary),
+          match?({IEx.Evaluator, _, _}, d[:"$initial_call"]),
+          do: pid
+
+    for pid <- links ++ iex, is_pid(pid), pid != self(), do: Process.exit(pid, :kill)
+    s
+  end
+end
+```
+
+`Repl.Terminal` is the terminal: a `Kino.JS.Live` with a text area and a line for input. The JavaScript runs in your browser, and the Elixir part runs in the VM.
+
+```elixir
+defmodule Repl.Terminal do
+  @moduledoc "A terminal in the output of a cell, for a shell of Repl.Session."
+  use Kino.JS
+  use Kino.JS.Live
+
+  # The text that the terminal keeps for a new view of the output.
+  @keep 65_536
+
+  def new(kind), do: Kino.JS.Live.new(__MODULE__, kind)
+
+  @impl true
+  def init(kind, ctx) do
+    {:ok, assign(ctx, session: Repl.Session.start(kind), text: "", prompt: "")}
+  end
+
+  @impl true
+  def handle_connect(ctx) do
+    {:ok, %{text: ctx.assigns.text, prompt: ctx.assigns.prompt}, ctx}
+  end
+
+  @impl true
+  def handle_event("input", line, ctx) do
+    Repl.Session.input(ctx.assigns.session, line)
+    {:noreply, keep(assign(ctx, prompt: ""), ctx.assigns.prompt <> line <> "\n")}
+  end
+
+  def handle_event("interrupt", _, ctx) do
+    Repl.Session.interrupt(ctx.assigns.session)
+    {:noreply, ctx}
+  end
+
+  @impl true
+  def handle_info({:repl, _, {:output, text}}, ctx) do
+    broadcast_event(ctx, "output", text)
+    {:noreply, keep(ctx, text)}
+  end
+
+  def handle_info({:repl, _, {:prompt, prompt}}, ctx) do
+    broadcast_event(ctx, "prompt", prompt)
+    {:noreply, assign(ctx, prompt: prompt)}
+  end
+
+  def handle_info({:repl, _, :down}, ctx) do
+    broadcast_event(ctx, "output", "\n** the shell stopped: run the cell again\n")
+    {:noreply, ctx}
+  end
+
+  defp keep(ctx, text) do
+    all = ctx.assigns.text <> text
+    size = byte_size(all)
+    all = if size > @keep, do: binary_part(all, size - @keep, @keep), else: all
+    assign(ctx, text: all)
+  end
+
+  asset "main.js" do
+    """
+    export function init(ctx, data) {
+      ctx.root.innerHTML = `
+        <style>
+          .term { background: #1c1917; color: #e7e5e4; border-radius: 8px; padding: 10px 12px;
+                  height: 360px; overflow-y: auto; cursor: text;
+                  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+          .term pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+          .term .line { display: flex; }
+          .term .prompt { white-space: pre; color: #c4b5fd; }
+          .term input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+                        color: inherit; font: inherit; padding: 0; }
+          .keys { font: 12px system-ui, sans-serif; color: #78716c; margin-top: 4px; }
+        </style>
+        <div class="term"><pre></pre><div class="line"><span class="prompt"></span><input
+          spellcheck="false" autocomplete="off" aria-label="The line for the shell"></div></div>
+        <div class="keys">Enter: send the line · ↑ and ↓: the lines before · Ctrl+C: stop the evaluation</div>`;
+      const term = ctx.root.querySelector(".term");
+      const out = term.querySelector("pre");
+      const prompt = term.querySelector(".prompt");
+      const input = term.querySelector("input");
+      const lines = [];
+      let at = 0;
+      const bottom = () => { term.scrollTop = term.scrollHeight; };
+      // The colors of ANSI escape codes (IEx uses them): 30 to 37, and 90 to 97.
+      const colors = ["#a8a29e", "#f87171", "#4ade80", "#facc15", "#60a5fa", "#c084fc", "#22d3ee", "#e7e5e4"];
+      let color = null, bold = false;
+      const append = (text) => {
+        for (const part of text.split(/(\\x1b\\[[0-9;]*m)/)) {
+          const codes = /^\\x1b\\[([0-9;]*)m$/.exec(part);
+          if (codes) {
+            for (const c of (codes[1] || "0").split(";").map(Number)) {
+              if (c === 0) { color = null; bold = false; }
+              else if (c === 1) bold = true;
+              else if (c === 39) color = null;
+              else if (c >= 30 && c <= 37) color = colors[c - 30];
+              else if (c >= 90 && c <= 97) color = colors[c - 90];
+            }
+          } else if (part) {
+            const span = document.createElement("span");
+            span.textContent = part;
+            if (color) span.style.color = color;
+            if (bold) span.style.fontWeight = "600";
+            out.append(span);
+          }
+        }
+        bottom();
+      };
+      append(data.text);
+      prompt.textContent = data.prompt;
+      bottom();
+      term.addEventListener("click", () => { if (!getSelection().toString()) input.focus(); });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const line = input.value;
+          append(prompt.textContent + line + "\\n");
+          prompt.textContent = "";
+          if (line.trim() && lines.at(-1) !== line) lines.push(line);
+          at = lines.length;
+          input.value = "";
+          ctx.pushEvent("input", line);
+        } else if (e.key === "ArrowUp" && at > 0) {
+          input.value = lines[--at];
+          e.preventDefault();
+        } else if (e.key === "ArrowDown" && at < lines.length) {
+          input.value = lines[++at] ?? "";
+          e.preventDefault();
+        } else if (e.key === "c" && e.ctrlKey && input.selectionStart === input.selectionEnd) {
+          append(prompt.textContent + input.value + "^C\\n");
+          input.value = "";
+          ctx.pushEvent("interrupt", null);
+          e.preventDefault();
+        }
+      });
+      ctx.handleEvent("output", append);
+      ctx.handleEvent("prompt", (text) => { prompt.textContent = text; bottom(); });
+    }
+    """
+  end
+end
+```
+
+## The Erlang shell
+
+Click in the terminal, and type an expression that ends with a full stop. Try these lines:
+
+* `X = lists:seq(1, 10).`
+* `[Y * Y || Y <- X, Y rem 2 =:= 0].`
+* `b().` shows the variables, and `f().` removes them.
+* `Pid = spawn(fun() -> receive M -> io:format("got ~p~n", [M]) end end), Pid ! hello.`
+* `erlang:system_info(system_architecture).`
+* `timer:sleep(infinity).`, then <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+
+```elixir
+Repl.Terminal.new(:erlang)
+```
+
+## IEx
+
+IEx is the shell of Elixir. Here an interrupt starts IEx again, with no variables.
+
+```elixir
+Repl.Terminal.new(:elixir)
+```
+
+## Next
+
+* [A tour of beam.com](tour_of_beam_com.livemd): processes, messages and supervisors.
+* [Inside the WebAssembly VM](inside_the_webassembly_vm.livemd): the VM that runs these shells.

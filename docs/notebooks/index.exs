@@ -24,6 +24,12 @@
       cover: "tour.svg"
     },
     %{
+      source: "docs/notebooks/erlang_shell.livemd",
+      slug: "erlang-shell",
+      description: "The Erlang shell and IEx in a terminal in this page, with the VM of this Livebook.",
+      cover: "shell.svg"
+    },
+    %{
       source: "docs/notebooks/inside_the_webassembly_vm.livemd",
       slug: "inside-the-webassembly-vm",
       description: "The threads, the scheduler, the memory, the clock, the files and the snapshots of the runtime.",

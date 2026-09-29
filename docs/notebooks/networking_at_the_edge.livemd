@@ -67,7 +67,7 @@ A program at the edge can be public, and its users can make it connect to hosts.
 * `example.com:443`: this host, on this port only.
 * `*.example.com`: the subdomains of `example.com`.
 
-A connection to another host gets `econnrefused`. The Erlang shell of beam.com on Deno Deploy (`examples/worker`) uses `BEAM_CONNECT=example.com:80,example.com:443`.
+A connection to another host gets `econnrefused`. The Erlang shell of beam.com on Deno Deploy (<https://beam.one.deno.net>, from `examples/worker`) uses `BEAM_CONNECT=example.com:80,example.com:443`.
 
 ## Incoming requests
 
