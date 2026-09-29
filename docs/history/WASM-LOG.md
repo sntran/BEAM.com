@@ -1456,8 +1456,13 @@ diagrams of Kino did not show there, for two causes:
 
 With both changes, `wrangler dev` (with a second port for the iframe
 Worker) shows the trace of messages and the supervisor tree. A
-`Kino.DataTable` that a cell makes again each second stays in its load
-state, so the live table of the notebook is Markdown now.
+`Kino.DataTable` that a cell makes again each second stayed in its load
+state, so the live table of the notebook was Markdown for a time.
+
+On 2026-09-29, with path tenants and the `beam.com` of `main`, the same
+table shows its rows and changes each second in `wrangler dev`, as in a
+native run of the same release. So the notebook has the
+`Kino.DataTable` again.
 
 **Public instances (2026-09-28).** A public Livebook with no password,
 with bounds for the Free plan. `durable.js` has two new modes:
