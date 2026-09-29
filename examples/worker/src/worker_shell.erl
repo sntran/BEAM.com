@@ -193,11 +193,19 @@ loop(S) ->
             loop(S)
     end.
 
+%% The functions that a request of the I/O protocol can name: those that
+%% the modules io and shell use. The code of the visitor can send a
+%% request to this process (its group leader), and the session runs the
+%% function of the request, with no check of allowed/3 and outside the
+%% limits of an evaluation.
+-define(READ_FUNCTIONS, [{erl_scan, tokens}, {io_lib, fread}]).
+-define(WRITE_FUNCTIONS, [{io_lib, format}, {io_lib, fwrite}, {io_lib, write}]).
+
 %% The requests of the I/O protocol.
 request(From, ReplyAs, {get_until, Encoding, Prompt, M, F, Xs}, S) ->
-    wait(From, ReplyAs, {until, Encoding, Prompt, M, F, Xs, []}, S);
+    until(From, ReplyAs, {until, Encoding, Prompt, M, F, Xs, []}, S);
 request(From, ReplyAs, {get_until, Prompt, M, F, Xs}, S) ->
-    wait(From, ReplyAs, {until, latin1, Prompt, M, F, Xs, []}, S);
+    until(From, ReplyAs, {until, latin1, Prompt, M, F, Xs, []}, S);
 request(From, ReplyAs, {get_line, Encoding, Prompt}, S) ->
     wait(From, ReplyAs, {line, Encoding, Prompt}, S);
 request(From, ReplyAs, {get_line, Prompt}, S) ->
@@ -216,9 +224,14 @@ simple({put_chars, Encoding, Chars}, S) ->
         Bin when is_binary(Bin) -> {ok, output(Bin, S)};
         _ -> {{error, put_chars}, S}
     end;
-simple({put_chars, Encoding, M, F, A}, S) ->
-    try simple({put_chars, Encoding, apply(M, F, A)}, S)
-    catch _:_ -> {{error, F}, S}
+simple({put_chars, Encoding, M, F, A}, S) when is_list(A) ->
+    case lists:member({M, F}, ?WRITE_FUNCTIONS) of
+        true ->
+            try simple({put_chars, Encoding, apply(M, F, A)}, S)
+            catch _:_ -> {{error, F}, S}
+            end;
+        false ->
+            {{error, request}, S}
     end;
 simple({put_chars, Chars}, S) ->
     simple({put_chars, latin1, Chars}, S);
@@ -238,6 +251,15 @@ simple({get_geometry, rows}, S) ->
     {24, S};
 simple(_Request, S) ->
     {{error, request}, S}.
+
+until(From, ReplyAs, {until, _, _, M, F, Xs, _} = Read, S) when is_list(Xs) ->
+    case lists:member({M, F}, ?READ_FUNCTIONS) of
+        true -> wait(From, ReplyAs, Read, S);
+        false -> From ! {io_reply, ReplyAs, {error, request}}, S
+    end;
+until(From, ReplyAs, _Read, S) ->
+    From ! {io_reply, ReplyAs, {error, request}},
+    S.
 
 %% A read waits for input. The time of the evaluation stops meanwhile.
 wait(From, ReplyAs, Read, #s{pending = none} = S) ->
