@@ -91,3 +91,16 @@ test('a module that imports another thing than WASI', async () => {
   const m = await host.op('compile', { bytes: b64(bytes) });
   await assert.rejects(host.op('instantiate', { module: m.ok, args: [], env: [] }), /only WASI/);
 });
+
+test('the bounds of the requests, and release', async () => {
+  const host = new WasmHost(), id = await instance(host, small);
+  for (const q of [{ offset: -1, length: 4 }, { offset: 0.5, length: 4 }, { offset: '1', length: 4 },
+                   { offset: 0, length: -1 }, { offset: 0, length: (16 << 20) + 1 }]) {
+    assert.equal((await host.op('read', { instance: id, ...q })).error, 'out_of_bounds', JSON.stringify(q));
+  }
+  assert.equal((await host.op('write', { instance: id, offset: -1, data: b64(Buffer.from('x')) })).error, 'out_of_bounds');
+  assert.equal((await host.op('memory_grow', { instance: id, pages: -1 })).error, 'out_of_bounds');
+  assert.equal((await host.op('release', { id })).ok, true);
+  assert.equal((await host.op('memory_size', { instance: id })).error, 'unknown instance');
+  assert.equal(host.instances.size, 0);
+});

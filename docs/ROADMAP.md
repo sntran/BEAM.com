@@ -74,6 +74,13 @@ systems.
 
 - A test in CI that runs the Workers in `workerd` (CI builds them, and
   checks the files, but does not run them yet).
+- Host tenants for the public Livebook (a domain with a wildcard), so
+  that each instance has its own origin in the browser.
+- `BEAM_CONNECT`: rules with IPv6 addresses (`[::1]:443`) and with a
+  trailing dot, and a log line for a rule that does not parse.
+- SQLite on Deno KV: a lease for each read transaction, so that a long
+  read keeps its versions of the blocks (today it fails with an I/O
+  error when two later commits changed its blocks).
 - Postgres through `wasm_tcp` (Postgrex over `gen_tcp` and `ssl`).
 - Modules that load when the code server asks for them: this needs a
   runtime built with `-sSUPPORT_LONGJMP=wasm` (see EM4 in

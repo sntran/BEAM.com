@@ -26,3 +26,12 @@ options_test_() ->
      ?_assertError({badarg, preopens_not_supported},
                    wasm_host_wasm:instantiate(M, #{}, #{preopens => #{"/" => "/tmp"}})),
      ?_assertError(badarg, wasm_host_wasm:instantiate(M, #{}, #{args => not_a_list}))].
+
+%% Offsets and lengths are integers of 0 or more, before any request.
+bounds_test_() ->
+    I = {wasm_instance, <<"i1">>},
+    [?_assertError(function_clause, wasm_host_wasm:read_binary(I, -1, 4)),
+     ?_assertError(function_clause, wasm_host_wasm:read_binary(I, 0, -4)),
+     ?_assertError(function_clause, wasm_host_wasm:read_binary(I, 1.5, 4)),
+     ?_assertError(function_clause, wasm_host_wasm:write_binary(I, -1, <<"x">>)),
+     ?_assertError(function_clause, wasm_host_wasm:memory_grow(I, -1))].

@@ -13,6 +13,8 @@
 %%   compile/1 gives {error, Reason}. A web page and Deno can.
 %% - The code of a module runs on the thread of the host: a function that
 %%   does not return stops the VM.
+%% - The host keeps a module or an instance until the process that made
+%%   it stops, and at most 1024 of them at one time.
 %%
 %% A request is {"t":"wasm","id":ID,"op":OP} and a JSON body (with the
 %% bytes of a module in base64); the reply is {"t":"wasm_reply","id":ID}
@@ -23,6 +25,7 @@
 -export([compile/1, instantiate/1, instantiate/2, instantiate/3,
          call_function/3, function_exists/2, start/1, run/2,
          memory_size/1, memory_grow/2, read_binary/3, write_binary/3]).
+-export([release/1]).
 -export([wire/1, unwire/1]).
 
 -define(TIMEOUT, 60000).
@@ -30,7 +33,7 @@
 -spec compile(binary()) -> {ok, {wasm_module, binary()}} | {error, binary()}.
 compile(Bytes) when is_binary(Bytes) ->
     case request(compile, #{bytes => base64:encode(Bytes)}) of
-        {ok, Id} -> {ok, {wasm_module, Id}};
+        {ok, Id} -> {ok, {wasm_module, owned(Id)}};
         Error -> Error
     end.
 
@@ -38,8 +41,13 @@ instantiate(Module) -> instantiate(Module, #{}, #{}).
 instantiate(Module, Imports) -> instantiate(Module, Imports, #{}).
 
 instantiate(Bytes, Imports, Opts) when is_binary(Bytes) ->
+    %% The module of the bytes has no handle for the caller: the host
+    %% keeps it only for this instance.
     case compile(Bytes) of
-        {ok, Module} -> instantiate(Module, Imports, Opts);
+        {ok, Module} ->
+            try instantiate(Module, Imports, Opts)
+            after release(Module)
+            end;
         Error -> Error
     end;
 instantiate({wasm_module, Id}, Imports, Opts) when is_map(Imports), is_map(Opts) ->
@@ -48,7 +56,7 @@ instantiate({wasm_module, Id}, Imports, Opts) when is_map(Imports), is_map(Opts)
     Env = [[utf8(K), utf8(V)] || {K, V} <- pairs(maps:get(env, Opts, []))],
     pairs(maps:get(preopens, Opts, [])) =:= [] orelse error({badarg, preopens_not_supported}),
     case request(instantiate, #{module => Id, args => Args, env => Env}) of
-        {ok, Instance} -> {ok, {wasm_instance, Instance}};
+        {ok, Instance} -> {ok, {wasm_instance, owned(Instance)}};
         Error -> Error
     end.
 
@@ -71,7 +79,10 @@ start(Instance) ->
 
 run(Program, Opts) when is_map(Opts) ->
     case instantiate(Program, #{}, Opts) of
-        {ok, Instance} -> start(Instance);
+        {ok, Instance} ->
+            try start(Instance)
+            after release(Instance)
+            end;
         Error -> Error
     end.
 
@@ -81,18 +92,36 @@ memory_size({wasm_instance, Id}) ->
 memory_grow({wasm_instance, Id}, Pages) when is_integer(Pages), Pages >= 0 ->
     request(memory_grow, #{instance => Id, pages => Pages}).
 
-read_binary({wasm_instance, Id}, Offset, Length) ->
+read_binary({wasm_instance, Id}, Offset, Length)
+  when is_integer(Offset), Offset >= 0, is_integer(Length), Length >= 0 ->
     case request(read, #{instance => Id, offset => Offset, length => Length}) of
         {ok, Data} -> {ok, base64:decode(Data)};
         Error -> Error
     end.
 
-write_binary({wasm_instance, Id}, Offset, Data) ->
+write_binary({wasm_instance, Id}, Offset, Data) when is_integer(Offset), Offset >= 0 ->
     case request(write, #{instance => Id, offset => Offset,
                           data => base64:encode(iolist_to_binary(Data))}) of
         {ok, _} -> ok;
         Error -> Error
     end.
+
+%% The host forgets a module or an instance: the handle does not work
+%% after this.
+-spec release({wasm_module, binary()} | {wasm_instance, binary()}) -> ok.
+release({_, Id}) when is_binary(Id) ->
+    _ = request(release, #{id => Id}),
+    ok.
+
+%% A handle belongs to the process that made it: the host forgets it when
+%% that process stops (a small process waits for the end of the owner).
+owned(Id) ->
+    Owner = self(),
+    _ = spawn(fun() ->
+                      Ref = erlang:monitor(process, Owner),
+                      receive {'DOWN', Ref, process, _, _} -> release({handle, Id}) end
+              end),
+    Id.
 
 %% --- the host ---------------------------------------------------------
 

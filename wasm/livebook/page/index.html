@@ -90,13 +90,23 @@
     });
     vm.postMessage({ type: 'start', base: APP.pathname.replace(/\/$/, '') });
 
-    // The service worker: its requests go to the VM with their reply port.
+    // The service worker (sw.js, not another worker of this origin): its
+    // requests go to the VM with their reply port.
+    const SW = new URL('./sw.js', location.href).href;
     navigator.serviceWorker.addEventListener('message', (e) => {
-      if (e.data?.type === 'fetch') vm.postMessage(e.data, [e.ports[0]]);
+      if (e.source?.scriptURL === SW && e.data?.type === 'fetch') vm.postMessage(e.data, [e.ports[0]]);
     });
-    // The WebSocket of the Livebook frame (ws-shim.js): its port goes to the VM.
+    // The WebSocket of the Livebook frame (ws-shim.js), from the frame or a
+    // frame in it: its port goes to the VM.
+    const inFrame = (w) => {
+      for (let n = 0; w && n < 10; n++, w = w.parent) {
+        if (w === document.getElementById('app').contentWindow) return true;
+        if (w === w.parent) return false;
+      }
+      return false;
+    };
     addEventListener('message', (e) => {
-      if (e.origin === location.origin && e.data?.type === 'ws') vm.postMessage(e.data, [e.ports[0]]);
+      if (e.origin === location.origin && e.data?.type === 'ws' && inFrame(e.source)) vm.postMessage(e.data, [e.ports[0]]);
     });
     // This page is outside the scope, so navigator.serviceWorker.ready does
     // not apply: wait for the registration to be active.

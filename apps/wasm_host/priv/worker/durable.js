@@ -97,13 +97,14 @@ export class Beam extends DurableObject {
   // instance, the place in the queue, or a limit.
   async admit(ticket, address) {
     const env = this.env, sql = this.ctx.storage.sql, now = Date.now();
-    const max = Number(env.BEAM_INSTANCES);
-    const ttl = Number(env.BEAM_INSTANCE_TTL ?? 1800);
-    const hours = Number(env.BEAM_INSTANCE_HOURS ?? 24);
-    const perAddress = Number(env.BEAM_INSTANCES_PER_IP ?? 2);
+    // A limit that is not a number is the default (NaN would be no limit).
+    const max = limit(env.BEAM_INSTANCES, 1);
+    const ttl = limit(env.BEAM_INSTANCE_TTL, 1800);
+    const hours = limit(env.BEAM_INSTANCE_HOURS, 24);
+    const perAddress = limit(env.BEAM_INSTANCES_PER_IP, 2);
     this.tables();
     // A visitor that did not refresh its page for 60 s left the queue.
-    sql.exec('DELETE FROM beam_queue WHERE seen < ?', now - 60000);
+    sql.exec('DELETE FROM beam_waiting WHERE seen < ?', now - 60000);
     // The rows of the instances past their limit stay until sweep().
     const one = (q, ...a) => [...sql.exec(q, ...a)][0];
     const mine = one('SELECT name, expires FROM beam_instances WHERE ticket = ? AND expires > ?', ticket, now);
@@ -116,18 +117,22 @@ export class Beam extends DurableObject {
     const day = new Date(now).toISOString().slice(0, 10);
     const used = one('SELECT seconds FROM beam_budget WHERE day = ?', day)?.seconds ?? 0;
     if (used + ttl > hours * 3600) return { limit: 'day' };
-    sql.exec('INSERT INTO beam_queue VALUES (?, ?, ?) ON CONFLICT(ticket) DO UPDATE SET seen = excluded.seen',
-      ticket, now, now);
-    const since = one('SELECT since FROM beam_queue WHERE ticket = ?', ticket).since;
-    const position = one('SELECT count(*) AS n FROM beam_queue WHERE since < ? OR (since = ? AND ticket < ?)',
+    // An address has at most perAddress places in the queue, so that one
+    // client with many tickets cannot fill it.
+    const queued = one('SELECT count(*) AS n FROM beam_waiting WHERE address = ? AND ticket <> ?', address, ticket).n;
+    if (queued >= perAddress) return { limit: 'address', next };
+    sql.exec('INSERT INTO beam_waiting VALUES (?, ?, ?, ?) ON CONFLICT(ticket) DO UPDATE SET seen = excluded.seen',
+      ticket, address, now, now);
+    const since = one('SELECT since FROM beam_waiting WHERE ticket = ?', ticket).since;
+    const position = one('SELECT count(*) AS n FROM beam_waiting WHERE since < ? OR (since = ? AND ticket < ?)',
       since, since, ticket).n + 1;
     if (position > max - count) {
-      return { position, waiting: one('SELECT count(*) AS n FROM beam_queue').n, next };
+      return { position, waiting: one('SELECT count(*) AS n FROM beam_waiting').n, next };
     }
     const name = randomName();
     const expires = now + ttl * 1000;
     sql.exec('INSERT INTO beam_instances VALUES (?, ?, ?, ?)', name, ticket, address, expires);
-    sql.exec('DELETE FROM beam_queue WHERE ticket = ?', ticket);
+    sql.exec('DELETE FROM beam_waiting WHERE ticket = ?', ticket);
     sql.exec('DELETE FROM beam_budget WHERE day < ?', day);
     sql.exec('INSERT INTO beam_budget VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET seconds = seconds + excluded.seconds',
       day, ttl);
@@ -141,17 +146,26 @@ export class Beam extends DurableObject {
     this.tables();
     const stub = (name) => env.BEAM.get(env.BEAM.idFromName(name));
     let expired = 0, retired = 0;
+    // An error of one object does not stop the sweep of the others.
     for (const { name } of [...sql.exec('SELECT name FROM beam_instances WHERE expires <= ?', now)]) {
-      await stub(name).expire();
-      sql.exec('DELETE FROM beam_instances WHERE name = ?', name);
-      expired++;
+      try {
+        await stub(name).expire();
+        sql.exec('DELETE FROM beam_instances WHERE name = ?', name);
+        expired++;
+      } catch (e) {
+        console.log(`beam: sweep: ${name}: ${e}`);
+      }
     }
     const done = new Set([...sql.exec('SELECT name FROM beam_retired')].map((r) => r.name));
     for (const name of (env.BEAM_RETIRE ?? '').split(',').map((n) => n.trim()).filter(valid)) {
       if (done.has(name)) continue;
-      await stub(name).expire();
-      sql.exec('INSERT INTO beam_retired VALUES (?, ?)', name, now);
-      retired++;
+      try {
+        await stub(name).expire();
+        sql.exec('INSERT INTO beam_retired VALUES (?, ?)', name, now);
+        retired++;
+      } catch (e) {
+        console.log(`beam: sweep: ${name}: ${e}`);
+      }
     }
     return { expired, retired };
   }
@@ -166,7 +180,7 @@ export class Beam extends DurableObject {
   tables() {
     const sql = this.ctx.storage.sql;
     sql.exec('CREATE TABLE IF NOT EXISTS beam_instances (name TEXT PRIMARY KEY, ticket TEXT, address TEXT, expires INTEGER)');
-    sql.exec('CREATE TABLE IF NOT EXISTS beam_queue (ticket TEXT PRIMARY KEY, since INTEGER, seen INTEGER)');
+    sql.exec('CREATE TABLE IF NOT EXISTS beam_waiting (ticket TEXT PRIMARY KEY, address TEXT, since INTEGER, seen INTEGER)');
     sql.exec('CREATE TABLE IF NOT EXISTS beam_budget (day TEXT PRIMARY KEY, seconds INTEGER)');
     sql.exec('CREATE TABLE IF NOT EXISTS beam_retired (name TEXT PRIMARY KEY, time INTEGER)');
   }
@@ -176,6 +190,22 @@ export class Beam extends DurableObject {
 function randomName() {
   const abc = 'abcdefghijklmnopqrstuvwxyz234567';
   return [...crypto.getRandomValues(new Uint8Array(20))].map((b) => abc[b & 31]).join('');
+}
+
+// A limit of the vars: a number of 0 or more, else the default.
+function limit(value, fallback) {
+  const n = Number(value);
+  return value !== undefined && value !== '' && Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+// The address of a client for its limits: an IPv6 client has a whole /64,
+// so the limits count the /64.
+function clientKey(ip) {
+  if (!ip.includes(':')) return ip;
+  const [head, tail = ''] = ip.split('::');
+  const h = head ? head.split(':') : [], t = tail ? tail.split(':') : [];
+  const all = ip.includes('::') ? [...h, ...Array(8 - h.length - t.length).fill('0'), ...t] : h;
+  return all.slice(0, 4).map((x) => x.toLowerCase().replace(/^0+(?=.)/, '')).join(':') + '::/64';
 }
 
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -218,6 +248,11 @@ At the end, the instance stops, and its files are deleted.</p>
   if (url.pathname !== '/.instance' || (request.method !== 'POST' && request.method !== 'GET')) {
     return new Response('not found\n', { status: 404 });
   }
+  // Only the navigation of a page (the button, the refresh) gets the name
+  // of an instance: a script of a page of another instance, on this same
+  // origin, cannot read it with fetch().
+  const mode = request.headers.get('sec-fetch-mode');
+  if (mode && mode !== 'navigate') return new Response('forbidden\n', { status: 403 });
   let ticket = cookie(request, 'beam_ticket');
   const headers = {};
   if (!/^[0-9a-f]{32}$/.test(ticket ?? '')) {
@@ -228,7 +263,7 @@ At the end, the instance stops, and its files are deleted.</p>
   // A hash of the address and the day, not the address.
   const day = new Date().toISOString().slice(0, 10);
   const digest = await crypto.subtle.digest('SHA-256',
-    new TextEncoder().encode(`${request.headers.get('cf-connecting-ip') ?? ''} ${day}`));
+    new TextEncoder().encode(`${clientKey(request.headers.get('cf-connecting-ip') ?? '')} ${day}`));
   const r = await registry.admit(ticket, hex(new Uint8Array(digest).slice(0, 16)));
   if (r.name) {
     if (!r.running) await env.BEAM.get(env.BEAM.idFromName(r.name)).start(r.expires);
@@ -264,17 +299,28 @@ export default {
       }
       if (!valid(m[1])) return new Response('bad tenant name\n', { status: 400 });
       if (m[2] === undefined) return Response.redirect(new URL(`/t/${m[1]}/`, url), 301);
-      // The path of the app, with no prefix.
-      const inner = new URL(m[2] + url.search, url);
+      // The path of the app, with no prefix, on the same origin (a path
+      // "//host/..." must not change the host).
+      const inner = new URL(url);
+      inner.pathname = m[2];
       // The static assets of the app (wasm/erts/host/static.mjs).
       if (env.ASSETS && (request.method === 'GET' || request.method === 'HEAD')) {
         const asset = await env.ASSETS.fetch(new Request(inner, request));
         if (asset.status !== 404) return asset;
       }
+      // All the tenants share this origin. A service worker of one tenant
+      // could take the requests of the others, so none can register.
+      if (request.headers.get('service-worker') === 'script') {
+        return new Response('no service workers for tenants\n', { status: 403 });
+      }
       // The app can trust the header: a client cannot give it.
       request = new Request(inner, request);
       request.headers.set('x-beam-tenant', m[1]);
-      return env.BEAM.get(env.BEAM.idFromName(m[1])).fetch(request);
+      const response = await env.BEAM.get(env.BEAM.idFromName(m[1])).fetch(request);
+      if (!response.headers.has('service-worker-allowed')) return response;
+      const out = new Response(response.body, response);
+      out.headers.delete('service-worker-allowed');
+      return out;
     }
     const set = env.BEAM_TENANTS === 'cookie' && /^\/\.tenant\/([^/]+)$/.exec(url.pathname);
     if (set) {

@@ -23,12 +23,15 @@ await spare.ready;
 if (env.BEAM_WARM) await spare.warm(env.BEAM_WARM);
 
 // The tenants and the instances of durable.js; the first object of the
-// isolate takes the spare VM.
+// isolate takes the spare VM. With BEAM_PERSIST, each object boots its own
+// VM: the spare VM booted with no storage, so it has not loaded the
+// persisted files of the object.
 export class Beam extends Base {
   makeVm(vars) {
     const sql = this.ctx.storage.sql, id = this.ctx.id.toString();
-    const vm = spare ? spare.adopt({ sql, id, vars }) : new Vm(this.env, { plain: false, sql, id, release, snapshot: null, vars });
-    spare = null;
+    const take = spare && !this.env.BEAM_PERSIST;
+    const vm = take ? spare.adopt({ sql, id, vars }) : new Vm(this.env, { plain: false, sql, id, release, snapshot: null, vars });
+    if (take) spare = null;
     return vm;
   }
 }

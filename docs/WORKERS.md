@@ -175,7 +175,18 @@ this.
 
 With `BEAM_PERSIST` (a list of directories, for example `"/data"`), a
 Durable Object keeps the files of these directories in its SQLite
-storage, and a new VM gets them back.
+storage, and a new VM gets them back. With `BEAM_PERSIST`, each object
+boots its own VM, and does not take the spare VM of
+`durable-global.js`.
+
+Caution: with `"cookie"` and `"path"`, all the tenants share one origin
+in the browser. A page of one tenant can run scripts on the pages of the
+other tenants that the same browser opens, and can act for that
+visitor there. When the tenants run code that you do not trust (as the
+instances of `wasm/livebook`), use `"host"`: each tenant then has its
+own origin. The Worker refuses a service worker under `/t/NAME/`, and a
+fetch() of `/.instance`, so a tenant cannot take all the requests of the
+origin, or read the instance of another visitor with fetch().
 
 ## Incoming TCP and distributed Erlang
 
@@ -226,7 +237,7 @@ example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
-| `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. |
+| `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
 | `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
 | `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 
