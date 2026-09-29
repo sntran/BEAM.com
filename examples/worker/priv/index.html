@@ -74,7 +74,7 @@
   const log = $('log'), input = $('input'), run = $('run'), stop = $('stop'), prompt = $('prompt');
   const examples = [
     'erlang:system_info(system_architecture).',
-    'Pids = [spawn(fun() -> receive stop -> ok end end) || _ <- lists:seq(1, 10000)], length(processes()).',
+    'Pids = [spawn(fun() -> receive stop -> ok end end) || _ <- lists:seq(1, 10000)], erlang:system_info(process_count).',
     '[P ! stop || P <- Pids], ok.',
     'fib(0) -> 0; fib(1) -> 1; fib(N) -> fib(N - 1) + fib(N - 2).',
     'fib(25).',

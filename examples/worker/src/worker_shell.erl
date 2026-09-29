@@ -9,6 +9,8 @@
 %% page. It allows:
 %% - the modules of data (lists, maps, binary, string, ...), io to the
 %%   page, and some functions of erlang, crypto, timer, gen_tcp;
+%% - erlang:process_info/1,2 only for a process of the same session, and
+%%   erlang:system_info/1 only for the keys of ?SYSTEM_INFO;
 %% - a message or an exit signal only to a process of the same session;
 %% - spawn/1 until the VM has 20,000 processes.
 %% It refuses other calls, "fun M:F/A" (an external fun can call any
@@ -53,8 +55,7 @@
          {erlang, throw}, {erlang, exit, 1}, {erlang, monotonic_time}, {erlang, system_time},
          {erlang, timestamp}, {erlang, time}, {erlang, date}, {erlang, localtime},
          {erlang, universaltime}, {erlang, unique_integer}, {erlang, phash2},
-         {erlang, system_info}, {erlang, statistics}, {erlang, process_info},
-         {erlang, is_process_alive}, {erlang, monitor}, {erlang, demonitor},
+         {erlang, statistics}, {erlang, is_process_alive}, {erlang, monitor}, {erlang, demonitor},
          {erlang, term_to_binary}, {erlang, list_to_existing_atom},
          {erlang, binary_to_existing_atom}, {erlang, atom_to_list}, {erlang, atom_to_binary},
          {erlang, integer_to_list}, {erlang, integer_to_binary}, {erlang, list_to_integer},
@@ -66,6 +67,15 @@
          {erlang, make_tuple}, {erlang, insert_element}, {erlang, delete_element},
          {erlang, setelement}, {erlang, split_binary}, {erlang, spawn, 1},
          {erlang, spawn_link, 1}, {erlang, spawn_monitor, 1}]).
+
+%% The keys of erlang:system_info/1 that a session can read. The other keys
+%% can show the state of other sessions (procs, for example).
+-define(SYSTEM_INFO,
+        [system_architecture, otp_release, version, machine, emu_flavor, emu_type,
+         wordsize, process_count, process_limit, port_count, port_limit, atom_count,
+         atom_limit, ets_count, ets_limit, schedulers, schedulers_online,
+         dirty_cpu_schedulers, dirty_io_schedulers, logical_processors, thread_pool_size,
+         threads, smp_support, time_warp_mode, start_time]).
 
 %% A new session for the calling process.
 -spec start() -> pid().
@@ -111,6 +121,9 @@ allowed(erlang, send, [To, _Msg]) -> own(To);
 allowed(erlang, send, [To, _Msg, _Opts]) -> own(To);
 allowed(erlang, exit, [Pid, _Reason]) -> own(Pid);
 allowed(erlang, link, [Pid]) -> own(Pid);
+allowed(erlang, process_info, [Pid]) -> own(Pid);
+allowed(erlang, process_info, [Pid, _Item]) -> own(Pid);
+allowed(erlang, system_info, [Key]) -> lists:member(Key, ?SYSTEM_INFO);
 allowed(erlang, unlink, [Pid]) -> own(Pid);
 allowed(erlang, apply, [F, Args]) when is_function(F), is_list(Args) ->
     element(1, non_local_allowed(F, Args, []));
