@@ -66,7 +66,9 @@ The zip of `beam.com` has these applications:
 - BEAM.com: `wasm` (WebAssembly), `esqlite` (SQLite), `wasm_host` (for
   `--target wasm32`) and `beam_com_script` (for one-file programs).
 
-A custom build can add more OTP applications (see
+A custom build can add more OTP applications: open an issue with the form
+[A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml),
+and CI builds the file for you (see "A custom build" in
 [`BUILDING.md`](BUILDING.md)).
 
 ## Hex packages

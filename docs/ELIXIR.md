@@ -81,6 +81,11 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
   file, make `escript` a small script instead:
   `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`.
   `beam.com INPUT -o OUTPUT` does not need Hex or rebar3.
+- A custom build can have Hex and rebar3 in the file, so `mix deps.get`
+  needs no `mix local.hex` or `mix local.rebar`. Open an issue with the
+  form
+  [A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml),
+  and CI builds the file for you (see [`BUILDING.md`](BUILDING.md)).
 - `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
 - To build an Elixir project into one file, use `beam.com INPUT -o OUTPUT` (see
   "Elixir programs" above), not a Mix task.

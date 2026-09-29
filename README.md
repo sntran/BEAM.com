@@ -54,6 +54,16 @@ starts faster) and `SHA256SUMS`. The prerelease
 On NetBSD and OpenBSD, start the file with the APE loader
 (`ape-x86_64.elf ./beam.com`): see [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
+### A custom build
+
+Do you need more OTP applications (for example `ssh` or `mnesia`), Hex and
+rebar3 in the file, or a file without Elixir, SQLite or WebAssembly? Open
+an issue with the form
+[A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml).
+CI builds and tests the file with your choices, and puts it on the issue.
+You need no toolchain. See "A custom build" in
+[`docs/BUILDING.md`](docs/BUILDING.md).
+
 ## Quick start
 
 Run a program, and make an executable of it:
