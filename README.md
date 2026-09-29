@@ -40,6 +40,9 @@ These run from the WebAssembly runtime of `beam.com`, on the free plans:
   for each visitor) and <https://livebook.one.deno.net> (Deno Deploy):
   Livebook, with the notebooks of beam.com
   ([`wasm/livebook`](wasm/livebook)).
+- <https://beam.one.deno.net> (Deno Deploy): the Erlang shell, with the
+  VM on the server and a restricted shell for all the visitors
+  ([`examples/worker`](examples/worker)).
 
 ## Download
 
@@ -113,18 +116,19 @@ deno serve -A deno.js                            # or on Deno
 
 ## Documentation
 
-The site <https://sntran.github.io/BEAM.com/> has these pages, the
-Erlang shell in your browser at
-[`repl/`](https://sntran.github.io/BEAM.com/repl/), and Livebook in your
-browser at [`livebook/`](https://sntran.github.io/BEAM.com/livebook/),
-with the notebooks of [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md).
+The site <https://sntran.github.io/BEAM.com/> is Livebook in your
+browser, with these pages as notebooks that run (see
+[`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md)). The same pages are at
+[`docs/`](https://sntran.github.io/BEAM.com/docs/) as static pages, and
+the Erlang shell in your browser is at
+[`repl/`](https://sntran.github.io/BEAM.com/repl/).
 
 | File | What |
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |
 | [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, the file watcher. |
 | [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages (`--target wasm32`): Durable Objects, Ecto SQLite, snapshots, tenants, limits. |
-| [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md) | Notebooks that run in your browser: a tour of beam.com, the WebAssembly VM, hosts and storage, networking, and building programs. |
+| [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md) | The documentation as notebooks that run in your browser: a tour of beam.com, the WebAssembly VM, the anatomy of the file, WebAssembly programs, hosts and storage, networking, and building programs. |
 | [`docs/LIBRARIES.md`](docs/LIBRARIES.md) | Crypto and TLS, SQLite, and WebAssembly in Erlang code. |
 | [`docs/SANDBOX.md`](docs/SANDBOX.md) | `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`: a program that gives up what it does not need. |
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | The status of each system, and the known limits. |

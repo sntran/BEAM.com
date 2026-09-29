@@ -67,7 +67,7 @@ A program at the edge can be public, and its users can make it connect to hosts.
 * `example.com:443`: this host, on this port only.
 * `*.example.com`: the subdomains of `example.com`.
 
-A connection to another host gets `econnrefused`. The Erlang shell of beam.com on Deno Deploy (`examples/worker`) uses `BEAM_CONNECT=example.com:80,example.com:443`.
+A connection to another host gets `econnrefused`. The Erlang shell of beam.com on Deno Deploy (<https://beam.one.deno.net>, from `examples/worker`) uses `BEAM_CONNECT=example.com:80,example.com:443`.
 
 ## Incoming requests
 
@@ -100,4 +100,4 @@ Distributed Erlang needs TCP connections between nodes. On Cloudflare, a WebSock
 
 Caution: anyone who can reach the Worker can reach its listeners. Protect the path (for example with Cloudflare Access) before you deploy a listener.
 
-Read more in the documentation: [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html).
+Read more in the documentation: [Cloudflare Workers, Deno and a web page](../WORKERS.md).

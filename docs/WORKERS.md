@@ -418,10 +418,13 @@ visits (a restore of the snapshot).
 
 ### Livebook in a web page
 
-Livebook runs so at `livebook/` of the same site
+Livebook runs so at the root of the same site
 ([`wasm/livebook/page.sh`](../wasm/livebook/page.sh)): Livebook,
 Phoenix, Elixir and the code of a notebook run in the tab. Its Learn
-section has the notebooks of beam.com ([`NOTEBOOKS.md`](NOTEBOOKS.md)). A web app with
+section has the documentation of beam.com as notebooks
+([`NOTEBOOKS.md`](NOTEBOOKS.md)). The notebook "The Erlang shell" runs
+the same shell as `repl/` in the VM of Livebook, with a terminal in the
+output of a cell. A web app with
 pages and a LiveView socket needs more than `beam.fetch` in the page:
 
 - The VM runs in a Web Worker (`vm.js`), so its work does not stop the

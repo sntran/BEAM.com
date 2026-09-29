@@ -1,6 +1,6 @@
-# The documentation site of BEAM.com (GitHub Pages): the README and the
-# pages of docs/, as ExDoc makes the sites of hexdocs.pm. docs/site.sh
-# builds it with the tools of beam.com.
+# The static documentation of BEAM.com (GitHub Pages, at docs/): the
+# README, the pages of docs/ and the notebooks, as ExDoc makes the sites
+# of hexdocs.pm. docs/site.sh builds it with the tools of beam.com.
 defmodule BeamComDocs.MixProject do
   use Mix.Project
 
@@ -22,13 +22,12 @@ defmodule BeamComDocs.MixProject do
       homepage_url: "https://github.com/sntran/BEAM.com",
       docs: [
         main: "readme",
-        extras: Enum.map(extras(), &"pages/#{&1}.md"),
-        groups_for_extras: [
-          Guides: ~r"pages/(PROGRAMS|ELIXIR|WORKERS|NOTEBOOKS|LIBRARIES|SANDBOX)\.md",
-          Reference: ~r"pages/(PLATFORMS|INTERNALS|JIT|BENCHMARKS|UPSTREAM)\.md",
-          Project: ~r"pages/(BUILDING|TESTING|ROADMAP|CONTRIBUTING|SECURITY)\.md",
-          History: ~r"pages/(WASM-LOG|JIT-DESIGN)\.md"
-        ],
+        extras: Enum.map(extras(), & &1.page),
+        groups_for_extras:
+          extras()
+          |> Enum.filter(& &1.group)
+          |> Enum.chunk_by(& &1.group)
+          |> Enum.map(fn pages -> {hd(pages).group, Enum.map(pages, & &1.page)} end),
         # "View source" of a page: its file in the repository.
         source_url_pattern: &source_url/2,
         # The pages name functions of other projects in code spans.
@@ -41,20 +40,13 @@ defmodule BeamComDocs.MixProject do
   end
 
   defp source_url(path, line) do
-    name = Path.basename(path)
-
-    dir =
-      cond do
-        name in ~w(README.md CONTRIBUTING.md SECURITY.md) -> ""
-        name in ~w(WASM-LOG.md JIT-DESIGN.md) -> "docs/history/"
-        true -> "docs/"
-      end
-
-    "https://github.com/sntran/BEAM.com/blob/main/#{dir}#{name}#L#{line}"
+    %{source: source} = Enum.find(extras(), &(Path.basename(&1.page) == Path.basename(path)))
+    "https://github.com/sntran/BEAM.com/blob/main/#{source}#L#{line}"
   end
 
+  # The pages, their groups and their sources, in the order of
+  # docs/notebooks/index.exs (prepare.exs writes pages/extras.exs).
   defp extras do
-    ~w(README PROGRAMS ELIXIR WORKERS NOTEBOOKS LIBRARIES SANDBOX PLATFORMS INTERNALS JIT
-       BENCHMARKS UPSTREAM BUILDING TESTING ROADMAP CONTRIBUTING SECURITY WASM-LOG JIT-DESIGN)
+    elem(Code.eval_file(Path.expand("pages/extras.exs", __DIR__)), 0)
   end
 end

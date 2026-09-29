@@ -17,7 +17,7 @@
 
 -define(TABLE, ?MODULE).
 -define(EVENTS, [<<"tcp_open">>, <<"tcp_data">>, <<"tcp_closed">>, <<"tcp_error">>,
-                 <<"tcp_listening">>, <<"sql_reply">>]).
+                 <<"tcp_listening">>, <<"sql_reply">>, <<"wasm_reply">>]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).

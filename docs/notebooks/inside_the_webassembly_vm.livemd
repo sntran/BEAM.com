@@ -138,5 +138,5 @@ The runtime is built from the source of OTP by `wasm/erts/build.sh` of beam.com,
 
 Read more in the documentation:
 
-* [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html), with "How it works".
-* [The record of the WebAssembly work](https://sntran.github.io/BEAM.com/wasm-log.html), with all the measurements.
+* [Cloudflare Workers, Deno and a web page](../WORKERS.md), with "How it works".
+* [The record of the WebAssembly work](../history/WASM-LOG.md), with all the measurements.

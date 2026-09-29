@@ -281,6 +281,30 @@ strip_and_compress_test() ->
 %% A module in place of the NIF of exqlite: the exports of the original,
 %% calls to wasm_host_sqlite:dispatch/2 (with no NIF of exqlite: the host),
 %% and not_supported for the functions that the backend does not have.
+wasm_shim_test() ->
+    %% The module wasm of a wasm32 release: each function calls
+    %% wasm_host_wasm, which checks its arguments before it asks the host.
+    {module, wasm} = code:load_binary(wasm, "shim", beam_com_wasm:wasm_shim()),
+    try
+        ?assert(erlang:function_exported(wasm, run, 2)),
+        ?assert(erlang:function_exported(wasm, call_function, 3)),
+        ?assertError(badarg, wasm:call_function({wasm_instance, <<"i1">>}, "f", [<<"x">>])),
+        ?assertError({badarg, host_functions_not_supported},
+                     wasm:instantiate({wasm_module, <<"m1">>}, #{<<"env">> => #{}}))
+    after
+        code:purge(wasm), code:delete(wasm)
+    end.
+
+with_wasm_test_() ->
+    Host = {"lib/wasm_host-0.1.0/ebin/wasm_host.app", <<"app">>},
+    Shim = beam_com_wasm:wasm_shim(),
+    [%% No application wasm: the module goes into wasm_host.
+     ?_assertEqual([Host, {"lib/wasm_host-0.1.0/ebin/wasm.beam", Shim}],
+                   beam_com_wasm:with_wasm([Host])),
+     %% The application wasm: its module (the NIF of WAMR) is replaced.
+     ?_assertEqual([Host, {"lib/wasm-0.1.0/ebin/wasm.beam", Shim}],
+                   beam_com_wasm:with_wasm([Host, {"lib/wasm-0.1.0/ebin/wasm.beam", <<"native">>}]))].
+
 sqlite_shim_test() ->
     Mod = 'Elixir.Exqlite.Sqlite3NIF',
     Forms = [{attribute, 1, module, Mod},

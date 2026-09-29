@@ -1,7 +1,7 @@
 #!/bin/sh
 # Livebook in a web page (page/index.html): the release of setup.sh, the
 # runtime of beam.com and the files of page/, as static files for a site
-# (the docs site on GitHub Pages puts them at livebook/).
+# (the root of the site on GitHub Pages: docs/site.sh).
 #
 #   BEAM_COM=/path/to/beam.com wasm/livebook/page.sh DIR OUT
 #

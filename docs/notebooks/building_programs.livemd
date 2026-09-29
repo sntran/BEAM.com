@@ -111,6 +111,6 @@ The Livebook of this page comes from the same steps: `wasm/livebook/setup.sh` of
 
 ## Read more
 
-* [Run and build programs](https://sntran.github.io/BEAM.com/programs.html)
-* [Elixir, Mix and Phoenix](https://sntran.github.io/BEAM.com/elixir.html)
-* [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html)
+* [Run and build programs](../PROGRAMS.md)
+* [Elixir, Mix and Phoenix](../ELIXIR.md)
+* [Cloudflare Workers, Deno and a web page](../WORKERS.md)

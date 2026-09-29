@@ -5,7 +5,7 @@
 # time limit. A registry limits the instances at one time and keeps a
 # queue. The files of /data (the notebooks and the settings) stay in the
 # SQLite storage of the object (BEAM_PERSIST) until the limit. The Learn
-# section has only the notebooks of beam.com (docs/notebooks).
+# section has the documentation of beam.com as notebooks (docs/notebooks).
 #
 #   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME wasm/livebook/setup.sh [DIR]
 #
@@ -77,13 +77,18 @@ if [ ! -d livebook ]; then
     mkdir livebook
     tar -xOf livebook.tar contents.tar.gz | tar -xzf - -C livebook
     (cd livebook && patch -p1 < "$HERE/livebook.patch")
+    cp "$HERE/livebook.patch" livebook/.beam.patch
+elif ! cmp -s livebook/.beam.patch "$HERE/livebook.patch"; then
+    # A new livebook.patch: take out the old one, and apply the new one.
+    (cd livebook && patch -R -p1 < .beam.patch && patch -p1 < "$HERE/livebook.patch")
+    cp "$HERE/livebook.patch" livebook/.beam.patch
 fi
-# The notebooks of beam.com, with their index (the order, the text of the
-# cards and the covers), for the Learn section (livebook.patch).
-rm -rf livebook/lib/livebook/notebook/learn/beam
-mkdir -p livebook/lib/livebook/notebook/learn/beam
-cp "$HERE"/../../docs/notebooks/*.livemd "$HERE"/../../docs/notebooks/*.svg \
-   "$HERE/../../docs/notebooks/index.exs" livebook/lib/livebook/notebook/learn/beam/
+# The documentation of beam.com as the notebooks of the Learn section
+# (livebook.patch): docs/notebooks/build.exs makes a notebook of each page,
+# with the covers, the files and the index. The anatomy notebook gets the
+# first bytes and the zip list of BEAM_COM.
+elixir.com "$HERE/../../docs/notebooks/build.exs" \
+    "$DIR/livebook/lib/livebook/notebook/learn/beam" "$BEAM_COM"
 (cd livebook && mix.com local.hex --force --if-missing && mix.com deps.get &&
      mix.com release livebook --overwrite)
 
