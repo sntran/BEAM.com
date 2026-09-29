@@ -11,16 +11,26 @@ defmodule PhoenixDemoWeb.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_scope_for_user
+    plug :put_cloudflare_request
+  end
+
+  # Cloudflare names the data center of a request in its cf-ray header (for
+  # example "8f2d3a1b2c3d4e5f-SJC"), and the country of the visitor in
+  # cf-ipcountry. The home page shows them.
+  defp put_cloudflare_request(conn, _opts) do
+    case get_req_header(conn, "cf-ray") do
+      [ray | _] ->
+        conn
+        |> put_session(:cf_colo, ray |> String.split("-") |> List.last())
+        |> put_session(:cf_country, conn |> get_req_header("cf-ipcountry") |> List.first())
+
+      [] ->
+        conn
+    end
   end
 
   pipeline :api do
     plug :accepts, ["json"]
-  end
-
-  scope "/", PhoenixDemoWeb do
-    pipe_through :browser
-
-    get "/", PageController, :home
   end
 
   # Other scopes may use custom stacks.
@@ -72,6 +82,7 @@ defmodule PhoenixDemoWeb.Router do
 
     live_session :current_user,
       on_mount: [{PhoenixDemoWeb.UserAuth, :mount_current_scope}] do
+      live "/", DemoLive, :home
       live "/users/register", UserLive.Registration, :new
       live "/users/log-in", UserLive.Login, :new
       live "/users/log-in/:token", UserLive.Confirmation, :new

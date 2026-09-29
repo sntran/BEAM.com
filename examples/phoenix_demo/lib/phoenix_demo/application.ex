@@ -14,6 +14,7 @@ defmodule PhoenixDemo.Application do
        repos: Application.fetch_env!(:phoenix_demo, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:phoenix_demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: PhoenixDemo.PubSub},
+      PhoenixDemoWeb.Presence,
       # Start a worker by calling: PhoenixDemo.Worker.start_link(arg)
       # {PhoenixDemo.Worker, arg},
       # Start to serve requests, typically the last entry

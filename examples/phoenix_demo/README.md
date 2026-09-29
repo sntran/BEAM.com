@@ -17,7 +17,19 @@ Cloudflare Workers, at https://phoenix.fifo.workers.dev. One Durable Object
 runs the release in BEAM (WebAssembly), and its SQLite storage keeps the
 database.
 
-The changes to the generated app:
+The home page (`PhoenixDemoWeb.DemoLive`) shows what only a live BEAM process
+on Cloudflare can show:
+
+- The architecture of the VM: `wasm32-unknown-emscripten`.
+- The Cloudflare data center of the request, from its `cf-ray` header.
+- A server clock that the server pushes each second over the WebSocket.
+- The round-trip time of the WebSocket, measured in the browser.
+- The visitors online now (Phoenix.Presence): open a second tab.
+- A counter that all visitors share (Phoenix.PubSub), in SQLite in the
+  Durable Object: a click in one tab changes it in all tabs.
+- The uptime of the VM and its count of processes.
+
+The other changes to the generated app:
 
 - The demo sends no real email. The emails stay in memory (the local adapter
   of Swoosh), and the page `/mailbox` shows them to anybody. So anybody can
