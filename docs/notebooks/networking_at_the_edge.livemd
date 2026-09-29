@@ -1,0 +1,103 @@
+# Networking at the edge
+
+## About this notebook
+
+WebAssembly has no sockets. The host of the runtime gives the VM its network: outgoing TCP connections, incoming HTTP requests and WebSockets. This notebook shows what each host gives, and how a program uses it with the normal modules of OTP (`:gen_tcp`, `:ssl`) and Elixir (`Req`).
+
+```elixir
+host = System.get_env("BEAM_HOST", "native")
+
+%{
+  host: host,
+  outgoing_tcp:
+    case host do
+      "browser" -> "none: a web page has no TCP"
+      "native" -> "the network of the computer"
+      _ -> "yes, through the host"
+    end,
+  allowed_hosts: System.get_env("BEAM_CONNECT", "all")
+}
+```
+
+## Outgoing connections
+
+In the runtime, `:gen_tcp` uses the socket module `wasm_tcp` of beam.com. A connect goes to the host:
+
+* On Cloudflare, the Worker opens the connection with `connect()` of `cloudflare:sockets`.
+* On Deno, the host opens it with `Deno.connect`.
+* In a web page, there is no TCP. A connect gets `{:error, :econnrefused}`.
+
+The host resolves the name. So the VM connects to a name, not to an address that it chooses.
+
+This cell sends an HTTP request on a plain TCP connection. On Cloudflare and Deno it gets the first line of the reply. In this web page, it gets `econnrefused`.
+
+```elixir
+case :gen_tcp.connect(~c"example.com", 80, [:binary, active: false], 5_000) do
+  {:ok, socket} ->
+    :ok = :gen_tcp.send(socket, "HEAD / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    {:ok, reply} = :gen_tcp.recv(socket, 0, 5_000)
+    :gen_tcp.close(socket)
+    reply |> String.split("\r\n") |> hd()
+
+  {:error, reason} ->
+    {:error, reason}
+end
+```
+
+## TLS
+
+The host gives only TCP. The VM does TLS itself, with the `ssl` application of OTP (and the OpenSSL of `crypto`). The runtime has no store of root certificates: `beam.com --target wasm32 --cacerts FILE` puts the certificates of FILE into the release. Livebook of beam.com gets the bundle of Mozilla.
+
+On Cloudflare and Deno, `Req` (a dependency of Livebook) then works as on a computer:
+
+```elixir
+if System.get_env("BEAM_HOST") == "browser" do
+  "This web page has no TCP, so Req cannot connect. Run this cell in the Livebook of beam.com on Cloudflare."
+else
+  %{status: status, body: body} = Req.get!("https://hex.pm/api/packages/kino")
+  {status, Map.take(body, ["name", "latest_stable_version"])}
+end
+```
+
+## Limit the hosts: BEAM_CONNECT
+
+A program at the edge can be public, and its users can make it connect to hosts. The variable `BEAM_CONNECT` of the runtime limits the hosts. It is a list, separated by commas:
+
+* `example.com`: this host, on all ports.
+* `example.com:443`: this host, on this port only.
+* `*.example.com`: the subdomains of `example.com`.
+
+A connection to another host gets `econnrefused`. The Erlang shell of beam.com on Deno Deploy (`examples/worker`) uses `BEAM_CONNECT=example.com:80,example.com:443`.
+
+## Incoming requests
+
+A host gives the VM HTTP requests, not TCP connections. The program listens on a TCP port as on a computer (`PORT`, 4000 by default), and the host sends each request to that listener:
+
+* The host writes the request into a socket of `wasm_tcp`, and reads the reply from it.
+* A WebSocket upgrade goes to the same listener. The host joins the WebSocket of the client to it.
+
+This Livebook is an example: a Phoenix app on a port of the VM. Its pages and its LiveView socket come through the host:
+
+```elixir
+%{
+  listener: LivebookWeb.Endpoint.config(:http),
+  url_of_the_app: LivebookWeb.Endpoint.url(),
+  base_path: LivebookWeb.Endpoint.path("/")
+}
+```
+
+The app thinks that it runs at `http://localhost:4000`. The host gives it the requests of the site, and the base path makes the links of the app go to the site.
+
+In this web page, the host is a service worker and a Web Worker. The service worker gives each request of the Livebook frame to the VM, and a small script gives it the LiveView socket.
+
+## Distributed Erlang
+
+Distributed Erlang needs TCP connections between nodes. On Cloudflare, a WebSocket to the path `/.tcp/PORT` of the Worker is a TCP connection to the listener of the program on PORT. The runtime uses this for distribution:
+
+* `DIST_NAME` starts distributed Erlang over these sockets (`-proto_dist wasm_tcp`, with no `epmd`). All the nodes use the port `DIST_PORT` (4370).
+* With `DIST_LISTEN=true`, a native node can connect to the Worker. Then a remote shell into the VM at the edge works.
+* `DIST_CONNECT` names a node that the Worker connects to.
+
+Caution: anyone who can reach the Worker can reach its listeners. Protect the path (for example with Cloudflare Access) before you deploy a listener.
+
+Read more in the documentation: [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html).

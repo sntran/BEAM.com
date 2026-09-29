@@ -1,53 +1,54 @@
-# BEAM on the edge
+# A tour of beam.com
 
 ## About this notebook
 
-This Livebook runs in a Cloudflare Worker. The BEAM VM (ERTS) is WebAssembly, and it runs in one Durable Object. There is no server, no container and no VPS.
+`beam.com` is Erlang/OTP and Elixir in one executable file. The same file runs on Linux, macOS, Windows, FreeBSD, NetBSD and OpenBSD. It also has a second runtime: the Erlang runtime system (ERTS) compiled to WebAssembly. `beam.com INPUT -o DIR --target wasm32` makes one directory that runs a program on Cloudflare Workers, on Deno Deploy, or in a web page.
 
-Each cell runs in the VM of Livebook itself (the embedded runtime). The cells show the parts of Erlang and Elixir that make the BEAM different: many small processes, supervisors that restart them, messages, and code that changes while it runs.
+This Livebook is such a program. The release of Livebook runs in that WebAssembly runtime, and each cell runs in the same VM as Livebook (the embedded runtime).
 
-Read these limits before you start:
+This notebook shows the parts of the BEAM that make it different: many small processes, messages, supervisors that start processes again, and code that changes while it runs.
 
-* The VM has 128 MB of memory and one scheduler. A cell that does not stop blocks the other cells.
-* `Mix.install/2` is not available. Kino and the dependencies of Livebook are in the release.
-* The Durable Object keeps the files of `/data` (your notebooks) in its SQLite storage. The processes and their memory stop when the object stops.
-* This instance has a time limit. At the limit, it stops, and its files are deleted. The next cell shows the minutes that are left.
-
-Run the cells in order. To run all the cells, press <kbd>Esc</kbd>, then <kbd>e</kbd> and <kbd>a</kbd> (evaluate all outdated cells).
+Run the cells in order. To run all the cells, press <kbd>Esc</kbd>, then <kbd>e</kbd> and <kbd>a</kbd>.
 
 ## Where this runs
 
+The runtime tells the program its host in the variable `BEAM_HOST`.
+
 ```elixir
+host = System.get_env("BEAM_HOST", "native")
+
+where =
+  case host do
+    "browser" -> "in this tab of your browser: no server runs this code"
+    "cloudflare" -> "in a Cloudflare Worker (a Durable Object)"
+    "deno-deploy" -> "on Deno Deploy"
+    "deno" -> "in Deno"
+    _ -> "natively, not in the WebAssembly runtime"
+  end
+
 {up, _} = :erlang.statistics(:wall_clock)
 
 %{
+  where: where,
   system: to_string(:erlang.system_info(:system_architecture)),
   otp: to_string(:erlang.system_info(:otp_release)),
   elixir: System.version(),
   schedulers: :erlang.system_info(:schedulers),
   word_size: :erlang.system_info(:wordsize),
   processes: length(Process.list()),
-  modules_loaded: length(:code.all_loaded()),
-  uptime_seconds: div(up, 1000),
-  instance_minutes_left:
-    case System.get_env("BEAM_INSTANCE_EXPIRES") do
-      nil -> nil
-      expires -> div(String.to_integer(expires) - System.os_time(:second), 60)
-    end
+  uptime_seconds: div(up, 1000)
 }
 ```
 
-The system is `wasm32-unknown-emscripten`: the same ERTS as on a server, compiled to WebAssembly. The word size is 4 bytes, so a process takes half the memory of a process on a 64-bit server.
+The system is `wasm32-unknown-emscripten`: the ERTS of a server, compiled to WebAssembly. The word size is 4 bytes, so a process takes about half the memory of a process on a 64-bit server. The VM has one scheduler: see the notebook "Inside the WebAssembly VM".
 
-### A clock for the edge
+### A measure that needs no clock
 
-On Cloudflare, the clocks of a Worker give the time of the last I/O (a protection against timing attacks). They do not move while code runs, and a timer moves them only by its own time. So a cell cannot measure its time there: `:timer.tc/1` gives 0 ms.
-
-`Edge.measure/1` gives two numbers. `ms` is the time, which is correct on your computer and near 0 on Cloudflare. `reductions` counts the units of work of the VM, and it needs no clock. Code that a cell evaluates (not the code of a module) runs in the interpreter of Erlang terms, so it takes more reductions.
+On Cloudflare, the clock of a Worker moves only at I/O (a protection against timing attacks). There, `:timer.tc/1` gives 0 for code that does no I/O. The reductions of the VM count its units of work, and they need no clock. `Tour.measure/1` gives both.
 
 ```elixir
-defmodule Edge do
-  @doc false
+defmodule Tour do
+  @doc "The time (ms) and the reductions of fun, and its result."
   def measure(fun) do
     {r0, _} = :erlang.statistics(:exact_reductions)
     t0 = System.monotonic_time(:microsecond)
@@ -58,8 +59,10 @@ defmodule Edge do
   end
 end
 
-Edge.measure(fn -> Enum.reduce(1..1_000_000, 0, &+/2) end)
+Tour.measure(fn -> Enum.reduce(1..1_000_000, 0, &+/2) end)
 ```
+
+Code that a cell evaluates runs in the interpreter of Erlang terms. The code of a module (such as `Enum`) is compiled BEAM code, so it takes fewer reductions.
 
 ## Many small processes
 
@@ -73,7 +76,7 @@ count_input = Kino.Input.number("Processes", default: 10_000)
 count = Kino.Input.read(count_input)
 
 {cost, pids} =
-  Edge.measure(fn ->
+  Tour.measure(fn ->
     for _ <- 1..count do
       spawn(fn ->
         receive do
@@ -99,7 +102,7 @@ Enum.each(pids, &send(&1, :stop))
 Processes share no memory. They send messages. This ring sends one message around 1,000 processes, 100 times: 100,000 messages.
 
 ```elixir
-defmodule Edge.Ring do
+defmodule Tour.Ring do
   def start(size) do
     Enum.reduce(1..size, self(), fn _, next ->
       spawn(fn -> relay(next) end)
@@ -134,8 +137,8 @@ defmodule Edge.Ring do
   end
 end
 
-first = Edge.Ring.start(1_000)
-{cost, :ok} = Edge.measure(fn -> Edge.Ring.run(first, 100) end)
+first = Tour.Ring.start(1_000)
+{cost, :ok} = Tour.measure(fn -> Tour.Ring.run(first, 100) end)
 "100,000 messages in #{cost.ms} ms (#{cost.reductions} reductions)"
 ```
 
@@ -172,7 +175,7 @@ children =
 
 {:ok, sup} =
   Kino.start_child(%{
-    id: :edge_supervisor,
+    id: :tour_supervisor,
     type: :supervisor,
     start: {Supervisor, :start_link, [children, [strategy: :one_for_one]]}
   })
@@ -185,10 +188,14 @@ Now stop one of the counters. Look at the process ids before and after:
 ```elixir
 before = for {id, pid, _, _} <- Supervisor.which_children(sup), do: {id, pid}
 {id, victim} = Enum.random(before)
+ref = Process.monitor(victim)
 Process.exit(victim, :kill)
 
-# The supervisor gets the exit signal and starts a new counter.
-Process.sleep(50)
+# Wait for the end of the process. Then the supervisor has the new counter.
+receive do
+  {:DOWN, ^ref, :process, _, _} -> :ok
+end
+
 now = for {id, pid, _, _} <- Supervisor.which_children(sup), do: {id, pid}
 
 %{stopped: {id, victim}, before: before, after: now}
@@ -199,7 +206,7 @@ now = for {id, pid, _, _} <- Supervisor.which_children(sup), do: {id, pid}
 The BEAM can load a new version of a module while processes run the old one. A process moves to the new version at its next call through the module name (`__MODULE__.loop/1`). A release upgrade uses the same mechanism.
 
 ```elixir
-defmodule Edge.Greeter do
+defmodule Tour.Greeter do
   def loop(n) do
     receive do
       {:hello, from} ->
@@ -209,7 +216,7 @@ defmodule Edge.Greeter do
   end
 end
 
-greeter = spawn(fn -> Edge.Greeter.loop(1) end)
+greeter = spawn(fn -> Tour.Greeter.loop(1) end)
 
 ask = fn ->
   send(greeter, {:hello, self()})
@@ -230,7 +237,7 @@ This cell compiles version 2 of the module, and asks the same process (the same 
 
 ```elixir
 Code.compile_string("""
-defmodule Edge.Greeter do
+defmodule Tour.Greeter do
   def loop(n) do
     receive do
       {:hello, from} ->
@@ -278,21 +285,17 @@ Kino.listen(1_000, fn _ ->
     )
   )
 end)
+
+Kino.nothing()
 ```
 
-## Out to the internet
+## Next
 
-The Worker opens TCP connections for the VM, and the VM does TLS itself, with the root certificates of the release. `Req` is a dependency of Livebook:
+The other notebooks of this section:
 
-```elixir
-%{status: status, body: body} = Req.get!("https://hex.pm/api/packages/kino")
-{status, Map.take(body, ["name", "latest_stable_version", "html_url"])}
-```
+* **Inside the WebAssembly VM**: the threads, the memory, the clock and the snapshots of the runtime.
+* **Hosts and storage**: one build for Workers, Deno and a web page, and SQLite in the VM.
+* **Networking at the edge**: outgoing connections, `BEAM_CONNECT`, and incoming requests.
+* **Building programs with beam.com**: the command line, and the release that runs this Livebook.
 
-## How this works
-
-* The Worker gets the release of Livebook (`release.bin`) from a second Worker, and starts ERTS in WebAssembly with JSPI.
-* The first start of a new version makes a snapshot of the memory of the VM, after it loaded the modules of the boot and before it started Livebook. The next starts restore that snapshot, and then start Livebook.
-* The Durable Object writes the files of `/data` to its SQLite storage when the VM closes them. A new VM gets them back before it starts. So your notebooks stay after the object stops.
-* Each visitor starts an instance: its own Durable Object, VM, files and storage, at a random path (`/t/NAME`). A registry object limits the instances at one time, keeps a queue, and gives each instance its time limit.
-* Kino draws its diagrams in an iframe of a second site (a third Worker), apart from the pages of Livebook.
+The documentation of beam.com is at <https://sntran.github.io/BEAM.com/>.

@@ -420,7 +420,8 @@ visits (a restore of the snapshot).
 
 Livebook runs so at `livebook/` of the same site
 ([`wasm/livebook/page.sh`](../wasm/livebook/page.sh)): Livebook,
-Phoenix, Elixir and the code of a notebook run in the tab. A web app with
+Phoenix, Elixir and the code of a notebook run in the tab. Its Learn
+section has the notebooks of beam.com ([`NOTEBOOKS.md`](NOTEBOOKS.md)). A web app with
 pages and a LiveView socket needs more than `beam.fetch` in the page:
 
 - The VM runs in a Web Worker (`vm.js`), so its work does not stop the

@@ -5,7 +5,7 @@
 # time limit. A registry limits the instances at one time and keeps a
 # queue. The files of /data (the notebooks and the settings) stay in the
 # SQLite storage of the object (BEAM_PERSIST) until the limit. The Learn
-# section has the notebook beam_on_the_edge.livemd.
+# section has only the notebooks of beam.com (docs/notebooks).
 #
 #   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME wasm/livebook/setup.sh [DIR]
 #
@@ -60,14 +60,19 @@ export ERL_LIBS="$DIR/otp"
 
 # Livebook: the Hex package, with the changes of livebook.patch (no
 # distribution, memory data with +Mea min, Kino and ExUnit in the release,
-# the notebook of the edge in the Learn section).
+# only the notebooks of beam.com in the Learn section).
 if [ ! -d livebook ]; then
     curl -sSfL -o livebook.tar "https://repo.hex.pm/tarballs/livebook-$VSN.tar"
     mkdir livebook
     tar -xOf livebook.tar contents.tar.gz | tar -xzf - -C livebook
     (cd livebook && patch -p1 < "$HERE/livebook.patch")
 fi
-cp "$HERE/beam_on_the_edge.livemd" livebook/lib/livebook/notebook/learn/
+# The notebooks of beam.com, with their index (the order, the text of the
+# cards and the covers), for the Learn section (livebook.patch).
+rm -rf livebook/lib/livebook/notebook/learn/beam
+mkdir -p livebook/lib/livebook/notebook/learn/beam
+cp "$HERE"/../../docs/notebooks/*.livemd "$HERE"/../../docs/notebooks/*.svg \
+   "$HERE/../../docs/notebooks/index.exs" livebook/lib/livebook/notebook/learn/beam/
 (cd livebook && mix.com local.hex --force --if-missing && mix.com deps.get &&
      mix.com release livebook --overwrite)
 

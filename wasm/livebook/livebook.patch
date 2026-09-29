@@ -24,7 +24,7 @@
      [
 --- a/config/config.exs
 +++ b/config/config.exs
-@@ -53,3 +53,20 @@
+@@ -53,3 +53,28 @@
  # Import environment specific config. This must remain at the bottom
  # of this file so it overrides the configuration defined above.
  import_config "#{Mix.env()}.exs"
@@ -34,17 +34,25 @@
 +# The default poller measures :erlang.memory/0, which +Mea min does not support.
 +config :telemetry_poller, :default, false
 +
-+# BEAM on Cloudflare Workers: the notebook of the edge, after the welcome
-+# notebook in the Learn section.
-+config :livebook, :learn_notebooks, [
-+  %{
-+    path: Path.expand("../lib/livebook/notebook/learn/beam_on_the_edge.livemd", __DIR__),
-+    details: %{
-+      description: "Processes, supervisors, messages and hot code upgrades in a Cloudflare Worker.",
-+      cover_filename: "elixir.png"
-+    }
-+  }
-+]
++# beam.com: the Learn section has only the notebooks of beam.com
++# (docs/notebooks of beam.com, which setup.sh copies to learn/beam). Its
++# index.exs gives their order, descriptions and covers.
++beam_notebooks = Path.expand("../lib/livebook/notebook/learn/beam", __DIR__)
++
++config :livebook, :learn_only_configured, true
++
++config :livebook,
++       :learn_notebooks,
++       for(
++         notebook <- elem(Code.eval_file(Path.join(beam_notebooks, "index.exs")), 0),
++         do: %{
++           path: Path.join(beam_notebooks, notebook.file),
++           details: %{
++             description: notebook.description,
++             cover_path: Path.join(beam_notebooks, notebook.cover)
++           }
++         }
++       )
 --- a/lib/livebook.ex
 +++ b/lib/livebook.ex
 @@ -127,7 +127,11 @@
@@ -79,6 +87,32 @@
  
      children =
        if serverless?() do
+--- a/lib/livebook/notebook/learn.ex
++++ b/lib/livebook/notebook/learn.ex
+@@ -110,7 +110,13 @@
+ 
+   user_configs = Application.compile_env(:livebook, :learn_notebooks, [])
+ 
+-  notebook_configs = [welcome_config] ++ user_configs ++ other_configs
++  # beam.com: with :learn_only_configured, only the notebooks of the config.
++  @only_configured Application.compile_env(:livebook, :learn_only_configured, false)
++
++  notebook_configs =
++    if @only_configured,
++      do: user_configs,
++      else: [welcome_config] ++ user_configs ++ other_configs
+ 
+   notebook_infos =
+     for config <- notebook_configs do
+@@ -229,7 +235,7 @@
+   def group_infos() do
+     notebook_infos = notebook_infos()
+ 
+-    for config <- @group_configs do
++    for config <- if(@only_configured, do: [], else: @group_configs) do
+       %{
+         title: config.title,
+         description: config.description,
 --- a/lib/livebook/runtime/evaluator.ex
 +++ b/lib/livebook/runtime/evaluator.ex
 @@ -104,7 +104,7 @@

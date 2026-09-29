@@ -24,7 +24,7 @@ defmodule BeamComDocs.MixProject do
         main: "readme",
         extras: Enum.map(extras(), &"pages/#{&1}.md"),
         groups_for_extras: [
-          Guides: ~r"pages/(PROGRAMS|ELIXIR|WORKERS|LIBRARIES|SANDBOX)\.md",
+          Guides: ~r"pages/(PROGRAMS|ELIXIR|WORKERS|NOTEBOOKS|LIBRARIES|SANDBOX)\.md",
           Reference: ~r"pages/(PLATFORMS|INTERNALS|JIT|BENCHMARKS|UPSTREAM)\.md",
           Project: ~r"pages/(BUILDING|TESTING|ROADMAP|CONTRIBUTING|SECURITY)\.md",
           History: ~r"pages/(WASM-LOG|JIT-DESIGN)\.md"
@@ -54,7 +54,7 @@ defmodule BeamComDocs.MixProject do
   end
 
   defp extras do
-    ~w(README PROGRAMS ELIXIR WORKERS LIBRARIES SANDBOX PLATFORMS INTERNALS JIT
+    ~w(README PROGRAMS ELIXIR WORKERS NOTEBOOKS LIBRARIES SANDBOX PLATFORMS INTERNALS JIT
        BENCHMARKS UPSTREAM BUILDING TESTING ROADMAP CONTRIBUTING SECURITY WASM-LOG JIT-DESIGN)
   end
 end
