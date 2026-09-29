@@ -524,10 +524,17 @@ base_apps(Root) ->
               <- [file:consult(filename:join([LibDir, Dir, "ebin",
                                               atom_to_list(Name) ++ ".app"]))]]).
 
+%% "NAME-VSN": the version starts at the first "-" before a digit, so a
+%% version can have a "-" ("phoenix-1.9.0-dev", "ecto-3.0.0-rc.1"). With no
+%% digit after a "-", the version starts at the last "-".
 split_dir(Dir) ->
-    case string:split(Dir, "-", trailing) of
-        [Name, Vsn] -> {list_to_atom(Name), Vsn};
-        _ -> {list_to_atom(Dir), none}
+    case re:run(Dir, "^(.+?)-([0-9].*)$", [{capture, all_but_first, list}, unicode]) of
+        {match, [Name, Vsn]} -> {list_to_atom(Name), Vsn};
+        nomatch ->
+            case string:split(Dir, "-", trailing) of
+                [Name, Vsn] -> {list_to_atom(Name), Vsn};
+                _ -> {list_to_atom(Dir), none}
+            end
     end.
 
 %% One .erl file with main/1.
