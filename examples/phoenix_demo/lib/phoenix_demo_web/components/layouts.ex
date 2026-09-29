@@ -39,12 +39,13 @@ defmodule PhoenixDemoWeb.Layouts do
       <div class="flex-1">
         <a href="/" class="flex-1 flex w-fit items-center gap-2">
           <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
+          <span class="text-sm font-semibold">v{phoenix_version()}</span>
         </a>
       </div>
       <div class="flex-none">
         <ul class="flex flex-column px-1 space-x-4 items-center">
-          <li>
+          <%!-- A phone has no room for all the links: it shows GitHub and the theme. --%>
+          <li class="hidden sm:block">
             <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
           </li>
           <li>
@@ -53,7 +54,7 @@ defmodule PhoenixDemoWeb.Layouts do
           <li>
             <.theme_toggle />
           </li>
-          <li>
+          <li class="hidden sm:block">
             <a href="https://phoenix.hexdocs.pm/overview.html" class="btn btn-primary">
               Get Started <span aria-hidden="true">&rarr;</span>
             </a>
@@ -156,5 +157,11 @@ defmodule PhoenixDemoWeb.Layouts do
       </button>
     </div>
     """
+  end
+
+  # The version of Phoenix with no pre-release part ("1.9.0-dev" gives
+  # "1.9.0"), so the header fits on the screen of a phone.
+  defp phoenix_version do
+    :phoenix |> Application.spec(:vsn) |> to_string() |> String.split("-") |> hd()
   end
 end

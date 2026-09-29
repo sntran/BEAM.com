@@ -10,6 +10,13 @@ defmodule PhoenixDemoWeb.DemoLiveTest do
     assert html =~ "Visitors online"
   end
 
+  test "the header shows the version of Phoenix with no pre-release part", %{conn: conn} do
+    {:ok, _view, html} = live(conn, ~p"/")
+    [version | _] = String.split(to_string(Application.spec(:phoenix, :vsn)), "-")
+    assert html =~ ">v#{version}</span>"
+    refute html =~ ~r/>v[^<]*-[^<]*<\/span>/
+  end
+
   test "the page shows the country of the request from Cloudflare", %{conn: conn} do
     conn = put_req_header(conn, "cf-ipcountry", "US")
     {:ok, view, _html} = live(conn, ~p"/")
