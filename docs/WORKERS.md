@@ -350,8 +350,10 @@ How the pages go to Deno KV:
 - SQLite writes a transaction as one batch (`SQLITE_ENABLE_BATCH_ATOMIC_WRITE`).
   The host commits the batch in one atomic operation of KV, which checks
   that the database did not change after the read.
-- A write takes a write lock in KV for 10 s. When another isolate has the
-  lock, or when the read is not of the last version, SQLite gets
+- A write takes a write lock in KV for 10 s, and its commit removes the
+  lock. So a write transaction is three operations of KV: the read of the
+  version, the lock, and the commit. When another isolate has the lock,
+  or when the read is not of the last version, SQLite gets
   `SQLITE_BUSY`. Then its busy handler tries again from a new read (the
   `busy_timeout` of `ecto_sqlite3`, 2000 ms by default).
 - A journal stays in the memory of the VM. The database in KV changes

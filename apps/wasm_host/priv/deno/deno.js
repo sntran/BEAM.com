@@ -110,7 +110,9 @@ class KvStore {
       return null;
     });
   }
-  commit(name, stamp, { version, size, blocks }) {
+  // With release, the commit also removes the write lock. It does not
+  // check the lock: the version of the database is the check.
+  commit(name, stamp, { version, size, blocks }, release = false) {
     return retry(async () => {
       const op = this.kv.atomic().check({ key: this.key(name, 'm'), versionstamp: stamp });
       for (const b of blocks) {
@@ -118,27 +120,33 @@ class KvStore {
         if (b.drop) op.delete(this.key(name, 'b', b.n, b.drop));
       }
       op.set(this.key(name, 'm'), { version, size });
+      if (release) op.delete(this.key(name, 'w'));
       const r = await op.commit();
       return r.ok ? r.versionstamp : null;
     });
   }
   // The write lock: a key with an owner and an end. The commit does not
-  // need it, because it checks the version of the database.
+  // need it, because it checks the version of the database. The lease is
+  // the versionstamp of the lock. With no lock, one atomic operation
+  // takes it; else a read finds if the lock is ours or at its end.
   lock(name, stamp, owner, ms) {
+    const m = this.key(name, 'm'), w = this.key(name, 'w');
+    const take = (mStamp, wStamp) => this.kv.atomic()
+      .check({ key: m, versionstamp: mStamp }).check({ key: w, versionstamp: wStamp })
+      .set(w, { owner, until: Date.now() + ms }, { expireIn: ms }).commit();
     return retry(async () => {
-      const [m, w] = await this.kv.getMany([this.key(name, 'm'), this.key(name, 'w')]);
-      const now = Date.now();
-      if (m.versionstamp !== stamp || (w.value && w.value.owner !== owner && w.value.until > now)) return false;
-      const r = await this.kv.atomic().check(m).check(w)
-        .set(w.key, { owner, until: now + ms }, { expireIn: ms }).commit();
-      return r.ok;
+      let r = await take(stamp, null);
+      if (r.ok) return r.versionstamp;
+      const [mv, wv] = await this.kv.getMany([m, w]);
+      if (mv.versionstamp !== stamp || (wv.value && wv.value.owner !== owner && wv.value.until > Date.now())) return null;
+      r = await take(stamp, wv.versionstamp);
+      return r.ok ? r.versionstamp : null;
     });
   }
-  unlock(name, owner) {
-    return retry(async () => {
-      const w = await this.kv.get(this.key(name, 'w'));
-      if (w.value?.owner === owner) await this.kv.atomic().check(w).delete(w.key).commit();
-    });
+  // One atomic operation: it removes the lock only when it is still that lease.
+  unlock(name, lease) {
+    const w = this.key(name, 'w');
+    return retry(() => this.kv.atomic().check({ key: w, versionstamp: lease }).delete(w).commit());
   }
   async remove(name) {
     const keys = [];

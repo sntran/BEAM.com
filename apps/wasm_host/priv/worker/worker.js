@@ -413,11 +413,12 @@ export default {
 //   meta(name) -> {version, size, stamp}: version 0 and size 0 for no file
 //   block(name, n, version) -> {data, v, prev}: the newest block n at or
 //     before version, or null
-//   commit(name, stamp, {version, size, blocks: [{n, data, prev, drop}]})
-//     -> the new stamp, or null when another commit came first
-//   lock(name, stamp, owner, ms) -> true, or false when another owner has
-//     the write lock or the stamp is not the last one
-//   unlock(name, owner)
+//   commit(name, stamp, {version, size, blocks: [{n, data, prev, drop}]}, release)
+//     -> the new stamp, or null when another commit came first; with
+//     release, the commit also removes the write lock
+//   lock(name, stamp, owner, ms) -> a lease, or null when another owner
+//     has the write lock or the stamp is not the last one
+//   unlock(name, lease): removes the write lock of that lease
 //   remove(name)
 // A transaction reads one version of the database: the version at its
 // shared lock. Its writes go to the store in one commit, which fails when
@@ -431,7 +432,9 @@ const SQLITE_BUSY = 5, SQLITE_IOERR = 10, SQLITE_FULL = 13;
 export class HostFiles {
   // maxBlocks: the blocks of one commit (a commit of the store has limits).
   // lease: the time of the write lock of a database (ms). The lock only
-  // makes a conflict less frequent; the commit checks the version.
+  // makes a conflict less frequent; the commit checks the version. A
+  // write transaction is three operations of the store: the version (at
+  // the shared lock), the lock, and the commit, which also unlocks.
   constructor(store, { maxBlocks = 160, lease = 10000, debug = false } = {}) {
     this.store = store;
     this.debug = debug;
@@ -482,7 +485,7 @@ export class HostFiles {
       case FOP.CLOSE: await this.release(f, id); this.files.delete(id); return 0;
       case FOP.LOCK:
         if (n === 1) await this.begin(f);
-        else if (n >= 2 && !f.leased) return this.reserve(f, id);
+        else if (n >= 2 && !f.lease) return this.reserve(f, id);
         return 0;
       case FOP.UNLOCK:
         if (n < 2) await this.release(f, id);
@@ -523,15 +526,15 @@ export class HostFiles {
   // last one. Then the busy handler of SQLite tries again from a new read.
   async reserve(f, id) {
     if (!f.snap) await this.begin(f);
-    if (!await this.store.lock(f.db.name, f.snap.stamp, `${this.owner}:${id}`, this.lease)) return SQLITE_BUSY;
-    f.leased = true;
-    return 0;
+    f.lease = await this.store.lock(f.db.name, f.snap.stamp, `${this.owner}:${id}`, this.lease);
+    return f.lease ? 0 : SQLITE_BUSY;
   }
 
   async release(f, id) {
-    if (!f.leased) return;
-    f.leased = false;
-    await this.store.unlock(f.db.name, `${this.owner}:${id}`);
+    const lease = f.lease;
+    if (!lease) return;
+    f.lease = null;
+    await this.store.unlock(f.db.name, lease);
   }
 
   // Block k as this transaction sees it (zeros for no block).
@@ -588,7 +591,7 @@ export class HostFiles {
       const old = same ? db.cache.get(n) : undefined;
       return { n, data, prev: old?.v ?? 0, drop: old?.prev || 0 };
     });
-    const stamp = await this.store.commit(db.name, f.snap.stamp, { version, size, blocks });
+    const stamp = await this.store.commit(db.name, f.snap.stamp, { version, size, blocks }, !!f.lease);
     f.dirty.clear();
     f.size = null;
     if (stamp === null) {
@@ -596,6 +599,7 @@ export class HostFiles {
       db.version = -1;
       return SQLITE_BUSY;
     }
+    f.lease = null;  // the commit removed it
     if (!same) db.cache.clear();
     db.version = version;
     for (const b of blocks) db.cache.set(b.n, { data: b.data, v: version, prev: b.prev });
@@ -618,9 +622,10 @@ export class MemoryStore {
     for (let i = vs.length - 1; i >= 0; i--) if (vs[i].v <= version) return vs[i];
     return null;
   }
-  async commit(name, stamp, { version, size, blocks }) {
+  async commit(name, stamp, { version, size, blocks }, release = false) {
     const d = this.get(name);
     if (d.stamp !== stamp) return null;
+    if (release) d.lock = null;
     for (const b of blocks) {
       const vs = (d.blocks.get(b.n) ?? []).filter((x) => !b.drop || x.v !== b.drop);
       vs.push({ data: b.data, v: version, prev: b.prev });
@@ -631,13 +636,13 @@ export class MemoryStore {
   }
   async lock(name, stamp, owner, ms) {
     const d = this.get(name), now = Date.now();
-    if (d.stamp !== stamp || (d.lock && d.lock.owner !== owner && d.lock.until > now)) return false;
-    d.lock = { owner, until: now + ms };
-    return true;
+    if (d.stamp !== stamp || (d.lock && d.lock.owner !== owner && d.lock.until > now)) return null;
+    d.lock = { owner, until: now + ms, lease: (this.leases = (this.leases ?? 0) + 1) };
+    return d.lock.lease;
   }
-  async unlock(name, owner) {
+  async unlock(name, lease) {
     const d = this.get(name);
-    if (d.lock?.owner === owner) d.lock = null;
+    if (d.lock?.lease === lease) d.lock = null;
   }
   async remove(name) { this.dbs.delete(name); }
 }

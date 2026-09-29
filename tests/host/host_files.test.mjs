@@ -145,3 +145,40 @@ test('a commit that is too large gets SQLITE_FULL and changes nothing', async ()
   await a.unlock(fa, NONE);
   assert.equal(await a.access(), 0);
 });
+
+test('a write transaction is three operations of the store', async () => {
+  const store = new MemoryStore(), calls = [];
+  for (const k of ['meta', 'block', 'lock', 'unlock', 'commit']) {
+    const f = store[k].bind(store);
+    store[k] = (...a) => { calls.push(k); return f(...a); };
+  }
+  const a = host(store), fa = await a.open();
+  await put(a, fa, 0, 'one');
+  calls.length = 0;
+  assert.equal(await put(a, fa, 0, 'two'), 0);
+  assert.deepEqual(calls, ['meta', 'lock', 'commit']);
+});
+
+test('the commit removes the write lock', async () => {
+  const store = new MemoryStore(), a = host(store), b = host(store);
+  const fa = await a.open(), fb = await b.open();
+  await a.lock(fa, SHARED);
+  await a.lock(fa, RESERVED);
+  await a.write(fa, 0, 'a');
+  assert.equal(await a.sync(fa), 0);
+  assert.equal(await put(b, fb, 1, 'b'), 0);
+  await a.unlock(fa, NONE);
+  await a.lock(fa, SHARED);
+  assert.equal(await a.read(fa, 0, 2), 'ab');
+  await a.unlock(fa, NONE);
+});
+
+test('a write lock with no commit ends at the unlock', async () => {
+  const store = new MemoryStore(), a = host(store), b = host(store);
+  const fa = await a.open(), fb = await b.open();
+  await put(a, fa, 0, 'x');
+  await a.lock(fa, SHARED);
+  assert.equal(await a.lock(fa, RESERVED), 0);
+  await a.unlock(fa, NONE);
+  assert.equal(await put(b, fb, 0, 'y'), 0);
+});
