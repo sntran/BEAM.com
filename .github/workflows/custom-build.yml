@@ -21,6 +21,7 @@ env:
   OTP_VERSION: "29.1.1"
   COSMOCC_VERSION: "4.0.2"
   OPENSSL_VERSION: "4.0.2"
+  EMSDK_VERSION: "6.0.10"
 
 jobs:
   build:
@@ -114,18 +115,41 @@ jobs:
           sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
+      # The WebAssembly runtime of --target wasm32, as in build.yml (the
+      # caches of main are shared).
+      - name: Cache emsdk
+        uses: actions/cache@v6
+        with:
+          path: build/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}
+
+      - name: Cache OpenSSL for WebAssembly
+        uses: actions/cache@v6
+        with:
+          path: build/wasm/openssl
+          key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
+
       - name: Build
         env:
           CC: cosmocc
           AR: cosmoar
         run: |
           export OUT="$GITHUB_WORKSPACE/build/$OUT_NAME"
-          ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall bundle
+          ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall wasm_runtime bundle
+
+      # The test step of build.sh: the file runs a program, and builds one
+      # that runs (with SQLite and WebAssembly, when they are in it).
+      - name: Test
+        timeout-minutes: 5
+        run: OUT="$GITHUB_WORKSPACE/build/$OUT_NAME" timeout 120 ./build.sh test
 
       - name: Check the file
         run: |
           f="build/$OUT_NAME"
           "$f" --version
+          # The runtime of --target wasm32 is in the zip.
+          "$f" -noshell -eval 'case filelib:wildcard("/zip/lib/wasm_host-*/priv/runtime/beam.wasm") of [_] -> halt(); [] -> halt(1) end.' ||
+            { echo "No WebAssembly runtime in the file" >&2; exit 1; }
           for n in $EXTRA_NIFS; do
             "$f" --version | grep -q "Linked NIFs.* $n-" || { echo "The NIF of $n is not linked" >&2; exit 1; }
           done
@@ -154,6 +178,8 @@ jobs:
             echo "The build is ready: [$OUT_NAME]($URL) (a zip with the file; the download needs a GitHub account, for 90 days)."
             echo
             echo "OTP applications added: ${OTP_APPS:-none}. Hex: $HEX. rebar3: $REBAR3. More NIFs: ${EXTRA_NIFS:-none}. Elixir: $ELIXIR. JIT: $JIT. SQLite: $SQLITE. WebAssembly: $WASM."
+            echo
+            echo "Built from the commit $GITHUB_SHA of main, with the WebAssembly runtime of --target wasm32."
             echo
             echo "The run: $RUN"
           } > answer.md

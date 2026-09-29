@@ -80,8 +80,9 @@ You do not need to build it yourself: open an issue with the form **A
 custom build of beam.com**. CI builds the file with your choices
 ([the workflow](../.github/workflows/custom-build.yml)), puts it on the
 issue (a download of the run, with a GitHub account, for 90 days), and
-closes the issue. A custom build has no WebAssembly runtime, so it
-cannot make Workers (`--target wasm32`).
+closes the issue. A custom build has the WebAssembly runtime too
+(`--target wasm32`), and CI builds and runs a program with it before the
+answer. It is built from `main`, and the answer names the commit.
 
 ## Continuous integration
 
