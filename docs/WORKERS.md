@@ -416,6 +416,38 @@ BEAM.com on GitHub Pages ([`pages.sh`](../examples/worker/pages.sh)). In Chromiu
 ready in about 1.0 s at the first visit, and in 0.4 to 0.5 s at the next
 visits (a restore of the snapshot).
 
+### Livebook in a web page
+
+Livebook runs so at `livebook/` of the same site
+([`wasm/livebook/page.sh`](../wasm/livebook/page.sh)): Livebook,
+Phoenix, Elixir and the code of a notebook run in the tab. A web app with
+pages and a LiveView socket needs more than `beam.fetch` in the page:
+
+- The VM runs in a Web Worker (`vm.js`), so its work does not stop the
+  page.
+- A service worker (`sw.js`) takes each request of the Livebook frame
+  (`app/`). A static file of Livebook comes from the site. Another request
+  goes to the VM.
+- A service worker cannot take a WebSocket. The pages of Livebook get
+  `ws-shim.js`, whose `WebSocket` sends the socket of LiveView to the VM
+  through the page.
+- A page drops the `Set-Cookie` headers of a `Response`. So `vm.js` keeps
+  the cookies of Livebook, and each request gets them.
+- The iframe page of Kino (`app/iframe/vN.html`) is on the same site, so
+  the service worker also takes its requests for the JS of Kino.
+
+Caution: the JS outputs of Kino run on the origin of the site
+(`sntran.github.io`), and not on a separate origin. A notebook from
+another person can run JS there. Open only notebooks that you trust.
+
+The notebooks stay in the memory of the tab, and a tab of the site runs
+one VM. A notebook has no network: `Mix.install` works only for the
+packages in the release (Kino). In headless Chromium (September 2026), on
+a local server, the first visit showed Livebook in 1.9 s. The next
+visits restored the VM from the snapshot in 0.25 s and showed Livebook
+in 1.0 s. Livebook evaluated a cell in about 0.2 s, and 10,000 processes
+started in 80 ms.
+
 ## The host
 
 The runtime gives the app the variable `BEAM_HOST`: `cloudflare`,

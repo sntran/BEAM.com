@@ -15,6 +15,10 @@
 //   const response = await beam.fetch('/path');   // a Response of the app
 //   const socket = await beam.socket('/ws');      // a WebSocket of the app
 //
+// It also runs in a module Web Worker, which has no import map: there,
+// the page gives a copy of worker.js with those four paths in its imports
+// (wasm/livebook/page.sh makes one).
+//
 // The app runs in the page, as in a Durable Object: its timers run all the
 // time. The page has no TCP connections and no SQL storage. The snapshot
 // of the booted VM goes to the Cache API of the site (only on HTTPS and on
@@ -62,13 +66,16 @@ globalThis.WebSocketPair = class {
 };
 
 // new Response(null, { status: 101, webSocket }) of Workers: a page refuses
-// the status 101, so the response keeps the client end in webSocket.
+// the status 101, so the response keeps the client end in webSocket. A
+// page also drops the Set-Cookie headers of a Response: setCookies keeps
+// them (a Headers of its own keeps them).
 const NativeResponse = Response;
 globalThis.Response = class extends NativeResponse {
   constructor(body, init) {
     const webSocket = init?.webSocket;
     super(webSocket ? null : body, webSocket ? { status: 200 } : init);
     if (webSocket) this.webSocket = webSocket;
+    this.setCookies = init?.headers ? new Headers(init.headers).getSetCookie() : [];
   }
 };
 
@@ -96,15 +103,17 @@ export async function start({ release = './release.bin', env = {} } = {}) {
     throw new Error('this browser has no JSPI (WebAssembly.Suspending)');
   }
   const { Vm } = await import('./worker.js');
-  const vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, document.baseURI).href },
+  const vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, globalThis.document?.baseURI ?? location.href).href },
                     { plain: false });
   await vm.ready;
   const origin = new URL('http://localhost');
   return {
     vm,
     fetch: (path, init) => vm.fetch(request(new URL(path, origin), init)),
-    async socket(path) {
-      const response = await vm.fetch(request(new URL(path, origin), { headers: { upgrade: 'websocket' } }));
+    // init.headers: more headers of the upgrade request (a cookie, for example).
+    async socket(path, init = {}) {
+      const headers = { ...init.headers, upgrade: 'websocket' };
+      const response = await vm.fetch(request(new URL(path, origin), { headers }));
       const socket = response.webSocket;
       if (!socket) throw new Error(`${path}: no WebSocket (status ${response.status})`);
       setTimeout(() => socket.emit(new Event('open')));

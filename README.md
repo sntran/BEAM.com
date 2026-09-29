@@ -111,9 +111,10 @@ deno serve -A deno.js                            # or on Deno
 
 ## Documentation
 
-The site <https://sntran.github.io/BEAM.com/> has these pages, and the
+The site <https://sntran.github.io/BEAM.com/> has these pages, the
 Erlang shell in your browser at
-[`repl/`](https://sntran.github.io/BEAM.com/repl/).
+[`repl/`](https://sntran.github.io/BEAM.com/repl/), and Livebook in your
+browser at [`livebook/`](https://sntran.github.io/BEAM.com/livebook/).
 
 | File | What |
 |---|---|

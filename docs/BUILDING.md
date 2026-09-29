@@ -105,9 +105,12 @@ answer. It is built from `main`, and the answer names the commit.
 
 [Another workflow](../.github/workflows/pages.yml) publishes the site of
 BEAM.com on GitHub Pages ([`site.sh`](site.sh)): these docs as ExDoc
-makes them, and the Erlang shell of `examples/worker` at `repl/`. It uses
+makes them, the Erlang shell of `examples/worker` at `repl/`, and
+Livebook at `livebook/` ([`page.sh`](../wasm/livebook/page.sh)). It uses
 the `edge` binary, and runs after each change of the docs on `main` and
-after each run of CI on `main`.
+after each run of CI on `main`. The release of Livebook stays in the
+cache of the workflow until its files or the versions of `beam.com`
+change.
 
 A run starts for each pull request (and again for each new push to it;
 the run of the older commit stops), for each push to `main`, and for each

@@ -1,9 +1,11 @@
 #!/bin/sh
 # Builds the site of BEAM.com for GitHub Pages into OUT, with the tools of
-# BEAM_COM (mix, elixir): the documentation (ExDoc, docs/site), and the
-# Erlang shell of examples/worker in the page, at repl/.
+# BEAM_COM (mix, elixir): the documentation (ExDoc, docs/site), the
+# Erlang shell of examples/worker in the page, at repl/, and Livebook in
+# the page, at livebook/ (wasm/livebook/page.sh), when LIVEBOOK_DIR names
+# the directory of wasm/livebook/setup.sh.
 #
-#   sh docs/site.sh BEAM_COM OUT
+#   [LIVEBOOK_DIR=DIR] sh docs/site.sh BEAM_COM OUT
 set -eu
 BEAM_COM=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 OUT=$2
@@ -20,4 +22,7 @@ elixir.com "$SITE/prepare.exs" "$SITE/pages"
 mkdir -p "$OUT"
 cp -R "$SITE/doc/." "$OUT/"
 sh "$ROOT/examples/worker/pages.sh" "$BEAM_COM" "$OUT/repl"
+if [ -n "${LIVEBOOK_DIR:-}" ]; then
+    BEAM_COM=$BEAM_COM sh "$ROOT/wasm/livebook/page.sh" "$LIVEBOOK_DIR" "$OUT/livebook"
+fi
 echo "site.sh: wrote $OUT"
