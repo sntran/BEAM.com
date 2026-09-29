@@ -1,10 +1,11 @@
 name: Publish the site
 
-# The site of BEAM.com on GitHub Pages (docs/site.sh): the documentation
-# (ExDoc), the Erlang shell of examples/worker in the page at repl/, and
-# Livebook in the page at livebook/ (wasm/livebook/page.sh). The release
-# of Livebook (wasm/livebook/setup.sh) stays in the cache until its files
-# or the versions of beam.com change.
+# The site of BEAM.com on GitHub Pages (docs/site.sh): Livebook in the
+# page at the root (wasm/livebook/page.sh), with the documentation as its
+# notebooks, the same documentation as static pages at docs/ (ExDoc), and
+# the Erlang shell of examples/worker in the page at repl/. The release of
+# Livebook (wasm/livebook/setup.sh) has the notebooks in it. It stays in
+# the cache until its files, the pages or the versions of beam.com change.
 # It uses the beam.com of main (the prerelease "edge"). It runs after each
 # change of the pages on main, after each run of the build on main (a new
 # edge), and by hand. Pages must use "GitHub Actions" as its source
@@ -70,7 +71,7 @@ jobs:
           path: |
             livebook-build/livebook/_build/prod/rel/livebook
             livebook-build/cacert.pem
-          key: livebook-${{ steps.edge.outputs.versions }}-${{ hashFiles('wasm/livebook/setup.sh', 'wasm/livebook/livebook.patch', 'docs/notebooks/**') }}
+          key: livebook-${{ steps.edge.outputs.versions }}-${{ hashFiles('wasm/livebook/setup.sh', 'wasm/livebook/livebook.patch', 'docs/notebooks/**', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'docs/*.md', 'docs/history/*.md') }}
 
       - name: Build the release of Livebook
         if: steps.livebook.outputs.cache-hit != 'true'

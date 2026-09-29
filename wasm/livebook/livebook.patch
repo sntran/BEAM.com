@@ -24,7 +24,7 @@
      [
 --- a/config/config.exs
 +++ b/config/config.exs
-@@ -53,3 +53,28 @@
+@@ -53,3 +53,32 @@
  # Import environment specific config. This must remain at the bottom
  # of this file so it overrides the configuration defined above.
  import_config "#{Mix.env()}.exs"
@@ -34,25 +34,29 @@
 +# The default poller measures :erlang.memory/0, which +Mea min does not support.
 +config :telemetry_poller, :default, false
 +
-+# beam.com: the Learn section has only the notebooks of beam.com
-+# (docs/notebooks of beam.com, which setup.sh copies to learn/beam). Its
-+# index.exs gives their order, descriptions and covers.
-+beam_notebooks = Path.expand("../lib/livebook/notebook/learn/beam", __DIR__)
++# beam.com: the Learn section has only the notebooks of beam.com: the
++# documentation of beam.com (docs/notebooks/build.exs of beam.com, which
++# setup.sh runs, writes them to learn/beam). Its index.exs gives the
++# notebooks with a card, the groups of the other notebooks, and the files
++# of each notebook.
++beam_learn =
++  elem(Code.eval_file(Path.expand("../lib/livebook/notebook/learn/beam/index.exs", __DIR__)), 0)
 +
 +config :livebook, :learn_only_configured, true
 +
 +config :livebook,
 +       :learn_notebooks,
 +       for(
-+         notebook <- elem(Code.eval_file(Path.join(beam_notebooks, "index.exs")), 0),
++         notebook <- beam_learn.notebooks,
 +         do: %{
-+           path: Path.join(beam_notebooks, notebook.file),
-+           details: %{
-+             description: notebook.description,
-+             cover_path: Path.join(beam_notebooks, notebook.cover)
-+           }
++           path: notebook.path,
++           slug: notebook.slug,
++           file_paths: notebook.files,
++           details: notebook.details
 +         }
 +       )
++
++config :livebook, :learn_groups, beam_learn.groups
 --- a/lib/livebook.ex
 +++ b/lib/livebook.ex
 @@ -127,7 +127,11 @@
@@ -104,15 +108,54 @@
  
    notebook_infos =
      for config <- notebook_configs do
-@@ -229,7 +235,7 @@
+@@ -222,6 +228,20 @@
+     }
+   ]
+ 
++  # beam.com: the groups of the config (:learn_groups), with the cover in
++  # the module, as the cover of a notebook.
++  beam_groups = Application.compile_env(:livebook, :learn_groups, [])
++
++  for group <- beam_groups do
++    @external_resource group.cover_path
++  end
++
++  @beam_groups (for group <- beam_groups do
++                  group
++                  |> Map.take([:title, :description, :slugs])
++                  |> Map.put(:cover, {:url, Livebook.Utils.read_as_data_url!(group.cover_path)})
++                end)
++
+   @doc """
+   Returns a list of all defined notebook groups.
+   """
+@@ -229,6 +249,26 @@
    def group_infos() do
      notebook_infos = notebook_infos()
  
--    for config <- @group_configs do
-+    for config <- if(@only_configured, do: [], else: @group_configs) do
++    if @only_configured do
++      for group <- @beam_groups do
++        %{
++          title: group.title,
++          description: group.description,
++          cover: group.cover,
++          notebook_infos:
++            for(
++              slug <- group.slugs,
++              info = Enum.find(notebook_infos, &(&1.slug == slug)),
++              do: info
++            )
++        }
++      end
++    else
++      default_group_infos(notebook_infos)
++    end
++  end
++
++  defp default_group_infos(notebook_infos) do
+     for config <- @group_configs do
        %{
          title: config.title,
-         description: config.description,
 --- a/lib/livebook/runtime/evaluator.ex
 +++ b/lib/livebook/runtime/evaluator.ex
 @@ -104,7 +104,7 @@
@@ -184,3 +227,37 @@
      :ets.insert(@name, {:memory, memory})
      memory
    end
+--- a/lib/livebook_web/live/learn_live.ex
++++ b/lib/livebook_web/live/learn_live.ex
+@@ -35,8 +35,8 @@
+         <div>
+           <LayoutComponents.title text="Learn" />
+           <p class="mt-4 mb-8 text-gray-700">
+-            Check out a number of examples showcasing various parts of the Elixir ecosystem.<br />
+-            Click on any notebook you like and start playing around with it!
++            The documentation of beam.com, as notebooks that run in this Livebook.<br />
++            Open a notebook, change its code and run it. Nothing leaves your browser.
+           </p>
+         </div>
+         <div
+--- a/lib/livebook_web/live/session_live.ex
++++ b/lib/livebook_web/live/session_live.ex
+@@ -1153,7 +1153,18 @@
+   defp handle_relative_notebook_path(socket, relative_path, requested_url) do
+     resolution_location = location(socket.private.data)
+ 
++    # beam.com: in a notebook of the Learn section (no location), a link
++    # SLUG.livemd opens the Learn notebook SLUG.
++    slug = Path.basename(relative_path, Livebook.LiveMarkdown.extension())
++
++    learn? =
++      resolution_location == nil and
++        Enum.any?(Livebook.Notebook.Learn.notebook_infos(), &(&1.slug == slug))
++
+     case resolution_location do
++      nil when learn? ->
++        push_navigate(socket, to: ~p"/learn/notebooks/#{slug}")
++
+       nil ->
+         socket
+         |> put_flash(

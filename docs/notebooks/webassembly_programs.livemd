@@ -1,0 +1,496 @@
+<!-- livebook:{"file_entries":[{"name":"hello.c","type":"attachment"},{"name":"hello.wasm","type":"attachment"}]} -->
+
+# WebAssembly programs
+
+## About this notebook
+
+`beam.com` runs WebAssembly modules and WASI programs. A program calls the module `wasm`: `wasm:compile/1`, `wasm:instantiate/3`, `wasm:call_function/3` and `wasm:run/2` (see [Libraries](../LIBRARIES.md)).
+
+In the native file, WAMR (the WebAssembly Micro Runtime, linked into `beam.com`) runs the modules. This Livebook runs in the WebAssembly runtime of beam.com, which has no WAMR. There, the module `wasm` sends each call to the WebAssembly engine of the host: the engine of your browser in this page, and V8 on Deno. The API is the same, so the calls of `wasm` in this notebook also run in a native `beam.com`.
+
+In this notebook:
+
+* An assembler, in Elixir, makes a module from WebAssembly text.
+* The cells call the functions of the module, and read and write its memory.
+* A C program, compiled for WASI, runs with its arguments and its environment.
+* An Erlang cell does the same calls.
+
+```elixir
+Code.ensure_loaded?(:wasm) and function_exported?(:wasm, :run, 2)
+```
+
+## From text to bytes
+
+The WebAssembly text format (WAT) is the text form of a module. Tools such as `wat2wasm` change it to the binary format. This Livebook has no such tool, so the next cell is a small assembler in Elixir. It knows a part of the format:
+
+* functions with `i32` and `i64` values, their parameters, their locals and their exports;
+* the flat form of the instructions: `block`, `loop`, `if`, `else`, `end`, `br`, `br_if`, `call`, the locals, the constants, the arithmetic, the comparisons, the loads and the stores;
+* one memory, with its export and its data.
+
+The binary format is a list of sections. Each section has an id, a size and its content. The numbers are LEB128: 7 bits in each byte.
+
+```elixir
+defmodule Wat do
+  @moduledoc """
+  An assembler for a part of the WebAssembly text format (WAT): the
+  functions (i32 and i64), their exports, one memory and its data. The
+  instructions are in the flat form (one instruction after the other),
+  not in the folded form.
+  """
+
+  import Bitwise
+
+  @types %{"i32" => 0x7F, "i64" => 0x7E, "f32" => 0x7D, "f64" => 0x7C}
+
+  # The instructions with no immediate value.
+  @plain %{
+    "unreachable" => 0x00, "nop" => 0x01, "return" => 0x0F, "drop" => 0x1A,
+    "select" => 0x1B,
+    "i32.eqz" => 0x45, "i32.eq" => 0x46, "i32.ne" => 0x47, "i32.lt_s" => 0x48,
+    "i32.lt_u" => 0x49, "i32.gt_s" => 0x4A, "i32.gt_u" => 0x4B, "i32.le_s" => 0x4C,
+    "i32.le_u" => 0x4D, "i32.ge_s" => 0x4E, "i32.ge_u" => 0x4F,
+    "i64.eqz" => 0x50, "i64.eq" => 0x51, "i64.ne" => 0x52, "i64.lt_s" => 0x53,
+    "i64.lt_u" => 0x54, "i64.gt_s" => 0x55, "i64.gt_u" => 0x56, "i64.le_s" => 0x57,
+    "i64.le_u" => 0x58, "i64.ge_s" => 0x59, "i64.ge_u" => 0x5A,
+    "i32.add" => 0x6A, "i32.sub" => 0x6B, "i32.mul" => 0x6C, "i32.div_s" => 0x6D,
+    "i32.div_u" => 0x6E, "i32.rem_s" => 0x6F, "i32.rem_u" => 0x70, "i32.and" => 0x71,
+    "i32.or" => 0x72, "i32.xor" => 0x73, "i32.shl" => 0x74, "i32.shr_s" => 0x75,
+    "i32.shr_u" => 0x76,
+    "i64.add" => 0x7C, "i64.sub" => 0x7D, "i64.mul" => 0x7E, "i64.div_s" => 0x7F,
+    "i64.div_u" => 0x80, "i64.rem_s" => 0x81, "i64.rem_u" => 0x82, "i64.and" => 0x83,
+    "i64.or" => 0x84, "i64.xor" => 0x85, "i64.shl" => 0x86, "i64.shr_s" => 0x87,
+    "i64.shr_u" => 0x88,
+    "i32.wrap_i64" => 0xA7, "i64.extend_i32_s" => 0xAC, "i64.extend_i32_u" => 0xAD
+  }
+
+  # The loads and stores: the opcode and the alignment (log2 of the bytes).
+  @memory %{
+    "i32.load" => {0x28, 2}, "i64.load" => {0x29, 3}, "i32.load8_u" => {0x2D, 0},
+    "i32.store" => {0x36, 2}, "i64.store" => {0x37, 3}, "i32.store8" => {0x3A, 0}
+  }
+
+  @doc "The bytes of the module in the text `source`."
+  def assemble(source) do
+    [["module" | fields]] = source |> tokens() |> parse()
+    funcs = for ["func" | rest] <- fields, do: func(rest)
+    index = for {f, i} <- Enum.with_index(funcs), f.name, into: %{}, do: {f.name, i}
+    types = funcs |> Enum.map(& &1.type) |> Enum.uniq()
+    memories = for ["memory" | rest] <- fields, do: rest
+
+    exports =
+      for({f, i} <- Enum.with_index(funcs), name <- f.exports, do: {name, 0, i}) ++
+        for rest <- memories, ["export", name] <- rest, do: {name, 2, 0}
+
+    IO.iodata_to_binary([
+      "\0asm", <<1, 0, 0, 0>>,
+      section(1, vec(types, fn {params, results} ->
+        [0x60, vec(params, &@types[&1]), vec(results, &@types[&1])]
+      end)),
+      section(3, vec(funcs, &u(Enum.find_index(types, fn t -> t == &1.type end)))),
+      section(5, vec(memories, &limits(for n <- &1, is_binary(n), do: number(n)))),
+      section(7, vec(exports, fn {name, kind, i} -> [name(name), kind, u(i)] end)),
+      section(10, vec(funcs, &code(&1, index))),
+      section(11, vec(for(["data" | rest] <- fields, do: rest), fn [["i32.const", at] | text] ->
+        [0, 0x41, s(number(at)), 0x0B, name(Enum.map_join(text, fn {:text, t} -> t end))]
+      end))
+    ])
+  end
+
+  # --- the text: tokens, then nested lists ---------------------------------
+
+  defp tokens(source) do
+    ~r/\(|\)|"(?:[^"\\]|\\.)*"|[^\s()";]+|;;[^\n]*/
+    |> Regex.scan(source)
+    |> Enum.map(&hd/1)
+    |> Enum.reject(&String.starts_with?(&1, ";;"))
+  end
+
+  defp parse(tokens), do: tokens |> nest([]) |> elem(0)
+
+  defp nest([], acc), do: {Enum.reverse(acc), []}
+  defp nest([")" | rest], acc), do: {Enum.reverse(acc), rest}
+
+  defp nest(["(" | rest], acc) do
+    {list, rest} = nest(rest, [])
+    nest(rest, [list | acc])
+  end
+
+  defp nest(["\"" <> _ = text | rest], acc), do: nest(rest, [{:text, unquote_text(text)} | acc])
+  defp nest([token | rest], acc), do: nest(rest, [token | acc])
+
+  # A string: \n, \t, \\, \" and \HH (a byte in hexadecimal).
+  defp unquote_text(text) do
+    text
+    |> String.slice(1..-2//1)
+    |> then(&Regex.replace(~r/\\([0-9a-fA-F]{2}|.)/, &1, fn _, e ->
+      case e do
+        "n" -> "\n"
+        "t" -> "\t"
+        <<_, _>> -> <<String.to_integer(e, 16)>>
+        other -> other
+      end
+    end))
+  end
+
+  # --- a function ------------------------------------------------------------
+
+  defp func(rest) do
+    {name, rest} =
+      case rest do
+        ["$" <> _ = name | rest] -> {name, rest}
+        rest -> {nil, rest}
+      end
+
+    {header, body} = Enum.split_while(rest, &is_list/1)
+    params = for ["param" | p] <- header, do: p
+    locals = for ["local" | l] <- header, do: l
+
+    %{
+      name: name,
+      exports: for(["export", {:text, e}] <- header, do: e),
+      type: {types(params), for(["result" | r] <- header, t <- r, do: t)},
+      locals: types(locals),
+      # The names of the parameters and of the locals, to their index.
+      names: (params ++ locals) |> Enum.flat_map(&names/1) |> Enum.with_index() |> Map.new(),
+      body: body
+    }
+  end
+
+  # (param $a i32) has a name; (param i32 i32) has none.
+  defp names(["$" <> _ = name, _type]), do: [name]
+  defp names(types), do: Enum.map(types, fn _ -> nil end)
+
+  defp types(decls), do: for(d <- decls, t <- d, Map.has_key?(@types, t), do: t)
+
+  defp code(f, funcs) do
+    locals = f.locals |> Enum.chunk_by(& &1) |> Enum.map(&[u(length(&1)), @types[hd(&1)]])
+    body = [vec(locals, & &1), instructions(f.body, f.names, funcs, []), 0x0B]
+    [u(IO.iodata_length(body)), body]
+  end
+
+  # labels: the names of the open blocks, the innermost first (for br).
+  defp instructions([], _names, _funcs, _labels), do: []
+
+  defp instructions([op | rest], names, funcs, labels) when op in ["block", "loop", "if"] do
+    {label, rest} =
+      case rest do
+        ["$" <> _ = label | rest] -> {label, rest}
+        rest -> {nil, rest}
+      end
+
+    {type, rest} =
+      case rest do
+        [["result", t] | rest] -> {@types[t], rest}
+        rest -> {0x40, rest}
+      end
+
+    opcode = %{"block" => 0x02, "loop" => 0x03, "if" => 0x04}[op]
+    [opcode, type | instructions(rest, names, funcs, [label | labels])]
+  end
+
+  defp instructions(["else" | rest], n, f, l), do: [0x05 | instructions(rest, n, f, l)]
+  defp instructions(["end" | rest], n, f, [_ | l]), do: [0x0B | instructions(rest, n, f, l)]
+
+  defp instructions([op, target | rest], n, f, l) when op in ["br", "br_if"] do
+    depth = if String.starts_with?(target, "$"), do: Enum.find_index(l, &(&1 == target)), else: number(target)
+    [if(op == "br", do: 0x0C, else: 0x0D), u(depth) | instructions(rest, n, f, l)]
+  end
+
+  defp instructions(["call", target | rest], n, f, l) do
+    i = if String.starts_with?(target, "$"), do: Map.fetch!(f, target), else: number(target)
+    [0x10, u(i) | instructions(rest, n, f, l)]
+  end
+
+  defp instructions([op, local | rest], n, f, l)
+       when op in ["local.get", "local.set", "local.tee"] do
+    i = if String.starts_with?(local, "$"), do: Map.fetch!(n, local), else: number(local)
+    opcode = %{"local.get" => 0x20, "local.set" => 0x21, "local.tee" => 0x22}[op]
+    [opcode, u(i) | instructions(rest, n, f, l)]
+  end
+
+  defp instructions(["i32.const", v | rest], n, f, l), do: [0x41, s(number(v)) | instructions(rest, n, f, l)]
+  defp instructions(["i64.const", v | rest], n, f, l), do: [0x42, s(number(v)) | instructions(rest, n, f, l)]
+  defp instructions(["memory.size" | rest], n, f, l), do: [0x3F, 0 | instructions(rest, n, f, l)]
+  defp instructions(["memory.grow" | rest], n, f, l), do: [0x40, 0 | instructions(rest, n, f, l)]
+
+  defp instructions([op | rest], n, f, l) do
+    case {@plain[op], @memory[op]} do
+      {opcode, nil} when opcode != nil ->
+        [opcode | instructions(rest, n, f, l)]
+
+      {nil, {opcode, align}} ->
+        # The offset: "offset=N" after the instruction, or 0.
+        {offset, rest} =
+          case rest do
+            ["offset=" <> o | rest] -> {number(o), rest}
+            rest -> {0, rest}
+          end
+
+        [opcode, u(align), u(offset) | instructions(rest, n, f, l)]
+
+      _ ->
+        raise ArgumentError, "unknown instruction: #{inspect(op)}"
+    end
+  end
+
+  # --- the binary format -----------------------------------------------------
+
+  defp section(_id, [[0]]), do: []
+  defp section(id, content), do: [id, u(IO.iodata_length(content)), content]
+
+  # The size of a memory in pages of 64 KiB: the minimum, and the maximum.
+  defp limits([min]), do: [0, u(min)]
+  defp limits([min, max]), do: [1, u(min), u(max)]
+
+  defp vec(items, fun), do: [u(length(items)) | Enum.map(items, fun)]
+  defp name({:text, text}), do: name(text)
+  defp name(text), do: [u(byte_size(text)), text]
+
+  defp number("0x" <> hex), do: String.to_integer(String.replace(hex, "_", ""), 16)
+  defp number("-0x" <> hex), do: -number("0x" <> hex)
+  defp number(text), do: String.to_integer(String.replace(text, "_", ""))
+
+  # LEB128: 7 bits in each byte, the low bits first; the high bit of a
+  # byte tells that more bytes come.
+  defp u(n) when n < 0x80, do: [n]
+  defp u(n), do: [0x80 ||| (n &&& 0x7F) | u(n >>> 7)]
+
+  defp s(n) do
+    low = n &&& 0x7F
+    rest = n >>> 7
+
+    if (rest == 0 and (low &&& 0x40) == 0) or (rest == -1 and (low &&& 0x40) != 0),
+      do: [low],
+      else: [0x80 ||| low | s(rest)]
+  end
+end
+```
+
+## A module
+
+Change the text and run the cells again. The module has five functions:
+
+* `add` adds two `i32` values.
+* `fact` gives n! with `i64` values, by recursion.
+* `sum` adds the bytes of the memory, with a loop.
+* `pages` grows the memory with `memory.grow`.
+* `divide` divides two `i32` values.
+
+```elixir
+source =
+  Kino.Input.textarea("WebAssembly text",
+    monospace: true,
+    default: ~S"""
+    (module
+      ;; The memory: one page of 64 KiB (4 at most), with a text at 0.
+      (memory (export "memory") 1 4)
+      (data (i32.const 0) "Hello, memory!\n")
+
+      (func $add (export "add") (param $a i32) (param $b i32) (result i32)
+        local.get $a
+        local.get $b
+        i32.add)
+
+      ;; n! with 64-bit integers, by recursion.
+      (func $fact (export "fact") (param $n i64) (result i64)
+        local.get $n
+        i64.const 1
+        i64.le_s
+        if (result i64)
+          i64.const 1
+        else
+          local.get $n
+          local.get $n
+          i64.const 1
+          i64.sub
+          call $fact
+          i64.mul
+        end)
+
+      ;; The sum of len bytes at ptr, with a loop.
+      (func (export "sum") (param $ptr i32) (param $len i32) (result i32)
+        (local $total i32)
+        block $done
+          loop $next
+            local.get $len
+            i32.eqz
+            br_if $done
+            local.get $total
+            local.get $ptr
+            i32.load8_u
+            i32.add
+            local.set $total
+            local.get $ptr
+            i32.const 1
+            i32.add
+            local.set $ptr
+            local.get $len
+            i32.const -1
+            i32.add
+            local.set $len
+            br $next
+          end
+        end
+        local.get $total)
+
+      (func (export "pages") (param $more i32) (result i32)
+        local.get $more
+        memory.grow)
+
+      (func (export "divide") (param i32 i32) (result i32)
+        local.get 0
+        local.get 1
+        i32.div_s))
+    """
+  )
+```
+
+```elixir
+bytes = Wat.assemble(Kino.Input.read(source))
+"#{byte_size(bytes)} bytes"
+```
+
+The bytes start with `\0asm` and the version 1. Then come the sections. This reader shows them:
+
+```elixir
+defmodule WasmBytes do
+  @moduledoc "The sections of a WebAssembly module, as the binary format gives them."
+
+  import Bitwise
+
+  @names %{
+    0 => "custom", 1 => "type", 2 => "import", 3 => "function", 4 => "table",
+    5 => "memory", 6 => "global", 7 => "export", 8 => "start", 9 => "element",
+    10 => "code", 11 => "data", 12 => "data count"
+  }
+
+  @doc "Each section: its name, its offset in the file, its size and its first bytes."
+  def sections(<<"\0asm", 1::little-32, rest::binary>>), do: read(rest, 8)
+
+  defp read(<<>>, _at), do: []
+
+  defp read(<<id, rest::binary>>, at) do
+    {size, rest, length} = uleb(rest)
+    <<content::binary-size(^size), rest::binary>> = rest
+
+    section = %{
+      section: @names[id],
+      offset: at,
+      size: size,
+      first_bytes: for(<<b <- binary_part(content, 0, min(size, 16))>>, do: Base.encode16(<<b>>)) |> Enum.join(" ")
+    }
+
+    [section | read(rest, at + 1 + length + size)]
+  end
+
+  # An unsigned LEB128 number: the number, the bytes after it, and its length.
+  defp uleb(bytes, shift \\ 0, acc \\ 0, length \\ 1)
+
+  defp uleb(<<1::1, low::7, rest::binary>>, shift, acc, length),
+    do: uleb(rest, shift + 7, acc ||| low <<< shift, length + 1)
+
+  defp uleb(<<0::1, low::7, rest::binary>>, shift, acc, length),
+    do: {acc ||| low <<< shift, rest, length}
+end
+
+WasmBytes.sections(bytes)
+```
+
+## Call the functions
+
+`wasm:compile/1` validates the bytes. `wasm:instantiate/1` makes an instance: the memory, and the functions that the cells can call.
+
+```elixir
+{:ok, module} = :wasm.compile(bytes)
+{:ok, instance} = :wasm.instantiate(module)
+
+%{
+  add: :wasm.call_function(instance, "add", [2, 3]),
+  fact: :wasm.call_function(instance, "fact", [20]),
+  exists: {:wasm.function_exists(instance, "fact"), :wasm.function_exists(instance, "nope")}
+}
+```
+
+20! is 2432902008176640000. It is larger than 2<sup>53</sup>, the largest integer that JavaScript keeps exactly as a number. The `i64` values go between the VM and the engine as text, so the value is exact.
+
+Bad calls give errors, not a crash of the VM. A division by zero is a trap:
+
+```elixir
+%{
+  trap: :wasm.call_function(instance, "divide", [1, 0]),
+  not_found: :wasm.call_function(instance, "nope", []),
+  after_the_trap: :wasm.call_function(instance, "divide", [100, 7])
+}
+```
+
+## The memory
+
+The memory of an instance is an array of bytes. The data section put a text at the offset 0:
+
+```elixir
+:wasm.read_binary(instance, 0, 15)
+```
+
+The cell writes the bytes 1 to 100 at the offset 1024. Then `sum` reads them in its loop:
+
+```elixir
+:ok = :wasm.write_binary(instance, 1024, :binary.list_to_bin(Enum.to_list(1..100)))
+:wasm.call_function(instance, "sum", [1024, 100])
+```
+
+The memory grows by pages of 64 KiB. `wasm:memory_grow/2` and the instruction `memory.grow` give the size before, in pages:
+
+```elixir
+{:ok, before} = :wasm.memory_size(instance)
+{:ok, [old_pages]} = :wasm.call_function(instance, "pages", [1])
+{:ok, now} = :wasm.memory_size(instance)
+%{bytes_before: before, pages_before: old_pages, bytes_now: now}
+```
+
+## A C program with WASI
+
+WASI (the WebAssembly System Interface) gives a program its arguments, its environment, the clock and the output. This C program was compiled with Emscripten (`emcc -O2 -sSTANDALONE_WASM hello.c -o hello.wasm`):
+
+```elixir
+Kino.FS.file_path("hello.c") |> File.read!() |> IO.puts()
+```
+
+Its module imports only WASI functions:
+
+```elixir
+hello = Kino.FS.file_path("hello.wasm") |> File.read!()
+
+hello
+|> WasmBytes.sections()
+|> Enum.map(&Map.take(&1, [:section, :size]))
+```
+
+`wasm:run/2` makes an instance and calls its function `_start`. The first argument is the name of the program. The program writes to the output of this cell, and gives its exit code. With more than one argument, it gives 3:
+
+```elixir
+:wasm.run(hello, %{args: ["hello", "one", "two"], env: %{"WHO" => "Livebook"}})
+```
+
+## The same calls in Erlang
+
+Livebook also runs Erlang cells. An Erlang cell sees the variables of the Elixir cells above, with a capital letter: `Hello` is `hello`, the bytes of the C program. This cell runs the program again, in Erlang:
+
+```erlang
+{ok, Wasi} = wasm:instantiate(Hello, #{}, #{args => ["hello"], env => #{"WHO" => "Erlang"}}),
+{wasm:function_exists(Wasi, "_start"), wasm:start(Wasi)}.
+```
+
+## The limits
+
+In the WebAssembly runtime, the module `wasm` has these limits:
+
+* A module can import only WASI functions. Host functions (Erlang functions that the module calls) are not supported. This is also true in the native `beam.com`.
+* A WASI program has no files (no preopens), and its standard input is empty.
+* The output of a program comes when the call returns, not while it runs.
+* The code of a module runs on the thread of the host. A function that does not return stops the VM.
+* A Cloudflare Worker cannot compile WebAssembly at run time. There, `wasm:compile/1` gives an error. A web page and Deno can compile.
+
+## Next
+
+* [The anatomy of beam.com](anatomy_of_beam_com.livemd): the file that is a shell script, a Windows program and a zip.
+* [Libraries](../LIBRARIES.md): the application `wasm` in the native `beam.com`.

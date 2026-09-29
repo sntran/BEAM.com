@@ -89,3 +89,20 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `preopens`.
+
+With `--target wasm32`, the program runs in the WebAssembly runtime,
+which has no WAMR. There, the builder puts a module `wasm` with the same
+API in the release, and the engine of the host runs the modules: V8 on
+Deno, and the engine of the browser in a web page. The differences:
+
+- A WASI program has no preopens, and its standard input is empty.
+- The standard output and the standard error of a program go to the
+  group leader of the caller when the call returns.
+- A Cloudflare Worker cannot compile WebAssembly at run time, so there
+  `wasm:compile/1` gives `{error, Reason}`.
+- The code of a module runs on the thread of the host: a function that
+  does not return stops the VM.
+
+The notebook
+[`docs/notebooks/webassembly_programs.livemd`](notebooks/webassembly_programs.livemd)
+runs a module and a C program in this way.

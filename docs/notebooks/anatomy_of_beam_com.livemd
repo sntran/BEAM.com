@@ -1,0 +1,320 @@
+<!-- livebook:{"file_entries":[{"name":"beam-com-head.bin","type":"attachment"},{"name":"beam-com-zip.etf","type":"attachment"}]} -->
+
+# The anatomy of beam.com
+
+## About this notebook
+
+`beam.com` is one file, and six systems run it: Linux, macOS, Windows, FreeBSD, NetBSD and OpenBSD, on x86-64 and on ARM64. The file is an Actually Portable Executable (APE) of [Cosmopolitan](https://github.com/jart/cosmopolitan). Its bytes are valid in more than one format at the same time:
+
+| Who reads the file | What it sees |
+|---|---|
+| A POSIX shell (`sh`) | A shell script |
+| Windows | A PE program for x86-64 |
+| The APE loader, FreeBSD, NetBSD and OpenBSD | ELF programs for x86-64 and for ARM64 |
+| macOS on x86-64 | A Mach-O program |
+| A zip reader | A zip file with Erlang/OTP and Elixir |
+
+This notebook reads those formats with Elixir. It has two files from the build of this Livebook:
+
+* `beam-com-head.bin`: the first 96 KiB of `beam.com`, with all the headers and the script.
+* `beam-com-zip.etf`: the size of `beam.com`, and the list of its zip (the name, the size, the compressed size and the offset of each file), as an Erlang term.
+
+Caution: the VM of this page is not this file. See "And this page?" at the end.
+
+```elixir
+head = Kino.FS.file_path("beam-com-head.bin") |> File.read!()
+
+%{size: file_size, entries: entries} =
+  Kino.FS.file_path("beam-com-zip.etf") |> File.read!() |> :erlang.binary_to_term([:safe])
+
+# The printable bytes as they are, the others as a dot.
+show = fn bin ->
+  for <<c <- bin>>, into: "", do: if(c in 0x20..0x7E or c == ?\n, do: <<c>>, else: "·")
+end
+
+%{file_size: file_size, head_bytes: byte_size(head), files_in_the_zip: length(entries)}
+```
+
+## The first bytes
+
+```elixir
+head |> binary_part(0, 120) |> show.() |> IO.puts()
+```
+
+The file starts with `MZ`. For Windows, `MZ` is the mark of a program (the initials of Mark Zbikowski, of MS-DOS). For a shell, `MZqFpD='` starts a variable, and the quote takes all the binary bytes up to the next quote. Then `<<'justinetvuwn3'` sends more binary bytes to nothing (a here-document), up to the line `justinetvuwn3`. After that line, the shell reads a script.
+
+## The shell script
+
+Linux and macOS do not know the format of the file. So the kernel gives an error, and the shell runs the file as a script:
+
+```elixir
+[_, after_heredoc] = :binary.split(head, "\njustinetvuwn3\n")
+[script | _] = :binary.split(after_heredoc, "exit 127\n")
+script = script <> "exit 127\n"
+IO.puts(script)
+```
+
+The script finds a loader for the file and starts it:
+
+1. When the system has the program `ape` (the APE loader, installed with `binfmt_misc` for example), it runs `ape beam.com`.
+2. Else, it looks for a loader that an earlier run wrote to `~/.ape-1.10`.
+3. Else, it takes the loader from the file itself, with `dd`: a small program, compressed with gzip. On macOS for ARM64, the loader is C source that `cc` compiles.
+4. The loader maps the code of the file into memory, and starts it.
+
+The `dd` commands give the offsets of the loaders in the file:
+
+```elixir
+loaders =
+  for [_, skip, count] <- Regex.scan(~r/dd if="\$o" skip=(\d+)\s+count=(\d+)/, script), uniq: true do
+    %{offset: String.to_integer(skip), bytes: String.to_integer(count)}
+  end
+```
+
+## ELF: the programs for x86-64 and ARM64
+
+With `--assimilate`, the script writes an ELF header at the start of the file, with `printf`. After that, the file is a normal ELF program, and only Linux or a BSD can run it. The two headers are in the text of the script, in octal. This cell reads them:
+
+```elixir
+import Bitwise
+
+elf_headers =
+  for [_, text] <- Regex.scan(~r/printf '([^']*)'/, script) do
+    # printf keeps the low 8 bits of an octal escape.
+    Regex.replace(~r/\\([0-7]{1,3})/, text, fn _, octal -> <<String.to_integer(octal, 8) &&& 0xFF>> end)
+  end
+
+elf =
+  for header <- elf_headers do
+    <<0x7F, "ELF", 2, 1, 1, abi, _::binary-8, _type::little-16, machine::little-16,
+      _version::little-32, entry::little-64, phoff::little-64, _shoff::little-64,
+      _flags::little-32, _ehsize::little-16, 56::little-16, phnum::little-16, _::binary>> = header
+
+    %{
+      machine: %{62 => "x86-64", 183 => "ARM64"}[machine],
+      os_abi: abi,
+      entry: "0x" <> Integer.to_string(entry, 16),
+      program_headers_at: phoff,
+      program_headers: phnum
+    }
+  end
+```
+
+`os_abi` 9 is FreeBSD: FreeBSD needs it, and Linux, NetBSD and OpenBSD do not check it. The program headers are in the first bytes of the file. They tell the loader which bytes of the file go where in memory:
+
+```elixir
+import Bitwise
+
+segment_types = %{1 => "LOAD", 4 => "NOTE", 7 => "TLS", 0x6474E551 => "GNU_STACK"}
+
+segments =
+  for %{machine: machine, program_headers_at: at, program_headers: n} <- elf,
+      <<type::little-32, flags::little-32, offset::little-64, address::little-64, _::little-64,
+        file_bytes::little-64, memory_bytes::little-64, _::little-64 <- binary_part(head, at, n * 56)>> do
+    %{
+      machine: machine,
+      type: segment_types[type],
+      access: for({bit, letter} <- [{4, "r"}, {2, "w"}, {1, "x"}], into: "", do: if((flags &&& bit) != 0, do: letter, else: "-")),
+      file_offset: offset,
+      file_bytes: file_bytes,
+      address: "0x" <> Integer.to_string(address, 16),
+      memory_bytes: memory_bytes
+    }
+  end
+
+Kino.DataTable.new(segments, name: "ELF segments")
+```
+
+The segment `LOAD` with `r-x` is the machine code. The code for x86-64 and the code for ARM64 are at different offsets of the file: the file has both.
+
+The segment `NOTE` names the systems. OpenBSD and NetBSD run a program only with their note:
+
+```elixir
+%{file_offset: at, file_bytes: bytes} = Enum.find(segments, &(&1.type == "NOTE"))
+
+defmodule ElfNote do
+  @doc "The notes of an ELF segment: the name, the type and the content of each."
+  def read(<<name_size::little-32, desc_size::little-32, type::little-32, rest::binary>>) do
+    name_pad = pad(name_size)
+    desc_pad = pad(desc_size)
+    <<name::binary-size(^name_pad), desc::binary-size(^desc_pad), rest::binary>> = rest
+
+    [%{name: binary_part(name, 0, name_size - 1), type: type, content: binary_part(desc, 0, desc_size)}
+     | read(rest)]
+  end
+
+  def read(_), do: []
+
+  defp pad(n), do: div(n + 3, 4) * 4
+end
+
+ElfNote.read(binary_part(head, at, bytes))
+```
+
+## PE: the program for Windows
+
+Windows reads `MZ`, then the offset of the PE header at the byte 0x3C. The PE header names the machine and the sections of the program:
+
+```elixir
+<<_::binary-size(0x3C), pe_at::little-32, _::binary>> = head
+
+<<"PE\0\0", machine::little-16, sections::little-16, _::binary-12, optional_size::little-16,
+  _::little-16, rest::binary>> = binary_part(head, pe_at, byte_size(head) - pe_at)
+
+<<_::binary-size(^optional_size), table::binary>> = rest
+
+pe_sections =
+  for <<name::binary-8, memory_bytes::little-32, address::little-32, file_bytes::little-32,
+        offset::little-32, _::binary-16 <- binary_part(table, 0, sections * 40)>> do
+    %{
+      section: String.trim_trailing(name, <<0>>),
+      file_offset: offset,
+      file_bytes: file_bytes,
+      memory_bytes: memory_bytes,
+      address: "0x" <> Integer.to_string(address, 16)
+    }
+  end
+
+%{pe_header_at: pe_at, machine: %{0x8664 => "x86-64", 0xAA64 => "ARM64"}[machine], sections: pe_sections}
+```
+
+Compare the offsets with the ELF segments for x86-64: Windows and the ELF loader map the same bytes of the file. The file has one copy of the code for x86-64, and all the systems use it.
+
+## Mach-O: macOS on x86-64
+
+On macOS for x86-64, `--assimilate` copies a Mach-O header over the start of the file (the first `dd` command of the script). The header is at the offset 3224:
+
+```elixir
+{macho_at, 4} = :binary.match(head, <<0xCF, 0xFA, 0xED, 0xFE>>)
+
+<<_::binary-size(^macho_at), 0xFEEDFACF::little-32, cpu::little-32, _::little-32, _::little-32,
+  commands::little-32, _size::little-32, _flags::little-32, _::little-32, rest::binary>> = head
+
+macho =
+  Enum.map_reduce(1..commands, rest, fn _, <<command::little-32, size::little-32, rest::binary>> ->
+    body_size = size - 8
+    <<body::binary-size(^body_size), rest::binary>> = rest
+
+    item =
+      case {command, body} do
+        {0x19, <<name::binary-16, address::little-64, memory_bytes::little-64, offset::little-64,
+                 file_bytes::little-64, _::binary>>} ->
+          %{
+            segment: String.trim_trailing(name, <<0>>),
+            file_offset: offset,
+            file_bytes: file_bytes,
+            memory_bytes: memory_bytes,
+            address: "0x" <> Integer.to_string(address, 16)
+          }
+
+        {other, _} ->
+          %{load_command: "0x" <> Integer.to_string(other, 16)}
+      end
+
+    {item, rest}
+  end)
+  |> elem(0)
+
+%{macho_header_at: macho_at, cpu: if(cpu == 0x01000007, do: "x86-64", else: cpu), load_commands: macho}
+```
+
+The segments `__APE1`, `__APE2` and `__APE3` are again the same bytes: the code, the read-only data and the data for x86-64.
+
+## The zip
+
+A zip reader reads a zip from its end: the central directory at the end gives the offset of each file. So a zip can have other bytes before it, such as a program. `beam.com` reads its own zip as the directory `/zip`: Erlang/OTP and Elixir load their code from there.
+
+```elixir
+first = entries |> Enum.map(&elem(&1, 3)) |> Enum.min()
+
+# lib/stdlib-8.1/ebin/lists.beam is in the application stdlib.
+application = fn name ->
+  case String.split(name, "/") do
+    ["lib", app | _] -> app |> String.split("-") |> hd()
+    [top | _] -> top
+  end
+end
+
+by_application =
+  entries
+  |> Enum.group_by(fn {name, _, _, _} -> application.(name) end)
+  |> Enum.map(fn {app, files} ->
+    %{
+      part: app,
+      files: length(files),
+      bytes: files |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
+      compressed: files |> Enum.map(&elem(&1, 2)) |> Enum.sum()
+    }
+  end)
+  |> Enum.sort_by(& &1.bytes, :desc)
+
+Kino.DataTable.new(by_application, name: "The zip, by application", keys: [:part, :files, :bytes, :compressed])
+```
+
+`wasm_host` is the WebAssembly runtime (`beam.wasm` and its JavaScript) that `--target wasm32` puts next to a release.
+
+```elixir
+%{
+  zip_starts_at: first,
+  zip_bytes: file_size - first,
+  files: length(entries),
+  uncompressed_bytes: entries |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+}
+```
+
+The `.beam` files of `kernel` and `stdlib` are stored, not compressed (their bytes and their compressed bytes are equal). The boot loads most of them, and a stored file needs no inflation: a program starts about 50 ms faster.
+
+## The map of the file
+
+This cell puts all the parts in one picture, from the offsets that the cells above read:
+
+```elixir
+arm = Enum.find(segments, &(&1.machine == "ARM64" and &1.access == "r-x"))
+arm_data = Enum.find(segments, &(&1.machine == "ARM64" and &1.access == "rw-"))
+x86 = Enum.find(pe_sections, &(&1.section == ".text"))
+x86_end = pe_sections |> Enum.map(&(&1.file_offset + &1.file_bytes)) |> Enum.max()
+
+parts = [
+  {"headers and script", 0, x86.file_offset, "#888"},
+  {"x86-64 code and data", x86.file_offset, x86_end, "#4063d8"},
+  {"ARM64 code and data", arm.file_offset, arm_data.file_offset + arm_data.file_bytes, "#389826"},
+  {"loaders", loaders |> Enum.map(& &1.offset) |> Enum.min(), first, "#cb3c33"},
+  {"zip: OTP and Elixir", first, file_size, "#9558b2"}
+]
+
+width = 800
+
+bars =
+  for {{label, from, to, color}, i} <- Enum.with_index(parts) do
+    x = from * width / file_size
+    w = max((to - from) * width / file_size, 2)
+    size = if to - from >= 1_048_576, do: "#{Float.round((to - from) / 1_048_576, 1)} MB", else: "#{div(to - from, 1024)} KiB"
+
+    """
+    <rect x="#{x}" y="10" width="#{w}" height="40" fill="#{color}"/>
+    <text x="10" y="#{80 + i * 20}" font-size="13" fill="#{color}">■ #{label}: #{from} to #{to} (#{size})</text>
+    """
+  end
+
+Kino.Image.new(
+  ~s(<svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{80 + length(parts) * 20}" font-family="sans-serif">#{bars}</svg>),
+  :svg
+)
+```
+
+## And this page?
+
+The VM of this Livebook is not `beam.com`. A browser cannot run an x86-64 or ARM64 program. The WebAssembly runtime of beam.com is ERTS of the same OTP, compiled again with Emscripten to `beam.wasm`. `beam.com INPUT -o DIR --target wasm32` puts `beam.wasm` next to the release of the program, and the host starts it. The release has no zip: it is one file, `release.bin`, that the runtime reads into its memory.
+
+```elixir
+%{
+  this_vm: to_string(:erlang.system_info(:system_architecture)),
+  word_size: :erlang.system_info(:wordsize),
+  root: to_string(:code.root_dir())
+}
+```
+
+## Next
+
+* [WebAssembly programs](webassembly_programs.livemd): WebAssembly modules and WASI programs from the VM.
+* [Inside the WebAssembly VM](inside_the_webassembly_vm.livemd): the runtime of this page.
+* [Platforms](../PLATFORMS.md) and [Internals](../INTERNALS.md): the systems of `beam.com`, and how the file works.

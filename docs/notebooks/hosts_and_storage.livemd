@@ -119,6 +119,31 @@ summary =
 Kino.DataTable.new(Db.query(db, "select * from events order by value desc limit 50"), name: "The last events")
 ```
 
+## A SQL console
+
+Write one SQL statement, and run the next cell. The statement runs in the database of the cells above, with the table `events`. Try `create table`, `insert`, `update` and joins:
+
+```elixir
+sql =
+  Kino.Input.textarea("SQL",
+    monospace: true,
+    default: """
+    select kind, count(*) as n, min(value) as low, max(value) as high
+    from events
+    group by kind
+    """
+  )
+```
+
+```elixir
+try do
+  Kino.DataTable.new(Db.query(db, Kino.Input.read(sql)), name: "The result")
+rescue
+  # An error of SQLite, such as a syntax error: {:error, message}.
+  error in MatchError -> error.term
+end
+```
+
 ## SQLite on Deno KV
 
 On Deno Deploy, each isolate has its own VM. A database in one VM is not in the others. So the host keeps the pages of the database in Deno KV, which all the isolates share, and SQLite runs in each VM:
@@ -136,4 +161,4 @@ On Deno Deploy, a write of the Phoenix demo of beam.com takes about 25 ms more t
 * A Cloudflare Durable Object can keep the files of some directories in its SQLite storage (`BEAM_PERSIST`). This is how the Livebook of beam.com on Cloudflare keeps your notebooks.
 * In this page, nothing stays after you close the tab. To keep a notebook, download it: the menu of the notebook, then "Export".
 
-Read more in the documentation: [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html).
+Read more in the documentation: [Cloudflare Workers, Deno and a web page](../WORKERS.md).

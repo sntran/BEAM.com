@@ -100,4 +100,4 @@ Distributed Erlang needs TCP connections between nodes. On Cloudflare, a WebSock
 
 Caution: anyone who can reach the Worker can reach its listeners. Protect the path (for example with Cloudflare Access) before you deploy a listener.
 
-Read more in the documentation: [Cloudflare Workers, Deno and a web page](https://sntran.github.io/BEAM.com/workers.html).
+Read more in the documentation: [Cloudflare Workers, Deno and a web page](../WORKERS.md).

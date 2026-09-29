@@ -97,6 +97,15 @@ Enum.each(pids, &send(&1, :stop))
 "#{count} processes in #{cost.ms} ms (#{cost.reductions} reductions), #{div(bytes, count)} bytes each"
 ```
 
+Livebook also runs Erlang cells. This is the same test in Erlang, with 1,000 processes. An Erlang cell sees the variables of the Elixir cells, with a capital letter (`Count` is `count`), so its own variables have other names:
+
+```erlang
+Procs = [spawn(fun() -> receive stop -> ok end end) || _ <- lists:seq(1, 1000)],
+Memory = lists:sum([M || P <- Procs, {memory, M} <- [erlang:process_info(P, memory)]]),
+[P ! stop || P <- Procs],
+#{processes => length(Procs), bytes_each => Memory div length(Procs), elixir_count => Count}.
+```
+
 ## Messages
 
 Processes share no memory. They send messages. This ring sends one message around 1,000 processes, 100 times: 100,000 messages.
@@ -293,9 +302,11 @@ Kino.nothing()
 
 The other notebooks of this section:
 
-* **Inside the WebAssembly VM**: the threads, the memory, the clock and the snapshots of the runtime.
-* **Hosts and storage**: one build for Workers, Deno and a web page, and SQLite in the VM.
-* **Networking at the edge**: outgoing connections, `BEAM_CONNECT`, and incoming requests.
-* **Building programs with beam.com**: the command line, and the release that runs this Livebook.
+* [Inside the WebAssembly VM](inside_the_webassembly_vm.livemd): the threads, the memory, the clock and the snapshots of the runtime.
+* [The anatomy of beam.com](anatomy_of_beam_com.livemd): one file that is a shell script, a Windows program, an ELF program and a zip.
+* [WebAssembly programs](webassembly_programs.livemd): a module in WebAssembly text, and a C program with WASI.
+* [Hosts and storage](hosts_and_storage.livemd): one build for Workers, Deno and a web page, and SQL with SQLite in the VM.
+* [Networking at the edge](networking_at_the_edge.livemd): outgoing connections, `BEAM_CONNECT`, and incoming requests.
+* [Building programs with beam.com](building_programs.livemd): the command line, and the release that runs this Livebook.
 
-The documentation of beam.com is at <https://sntran.github.io/BEAM.com/>.
+The guides, the reference and the history of beam.com are notebooks too: see the groups of the Learn section.

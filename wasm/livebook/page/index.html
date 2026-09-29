@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Livebook in the Browser</title>
+<title>BEAM.com in Livebook</title>
 <link rel="icon" href="app/favicons/favicon.svg">
-<meta name="description" content="Livebook with no server: Erlang/OTP, Elixir, Phoenix and your notebook run in this page, from beam.com.">
+<meta name="description" content="The documentation of beam.com as notebooks: Livebook, Erlang/OTP and Elixir run in this page, with no server.">
 <style>
   :root { --bg: #fafaf9; --text: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #4c1d95; --error: #b91c1c; }
   @media (prefers-color-scheme: dark) {
@@ -29,13 +29,14 @@
 </head>
 <body>
 <div id="boot">
-  <h1><span>Livebook</span> in your browser</h1>
+  <h1><span>beam.com</span> in Livebook</h1>
   <p id="status">Starting…</p>
   <progress id="bar"></progress>
-  <p class="small">Livebook, Phoenix, Elixir and Erlang/OTP run in this page, in BEAM compiled to
-    WebAssembly. No server runs your code. The first visit loads about 30 MB; the next visits start
+  <p class="small">The documentation of <a href="https://github.com/sntran/BEAM.com">beam.com</a> is a
+    set of notebooks. Livebook, Phoenix, Elixir and Erlang/OTP run in this page, in BEAM compiled to
+    WebAssembly, and no server runs your code. The first visit loads about 30 MB; the next visits start
     from a snapshot. The notebooks stay in the memory of this tab: download a notebook to keep it.
-    From <a href="https://github.com/sntran/BEAM.com">beam.com</a>.</p>
+    To read the documentation without Livebook, open <a href="docs/">the static pages</a>.</p>
 </div>
 <iframe id="app" title="Livebook" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
 <script type="module">
@@ -43,11 +44,25 @@
   const say = (text, error = false) => { status.textContent = text; status.className = error ? 'err' : ''; };
   const APP = new URL('./app/', location.href);
 
-  async function main() {
-    if (typeof WebAssembly.Suspending !== 'function') {
-      throw new Error('This browser has no JSPI (WebAssembly JavaScript Promise Integration). Use Chrome or Edge 137 or later.');
+  // The static pages of the documentation (docs/, from site.sh), for a
+  // browser that cannot run Livebook: the page of the notebook in the
+  // address (#/learn/notebooks/SLUG), or the first page.
+  async function staticPages() {
+    const slug = /^#\/learn\/notebooks\/([a-z0-9-]+)/.exec(location.hash)?.[1];
+    let page = '';
+    if (slug) {
+      try { page = (await (await fetch('docs-map.json')).json())[slug] ?? ''; } catch {}
     }
-    if (!('serviceWorker' in navigator)) throw new Error('This browser has no service workers.');
+    location.replace(new URL('docs/' + page, location.href));
+  }
+
+  async function main() {
+    // No JSPI (WebAssembly JavaScript Promise Integration, in Chrome and
+    // Edge 137 or later) or no service workers: the static pages.
+    if (typeof WebAssembly.Suspending !== 'function' || !('serviceWorker' in navigator)) {
+      say('This browser cannot run Livebook. Opening the static pages…');
+      return staticPages();
+    }
     // One VM for each browser: the service worker sends all the requests of
     // Livebook to this tab.
     const lock = await new Promise((resolve) =>
@@ -55,7 +70,12 @@
         resolve(l);
         return l ? new Promise(() => {}) : undefined;
       }));
-    if (!lock) throw new Error('Livebook runs in another tab of this site. Close that tab, then reload this one.');
+    // Livebook runs in another tab of this site: this tab shows the static
+    // pages.
+    if (!lock) {
+      say('Livebook runs in another tab of this site. Opening the static pages…');
+      return staticPages();
+    }
 
     const t0 = performance.now();
     say('Loading the runtime and the release…');
@@ -95,7 +115,57 @@
     say(`Opening Livebook (the VM started in ${ms} ms)…`);
     const frame = document.getElementById('app');
     frame.addEventListener('load', () => document.body.classList.add('running'), { once: true });
-    frame.src = APP.href + (location.hash.startsWith('#/') ? location.hash.slice(2) : '');
+    // The Learn section (the documentation) is the first page.
+    const start = location.hash.startsWith('#/') ? location.hash.slice(2) : 'learn';
+    follow.slug = /^learn\/notebooks\/([^/?#]+)/.exec(start)?.[1] ?? null;
+    frame.addEventListener('load', () => {
+      // LiveView changes the address of the frame with the History API.
+      const w = frame.contentWindow;
+      for (const k of ['pushState', 'replaceState']) {
+        const original = w.history[k];
+        w.history[k] = function (...args) { const r = original.apply(this, args); follow(); return r; };
+      }
+      w.addEventListener('popstate', follow);
+      // A link to a Learn notebook (a card, or SLUG.livemd in a notebook):
+      // LiveView goes from it to the new session at once.
+      w.document.addEventListener('click', (e) => {
+        const a = e.target.closest?.('a[href]');
+        const m = a && /\/learn\/notebooks\/([^/]+)$|\/([^/]+)\.livemd$/.exec(new URL(a.href).pathname);
+        if (m) follow.slug = m[1] ?? m[2];
+      }, true);
+      follow();
+    });
+    frame.src = APP.href + start;
+  }
+
+  // The address of this page follows the frame, so that it can be copied
+  // and shared: #/learn/... for the Learn section, and for the session of
+  // a Learn notebook the address of that notebook (Livebook opens a Learn
+  // notebook as a new session).
+  const sessions = new Map();
+  function follow() {
+    let path;
+    try { path = document.getElementById('app').contentWindow.location.pathname; } catch { return; }
+    if (!path.startsWith(APP.pathname)) return;
+    const rest = path.slice(APP.pathname.length);
+    const notebook = /^learn\/notebooks\/([^/]+)/.exec(rest)?.[1];
+    const session = /^sessions\/([^/]+)/.exec(rest)?.[1];
+    // follow.slug: the Learn notebook of the next new session.
+    let hash = '';
+    if (notebook) {
+      follow.slug = notebook;
+      hash = '#/' + rest;
+    } else if (rest.startsWith('learn')) {
+      hash = '#/' + rest;
+    } else if (session) {
+      // A link SLUG.livemd goes through the old session first.
+      if (follow.slug && !sessions.has(session)) {
+        sessions.set(session, follow.slug);
+        follow.slug = null;
+      }
+      if (sessions.has(session)) hash = '#/learn/notebooks/' + sessions.get(session);
+    }
+    if (hash !== location.hash) history.replaceState(null, '', hash || location.pathname);
   }
 
   main().catch((e) => { bar.remove(); say(e.message, true); console.error(e); });
