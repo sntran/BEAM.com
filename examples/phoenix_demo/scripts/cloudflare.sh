@@ -32,6 +32,8 @@ mix.com local.hex --force --if-missing
 mix.com deps.get --only prod
 mix.com compile
 mix.com assets.deploy
+# mix release keeps the directories of old versions in lib/. Remove them.
+rm -rf _build/prod/rel/phoenix_demo
 RELEASE_ERTS=false mix.com release --overwrite
 
 # The build runs the release once on this computer, to find the modules of its
@@ -53,10 +55,18 @@ const vars = {
   DATABASE_PATH: "/data/phoenix_demo.db",
   // No allocators of ERTS: a smaller VM.
   BEAM_ERL_FLAGS: "-Mea min",
+  // beam.com sets PHX_SERVER only when it finds the app phoenix, and it
+  // does not find phoenix-1.9.0-dev (a version with "-"). So set it here.
+  PHX_SERVER: "true",
 };
-fs.writeFileSync(p, fs.readFileSync(p, "utf8")
+let text = fs.readFileSync(p, "utf8")
   .replace(/"name": "[^"]*"/, `"name": "${e.WORKER}"`)
-  .replace(/\n\s*"services": \[[^\]]*\],/, "")
-  .replace(/"vars": \{[^}]*\}/, `"vars": ${JSON.stringify(vars)}`)
-  .replace(/\n}\s*$/, ",\n  \"observability\": { \"enabled\": true }\n}\n"));' "$DIR"
+  .replace(/\n\s*"services": \[[^\]]*\],/, "");
+// Some templates have no "vars" key. Then add the key after "name".
+text = /"vars": \{[^}]*\}/.test(text)
+  ? text.replace(/"vars": \{[^}]*\}/, `"vars": ${JSON.stringify(vars)}`)
+  : text.replace(/("name": "[^"]*",)/, `$1\n  "vars": ${JSON.stringify(vars)},`);
+if (!text.includes("\"observability\""))
+  text = text.replace(/\n}\s*$/, ",\n  \"observability\": { \"enabled\": true }\n}\n");
+fs.writeFileSync(p, text);' "$DIR"
 echo "Built $DIR. Deploy: (cd $DIR && npx wrangler deploy -c wrangler.durable.jsonc)"

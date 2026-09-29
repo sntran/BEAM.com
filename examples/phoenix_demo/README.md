@@ -17,6 +17,11 @@ Cloudflare Workers, at https://phoenix.fifo.workers.dev. One Durable Object
 runs the release in BEAM (WebAssembly), and its SQLite storage keeps the
 database.
 
+The app uses Phoenix 1.9.0-dev and LiveView 1.3.0-dev, from the `main` branches
+on GitHub, because no 1.9 pre-release is on Hex. The installer of the `main`
+branch made the app, as `mix phx.new` of Phoenix 1.9 will make it: esbuild
+makes an ES module, and the built-in `JSON` module replaces Jason.
+
 The home page (`PhoenixDemoWeb.DemoLive`) shows what only a live BEAM process
 on Cloudflare can show:
 

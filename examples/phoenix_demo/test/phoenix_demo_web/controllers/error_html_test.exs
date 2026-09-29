@@ -1,5 +1,5 @@
 defmodule PhoenixDemoWeb.ErrorHTMLTest do
-  use PhoenixDemoWeb.ConnCase, async: true
+  use PhoenixDemoWeb.ConnCase
 
   # Bring render_to_string/4 for testing custom views
   import Phoenix.Template, only: [render_to_string: 4]

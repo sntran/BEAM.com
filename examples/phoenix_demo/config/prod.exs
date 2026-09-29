@@ -21,10 +21,10 @@ config :phoenix_demo, PhoenixDemoWeb.Endpoint,
   ]
 
 # The local mail adapter needs no API client.
-config :swoosh, api_client: false
+config :swoosh, :api_client, false
 
 # Keep the emails in memory for the public mailbox page (see the router).
-config :swoosh, local: true
+config :swoosh, :local, true
 
 # A password hash of the default cost (12) takes about 0.6 s of CPU in
 # WebAssembly, and a Worker has little CPU time. Cost 10 is 4 times faster.
