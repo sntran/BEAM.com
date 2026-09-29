@@ -68,7 +68,9 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     Bin = pack([{".release.json", json:encode(Meta#{snapshot_key => snapshot_key(Files, Worker)})}
                 | Packed]),
     [ok = filelib:ensure_path(filename:join(Output, D)) || D <- ["", "release"]],
-    [write_file(filename:join(Output, F), D) || {F, D} <- Worker],
+    %% A file can be in a subdirectory (release/, licenses/otp/).
+    [begin ok = filelib:ensure_dir(P), write_file(P, D) end
+     || {F, D} <- Worker, P <- [filename:join(Output, F)]],
     write_file(filename:join([Output, "release", "release.bin"]), Bin),
     Quiet orelse io:format("~ts: wrote ~ts (the Workers ~ts and ~ts-release)~n"
                            "  release: ~ts ~ts, ~b files, ~.1f MB (~b modules compressed)~n"
@@ -432,8 +434,9 @@ worker_files(#{name := App} = Rel, Runtime, Root) ->
      {"worker.capnp", capnp(Phoenix)}] ++ licenses(Root).
 
 %% The license texts of the zip (licenses/NOTICE names the software in
-%% beam.wasm), in the directory licenses/ of DIR. Wrangler does not upload
-%% them: no rule of the configurations names a .txt file.
+%% beam.wasm), in the directory licenses/ of DIR. Wrangler uploads the
+%% .txt files as text modules (about 80 KB), which the Worker does not
+%% read: so the notices go with the runtime.
 licenses(Root) ->
     Dir = filename:join(Root, "licenses"),
     [{"licenses/" ++ F, read(filename:join(Dir, F))}

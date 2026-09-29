@@ -46,7 +46,7 @@ config providers run in the Worker. See
 | `durable-global.js`, `wrangler.durable-global.jsonc` | The Durable Objects, with a spare VM that the global scope restores. |
 | `worker.capnp` | Both Workers for `workerd`. |
 | `tcp-proxy.mjs` | A local TCP port for a listener of the program (see "Incoming TCP"). |
-| `licenses/` | The license texts of the software in `beam.wasm` (not uploaded). |
+| `licenses/` | The license texts of the software in `beam.wasm`. Wrangler uploads them with the runtime (about 80 KB). |
 
 The build also runs the release one time on this computer, to find the
 modules of its boot. The Worker then loads them in one batch, and the
