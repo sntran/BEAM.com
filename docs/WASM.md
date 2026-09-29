@@ -328,6 +328,71 @@ optimized code. The interpreter is now 1.2 to 1.4 times the native
 interpreter, the usual cost of WebAssembly. A plain `switch` in place of
 the computed `goto` (`NO_JUMP_TABLE`) and `-O3` do not change the speed.
 
+### Speed: build flags, allocators and the host (2026-09-28)
+
+A second search for speed, with the Node.js variant of `wasm/erts/build.sh`
+(emsdk 6.0.10, OTP 29.1.1) in Node.js 26.10 (V8 14.6), and the Worker
+variant in the local workerd of wrangler (V8 15.4). The benchmark:
+
+- `game`: one tick of a world of level 6 of a Phoenix game (Humans Must
+  Die): 13 systems over 40,962 cells, float columns as binaries.
+- `fib`, `floats`, `sort`, `maps`, `binary`, `etf` (`term_to_binary` and
+  back), `messages` (50,000 round trips): small workloads.
+
+The flags of the emulator are the flags of the Worker: `-S 1 -SDcpu 1 -A 0
+-Mea min`. Each value is the best of 3 to 5 runs, in ms. Two runs of one
+build differ by 10 to 20%.
+
+| Build | game | fib | floats | sort | maps | binary | etf | messages |
+|---|---|---|---|---|---|---|---|---|
+| CI flags (`-O2`) | 93-96 | 32-40 | 176-186 | 51-55 | 50 | 29-30 | 10 | 31 |
+| `-O3` (compile and link) | 92-99 | 32-34 | 177-183 | 56 | 50-52 | 31 | 9-10 | 27-31 |
+| `-sMALLOC=mimalloc` | 101 | 31-32 | 181-182 | 55-59 | 51-53 | 34-35 | 10-13 | 29-38 |
+| `-flto` | 105-111 | 36-38 | 215-226 | 56-59 | 52 | 33-34 | 10 | 28-30 |
+| `-DNO_JUMP_TABLE` | 89-100 | 36-37 | 171-182 | 50-56 | 50-52 | 30-32 | 9-16 | 29-41 |
+| CI flags, `-Mea max` | 174-183 | 33-34 | 183-200 | 52-58 | 57-58 | 37-54 | 41-57 | 27-30 |
+| CI flags, `-Mea max -MHsbct 16384 -MBsbct 16384` | 103 | 35 | 198 | 56 | 57 | 32 | 15 | 29 |
+| CI flags, V8 `--liftoff-only` | 278 | 96 | 373 | 118 | 93 | 60 | 15 | 70 |
+| CI flags, V8 `--wasm-enforce-bounds-checks` | 123-127 | 36-40 | 205-218 | 58-62 | 56-58 | 36-37 | 10-11 | 37-40 |
+| CI flags in workerd | 120-136 | 41-47 | 198-199 | 59-70 | 59-61 | 32-37 | 11 | 40 |
+| Native interpreter (x86-64, `+Mea min`) | 110 | 19 | 67 | 72 | 87 | 32 | 13 | 41 |
+| Native JIT (x86-64, `+Mea min`) | 93 | 12 | 92 | 68 | 91 | 37 | 14 | 42 |
+| Native JIT (x86-64, default allocators) | 71 | 2 (fib 27) | 89 | 28 | 56 | 20 | 11 | 41 |
+
+What was found:
+
+- No flag of the build makes the emulator faster. `-O3` and
+  `NO_JUMP_TABLE` give the same times, mimalloc is a little slower, and
+  LTO is 10 to 20% slower. V8 compiles the code again, so the flags of
+  clang change little.
+- The game runs as fast in Node.js as on the native JIT with the same
+  allocators (`+Mea min`), and faster than the native interpreter. On
+  maps and on sort, WebAssembly is faster than native with `+Mea min`.
+- `-Mea min` (malloc for all memory) is the fastest choice in
+  WebAssembly. With the ERTS allocators (`-Mea max`), each large heap of a
+  collection gets its own carrier, and the `mmap()` of Emscripten fills
+  each new carrier with zeros: a tick takes twice the time. Large
+  single-block thresholds (`-MHsbct 16384 -MBsbct 16384`) remove most of
+  that cost, but malloc stays faster.
+- A profile of the game (a build with `--profiling-funcs`, `node
+  --cpu-prof`): `process_main()` 46% of the time, the garbage collector
+  about 11% (`garbage_collect`, `full_sweep_heaps`, `sweep_new_heap`), and
+  the rest is small. One function calls the JavaScript `invoke_*`
+  wrappers of `setjmp()`, and it is not in the hot path.
+- workerd is 25 to 30% slower than Node.js for the same module, with no
+  change over time. Node.js with `--wasm-enforce-bounds-checks` gives the
+  same times, so workerd checks the bounds of each memory access in code,
+  and does not use the trap handler of V8 with guard pages (UPSTREAM.md,
+  workerd W7). The host decides this; the build cannot change it.
+- Profile-guided optimization does not work with emsdk 6.0.10: the
+  profile runtime and the instrumentation have different versions
+  (UPSTREAM.md, Emscripten EM5).
+
+So the speed of an application in a Worker now comes from its own code:
+fewer allocations and fewer reads of boxed floats. See the float columns
+of Humans Must Die, which went from 290 ms to 160 ms for one tick in
+`wrangler dev`.
+
 ### wasm64
 
 `WASM64=1 wasm/erts/build.sh` builds ERTS for `wasm64-unknown-emscripten`
