@@ -7,7 +7,7 @@ body:
       value: |
         Thank you for the report. For a problem when you **build** a program, use the "The build of a program fails" form.
 
-        Before you send it, please try the latest release, and read "Known limits" in the README (for example: no port programs on Windows, and no NIFs from shared objects).
+        Before you send it, please try the latest release, and read "Known limits" in docs/PLATFORMS.md (for example: no port programs on Windows, and no NIFs from shared objects).
   - type: dropdown
     id: platform
     attributes:

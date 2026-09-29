@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for the report. Please read "Run and build a program" and "Known limits" in the README first: for example, git dependencies, NIF dependencies (other than the NIFs in beam.com), rebar3 plugins, umbrella projects and `config/runtime.exs` are not supported yet.
+        Thank you for the report. Please read docs/PROGRAMS.md and "Known limits" in docs/PLATFORMS.md first: for example, git dependencies, NIF dependencies (other than the NIFs in beam.com), rebar3 plugins, umbrella projects and `config/runtime.exs` are not supported yet.
   - type: dropdown
     id: input
     attributes:

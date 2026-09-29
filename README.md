@@ -142,6 +142,11 @@ limits. The main limits: only the NIFs that are linked into `beam.com`
 work, and Hex packages are the only dependencies of a build (no git
 dependencies).
 
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Report a security problem in
+private: see [`SECURITY.md`](SECURITY.md).
+
 ## License
 
 BEAM.com is licensed under the [Apache License 2.0](LICENSE). The file
