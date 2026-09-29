@@ -358,6 +358,10 @@ The variable `BEAM_SQLITE` selects the database:
 | a file path | `node:sqlite` runs the SQL on that file. |
 | `off` | SQLite in the VM, with its databases in the memory of the VM. |
 
+The VM gets the mode that the host uses in `BEAM_SQLITE`: `kv`,
+`memory`, `off` or the file path. With no KV, the host uses `memory`, and
+the VM gets `memory`.
+
 How the pages go to Deno KV:
 
 - The host keeps each database as blocks of 4 KiB. Each block has a

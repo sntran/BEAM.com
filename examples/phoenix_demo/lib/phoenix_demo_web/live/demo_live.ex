@@ -94,7 +94,16 @@ defmodule PhoenixDemoWeb.DemoLive do
 
   defp online, do: @topic |> Presence.list() |> map_size()
 
-  defp host, do: Map.get(@hosts, System.get_env("BEAM_HOST", "native"), @hosts["native"])
+  defp host do
+    host = Map.get(@hosts, System.get_env("BEAM_HOST", "native"), @hosts["native"])
+
+    # On Deno, BEAM_SQLITE gives the store of SQLite: "kv" when the pages
+    # of the database are in Deno KV.
+    case System.get_env("BEAM_SQLITE") do
+      "kv" -> %{host | store: "it stays in SQLite, with the pages of the database in Deno KV"}
+      _ -> host
+    end
+  end
 
   defp now, do: DateTime.utc_now() |> Calendar.strftime("%H:%M:%S UTC")
 
