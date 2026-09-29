@@ -407,7 +407,13 @@ jobs:
         run: |
           cd bin
           sha256sum beam.com beam-emu.com > SHA256SUMS
-          cat > notes.md <<EOF
+          # The section of this version in CHANGELOG.md, then the files.
+          awk -v v="## ${TAG#v}" '$0 == v {on = 1; next} /^## / {on = 0} on' \
+            ../CHANGELOG.md > notes.md
+          cat >> notes.md <<EOF
+
+          ---
+
           Erlang/OTP $OTP_VERSION and Elixir in one executable file, for Linux,
           macOS, Windows and the BSDs, on x86_64 and aarch64.
 

@@ -120,8 +120,10 @@ workflow by hand (Actions, "Run workflow").
 
 ## Make a release
 
-1. Set the version in `apps/beam_com/src/beam_com.app.src`, and merge the
-   change to `main`.
+1. Set the version in `apps/beam_com/src/beam_com.app.src`, write its
+   section (`## X.Y.Z`) in [`CHANGELOG.md`](../CHANGELOG.md), and merge
+   the change to `main`. The section goes at the start of the notes of
+   the release.
 2. Push a tag with the same version: `git tag v0.1.0 && git push origin
    v0.1.0`.
 3. CI builds and tests the files on all the platforms, and then publishes
