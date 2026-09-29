@@ -366,6 +366,22 @@ processes on one KV, four LiveView clients, 100 clicks at the same time.
 The counter got all the 100 clicks, with no error, and it kept its value
 after a restart.
 
+On Deno Deploy (September 2026), the same demo with a KV database. The
+times are from a client in the US, over one LiveView socket:
+
+| | Database in memory | SQLite on Deno KV |
+|---|---|---|
+| First request of a new isolate (boot and migrations) | 8.2 s | 4.5 s |
+| `GET /`, median | 46 ms | 36 to 48 ms |
+| A LiveView event with no SQL, median | 16 ms | 15 to 16 ms |
+| A click (one write transaction), median | 18 ms | 57 to 60 ms |
+
+The first request has one measurement for each, and its time changes
+with the work of the new isolate (a boot, or a restore of a snapshot).
+A write transaction adds about 40 ms: it reads the version, takes the
+write lock, commits, and releases the lock in KV. Four clients sent 100
+clicks at the same time in 4.8 s, and the counter got all of them.
+
 ## In a web page
 
 The output also runs in a browser tab with JSPI (Chrome 137 or later).
