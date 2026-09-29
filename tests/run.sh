@@ -276,14 +276,17 @@ for app in greeter crypto_check tls_check; do
     fi
 done
 
-# beam.com INPUT -o OUTPUT, on this system: the examples of the repository.
+# beam.com INPUT -o OUTPUT, on this system: an example and the check
+# programs of the repository.
 if [ -d examples ]; then
     check beam.com 'wrote .*hashsum.b.com' \
         examples/hashsum.erl -o "$dir/hashsum.b.com"
     [ -f "$dir/hashsum.b.com" ] && check hashsum.b.com "$hashsum" abc
-    for app in greeter crypto_check tls_check calc; do
+    for src in examples/greeter tests/programs/crypto_check tests/programs/tls_check \
+               tests/programs/calc; do
+        app=$(basename "$src")
         check beam.com "wrote .*$app.b.com" \
-            "examples/$app" -o "$dir/$app.b.com"
+            "$src" -o "$dir/$app.b.com"
         if [ -f "$dir/$app.b.com" ]; then
             eval "check $app.b.com \"\$$app\""
         fi
@@ -918,7 +921,7 @@ wasm='wasm: add(40, 2) = 42@@wasm: trap: @@wasm: memory ok@@hello from wasi@@was
 go='go: hello from wasip1, args \[one two\]@@go: BEAM_COM=1@@go: read back "written by go"@@exited with 0'
 if [ -d examples ]; then
     check beam.com 'wrote .*wasm_check.b.com' \
-        examples/wasm_check.erl -o "$dir/wasm_check.b.com"
+        tests/programs/wasm_check.erl -o "$dir/wasm_check.b.com"
     if [ -f "$dir/wasm_check.b.com" ]; then
         check wasm_check.b.com "$wasm"
         if [ -f "$dir/hello_go.wasm" ]; then
@@ -993,7 +996,7 @@ if [ -f "$dir/beam-emu.com" ]; then
             check script_check.emu.com '^line 100000$@@^last line$' big
         fi
         check beam-emu.com 'wrote .*crypto_check.emu.com' \
-            examples/crypto_check -o "$dir/crypto_check.emu.com"
+            tests/programs/crypto_check -o "$dir/crypto_check.emu.com"
         [ -f "$dir/crypto_check.emu.com" ] && check crypto_check.emu.com "$crypto_check"
         # The sandbox with the interpreter (the sandbox checks above use
         # beam.com, the JIT, for which the launcher adds "prot_exec").
@@ -1010,7 +1013,7 @@ fi
 sqlite='sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if [ -d examples ]; then
     check beam.com 'wrote .*sqlite_check.b.com' \
-        examples/sqlite_check.erl -o "$dir/sqlite_check.b.com"
+        tests/programs/sqlite_check.erl -o "$dir/sqlite_check.b.com"
     if [ -f "$dir/sqlite_check.b.com" ]; then
         check sqlite_check.b.com "$sqlite:memory:"
         rm -f "$dir/test.db"
@@ -1018,7 +1021,7 @@ if [ -d examples ]; then
     fi
     if [ -f "$dir/beam-emu.com" ]; then
         check beam-emu.com 'wrote .*sqlite_check.emu.com' \
-            examples/sqlite_check.erl -o "$dir/sqlite_check.emu.com"
+            tests/programs/sqlite_check.erl -o "$dir/sqlite_check.emu.com"
         [ -f "$dir/sqlite_check.emu.com" ] && check sqlite_check.emu.com "$sqlite:memory:"
     fi
 fi

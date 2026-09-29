@@ -113,7 +113,7 @@ jobs:
       - name: Build the WASI example in Go
         if: matrix.out == 'beam.com'
         run: |
-          cd examples/wasm/hello_go
+          cd tests/programs/hello_go
           GOOS=wasip1 GOARCH=wasm go build -o ../../../build/hello_go.wasm .
 
       - name: Upload the WASI example
@@ -183,12 +183,13 @@ jobs:
 
       - name: Build the example releases and add them to beam.com
         run: |
-          for app in greeter crypto_check tls_check; do
-            (cd examples/$app && rebar3 release)
-            cp beam.com $app.com
-            (cd examples/$app/_build/default/rel/$app &&
+          for src in examples/greeter tests/programs/crypto_check tests/programs/tls_check; do
+            app=$(basename "$src")
+            (cd "$src" && rebar3 release)
+            cp beam.com "$app.com"
+            (cd "$src/_build/default/rel/$app" &&
              find releases lib -type f | sort &&
-             zip -r ../../../../../../$app.com releases lib)
+             zip -r "$GITHUB_WORKSPACE/$app.com" releases lib)
           done
 
       - name: Upload the example releases

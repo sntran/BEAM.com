@@ -863,12 +863,12 @@ step_test() {
     unzip -l "$OUT" | grep -q ' licenses/otp/MIT.txt$'
     unzip -l "$BUILD/hashsum.com" | grep -q ' licenses/LICENSE$'
     if [ "$WASM" = 1 ]; then
-        "$OUT" "$ROOT/examples/wasm_check.erl" -o "$BUILD/wasm_check.com"
+        "$OUT" "$ROOT/tests/programs/wasm_check.erl" -o "$BUILD/wasm_check.com"
         "$BUILD/wasm_check.com" | tee "$BUILD/test.out"
         grep -q '^wasm: wasi exit code 7' "$BUILD/test.out"
     fi
     if [ "$SQLITE" = 1 ]; then
-        "$OUT" "$ROOT/examples/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
+        "$OUT" "$ROOT/tests/programs/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
         "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
         grep -q '^sqlite: json \["alpha","beta","gamma"\]' "$BUILD/test.out"
     fi

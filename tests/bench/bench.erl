@@ -167,7 +167,7 @@ wasm_instance() ->
     {ok, Inst} = wasm:instantiate(Mod),
     Inst.
 
-%% The module of examples/wasm_check.erl: add(i32, i32) and
+%% The module of tests/programs/wasm_check.erl: add(i32, i32) and
 %% sum(ptr, len), which adds the bytes of the memory.
 math_module() ->
     Types = vec([functype([i32, i32], [i32])]),
