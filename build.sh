@@ -423,8 +423,10 @@ build_hex_nif() {
             # (the module Exqlite.Sqlite3NIF of a release sends the SQL to
             # the host or to this NIF, see wasm_host_sqlite), with the
             # SQLite of exqlite and the VFS of the host files
-            # (wasm/erts/sqlite_vfs.c). The options of its Makefile, and a
-            # batch atomic write for a commit of the host.
+            # (wasm/erts/sqlite_vfs.c). The options of its Makefile, a
+            # batch atomic write for a commit of the host, and no WAL: the
+            # host files have no shared memory, and in the memory files of
+            # Emscripten the close of a database in WAL mode does not end.
             sed 's/^ERL_NIF_INIT(Elixir\.Exqlite\.Sqlite3NIF,/ERL_NIF_INIT(wasm_host_exqlite,/' \
                 "$src/c_src/sqlite3_nif.c" > "$src/c_src/wasm_sqlite3_nif.c"
             grep -q '^ERL_NIF_INIT(wasm_host_exqlite,' "$src/c_src/wasm_sqlite3_nif.c"
@@ -433,7 +435,8 @@ build_hex_nif() {
                -DSQLITE_ENABLE_FTS3=1 -DSQLITE_ENABLE_FTS4=1 -DSQLITE_ENABLE_FTS5=1
                -DSQLITE_ENABLE_GEOPOLY=1 -DSQLITE_ENABLE_MATH_FUNCTIONS=1 -DSQLITE_ENABLE_RBU=1
                -DSQLITE_ENABLE_RTREE=1 -DSQLITE_OMIT_DEPRECATED=1 -DSQLITE_ENABLE_DBSTAT_VTAB=1
-               -DSQLITE_ENABLE_BATCH_ATOMIC_WRITE=1 -DSQLITE_EXTRA_INIT=beam_vfs_init"
+               -DSQLITE_ENABLE_BATCH_ATOMIC_WRITE=1 -DSQLITE_EXTRA_INIT=beam_vfs_init
+               -DSQLITE_OMIT_WAL=1"
             set -- "c_src/wasm_sqlite3_nif.c:$nif $q" "c_src/sqlite3.c:$q" \
                 "$ROOT/wasm/erts/sqlite_vfs.c:$q" ;;
     esac
