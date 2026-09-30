@@ -113,7 +113,15 @@ $patterns["calc"] = '(?m)calc: 1 \+ 2 \* \(3 - 1\) - 8 / 4 = 3\r?$@@(?m)calc: as
 $apps = @("greeter", "crypto_check", "tls_check")
 
 # The commands of the default beam.com.
+# With no input, beam.com runs the project in the current directory. The
+# top of the repository is a Mix project, so this check runs in an empty
+# directory.
+$empty = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_empty_$PID"
+New-Item -ItemType Directory -Force $empty | Out-Null
+Push-Location $empty
 Check "beam.com" 'run INPUT \(default: the project in this directory\)@@make an executable of INPUT' @()
+Pop-Location
+Remove-Item $empty -Force
 Check "beam.com" 'run INPUT \(default: the project in this directory\)' @("--help")
 Check "beam.com" 'Erlang/OTP  : 29\.@@OS type     : unix/windows@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-' @("--version")
 Check "beam.com" 'nosuch: not a .erl, .ex or .exs file, or a directory' @("nosuch") 1
