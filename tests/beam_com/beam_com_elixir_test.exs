@@ -132,7 +132,10 @@ defmodule BeamComElixirTest do
         "defmodule Bad.MixProject do\n  def project, do: raise \"boom\"\nend\n"
       )
 
+      project = Mix.Project.get()
       assert {:error, ~c"~ts: ~ts", [_, _]} = catch_throw(:beam_com_elixir.mix_project(bad))
+      # This mix.exs pushes no project, so the stack of Mix stays.
+      assert Mix.Project.get() == project
     end
 
     test "the deps of mix.exs" do

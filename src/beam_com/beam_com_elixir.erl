@@ -127,7 +127,13 @@ mix_project(Dir) ->
           application => App}
     after
         %% The project module of mix.exs, and the project stack of Mix.
-        try 'Elixir.Mix.Project':pop() catch _:_ -> ok end,
+        %% "use Mix.Project" pushes the project. A module with project/0
+        %% and no "use Mix.Project" pushes nothing: then the stack stays.
+        try 'Elixir.Mix.Project':get() of
+            Project -> 'Elixir.Mix.Project':pop();
+            _ -> ok
+        catch _:_ -> ok
+        end,
         [begin code:purge(M), code:delete(M) end
          || {M, _} <- Mods, not lists:keymember(M, 1, Old)]
     end.
