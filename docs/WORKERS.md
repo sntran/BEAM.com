@@ -379,7 +379,8 @@ How the pages go to Deno KV:
 - A journal stays in the memory of the VM. The database in KV changes
   only in one commit, so a new VM needs no journal.
 - There is no WAL. `journal_mode: :wal` of `ecto_sqlite3` keeps the mode
-  `delete`.
+  `delete`. This is true for each database of the WebAssembly runtime:
+  its SQLite has no WAL (`SQLITE_OMIT_WAL`).
 
 `BEAM_SQLITE_DEBUG=1` logs each operation of the host on the files.
 
