@@ -81,7 +81,7 @@ input { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); ba
 #preview { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .address { flex: 1; font: 12.5px var(--mono); }
 .open { font-size: 13px; color: var(--accent); }
-.preview iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.preview iframe { width: 100%; height: 100%; border: 0; background: var(--panel); }
 
 .panel { grid-area: panel; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
 .tabs { display: flex; gap: 2px; padding: 4px 8px 0; border-bottom: 1px solid var(--line); }
@@ -98,8 +98,13 @@ input { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); ba
 .panel .log { border: none; border-radius: 0; max-height: none; }
 
 @media (max-width: 900px) {
-  .studio { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 40vh 60vh 50vh 30vh; height: auto;
-            grid-template-areas: "bar" "editor" "preview" "panel" "files"; }
+  /* A phone: the app first, then its problems, the editor and the files. */
+  .studio { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto 50vh auto; height: auto;
+            grid-template-areas: "bar" "preview" "panel" "editor" "files"; }
+  .panel { min-height: 30vh; }
+  .task { flex: 1 1 100%; min-width: 0; }
+  .diag { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .files { max-height: 50vh; }
 }
 
 /* The IEx tab. */
