@@ -112,3 +112,7 @@ input { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); ba
 .iex .log .in { color: var(--accent); }
 .iex-line { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); }
 .iex-line input { flex: 1; font: 13px var(--mono); }
+
+/* Before LiveView joins, a click on a button of a form does nothing:
+   the form waits for the connection. */
+[data-phx-main]:not(.phx-connected) form button[type="submit"] { pointer-events: none; opacity: .5; }

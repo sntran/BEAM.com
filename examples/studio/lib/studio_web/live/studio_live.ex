@@ -253,7 +253,8 @@ defmodule StudioWeb.StudioLive do
         <div :if={@tab == "problems"} class="problems">
           <p :if={@info.message} class="message">{@info.message}</p>
           <p :if={@info.diagnostics == [] and @info.message == nil} class="quiet">
-            No problems. Built in {@info.compiled_ms} ms.
+            No problems.{if is_integer(@info.compiled_ms) and @info.compiled_ms > 0,
+              do: " Built in #{@info.compiled_ms} ms."}
           </p>
           <button
             :for={d <- @info.diagnostics}
@@ -363,7 +364,12 @@ defmodule StudioWeb.StudioLive do
     """
   end
 
-  defp status_text(%{status: :running, compiled_ms: ms}), do: "running · #{ms} ms"
+  # On Workers, the clock does not move while a request runs: the build
+  # time can be 0.
+  defp status_text(%{status: :running, compiled_ms: ms}) when is_integer(ms) and ms > 0,
+    do: "running · #{ms} ms"
+
+  defp status_text(%{status: :running}), do: "running"
   defp status_text(%{status: :compiling}), do: "compiling…"
   defp status_text(%{status: :generating}), do: "generating…"
   defp status_text(%{status: :error}), do: "error"
