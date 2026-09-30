@@ -8,6 +8,8 @@
 #   page of Livebook goes there in a browser with no JSPI, with
 #   docs-map.json (the page of each notebook);
 # - repl/: the Erlang shell of examples/worker in the page;
+# - phx/: the studio of examples/studio in the page: mix phx.new and a
+#   Phoenix app;
 # - NAME.html and livebook/: the old addresses of the pages and of
 #   Livebook, which go to the new ones.
 #
@@ -29,6 +31,7 @@ elixir.com "$SITE/prepare.exs" "$SITE/pages"
 rm -rf "$OUT/docs"
 cp -R "$SITE/doc" "$OUT/docs"
 sh "$ROOT/examples/worker/pages.sh" "$BEAM_COM" "$OUT/repl"
+BEAM_COM=$BEAM_COM sh "$ROOT/examples/studio/scripts/page.sh" "$OUT/phx"
 
 # A page that goes to another address, with the part of the address after
 # # (the path in Livebook, or an anchor).

@@ -19,6 +19,7 @@ on:
       - "SECURITY.md"
       - "docs/**"
       - "examples/worker/**"
+      - "examples/studio/**"
       - "wasm/livebook/**"
       - ".github/workflows/pages.yml"
   workflow_run:
@@ -43,7 +44,7 @@ jobs:
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       pages: write
