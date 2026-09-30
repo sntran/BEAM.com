@@ -24,6 +24,12 @@
       cover: "tour.svg"
     },
     %{
+      source: "docs/notebooks/phx_new_studio.livemd",
+      slug: "phx-new-studio",
+      description: "mix phx.new and a Phoenix app with nothing to install: how the studio compiles and runs a project in the VM.",
+      cover: "phx.svg"
+    },
+    %{
       source: "docs/notebooks/erlang_shell.livemd",
       slug: "erlang-shell",
       description: "The Erlang shell and IEx in a terminal in this page, with the VM of this Livebook.",

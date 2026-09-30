@@ -14,6 +14,7 @@ static pages, at [`docs/`](https://sntran.github.io/BEAM.com/docs/).
 | Notebook | What it shows | |
 |---|---|---|
 | A tour of beam.com | Processes, messages, supervisors, and code that changes while it runs. | [Run in your browser](https://sntran.github.io/BEAM.com/#/learn/notebooks/tour-of-beam-com) · [source](notebooks/tour_of_beam_com.livemd) |
+| How the phx.new studio works | `mix phx.new` in the VM: the compile, one plug in front of the app, JavaScript with no esbuild, and Tailwind in the browser. | [Run in your browser](https://sntran.github.io/BEAM.com/#/learn/notebooks/phx-new-studio) · [source](notebooks/phx_new_studio.livemd) |
 | The Erlang shell | The Erlang shell and IEx in a terminal in the page, with the VM of Livebook. | [Run in your browser](https://sntran.github.io/BEAM.com/#/learn/notebooks/erlang-shell) · [source](notebooks/erlang_shell.livemd) |
 | Inside the WebAssembly VM | The threads, the scheduler, the memory, the clock, the files and the snapshots of the runtime. | [Run in your browser](https://sntran.github.io/BEAM.com/#/learn/notebooks/inside-the-webassembly-vm) · [source](notebooks/inside_the_webassembly_vm.livemd) |
 | The anatomy of beam.com | The file as a shell script, a PE program, ELF programs, a Mach-O program and a zip, read with Elixir. | [Run in your browser](https://sntran.github.io/BEAM.com/#/learn/notebooks/anatomy-of-beam-com) · [source](notebooks/anatomy_of_beam_com.livemd) |

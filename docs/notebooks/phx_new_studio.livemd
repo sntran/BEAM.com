@@ -1,0 +1,272 @@
+# How the phx.new studio works
+
+## The studio
+
+The studio makes a Phoenix project with `mix phx.new`, compiles it, and runs it. It needs no Erlang, no Elixir, no Node.js and no server of yours. Try it:
+
+* [In this browser](https://sntran.github.io/BEAM.com/phx/): the VM runs in the tab, as this Livebook does.
+* [On Cloudflare Workers](https://phx.fifo.workers.dev): each visitor gets an instance, a Durable Object with its own VM, for 30 minutes.
+
+The generator is the real one. The studio has the package `phx_new` of Hex in its release, and it calls `Mix.Tasks.Phx.New.run/1`, the function that `mix phx.new` runs in a terminal. The field `$ mix` of the studio runs the real generators of Phoenix and Ecto, such as `phx.gen.live`.
+
+The studio does the other steps of `mix phx.new` in the VM, with no tools of your computer:
+
+| On your computer | In the studio |
+|---|---|
+| `mix deps.get` gets the packages | The packages of a new project are in the release of the studio. |
+| `mix compile` | Mix reads `mix.exs` and the config files. `Kernel.ParallelCompiler` compiles `lib/`. |
+| `mix phx.server` | The app starts in the VM of the studio. One plug sends each request to the studio or to the app. |
+| esbuild makes one file of `assets/js` | The browser loads the files as ES modules. The studio changes their imports. |
+| The Tailwind CLI makes `app.css` | The compiler of Tailwind 4 runs in the page of the app. |
+
+This notebook shows each step with code that runs in this Livebook, in the same kind of VM. The source of the studio is in [`examples/studio`](../../examples/studio).
+
+## How a request goes
+
+```mermaid
+flowchart LR
+  B[Browser] --> F[Studio.Front]
+  F -- "/__studio/..." --> S[StudioWeb.Endpoint<br/>the studio, a LiveView]
+  F -- "/assets/js/app.js<br/>/assets/css/app.css" --> A[Studio.Assets]
+  F -- "any other path" --> E[HelloWeb.Endpoint<br/>the app of the project]
+```
+
+The app of the project runs at `/`, so its paths do not change. The studio is at `/__studio/`, and it shows the app in a frame.
+
+## Compile in the VM
+
+In a terminal, `mix compile` calls the compiler of Elixir. The studio calls it directly: `Kernel.ParallelCompiler.compile_to_path/3` compiles the files of `lib/`, loads the modules, and gives the warnings and the errors. The studio shows them in its tab Problems.
+
+The next cell writes two files and compiles them. The second file has a warning.
+
+```elixir
+dir = Path.join(System.tmp_dir!(), "studio_demo")
+File.rm_rf!(dir)
+File.mkdir_p!(Path.join(dir, "lib"))
+
+File.write!(Path.join(dir, "lib/greeter.ex"), """
+defmodule Demo.Greeter do
+  def hello(name), do: "Hello, \#{name}, from \#{:erlang.system_info(:system_architecture)}"
+end
+""")
+
+File.write!(Path.join(dir, "lib/unused.ex"), """
+defmodule Demo.Unused do
+  def one(x), do: 1
+end
+""")
+
+files = Path.wildcard(Path.join(dir, "lib/**/*.ex"))
+
+{us, {:ok, modules, %{compile_warnings: warnings}}} =
+  :timer.tc(fn ->
+    Kernel.ParallelCompiler.compile_to_path(files, Path.join(dir, "ebin"), return_diagnostics: true)
+  end)
+
+%{
+  modules: modules,
+  milliseconds: div(us, 1000),
+  warnings: for(w <- warnings, do: {Path.basename(w.file), w.position, w.message})
+}
+```
+
+The modules are in the VM now:
+
+```elixir
+Demo.Greeter.hello("Livebook")
+```
+
+A new project of `phx.new` has 12 modules. The studio compiles them in about 2 seconds in WebAssembly, and in about 1 second natively. After a save, it compiles all of `lib/` again and starts the app again.
+
+## A Phoenix endpoint is a plug
+
+`mix phx.server` starts an HTTP server for the endpoint. The studio does not do that: it starts the endpoint with `server: false`, and calls it as a plug. `Endpoint.call/2` runs the whole pipeline of the endpoint: its plugs, the router, and the controller.
+
+The next cell makes a small app: a controller, a router and an endpoint. It starts the endpoint with no server, and sends it a request with `Plug.Test`.
+
+```elixir
+defmodule Demo.PageController do
+  use Phoenix.Controller, formats: [:html]
+
+  def home(conn, _params) do
+    html(conn, "<h1>Hello from the app</h1><p>The path: #{conn.request_path}</p>")
+  end
+end
+
+defmodule Demo.Router do
+  use Phoenix.Router
+  get "/", Demo.PageController, :home
+  get "/about", Demo.PageController, :home
+end
+
+defmodule Demo.Endpoint do
+  use Phoenix.Endpoint, otp_app: :demo
+  plug Demo.Router
+end
+
+Application.put_env(:demo, Demo.Endpoint,
+  server: false,
+  secret_key_base: String.duplicate("s", 64)
+)
+
+case Demo.Endpoint.start_link() do
+  {:ok, _pid} -> :started
+  {:error, {:already_started, _pid}} -> :already_started
+end
+
+conn = Plug.Test.conn(:get, "/about") |> Demo.Endpoint.call(Demo.Endpoint.init([]))
+{conn.status, conn.resp_body}
+```
+
+## One plug in front
+
+The server of the studio has one plug, `Studio.Front`. It looks at the path, and it calls the studio, the asset steps, or the endpoint of the app. This is a small copy of it:
+
+```elixir
+defmodule Demo.Front do
+  @behaviour Plug
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(%{path_info: ["__studio" | _]} = conn, _opts),
+    do: send_resp(conn, 200, "the studio")
+
+  def call(%{path_info: ["assets", "js", "app.js"]} = conn, _opts),
+    do: send_resp(conn, 200, "the JavaScript step")
+
+  def call(conn, _opts), do: Demo.Endpoint.call(conn, Demo.Endpoint.init([]))
+end
+
+for path <- ["/__studio/", "/assets/js/app.js", "/", "/about"] do
+  conn = Plug.Test.conn(:get, path) |> Demo.Front.call([])
+  {path, conn.status, conn.resp_body}
+end
+```
+
+On Workers, an instance is at `/t/NAME/`, and the host removes that part of the path. The studio puts it back in `conn.script_name` and in the `url` of the endpoints, so each link that Phoenix makes starts with `/t/NAME`.
+
+## JavaScript with no esbuild
+
+A new project has `assets/js/app.js`. esbuild resolves its imports and makes one file. A browser can load ES modules, so the studio only changes each import to an address that the browser can load:
+
+* a package of the release (`phoenix`, `phoenix_html`, `phoenix_live_view`) goes to its file in the release;
+* a relative file (`../vendor/topbar`) goes to the file in `assets/`;
+* `phoenix-colocated/APP` goes to the hooks that LiveView writes at the compile;
+* another package goes to jsDelivr.
+
+The LiveSocket of `phx.new` connects to `/live`. Under a path, such as `/t/NAME`, the studio puts the path before it. This is the function of the studio, with the start of the `app.js` of `phx.new`:
+
+```elixir
+defmodule Demo.Imports do
+  @import ~r/(\bimport\s*(?:[\w*{}\s,$]+?\s*from\s*)?|\bexport\s*(?:[\w*{}\s,$]+?\s*)?from\s*|\bimport\s*\(\s*)(["'])([^"']+)\2/
+  @packages ~w(phoenix phoenix_html phoenix_live_view)
+
+  def transform(text, rel, base) do
+    text = Regex.replace(@import, text, fn _, head, q, spec -> head <> q <> resolve(spec, rel, base) <> q end)
+    Regex.replace(~r/new LiveSocket\(\s*(["'])\//, text, fn _, q -> "new LiveSocket(#{inspect(base)} + #{q}/" end)
+  end
+
+  defp resolve(spec, rel, base) do
+    cond do
+      spec in @packages ->
+        base <> "/__studio/pkg/" <> spec <> ".js"
+
+      String.starts_with?(spec, "phoenix-colocated/") ->
+        base <> "/__studio/colocated/" <> String.replace_prefix(spec, "phoenix-colocated/", "") <> "/index.js"
+
+      String.starts_with?(spec, ["./", "../"]) ->
+        base <> "/__studio/js/" <> (rel |> Path.dirname() |> Path.join(spec) |> Path.expand("/") |> String.trim_leading("/"))
+
+      true ->
+        "https://cdn.jsdelivr.net/npm/" <> spec <> "/+esm"
+    end
+  end
+end
+
+app_js = ~S"""
+import "phoenix_html"
+import {Socket} from "phoenix"
+import {LiveSocket} from "phoenix_live_view"
+import {hooks as colocatedHooks} from "phoenix-colocated/hello"
+import topbar from "../vendor/topbar"
+import confetti from "canvas-confetti"
+
+const liveSocket = new LiveSocket("/live", Socket, {hooks: {...colocatedHooks}})
+"""
+
+IO.puts(Demo.Imports.transform(app_js, "js/app.js", "/t/abc"))
+```
+
+A file with no `import` and no `export`, such as `topbar.js`, is a CommonJS or UMD file. The studio puts it in a module that gives `module.exports` as the default export.
+
+## Tailwind in the browser
+
+The Tailwind CLI reads `assets/css/app.css` and the files where the classes are, and it writes the CSS. Tailwind 4 has its compiler in JavaScript too, as the package `tailwindcss`. In the studio, the page of the app runs it:
+
+1. The studio sends the text of `app.css` and the text of the files that the `@source` lines name.
+2. The compiler of Tailwind reads `app.css`. The plugins of `phx.new` come from npm: daisyUI, and the heroicons that the page uses.
+3. The page puts the CSS in a `<style>` element, and sends it to the studio. The studio serves it at `/assets/css/app.css` for the next load.
+
+The next cell runs the same compiler in the frame of its output. It loads Tailwind from jsDelivr.
+
+```elixir
+defmodule Demo.Tailwind do
+  use Kino.JS
+
+  def new(html), do: Kino.JS.new(__MODULE__, html)
+
+  asset "main.js" do
+    """
+    export async function init(ctx, html) {
+      ctx.root.innerHTML = "<p>The compiler of Tailwind loads…</p>";
+      const TW = "https://cdn.jsdelivr.net/npm/tailwindcss@4.3.3";
+      const { compile } = await import(TW + "/+esm");
+      const loadStylesheet = async (id, base) => {
+        const path = TW + "/index.css";
+        return { path, base: TW, content: await (await fetch(path)).text() };
+      };
+      const started = performance.now();
+      const compiler = await compile('@import "tailwindcss";', { base: "/", loadStylesheet });
+      const candidates = [...new Set(html.split(/[\\s"'`<>{}=;,]+/))];
+      const css = compiler.build(candidates);
+      const ms = Math.round(performance.now() - started);
+      ctx.root.innerHTML = `<style>${css}</style>${html}` +
+        `<p style="font: 13px monospace; margin-top: 12px">${css.length} bytes of CSS in ${ms} ms</p>`;
+    }
+    """
+  end
+end
+
+Demo.Tailwind.new(~S"""
+<div class="p-6 rounded-xl bg-orange-100 text-orange-950 shadow-md">
+  <h2 class="text-2xl font-bold tracking-tight">Styled by Tailwind 4</h2>
+  <p class="mt-2 text-sm text-orange-800">The compiler ran in the frame of this output.</p>
+</div>
+""")
+```
+
+## The generator and Mix
+
+This Livebook has no Mix. The studio has `:mix` and `:phx_new` in its release, and it runs a task in a project as Mix does:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+Mix.shell(Mix.Shell.Process)
+
+Mix.Project.in_project(:hello, "/tmp/studio/hello", fn _project ->
+  Mix.Task.rerun("phx.gen.live", ~w(Blog Post posts title:string body:text))
+end)
+```
+
+`Mix.Shell.Process` sends the output of the task to the process, as messages. The studio shows them in its tab Mix. Then it compiles the project again, and `Ecto.Migrator` of `phx.new` runs the new migration when the app starts.
+
+## Two things that the studio found
+
+The studio runs Ecto and a new Phoenix project in the WebAssembly runtime. Its tests found two faults of beam.com:
+
+* The build for `--target wasm32` removed the attributes of each module. `Ecto.Repo` reads the behaviours of its adapter, so it refused `Ecto.Adapters.SQLite3`. The build now keeps the chunk `Attr`.
+* SQLite in the VM used WAL mode for the files in memory, and the close of such a database did not end. `ecto_sqlite3` uses WAL by default, so the stop of a repo stopped the VM. SQLite of the runtime now has no WAL, as the files of the hosts already had.
+
+See the [README of the studio](../../examples/studio/README.md) for its limits, and [WORKERS.md](../WORKERS.md) for the hosts.
