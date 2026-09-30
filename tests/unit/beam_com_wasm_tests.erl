@@ -278,6 +278,20 @@ strip_and_compress_test() ->
     ?assertEqual(ok, b:f()),
     ?assertEqual({Stripped, 0}, beam_com_wasm:compress_beams(Stripped, [])).
 
+%% A .beam file of a release keeps its attributes: Ecto.Repo reads the
+%% behaviours of its adapter. beam_lib:strip/1 removes them.
+strip_keeps_attributes_test() ->
+    {ok, m, Beam} = compile:forms([{attribute, 1, module, m}, {attribute, 2, behaviour, gen_server},
+                                   {attribute, 3, export, [{f, 0}]},
+                                   {function, 4, f, 0, [{clause, 4, [], [], [{atom, 4, ok}]}]}],
+                                  [binary, debug_info]),
+    S = beam_com_wasm:strip("lib/x-1/ebin/m.beam", Beam),
+    Chunk = fun(C) -> {ok, {_, [{_, V}]}} = beam_lib:chunks(S, [C], [allow_missing_chunks]), V end,
+    ?assertEqual(missing_chunk, Chunk("Dbgi")),
+    {ok, {m, [{attributes, Attrs}]}} = beam_lib:chunks(S, [attributes]),
+    ?assertEqual([gen_server], proplists:get_value(behaviour, Attrs)),
+    ?assertEqual(<<"text">>, beam_com_wasm:strip("lib/x-1/priv/a.txt", <<"text">>)).
+
 %% A module in place of the NIF of exqlite: the exports of the original,
 %% calls to wasm_host_sqlite:dispatch/2 (with no NIF of exqlite: the host),
 %% and not_supported for the functions that the backend does not have.

@@ -32,8 +32,13 @@
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1]).
+         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1]).
 -endif.
+
+%% The chunks of a .beam file in a release: the loader, the line numbers and
+%% the attributes.
+-define(KEEP_CHUNKS, ["Atom", "AtU8", "Attr", "Code", "StrT", "ImpT", "ExpT", "FunT",
+                      "LitT", "Line", "Type", "Meta", "Recs"]).
 
 -define(HOST_APP, wasm_host).
 -define(CACERTS, "etc/cacerts.pem").
@@ -305,13 +310,13 @@ with_boot_modules(Files, Mods) ->
              false -> D
          end} || {P, D} <- Files].
 
-%% The chunks that the loader uses, the line numbers and the attributes,
-%% as beam_com_build:strip/1 and "mix release" (strip_beams). Only the
-%% files with debug information, docs or the checker chunk of Elixir: a
-%% file of "mix release" is stripped and compressed already.
+%% The chunks that the loader uses, the line numbers and the attributes
+%% (?KEEP_CHUNKS), as beam_com_build:strip/1 and "mix release"
+%% (strip_beams). Only the files with debug information, docs or the
+%% checker chunk of Elixir: a file of "mix release" is stripped and
+%% compressed already.
 strip_beams(Files) ->
-    Keep = ["Atom", "AtU8", "Attr", "Code", "StrT", "ImpT", "ExpT", "FunT",
-            "LitT", "Line", "Type", "Meta", "Recs"],
+    Keep = ?KEEP_CHUNKS,
     [{P, case filename:extension(P) =:= ".beam" andalso is_binary(D) andalso strip_beam(D, Keep) of
              false -> D;
              S -> S
@@ -818,9 +823,15 @@ read(Path) ->
 data(Path) ->
     strip(Path, read(Path)).
 
+%% The chunks of ?KEEP_CHUNKS. Not beam_lib:strip/1: it also removes the
+%% attributes, and code such as Ecto.Repo reads the behaviours of a module
+%% (module_info(attributes)).
 strip(Path, B) ->
     case filename:extension(Path) of
-        ".beam" -> {ok, {_, S}} = beam_lib:strip(B), S;
+        ".beam" ->
+            {ok, {_, Chunks}} = beam_lib:chunks(B, ?KEEP_CHUNKS, [allow_missing_chunks]),
+            {ok, S} = beam_lib:build_module([C || {_, X} = C <- Chunks, is_binary(X)]),
+            S;
         _ -> B
     end.
 
