@@ -122,6 +122,32 @@ const Preview = {
   },
 };
 
+// Download: the page fetches the zip and saves it from a blob. In the
+// page of the studio, Chrome does not send the request of a link with
+// "download" to the service worker, so the link alone gets no zip.
+document.addEventListener("click", async (e) => {
+  const link = e.target.closest("a[data-download]");
+  if (!link) return;
+  e.preventDefault();
+  const label = link.textContent;
+  link.textContent = "Downloading…";
+  try {
+    const response = await fetch(link.href);
+    if (!response.ok) throw new Error(`${response.status}`);
+    const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "project.zip";
+    const url = URL.createObjectURL(await response.blob());
+    const a = Object.assign(document.createElement("a"), { href: url, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (err) {
+    alert(`The download failed: ${err.message}`);
+  } finally {
+    link.textContent = label;
+  }
+});
+
 // The IEx line: it clears after each submit (LiveView reads the value at
 // the submit), and the arrow keys go through the history of the session.
 const IexLine = {

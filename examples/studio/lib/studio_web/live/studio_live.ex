@@ -206,7 +206,7 @@ defmodule StudioWeb.StudioLive do
           />
         </form>
         <button phx-click="build" disabled={@busy}>Restart</button>
-        <a class="button" href={"#{@base}/__studio/download"} download>Download</a>
+        <a class="button" href={"#{@base}/__studio/download"} download data-download>Download</a>
       </header>
 
       <nav class="files" aria-label="Files">
