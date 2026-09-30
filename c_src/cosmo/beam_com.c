@@ -22,7 +22,7 @@
  *
  * When the zip has the beam_com application and no release (the default
  * beam.com), the command line of beam.com runs (run a program or a
- * project, -o to build it, --help, --version; see apps/beam_com).
+ * project, -o to build it, --help, --version; see src/beam_com).
  */
 #include <cosmo.h>
 #include <dirent.h>
@@ -784,7 +784,7 @@ static char *cache_program(const char *name)
  * on macOS with mac_listener (FILESYSTEM_FSMAC_EXECUTABLE_FILE). For the
  * tools of Elixir, the variable names the program inotifywait or
  * mac_listener in the cache of BEAM.com (cache_program()), so that the
- * watcher of this file runs (cosmo/beam_com_watch.c).
+ * watcher of this file runs (c_src/cosmo/beam_com_watch.c).
  *
  * Not when the variable is set, and not on Windows (file_system has its
  * own watcher there).
@@ -805,7 +805,7 @@ static void watch_link(void)
  * (exqlite, bcrypt_elixir and argon2_elixir, see build.sh), so these
  * packages need no make and no C compiler. For the tools of Elixir, MAKE
  * names the program make in the cache of BEAM.com (cache_program()): this
- * file, which then runs apps/beam_com/src/beam_com_make.erl. It does
+ * file, which then runs src/beam_com/beam_com_make.erl. It does
  * nothing for these packages, and runs the make of PATH for the other
  * ones.
  *
@@ -842,7 +842,7 @@ static void rebar3_link(void)
 }
 
 /*
- * The flags of beam.com (apps/beam_com/src/beam_com.erl), which are not
+ * The flags of beam.com (src/beam_com/beam_com.erl), which are not
  * flags of erl: -h, --help, --version, "--" (the arguments of the program
  * follow), -o and -a, the sandbox (-R, -W, -N, -A, --allow-*, --deny-*),
  * and --main, --tool, --extract-priv, --target, --cacerts.
@@ -1444,7 +1444,7 @@ void beam_com_main(int *argcp, char ***argvp)
         argv[1] = "epmd";
         exit(epmd_main(argc - 1, argv + 1));
     }
-    /* inotifywait: the file watcher (cosmo/beam_com_watch.c), by name
+    /* inotifywait: the file watcher (c_src/cosmo/beam_com_watch.c), by name
      * (the link that watch_link() makes) or as "beam.com inotifywait". */
     if (starts_with(name, "inotifywait"))
         exit(beam_com_inotifywait_main(argc, argv));

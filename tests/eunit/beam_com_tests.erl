@@ -30,7 +30,8 @@ build_options_test_() ->
 
 build_errors_test_() ->
     %% The tests run in a directory without a project: no input is an error.
-    {error, "usage: " ++ _, ["beam.com"]} = Usage = (catch opts([])),
+    Usage = try opts([]) catch throw:Thrown -> Thrown end,
+    {error, "usage: " ++ _, ["beam.com"]} = Usage,
     [{"no input", ?_assertThrow(Usage, opts([]))},
      {"only options", ?_assertThrow(Usage, opts(["-o", "x.com"]))},
      {"two inputs",

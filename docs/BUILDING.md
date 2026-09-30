@@ -41,7 +41,7 @@ The steps, in order:
 | `wasm_runtime` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
 | `bundle` | Writes `build/beam.com`: the emulator and its zip. |
 | `test` | Runs `beam.com`, and builds and runs a program with it. |
-| `unit` | Runs the unit tests of the Erlang code, with coverage. |
+| `unit` | Runs the tests of the Mix project (`mix test --cover`): the EUnit and ExUnit tests, and the tests of the WebAssembly host. |
 
 You can run one step or more, for example `./build.sh bundle test`. See
 the top of [`build.sh`](../build.sh) for the environment variables: the
@@ -120,7 +120,7 @@ workflow by hand (Actions, "Run workflow").
 
 ## Make a release
 
-1. Set the version in `apps/beam_com/src/beam_com.app.src`, write its
+1. Set the version in `src/beam_com/beam_com.app.src`, write its
    section (`## X.Y.Z`) in [`CHANGELOG.md`](../CHANGELOG.md), and merge
    the change to `main`. The section goes at the start of the notes of
    the release.

@@ -96,7 +96,7 @@ GCC accepts this, and many build systems (OTP's `depend` targets) use
 it. There is no `-o` on the command line: the fat wrapper adds its own
 output file.
 
-**Workaround in BEAM.com.** [`cosmo/depcc`](../cosmo/depcc) runs the
+**Workaround in BEAM.com.** [`c_src/cosmo/depcc`](../c_src/cosmo/depcc) runs the
 compiler once for each source file (`DEP_CC`).
 
 **Possible upstream fix.** For `-M`/`-MM` without `-MD`/`-MMD` and
@@ -169,7 +169,7 @@ and there is no `net/if_dl.h`.
 addresses (ERTS `inet_drv.c`, the `socket` NIF) does not compile.
 
 **Workaround in BEAM.com.** `#undef AF_LINK` in
-[`cosmo/erts_cosmo.h`](../cosmo/erts_cosmo.h), and `--disable-esock`.
+[`c_src/cosmo/erts_cosmo.h`](../c_src/cosmo/erts_cosmo.h), and `--disable-esock`.
 
 **Possible upstream fix.** Add `<net/if_dl.h>` with `struct sockaddr_dl`
 (BSD/XNU layout), or do not define `AF_LINK`.
@@ -250,7 +250,7 @@ is fixed in newer releases.
 **Effect.** OTP builds NIFs as shared objects (`asn1`, `crypto`,
 `runtime_tools`...).
 
-**Workaround in BEAM.com.** [`cosmo/noshared`](../cosmo/noshared)
+**Workaround in BEAM.com.** [`c_src/cosmo/noshared`](../c_src/cosmo/noshared)
 writes placeholder files, so the OTP build continues. Such NIFs cannot
 load.
 
@@ -435,7 +435,7 @@ loads the DLL with `LoadLibrary()` and calls the functions through
 `GetProcAddress()` pointers declared with `__attribute__((__ms_abi__))`
 (the pattern of `libc/dlopen/dlopen.c`). This works.
 
-**Workaround in BEAM.com.** `windows_setup()` in `cosmo/beam_com.c`
+**Workaround in BEAM.com.** `windows_setup()` in `c_src/cosmo/beam_com.c`
 uses `__get_resolv_conf()` and `GetHostsTxtPath()` for an inetrc file,
 and `crypt32` through `LoadLibrary()` for a PEM file.
 
@@ -591,7 +591,7 @@ closes the UDP socket of `inet_db` while a file thread reads
 comes into the gap more often.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=close`, and `__wrap_close()` in `cosmo/beam_com.c` holds
+`-Wl,--wrap=close`, and `__wrap_close()` in `c_src/cosmo/beam_com.c` holds
 `__fds_lock()` around the real `close()` (the lock is recursive). With
 it: 0 of 600 starts fail.
 
@@ -621,7 +621,7 @@ number that the kernel has just freed, and calls `fstat()` on it.
 `fstat()` (and `read()` and the others) sees the old `kFdZip` entry, and
 uses the freed handle.
 
-**Workaround in BEAM.com.** `__wrap_close()` in `cosmo/beam_com.c`
+**Workaround in BEAM.com.** `__wrap_close()` in `c_src/cosmo/beam_com.c`
 (the wrapper of C25) closes a `/zip` descriptor in the safe order: it
 clears the entry (`__releasefd()`), then calls the `close` system call,
 then frees the handle (`__zipos_drop()`), all under the lock. It does
@@ -648,7 +648,7 @@ which is denied for a drive root (`C:\`), and gives `EACCES`. POSIX
 says that `mkdir()` of an existing path gives `EEXIST`.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=mkdir`, and `__wrap_mkdir()` in `cosmo/beam_com.c` gives
+`-Wl,--wrap=mkdir`, and `__wrap_mkdir()` in `c_src/cosmo/beam_com.c` gives
 `EEXIST` in place of `EACCES` on Windows when the path exists.
 
 **Possible upstream fix.** In `sys_mkdirat_nt()`, give `EEXIST` when
@@ -668,7 +668,7 @@ not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
 gives `ENOSYS` on Windows for all values.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=chown`, and `__wrap_chown()` in `cosmo/beam_com.c` gives, on
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c` gives, on
 Windows, for `-1` and `-1`: 0 when the path exists, else the error of
 `stat()` (`ENOENT`, on which `File.touch/1` makes the file).
 
@@ -702,7 +702,7 @@ arguments of `kevent()` gives the timeout pointer as `flags`; the first
 version of the watcher did this, and on macOS it fell back to the
 interval (CI of #29).
 
-**Workaround in BEAM.com.** `cosmo/beam_com_watch.c` declares
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com_watch.c` declares
 `sys_kqueue()` and `sys_kevent()` itself, and has the four layouts of
 `struct kevent`. It selects one at run time (`IsNetbsd()`,
 `IsFreebsd()`, `IsXnu()`). On macOS it always gives
@@ -755,7 +755,7 @@ starts it as a Windows program. There, `IsWslChimera()` in
 `winmain.greg.c` prints the error and exits with 77. The same occurs
 on Linux with any binfmt_misc entry for `MZ` (for example Wine).
 
-**Workaround in BEAM.com.** `beam_com_execve()` in `cosmo/beam_com.c`:
+**Workaround in BEAM.com.** `beam_com_execve()` in `c_src/cosmo/beam_com.c`:
 on Linux, when `/proc/self/exe` is not the program file (a loader runs
 it) and the file to start is an APE file, it executes `/proc/self/exe`
 (the loader) with the arguments `ape - FILE ARGV0 ARGV1 ...`. The
@@ -1128,7 +1128,7 @@ With clean paths (as in beam.com) the start fails:
 `{error, {eex, {"no such file or directory", "eex.app"}}}`.
 
 **Workaround in BEAM.com.** The tools add `eex`, `ex_unit`, `logger` and
-`mix` once more with ".." (`elixir_paths()` in `cosmo/beam_com.c`).
+`mix` once more with ".." (`elixir_paths()` in `c_src/cosmo/beam_com.c`).
 
 **Possible upstream fix.** In OTP, compare the normalized names in
 `del_path/1`. In ecto_sql, run `app.config` (or `loadpaths`) before the

@@ -83,7 +83,7 @@ What was needed:
   configuration for arm64 and for OpenBSD.
 - asmjit is compiled without its precompiled header: `cosmocc` cannot make
   or use one `.gch` file for two CPUs (the same patch).
-- `cosmo/erts_cosmo.h` has C linkage for C++ files.
+- `c_src/cosmo/erts_cosmo.h` has C linkage for C++ files.
 - The compiler of one CPU writes an ELF file. `build.sh` makes the APE
   file with `apelink` (`objcopy -O binary` drops the zip of the ELF).
 

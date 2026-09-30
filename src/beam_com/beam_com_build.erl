@@ -14,9 +14,9 @@
 -export([run/1, allow/2, check_target/1, split_dir/1, temp_dir/1, executable/0]).
 
 -ifdef(TEST).
--export([split_dir/1, default_output/1, base_apps/1, script/1, app_dir/1,
+-export([default_output/1, base_apps/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
-         parents/1, keep/2, executable/0, slashes/2, generate/2, native/2,
+         parents/1, keep/2, slashes/2, generate/2, native/2,
          base_kind/1, check_base/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,

@@ -407,7 +407,7 @@ export default {
 };
 
 // The files of the host for SQLite in the VM (exqlite, the NIF of the
-// runtime, with wasm/erts/sqlite_vfs.c): the main database files. A store
+// runtime, with c_src/erts_wasm/sqlite_vfs.c): the main database files. A store
 // keeps their blocks of 4 KiB, each with the version of the database that
 // wrote it:
 //   meta(name) -> {version, size, stamp}: version 0 and size 0 for no file

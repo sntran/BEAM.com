@@ -14,7 +14,7 @@ Design report, 2026-09-26, before step (a). Paths are relative to the built OTP 
   CPUs, with no source change. Tested: all 46 asmjit files
   (core, support, x86 or arm) plus 8 to 11 `beam/jit` files per CPU
   (a compile test with `cosmoc++` and the per-CPU compilers).
-- Two things needed fixing for the test: `cosmo/erts_cosmo.h` is not valid
+- Two things needed fixing for the test: `c_src/cosmo/erts_cosmo.h` is not valid
   C++ (see 2.1), and the aarch64 half needs the ARM cache-instruction
   macros in `config.h` set to 1 (see 2.2).
 - The build system is the main work: OTP picks one `JIT_ARCH` at configure
@@ -327,7 +327,7 @@ and `erlang:system_info(emu_flavor)` are the smoke checks.
 
 | step | what | patches | risk |
 |---|---|---|---|
-| 0 | Prep, no behavior change: `extern "C"` in `cosmo/erts_cosmo.h`; `CXX=cosmoc++` in `build.sh` configure; `FLAVOR` variable in `build.sh`; replace the asmjit `.gch` PCH rule with `-include asmjit/core.h` (Makefile.in:1023-1050) | 3 small hunks | low |
+| 0 | Prep, no behavior change: `extern "C"` in `c_src/cosmo/erts_cosmo.h`; `CXX=cosmoc++` in `build.sh` configure; `FLAVOR` variable in `build.sh`; replace the asmjit `.gch` PCH rule with `-include asmjit/core.h` (Makefile.in:1023-1050) | 3 small hunks | low |
 | a | x86_64-only JIT on Linux: `CC=x86_64-unknown-cosmo-cc CXX=x86_64-unknown-cosmo-c++ --enable-jit`, `enable_native_stack=no` for cosmo (configure.ac:3195). asmjit `virtmem.cpp` cosmo patch for memfd/`SHM_ANON`. Run the test suite subset we use | configure.ac, virtmem.cpp (~30 lines), build.sh | medium: first real run of generated code inside an APE process; dual mapping on Linux |
 | b | Same x86_64 binary on the other OSes (it already is an APE): FreeBSD, NetBSD, OpenBSD (dual mapping via tmp file; no RWX), Windows (RWX `VirtualAlloc`), macOS x86_64 (tmp-file dual; watch for the Sonoma popup). Add the per-OS table from section 3 to `virtmem.cpp` | virtmem.cpp only | medium-high: OpenBSD and macOS are the unknowns; Windows probably works first time |
 | c | aarch64 half alone: `aarch64-unknown-cosmo-c++`, `ethr_cv_arm_*=yes`, `BEAMASM_MANUAL_ICACHE_FLUSHING`, macOS arm64 `MAP_JIT`/`__jit_begin` fallback. Test on Linux aarch64 and Apple Silicon | configure cache vars; `beam_jit_main.cpp:188` `IsXnuSilicon()`; virtmem.cpp MAP_JIT branch | medium-high: Apple Silicon executable memory is the biggest single risk |

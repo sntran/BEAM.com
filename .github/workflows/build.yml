@@ -360,7 +360,7 @@ jobs:
 
   # The release of a tag vX.Y.Z, after all the tests: beam.com and
   # beam-emu.com, with their SHA-256. The tag must be the version of
-  # beam.com (the vsn of apps/beam_com/src/beam_com.app.src).
+  # beam.com (the vsn of src/beam_com/beam_com.app.src).
   release:
     name: Publish the release
     needs: [test, test-bsd]
@@ -378,7 +378,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Check the version
         run: |
-          vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' apps/beam_com/src/beam_com.app.src)
+          vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' src/beam_com/beam_com.app.src)
           if [ "v$vsn" != "$TAG" ]; then
             echo "The tag $TAG is not the version of beam.com (v$vsn)" >&2
             exit 1
