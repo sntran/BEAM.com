@@ -176,7 +176,18 @@ calc='calc: 1 + 2 \* (3 - 1) - 8 / 4 = 3$@@calc: asn1 ber 300980044245414d810103
 
 # The commands of the default beam.com. os:type() names this system.
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
+# With no input, beam.com runs the project in the current directory. The
+# top of the repository is a Mix project, so this check runs in an empty
+# directory.
+top=$(pwd) top_dir=$dir top_runner=$runner
+dir=$(cd "$dir" && pwd)
+case $runner in /*) ;; */*) runner=$top/$runner ;; esac
+empty=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_empty.XXXXXX")
+cd "$empty"
 check beam.com 'run INPUT (default: the project in this directory)@@make an executable of INPUT@@--help | --version'
+cd "$top"
+dir=$top_dir runner=$top_runner
+rmdir "$empty"
 check beam.com 'run INPUT (default: the project in this directory)' --help
 check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" --version
 check_status 1 beam.com 'nosuch: not a .erl, .ex or .exs file, or a directory' nosuch

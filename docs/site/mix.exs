@@ -6,7 +6,7 @@ defmodule BeamComDocs.MixProject do
 
   @version (fn ->
               {:ok, [{:application, :beam_com, props}]} =
-                :file.consult(Path.expand("../../apps/beam_com/src/beam_com.app.src", __DIR__))
+                :file.consult(Path.expand("../../src/beam_com/beam_com.app.src", __DIR__))
 
               to_string(props[:vsn])
             end).()

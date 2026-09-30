@@ -1,6 +1,6 @@
 %% Unit tests for beam_com_elixir: one-file programs, mix.exs, and
-%% config/config.exs. They need Elixir in the code path (ELIXIR_LIB, see
-%% run.escript); without it they are skipped.
+%% config/config.exs. They need Elixir in the code path; mix test puts it
+%% there.
 -module(beam_com_elixir_tests).
 
 -include_lib("eunit/include/eunit.hrl").

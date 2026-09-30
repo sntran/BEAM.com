@@ -245,9 +245,9 @@ workerd serve wasm/erts/build/worker/worker.capnp     # GET /?eval=EXPR
 
 | File | What |
 |---|---|
-| `wasm/erts/jspi_pthread.c`, `sp.S`, `sp64.S` | the green threads of phase A, for Emscripten; also `poll()` and `nanosleep()` that suspend, no `socket()`, and the wait of `wasm_host` |
+| `c_src/erts_wasm/jspi_pthread.c`, `sp.S`, `sp64.S` | the green threads of phase A, for Emscripten; also `poll()` and `nanosleep()` that suspend, no `socket()`, and the wait of `wasm_host` |
 | `wasm/erts/jspi_lib.js` | the host side (an Emscripten JS library: `__async` functions are `Suspending` imports); `Module.beamHost` for the messages with Erlang |
-| `wasm/erts/wasm_host_nif.c` | a static NIF: messages between Erlang and the JavaScript host |
+| `c_src/erts_wasm/wasm_host_nif.c` | a static NIF: messages between Erlang and the JavaScript host |
 | `wasm/erts/erl-xcomp-wasm32-emscripten.conf` | the cross-compilation settings of OTP (`erl_xcomp_*`): no JIT, no kernel poll, static crypto and asn1 NIFs, no `socket` NIF |
 | `wasm/erts/otp.patch` | seven small changes of ERTS (below) |
 | `wasm/erts/build.sh`, `run.sh`, `beam-node.mjs` | build from a clean OTP clone (libcrypto too; 3 to 4 minutes), and run in Node.js; `WASM64=1` for wasm64, `WORKER=1` for the Worker variants |
@@ -503,7 +503,7 @@ without ERTS. The output is a directory:
   (a directory) gives another one, and the cache
   (`~/.cache/beam.com/wasm32`) one for a `beam.com` built without it.
 - **The application `wasm_host`** (in the zip of every `beam.com`:
-  `apps/wasm_host`) goes into the release, and the boot script starts it
+  `src/wasm_host`) goes into the release, and the boot script starts it
   after stdlib, before the applications of the program. In the runtime
   (`WASM_HOST` set) it starts the pump of the host events and makes
   `gen_tcp` use `wasm_tcp`; natively it does nothing. So the program is
@@ -568,9 +568,9 @@ and 20 s for `examples/worker` (with the compilation of Cowboy).
 |---|---|
 | The risk check | libcrypto for WebAssembly; the release (`mix release`, no ERTS) boots as `bin/hello start` does; interactive mode |
 | `wasm_host` | a static NIF: `take/0` gives the next event of the host, and `select/0` a message when there is one (the host writes a byte into a pipe for each event: `enif_select`); `send/1`. Events are a JSON header, a newline and the body. (At first `recv/0` waited on a dirty I/O scheduler; that thread could not return for a snapshot) |
-| `apps/wasm_host` | the pump of the host events (`wasm_host_server`), and `wasm_tcp`; the first version was a Phoenix endpoint adapter (now removed: Bandit runs unchanged over `wasm_tcp`) |
+| `src/wasm_host` | the pump of the host events (`wasm_host_server`), and `wasm_tcp`; the first version was a Phoenix endpoint adapter (now removed: Bandit runs unchanged over `wasm_tcp`) |
 | `wasm/erts/host/server.mjs` | a Node.js host: `node:http` and WebSockets (`ws`) |
-| `apps/wasm_host/priv/worker/worker.js` | the runtime Worker (and a Durable Object wrapper): one VM for all requests of an isolate |
+| `priv/wasm_host/worker/worker.js` | the runtime Worker (and a Durable Object wrapper): one VM for all requests of an isolate |
 | `wasm_tcp` | TCP client sockets of the host (`node:net`, `connect()` of `cloudflare:sockets`) for `gen_tcp`; `ssl` runs over them |
 | `beam_com_wasm` | packs a release into `release.bin` (in Erlang, so no toolchain; first `wasm/worker/pack.erl`); the Worker writes it into the file system of the VM before the boot |
 
@@ -630,7 +630,7 @@ the whole is only 4% smaller, and the files take two times more memory.
 
 ### The BEAM runtime Worker
 
-`worker.js` (`apps/wasm_host/priv/worker`) is a Worker with the runtime and no application
+`worker.js` (`priv/wasm_host/worker`) is a Worker with the runtime and no application
 (`worker.js`, `beam.mjs`, `beam.wasm`: 5.3 MB). At the first request of an
 isolate, it gets a release, boots it, and keeps the VM for the next
 requests to that isolate. The release comes from:

@@ -11,6 +11,9 @@
 # wasm/erts/run.sh.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
+# The C sources of the runtime (the green threads, the stack switch, the
+# NIF of the host, the SQLite VFS).
+CSRC=$(cd "$HERE/../../c_src/erts_wasm" && pwd)
 # WASM64=1: wasm64 (-sMEMORY64): 64-bit terms (60-bit small integers, as
 # on native), in $HERE/build64.
 if [ "${WASM64:-0}" = 1 ]; then
@@ -28,7 +31,7 @@ PATH=$BOOTSTRAP/bootstrap/bin:$EMSDK/upstream/emscripten:$PATH
 export PATH
 T=$WASM_TARGET
 OTP=$OUT/otp
-OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
+OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 WASM_OPENSSL=$OUT/openssl
 export EMSDK WASM_OPENSSL
 
@@ -71,15 +74,15 @@ cp "$BOOTSTRAP/bootstrap/bin/yielding_c_fun" "erts/lib_src/yielding_c_fun/bin/$T
 make -C erts/lib_src -j"$JOBS" TARGET=$T TYPE=opt opt > "$OUT/lib_src.log" 2>&1
 
 # The green threads (pthreads on JSPI).
-emcc -O2 -Wall $WASM_ARCH_FLAGS -c "$HERE/jspi_pthread.c" -o "$OUT/jspi_pthread.o"
-emcc -O2 $WASM_ARCH_FLAGS -c "$HERE/$SP" -o "$OUT/sp.o"
+emcc -O2 -Wall $WASM_ARCH_FLAGS -c "$CSRC/jspi_pthread.c" -o "$OUT/jspi_pthread.o"
+emcc -O2 $WASM_ARCH_FLAGS -c "$CSRC/$SP" -o "$OUT/sp.o"
 
 # The static NIFs: asn1 and crypto (the configured ones), and wasm_host
 # (messages with the JavaScript host). The table of static NIFs is made
 # from this list.
 emcc -O2 -Wall $WASM_ARCH_FLAGS -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME=wasm_host \
     -I"$OTP/erts/emulator/beam" -I"$OTP/erts/include" -I"$OTP/erts/include/$T" \
-    -c "$HERE/wasm_host_nif.c" -o "$OUT/wasm_host_nif.o"
+    -c "$CSRC/wasm_host_nif.c" -o "$OUT/wasm_host_nif.o"
 rm -f "$OUT/wasm_host.a"
 emar rcs "$OUT/wasm_host.a" "$OUT/wasm_host_nif.o"
 NIFS="$OTP/lib/asn1/priv/lib/$T/asn1rt_nif.a $OTP/lib/crypto/priv/lib/$T/crypto.a $OUT/wasm_host.a:wasm_host"

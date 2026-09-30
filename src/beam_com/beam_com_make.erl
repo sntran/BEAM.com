@@ -1,6 +1,6 @@
 %% make for elixir_make, in the tools of Elixir (mix.com, iex.com,
 %% elixir.com, elixirc.com). The tools set MAKE to a program "make" that
-%% is beam.com (make_link() in cosmo/beam_com.c), and beam.com runs this
+%% is beam.com (make_link() in c_src/cosmo/beam_com.c), and beam.com runs this
 %% module for it.
 %%
 %% elixir_make runs make in the directory of a package that has C code (a

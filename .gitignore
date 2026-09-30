@@ -7,3 +7,5 @@ deps/
 # The tests write these lock files (tests/run.sh).
 /examples/hexweb/rebar.lock
 /examples/greeter_ex/mix.lock
+# The coverage report of mix test --cover.
+/cover/

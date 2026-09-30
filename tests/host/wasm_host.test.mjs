@@ -13,7 +13,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { WasmHost, wasmSignatures } = await import('../../apps/wasm_host/priv/worker/worker.js');
+const { WasmHost, wasmSignatures } = await import('../../priv/wasm_host/worker/worker.js');
 
 // (module (func (export "add") (param i32 i32) (result i32) ...)
 //         (func (export "big") (param i64) (result i64) x * x)

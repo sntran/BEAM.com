@@ -16,7 +16,7 @@ systems.
 - Elixir 1.20.4 and its tools in the file (`mix`, `iex`, `elixir`,
   `elixirc`, `escript`), and Phoenix from source with SQLite and
   `phx.gen.auth`. See [`ELIXIR.md`](ELIXIR.md).
-- Static NIFs: `crypto` and `asn1` (OpenSSL 4.0.2), SQLite 3.53.4
+- Static NIFs: `crypto` and `asn1` (OpenSSL 4.0.3), SQLite 3.53.4
   (esqlite and exqlite), WebAssembly (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir. See [`LIBRARIES.md`](LIBRARIES.md).
 - A sandbox with the permission flags of Deno (Linux and OpenBSD). See
@@ -93,7 +93,7 @@ systems.
 ## Watch list (checked 2026-09-26)
 
 All the parts of the build are at their latest stable release (cosmocc
-4.0.2, Erlang/OTP 29.1.1, Elixir 1.20.4, OpenSSL 4.0.2, SQLite 3.53.4,
+4.0.2, Erlang/OTP 29.1.1, Elixir 1.20.4, OpenSSL 4.0.3, SQLite 3.53.4,
 WAMR 2.4.5, emsdk 6.0.10).
 
 - **Cosmopolitan master** has fixes that are not in a release yet: in
@@ -107,7 +107,7 @@ WAMR 2.4.5, emsdk 6.0.10).
   Cosmopolitan itself (C14). CI stays on OpenBSD 7.3 until then.
 - **The TLS of OTP 29** uses the hybrid post-quantum group
   `x25519mlkem768` by default. Next: a check that a TLS 1.3 connection
-  uses it with the static OpenSSL 4.0.2.
+  uses it with the static OpenSSL 4.0.3.
 - **Elixir 1.20** can evaluate module bodies in place of a compile
   (`module_definition: :interpreted`). A probe: read `mix.exs` that way,
   for a faster build of a Mix project.

@@ -4,21 +4,53 @@ BEAM.com has unit tests, behavior tests on each system, and benchmarks.
 Each feature has tests of its behavior, also for errors and limits, not
 only for the normal case.
 
-## 1. Unit tests (Erlang, with coverage)
+## 1. Unit tests (one Mix project, with coverage)
 
-`tests/unit/*_tests.erl` are EUnit tests for the Erlang code of
-`apps/beam_com` (the commands, the builder, the Hex client, the Elixir
-and `--target wasm32` parts, and the zip writer), `apps/beam_com_script`,
-and `wasm_host_sqlite` (the Ecto SQLite shim of the Workers).
+The repository is one Mix project (`mix.exs`):
+
+| Directory | Contents |
+|---|---|
+| `src/APP/` | The Erlang code of each OTP application: `beam_com`, `beam_com_script`, `wasm` and `wasm_host`. |
+| `c_src/` | The C code: `cosmo/` (the native executable), `erts_wasm/` (the WebAssembly runtime) and `wasm/` (the NIF of WAMR). |
+| `priv/wasm_host/` | The JavaScript of the hosts of the WebAssembly runtime. |
+| `lib/` | The Elixir code: the models of the protocols and the Mix tasks. |
+| `tests/` | The tests, with ExUnit. |
+
+`build.sh` builds beam.com: it compiles each directory of `src/` as its
+own application. Mix compiles all of `src/` as one application, only for
+the tests.
+
+`mix test` runs these tests:
+
+- `tests/eunit/*_tests.erl`: the EUnit tests of the Erlang code of
+  `src/beam_com` (the commands, the builder, the Hex client, the Elixir
+  and `--target wasm32` parts, and the zip writer), `src/beam_com_script`,
+  and `src/wasm_host` (the Ecto SQLite shim of the Workers).
+  `tests/eunit_test.exs` makes one ExUnit test for each EUnit test
+  function and generator, and runs it in a new directory with no
+  project. The EUnit modules move to ExUnit files one by one.
+- `tests/host_test.exs`: the tests of the JavaScript of the hosts
+  (`tests/host/*.test.mjs`) with `node --test`. They need Node.js 20.6 or
+  later. Without `node`, ExUnit skips them (the tag `node`).
+- The other `tests/*_test.exs` files: ExUnit tests and StreamData
+  properties.
 
 ```sh
-./build.sh unit            # after the make step; needs no beam.com
+mix deps.get
+mix test                   # all the tests
+mix test --cover           # with the coverage of each module, in cover/
+./build.sh unit            # after the make and elixir steps; needs no beam.com
 ```
 
-`tests/unit/run.escript` compiles the modules with `-DTEST` (which
-exports the internal functions) under `cover`, runs the tests, and
-prints the line coverage of each module. The HTML report is in
-`build/unit/cover/`. The step fails when a test fails.
+The test environment compiles the Erlang code with `-DTEST`, which
+exports the internal functions. The tests need an OTP with `eunit`,
+`tools` (for `--cover`), `parsetools` and `asn1`: the zip of beam.com
+does not have `eunit` and `tools`. `./build.sh unit` uses the OTP build
+tree and the Elixir of the build, and builds `eunit` and `tools` when
+they are not there. It also checks the warnings and the format.
+
+`mix test --cover` fails when the coverage of the code (without the test
+modules) is less than the threshold in `mix.exs`.
 
 The oracle of the zip tests is independent code: the `zip` module of
 stdlib and Info-ZIP `unzip` must read every file that the writer makes.

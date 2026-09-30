@@ -11,7 +11,7 @@
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
-#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.2)
+#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.3)
 #   SQLITE           0: leave out SQLite (the esqlite NIF, linked into
 #                    beam.com, and the esqlite application in the zip;
 #                    default 1)
@@ -69,14 +69,14 @@ set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
-OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
+OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-ad05823719d77c8faee87348ea39513d4e2f99c5}
 COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44}
-OPENSSL_COMMIT=${OPENSSL_COMMIT:-f089acdf4bc7ba94a79f4bf6eb7362c3e7d14aa9}
+OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
 # esqlite (Apache-2.0), with the SQLite amalgamation (public domain) of
@@ -87,7 +87,7 @@ SQLITE_YEAR=${SQLITE_YEAR:-2026}
 SQLITE_SHA256=${SQLITE_SHA256:-1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d}
 # The NIFs of Elixir packages (with the SHA-256 of the hex.pm tarball).
 # The tools of Elixir compile these packages without a C compiler (see
-# apps/beam_com/src/beam_com_make.erl).
+# src/beam_com/beam_com_make.erl).
 EXQLITE_VERSION=${EXQLITE_VERSION:-0.41.0}
 EXQLITE_SHA256=${EXQLITE_SHA256:-a7e9b6bed529ab72aa07ed2a925ac109c27e6877a7a8af252361c396a4192855}
 BCRYPT_ELIXIR_VERSION=${BCRYPT_ELIXIR_VERSION:-3.3.2}
@@ -235,10 +235,10 @@ step_otp() {
         touch "$ERL_TOP/.beam_com_patched"
     fi
     # The multi-call wrappers compile with the ERTS flags.
-    cp "$ROOT"/cosmo/beam_com.c "$ROOT"/cosmo/beam_com_child_setup.c \
-       "$ROOT"/cosmo/beam_com_inet_gethost.c "$ROOT"/cosmo/beam_com_epmd.h \
-       "$ROOT"/cosmo/beam_com_epmd.c "$ROOT"/cosmo/beam_com_epmd_srv.c \
-       "$ROOT"/cosmo/beam_com_epmd_cli.c "$ROOT"/cosmo/beam_com_watch.c \
+    cp "$ROOT"/c_src/cosmo/beam_com.c "$ROOT"/c_src/cosmo/beam_com_child_setup.c \
+       "$ROOT"/c_src/cosmo/beam_com_inet_gethost.c "$ROOT"/c_src/cosmo/beam_com_epmd.h \
+       "$ROOT"/c_src/cosmo/beam_com_epmd.c "$ROOT"/c_src/cosmo/beam_com_epmd_srv.c \
+       "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
        "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
@@ -251,7 +251,7 @@ step_configure() {
     #  - sendfile: inet_drv only knows the Linux/BSD/Solaris variants.
     #  - linux_thp: 2 MiB page alignment breaks the APE layout.
     #  - clock ids: CLOCK_UPTIME exists in the headers but only works on BSD.
-    #  - DED_LD*: there are no shared objects. cosmo/noshared writes
+    #  - DED_LD*: there are no shared objects. c_src/cosmo/noshared writes
     #    placeholder files for NIF libraries, and the configure tests of
     #    the NIFs link normal programs (no -shared).
     # The crypto and asn1 NIFs are linked into the emulator
@@ -274,9 +274,9 @@ step_configure() {
     fi
     ./configure \
         CC="$CC" CXX="$CXX" AR="$AR" RANLIB=true LIBS="$OPENSSL/lib/libcrypto.a" \
-        DED_LD="$ROOT/cosmo/noshared" DED_LDFLAGS="-no-pie" \
+        DED_LD="$ROOT/c_src/cosmo/noshared" DED_LDFLAGS="-no-pie" \
         DED_LD_FLAG_RUNTIME_LIBRARY_PATH="-Wl,-rpath," \
-        CFLAGS="-O2 -g -DZSTD_DISABLE_ASM -include $ROOT/cosmo/erts_cosmo.h" \
+        CFLAGS="-O2 -g -DZSTD_DISABLE_ASM -include $ROOT/c_src/cosmo/erts_cosmo.h" \
         ac_cv_header_poll_h=no \
         ac_cv_func_sendfile=no \
         erts_cv_linux_thp=no \
@@ -423,7 +423,7 @@ build_hex_nif() {
             # (the module Exqlite.Sqlite3NIF of a release sends the SQL to
             # the host or to this NIF, see wasm_host_sqlite), with the
             # SQLite of exqlite and the VFS of the host files
-            # (wasm/erts/sqlite_vfs.c). The options of its Makefile, a
+            # (c_src/erts_wasm/sqlite_vfs.c). The options of its Makefile, a
             # batch atomic write for a commit of the host, and no WAL: the
             # host files have no shared memory, and in the memory files of
             # Emscripten the close of a database in WAL mode does not end.
@@ -438,7 +438,7 @@ build_hex_nif() {
                -DSQLITE_ENABLE_BATCH_ATOMIC_WRITE=1 -DSQLITE_EXTRA_INIT=beam_vfs_init
                -DSQLITE_OMIT_WAL=1"
             set -- "c_src/wasm_sqlite3_nif.c:$nif $q" "c_src/sqlite3.c:$q" \
-                "$ROOT/wasm/erts/sqlite_vfs.c:$q" ;;
+                "$ROOT/c_src/erts_wasm/sqlite_vfs.c:$q" ;;
     esac
     for f in "$@"; do
         c=${f%%:*}
@@ -582,7 +582,7 @@ step_wasm() {
     #  - WASM_DISABLE_HW_BOUND_CHECK: no guard pages and signal handlers
     #    for the linear memory (the Windows emulation of signals).
     #  - SIMD needs SIMDe, which is not in the WAMR repository.
-    flags="-O2 -include $ROOT/apps/wasm/c_src/wamr_target.h
+    flags="-O2 -include $ROOT/c_src/wasm/wamr_target.h
         -DBH_PLATFORM_COSMOPOLITAN -DBH_MALLOC=wasm_runtime_malloc
         -DBH_FREE=wasm_runtime_free -D_GNU_SOURCE
         -DWASM_ENABLE_INTERP=1 -DWASM_ENABLE_FAST_INTERP=1
@@ -605,13 +605,13 @@ step_wasm() {
     # cosmocc does not take assembler files, so the trampoline is made
     # with the compiler of each CPU (the aarch64 object goes in .aarch64/).
     x86_64-unknown-cosmo-cc -c -Icore/iwasm/common/arch \
-        "$ROOT/apps/wasm/c_src/invokeNative.S" -o "$obj/invokeNative.o"
+        "$ROOT/c_src/wasm/invokeNative.S" -o "$obj/invokeNative.o"
     aarch64-unknown-cosmo-cc -c -Icore/iwasm/common/arch \
-        "$ROOT/apps/wasm/c_src/invokeNative.S" -o "$obj/.aarch64/invokeNative.o"
+        "$ROOT/c_src/wasm/invokeNative.S" -o "$obj/.aarch64/invokeNative.o"
     "$CC" -O2 -DSTATIC_ERLANG_NIF_LIBNAME=wasm -Icore/iwasm/include \
         -I"$ERL_TOP/erts/emulator/beam" -I"$ERL_TOP/erts/include" \
         -I"$ERL_TOP/erts/include/$t" \
-        -c "$ROOT/apps/wasm/c_src/wasm_nif.c" -o "$obj/wasm_nif.o"
+        -c "$ROOT/c_src/wasm/wasm_nif.c" -o "$obj/wasm_nif.o"
     rm -f wasm.a .aarch64/wasm.a
     (cd "$obj" && "$AR" rcs "$WAMR/wasm.a" ./*.o)
 }
@@ -691,11 +691,11 @@ step_make() {
     check_static_nifs
     nifs=$(static_nifs)
     DEPCC_CC=$CC make -j"$JOBS" OTP_SMALL_BUILD=true \
-        DEP_CC="$ROOT/cosmo/depcc" ${nifs:+"STATIC_NIFS=$nifs"}
+        DEP_CC="$ROOT/c_src/cosmo/depcc" ${nifs:+"STATIC_NIFS=$nifs"}
     for app in $EXTRA_APPS; do
         log "Building $app"
         PATH=$ERL_TOP/bootstrap/bin:$PATH DEPCC_CC=$CC \
-            make -C "lib/$app" opt DEP_CC="$ROOT/cosmo/depcc"
+            make -C "lib/$app" opt DEP_CC="$ROOT/c_src/cosmo/depcc"
     done
     for app in $SRC_APPS; do
         log "Building $app (Erlang code)"
@@ -718,7 +718,7 @@ step_multicall() {
     rm -f "$t/opt/$FLAVOR/driver_tab.c" "$objdir/driver_tab.o"
     nifs=$(static_nifs)
     # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
-    # __wrap_mkdir() and __wrap_chown() in cosmo/beam_com.c.
+    # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
         EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
@@ -757,7 +757,7 @@ step_bundle() {
     # include for "beam.com INPUT -o OUTPUT").
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
-    cp "$ROOT/cosmo/windows.inetrc" "$ROOT/cosmo/sandbox.inetrc" "$STAGE/bin/"
+    cp "$ROOT/c_src/cosmo/windows.inetrc" "$ROOT/c_src/cosmo/sandbox.inetrc" "$STAGE/bin/"
     for app in $BUNDLE_APPS; do
         src=$ERL_TOP/lib/$app
         vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/ebin/$app.app")
@@ -824,24 +824,24 @@ step_bundle() {
     # WebAssembly: the wasm application (its NIF is in the emulator).
     if [ "$WASM" = 1 ]; then
         mkdir -p "$STAGE/lib/wasm-0.1.0/ebin"
-        "$ERL_TOP/bin/erlc" -o "$STAGE/lib/wasm-0.1.0/ebin" "$ROOT"/apps/wasm/src/*.erl
-        cp "$ROOT/apps/wasm/src/wasm.app.src" "$STAGE/lib/wasm-0.1.0/ebin/wasm.app"
+        "$ERL_TOP/bin/erlc" -o "$STAGE/lib/wasm-0.1.0/ebin" "$ROOT"/src/wasm/*.erl
+        cp "$ROOT/src/wasm/wasm.app.src" "$STAGE/lib/wasm-0.1.0/ebin/wasm.app"
     fi
 
     # The commands of beam.com (lib/beam_com has no version, so that
     # beam_com.c can find it), and the runner of one-file programs.
     mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
-    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/apps/beam_com/src/*.erl
+    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/src/beam_com/*.erl
     # The .app file gets the full version of OTP, and the Elixir packages
     # whose NIFs are linked ([{exqlite, "0.41.0"}, ...]).
     nifs=$(hex_nifs | awk '{printf "%s{%s, \"%s\"}", (NR > 1 ? ", " : ""), $1, $2}')
     sed -e "s/{otp_version, \"\"}/{otp_version, \"$OTP_VERSION\"}/" \
         -e "s/{nifs, \[\]}/{nifs, [$nifs]}/" \
-        "$ROOT/apps/beam_com/src/beam_com.app.src" \
+        "$ROOT/src/beam_com/beam_com.app.src" \
         > "$STAGE/lib/beam_com/ebin/beam_com.app"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_script-0.1.0/ebin" \
-        "$ROOT"/apps/beam_com_script/src/*.erl
-    cp "$ROOT/apps/beam_com_script/src/beam_com_script.app.src" \
+        "$ROOT"/src/beam_com_script/*.erl
+    cp "$ROOT/src/beam_com_script/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
 
     # The host of the WebAssembly runtime (--target wasm32): Erlang code
@@ -852,11 +852,11 @@ step_bundle() {
     # The hosts of worker.js: Workers (priv/worker), Deno (priv/deno) and a
     # web page (priv/browser).
     mkdir -p "$wh/ebin" "$wh/priv"
-    "$ERL_TOP/bin/erlc" -o "$wh/ebin" "$ROOT"/apps/wasm_host/src/*.erl
-    cp "$ROOT/apps/wasm_host/src/wasm_host.app.src" "$wh/ebin/wasm_host.app"
+    "$ERL_TOP/bin/erlc" -o "$wh/ebin" "$ROOT"/src/wasm_host/*.erl
+    cp "$ROOT/src/wasm_host/wasm_host.app.src" "$wh/ebin/wasm_host.app"
     for host in worker deno browser; do
         rm -rf "$wh/priv/$host"
-        cp -R "$ROOT/apps/wasm_host/priv/$host" "$wh/priv/$host"
+        cp -R "$ROOT/priv/wasm_host/$host" "$wh/priv/$host"
     done
     runtime=${WASM_RUNTIME:-$BUILD/wasm-runtime}
     if [ "$runtime" != none ] && [ -f "$runtime/beam.wasm" ]; then
@@ -905,20 +905,29 @@ step_bundle() {
     ls -l "$OUT"
 }
 
-# The unit tests of the Erlang code (tests/unit), with coverage. They
-# run on the Erlang of the OTP build tree.
+# The tests of the Mix project (mix.exs, tests/): the EUnit tests of the
+# Erlang code, the ExUnit tests, and the tests of the JavaScript of the
+# WebAssembly host (Node.js 20.6 or later). They run with coverage, on the
+# Erlang of the OTP build tree and the Elixir of the build.
 step_unit() {
-    log "Running the unit tests"
-    if [ ! -f "$ERL_TOP/lib/eunit/ebin/eunit.beam" ]; then
-        PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/eunit" opt
-    fi
-    ELIXIR_LIB=$BUILD/elixir-$ELIXIR_VERSION/lib \
-        "$ERL_TOP/bin/escript" "$ROOT/tests/unit/run.escript" "$BUILD/unit"
-    # The JavaScript of the WebAssembly host (Node.js 20.6 or later).
-    if command -v node >/dev/null 2>&1; then
-        log "Running the tests of the WebAssembly host"
-        node --test "$ROOT"/tests/host/*.test.mjs
-    fi
+    log "Running the tests of the Mix project"
+    for app in eunit tools; do
+        if ! ls "$ERL_TOP/lib/$app/ebin/"*.beam >/dev/null 2>&1; then
+            PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/$app" opt
+        fi
+    done
+    (
+        cd "$ROOT"
+        export PATH="$ERL_TOP/bin:$BUILD/elixir-$ELIXIR_VERSION/bin:$PATH"
+        export MIX_HOME="$BUILD/mix-home-test" HEX_HOME="$BUILD/hex-home-test"
+        export MIX_BUILD_ROOT="$BUILD/mix" MIX_DEPS_PATH="$BUILD/deps"
+        export LC_ALL=C.UTF-8 MIX_ENV=test
+        mix local.hex --force --if-missing
+        mix deps.get
+        mix compile --warnings-as-errors
+        mix format --check-formatted
+        mix test --cover
+    )
 }
 
 step_test() {

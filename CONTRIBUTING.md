@@ -22,7 +22,7 @@ See [`docs/BUILDING.md`](docs/BUILDING.md) and
 
 ```sh
 ./build.sh                   # all the steps: build/beam.com
-./build.sh unit              # the unit tests, with coverage
+./build.sh unit              # the tests of the Mix project, with coverage
 tests/run.sh build           # the behavior tests
 ```
 

@@ -46,7 +46,7 @@ An OTP installation has more than one executable. ERTS starts
 `erl_child_setup` when it boots (it forks the port programs), and on
 Linux the kernel starts `inet_gethost` at boot to resolve the host name.
 BEAM.com links these programs into the emulator. It is a multi-call
-binary, like BusyBox (see [`cosmo/beam_com.c`](../cosmo/beam_com.c)).
+binary, like BusyBox (see [`c_src/cosmo/beam_com.c`](../c_src/cosmo/beam_com.c)).
 
 When ERTS must execute a program in `/zip/bin/`, it executes its own
 file (`GetProgramExecutableName()`) again, with
@@ -69,7 +69,7 @@ is `/proc/self/exe`, and the kernel starts it.
 
 ## Crypto and TLS
 
-`build.sh` builds a static `libcrypto` (OpenSSL 4.0.2, no assembly, so
+`build.sh` builds a static `libcrypto` (OpenSSL 4.0.3, no assembly, so
 the same C code compiles for x86_64 and aarch64), and OTP is configured
 with `--enable-static-nifs`. ERTS selects a static NIF by the name of the
 module that loads it, so the `crypto.beam` of a normal release uses the
@@ -97,7 +97,7 @@ lib/esqlite-.../ebin/...           SQLite
 lib/wasm-0.1.0/ebin/...            WebAssembly
 lib/wasm_host-0.1.0/...            for --target wasm32, with the runtime
                                    (priv/runtime/beam.wasm) and the Workers
-lib/beam_com/ebin/...              the commands (apps/beam_com)
+lib/beam_com/ebin/...              the commands (src/beam_com)
 lib/beam_com_script-0.1.0/ebin/... runs one-file programs
 licenses/                          LICENSE, NOTICE and the license texts
 ```
@@ -127,7 +127,7 @@ PKZIP keeps its index (the central directory) at the end of the file,
 and in an APE file the offsets count from the start of the file. The
 emulator also has zip entries of its own inside its image (symbol
 tables, time zones, `.cosmo`), which must stay where they are. The
-builder ([`apps/beam_com/src/beam_com_zip.erl`](../apps/beam_com/src/beam_com_zip.erl))
+builder ([`src/beam_com/beam_com_zip.erl`](../src/beam_com/beam_com_zip.erl))
 keeps the bytes up to the first entry that it removes, moves the entries
 after that point that it keeps, adds the new entries, and writes a new
 central directory with the new offsets.
@@ -159,7 +159,7 @@ Code in C (crypto, SQLite, WebAssembly) has the same speed in both.
 
 The OTP changes are small. Most of the port is in the configure
 arguments and in a header that the compiler includes in each file
-([`cosmo/erts_cosmo.h`](../cosmo/erts_cosmo.h)).
+([`c_src/cosmo/erts_cosmo.h`](../c_src/cosmo/erts_cosmo.h)).
 
 | Change | Why |
 | --- | --- |
@@ -170,8 +170,8 @@ arguments and in a header that the compiler includes in each file
 | monotonic clock = `CLOCK_MONOTONIC` | `CLOCK_UPTIME` is in the headers, but only works on BSD. |
 | `ac_cv_func_sendfile=no` | `inet_drv` only knows the Linux, BSD and Solaris `sendfile()`. |
 | `-DZSTD_DISABLE_ASM` | cosmocc does not compile the zstd `.S` file for two CPUs. |
-| `DEP_CC=cosmo/depcc` | cosmocc does not support `-MM` with many input files. |
-| `DED_LD=cosmo/noshared` (at configure time) | There are no shared objects. NIF `.so` files become placeholders, and the NIF configure tests link normal programs, not `-shared` ones. |
+| `DEP_CC=c_src/cosmo/depcc` | cosmocc does not support `-MM` with many input files. |
+| `DED_LD=c_src/cosmo/noshared` (at configure time) | There are no shared objects. NIF `.so` files become placeholders, and the NIF configure tests link normal programs, not `-shared` ones. |
 | `--enable-static-nifs`, `--with-ssl`, `--disable-dynamic-ssl-lib` | The `crypto` and `asn1` NIFs and `libcrypto` are linked into the emulator. |
 | No `ERTS_LOW_WRITE` section | The APE linker script does not know this section. It made the PE `.data` section end after the file data, and `apelink` stopped with "PE SizeOfRawData overlaps end of image". |
 | No reserve-then-commit `mmap` | On Windows, `mmap(MAP_FIXED)` in a `PROT_NONE` reservation fails, and ERTS stopped at boot. |

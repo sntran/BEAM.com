@@ -12,7 +12,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { HostFiles, MemoryStore } = await import('../../apps/wasm_host/priv/worker/worker.js');
+const { HostFiles, MemoryStore } = await import('../../priv/wasm_host/worker/worker.js');
 
 // The operations of sqlite_vfs.c, and the codes of SQLite.
 const OPEN = 1, CLOSE = 2, READ = 3, WRITE = 4, SYNC = 6, SIZE = 7, LOCK = 8, UNLOCK = 9, ACCESS = 11;

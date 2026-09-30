@@ -1,7 +1,7 @@
 %% The NIF of exqlite in the WebAssembly runtime (a static NIF of
 %% beam.wasm, wasm/erts/build.sh): SQLite in the VM. Its files are the
 %% memory files of Emscripten, or the files of the host when it has them
-%% (wasm/erts/sqlite_vfs.c: Deno KV in deno.js). wasm_host_sqlite sends
+%% (c_src/erts_wasm/sqlite_vfs.c: Deno KV in deno.js). wasm_host_sqlite sends
 %% the calls of the module Exqlite.Sqlite3NIF of a release here when the
 %% host does not run the SQL itself.
 -module(wasm_host_exqlite).

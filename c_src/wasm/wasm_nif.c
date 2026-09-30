@@ -2,7 +2,7 @@
  * The wasm NIF: WebAssembly (and WASI preview 1) for Erlang, with the
  * WAMR interpreter.
  *
- * The Erlang API (apps/wasm/src/wasm.erl) does not show WAMR types, so
+ * The Erlang API (src/wasm/wasm.erl) does not show WAMR types, so
  * that the runtime can change later.
  *
  * Modules and instances are resources. An instance is not thread safe:

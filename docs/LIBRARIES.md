@@ -6,7 +6,7 @@ program gets them with no C compiler and no files on the disk.
 ## Crypto and TLS
 
 `crypto` and `ssl` work: the `crypto` and `asn1` NIFs are linked into
-`beam.com` with a static OpenSSL 4.0.2, and TLS connections verify the
+`beam.com` with a static OpenSSL 4.0.3, and TLS connections verify the
 server with the certificates of the OS (on Windows too).
 
 - `public_key:cacerts_get/0` gives the trusted root certificates of the

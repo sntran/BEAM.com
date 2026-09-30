@@ -20,7 +20,7 @@ concurrency:
 env:
   OTP_VERSION: "29.1.1"
   COSMOCC_VERSION: "4.0.2"
-  OPENSSL_VERSION: "4.0.2"
+  OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
 
 jobs:
