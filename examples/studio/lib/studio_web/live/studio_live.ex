@@ -267,10 +267,10 @@ defmodule StudioWeb.StudioLive do
           </button>
         </div>
         <div :if={@tab == "iex"} class="iex">
-          <pre class="log" id="iex-log"><%= for e <- Enum.reverse(@iex_log) do %><span class="in">iex({e.n})&gt; {e.code}</span>
+          <pre class="log" id="iex-log" phx-hook="ScrollEnd"><%= for e <- Enum.reverse(@iex_log) do %><span class="in">iex({e.n})&gt; {e.code}</span>
     {e.output}
     <% end %></pre>
-          <form phx-submit="eval" class="iex-line">
+          <form id="iex-line" phx-submit="eval" phx-hook="IexLine" class="iex-line">
             <label for="code" class="prompt">iex({@iex_n})&gt;</label>
             <input
               id="code"
@@ -293,33 +293,67 @@ defmodule StudioWeb.StudioLive do
   attr :open, :string
 
   defp tree(assigns) do
-    assigns = assign(assigns, groups: group(assigns.files))
+    assigns = assign(assigns, nodes: nest(assigns.files))
 
     ~H"""
+    <.nodes nodes={@nodes} open={@open} />
+    """
+  end
+
+  attr :nodes, :list, required: true
+  attr :open, :string
+
+  # A directory is open when it holds the open file, or when it is lib/ or
+  # a directory of lib/.
+  defp nodes(assigns) do
+    ~H"""
     <ul class="tree">
-      <li :for={{dir, files} <- @groups}>
-        <details open={
-          dir == "" or String.starts_with?(@open || "", dir <> "/") or String.starts_with?(dir, "lib")
-        }>
-          <summary :if={dir != ""}>{dir}/</summary>
-          <ul>
-            <li :for={f <- files}>
-              <button class={"file #{if f == @open, do: "on"}"} phx-click="open" phx-value-path={f}>{Path.basename(
-                f
-              )}</button>
-            </li>
-          </ul>
-        </details>
+      <li :for={node <- @nodes}>
+        <%= case node do %>
+          <% {:dir, path, children} -> %>
+            <details open={
+              String.starts_with?(@open || "", path <> "/") or path == "lib" or
+                (String.starts_with?(path, "lib/") and length(Path.split(path)) <= 2)
+            }>
+              <summary>{Path.basename(path)}/</summary>
+              <.nodes nodes={children} open={@open} />
+            </details>
+          <% {:file, path} -> %>
+            <button
+              class={"file #{if path == @open, do: "on"}"}
+              phx-click="open"
+              phx-value-path={path}
+            >
+              {Path.basename(path)}
+            </button>
+        <% end %>
       </li>
     </ul>
     """
   end
 
-  defp group(files) do
-    files
-    |> Enum.group_by(fn f -> if Path.dirname(f) == ".", do: "", else: Path.dirname(f) end)
-    |> Enum.sort_by(fn {dir, _} -> {dir != "", dir} end)
+  # The paths as a tree: [{:dir, path, children} | {:file, path}], the
+  # directories first, each level in order.
+  defp nest(files, prefix \\ "") do
+    {dirs, here} =
+      files
+      |> Enum.map(&Path.split/1)
+      |> Enum.split_with(&match?([_, _ | _], &1))
+
+    dirs =
+      dirs
+      |> Enum.group_by(&hd/1, &Path.join(tl(&1)))
+      |> Enum.sort()
+      |> Enum.map(fn {dir, rest} ->
+        path = join(prefix, dir)
+        {:dir, path, nest(rest, path)}
+      end)
+
+    dirs ++ (here |> Enum.map(&hd/1) |> Enum.sort() |> Enum.map(&{:file, join(prefix, &1)}))
   end
+
+  defp join("", name), do: name
+  defp join(prefix, name), do: prefix <> "/" <> name
 
   attr :flash, :map, required: true
 

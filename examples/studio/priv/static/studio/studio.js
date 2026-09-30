@@ -122,11 +122,38 @@ const Preview = {
   },
 };
 
+// The IEx line: it clears after each submit (LiveView reads the value at
+// the submit), and the arrow keys go through the history of the session.
+const IexLine = {
+  mounted() {
+    const input = this.el.querySelector("input");
+    const history = [];
+    let at = 0;
+    this.el.addEventListener("submit", () => {
+      if (input.value.trim()) history.push(input.value);
+      at = history.length;
+      setTimeout(() => { input.value = ""; }, 0);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      at = Math.max(0, Math.min(history.length, at + (e.key === "ArrowUp" ? -1 : 1)));
+      input.value = history[at] ?? "";
+    });
+  },
+};
+
+// A log that shows its last line.
+const ScrollEnd = {
+  mounted() { this.el.scrollTop = this.el.scrollHeight; },
+  updated() { this.el.scrollTop = this.el.scrollHeight; },
+};
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveSocket(`${base}/__studio/live`, Socket, {
   longPollFallbackMs: 2500,
   params: { _csrf_token: csrfToken },
-  hooks: { Editor, Preview },
+  hooks: { Editor, Preview, IexLine, ScrollEnd },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;
