@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phx.new in the browser</title>
+<meta name="description" content="mix phx.new and a Phoenix app, in this page: Phoenix, Elixir and Erlang/OTP run in BEAM compiled to WebAssembly, with no server.">
+<style>
+  :root { --bg: #f6f4f1; --text: #1f1a17; --muted: #756c65; --accent: #e8590c; --error: #c0262d; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #171412; --text: #efe9e4; --muted: #a2978f; --accent: #ff7a33; --error: #ff7b7f; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #boot { max-width: 40rem; margin: 0 auto; padding: 15vh 16px 0; }
+  h1 { font: 700 2rem/1.1 ui-monospace, Menlo, Consolas, monospace; margin: 0 0 8px; }
+  h1 span { color: var(--accent); }
+  #status { color: var(--muted); min-height: 1.5em; }
+  #status.err { color: var(--error); }
+  progress { width: 100%; height: 6px; margin: 12px 0; accent-color: var(--accent); }
+  p.small { color: var(--muted); font-size: 0.875rem; }
+  a { color: var(--accent); }
+  iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: none; background: var(--bg); }
+  body.running #boot { display: none; }
+  body.running iframe { display: block; }
+</style>
+</head>
+<body>
+<div id="boot">
+  <h1><span>$</span> mix phx.new</h1>
+  <p id="status">Starting…</p>
+  <progress id="bar"></progress>
+  <p class="small">Phoenix, Elixir and Erlang/OTP run in this page, in BEAM compiled to WebAssembly
+    by <a href="https://github.com/sntran/BEAM.com">beam.com</a>. No server runs your code. The first
+    visit loads about 30 MB. The project stays in the memory of this tab: use Download to keep it.</p>
+</div>
+<iframe id="app" title="The studio" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+<script type="module">
+  const status = document.getElementById('status'), bar = document.getElementById('bar');
+  const say = (text, error = false) => { status.textContent = text; status.className = error ? 'err' : ''; };
+  const APP = new URL('./app/', location.href);
+
+  async function main() {
+    // JSPI (WebAssembly JavaScript Promise Integration) is in Chrome and
+    // Edge 137 or later.
+    if (typeof WebAssembly.Suspending !== 'function' || !('serviceWorker' in navigator)) {
+      bar.remove();
+      return say('This browser cannot run the VM. Open this page in Chrome or Edge 137 or later.', true);
+    }
+    // One VM for each browser: the service worker sends all the requests of
+    // the frames to this tab.
+    const lock = await new Promise((resolve) =>
+      navigator.locks.request('beam-studio', { ifAvailable: true }, (l) => {
+        resolve(l);
+        return l ? new Promise(() => {}) : undefined;
+      }));
+    if (!lock) {
+      bar.remove();
+      return say('The studio runs in another tab of this site. Use that tab, or close it and load this page again.', true);
+    }
+    const t0 = performance.now();
+    say('Loading the runtime and the release…');
+    const vm = new Worker(new URL('./vm.js', import.meta.url), { type: 'module' });
+    const ready = new Promise((resolve, reject) => {
+      vm.addEventListener('message', (e) => {
+        if (e.data.type === 'ready') resolve(e.data);
+        else if (e.data.type === 'error') reject(new Error(e.data.message));
+        else if (e.data.type === 'status') say(e.data.text);
+      });
+      vm.addEventListener('error', (e) => reject(new Error(e.message || 'the VM stopped')));
+    });
+    vm.postMessage({ type: 'start', base: APP.pathname.replace(/\/$/, '') });
+    // The requests of the service worker (sw.js, not another worker of this
+    // origin) go to the VM with their reply port.
+    const SW = new URL('./sw.js', location.href).href;
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.source?.scriptURL === SW && e.data?.type === 'fetch') vm.postMessage(e.data, [e.ports[0]]);
+    });
+    // The WebSockets of the frames (ws-shim.js): the studio frame, and the
+    // frame of the app in it.
+    const inFrame = (w) => {
+      for (let n = 0; w && n < 10; n++, w = w.parent) {
+        if (w === document.getElementById('app').contentWindow) return true;
+        if (w === w.parent) return false;
+      }
+      return false;
+    };
+    addEventListener('message', (e) => {
+      if (e.origin === location.origin && e.data?.type === 'ws' && inFrame(e.source)) vm.postMessage(e.data, [e.ports[0]]);
+    });
+    // This page is outside the scope, so navigator.serviceWorker.ready does
+    // not apply: wait for the registration to be active.
+    const reg = await navigator.serviceWorker.register('./sw.js', { scope: APP.pathname, type: 'module' });
+    const sw = await new Promise((resolve) => {
+      const check = () => { if (reg.active) resolve(reg.active); };
+      check();
+      for (const w of [reg.installing, reg.waiting]) w?.addEventListener('statechange', check);
+      reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', check));
+    });
+    sw.postMessage({ type: 'boot' });  // this tab is the VM
+    await ready;
+    const ms = Math.round(performance.now() - t0);
+    console.log(`studio: ready in ${ms} ms`);
+    say(`Opening the studio (the VM started in ${ms} ms)…`);
+    const frame = document.getElementById('app');
+    frame.addEventListener('load', () => document.body.classList.add('running'), { once: true });
+    frame.src = APP.href + '__studio/';
+  }
+
+  main().catch((e) => { bar.remove(); say(e.message, true); console.error(e); });
+</script>
+</body>
+</html>
