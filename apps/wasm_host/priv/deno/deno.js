@@ -240,6 +240,8 @@ if (mode !== 'kv' && mode !== 'off') {
   const { DatabaseSync } = await import('node:sqlite');
   sql = new SqlStorage(new DatabaseSync(mode === 'memory' ? ':memory:' : mode));
 }
+// The app can tell where its database is (kv, memory, off, or a path).
+vars.BEAM_SQLITE = mode;
 let vm;  // the VM of this isolate
 
 // The static assets of the app (static/, from wasm/erts/host/static.mjs),
