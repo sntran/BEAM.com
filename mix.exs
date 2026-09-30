@@ -21,11 +21,16 @@ defmodule BeamCom.MixProject do
               to_string(props[:vsn])
             end).()
 
+  # The code and the tests use Erlang/OTP 29, the OTP of beam.com.
+  if String.to_integer(System.otp_release()) < 29 do
+    Mix.raise("beam.com needs Erlang/OTP 29 or later, not #{System.otp_release()}")
+  end
+
   def project do
     [
       app: :beam_com,
       version: @version,
-      elixir: "~> 1.18",
+      elixir: "~> 1.20",
       erlc_paths: erlc_paths(Mix.env()),
       erlc_options: erlc_options(Mix.env()),
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -69,7 +74,7 @@ defmodule BeamCom.MixProject do
 
   defp deps do
     [
-      {:stream_data, "~> 1.2", only: [:dev, :test]}
+      {:stream_data, "~> 1.4", only: [:dev, :test]}
     ]
   end
 end

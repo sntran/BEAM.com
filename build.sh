@@ -11,7 +11,7 @@
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
-#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.2)
+#   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.3)
 #   SQLITE           0: leave out SQLite (the esqlite NIF, linked into
 #                    beam.com, and the esqlite application in the zip;
 #                    default 1)
@@ -69,14 +69,14 @@ set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.1}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
-OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.2}
+OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-ad05823719d77c8faee87348ea39513d4e2f99c5}
 COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44}
-OPENSSL_COMMIT=${OPENSSL_COMMIT:-f089acdf4bc7ba94a79f4bf6eb7362c3e7d14aa9}
+OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
 # esqlite (Apache-2.0), with the SQLite amalgamation (public domain) of

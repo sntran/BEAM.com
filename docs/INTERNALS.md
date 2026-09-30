@@ -69,7 +69,7 @@ is `/proc/self/exe`, and the kernel starts it.
 
 ## Crypto and TLS
 
-`build.sh` builds a static `libcrypto` (OpenSSL 4.0.2, no assembly, so
+`build.sh` builds a static `libcrypto` (OpenSSL 4.0.3, no assembly, so
 the same C code compiles for x86_64 and aarch64), and OTP is configured
 with `--enable-static-nifs`. ERTS selects a static NIF by the name of the
 module that loads it, so the `crypto.beam` of a normal release uses the

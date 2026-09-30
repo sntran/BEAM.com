@@ -17,7 +17,7 @@ small OTP and makes `build/beam.com`:
 The script downloads:
 
 - cosmocc 4.0.2 (the compiler and Cosmopolitan Libc);
-- the source of Erlang/OTP 29.1.1, OpenSSL 4.0.2, SQLite 3.53.4,
+- the source of Erlang/OTP 29.1.1, OpenSSL 4.0.3, SQLite 3.53.4,
   esqlite, WAMR 2.4.5 and Elixir 1.20.4;
 - the hex.pm packages whose NIFs it links (exqlite, bcrypt_elixir and
   argon2_elixir), with a check of their SHA-256;
