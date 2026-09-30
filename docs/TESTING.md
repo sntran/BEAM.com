@@ -22,18 +22,23 @@ the tests.
 
 `mix test` runs these tests:
 
-- `tests/eunit/*_tests.erl`: the EUnit tests of the Erlang code of
-  `src/beam_com` (the commands, the builder, the Hex client, the Elixir
-  and `--target wasm32` parts, and the zip writer), `src/beam_com_script`,
-  and `src/wasm_host` (the Ecto SQLite shim of the Workers).
-  `tests/eunit_test.exs` makes one ExUnit test for each EUnit test
-  function and generator, and runs it in a new directory with no
-  project. The EUnit modules move to ExUnit files one by one.
+- The ExUnit tests of the Erlang code. Their paths follow the paths of
+  the code: `tests/APP/MODULE_test.exs` tests `src/APP/MODULE.erl`, with
+  the module `ModuleTest` (for example, `tests/beam_com/beam_com_zip_test.exs`
+  and `BeamComZipTest`). They cover `src/beam_com` (the commands, the
+  builder, the Hex client, the Elixir and `--target wasm32` parts, and the
+  zip writer), `src/beam_com_script`, and `src/wasm_host` (the Ecto SQLite
+  shim of the Workers).
 - `tests/host_test.exs`: the tests of the JavaScript of the hosts
   (`tests/host/*.test.mjs`) with `node --test`. They need Node.js 20.6 or
   later. Without `node`, ExUnit skips them (the tag `node`).
-- The other `tests/*_test.exs` files: ExUnit tests and StreamData
-  properties.
+- StreamData properties, in the test file of their module.
+
+`tests/support/` has the code that the tests share, for example
+`BeamCom.HexFixture`, a local Hex server. A test that needs a directory
+with no project (the commands of beam.com look for a project in the
+current directory) uses the `tmp_dir` tag and runs in that directory.
+Such a module is not async.
 
 ```sh
 mix deps.get
@@ -43,11 +48,11 @@ mix test --cover           # with the coverage of each module, in cover/
 ```
 
 The test environment compiles the Erlang code with `-DTEST`, which
-exports the internal functions. The tests need an OTP with `eunit`,
-`tools` (for `--cover`), `parsetools` and `asn1`: the zip of beam.com
-does not have `eunit` and `tools`. `./build.sh unit` uses the OTP build
-tree and the Elixir of the build, and builds `eunit` and `tools` when
-they are not there. It also checks the warnings and the format.
+exports the internal functions. The tests need an OTP with `tools` (for
+`--cover`), `parsetools` and `asn1`: the zip of beam.com does not have
+`tools`. `./build.sh unit` uses the OTP build tree and the Elixir of the
+build, and builds `tools` when it is not there. It also checks the
+warnings and the format.
 
 `mix test --cover` fails when the coverage of the code (without the test
 modules) is less than the threshold in `mix.exs`.

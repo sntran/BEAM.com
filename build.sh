@@ -905,17 +905,15 @@ step_bundle() {
     ls -l "$OUT"
 }
 
-# The tests of the Mix project (mix.exs, tests/): the EUnit tests of the
-# Erlang code, the ExUnit tests, and the tests of the JavaScript of the
-# WebAssembly host (Node.js 20.6 or later). They run with coverage, on the
-# Erlang of the OTP build tree and the Elixir of the build.
+# The tests of the Mix project (mix.exs, tests/): the ExUnit tests of the
+# Erlang code, and the tests of the JavaScript of the WebAssembly host
+# (Node.js 20.6 or later). They run with coverage (the application tools),
+# on the Erlang of the OTP build tree and the Elixir of the build.
 step_unit() {
     log "Running the tests of the Mix project"
-    for app in eunit tools; do
-        if ! ls "$ERL_TOP/lib/$app/ebin/"*.beam >/dev/null 2>&1; then
-            PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/$app" opt
-        fi
-    done
+    if ! ls "$ERL_TOP/lib/tools/ebin/"*.beam >/dev/null 2>&1; then
+        PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/tools" opt
+    fi
     (
         cd "$ROOT"
         export PATH="$ERL_TOP/bin:$BUILD/elixir-$ELIXIR_VERSION/bin:$PATH"
