@@ -12,6 +12,8 @@ defmodule Studio.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      # The app of the project can implement a protocol for its structs.
+      consolidate_protocols: false,
       # RELEASE_ERTS=false: a release with no ERTS, for beam.com.
       releases: [studio: [include_erts: System.get_env("RELEASE_ERTS") != "false"]]
     ]

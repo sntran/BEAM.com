@@ -101,3 +101,9 @@ input { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); ba
   .studio { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 40vh 60vh 50vh 30vh; height: auto;
             grid-template-areas: "bar" "editor" "preview" "panel" "files"; }
 }
+
+/* The IEx tab. */
+.iex { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
+.iex .log .in { color: var(--accent); }
+.iex-line { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); }
+.iex-line input { flex: 1; font: 13px var(--mono); }

@@ -15,7 +15,8 @@ defmodule StudioWeb.StudioLive do
     {:ok,
      socket
      |> assign(info: info, files: Project.files(), open: nil, busy: false, base: Project.base())
-     |> assign(name: "hello", task: "", task_log: [], tab: "problems", page_title: "phx.new")}
+     |> assign(name: "hello", task: "", task_log: [], tab: "problems", page_title: "phx.new")
+     |> assign(iex_log: [], binding: [], iex_n: 1)}
   end
 
   @impl true
@@ -57,7 +58,17 @@ defmodule StudioWeb.StudioLive do
     |> noreply()
   end
 
-  def handle_event("tab", %{"tab" => tab}, socket) when tab in ~w(problems log mix),
+  def handle_event("eval", %{"code" => code}, socket) do
+    binding = socket.assigns.binding
+    n = socket.assigns.iex_n
+
+    socket
+    |> run(fn -> {:eval, n, code, Studio.Console.eval(code, binding)} end)
+    |> assign(tab: "iex")
+    |> noreply()
+  end
+
+  def handle_event("tab", %{"tab" => tab}, socket) when tab in ~w(problems log mix iex),
     do: socket |> assign(tab: tab) |> noreply()
 
   @impl true
@@ -74,10 +85,26 @@ defmodule StudioWeb.StudioLive do
 
     socket =
       case result do
-        {:task, {:ok, lines}} -> assign(socket, task_log: lines, task: "")
-        {:task, {:error, lines}} -> assign(socket, task_log: lines)
-        {:error, message} -> put_flash(socket, :error, message)
-        _ -> socket
+        {:task, {:ok, lines}} ->
+          assign(socket, task_log: lines, task: "")
+
+        {:task, {:error, lines}} ->
+          assign(socket, task_log: lines)
+
+        {:eval, n, code, {output, binding}} ->
+          entry = %{n: n, code: code, output: output}
+
+          assign(socket,
+            iex_log: Enum.take([entry | socket.assigns.iex_log], 50),
+            binding: binding,
+            iex_n: n + 1
+          )
+
+        {:error, message} ->
+          put_flash(socket, :error, message)
+
+        _ ->
+          socket
       end
 
     socket =
@@ -200,7 +227,8 @@ defmodule StudioWeb.StudioLive do
             <input class="address" value="/" aria-label="Path of the app" spellcheck="false" />
             <a class="open" target="_blank" href={@base <> "/"}>Open</a>
           </div>
-          <iframe title="The app" src={@base <> "/"}></iframe>
+          <%!-- With no app, the frame stays empty until the first "reload". --%>
+          <iframe title="The app" src={if @info.endpoint, do: @base <> "/", else: "about:blank"}></iframe>
         </div>
       </section>
 
@@ -210,6 +238,7 @@ defmodule StudioWeb.StudioLive do
             :for={
               {id, label} <- [
                 {"problems", "Problems (#{length(@info.diagnostics)})"},
+                {"iex", "IEx"},
                 {"log", "Generator"},
                 {"mix", "Mix"}
               ]
@@ -236,6 +265,22 @@ defmodule StudioWeb.StudioLive do
             <span class="where">{d.file}{if d.line, do: ":#{d.line}"}</span>
             <span class="what">{d.message}</span>
           </button>
+        </div>
+        <div :if={@tab == "iex"} class="iex">
+          <pre class="log" id="iex-log"><%= for e <- Enum.reverse(@iex_log) do %><span class="in">iex({e.n})&gt; {e.code}</span>
+    {e.output}
+    <% end %></pre>
+          <form phx-submit="eval" class="iex-line">
+            <label for="code" class="prompt">iex({@iex_n})&gt;</label>
+            <input
+              id="code"
+              name="code"
+              value=""
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Hello.Repo.all(Hello.Blog.Post)"
+            />
+          </form>
         </div>
         <pre :if={@tab == "log"} class="log">{Enum.join(@info.log, "\n")}</pre>
         <pre :if={@tab == "mix"} class="log">{if @task_log == [], do: "Run a generator of Phoenix or Ecto in the field $ mix, then add its routes.", else: Enum.join(@task_log, "\n")}</pre>

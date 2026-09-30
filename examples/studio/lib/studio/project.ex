@@ -390,7 +390,7 @@ defmodule Studio.Project do
         else: config
 
     Enum.map(config, fn
-      {^app, env} -> {app, Enum.map(env, &endpoint_config/1)}
+      {^app, env} -> {app, env |> Enum.map(&endpoint_config/1) |> Enum.map(&repo_config/1)}
       other -> other
     end)
   end
@@ -414,6 +414,19 @@ defmodule Studio.Project do
   end
 
   defp endpoint_config(other), do: other
+
+  # In WebAssembly, the SQLite of beam.com has no WAL for the files in the
+  # memory of the VM: the close of a database in WAL mode does not end. So
+  # a repo of the project uses the journal mode "delete".
+  defp repo_config({key, value} = pair) when is_atom(key) and is_list(value) do
+    if wasm?() and String.ends_with?(Atom.to_string(key), "Repo") and Keyword.keyword?(value),
+      do: {key, Keyword.put(value, :journal_mode, :delete)},
+      else: pair
+  end
+
+  defp repo_config(other), do: other
+
+  defp wasm?, do: List.starts_with?(:erlang.system_info(:system_architecture), ~c"wasm32")
 
   defp base_path, do: if(base() == "", do: "/", else: base())
 
