@@ -40,6 +40,10 @@ These run from the WebAssembly runtime of `beam.com`, on the free plans:
   for each visitor) and <https://livebook.one.deno.net> (Deno Deploy):
   Livebook, with the notebooks of beam.com
   ([`wasm/livebook`](wasm/livebook)).
+- <https://phx.fifo.workers.dev> (Cloudflare Workers, an instance for
+  each visitor) and <https://sntran.github.io/BEAM.com/phx/> (in the
+  page): `mix phx.new` and a Phoenix app, with nothing to install
+  ([`examples/studio`](examples/studio)).
 - <https://beam.one.deno.net> (Deno Deploy): the Erlang shell, with the
   VM on the server and a restricted shell for all the visitors
   ([`examples/worker`](examples/worker)).
