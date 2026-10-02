@@ -342,7 +342,7 @@ defmodule BeamComTest do
       # the test node has more of them.
       [head, _] = String.split(IO.chardata_to_string(:beam_com.version()), "  Applications: ")
       assert String.starts_with?(out, head <> "  Applications: ")
-      assert out =~ ~r/ beam_com-[0-9.]+ .* stdlib-[0-9.]+ /
+      assert out =~ ~r/ beam_com-[0-9.]+ .*stdlib-[0-9.]+\s/
     end
 
     test "no argument out of a project: the help and the status 0", %{tmp_dir: dir} do
