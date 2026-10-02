@@ -925,6 +925,10 @@ step_unit() {
         mix compile --warnings-as-errors
         mix format --check-formatted
         mix test --cover
+        # The tests of the studio (examples/studio): the import rewrite.
+        cd examples/studio
+        MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" mix deps.get
+        MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" mix test
     )
 }
 

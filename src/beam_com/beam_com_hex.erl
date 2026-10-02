@@ -171,8 +171,10 @@ clause(String) ->
     Vsn = string:trim(Rest),
     case Op of
         '~>' ->
-            case string:split(Vsn, ".", all) of
-                [_, _] -> {'~>', version(Vsn ++ ".0"), 2};
+            %% "~> 2.1" and "~> 2.1-dev" omit the patch number.
+            [Core | Pre] = string:split(Vsn, "-"),
+            case string:split(Core, ".", all) of
+                [_, _] -> {'~>', version(lists:flatten(lists:join("-", [Core ++ ".0" | Pre]))), 2};
                 [_, _, _ | _] -> {'~>', version(Vsn), 3};
                 _ -> throw(bad)
             end;
@@ -208,23 +210,26 @@ expand(Clause) ->
     [Clause].
 
 %% matches(Version, Requirement): the version matches one alternative.
-%% A pre-release matches only a requirement that names a pre-release.
+%% The rule of Hex (Version.match?/3 of Elixir with allow_pre: false): a
+%% pre-release matches a ">", ">=" or "~>" clause only when the version
+%% of that clause is a pre-release. No requirement matches no pre-release.
 matches({_, _, _, Pre}, any) -> Pre =:= [];
 matches(Version, Req) when is_list(Req) ->
     {ok, Alts} = parse_requirement(Req),
     lists:any(fun(Alt) -> match_alt(Version, lists:append(Alt)) end, Alts).
 
-match_alt({_, _, _, Pre} = V, Clauses) ->
-    AllowPre = Pre =:= [] orelse
-        lists:any(fun({_, {_, _, _, P}}) -> P =/= [] andalso P =/= [0] end, Clauses),
-    AllowPre andalso lists:all(fun(C) -> match_clause(V, C) end, Clauses).
+match_alt(V, Clauses) ->
+    lists:all(fun(C) -> match_clause(V, C) end, Clauses).
 
 match_clause(V, {'==', W}) -> compare(V, W) =:= eq;
 match_clause(V, {'!=', W}) -> compare(V, W) =/= eq;
-match_clause(V, {'>=', W}) -> compare(V, W) =/= lt;
+match_clause(V, {'>=', W}) -> compare(V, W) =/= lt andalso pre_allowed(V, W);
 match_clause(V, {'<=', W}) -> compare(V, W) =/= gt;
-match_clause(V, {'>', W}) -> compare(V, W) =:= gt;
+match_clause(V, {'>', W}) -> compare(V, W) =:= gt andalso pre_allowed(V, W);
 match_clause(V, {'<', W}) -> compare(V, W) =:= lt.
+
+pre_allowed({_, _, _, []}, _) -> true;
+pre_allowed(_, {_, _, _, ReqPre}) -> ReqPre =/= [].
 
 %%% rebar.lock: #{Name => #{pkg, vsn, inner, outer}}, Name an atom.
 
@@ -587,8 +592,9 @@ seq(Chars, Close, Depth, Acc) ->
             end
     end.
 
-%% A binary of strings: <<>>, <<"text">>, <<"text"/utf8>>, and segments
-%% with commas.
+%% A binary: <<>>, <<"text">>, <<"text"/utf8>>, bytes (<<1,255>>), and
+%% segments with commas. io_lib:format/2 writes bytes when the binary
+%% has a character that it does not print.
 bin(">>" ++ Rest) ->
     {<<>>, skip(Rest)};
 bin(Chars) ->
@@ -596,14 +602,18 @@ bin(Chars) ->
 
 bin([$" | Rest], Acc) ->
     {Text, Rest1} = quoted(Rest, $", []),
-    {Seg, Rest2} = case skip(Rest1) of
-                       "/utf8" ++ R -> {unicode:characters_to_binary(Text), skip(R)};
-                       R -> {<< <<C:8>> || C <- Text >>, R}
-                   end,
-    case Rest2 of
-        [$, | R2] -> bin(skip(R2), [Seg | Acc]);
-        ">>" ++ R2 -> {iolist_to_binary(lists:reverse([Seg | Acc])), skip(R2)}
-    end.
+    case skip(Rest1) of
+        "/utf8" ++ R -> bin_next(skip(R), unicode:characters_to_binary(Text), Acc);
+        R -> bin_next(R, << <<C:8>> || C <- Text >>, Acc)
+    end;
+bin([C | _] = Chars, Acc) when C >= $0, C =< $9 ->
+    {Digits, Rest} = lists:splitwith(fun(D) -> D >= $0 andalso D =< $9 end, Chars),
+    Byte = list_to_integer(Digits),
+    Byte =< 255 orelse error(badarg),
+    bin_next(skip(Rest), <<Byte>>, Acc).
+
+bin_next([$, | Rest], Seg, Acc) -> bin(skip(Rest), [Seg | Acc]);
+bin_next(">>" ++ Rest, Seg, Acc) -> {iolist_to_binary(lists:reverse([Seg | Acc])), skip(Rest)}.
 
 %% The text of a quoted string or atom, with the escapes of Erlang.
 quoted([Q | Rest], Q, Acc) -> {lists:reverse(Acc), Rest};

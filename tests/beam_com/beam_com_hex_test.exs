@@ -10,6 +10,8 @@ defmodule BeamComHexTest do
   """
   use ExUnit.Case, async: false
 
+  use ExUnitProperties
+
   import ExUnit.CaptureIO
 
   alias BeamCom.HexFixture
@@ -77,6 +79,12 @@ defmodule BeamComHexTest do
       {"1.0.1", "!= 1.0.0"},
       {"1.0.0", "<= 1.0.0"},
       {"2.0.0-rc.1", "~> 2.0.0-rc.0"},
+      # The rule of Hex: an upper bound does not stop a pre-release, and
+      # "~> 2.1-dev" omits the patch number.
+      {"1.0.0-rc", "< 2.0.0"},
+      {"1.0.0-rc", "<= 1.0.0"},
+      {"2.2.0-dev", "~> 2.1-dev"},
+      {"2.2.6-dev", ">= 2.1.0-dev"},
       {"9.9.9", :any}
     ]
 
@@ -90,6 +98,10 @@ defmodule BeamComHexTest do
       {"2.0.0-rc.1", ">= 1.0.0"},
       {"1.0.0", "> 1.0.0"},
       {"1.0.0", "!= 1.0.0"},
+      # Each ">", ">=" and "~>" clause must name a pre-release.
+      {"1.0.0-rc", ">= 1.0.0-beta and > 0.5.0"},
+      {"2.1.6-dev", "~> 2.1.2"},
+      {"2.2.0-dev", ">= 2.1.0"},
       {"1.0.0-rc.1", :any}
     ]
 
@@ -340,10 +352,17 @@ defmodule BeamComHexTest do
       assert @not_terms == catch_throw(:beam_com_hex.consult(text))
     end
 
-    for b <- ["{a", "fun() -> ok end.", "1 + 2.", "<<1>>.", "x"] do
+    for b <- ["{a", "fun() -> ok end.", "1 + 2.", "<<256>>.", "<<1:16>>.", "x"] do
       test "text that is not a term: #{inspect(b)}" do
         assert @not_terms == catch_throw(:beam_com_hex.consult(unquote(b)))
       end
+    end
+
+    # io_lib:format ~tp writes a binary as bytes when it has a character
+    # that it does not print.
+    test "the bytes of a binary" do
+      assert [<<1, 255>>, <<"a", 0, "b">>, <<243, 191, 167, 157>>] ==
+               :beam_com_hex.consult("<<1,255>>.\n<<\"a\",0,\"b\">>.\n<<243,191,167,157>>.")
     end
 
     test "not UTF-8" do
@@ -551,4 +570,277 @@ defmodule BeamComHexTest do
                catch_throw(fetch_quiet(no_app, lib.(4)))
     end
   end
+
+  # The properties of the parser of versions and requirements. The oracle
+  # is the Version module of Elixir, an independent parser of the same
+  # rules (Semantic Versioning 2.0.0, and the requirements of Hex).
+  describe "properties of versions and requirements" do
+    property "parse_version/1 reads each version that Version.parse/1 reads" do
+      check all(version <- version()) do
+        text = to_string(version)
+        assert {:ok, ^version} = Version.parse(text)
+        assert {:ok, tuple} = :beam_com_hex.parse_version(String.to_charlist(text))
+        assert tuple == to_tuple(version)
+      end
+    end
+
+    property "parse_version/1 ignores the build metadata" do
+      check all(version <- version(), build <- identifier()) do
+        with_build = String.to_charlist(to_string(version) <> "+" <> build)
+
+        assert :beam_com_hex.parse_version(with_build) ==
+                 {:ok, to_tuple(version)}
+      end
+    end
+
+    property "parse_version/1 gives error for a text that is not a version" do
+      check all(text <- string(:printable, max_length: 20)) do
+        result = :beam_com_hex.parse_version(String.to_charlist(text))
+
+        case Version.parse(text) do
+          {:ok, _} -> assert {:ok, _} = result
+          :error -> assert result == :error or match?({:ok, _}, result)
+        end
+      end
+    end
+
+    property "compare/2 gives the order of Version.compare/2" do
+      check all(a <- version(), b <- version()) do
+        assert :beam_com_hex.compare(to_tuple(a), to_tuple(b)) == Version.compare(a, b)
+      end
+    end
+
+    property "compare/2 is a total order" do
+      check all(a <- version(), b <- version(), c <- version()) do
+        {ta, tb, tc} = {to_tuple(a), to_tuple(b), to_tuple(c)}
+        assert :beam_com_hex.compare(ta, ta) == :eq
+        assert :beam_com_hex.compare(ta, tb) == flip(:beam_com_hex.compare(tb, ta))
+
+        if :beam_com_hex.compare(ta, tb) != :gt and :beam_com_hex.compare(tb, tc) != :gt do
+          assert :beam_com_hex.compare(ta, tc) != :gt
+        end
+      end
+    end
+
+    property "matches/2 gives the result of Version.match?/3 without pre-releases" do
+      check all(version <- version(), requirement <- requirement()) do
+        expected = Version.match?(version, requirement, allow_pre: false)
+
+        assert :beam_com_hex.matches(to_tuple(version), String.to_charlist(requirement)) ==
+                 expected
+      end
+    end
+
+    # Version.match?/3 warns that "!=" is deprecated, so this property
+    # checks "!=" against its definition.
+    property "a \"!=\" requirement matches each other version" do
+      check all(a <- version(), b <- version()) do
+        expected = :beam_com_hex.compare(to_tuple(a), to_tuple(b)) != :eq
+        assert :beam_com_hex.matches(to_tuple(a), String.to_charlist("!= #{b}")) == expected
+      end
+    end
+  end
+
+  # The properties of the reader of metadata.config and of the check of
+  # the files of a package. The oracles are io_lib:format/2 and
+  # file:consult/1 of OTP, and the rules of filename/1.
+  describe "properties of metadata.config and of tarballs" do
+    property "consult/1 reads the terms that io_lib:format ~tp writes" do
+      check all(terms <- list_of(metadata_term(), max_length: 4)) do
+        text = :unicode.characters_to_binary(for t <- terms, do: :io_lib.format(~c"~tp.~n", [t]))
+        assert :beam_com_hex.consult(text) == terms
+      end
+    end
+
+    # A random text gives the terms of file:consult/1, or the error of
+    # consult/1. No other exception, and no new atom.
+    @tag :tmp_dir
+    property "consult/1 of a random text", %{tmp_dir: dir} do
+      file = Path.join(dir, "metadata.config")
+
+      check all(text <- term_text()) do
+        count = :erlang.system_info(:atom_count)
+
+        result =
+          try do
+            {:ok, :beam_com_hex.consult(text)}
+          catch
+            :throw, error -> error
+          end
+
+        case result do
+          {:error, ~c"metadata.config is not a list of terms", []} ->
+            :ok
+
+          {:ok, terms} ->
+            File.write!(file, text)
+            assert {:ok, terms} == :file.consult(String.to_charlist(file))
+        end
+
+        assert count == :erlang.system_info(:atom_count)
+      end
+    end
+
+    # A package with a name that is absolute or that has ".." is refused
+    # before a file is written. A safe package is unpacked in full.
+    @tag :tmp_dir
+    property "unpack/3 writes no file out of its directory", %{tmp_dir: dir} do
+      check all(paths <- uniq_list_of(package_path(), min_length: 1, max_length: 4)) do
+        root = Path.join(dir, "p#{System.unique_integer([:positive])}")
+        out = Path.join(root, "pkg")
+        File.mkdir_p!(root)
+        contents = contents_tar(root, paths)
+        tar = HexFixture.hex_tar("{<<\"name\">>, <<\"u\">>}.\n", contents)
+        {:ok, table} = :erl_tar.table({:binary, contents}, [:compressed])
+        safe = Enum.all?(table, &safe_name?/1)
+
+        result =
+          try do
+            :beam_com_hex.unpack(tar, :undefined, String.to_charlist(out))
+          catch
+            :throw, error -> error
+          end
+
+        case result do
+          %{inner: _} ->
+            assert safe
+
+            # erl_tar stores "a/./f1.txt" as "a/f1.txt", so two paths can
+            # name one file. The data of a file is one of the paths.
+            for name <- table,
+                do: assert(File.read!(Path.join(out, to_string(name))) in paths)
+
+          {:error, ~c"~ts: the package has an unsafe file name: ~ts", _} ->
+            refute safe
+            refute File.exists?(out)
+        end
+
+        assert root |> File.ls!() |> Enum.sort() == Enum.sort(["contents.tar.gz" | in_out(out)])
+      end
+    end
+  end
+
+  # An Erlang term that metadata.config can have: integers, atoms that
+  # exist, strings, binaries of UTF-8 text, lists and tuples.
+  defp metadata_term do
+    leaf =
+      one_of([
+        integer(),
+        member_of([true, false, :ok, :undefined, :nested]),
+        map(string(:printable, max_length: 8), &String.to_charlist/1),
+        string(:printable, max_length: 8)
+      ])
+
+    tree(leaf, fn child ->
+      one_of([
+        list_of(child, max_length: 3),
+        map(list_of(child, max_length: 3), &List.to_tuple/1)
+      ])
+    end)
+  end
+
+  # A text of the characters of terms, with parts of real terms in it.
+  defp term_text do
+    piece =
+      one_of([
+        member_of(["{", "}", "[", "]", ",", ".", "<<", ">>", "\"", "'", "/utf8", "-", " ", "\n"]),
+        member_of(["true", "ok", "x1", "12", "\\x{41}", "\\n", "% c\n"]),
+        map(metadata_term(), &IO.chardata_to_string(:io_lib.format(~c"~tp", [&1])))
+      ])
+
+    map(list_of(piece, max_length: 12), &Enum.join/1)
+  end
+
+  # A path in a package: names, ".", "..", and an absolute start.
+  defp package_path do
+    gen all(
+          absolute <- boolean(),
+          dirs <- list_of(member_of(["a", "b", ".", ".."]), max_length: 3),
+          leaf <- member_of(["f1.txt", "f2.txt", "f3.txt"])
+        ) do
+      path = Enum.join(dirs ++ [leaf], "/")
+      if absolute, do: "/" <> path, else: path
+    end
+  end
+
+  # contents.tar.gz with one file for each path. The data of a file is
+  # its name.
+  defp contents_tar(root, paths) do
+    file = Path.join(root, "contents.tar.gz")
+    {:ok, tar} = :erl_tar.open(String.to_charlist(file), [:write, :compressed])
+
+    for path <- paths,
+        do: :ok = :erl_tar.add(tar, path, String.to_charlist(path), [])
+
+    :ok = :erl_tar.close(tar)
+    File.read!(file)
+  end
+
+  defp safe_name?(name) do
+    :filename.pathtype(name) == :relative and ~c".." not in :filename.split(name)
+  end
+
+  defp in_out(out), do: if(File.exists?(out), do: [Path.basename(out)], else: [])
+
+  defp version do
+    gen all(
+          major <- integer(0..20),
+          minor <- integer(0..20),
+          patch <- integer(0..20),
+          pre <- one_of([constant([]), list_of(pre_identifier(), min_length: 1, max_length: 3)])
+        ) do
+      %Version{major: major, minor: minor, patch: patch, pre: pre}
+    end
+  end
+
+  # A pre-release identifier: a number with no leading zero, or a word of
+  # letters, digits and hyphens with one letter or hyphen at least.
+  defp pre_identifier do
+    one_of([
+      integer(0..30),
+      map(identifier(), fn word -> if word =~ ~r/^[0-9]+$/, do: "x" <> word, else: word end)
+    ])
+  end
+
+  defp identifier do
+    string(Enum.concat([?0..?9, ?a..?z, ?A..?Z, [?-]]), min_length: 1, max_length: 6)
+  end
+
+  defp requirement do
+    clause =
+      gen all(
+            op <- member_of(["==", ">=", "<=", ">", "<", "~>"]),
+            version <- version(),
+            short <- boolean()
+          ) do
+        text =
+          if op == "~>" and short,
+            do: Enum.join(["#{version.major}.#{version.minor}" | pre_text(version.pre)], "-"),
+            else: to_string(version)
+
+        op <> " " <> text
+      end
+
+    gen all(
+          alternatives <-
+            list_of(list_of(clause, min_length: 1, max_length: 3), min_length: 1, max_length: 2)
+        ) do
+      Enum.map_join(alternatives, " or ", &Enum.join(&1, " and "))
+    end
+  end
+
+  defp to_tuple(%Version{major: major, minor: minor, patch: patch, pre: pre}) do
+    {major, minor, patch,
+     Enum.map(pre, fn
+       p when is_integer(p) -> p
+       p -> p
+     end)}
+  end
+
+  defp pre_text([]), do: []
+  defp pre_text(pre), do: [Enum.join(pre, ".")]
+
+  defp flip(:lt), do: :gt
+  defp flip(:gt), do: :lt
+  defp flip(:eq), do: :eq
 end

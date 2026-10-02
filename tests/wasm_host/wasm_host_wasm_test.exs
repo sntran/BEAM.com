@@ -4,6 +4,7 @@ defmodule WasmHostWasmTest do
   runtime: the parts that need no host.
   """
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   @module {:wasm_module, "m1"}
   @instance {:wasm_instance, "i1"}
@@ -84,5 +85,24 @@ defmodule WasmHostWasmTest do
     flunk("no error")
   catch
     :error, reason -> reason
+  end
+
+  # A value goes to the host as JSON. The oracle is the json module of
+  # OTP: the value comes back the same after the encode and the decode.
+  describe "properties of wire/1 and unwire/1" do
+    property "a value comes back from JSON the same" do
+      check all(
+              value <-
+                one_of([
+                  integer(),
+                  map(integer(), &(&1 * 10_000_000_000_000_000)),
+                  float(),
+                  member_of([:nan, :infinity, :"-infinity"])
+                ])
+            ) do
+        json = :json.decode(IO.iodata_to_binary(:json.encode(:wasm_host_wasm.wire(value))))
+        assert :wasm_host_wasm.unwire(json) === value
+      end
+    end
   end
 end

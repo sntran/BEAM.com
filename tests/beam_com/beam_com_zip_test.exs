@@ -8,6 +8,7 @@ defmodule BeamComZipTest do
   the file, when it is installed.
   """
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   @end_record 0x06054B50
 
@@ -426,4 +427,69 @@ defmodule BeamComZipTest do
   catch
     :error, reason -> reason
   end
+
+  # The properties of the writer. The oracle is the zip module of stdlib.
+  describe "properties of the writer" do
+    property "stdlib reads each entry that write/3 writes" do
+      check all(prefix <- binary(), new <- entries()) do
+        out = write(exe(prefix), &all/1, new)
+        assert binary_part(out, 0, byte_size(prefix)) == prefix
+        assert names(out) == Enum.sort(for {name, _} <- new, do: name)
+
+        assert files(out) ==
+                 Enum.sort(for {name, data} <- new, List.last(name) != ?/, do: {name, data})
+      end
+    end
+
+    property "a second write keeps, removes and replaces entries" do
+      check all(
+              first <- entries(),
+              mask <- list_of(boolean(), length: length(first)),
+              second <- entries()
+            ) do
+        kept = for {{name, _}, true} <- Enum.zip(first, mask), do: name
+        out = write(exe(prefix()), &all/1, first)
+        second_names = names_of(second)
+        out = write(out, &(&1 in kept), second)
+
+        expected =
+          Enum.filter(first, fn {name, _} -> name in kept and name not in second_names end) ++
+            second
+
+        assert names(out) == Enum.sort(names_of(expected))
+
+        assert files(out) ==
+                 Enum.sort(for {name, data} <- expected, List.last(name) != ?/, do: {name, data})
+      end
+    end
+  end
+
+  # Entries with distinct names: files with data that compresses or not,
+  # and directories (a name that ends with "/").
+  defp entries do
+    file =
+      tuple(
+        {map(
+           list_of(member_of(["a", "b", "dir", "x.txt"]), min_length: 1, max_length: 3),
+           &path/1
+         ), one_of([binary(), map(binary(max_length: 8), &:binary.copy(&1, 50))])}
+      )
+
+    directory =
+      map(list_of(member_of(["a", "b", "dir"]), min_length: 1, max_length: 2), fn parts ->
+        {path(parts) ++ ~c"/", ""}
+      end)
+
+    map(
+      uniq_list_of(one_of([file, directory]), uniq_fun: &elem(&1, 0), max_length: 6),
+      fn entries ->
+        # A name is a file or a directory, not both.
+        dirs = for {name, ""} <- entries, List.last(name) == ?/, do: Enum.drop(name, -1)
+        Enum.reject(entries, fn {name, _} -> name in dirs end)
+      end
+    )
+  end
+
+  defp path(parts), do: String.to_charlist(Enum.join(parts, "/"))
+  defp names_of(entries), do: for({name, _} <- entries, do: name)
 end

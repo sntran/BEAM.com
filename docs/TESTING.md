@@ -32,7 +32,14 @@ the tests.
 - `tests/host_test.exs`: the tests of the JavaScript of the hosts
   (`tests/host/*.test.mjs`) with `node --test`. They need Node.js 20.6 or
   later. Without `node`, ExUnit skips them (the tag `node`).
-- StreamData properties, in the test file of their module.
+- StreamData properties, in the test file of their module. A property
+  uses an independent oracle where one exists: the `Version` module of
+  Elixir for the versions and the requirements of Hex, `io_lib`,
+  `file:consult/1` and `erl_tar` for `metadata.config` and the
+  tarballs, the `zip` module of stdlib for the zip writer, and the `json`
+  module of OTP for the values that go to the WebAssembly host.
+- `examples/studio/test`: the tests of the import rewrite of the studio.
+  `./build.sh unit` runs them after the tests of the root project.
 
 `tests/support/` has the code that the tests share, for example
 `BeamCom.HexFixture`, a local Hex server. A test that needs a directory
