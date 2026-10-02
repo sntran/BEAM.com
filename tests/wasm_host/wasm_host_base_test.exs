@@ -97,6 +97,22 @@ defmodule WasmHostBaseTest do
     end
   end
 
+  # Elixir writes one attribute for each @behaviour: an endpoint with its
+  # own @behaviour before use Phoenix.Endpoint.
+  test "endpoint/1 with Phoenix.Endpoint in the second behaviour attribute" do
+    mod = :"Elixir.WasmHostBaseTest.TwoBehaviours"
+
+    load(mod, [
+      {:attribute, 1, :behaviour, :"Elixir.Other"},
+      {:attribute, 2, :behavior, :"Elixir.Phoenix.Endpoint"}
+    ])
+
+    assert [behaviour: [:"Elixir.Other"], behavior: [:"Elixir.Phoenix.Endpoint"]] =
+             for({k, _} = a <- mod.module_info(:attributes), k in [:behaviour, :behavior], do: a)
+
+    assert :wasm_host_base.endpoint(mod)
+  end
+
   test "endpoint/1" do
     refute :wasm_host_base.endpoint(:lists)
     refute :wasm_host_base.endpoint(:"Elixir.WasmHostBaseTest.NotLoaded")

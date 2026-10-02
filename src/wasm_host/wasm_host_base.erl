@@ -57,11 +57,13 @@ is_path(_) ->
     false.
 
 %% An Elixir module with the behaviour Phoenix.Endpoint. The code path of
-%% the boot has the module, so it loads here.
+%% the boot has the module, so it loads here. A module has one attribute
+%% for each @behaviour (behaviour or behavior), so all of them count.
 endpoint(Mod) when is_atom(Mod) ->
     lists:prefix("Elixir.", atom_to_list(Mod))
         andalso code:ensure_loaded(Mod) =:= {module, Mod}
         andalso lists:member('Elixir.Phoenix.Endpoint',
-                             proplists:get_value(behaviour, Mod:module_info(attributes), []));
+                             [B || {K, Bs} <- Mod:module_info(attributes),
+                                   K =:= behaviour orelse K =:= behavior, B <- Bs]);
 endpoint(_) ->
     false.
