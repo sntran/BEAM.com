@@ -338,6 +338,14 @@ if [ -d examples ]; then
         check script_check.b.com 'schedulers 1$' info
         unset ERL_FLAGS
     fi
+    # The peer module of OTP: the program starts its own file in erl mode,
+    # with the standard I/O and then a TCP connection as the channel.
+    check beam.com 'wrote .*peer_check.b.com' \
+        tests/programs/peer_check.erl -o "$dir/peer_check.b.com"
+    if [ -f "$dir/peer_check.b.com" ]; then
+        peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000'
+        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$"
+    fi
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program.
     check beam.com "$hashsum" examples/hashsum.erl -- abc

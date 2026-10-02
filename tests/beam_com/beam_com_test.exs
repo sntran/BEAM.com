@@ -332,4 +332,44 @@ defmodule BeamComTest do
       end
     end
   end
+
+  # main/0 halts the node, so it runs in a peer node (BeamCom.PeerNode).
+  describe "main/0 in a peer node" do
+    test "--version: the text of version/0 and the status 0", %{tmp_dir: dir} do
+      {status, out} = BeamCom.PeerNode.run({:beam_com, :main, []}, argv: ["--version"], cd: dir)
+      assert status == 0
+      # The line "Applications" has the applications of the code path, and
+      # the test node has more of them.
+      [head, _] = String.split(IO.chardata_to_string(:beam_com.version()), "  Applications: ")
+      assert String.starts_with?(out, head <> "  Applications: ")
+      assert out =~ ~r/ beam_com-[0-9.]+ .* stdlib-[0-9.]+ /
+    end
+
+    test "no argument out of a project: the help and the status 0", %{tmp_dir: dir} do
+      {status, out} = BeamCom.PeerNode.run({:beam_com, :main, []}, cd: dir)
+      assert status == 0
+      assert out == IO.chardata_to_string(:beam_com.help([]))
+    end
+
+    test "an error: the message on standard error and the status 1", %{tmp_dir: dir} do
+      {status, out} =
+        BeamCom.PeerNode.run({:beam_com, :main, []}, argv: ["--version", "x"], cd: dir)
+
+      assert status == 1
+      assert out == "beam.com: usage: beam.com --version\n"
+    end
+
+    test "--target with no -o: the status 1", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "x.erl"), "-module(x).\n")
+
+      {status, out} =
+        BeamCom.PeerNode.run({:beam_com, :main, []},
+          argv: ["x.erl", "--target", "wasm32"],
+          cd: dir
+        )
+
+      assert status == 1
+      assert out =~ "beam.com: --target makes a file for another system: use it with -o"
+    end
+  end
 end
