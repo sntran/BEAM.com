@@ -31,7 +31,7 @@ defmodule BeamCom.MixProject do
       app: :beam_com,
       version: @version,
       elixir: "~> 1.20",
-      erlc_paths: erlc_paths(Mix.env()),
+      erlc_paths: ["src"],
       erlc_options: erlc_options(Mix.env()),
       elixirc_paths: elixirc_paths(Mix.env()),
       test_paths: ["tests"],
@@ -48,15 +48,9 @@ defmodule BeamCom.MixProject do
   @applications [:logger, :compiler, :sasl, :crypto, :ssl, :inets, :public_key]
 
   # Mix keeps only the applications of the project in the code path. The
-  # tests need eunit (the EUnit modules), parsetools and asn1 (the
-  # generators of beam_com_build).
-  defp extra_applications(:test), do: @applications ++ [:eunit, :parsetools, :asn1]
+  # tests need parsetools and asn1 (the generators of beam_com_build).
+  defp extra_applications(:test), do: @applications ++ [:parsetools, :asn1]
   defp extra_applications(_), do: @applications
-
-  # The EUnit test modules (tests/eunit) compile with the code, until each
-  # of them has an ExUnit test file.
-  defp erlc_paths(:test), do: ["src", "tests/eunit"]
-  defp erlc_paths(_), do: ["src"]
 
   # -DTEST exports the functions that the tests call.
   defp erlc_options(:test), do: [:debug_info, {:d, :TEST}]
