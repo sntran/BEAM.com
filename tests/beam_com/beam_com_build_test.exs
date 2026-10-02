@@ -1697,7 +1697,7 @@ defmodule BeamComBuildTest do
 
         # A drive becomes the form of Cosmopolitan: "C:\\x" is "/C/x".
         case String.to_charlist(path) do
-          [letter, ?: | _] -> assert [?/, letter | _] = out
+          [letter, ?: | _] -> assert [?/, ^letter | _] = out
           _ -> :ok
         end
       end
