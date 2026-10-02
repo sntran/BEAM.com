@@ -9,13 +9,34 @@
 %% For each channel, one line:
 %%
 %%   peer CHANNEL: release R, sum 6, own code true, error boom, bytes 1000000
+%%
+%% On Windows, beam.com has no port programs (open_port/2 with
+%% spawn_executable gives enotsup), so peer cannot start a node. There
+%% the program checks that error and prints one line:
+%%
+%%   peer: not supported on windows
 -module(peer_check).
 -export([main/1]).
 
 main(_) ->
     {ok, [[Exe]]} = init:get_argument(beam_com_exe),
-    [check(Exe, Channel) || Channel <- [standard_io, tcp]],
+    case os:type() of
+        {win32, _} -> windows(Exe);
+        _ -> [check(Exe, Channel) || Channel <- [standard_io, tcp]]
+    end,
     ok.
+
+%% peer:start/1, not start_link/1: the error comes back as a value. A
+%% result other than enotsup fails, so a change on Windows shows here.
+windows(Exe) ->
+    case peer:start(#{exec => {Exe, []}, env => [{"BEAM_COM_ERL", "1"}],
+                      connection => standard_io}) of
+        {error, {enotsup, _}} ->
+            io:format("peer: not supported on windows~n");
+        Other ->
+            io:format("peer: unexpected result on windows: ~p~n", [Other]),
+            erlang:halt(1)
+    end.
 
 check(Exe, Channel) ->
     %% A node with a TCP channel stays a child of this program (detached
