@@ -501,12 +501,15 @@ defmodule BeamComWasmTest do
       assert ["SECRET_KEY_BASE"] == env["secrets"]
     end
 
-    test "the files of priv/static of the app, not the compressed copies", %{files: files} do
+    test "the files of priv/static of the app, not the compressed copies and the dot files",
+         %{files: files} do
       page =
         files.([], [
           {~c"lib/app-0.2.0/priv/static/assets/app.css", "css"},
           {~c"lib/app-0.2.0/priv/static/assets/app.css.gz", "gz"},
           {~c"lib/app-0.2.0/priv/static/favicon.ico", "ico"},
+          {~c"lib/app-0.2.0/priv/static/.well-known/security.txt", "dot"},
+          {~c"lib/app-0.2.0/priv/static/assets/.hidden.css", "dot"},
           {~c"lib/app-0.2.0/priv/other/x.txt", "x"},
           {~c"lib/app_web-1/priv/static/web.css", "web"},
           {~c"lib/app-0.2.0/ebin/app.app", "app"}
@@ -518,6 +521,9 @@ defmodule BeamComWasmTest do
       assert "css" == :proplists.get_value(~c"app/assets/app.css", page)
       assert "ico" == :proplists.get_value(~c"app/favicon.ico", page)
       refute :proplists.is_defined(~c"app/assets/app.css.gz", page)
+      # actions/upload-pages-artifact leaves out a name that starts with ".".
+      refute :proplists.is_defined(~c"app/.well-known/security.txt", page)
+      refute :proplists.is_defined(~c"app/assets/.hidden.css", page)
     end
 
     # A second build replaces the links of the first one.

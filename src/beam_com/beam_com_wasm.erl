@@ -557,13 +557,16 @@ page_worker(Js) ->
 
 %% The files of priv/static of the application of the release, as
 %% {"/PATH", Data}, without the copies that Plug.Static compresses (the
-%% site compresses its files).
+%% site compresses its files). Not a path with a name that starts with "."
+%% (.well-known/): actions/upload-pages-artifact leaves them out of the
+%% site, so the VM serves them.
 static_files(Name, Files) ->
     Prefix = "lib/" ++ Name ++ "-",
     lists:sort([{"/" ++ string:join(Parts, "/"), D}
                 || {P, D} <- Files, lists:prefix(Prefix, P),
                    [_Vsn, "priv", "static" | Parts] <- [string:split(lists:nthtail(length(Prefix), P), "/", all)],
-                   Parts =/= [], not lists:member(filename:extension(P), [".gz", ".br"])]).
+                   Parts =/= [], not lists:member(filename:extension(P), [".gz", ".br"]),
+                   not lists:any(fun(F) -> lists:prefix(".", F) end, Parts)]).
 
 write_page(Output, Files) ->
     Page = filename:join(Output, "page"),

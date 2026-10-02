@@ -479,7 +479,12 @@ The base path:
   Phoenix (`~p`) stay in the frame.
 - A link or a form with a path outside the frame, such as `href="/"` of
   the layout of `mix phx.new`, goes to the same path in the frame
-  (`ws-shim.js`).
+  (`ws-shim.js`). A redirect of the app to such a path does the same
+  (`sw.js`). So a link to another site of the same origin (`/OTHER-REPO/`)
+  also goes into the frame: the page cannot see the difference from a
+  path of the app.
+- Each request to the VM has the host `localhost` and the header
+  `x-forwarded-proto: https`, as behind a proxy.
 
 The variables of `env.json`:
 
@@ -519,6 +524,18 @@ The limits:
   (3.5 to 14 MB for a Phoenix app).
 - The app needs an HTTP listener on `PORT`, and only the NIFs of the
   runtime (see "NIFs").
+- An app with `force_ssl` must have `rewrite_on: [:x_forwarded_proto]`
+  (as `mix phx.new` writes it), or exclude the host `localhost`. Else it
+  redirects each request to `https://localhost/`.
+
+Caution: all the project sites of one GitHub account share one origin
+(`USER.github.io`). A page of another site of the same account can read
+the secret in `localStorage`, the snapshot in the Cache API (all the
+memory of the VM), and the frame of the app. The site of BEAM.com runs
+Livebook with notebooks of other people on `sntran.github.io` (see the
+caution about Kino below). The user site (`USER.github.io` itself) has
+the same origin. Give an app with private data its own custom domain
+(Settings, Pages, Custom domain): then the site has its own origin.
 
 ### Livebook in a web page
 
