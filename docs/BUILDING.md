@@ -16,8 +16,7 @@ build/cosmocc/bin/make       # all the steps
 ```
 
 Any GNU make 4 works. CI uses the make of cosmocc, so the build does not
-depend on the make of the host. `./build.sh STEP...` is the old command
-line: it runs `make STEP...` with the make of cosmocc when it is there.
+depend on the make of the host.
 
 The build downloads:
 

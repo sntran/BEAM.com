@@ -67,7 +67,9 @@ jobs:
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
 
       - name: Download cosmocc
-        run: ./build.sh toolchain
+        # The GNU make of the host gets cosmocc. Then the make of cosmocc
+        # runs the build (the Makefile).
+        run: make toolchain
 
       - name: Cache OpenSSL
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -100,7 +102,7 @@ jobs:
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
 
       - name: Build
-        run: ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall wasm_runtime bundle
+        run: build/cosmocc/bin/make
 
       - name: Upload ${{ matrix.out }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -140,7 +142,7 @@ jobs:
 
       - name: Test
         timeout-minutes: 5
-        run: BEAM_COM_VERBOSE=1 timeout 120 ./build.sh test
+        run: BEAM_COM_VERBOSE=1 timeout 120 build/cosmocc/bin/make test
 
       # The file formats of the output and of a program that it built
       # (tests/check_format.sh): ZIP, PE, ELF and Mach-O. The Mach-O check
@@ -162,7 +164,7 @@ jobs:
       - name: Unit tests
         if: matrix.out == 'beam.com'
         timeout-minutes: 10
-        run: ./build.sh unit
+        run: build/cosmocc/bin/make unit
 
       - name: Trace a failed test
         if: failure()

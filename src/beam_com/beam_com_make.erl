@@ -6,8 +6,8 @@
 %% elixir_make runs make in the directory of a package that has C code (a
 %% NIF), with the build directory of the package in MIX_APP_PATH
 %% (_build/dev/lib/APP). The NIFs of some packages are linked into
-%% beam.com (the env nifs of the beam_com application, which build.sh
-%% sets: [{exqlite, "0.41.0"}, {bcrypt_elixir, "3.3.2"},
+%% beam.com (the env nifs of the beam_com application, which the
+%% step bundle of scripts/steps.sh sets: [{exqlite, "0.41.0"}, {bcrypt_elixir, "3.3.2"},
 %% {argon2_elixir, "4.1.3"}]). ERTS finds a
 %% static NIF by the name of its module, before it opens the file that
 %% load_nif/2 gets, so these packages need no make and no C compiler:

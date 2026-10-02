@@ -516,7 +516,7 @@ WebAssembly feature):
 
 The runtime is built from the source of the same OTP by
 [`wasm/erts/build.sh`](../wasm/erts/build.sh) (the step `wasm_runtime`
-of `build.sh`). [`wasm/erts/otp.patch`](../wasm/erts/otp.patch) has the
+of the Makefile). [`wasm/erts/otp.patch`](../wasm/erts/otp.patch) has the
 changes of ERTS. For example, `process_main()` returns at the end of each
 time slice: V8 then uses its optimized code for the loop of the
 interpreter, which made Erlang code about 4 times faster.

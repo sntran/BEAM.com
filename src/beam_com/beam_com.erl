@@ -319,7 +319,8 @@ vsn() ->
         undefined -> "(unknown version)"
     end.
 
-%% The full OTP version (29.1.1), which build.sh writes into the .app
+%% The full OTP version (29.1.1), which the build (scripts/steps.sh)
+%% writes into the .app
 %% file. erlang:system_info(otp_release) gives only the major version.
 otp_version() ->
     _ = application:load(beam_com),
