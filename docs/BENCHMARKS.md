@@ -38,6 +38,47 @@ for comparing variants on the same machine. CI machines are shared, so
 expect some noise; a difference of less than about 10% does not tell
 much.
 
+## The performance gate
+
+A pull request must not make `beam.com` slower. CI runs
+[`tests/bench/gate.sh`](../tests/bench/gate.sh) on Linux x86_64 for
+each pull request:
+
+```sh
+tests/bench/gate.sh NEW BASE [CASE...]
+```
+
+The base is the `edge` build of `main`, with its SHA-256 checked. Shared
+machines are noisy, so the gate compares the two files on the same
+machine at the same time:
+
+1. It builds `bench.erl` with each file.
+2. It runs the two programs in turns, 5 times (`ROUNDS`). The first
+   program changes each round.
+3. It keeps the best time of each case for each file. The start time of
+   a program is also a case.
+
+The gate fails when one of these is true:
+
+| Limit | Default |
+|---|---|
+| A case is slower by more than `LIMIT` percent, and also by more than `SLACK` ms. | 20%, 5 ms |
+| The geometric mean of the ratios is above 1 by more than `MEAN` percent. | 10% |
+| The file is larger by more than `SIZE` percent. | 10% |
+
+The table of the gate goes to the summary of the run. With 5 rounds on a
+machine with 4 CPUs, a run of one file against itself gave ratios from
+0.94 to 1.09. With 2 rounds, the ratios went from 0.72 to 1.40, so do not
+use fewer rounds for the gate.
+
+CI also runs the gate with `beam-emu.com` as the new file and `beam.com`
+as the base (the cases `fib` and `binary`). That run must fail, because
+`fib` is about 2 times slower in the interpreter. This check makes sure
+that the gate itself stays live.
+
+A change that is slower on purpose (for example, a new safety check)
+must say so in its pull request, and the owner decides.
+
 ## JIT (BeamAsm) against the interpreter
 
 The tables below were measured when `beam.com` was the interpreter and
