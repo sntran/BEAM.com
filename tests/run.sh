@@ -338,6 +338,35 @@ if [ -d examples ]; then
         check script_check.b.com 'schedulers 1$' info
         unset ERL_FLAGS
     fi
+    # The peer module of OTP: the program starts its own file in erl mode,
+    # with the standard I/O and then a TCP connection as the channel.
+    check beam.com 'wrote .*peer_check.b.com' \
+        tests/programs/peer_check.erl -o "$dir/peer_check.b.com"
+    if [ -f "$dir/peer_check.b.com" ]; then
+        peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000'
+        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$"
+    fi
+    # The blue-green spike (examples/bluegreen): an upgrade under load, and
+    # three upgrades that the server refuses. Linux has a result; the other
+    # systems have other rules for SO_REUSEPORT, so there it is a probe,
+    # with 5000 requests, so that the load still runs at the switch.
+    # check.sh is a shell script: sh starts it, and it starts each APE file
+    # with RUNNER (the APE loader on NetBSD and OpenBSD).
+    if [ -f "$dir/beam.com" ]; then
+        cp -R examples/bluegreen "$dir/"
+        bluegreen='^upgrade to version 2$@@^load: 2000 ok, 0 failed, counts in order true, versions \[1,2\]'
+        bluegreen="$bluegreen@@{unknown_state,@@{cannot_start,eacces}@@{cannot_start,enoent}"
+        bluegreen="$bluegreen@@^load: 3 ok, 0 failed, counts in order true, versions \[2\]"
+        saved_runner=$runner
+        RUNNER=$runner
+        export RUNNER
+        runner=sh
+        case $os in
+            linux) check bluegreen/check.sh "$bluegreen" "$dir/beam.com" ;;
+            *) probe bluegreen/check.sh "$dir/beam.com" 18451 5000 ;;
+        esac
+        runner=$saved_runner
+    fi
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program.
     check beam.com "$hashsum" examples/hashsum.erl -- abc

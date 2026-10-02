@@ -78,4 +78,69 @@ defmodule BeamComScriptTest do
     {:ok, info} = :file.read_file_info(file)
     Bitwise.band(elem(info, 7), 0o777)
   end
+
+  # The run of a program halts the node, so it runs in a peer node
+  # (BeamCom.PeerNode). start(Type, Module) runs Module:main/1 with the
+  # plain arguments.
+  describe "the run of a program in a peer node" do
+    # An Erlang module peer_prog in the peer: main/1 prints its arguments,
+    # or raises, or halts, by its first argument.
+    defp erlang_program(peer) do
+      source = ~c"""
+      -module(peer_prog).
+      -export([main/1]).
+      main(["raise" | _]) -> error(boom);
+      main(["halt", N]) -> erlang:halt(list_to_integer(N));
+      main(Args) -> io:format("args ~p~n", [Args]).
+      """
+
+      {:ok, tokens, _} = :erl_scan.string(source)
+      forms = split_forms(tokens, [], [])
+      {:ok, :peer_prog, beam} = :compile.forms(forms)
+
+      {:module, :peer_prog} =
+        :peer.call(peer, :code, :load_binary, [:peer_prog, ~c"peer_prog.erl", beam])
+    end
+
+    defp split_forms([], [], acc), do: acc |> Enum.reverse() |> Enum.map(&parse/1)
+
+    defp split_forms([{:dot, _} = dot | rest], form, acc),
+      do: split_forms(rest, [], [Enum.reverse([dot | form]) | acc])
+
+    defp split_forms([token | rest], form, acc), do: split_forms(rest, [token | form], acc)
+
+    defp parse(tokens) do
+      {:ok, form} = :erl_parse.parse_form(tokens)
+      form
+    end
+
+    defp run(module, argv, setup) do
+      BeamCom.PeerNode.run({:beam_com_script, :start, [:normal, module]},
+        argv: argv,
+        setup: setup
+      )
+    end
+
+    test "main/1 returns: the status 0, and the arguments are strings" do
+      assert run(:peer_prog, ["a", "b c"], &erlang_program/1) ==
+               {0, "args [\"a\",\"b c\"]\n"}
+    end
+
+    test "main/1 raises: the status 127 and the error" do
+      {status, out} = run(:peer_prog, ["raise"], &erlang_program/1)
+      assert status == 127
+      assert out =~ "beam.com: exception error: boom"
+    end
+
+    test "main/1 halts: its own status" do
+      assert run(:peer_prog, ["halt", "3"], &erlang_program/1) == {3, ""}
+    end
+
+    test "an Elixir module gets binaries, and its errors are Elixir errors" do
+      assert run(BeamCom.PeerProgram, ["a", "é"], nil) == {0, "args [\"a\", \"é\"]\n"}
+      {status, out} = run(BeamCom.PeerProgram, ["raise"], nil)
+      assert status == 127
+      assert out =~ "beam.com: ** (RuntimeError) boom"
+    end
+  end
 end
