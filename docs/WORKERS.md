@@ -450,7 +450,7 @@ change.
 | File | What |
 |---|---|
 | `index.html` | The page. It starts the VM, then shows the app in the frame `app/`. |
-| `vm.js` | The VM, in a module Web Worker. It keeps the cookies of the app. |
+| `vm.js` | The VM, in a module SharedWorker for all the tabs of the site. It keeps the cookies of the app. |
 | `sw.js` | The service worker of `app/`: it gives each request of the frame to the VM. |
 | `ws-shim.js` | The `WebSocket` of the pages of the app: a socket to the site goes to the VM. |
 | `env.json` | The name of the app and the variables of its VM. |
@@ -481,6 +481,23 @@ The base path:
   the layout of `mix phx.new`, goes to the same path in the frame
   (`ws-shim.js`).
 
+One VM for all the tabs of the site:
+
+- `vm.js` runs in a module SharedWorker. So all the tabs of the site use
+  one VM, and one jar of cookies: a login in one tab is a login in all
+  the tabs. One VM also uses less memory than one VM for each tab (a
+  booted VM uses 40 to 58 MB).
+- A service worker cannot open a SharedWorker. So `sw.js` gives a request
+  to the frame that sent it, and `ws-shim.js` of that frame gives it to
+  its tab, which gives it to the VM. When the service worker does not know
+  the frame (a new page of the frame), it gives the request to a tab of
+  `index.html`, a visible one first.
+- The VM stops when the last tab of the site closes. The next visit
+  restores the snapshot.
+- When the browser has no `SharedWorker`, or the VM does not start in it,
+  the VM runs in a module Web Worker of one tab. Then another tab of the
+  site shows a message.
+
 The variables of `env.json`:
 
 | Variable | Value | When |
@@ -495,9 +512,18 @@ A test of CI builds `examples/phoenix_demo` with
 [`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh). Then
 [`tests/page/check.mjs`](../tests/page/check.mjs) serves the site at
 `/repo/` and at `/`, and checks it in headless Chromium: the home page,
-a LiveView event, the links, and the login form (a POST). In headless
-Chromium on a local server (October 2026), the app showed in 2.2 to
-3.4 s at the first visit. The same page works in Firefox 157.
+a LiveView event, the links, and the login form (a POST). With `--tabs`,
+it also checks two tabs: the shared counter (`Phoenix.PubSub`) of one
+tab shows in the other tab, a tab still works when the first tab closes,
+the next visit restores the snapshot, and the fallback with no
+`SharedWorker`. In headless Chromium on a local server (October 2026),
+the app showed in 1.6 to 3.4 s at the first visit. The same page works
+in Firefox 157, with one VM for two tabs: the second tab was ready in
+10 ms.
+
+Not tested yet: Safari, and Chrome for Android. Chrome 148 for Android
+has SharedWorker again, but nobody has checked what occurs to the VM when
+Android puts the tab in the background.
 
 The limits:
 
@@ -505,8 +531,6 @@ The limits:
   data.
 - The data stays in the memory of the VM. When the tab closes, the data
   goes. The next visit starts from the snapshot of the boot.
-- One tab of the site runs the VM. Another tab of the site shows a
-  message.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
 - The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
   (3.5 to 14 MB for a Phoenix app).

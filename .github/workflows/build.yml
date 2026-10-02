@@ -292,7 +292,7 @@ jobs:
       - name: Check the site in Chromium
         run: |
           npm install --prefix wasm --no-audit --no-fund
-          node tests/page/check.mjs build/phoenix_demo/page --base /repo/ --phoenix-demo
+          node tests/page/check.mjs build/phoenix_demo/page --base /repo/ --phoenix-demo --tabs
           node tests/page/check.mjs build/phoenix_demo/page --phoenix-demo
 
   test:
