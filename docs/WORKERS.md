@@ -491,11 +491,18 @@ The variables of `env.json`:
 | `SECRET_KEY_BASE` | a random value for each browser, in `localStorage` | the release has Phoenix |
 | `DATABASE_PATH` | `/tmp/NAME.db`, in the memory of the VM | the release has `exqlite` |
 
-A test of CI builds `examples/phoenix_demo` with
-[`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh). Then
-[`tests/page/check.mjs`](../tests/page/check.mjs) serves the site at
-`/repo/` and at `/`, and checks it in headless Chromium: the home page,
-a LiveView event, the links, and the login form (a POST). In headless
+A GitHub workflow builds the site of an app and publishes it on GitHub
+Pages: see "Publish on GitHub Pages" in the [README](../README.md#publish-on-github-pages).
+The CI of BEAM.com calls this workflow
+([`pages-app.yml`](../.github/workflows/pages-app.yml)) for
+`examples/phoenix_demo` and `examples/worker`, and does not publish the
+sites. Then [`tests/page/check.mjs`](../tests/page/check.mjs) serves each
+site at `/repo/` (and the site of `examples/phoenix_demo` also at `/`),
+and checks it in headless Chromium. For
+`examples/phoenix_demo`, it checks the home page, a LiveView event, the
+links, and the login form (a POST). On this computer,
+[`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh) builds the
+site of `examples/phoenix_demo`. In headless
 Chromium on a local server (October 2026), the app showed in 2.2 to
 3.4 s at the first visit. The same page works in Firefox 157.
 

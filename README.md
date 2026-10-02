@@ -118,6 +118,61 @@ npx workerd serve worker.capnp                   # test on this computer (Worker
 deno serve -A deno.js                            # or on Deno
 ```
 
+## Publish on GitHub Pages
+
+An Erlang or Elixir app can run in the browser of each visitor, at
+`https://USER.github.io/REPO/`. The code of the app does not change, and
+you need no Erlang, Elixir or Node.js on your computer. Add this file to
+the repository of the app:
+
+```yaml
+# .github/workflows/pages.yml
+name: Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  pages:
+    uses: sntran/BEAM.com/.github/workflows/pages-app.yml@v0.1.0
+```
+
+Then turn on Pages one time: Settings, Pages, Source "GitHub Actions". The
+`GITHUB_TOKEN` cannot do this step. Until the first release (`v0.1.0`),
+use `@main` in place of `@v0.1.0`: the workflow then uses the `edge`
+build of `beam.com`.
+
+The workflow ([`pages-app.yml`](.github/workflows/pages-app.yml)) builds
+the app with `beam.com --target wasm32`, and publishes the static site
+`DIR/page/`. A Mix project with Phoenix becomes a release first
+(`mix.com release`). Its inputs:
+
+| Input | Default | What |
+|---|---|---|
+| `path` | `.` | The directory of the app. |
+| `beam-com` | the tag of the workflow, else `edge` | The version of `beam.com`. |
+| `deploy` | `true` | `false`: build the site, and do not publish it. |
+
+The app needs an HTTP listener on `PORT` (4000 by default), and only the
+NIFs of the WebAssembly runtime. The limits:
+
+- Each browser has its own copy of the app. Two visitors do not share
+  data.
+- The data stays in the memory of the VM. When the last tab of the site
+  closes, the data goes, and the next visit starts from the snapshot of
+  the boot.
+- No outgoing TCP: a connection of Erlang gets `econnrefused`.
+- The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
+  (3.5 to 14 MB for a Phoenix app).
+- The browser needs JSPI: Chrome and Edge 137 or later, or Firefox 153
+  or later.
+
+See "A static site for any app" in [`docs/WORKERS.md`](docs/WORKERS.md).
+
 ## Documentation
 
 The site <https://sntran.github.io/BEAM.com/> is Livebook in your
