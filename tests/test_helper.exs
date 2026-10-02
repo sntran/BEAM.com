@@ -7,4 +7,10 @@ exclude = if System.find_executable("node"), do: [], else: [:node]
 exclude =
   if System.get_env("BEAM_COM_WASM_RUNTIME", "") == "", do: [:wasm_diff | exclude], else: exclude
 
+# The tag :check_format needs BEAM_COM_FORMAT_FILE (tests/check_format_test.exs).
+exclude =
+  if System.get_env("BEAM_COM_FORMAT_FILE", "") == "",
+    do: [:check_format | exclude],
+    else: exclude
+
 ExUnit.start(exclude: exclude)

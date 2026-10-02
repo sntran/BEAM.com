@@ -42,6 +42,8 @@ the tests.
   `tests/wasm_diff/` runs in the native OTP and in the WebAssembly
   runtime of `--target wasm32`, and the two outputs must be the same.
   See "The differential test" below.
+- `tests/check_format_test.exs`: the tests of the file format checks.
+  See "File formats" below.
 - `examples/studio/test`: the tests of the import rewrite of the studio.
   `./build.sh unit` runs them after the tests of the root project.
 
@@ -178,7 +180,35 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 and `phx.gen.auth` (Linux, with the network), the file watchers, and a
 check of WSL2 in a user namespace of Linux.
 
-## 4. Systems
+## 4. File formats
+
+`tests/check_format.sh FILE...` checks the formats of an APE file with
+tools that are not part of beam.com:
+
+| Format | Tool | What it checks |
+|---|---|---|
+| ZIP | `unzip -t` | Each entry reads with no error and no warning. |
+| PE (Windows) | `pecheck` of cosmocc, `objdump -p` | A PE32+ for x86-64, a console program, NX_COMPAT. No writable code, and each section is inside the file. |
+| ELF (x86_64, aarch64) | `assimilate -e` of cosmocc, `readelf` | An executable for the correct machine. No segment is writable and executable, the stack is not executable, each segment is inside the file, and the entry point is in an executable segment. |
+| Mach-O (x86_64) | `assimilate -m`, `llvm-objdump --macho` | An executable for x86_64. No segment starts writable and executable, each segment is inside the file, and the start address is in an executable segment. |
+
+macOS on arm64 runs the APE loader, so the file has no Mach-O for arm64.
+
+CI runs the script on each build (`beam.com` and `beam-emu.com`) and on
+`hashsum.com`, a program that the build made with `-o`.
+
+```sh
+COSMOCC=build/cosmocc tests/check_format.sh build/beam.com
+```
+
+`tests/check_format_test.exs` makes four broken copies of a built
+`beam.com`: a ZIP with no end record, writable PE code, a writable and
+executable ELF segment, and a writable and executable Mach-O segment.
+Each copy must fail with the correct message, so a change in the output
+of a tool cannot make a check pass with no notice. The test needs
+`BEAM_COM_FORMAT_FILE` and `COSMOCC`. `./build.sh unit` sets them.
+
+## 5. Systems
 
 CI runs the behavior tests on Linux (x86_64, aarch64), macOS (arm64,
 x86_64), Windows, FreeBSD, NetBSD and OpenBSD 7.3, and the unit tests in
@@ -203,7 +233,7 @@ Wine 9.0 could not run Cosmopolitan programs in a container without a
 display (even a "hello" program waits forever), so Windows needs CI or a
 Windows machine. macOS and the BSDs also need CI or a real machine.
 
-## 5. Benchmarks
+## 6. Benchmarks
 
 `tests/bench/run.sh` (and `run.ps1`) measure the size, the start time and
 the speed of typical work for each variant. CI runs them after the tests
