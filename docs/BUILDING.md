@@ -6,15 +6,20 @@ for a custom build.
 
 ## Build
 
-You need Linux (x86_64), `git`, `make`, `perl`, `curl`, `zip` and
-`unzip`. The script downloads the sources, applies the patches, builds a
-small OTP and makes `build/beam.com`:
+You need Linux (x86_64), `git`, GNU make 4, `perl`, `curl`, `zip` and
+`unzip`. The [`Makefile`](../Makefile) downloads the sources, applies the
+patches, builds a small OTP and makes `build/beam.com`:
 
 ```sh
-./build.sh
+make toolchain               # downloads cosmocc, with its own GNU make 4.4
+build/cosmocc/bin/make       # all the steps
 ```
 
-The script downloads:
+Any GNU make 4 works. CI uses the make of cosmocc, so the build does not
+depend on the make of the host. `./build.sh STEP...` is the old command
+line: it runs `make STEP...` with the make of cosmocc when it is there.
+
+The build downloads:
 
 - cosmocc 4.0.2 (the compiler and Cosmopolitan Libc);
 - the source of Erlang/OTP 29.1.1, OpenSSL 4.0.3, SQLite 3.53.4,
@@ -23,30 +28,48 @@ The script downloads:
   argon2_elixir), with a check of their SHA-256;
 - emsdk 6.0.10, for the WebAssembly runtime of `--target wasm32`.
 
-The steps, in order:
+The steps, in order. The code of each step is in
+[`scripts/steps.sh`](../scripts/steps.sh), and the Makefile runs them:
 
-| Step | What it does |
-|---|---|
-| `toolchain` | Downloads cosmocc. |
-| `openssl` | Builds a static `libcrypto`. |
-| `otp` | Clones OTP and applies `patches/otp/*.patch`. |
-| `configure` | Configures OTP for Cosmopolitan. |
-| `sqlite` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
-| `nifs` | Builds the NIFs of exqlite, bcrypt_elixir and argon2_elixir (nothing with `ELIXIR=0`). |
-| `wasm` | Builds WAMR and the wasm NIF (nothing with `WASM=0`). |
-| `make` | Builds a small OTP: the emulator and the OTP applications. |
-| `elixir` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
-| `release` | Installs an OTP release tree, for its boot scripts. |
-| `multicall` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher) and the static NIFs. |
-| `wasm_runtime` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
-| `bundle` | Writes `build/beam.com`: the emulator and its zip. |
-| `test` | Runs `beam.com`, and builds and runs a program with it. |
-| `unit` | Runs the tests of the Mix project (`mix test --cover`): the EUnit and ExUnit tests, and the tests of the WebAssembly host. |
+| Step | Needs | What it does |
+|---|---|---|
+| `toolchain` | | Downloads cosmocc. |
+| `openssl` | `toolchain` | Builds a static `libcrypto`. |
+| `otp` | | Clones OTP and applies `patches/otp/*.patch`. |
+| `configure` | `otp`, `openssl` | Configures OTP for Cosmopolitan. |
+| `sqlite` | `configure` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
+| `nifs` | `sqlite` | Builds the NIFs of exqlite, bcrypt_elixir and argon2_elixir (nothing with `ELIXIR=0`). |
+| `wasm` | `configure` | Builds WAMR and the wasm NIF (nothing with `WASM=0`). |
+| `make` | `nifs`, `wasm` | Builds a small OTP: the emulator and the OTP applications. |
+| `elixir` | `make` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
+| `release` | `elixir` | Installs an OTP release tree, for its boot scripts. |
+| `multicall` | `release` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher) and the static NIFs. |
+| `wasm_runtime` | `multicall` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
+| `bundle` | `wasm_runtime` | Writes `build/beam.com`: the emulator and its zip. |
+| `test` | `bundle` | Runs `beam.com`, and builds and runs a program with it. |
+| `unit` | `elixir` | Runs the tests of the Mix project (`mix test --cover`). |
 
-You can run one step or more, for example `./build.sh bundle test`. See
-the top of [`build.sh`](../build.sh) for the environment variables: the
+`make STEP` runs the step and each step that it needs first. Each step
+writes a stamp in `build/stamps/`. A step runs again only when:
+
+- a step that it needs ran again;
+- one of its files in this repository changed (for example, `src/` for
+  `bundle`, and `patches/otp/` for `otp`);
+- a setting changed (`build/stamps/config`), for example `JIT=0`.
+
+`test` and `unit` run each time. `make redo-STEP` runs a step again with
+no change of its inputs, for example after a change of
+`scripts/steps.sh`. The steps run one at a time, because they share the
+OTP tree. Each step uses `JOBS` processes.
+
+The settings are environment variables or variables of the make command
+line. See the top of [`scripts/steps.sh`](../scripts/steps.sh): the
 versions, `JIT=0` (the interpreter, `beam-emu.com`), `SQLITE=0`,
-`WASM=0`, `ELIXIR=0` and `WASM_RUNTIME=none`.
+`WASM=0`, `ELIXIR=0` and `WASM_RUNTIME=none`. For example:
+
+```sh
+build/cosmocc/bin/make JIT=0 OUT=build/beam-emu.com
+```
 
 The OTP build runs the APE tools that it builds. If Linux cannot run
 APE files directly, register the APE loader with `binfmt_misc` (see
@@ -70,7 +93,7 @@ or rebar3. A custom build can have more:
 - `EXTRA_NIFS="picosat_elixir"`: the NIFs of more hex.pm packages,
   linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
   "Phoenix from source" in [`ELIXIR.md`](ELIXIR.md)). The list is in
-  `hex_nif_recipe()` of `build.sh`: `picosat_elixir` (the SAT solver of
+  `hex_nif_recipe()` of `scripts/steps.sh`: `picosat_elixir` (the SAT solver of
   Ash). Only with `ELIXIR=1`.
 
 With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and

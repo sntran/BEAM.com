@@ -69,7 +69,7 @@ is `/proc/self/exe`, and the kernel starts it.
 
 ## Crypto and TLS
 
-`build.sh` builds a static `libcrypto` (OpenSSL 4.0.3, no assembly, so
+The step `openssl` (`scripts/steps.sh`) builds a static `libcrypto` (OpenSSL 4.0.3, no assembly, so
 the same C code compiles for x86_64 and aarch64), and OTP is configured
 with `--enable-static-nifs`. ERTS selects a static NIF by the name of the
 module that loads it, so the `crypto.beam` of a normal release uses the
@@ -148,8 +148,8 @@ have the JIT too. No memory page of the JIT code is writable and
 executable at the same time (W^X): the JIT writes the code through a
 second mapping.
 
-`beam-emu.com` is the same with the BEAM interpreter (`JIT=0
-./build.sh`). It is 2.8 MB smaller and starts 40 to 90 ms faster, but
+`beam-emu.com` is the same with the BEAM interpreter (`make JIT=0
+OUT=build/beam-emu.com`). It is 2.8 MB smaller and starts 40 to 90 ms faster, but
 Erlang code is slower: 2 times on x86_64 and up to 11 times on aarch64
 for function calls ([`BENCHMARKS.md`](BENCHMARKS.md)). Use it
 to build small command-line programs, where the start time counts more.

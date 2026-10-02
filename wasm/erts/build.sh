@@ -87,14 +87,14 @@ rm -f "$OUT/wasm_host.a"
 emar rcs "$OUT/wasm_host.a" "$OUT/wasm_host_nif.o"
 NIFS="$OTP/lib/asn1/priv/lib/$T/asn1rt_nif.a $OTP/lib/crypto/priv/lib/$T/crypto.a $OUT/wasm_host.a:wasm_host"
 # HEX_NIFS: the NIFs of hex.pm packages (for example "bcrypt_elixir
-# argon2_elixir"), built by the recipes of ./build.sh (its step hex_nifs)
+# argon2_elixir"), built by the recipes of scripts/steps.sh (its step hex_nifs)
 # with emcc, and listed in $OUT/nifs ("NAME VSN" on each line).
 rm -rf "$OUT/hexnifs" "$OUT/nifs"
 touch "$OUT/nifs"
 if [ -n "${HEX_NIFS:-}" ]; then
     HEX_NIFS="$HEX_NIFS" HEX_NIF_OUT="$OUT/hexnifs" HEX_NIF_CC=emcc HEX_NIF_AR=emar \
         HEX_NIF_CFLAGS="$WASM_ARCH_FLAGS -I$OTP/erts/emulator/beam -I$OTP/erts/include -I$OTP/erts/include/$T" \
-        HEX_NIF_LIST="$OUT/nifs" "$HERE/../../build.sh" hex_nifs > "$OUT/hexnifs.log" 2>&1
+        HEX_NIF_LIST="$OUT/nifs" "$HERE/../../scripts/steps.sh" hex_nifs > "$OUT/hexnifs.log" 2>&1
     NIFS="$NIFS $(echo "$OUT"/hexnifs/*.a)"
 fi
 # The table of static NIFs comes from NIFS: make does not know that it
