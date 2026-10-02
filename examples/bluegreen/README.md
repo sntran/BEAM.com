@@ -68,6 +68,27 @@ Local, Linux x86_64 (4 CPUs), with the `beam.com` of CI:
   (`{cannot_start, eacces}`), and to a file that does not exist
   (`{cannot_start, enoent}`). After each refusal, the old version
   serves, and a later upgrade works.
+- One run of 5000 requests had one failed request: `econnreset`. This is
+  the reset of the accept queue of Linux (see the limits). The counts
+  stayed in order.
+- 10 runs of 5000 requests in a network namespace (Linux 6.18), 5 with
+  `net.ipv4.tcp_migrate_req=0` and 5 with `=1`: no failed request. The
+  slowest request took 14 to 26 ms. A reset is rare, so these runs do not
+  show the effect of `tcp_migrate_req`.
+
+The probes of CI (2000 requests):
+
+| System | Result | Versions | Slowest |
+|---|---|---|---|
+| macOS arm64 | 2000 ok, 0 failed | [1,2] | 33 ms |
+| macOS x86_64 | 2000 ok, 0 failed | [1,2] | 22 ms |
+| OpenBSD 7.3 | 2000 ok, 0 failed | [1,2] | 45 ms |
+| FreeBSD | 2000 ok, 0 failed | [1] | |
+| NetBSD | did not run | | |
+
+On FreeBSD, the load stopped before the switch. On NetBSD, `sh` cannot
+start an APE file, and the run with the APE loader did not run the probe. The probes now run 5000
+requests, and `sh` starts `check.sh` with `RUNNER` for each APE file.
 
 ## Limits
 
@@ -76,8 +97,9 @@ Local, Linux x86_64 (4 CPUs), with the `beam.com` of CI:
 - **Linux.** When a listener with `SO_REUSEPORT` closes, Linux resets the
   connections in its accept queue. The acceptor of the old server keeps
   that queue short, and the runs had no failure, but the risk is not
-  zero. Linux 5.14 and later can move these connections to the other
-  listener (`sysctl net.ipv4.tcp_migrate_req=1`).
+  zero: one run of 5000 requests had one `econnreset`. Linux 5.14 and
+  later can move these connections to the other listener
+  (`sysctl net.ipv4.tcp_migrate_req=1`).
 - **macOS and the BSDs** have other rules for `SO_REUSEPORT`. CI runs the
   check there as a probe, to get the result.
 - **The state** is in one process here. A real program must collect the
@@ -90,7 +112,7 @@ Local, Linux x86_64 (4 CPUs), with the `beam.com` of CI:
 
 ## Next steps
 
-- The results of the probes on macOS and the BSDs.
+- The probes on FreeBSD and NetBSD, with the longer load.
 - The state over the distribution, in place of a file.
 - The same steps for a release with a supervision tree, with the
   `sys` calls of OTP to collect the state of each process.
