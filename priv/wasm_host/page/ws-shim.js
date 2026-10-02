@@ -12,6 +12,7 @@
 //   the same path in the frame. Without this, the browser leaves the scope
 //   of the service worker, and the site gives a 404.
 (() => {
+  // The same rule as scope.js, which a classic script cannot import.
   const APP = new URL('./app/', document.currentScript?.src ?? location.href);
   const outside = (u) => u.origin === location.origin && !`${u.pathname}/`.startsWith(APP.pathname);
   const inApp = (u) => new URL(APP.pathname.replace(/\/$/, '') + u.pathname + u.search + u.hash, u).href;

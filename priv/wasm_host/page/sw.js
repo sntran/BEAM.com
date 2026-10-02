@@ -12,7 +12,10 @@
 //   proxy. The app makes its links with the prefix (BEAM_BASE_PATH, see
 //   wasm_host_base).
 // The page of an HTML reply gets ws-shim.js: the WebSocket of LiveView
-// then goes to the VM too.
+// then goes to the VM too. A redirect to a path of this origin outside the
+// scope goes to the same path in the scope (scope.js).
+import { inScope } from './scope.js';
+
 const SCOPE = new URL(registration.scope);
 const BOOT = new URL('../', SCOPE);
 const tabs = new Set();    // the tabs of index.html that said "boot"
@@ -79,7 +82,7 @@ async function handle(request, url, clientId) {
   }
   if (r.error) return new Response(r.error, { status: 502 });
   if (r.status >= 300 && r.status < 400 && r.location) {
-    return Response.redirect(new URL(r.location, url).href, [301, 302, 303, 307, 308].includes(r.status) ? r.status : 302);
+    return Response.redirect(inScope(new URL(r.location, url), SCOPE), [301, 302, 303, 307, 308].includes(r.status) ? r.status : 302);
   }
   const headers = new Headers(r.headers);
   let data = r.body;

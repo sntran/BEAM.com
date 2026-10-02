@@ -37,13 +37,16 @@ function keep(response) {
 }
 
 // The host of each request is localhost (PHX_HOST of env.json), so that the
-// app takes its WebSocket (check_origin) and does not redirect to HTTPS.
+// app takes its WebSocket (check_origin). x-forwarded-proto is https, as
+// behind a proxy: an app with force_ssl and rewrite_on: [:x_forwarded_proto]
+// then does not redirect to https://localhost/.
 async function fetchVm({ path, method, headers, body }, port) {
   try {
     // No accept-encoding: a body that the app compresses would reach the frame as it is.
     const h = Object.fromEntries(headers.filter(([k]) => !['cookie', 'host', 'accept-encoding'].includes(k)));
     h.cookie = cookie();
     h.host = 'localhost';
+    h['x-forwarded-proto'] = 'https';
     const r = await beam.fetch(path, { method, headers: h, body });
     keep(r);
     const out = [...r.headers].filter(([k]) => k !== 'set-cookie');
@@ -58,7 +61,7 @@ async function fetchVm({ path, method, headers, body }, port) {
 async function socketVm({ path, protocols }, port) {
   let socket;
   try {
-    const headers = { cookie: cookie(), host: 'localhost', origin: 'http://localhost' };
+    const headers = { cookie: cookie(), host: 'localhost', origin: 'http://localhost', 'x-forwarded-proto': 'https' };
     if (protocols.length) headers['sec-websocket-protocol'] = protocols.join(', ');
     socket = await beam.socket(path.startsWith(`${base}/`) ? path.slice(base.length) : path, { headers });
   } catch (e) {
