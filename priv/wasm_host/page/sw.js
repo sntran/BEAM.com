@@ -31,14 +31,14 @@ const isBootPage = (href) => {
   const u = new URL(href);
   return u.origin === BOOT.origin && (u.pathname === BOOT.pathname || u.pathname === `${BOOT.pathname}index.html`);
 };
-const inScope = (href) => {
+const isFramePage = (href) => {
   const u = new URL(href);
   return u.origin === SCOPE.origin && u.pathname.startsWith(SCOPE.pathname);
 };
 self.addEventListener('message', (e) => {
   if (!e.source?.url) return;
   if (e.data?.type === 'boot' && isBootPage(e.source.url)) tabs.add(e.source.id);
-  else if (e.data?.type === 'frame' && inScope(e.source.url)) frames.add(e.source.id);
+  else if (e.data?.type === 'frame' && isFramePage(e.source.url)) frames.add(e.source.id);
 });
 
 async function staticFiles() {
