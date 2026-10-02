@@ -161,9 +161,18 @@ jobs:
         with:
           node-version: "26"
 
+      # The test of the Elixir patch of the Mix lock runs in a user and
+      # network namespace (tests/elixir_patches_test.exs). Ubuntu 24.04
+      # blocks unprivileged user namespaces through AppArmor.
+      - name: Allow unprivileged user namespaces
+        if: matrix.out == 'beam.com'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Unit tests
         if: matrix.out == 'beam.com'
         timeout-minutes: 10
+        env:
+          BEAM_COM_NETNS: "1"
         run: build/cosmocc/bin/make unit
 
       - name: Trace a failed test

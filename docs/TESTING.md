@@ -42,6 +42,11 @@ the tests.
   `tests/wasm_diff/` runs in the native OTP and in the WebAssembly
   runtime of `--target wasm32`, and the two outputs must be the same.
   See "The differential test" below.
+- `tests/elixir_patches_test.exs`: the tests of the patches of Elixir
+  (`patches/elixir/`), with the `elixir` of the PATH. The test of the
+  build lock of Mix runs in a user and network namespace
+  (`unshare -rn`). Without it, ExUnit skips the test (the tag `netns`).
+  CI sets `BEAM_COM_NETNS=1`, so there the test must run.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
 - `examples/studio/test`: the tests of the import rewrite of the studio.
