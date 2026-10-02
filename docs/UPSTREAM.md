@@ -7,8 +7,8 @@ Keep it up to date when a new problem or workaround comes.
 
 The groups, and the prefix of their ids: Cosmopolitan (C), WAMR (W),
 Erlang/OTP (O), Emscripten (EM), workerd and Cloudflare Workers (CF),
-websock_adapter (WS), Livebook (L), Elixir packages with NIFs (E) and
-Blink (B).
+websock_adapter (WS), Livebook (L), Elixir (EX), Elixir packages with
+NIFs (E) and Blink (B).
 
 Status words of the Cosmopolitan items:
 
@@ -1530,6 +1530,63 @@ iframe`) from a Worker on another site, with
 
 **Possible upstream fix.** Publish each new iframe page on
 `livebookusercontent.com` before a release uses it.
+
+## Elixir
+
+Seen with Elixir 1.20.4. The fixes are in `patches/elixir/`, and the
+step `elixir` of the build applies them.
+
+### EX1. The build lock of Mix can wait for its own process
+
+**Symptom.** In CI (Linux aarch64), `mix.com phx.gen.auth` on a new
+Phoenix app printed "Waiting for lock on the build directory (held by
+process 6126)", and 6126 was its own OS process. It waited until the
+watchdog stopped it after 600 s. This occurs rarely.
+
+**Cause.** `Mix.Sync.Lock` (`lib/mix/lib/mix/sync/lock.ex`) keeps a
+lock as the TCP port of its owner, in the file `lock_0`. A process
+listens on a free port P, writes the file `port_P`, and makes `lock_0`
+as a hard link of `port_P`. In a new lock directory, the first lock gets
+`lock_0` this way, and `port_P` stays. Then:
+
+1. The unlock writes the port 0 into `lock_0`, so `port_P` holds port 0
+   too (it is the same file).
+2. A later lock that gets the same port P writes `port_P` in place. This
+   also writes `lock_0`, which now holds the live port P and the PID of
+   the process.
+3. The probe of `lock_0` connects to port P, which is the accept loop of
+   the same process. That loop answers "mixlock", so the lock looks
+   taken, and the process waits for itself.
+
+A new Phoenix app has a new build directory, so its first lock gets
+`lock_0` directly. The deps and the app compile one after the other,
+with two locks, so the second lock can get the same ephemeral port.
+The kernel picks the port, so the failure is rare. The cause is not in
+BEAM.com: plain Elixir 1.20.4 on Linux x86_64 does the same.
+
+**Reproduction.** Two locks, one after the other, in a user and
+network namespace with two ephemeral ports (40000 and 40001), so that
+the second lock often gets the port of the first:
+
+```sh
+unshare -rn sh -c 'python3 loopback_up.py &&
+  echo "40000 40001" > /proc/sys/net/ipv4/ip_local_port_range &&
+  elixir locks.exs'
+```
+
+`tests/elixir_patches_test.exs` has `locks.exs` and `loopback_up.py`.
+Without the fix, 3 runs of 3 waited for themselves; with the fix, each
+run passed.
+
+**Workaround in BEAM.com.**
+`patches/elixir/0001-mix-lock-port-file.patch`: `try_lock/4` removes
+`port_P` before it writes it, so the write makes a new file and does not
+change `lock_N`. The port P belongs to this process at that time, so no
+live process uses the old file. The environment variable
+`MIX_OS_CONCURRENCY_LOCK=0` turns the lock off, as another workaround.
+
+**Possible upstream fix.** The same change in `try_lock/4`, or a write
+of the port file to a new name and a rename.
 
 ## Elixir packages with NIFs (exqlite, elixir_make)
 

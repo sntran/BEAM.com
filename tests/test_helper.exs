@@ -13,4 +13,17 @@ exclude =
     do: [:check_format | exclude],
     else: exclude
 
+# The tag :netns needs a user and network namespace (unshare -rn) and
+# python3 (tests/elixir_patches_test.exs).
+netns? =
+  System.find_executable("unshare") != nil and System.find_executable("python3") != nil and
+    match?({_, 0}, System.cmd("unshare", ["-rn", "true"], stderr_to_stdout: true))
+
+# BEAM_COM_NETNS=1 (CI) makes the tag required: no silent skip.
+if System.get_env("BEAM_COM_NETNS") == "1" and not netns? do
+  raise "BEAM_COM_NETNS=1, but unshare -rn does not work here (or python3 is missing)"
+end
+
+exclude = if netns?, do: exclude, else: [:netns | exclude]
+
 ExUnit.start(exclude: exclude)
