@@ -58,6 +58,27 @@ defmodule BeamComWasmTest do
                for({:apply, {:application, :start_boot, [a, _]}} <- cmds, a != :kernel, do: a)
     end
 
+    test "with no config provider, the base path is set after wasm_host starts", %{cmds: cmds} do
+      start = {:apply, {:application, :start_boot, [:wasm_host, :permanent]}}
+
+      assert [^start, {:apply, {:wasm_host_base, :set, []}} | _] =
+               Enum.drop_while(cmds, &(&1 != start))
+    end
+
+    # runtime.exs of a Mix release must not replace the base path.
+    test "with a config provider, the base path is set after it", %{root: root} do
+      provider = {:apply, {:"Elixir.Config.Provider", :boot, []}}
+      base = {:apply, {:wasm_host_base, :set, []}}
+
+      cmds =
+        commands(:beam_com_wasm.with_host([{~c"releases/1/start.boot", boot([provider])}], root))
+
+      assert [^provider, ^base, {:apply, {:application, :start_boot, [:app, _]}}] =
+               Enum.drop_while(cmds, &(&1 != provider))
+
+      assert 1 == Enum.count(cmds, &(&1 == base))
+    end
+
     test "and it is loaded first", %{cmds: cmds} do
       assert [{:apply, {:application, :load, [{:application, :wasm_host, _}]}}] =
                for({:apply, {:application, :load, _}} = c <- cmds, do: c)
@@ -384,6 +405,141 @@ defmodule BeamComWasmTest do
            )
   end
 
+  describe "page_files_test_" do
+    # The worker.js of the Workers: the four imports that a module Web
+    # Worker cannot resolve.
+    @worker_js """
+    import { connect } from 'cloudflare:sockets';
+    import wasm from './beam.wasm';
+    const release = await import('./release.bin');
+    const snapshot = await import('./snapshot.bin');
+    """
+
+    setup %{tmp_dir: dir} do
+      root = root(dir)
+      page = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"page"])
+      :ok = :filelib.ensure_path(page)
+
+      for f <- [~c"index.html", ~c"sw.js", ~c"vm.js", ~c"ws-shim.js"],
+          do: :ok = :file.write_file(:filename.join(page, f), f)
+
+      worker = [
+        {~c"worker.js", @worker_js},
+        {~c"browser.js", "browser.js"},
+        {~c"browser/none.js", "none.js"},
+        {~c"beam.mjs", "beam.mjs"},
+        {~c"beam.wasm", "beam.wasm"},
+        {~c"licenses/NOTICE", "notice"},
+        {~c"wrangler.jsonc", "{}"},
+        {~c"release/app.js", "app.js"}
+      ]
+
+      files = fn apps, rel_files ->
+        rel = %{name: ~c"app", files: rel_files, apps: apps}
+
+        for {f, d} <- :beam_com_wasm.page_files(rel, worker, root),
+            do: {f, IO.iodata_to_binary(d)}
+      end
+
+      %{files: files}
+    end
+
+    # beam.wasm and release.bin are hard links (write_page/2).
+    test "the files of the site", %{files: files} do
+      page = files.([], [])
+
+      assert Enum.sort(Enum.map(page, &elem(&1, 0))) ==
+               Enum.sort([
+                 ~c"index.html",
+                 ~c"sw.js",
+                 ~c"vm.js",
+                 ~c"ws-shim.js",
+                 ~c"env.json",
+                 ~c"worker.js",
+                 ~c"browser.js",
+                 ~c"browser/none.js",
+                 ~c"beam.mjs",
+                 ~c"licenses/NOTICE",
+                 ~c"app/static.json"
+               ])
+
+      assert "[]" == :proplists.get_value(~c"app/static.json", page)
+    end
+
+    test "worker.js imports the modules of browser/", %{files: files} do
+      js = :proplists.get_value(~c"worker.js", files.([], []))
+
+      for spec <- ["'cloudflare:sockets'", "'./beam.wasm'", "'./release.bin'", "'./snapshot.bin'"],
+          do: refute(js =~ spec)
+
+      assert js =~ "from './browser/sockets.js'"
+      assert js =~ "from './browser/beam-wasm.js'"
+      assert js =~ "import('./browser/none.js')"
+    end
+
+    test "a worker.js with another import of beam.wasm" do
+      assert {:error, ~c"worker.js: the page cannot import ~ts", ["'./beam.wasm'"]} ==
+               catch_throw(:beam_com_wasm.page_worker("const w = new URL('./beam.wasm');"))
+    end
+
+    test "the variables of an app with no Phoenix", %{files: files} do
+      assert %{"name" => "app", "env" => %{"PORT" => "4000", "HOME" => "/tmp"}, "secrets" => []} ==
+               :json.decode(:proplists.get_value(~c"env.json", files.([], [])))
+    end
+
+    test "the variables of a Phoenix app with Ecto SQLite", %{files: files} do
+      env = :json.decode(:proplists.get_value(~c"env.json", files.([:phoenix, :exqlite], [])))
+
+      assert %{
+               "PORT" => "4000",
+               "HOME" => "/tmp",
+               "PHX_SERVER" => "true",
+               "PHX_HOST" => "localhost",
+               "DATABASE_PATH" => "/tmp/app.db"
+             } == env["env"]
+
+      assert ["SECRET_KEY_BASE"] == env["secrets"]
+    end
+
+    test "the files of priv/static of the app, not the compressed copies", %{files: files} do
+      page =
+        files.([], [
+          {~c"lib/app-0.2.0/priv/static/assets/app.css", "css"},
+          {~c"lib/app-0.2.0/priv/static/assets/app.css.gz", "gz"},
+          {~c"lib/app-0.2.0/priv/static/favicon.ico", "ico"},
+          {~c"lib/app-0.2.0/priv/other/x.txt", "x"},
+          {~c"lib/app_web-1/priv/static/web.css", "web"},
+          {~c"lib/app-0.2.0/ebin/app.app", "app"}
+        ])
+
+      assert ["/assets/app.css", "/favicon.ico"] ==
+               :json.decode(:proplists.get_value(~c"app/static.json", page))
+
+      assert "css" == :proplists.get_value(~c"app/assets/app.css", page)
+      assert "ico" == :proplists.get_value(~c"app/favicon.ico", page)
+      refute :proplists.is_defined(~c"app/assets/app.css.gz", page)
+    end
+
+    # A second build replaces the links of the first one.
+    test "beam.wasm and release.bin of the page are hard links", %{tmp_dir: dir} do
+      out = Path.join(dir, "out")
+      File.mkdir_p!(Path.join(out, "release"))
+
+      for _ <- 1..2 do
+        File.write!(Path.join(out, "beam.wasm"), "wasm")
+        File.write!(Path.join([out, "release", "release.bin"]), "release")
+        :ok = :beam_com_wasm.write_page(String.to_charlist(out), [{~c"app/static.json", "[]"}])
+      end
+
+      for {page, file} <- [{"beam.wasm", "beam.wasm"}, {"release.bin", "release/release.bin"}] do
+        assert File.stat!(Path.join([out, "page", page])).inode ==
+                 File.stat!(Path.join(out, file)).inode
+      end
+
+      assert "[]" == File.read!(Path.join([out, "page", "app", "static.json"]))
+    end
+  end
+
   # release.bin: no debug information in the code, and the modules that the
   # boot does not load compressed (the loader of ERTS reads gzip).
   test "strip_and_compress_test" do
@@ -530,8 +686,9 @@ defmodule BeamComWasmTest do
     assert [:bcrypt_elixir, :argon2_elixir] == :beam_com_wasm.runtime_nifs(dir)
   end
 
-  # The boot script of a release "app" 1, with kernel, stdlib and app.
-  defp boot do
+  # The boot script of a release "app" 1, with kernel, stdlib and app, and
+  # the commands after_stdlib between stdlib and app.
+  defp boot(after_stdlib \\ []) do
     :erlang.term_to_binary(
       {:script, {~c"app", ~c"1"},
        [
@@ -544,9 +701,8 @@ defmodule BeamComWasmTest do
          {:path, [~c"$ROOT/lib/stdlib-2/ebin"]},
          {:primLoad, [:maps]},
          {:apply, {:application, :start_boot, [:kernel, :permanent]}},
-         {:apply, {:application, :start_boot, [:stdlib, :permanent]}},
-         {:apply, {:application, :start_boot, [:app, :permanent]}}
-       ]}
+         {:apply, {:application, :start_boot, [:stdlib, :permanent]}}
+       ] ++ after_stdlib ++ [{:apply, {:application, :start_boot, [:app, :permanent]}}]}
     )
   end
 

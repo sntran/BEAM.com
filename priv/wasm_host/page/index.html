@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starting the app</title>
+<!-- The page of beam.com INPUT -o DIR --target wasm32 (DIR/page/): the app
+     runs in the browser, in BEAM compiled to WebAssembly. The files of this
+     directory are the root of the site. The page finds its base path from
+     its URL, so the same files work at /REPO/ of GitHub Pages, at / of a
+     custom domain, and on localhost. -->
+<style>
+  :root { --bg: #f6f4f1; --text: #1f1a17; --muted: #756c65; --accent: #a23cd0; --error: #c0262d; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #171412; --text: #efe9e4; --muted: #a2978f; --accent: #c98bf0; --error: #ff7b7f; }
+  }
+  :root[data-theme="dark"] { --bg: #171412; --text: #efe9e4; --muted: #a2978f; --accent: #c98bf0; --error: #ff7b7f; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #boot { max-width: 40rem; margin: 0 auto; padding: 15vh 16px 0; }
+  h1 { font: 700 2rem/1.1 ui-monospace, Menlo, Consolas, monospace; margin: 0 0 8px; overflow-wrap: anywhere; }
+  #status { color: var(--muted); min-height: 1.5em; }
+  #status.err { color: var(--error); }
+  progress { width: 100%; height: 6px; margin: 12px 0; accent-color: var(--accent); }
+  p.small { color: var(--muted); font-size: 0.875rem; }
+  a { color: var(--accent); }
+  iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: none; background: var(--bg); }
+  body.running #boot { display: none; }
+  body.running iframe { display: block; }
+</style>
+</head>
+<body>
+<div id="boot">
+  <h1 id="name">The app</h1>
+  <p id="status">Starting…</p>
+  <progress id="bar"></progress>
+  <p class="small">This app runs in this page, in BEAM compiled to WebAssembly by
+    <a href="https://github.com/sntran/BEAM.com">beam.com</a>. No server runs its code. Its data
+    stays in the memory of this browser, and goes when the tab closes.</p>
+</div>
+<iframe id="app" title="The app" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+<script type="module">
+  const status = document.getElementById('status'), bar = document.getElementById('bar');
+  const say = (text, error = false) => { status.textContent = text; status.className = error ? 'err' : ''; };
+  const fail = (text) => { bar.remove(); say(text, true); };
+  // The site is the directory of this page. The app is in the frame app/.
+  const SITE = new URL('./', location.href);
+  const APP = new URL('./app/', SITE);
+
+  // The variables of the VM (env.json, from the build). A secret gets a
+  // random value, one for each browser. It stays in localStorage, so that
+  // the snapshot of the VM (its key has the variables) serves the next visit.
+  function secret(name) {
+    const key = `beam-page:${SITE.pathname}:${name}`;
+    try {
+      const old = localStorage.getItem(key);
+      if (old) return old;
+    } catch {}
+    const bytes = crypto.getRandomValues(new Uint8Array(48));
+    const value = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_');
+    try { localStorage.setItem(key, value); } catch {}
+    return value;
+  }
+
+  async function main() {
+    const config = await (await fetch(new URL('env.json', SITE))).json();
+    document.title = config.name;
+    document.getElementById('name').textContent = config.name;
+    document.getElementById('app').title = config.name;
+    // JSPI (WebAssembly JavaScript Promise Integration) is in Chrome and
+    // Edge 137 or later, and in Firefox 153 or later. Safari 27 also has
+    // it, but nobody has tested this page in Safari yet.
+    if (typeof WebAssembly.Suspending !== 'function' || !('serviceWorker' in navigator)) {
+      return fail('This browser cannot run the VM. Open this page in Chrome or Edge 137 or later, or in Firefox 153 or later.');
+    }
+    // One VM for each browser: the service worker sends all the requests of
+    // the frame to this tab. The sites of one origin (USER.github.io/A/ and
+    // USER.github.io/B/) have different locks.
+    const lock = await new Promise((resolve) =>
+      navigator.locks.request(`beam-page:${SITE.pathname}`, { ifAvailable: true }, (l) => {
+        resolve(l);
+        return l ? new Promise(() => {}) : undefined;
+      }));
+    if (!lock) return fail('The app runs in another tab of this site. Use that tab, or close it and load this page again.');
+    const env = { ...config.env };
+    for (const name of config.secrets ?? []) env[name] = secret(name);
+    const t0 = performance.now();
+    say('Loading the runtime and the release…');
+    const vm = new Worker(new URL('./vm.js', import.meta.url), { type: 'module' });
+    const ready = new Promise((resolve, reject) => {
+      vm.addEventListener('message', (e) => {
+        if (e.data.type === 'ready') resolve(e.data);
+        else if (e.data.type === 'error') reject(new Error(e.data.message));
+      });
+      vm.addEventListener('error', (e) => reject(new Error(e.message || 'the VM stopped')));
+    });
+    vm.postMessage({ type: 'start', base: APP.pathname.replace(/\/$/, ''), env });
+    // The requests of the service worker (sw.js, not another worker of this
+    // origin) go to the VM with their reply port.
+    const SW = new URL('./sw.js', SITE).href;
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.source?.scriptURL === SW && e.data?.type === 'fetch') vm.postMessage(e.data, [e.ports[0]]);
+    });
+    // The WebSockets of the frame of the app, and of the frames in it
+    // (ws-shim.js).
+    const inFrame = (w) => {
+      for (let n = 0; w && n < 10; n++, w = w.parent) {
+        if (w === document.getElementById('app').contentWindow) return true;
+        if (w === w.parent) return false;
+      }
+      return false;
+    };
+    addEventListener('message', (e) => {
+      if (e.origin === location.origin && e.data?.type === 'ws' && inFrame(e.source)) vm.postMessage(e.data, [e.ports[0]]);
+    });
+    // This page is outside the scope, so navigator.serviceWorker.ready does
+    // not apply: wait for the registration to be active.
+    const reg = await navigator.serviceWorker.register(SW, { scope: APP.pathname, type: 'module' });
+    const sw = await new Promise((resolve) => {
+      const check = () => { if (reg.active) resolve(reg.active); };
+      check();
+      for (const w of [reg.installing, reg.waiting]) w?.addEventListener('statechange', check);
+      reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', check));
+    });
+    sw.postMessage({ type: 'boot' });  // this tab is the VM
+    await ready;
+    const ms = Math.round(performance.now() - t0);
+    console.log(`beam: the VM started in ${ms} ms`);
+    say(`Opening the app (the VM started in ${ms} ms)…`);
+    const frame = document.getElementById('app');
+    frame.addEventListener('load', () => document.body.classList.add('running'), { once: true });
+    frame.src = APP.href;
+  }
+
+  main().catch((e) => { fail(e.message); console.error(e); });
+</script>
+</body>
+</html>
