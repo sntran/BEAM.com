@@ -171,8 +171,10 @@ clause(String) ->
     Vsn = string:trim(Rest),
     case Op of
         '~>' ->
-            case string:split(Vsn, ".", all) of
-                [_, _] -> {'~>', version(Vsn ++ ".0"), 2};
+            %% "~> 2.1" and "~> 2.1-dev" omit the patch number.
+            [Core | Pre] = string:split(Vsn, "-"),
+            case string:split(Core, ".", all) of
+                [_, _] -> {'~>', version(lists:flatten(lists:join("-", [Core ++ ".0" | Pre]))), 2};
                 [_, _, _ | _] -> {'~>', version(Vsn), 3};
                 _ -> throw(bad)
             end;
@@ -208,23 +210,26 @@ expand(Clause) ->
     [Clause].
 
 %% matches(Version, Requirement): the version matches one alternative.
-%% A pre-release matches only a requirement that names a pre-release.
+%% The rule of Hex (Version.match?/3 of Elixir with allow_pre: false): a
+%% pre-release matches a ">", ">=" or "~>" clause only when the version
+%% of that clause is a pre-release. No requirement matches no pre-release.
 matches({_, _, _, Pre}, any) -> Pre =:= [];
 matches(Version, Req) when is_list(Req) ->
     {ok, Alts} = parse_requirement(Req),
     lists:any(fun(Alt) -> match_alt(Version, lists:append(Alt)) end, Alts).
 
-match_alt({_, _, _, Pre} = V, Clauses) ->
-    AllowPre = Pre =:= [] orelse
-        lists:any(fun({_, {_, _, _, P}}) -> P =/= [] andalso P =/= [0] end, Clauses),
-    AllowPre andalso lists:all(fun(C) -> match_clause(V, C) end, Clauses).
+match_alt(V, Clauses) ->
+    lists:all(fun(C) -> match_clause(V, C) end, Clauses).
 
 match_clause(V, {'==', W}) -> compare(V, W) =:= eq;
 match_clause(V, {'!=', W}) -> compare(V, W) =/= eq;
-match_clause(V, {'>=', W}) -> compare(V, W) =/= lt;
+match_clause(V, {'>=', W}) -> compare(V, W) =/= lt andalso pre_allowed(V, W);
 match_clause(V, {'<=', W}) -> compare(V, W) =/= gt;
-match_clause(V, {'>', W}) -> compare(V, W) =:= gt;
+match_clause(V, {'>', W}) -> compare(V, W) =:= gt andalso pre_allowed(V, W);
 match_clause(V, {'<', W}) -> compare(V, W) =:= lt.
+
+pre_allowed({_, _, _, []}, _) -> true;
+pre_allowed(_, {_, _, _, ReqPre}) -> ReqPre =/= [].
 
 %%% rebar.lock: #{Name => #{pkg, vsn, inner, outer}}, Name an atom.
 

@@ -10,6 +10,8 @@ defmodule BeamComHexTest do
   """
   use ExUnit.Case, async: false
 
+  use ExUnitProperties
+
   import ExUnit.CaptureIO
 
   alias BeamCom.HexFixture
@@ -77,6 +79,12 @@ defmodule BeamComHexTest do
       {"1.0.1", "!= 1.0.0"},
       {"1.0.0", "<= 1.0.0"},
       {"2.0.0-rc.1", "~> 2.0.0-rc.0"},
+      # The rule of Hex: an upper bound does not stop a pre-release, and
+      # "~> 2.1-dev" omits the patch number.
+      {"1.0.0-rc", "< 2.0.0"},
+      {"1.0.0-rc", "<= 1.0.0"},
+      {"2.2.0-dev", "~> 2.1-dev"},
+      {"2.2.6-dev", ">= 2.1.0-dev"},
       {"9.9.9", :any}
     ]
 
@@ -90,6 +98,10 @@ defmodule BeamComHexTest do
       {"2.0.0-rc.1", ">= 1.0.0"},
       {"1.0.0", "> 1.0.0"},
       {"1.0.0", "!= 1.0.0"},
+      # Each ">", ">=" and "~>" clause must name a pre-release.
+      {"1.0.0-rc", ">= 1.0.0-beta and > 0.5.0"},
+      {"2.1.6-dev", "~> 2.1.2"},
+      {"2.2.0-dev", ">= 2.1.0"},
       {"1.0.0-rc.1", :any}
     ]
 
@@ -551,4 +563,136 @@ defmodule BeamComHexTest do
                catch_throw(fetch_quiet(no_app, lib.(4)))
     end
   end
+
+  # The properties of the parser of versions and requirements. The oracle
+  # is the Version module of Elixir, an independent parser of the same
+  # rules (Semantic Versioning 2.0.0, and the requirements of Hex).
+  describe "properties of versions and requirements" do
+    property "parse_version/1 reads each version that Version.parse/1 reads" do
+      check all(version <- version()) do
+        text = to_string(version)
+        assert {:ok, ^version} = Version.parse(text)
+        assert {:ok, tuple} = :beam_com_hex.parse_version(String.to_charlist(text))
+        assert tuple == to_tuple(version)
+      end
+    end
+
+    property "parse_version/1 ignores the build metadata" do
+      check all(version <- version(), build <- identifier()) do
+        with_build = String.to_charlist(to_string(version) <> "+" <> build)
+
+        assert :beam_com_hex.parse_version(with_build) ==
+                 {:ok, to_tuple(version)}
+      end
+    end
+
+    property "parse_version/1 gives error for a text that is not a version" do
+      check all(text <- string(:printable, max_length: 20)) do
+        result = :beam_com_hex.parse_version(String.to_charlist(text))
+
+        case Version.parse(text) do
+          {:ok, _} -> assert {:ok, _} = result
+          :error -> assert result == :error or match?({:ok, _}, result)
+        end
+      end
+    end
+
+    property "compare/2 gives the order of Version.compare/2" do
+      check all(a <- version(), b <- version()) do
+        assert :beam_com_hex.compare(to_tuple(a), to_tuple(b)) == Version.compare(a, b)
+      end
+    end
+
+    property "compare/2 is a total order" do
+      check all(a <- version(), b <- version(), c <- version()) do
+        {ta, tb, tc} = {to_tuple(a), to_tuple(b), to_tuple(c)}
+        assert :beam_com_hex.compare(ta, ta) == :eq
+        assert :beam_com_hex.compare(ta, tb) == flip(:beam_com_hex.compare(tb, ta))
+
+        if :beam_com_hex.compare(ta, tb) != :gt and :beam_com_hex.compare(tb, tc) != :gt do
+          assert :beam_com_hex.compare(ta, tc) != :gt
+        end
+      end
+    end
+
+    property "matches/2 gives the result of Version.match?/3 without pre-releases" do
+      check all(version <- version(), requirement <- requirement()) do
+        expected = Version.match?(version, requirement, allow_pre: false)
+
+        assert :beam_com_hex.matches(to_tuple(version), String.to_charlist(requirement)) ==
+                 expected
+      end
+    end
+
+    # Version.match?/3 warns that "!=" is deprecated, so this property
+    # checks "!=" against its definition.
+    property "a \"!=\" requirement matches each other version" do
+      check all(a <- version(), b <- version()) do
+        expected = :beam_com_hex.compare(to_tuple(a), to_tuple(b)) != :eq
+        assert :beam_com_hex.matches(to_tuple(a), String.to_charlist("!= #{b}")) == expected
+      end
+    end
+  end
+
+  defp version do
+    gen all(
+          major <- integer(0..20),
+          minor <- integer(0..20),
+          patch <- integer(0..20),
+          pre <- one_of([constant([]), list_of(pre_identifier(), min_length: 1, max_length: 3)])
+        ) do
+      %Version{major: major, minor: minor, patch: patch, pre: pre}
+    end
+  end
+
+  # A pre-release identifier: a number with no leading zero, or a word of
+  # letters, digits and hyphens with one letter or hyphen at least.
+  defp pre_identifier do
+    one_of([
+      integer(0..30),
+      map(identifier(), fn word -> if word =~ ~r/^[0-9]+$/, do: "x" <> word, else: word end)
+    ])
+  end
+
+  defp identifier do
+    string(Enum.concat([?0..?9, ?a..?z, ?A..?Z, [?-]]), min_length: 1, max_length: 6)
+  end
+
+  defp requirement do
+    clause =
+      gen all(
+            op <- member_of(["==", ">=", "<=", ">", "<", "~>"]),
+            version <- version(),
+            short <- boolean()
+          ) do
+        text =
+          if op == "~>" and short,
+            do: Enum.join(["#{version.major}.#{version.minor}" | pre_text(version.pre)], "-"),
+            else: to_string(version)
+
+        op <> " " <> text
+      end
+
+    gen all(
+          alternatives <-
+            list_of(list_of(clause, min_length: 1, max_length: 3), min_length: 1, max_length: 2)
+        ) do
+      Enum.map_join(alternatives, " or ", &Enum.join(&1, " and "))
+    end
+  end
+
+  defp to_tuple(%Version{major: major, minor: minor, patch: patch, pre: pre}) do
+    {major, minor, patch,
+     Enum.map(pre, fn
+       p when is_integer(p) -> p
+       p -> p
+     end)}
+  end
+
+  defp pre_text([]), do: []
+  defp pre_text(pre), do: [Enum.join(pre, ".")]
+
+  defp flip(:lt), do: :gt
+  defp flip(:gt), do: :lt
+  defp flip(:eq), do: :eq
 end
