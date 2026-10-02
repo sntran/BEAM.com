@@ -75,8 +75,12 @@ stdlib and Info-ZIP `unzip` must read every file that the writer makes.
 The builder tests use the real OTP applications (linked into a temporary
 `lib/`), and run a full build with a fake executable.
 
-Some code runs only in a real `beam.com`, and the behavior tests cover
-it: `beam_com:main/0` and `beam_com_script` halt the node.
+`beam_com:main/0` and the run of a `beam_com_script` program halt the
+node. Their tests run them in a peer node (the `peer` module of OTP),
+with `BeamCom.PeerNode` of `tests/support/`. The test node gets the exit
+status and the output of the peer, also its standard error. The code of
+a peer is not cover-compiled, so these tests add nothing to the
+coverage.
 
 ### The differential test
 
@@ -166,6 +170,7 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 |---|---|
 | `tests/programs/wasm_tests.erl` | WebAssembly: every value type at its limits, wrong arguments, all trap kinds and the recovery after a trap, stack exhaustion, memory bounds and growth, 50 processes that call one instance, missing imports, and WASI arguments, environment and exit codes. |
 | `tests/programs/wasm_check.erl`, `tests/programs/hello_go` | A WebAssembly module, and a WASI program in Go (`GOOS=wasip1`). |
+| `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB). On Windows, which has no port programs, it checks that `peer` gives `enotsup`. |
 | `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS`. |
 | `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. |
 | `tests/programs/jit_maps.erl` | No page of the JIT code is writable and executable. |

@@ -169,6 +169,12 @@ if (Test-Path "examples") {
         Check "script_check.b.com" '(?m)^schedulers 1$' @("info")
         Remove-Item Env:ERL_FLAGS
     }
+    # The peer module of OTP. Windows has no port programs, so peer cannot
+    # start a node: the program checks that peer gives enotsup.
+    Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
+    if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
+        Check "peer_check.b.com" '(?m)^peer: not supported on windows$' @()
+    }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).
     Check "beam.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("examples/hashsum.erl", "--", "abc")
