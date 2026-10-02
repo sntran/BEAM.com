@@ -592,8 +592,9 @@ seq(Chars, Close, Depth, Acc) ->
             end
     end.
 
-%% A binary of strings: <<>>, <<"text">>, <<"text"/utf8>>, and segments
-%% with commas.
+%% A binary: <<>>, <<"text">>, <<"text"/utf8>>, bytes (<<1,255>>), and
+%% segments with commas. io_lib:format/2 writes bytes when the binary
+%% has a character that it does not print.
 bin(">>" ++ Rest) ->
     {<<>>, skip(Rest)};
 bin(Chars) ->
@@ -601,14 +602,18 @@ bin(Chars) ->
 
 bin([$" | Rest], Acc) ->
     {Text, Rest1} = quoted(Rest, $", []),
-    {Seg, Rest2} = case skip(Rest1) of
-                       "/utf8" ++ R -> {unicode:characters_to_binary(Text), skip(R)};
-                       R -> {<< <<C:8>> || C <- Text >>, R}
-                   end,
-    case Rest2 of
-        [$, | R2] -> bin(skip(R2), [Seg | Acc]);
-        ">>" ++ R2 -> {iolist_to_binary(lists:reverse([Seg | Acc])), skip(R2)}
-    end.
+    case skip(Rest1) of
+        "/utf8" ++ R -> bin_next(skip(R), unicode:characters_to_binary(Text), Acc);
+        R -> bin_next(R, << <<C:8>> || C <- Text >>, Acc)
+    end;
+bin([C | _] = Chars, Acc) when C >= $0, C =< $9 ->
+    {Digits, Rest} = lists:splitwith(fun(D) -> D >= $0 andalso D =< $9 end, Chars),
+    Byte = list_to_integer(Digits),
+    Byte =< 255 orelse error(badarg),
+    bin_next(skip(Rest), <<Byte>>, Acc).
+
+bin_next([$, | Rest], Seg, Acc) -> bin(skip(Rest), [Seg | Acc]);
+bin_next(">>" ++ Rest, Seg, Acc) -> {iolist_to_binary(lists:reverse([Seg | Acc])), skip(Rest)}.
 
 %% The text of a quoted string or atom, with the escapes of Erlang.
 quoted([Q | Rest], Q, Acc) -> {lists:reverse(Acc), Rest};

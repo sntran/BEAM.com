@@ -352,10 +352,17 @@ defmodule BeamComHexTest do
       assert @not_terms == catch_throw(:beam_com_hex.consult(text))
     end
 
-    for b <- ["{a", "fun() -> ok end.", "1 + 2.", "<<1>>.", "x"] do
+    for b <- ["{a", "fun() -> ok end.", "1 + 2.", "<<256>>.", "<<1:16>>.", "x"] do
       test "text that is not a term: #{inspect(b)}" do
         assert @not_terms == catch_throw(:beam_com_hex.consult(unquote(b)))
       end
+    end
+
+    # io_lib:format ~tp writes a binary as bytes when it has a character
+    # that it does not print.
+    test "the bytes of a binary" do
+      assert [<<1, 255>>, <<"a", 0, "b">>, <<243, 191, 167, 157>>] ==
+               :beam_com_hex.consult("<<1,255>>.\n<<\"a\",0,\"b\">>.\n<<243,191,167,157>>.")
     end
 
     test "not UTF-8" do
@@ -633,6 +640,147 @@ defmodule BeamComHexTest do
       end
     end
   end
+
+  # The properties of the reader of metadata.config and of the check of
+  # the files of a package. The oracles are io_lib:format/2 and
+  # file:consult/1 of OTP, and the rules of filename/1.
+  describe "properties of metadata.config and of tarballs" do
+    property "consult/1 reads the terms that io_lib:format ~tp writes" do
+      check all(terms <- list_of(metadata_term(), max_length: 4)) do
+        text = :unicode.characters_to_binary(for t <- terms, do: :io_lib.format(~c"~tp.~n", [t]))
+        assert :beam_com_hex.consult(text) == terms
+      end
+    end
+
+    # A random text gives the terms of file:consult/1, or the error of
+    # consult/1. No other exception, and no new atom.
+    @tag :tmp_dir
+    property "consult/1 of a random text", %{tmp_dir: dir} do
+      file = Path.join(dir, "metadata.config")
+
+      check all(text <- term_text()) do
+        count = :erlang.system_info(:atom_count)
+
+        result =
+          try do
+            {:ok, :beam_com_hex.consult(text)}
+          catch
+            :throw, error -> error
+          end
+
+        case result do
+          {:error, ~c"metadata.config is not a list of terms", []} ->
+            :ok
+
+          {:ok, terms} ->
+            File.write!(file, text)
+            assert {:ok, terms} == :file.consult(String.to_charlist(file))
+        end
+
+        assert count == :erlang.system_info(:atom_count)
+      end
+    end
+
+    # A package with a name that is absolute or that has ".." is refused
+    # before a file is written. A safe package is unpacked in full.
+    @tag :tmp_dir
+    property "unpack/3 writes no file out of its directory", %{tmp_dir: dir} do
+      check all(paths <- uniq_list_of(package_path(), min_length: 1, max_length: 4)) do
+        root = Path.join(dir, "p#{System.unique_integer([:positive])}")
+        out = Path.join(root, "pkg")
+        File.mkdir_p!(root)
+        contents = contents_tar(root, paths)
+        tar = HexFixture.hex_tar("{<<\"name\">>, <<\"u\">>}.\n", contents)
+        {:ok, table} = :erl_tar.table({:binary, contents}, [:compressed])
+        safe = Enum.all?(table, &safe_name?/1)
+
+        result =
+          try do
+            :beam_com_hex.unpack(tar, :undefined, String.to_charlist(out))
+          catch
+            :throw, error -> error
+          end
+
+        case result do
+          %{inner: _} ->
+            assert safe
+
+            # erl_tar stores "a/./f1.txt" as "a/f1.txt", so two paths can
+            # name one file. The data of a file is one of the paths.
+            for name <- table,
+                do: assert(File.read!(Path.join(out, to_string(name))) in paths)
+
+          {:error, ~c"~ts: the package has an unsafe file name: ~ts", _} ->
+            refute safe
+            refute File.exists?(out)
+        end
+
+        assert root |> File.ls!() |> Enum.sort() == Enum.sort(["contents.tar.gz" | in_out(out)])
+      end
+    end
+  end
+
+  # An Erlang term that metadata.config can have: integers, atoms that
+  # exist, strings, binaries of UTF-8 text, lists and tuples.
+  defp metadata_term do
+    leaf =
+      one_of([
+        integer(),
+        member_of([true, false, :ok, :undefined, :nested]),
+        map(string(:printable, max_length: 8), &String.to_charlist/1),
+        string(:printable, max_length: 8)
+      ])
+
+    tree(leaf, fn child ->
+      one_of([
+        list_of(child, max_length: 3),
+        map(list_of(child, max_length: 3), &List.to_tuple/1)
+      ])
+    end)
+  end
+
+  # A text of the characters of terms, with parts of real terms in it.
+  defp term_text do
+    piece =
+      one_of([
+        member_of(["{", "}", "[", "]", ",", ".", "<<", ">>", "\"", "'", "/utf8", "-", " ", "\n"]),
+        member_of(["true", "ok", "x1", "12", "\\x{41}", "\\n", "% c\n"]),
+        map(metadata_term(), &IO.chardata_to_string(:io_lib.format(~c"~tp", [&1])))
+      ])
+
+    map(list_of(piece, max_length: 12), &Enum.join/1)
+  end
+
+  # A path in a package: names, ".", "..", and an absolute start.
+  defp package_path do
+    gen all(
+          absolute <- boolean(),
+          dirs <- list_of(member_of(["a", "b", ".", ".."]), max_length: 3),
+          leaf <- member_of(["f1.txt", "f2.txt", "f3.txt"])
+        ) do
+      path = Enum.join(dirs ++ [leaf], "/")
+      if absolute, do: "/" <> path, else: path
+    end
+  end
+
+  # contents.tar.gz with one file for each path. The data of a file is
+  # its name.
+  defp contents_tar(root, paths) do
+    file = Path.join(root, "contents.tar.gz")
+    {:ok, tar} = :erl_tar.open(String.to_charlist(file), [:write, :compressed])
+
+    for path <- paths,
+        do: :ok = :erl_tar.add(tar, path, String.to_charlist(path), [])
+
+    :ok = :erl_tar.close(tar)
+    File.read!(file)
+  end
+
+  defp safe_name?(name) do
+    :filename.pathtype(name) == :relative and ~c".." not in :filename.split(name)
+  end
+
+  defp in_out(out), do: if(File.exists?(out), do: [Path.basename(out)], else: [])
 
   defp version do
     gen all(
