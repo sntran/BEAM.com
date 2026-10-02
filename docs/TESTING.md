@@ -182,8 +182,10 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 
 `tests/run.sh` also runs the tools of Elixir (`mix.com`, `iex.com`,
 `elixir.com`, `elixirc.com`, `escript`), a new Phoenix app with SQLite
-and `phx.gen.auth` (Linux, with the network), the file watchers, and a
-check of WSL2 in a user namespace of Linux.
+and `phx.gen.auth` (Linux, with the network), the file watchers, a
+check of WSL2 in a user namespace of Linux, and the blue-green spike
+(`examples/bluegreen/check.sh`: a check on Linux, a probe on the other
+Unix systems).
 
 ## 4. File formats
 
