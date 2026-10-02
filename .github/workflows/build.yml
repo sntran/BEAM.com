@@ -168,6 +168,34 @@ jobs:
             build/strace.txt
           if-no-files-found: ignore
 
+  # The models of the protocols (specs/ and lib/beam_com/protocol) with
+  # TLC: mix beam_com.tlc. It needs no build of beam.com.
+  models:
+    name: Check the models
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TLA2TOOLS_JAR: ${{ github.workspace }}/tla2tools.jar
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.20.4"
+      # tla2tools.jar v1.7.4 is the pinned stable release. v1.8.0 is a
+      # pre-release that the project publishes again each night, so its
+      # jar and its checksum change (docs/TESTING.md).
+      - name: Install tla2tools.jar
+        run: |
+          curl -fsSL -o "$TLA2TOOLS_JAR" \
+            "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $TLA2TOOLS_JAR" | sha256sum -c -
+          java -version
+      - name: Check the models with TLC
+        run: |
+          mix deps.get
+          mix beam_com.tlc
+
   example-release:
     name: Add a rebar3 release
     needs: build
