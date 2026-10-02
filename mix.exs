@@ -11,8 +11,8 @@ defmodule BeamCom.MixProject do
   # - lib/: the Elixir code: the models of the protocols and the Mix tasks;
   # - tests/: the tests, with ExUnit.
   #
-  # Mix compiles all of src/ as one application, for the tests. build.sh
-  # builds beam.com: it compiles each directory of src/ as its own
+  # Mix compiles all of src/ as one application, for the tests. The
+  # Makefile builds beam.com: it compiles each directory of src/ as its own
   # application, with the Erlang/OTP of the build.
   @version (fn ->
               {:ok, [{:application, :beam_com, props}]} =

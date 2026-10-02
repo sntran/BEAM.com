@@ -7,7 +7,7 @@ defmodule BeamCom.CheckFormatTest do
   The tests need BEAM_COM_FORMAT_FILE (a built beam.com), COSMOCC (the
   directory of cosmocc), GNU binutils, unzip, and llvm-objdump. Without
   BEAM_COM_FORMAT_FILE, ExUnit skips them (the tag check_format).
-  `./build.sh unit` sets the two variables when the build has the files.
+  `make unit` sets the two variables when the build has the files.
   """
   use ExUnit.Case, async: true
 

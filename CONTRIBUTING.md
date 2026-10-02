@@ -21,8 +21,9 @@ See [`docs/BUILDING.md`](docs/BUILDING.md) and
 [`docs/TESTING.md`](docs/TESTING.md). In short, on Linux x86_64:
 
 ```sh
-./build.sh                   # all the steps: build/beam.com
-./build.sh unit              # the tests of the Mix project, with coverage
+make toolchain               # cosmocc, with its GNU make
+build/cosmocc/bin/make       # all the steps: build/beam.com
+build/cosmocc/bin/make unit  # the tests of the Mix project, with coverage
 tests/run.sh build           # the behavior tests
 ```
 

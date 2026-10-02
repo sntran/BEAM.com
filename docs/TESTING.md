@@ -16,7 +16,7 @@ The repository is one Mix project (`mix.exs`):
 | `lib/` | The Elixir code: the models of the protocols and the Mix tasks. |
 | `tests/` | The tests, with ExUnit. |
 
-`build.sh` builds beam.com: it compiles each directory of `src/` as its
+The Makefile builds beam.com: it compiles each directory of `src/` as its
 own application. Mix compiles all of `src/` as one application, only for
 the tests.
 
@@ -45,7 +45,7 @@ the tests.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
 - `examples/studio/test`: the tests of the import rewrite of the studio.
-  `./build.sh unit` runs them after the tests of the root project.
+  `make unit` runs them after the tests of the root project.
 
 `tests/support/` has the code that the tests share, for example
 `BeamCom.HexFixture`, a local Hex server. A test that needs a directory
@@ -57,13 +57,13 @@ Such a module is not async.
 mix deps.get
 mix test                   # all the tests
 mix test --cover           # with the coverage of each module, in cover/
-./build.sh unit            # after the make and elixir steps; needs no beam.com
+make unit                  # after the make and elixir steps; needs no beam.com
 ```
 
 The test environment compiles the Erlang code with `-DTEST`, which
 exports the internal functions. The tests need an OTP with `tools` (for
 `--cover`), `parsetools` and `asn1`: the zip of beam.com does not have
-`tools`. `./build.sh unit` uses the OTP build tree and the Elixir of the
+`tools`. `make unit` uses the OTP build tree and the Elixir of the
 build, and builds `tools` when it is not there. It also checks the
 warnings and the format.
 
@@ -98,7 +98,7 @@ The test needs `BEAM_COM_WASM_RUNTIME` (the runtime directory, for
 example `build/wasm-runtime`) and Node.js 25 or later (JSPI). The
 runtime and the `erl` of the test must come from the same OTP. Without
 `BEAM_COM_WASM_RUNTIME`, ExUnit skips the test (the tag `wasm_diff`).
-`./build.sh unit` sets the variable when the build has the runtime, so
+`make unit` sets the variable when the build has the runtime, so
 CI runs the test in the build job.
 
 ```sh
@@ -206,7 +206,7 @@ COSMOCC=build/cosmocc tests/check_format.sh build/beam.com
 executable ELF segment, and a writable and executable Mach-O segment.
 Each copy must fail with the correct message, so a change in the output
 of a tool cannot make a check pass with no notice. The test needs
-`BEAM_COM_FORMAT_FILE` and `COSMOCC`. `./build.sh unit` sets them.
+`BEAM_COM_FORMAT_FILE` and `COSMOCC`. `make unit` sets them.
 
 ## 5. Systems
 
