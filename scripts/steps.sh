@@ -743,6 +743,14 @@ step_elixir() {
             https://github.com/elixir-lang/elixir.git "$src"
     fi
     check_commit "$src" "$ELIXIR_COMMIT" "Elixir $ELIXIR_VERSION"
+    if [ ! -f "$src/.beam_com_patched" ]; then
+        log "Applying the patches of Elixir"
+        for p in "$ROOT"/patches/elixir/*.patch; do
+            echo "  $p"
+            git -C "$src" apply "$p"
+        done
+        touch "$src/.beam_com_patched"
+    fi
     (cd "$src" && PATH="$ERL_TOP/bin:$PATH" make compile)
 }
 
