@@ -142,6 +142,16 @@ jobs:
         timeout-minutes: 5
         run: BEAM_COM_VERBOSE=1 timeout 120 ./build.sh test
 
+      # The file formats of the output and of a program that it built
+      # (tests/check_format.sh): ZIP, PE, ELF and Mach-O. The Mach-O check
+      # needs llvm-objdump.
+      - name: Check the file formats
+        timeout-minutes: 10
+        run: |
+          command -v llvm-objdump >/dev/null ||
+            { sudo apt-get update -q >/dev/null && sudo apt-get install -y -q llvm >/dev/null; }
+          tests/check_format.sh "$OUT" build/hashsum.com
+
       # The differential test runs beam.wasm in Node.js, and needs JSPI
       # (Node.js 25 or later).
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5

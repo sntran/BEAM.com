@@ -925,6 +925,10 @@ step_unit() {
         if [ -f "$BUILD/wasm-runtime/beam.wasm" ]; then
             export BEAM_COM_WASM_RUNTIME="$BUILD/wasm-runtime"
         fi
+        # The tests of tests/check_format.sh use the beam.com of the build.
+        if [ -f "$OUT" ] && [ -x "$COSMOCC/bin/assimilate" ]; then
+            export BEAM_COM_FORMAT_FILE="$OUT" COSMOCC
+        fi
         mix local.hex --force --if-missing
         mix deps.get
         mix compile --warnings-as-errors
