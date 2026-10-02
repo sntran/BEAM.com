@@ -264,7 +264,7 @@ jobs:
           - { name: macOS x86_64, os: macos-15-intel }
           - { name: Windows x86_64, os: windows-latest }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -287,6 +287,39 @@ jobs:
         run: |
           tests/bench/run.sh bin | tee bench.md
           { echo "### Benchmarks: ${{ matrix.name }}"; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The performance gate (tests/bench/gate.sh, docs/BENCHMARKS.md): the
+      # beam.com of this change against the edge build of main, on this
+      # machine at the same time.
+      - name: Performance gate
+        if: matrix.name == 'Linux x86_64' && github.event_name == 'pull_request'
+        run: |
+          mkdir -p base
+          url=https://github.com/${{ github.repository }}/releases/download/edge
+          for i in 1 2 3; do
+            curl -fsSL -o base/beam.com "$url/beam.com" &&
+              curl -fsSL -o base/beam.com.sha256 "$url/beam.com.sha256" && break
+            sleep 30
+          done
+          (cd base && sha256sum -c beam.com.sha256)
+          status=0
+          tests/bench/gate.sh bin/beam.com base/beam.com > gate.md || status=$?
+          cat gate.md
+          { echo "### Performance gate"; echo; cat gate.md; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      # The gate must fail for the interpreter (fib is about 2 times
+      # slower), so that the gate itself stays live.
+      - name: The gate fails for the interpreter
+        if: matrix.name == 'Linux x86_64' && github.event_name == 'pull_request'
+        run: |
+          status=0
+          ROUNDS=1 tests/bench/gate.sh bin/beam-emu.com bin/beam.com fib binary > emu.md || status=$?
+          cat emu.md
+          if [ "$status" != 1 ]; then
+            echo "The gate gave the exit status $status for beam-emu.com, not 1."
+            exit 1
+          fi
 
       - name: Benchmarks (Windows)
         if: runner.os == 'Windows'
