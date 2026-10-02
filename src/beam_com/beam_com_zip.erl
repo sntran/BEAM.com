@@ -137,7 +137,8 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
     add(Rest, Pos + iolist_size(Local), [Local | Data], [E | Entries]).
 
 %% The code of kernel and stdlib is stored, not compressed: the boot
-%% loads it, and a stored entry needs no inflating (see build.sh).
+%% loads it, and a stored entry needs no inflating (see
+%% scripts/steps.sh).
 stored(<<"lib/kernel-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
 stored(<<"lib/stdlib-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
 stored(_) -> false.

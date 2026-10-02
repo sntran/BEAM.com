@@ -878,7 +878,7 @@ would work with musl, Cosmopolitan and other libcs.
 With `--disable-parallel-configure`, `erts/configure` failed (`exit 1`
 in `erts/config.log`), but the top-level `./configure` exited with 0
 and printed only the "APPLICATIONS DISABLED" table. The next `make`
-then used an old `config.status`. [`build.sh`](../build.sh) checks
+then used an old `config.status`. [`scripts/steps.sh`](../scripts/steps.sh) checks
 `erts/config.log` for this reason. The top-level configure should stop
 when the ERTS configure fails.
 
@@ -1535,7 +1535,7 @@ iframe`) from a Worker on another site, with
 
 Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and
 cc_precompiler 0.1.11, when their NIFs are linked into the emulator as
-static NIFs (`step_nifs` in `build.sh`).
+static NIFs (`step_nifs` in `scripts/steps.sh`).
 
 ### E1. exqlite: global functions with common names
 

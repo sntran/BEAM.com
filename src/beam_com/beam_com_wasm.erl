@@ -116,7 +116,7 @@ runtime_dir(Root) ->
     end.
 
 %% The applications whose NIFs are in the native beam.com: esqlite, and
-%% the hex.pm packages of the env nifs of beam_com (build.sh), but
+%% the hex.pm packages of the env nifs of beam_com (scripts/steps.sh), but
 %% exqlite and wasm, whose modules the runtime replaces (with_sqlite/2,
 %% with_wasm/1).
 native_nifs() ->

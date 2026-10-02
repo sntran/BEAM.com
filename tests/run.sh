@@ -462,7 +462,7 @@ if [ -d examples ]; then
 fi
 
 # --target wasm32: the Workers of examples/worker (cowboy, from hex.pm).
-# The runtime of the zip (the step wasm_runtime of build.sh), else a
+# The runtime of the zip (the step wasm_runtime of the Makefile), else a
 # stand-in; the build runs the release natively to find the modules of
 # the boot.
 if [ -d examples ]; then

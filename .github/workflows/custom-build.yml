@@ -1,7 +1,7 @@
 name: Custom build
 
 # The builder for the issues of the form "A custom build of beam.com"
-# (label custom-build): build.sh with the choices of the issue, the file
+# (label custom-build): the Makefile with the choices of the issue, the file
 # as an artifact of the run, a comment with its link, and the issue
 # closed. A one-off build for the user who asks: no release.
 on:
@@ -108,7 +108,9 @@ jobs:
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
 
       - name: Download cosmocc
-        run: ./build.sh toolchain
+        # The GNU make of the host gets cosmocc. Then the make of cosmocc
+        # runs the build.
+        run: make toolchain
 
       - name: Cache OpenSSL
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -144,13 +146,13 @@ jobs:
           AR: cosmoar
         run: |
           export OUT="$GITHUB_WORKSPACE/build/$OUT_NAME"
-          ./build.sh openssl otp configure sqlite nifs wasm make elixir release multicall wasm_runtime bundle
+          build/cosmocc/bin/make
 
-      # The test step of build.sh: the file runs a program, and builds one
+      # The step test of the Makefile: the file runs a program, and builds one
       # that runs (with SQLite and WebAssembly, when they are in it).
       - name: Test
         timeout-minutes: 5
-        run: OUT="$GITHUB_WORKSPACE/build/$OUT_NAME" timeout 120 ./build.sh test
+        run: OUT="$GITHUB_WORKSPACE/build/$OUT_NAME" timeout 120 build/cosmocc/bin/make test
 
       - name: Check the file
         run: |

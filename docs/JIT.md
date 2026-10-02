@@ -4,11 +4,11 @@
 
 Since all platforms were green with the fat JIT, and the benchmarks
 (`docs/BENCHMARKS.md`) show that it is worth its cost, `beam.com` has
-the JIT, and `beam-emu.com` has the interpreter (`JIT=0 ./build.sh`).
+the JIT, and `beam-emu.com` has the interpreter (`make JIT=0 OUT=build/beam-emu.com`).
 
 ## One fat file with both backends (steps c and d)
 
-`JIT=1 ./build.sh` (the default, with the normal, fat `cosmocc`) builds a
+`make JIT=1` (the default, with the normal, fat `cosmocc`) builds a
 `beam.com` with both backends of BeamAsm: the x86 backend in the
 x86_64 half and the arm backend in the aarch64 half. CI builds it and
 tests it on every platform (see `tests/run.sh`).
@@ -16,7 +16,7 @@ tests it on every platform (see `tests/run.sh`).
 What was needed, in addition to the x86_64 probe below:
 
 - **`JIT_ARCH=fat`** (`patches/otp/0002-jit.patch`, when
-  `BEAM_COM_FAT_JIT=yes`, which `build.sh` sets for `cosmocc`). The
+  `BEAM_COM_FAT_JIT=yes`, which `scripts/steps.sh` sets for `cosmocc`). The
   Makefile generates the opcode tables and `beam_asm_global.hpp` once for
   each backend, into `$(TTF_DIR)/jit-x86` and `jit-arm`. Small wrapper
   files select the backend of the compiler pass with
@@ -71,7 +71,7 @@ On Linux, `+JMsingle true` gives one RWX mapping, which the check sees
 ## The x86_64 probe (steps a and b)
 
 BeamAsm first worked in an x86_64-only `beam-jit.com`
-(`JIT=1 CC=x86_64-unknown-cosmo-cc ./build.sh`), on Linux, macOS x86_64,
+(`make JIT=1 CC=x86_64-unknown-cosmo-cc`), on Linux, macOS x86_64,
 Windows, FreeBSD, NetBSD and OpenBSD 7.3.
 
 What was needed:
@@ -84,7 +84,7 @@ What was needed:
 - asmjit is compiled without its precompiled header: `cosmocc` cannot make
   or use one `.gch` file for two CPUs (the same patch).
 - `c_src/cosmo/erts_cosmo.h` has C linkage for C++ files.
-- The compiler of one CPU writes an ELF file. `build.sh` makes the APE
+- The compiler of one CPU writes an ELF file. The build (`scripts/steps.sh`) makes the APE
   file with `apelink` (`objcopy -O binary` drops the zip of the ELF).
 
 Sizes: the x86_64-only `beam-jit.com` was 28.7 MB, and the programs that
