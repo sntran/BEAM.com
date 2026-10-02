@@ -72,7 +72,48 @@ The builder tests use the real OTP applications (linked into a temporary
 Some code runs only in a real `beam.com`, and the behavior tests cover
 it: `beam_com:main/0` and `beam_com_script` halt the node.
 
-## 2. Behavior tests in beam.com
+## 2. Models
+
+TLC checks the models of four protocols. Each model has an invariant
+that a known fault breaks, so a check that passes means something.
+
+| Model | What it checks |
+|---|---|
+| `specs/KvBlocks.tla` | The blocks of a value in Workers KV: a reader gets a whole version or no version, and the old version stays until the new one is complete. |
+| `specs/GreenThreads.tla` | The green threads of the wasm runtime (`jspi_lib.js`, `jspi_pthread.c`): one thread runs at a time, no wake is lost, and no thread wakes before it waits. |
+| `specs/Admission.tla` (with `MC_Admission.tla`) | The admission of visitors: at most `Max` run, at most one for each address, and the queue keeps its order. |
+| `BeamCom.Protocol.Instance` | An Accord contract of one instance: each instance ends, and an instance that ended has no storage. |
+
+```sh
+mix beam_com.tlc                      # all models
+mix beam_com.tlc --only GreenThreads  # one model of specs/
+mix beam_com.tlc --skip-missing       # no error without java or the jar
+```
+
+The task runs `mix accord.check` and then TLC for each `specs/*.cfg`.
+The part of the file name before the first `.` names the module, so
+`MC_Admission.max1.cfg` checks `MC_Admission` with `Max = 1`. A run of
+all models takes about one minute.
+
+TLC needs Java 11 or later and `tla2tools.jar`. The task reads the jar
+from `TLA2TOOLS_JAR`, then `~/.tla/tla2tools.jar`, then the project
+root. CI pins the stable release v1.7.4 (2,274,532 bytes):
+
+```
+936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  tla2tools.jar
+```
+
+Do not use v1.8.0. It is a nightly build, so its checksum changes.
+
+TLC found a race in the green threads. The plain Worker runs all the
+timers that are due in one task. A thread whose timer fired, but which
+did not run yet, could then get a wake. That wake went to the next
+wait, so the thread ran two times and the run queue became wrong.
+`GreenThreads.cfg` sets `Fix = TRUE`. With `Fix = FALSE`, TLC shows the
+fault. `tests/host/jspi_lib.test.mjs` checks the same order of events in
+Node.
+
+## 3. Behavior tests in beam.com
 
 `tests/run.sh` (Unix) and `tests/run.ps1` (Windows) run `beam.com` and
 the programs that it builds, on each system, and check the output and
@@ -101,7 +142,7 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 and `phx.gen.auth` (Linux, with the network), the file watchers, and a
 check of WSL2 in a user namespace of Linux.
 
-## 3. Systems
+## 4. Systems
 
 CI runs the behavior tests on Linux (x86_64, aarch64), macOS (arm64,
 x86_64), Windows, FreeBSD, NetBSD and OpenBSD 7.3, and the unit tests in
@@ -126,7 +167,7 @@ Wine 9.0 could not run Cosmopolitan programs in a container without a
 display (even a "hello" program waits forever), so Windows needs CI or a
 Windows machine. macOS and the BSDs also need CI or a real machine.
 
-## 4. Benchmarks
+## 5. Benchmarks
 
 `tests/bench/run.sh` (and `run.ps1`) measure the size, the start time and
 the speed of typical work for each variant. CI runs them after the tests

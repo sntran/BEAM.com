@@ -68,7 +68,13 @@ defmodule BeamCom.MixProject do
 
   defp deps do
     [
-      {:stream_data, "~> 1.4", only: [:dev, :test]}
+      {:stream_data, "~> 1.4", only: [:dev, :test]},
+      # The protocol contracts (lib/beam_com/protocol) and mix accord.check.
+      {:accord,
+       github: "QuinnWilton/accord",
+       ref: "c4944fb90c6258644e10d9bac0efd8a387717b89",
+       only: [:dev, :test],
+       runtime: false}
     ]
   end
 end

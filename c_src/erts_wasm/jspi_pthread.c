@@ -303,7 +303,11 @@ static int cond_wait(pthread_cond_t *c, pthread_mutex_t *m, int timeout_ms)
 
     enqueue(&x->waiters, self);
     pthread_mutex_unlock(m);
-    woken = block(timeout_ms);
+    block(timeout_ms);
+    /* A signal can come after the timeout, before this thread runs: then
+     * the signal took the thread from the queue. The flag of wake() is the
+     * answer, not the result of the suspend (specs/GreenThreads.tla). */
+    woken = self->woken;
     if (!woken)
         unqueue(&x->waiters, self);
     pthread_mutex_lock(m);

@@ -62,17 +62,32 @@ addToLibrary({
   jspi_suspend__deps: ['$jspi', '$jspiTimer', '$jspiClear'],
   jspi_suspend__async: true,
   jspi_suspend__sig: 'ipi',
+  // A timer can fire, and its thread can wait to run, while another thread
+  // wakes it: runJobs of worker.js runs all the due timers in one task.
+  // Then the waiter of the thread is a function that does nothing, so the
+  // wake does not go to jspi.early. Else the next suspend of the thread
+  // returns at once, while the thread is in a wait queue
+  // (specs/GreenThreads.tla).
   jspi_suspend: (t, ms) => new Promise((resolve) => {
     if (jspi.early.delete(t)) return resolve(1);
     let timer = null;
-    jspi.waiters.set(t, () => { if (timer !== null) jspiClear(timer); jspi.waiters.delete(t); resolve(1); });
-    if (ms >= 0) timer = jspiTimer(() => { jspi.waiters.delete(t); resolve(0); }, ms);
+    const w = () => { if (timer !== null) jspiClear(timer); resolve(1); };
+    jspi.waiters.set(t, w);
+    if (ms >= 0) {
+      timer = jspiTimer(() => {
+        if (jspi.waiters.get(t) === w) jspi.waiters.set(t, () => {});
+        resolve(0);
+      }, ms);
+    }
   }),
   jspi_resume__deps: ['$jspi'],
   jspi_resume__sig: 'vp',
+  // The resume puts a function that does nothing in place of the waiter:
+  // so a waiter runs once, a second resume before the thread runs does
+  // nothing, and no resume removes the waiter of a later suspend.
   jspi_resume: (t) => {
     const w = jspi.waiters.get(t);
-    if (w) queueMicrotask(w); else jspi.early.add(t);
+    if (w) { jspi.waiters.set(t, () => {}); queueMicrotask(w); } else jspi.early.add(t);
   },
   // Messages between the host and Erlang (wasm_host_nif.c):
   // Module.beamHost.push(bytes) gives an event to Erlang, and
