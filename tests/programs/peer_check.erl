@@ -12,7 +12,8 @@
 %%
 %% On Windows, beam.com has no port programs (open_port/2 with
 %% spawn_executable gives enotsup), so peer cannot start a node. There
-%% the program checks that error and prints one line:
+%% os:type() is {unix, windows}, because ERTS is the Unix build. The
+%% program checks that error and prints one line:
 %%
 %%   peer: not supported on windows
 -module(peer_check).
@@ -21,7 +22,7 @@
 main(_) ->
     {ok, [[Exe]]} = init:get_argument(beam_com_exe),
     case os:type() of
-        {win32, _} -> windows(Exe);
+        {_, windows} -> windows(Exe);
         _ -> [check(Exe, Channel) || Channel <- [standard_io, tcp]]
     end,
     ok.
