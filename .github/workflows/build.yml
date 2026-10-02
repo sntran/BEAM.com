@@ -142,6 +142,13 @@ jobs:
         timeout-minutes: 5
         run: BEAM_COM_VERBOSE=1 timeout 120 ./build.sh test
 
+      # The differential test runs beam.wasm in Node.js, and needs JSPI
+      # (Node.js 25 or later).
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        if: matrix.out == 'beam.com'
+        with:
+          node-version: "26"
+
       - name: Unit tests
         if: matrix.out == 'beam.com'
         timeout-minutes: 10

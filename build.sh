@@ -920,6 +920,11 @@ step_unit() {
         export MIX_HOME="$BUILD/mix-home-test" HEX_HOME="$BUILD/hex-home-test"
         export MIX_BUILD_ROOT="$BUILD/mix" MIX_DEPS_PATH="$BUILD/deps"
         export LC_ALL=C.UTF-8 MIX_ENV=test
+        # The differential test (tests/wasm_diff_test.exs) runs when the
+        # build has the WebAssembly runtime (the step wasm_runtime).
+        if [ -f "$BUILD/wasm-runtime/beam.wasm" ]; then
+            export BEAM_COM_WASM_RUNTIME="$BUILD/wasm-runtime"
+        fi
         mix local.hex --force --if-missing
         mix deps.get
         mix compile --warnings-as-errors
