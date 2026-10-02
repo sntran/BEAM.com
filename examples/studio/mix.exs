@@ -12,6 +12,8 @@ defmodule Studio.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      # The tests need no server: the studio does not start.
+      aliases: [test: "test --no-start"],
       # The app of the project can implement a protocol for its structs.
       consolidate_protocols: false,
       # RELEASE_ERTS=false: a release with no ERTS, for beam.com.
@@ -42,7 +44,8 @@ defmodule Studio.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"}
+      {:bandit, "~> 1.5"},
+      {:stream_data, "~> 1.4", only: :test}
     ]
   end
 end

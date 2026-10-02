@@ -11,6 +11,7 @@ defmodule BeamComBuildTest do
   changes the current directory, so it does not run with other modules.
   """
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
   import Bitwise
   import ExUnit.CaptureIO
@@ -1675,5 +1676,83 @@ defmodule BeamComBuildTest do
   defp quiet(fun) do
     {result, _output} = with_io(:stderr, fn -> silent(fun) end)
     result
+  end
+
+  describe "properties of the names and the paths" do
+    # The version starts at the first "-" before a digit, so a version can
+    # have a "-" ("ecto-3.0.0-rc.1").
+    property "split_dir/1 gives the name and the version of NAME-VSN" do
+      check all(name <- app_name(), vsn <- app_version()) do
+        assert :beam_com_build.split_dir(String.to_charlist(name <> "-" <> vsn)) ==
+                 {String.to_atom(name), String.to_charlist(vsn)}
+      end
+    end
+
+    property "slashes/2 on Windows gives a path with no backslash" do
+      check all(path <- windows_path()) do
+        out = :beam_com_build.slashes(String.to_charlist(path), {:win32, :windows})
+        refute ?\\ in out
+        assert :beam_com_build.slashes(out, {:win32, :windows}) == out
+        assert length(out) == String.length(path)
+
+        # A drive becomes the form of Cosmopolitan: "C:\\x" is "/C/x".
+        case String.to_charlist(path) do
+          [letter, ?: | _] -> assert [?/, letter | _] = out
+          _ -> :ok
+        end
+      end
+    end
+
+    property "slashes/2 on Unix does not change a path" do
+      check all(path <- windows_path()) do
+        path = String.to_charlist(path)
+        assert :beam_com_build.slashes(path, {:unix, :linux}) == path
+      end
+    end
+  end
+
+  # An application name: words of letters, digits and "_", joined by "-"
+  # and a letter, so no "-" comes before a digit.
+  defp app_name do
+    word = string(Enum.concat([?a..?z, ?0..?9, [?_]]), min_length: 1, max_length: 6)
+
+    gen all(
+          first <- string(?a..?z, length: 1),
+          words <- list_of(word, max_length: 2),
+          tail <- list_of(map(string(?a..?z, length: 1), &("-" <> &1)), max_length: 1)
+        ) do
+      first <> Enum.join(words, "_") <> Enum.join(tail)
+    end
+  end
+
+  defp app_version do
+    gen all(
+          parts <- list_of(integer(0..30), min_length: 1, max_length: 3),
+          pre <-
+            one_of([
+              constant(""),
+              map(string(?a..?z, min_length: 1, max_length: 4), &("-" <> &1 <> ".1"))
+            ])
+        ) do
+      Enum.join(parts, ".") <> pre
+    end
+  end
+
+  defp windows_path do
+    gen all(
+          drive <-
+            one_of([
+              constant(""),
+              map(string(Enum.concat(?A..?Z, ?a..?z), length: 1), &(&1 <> ":"))
+            ]),
+          parts <-
+            list_of(string(Enum.concat([?a..?z, [?., ?_, ?\s]]), max_length: 5), max_length: 4),
+          separators <- list_of(member_of(["\\", "/"]), length: max(length(parts), 1))
+        ) do
+      drive <>
+        (Enum.zip_with(separators, parts ++ [""], &(&1 <> &2))
+         |> Enum.take(max(length(parts), 1))
+         |> Enum.join())
+    end
   end
 end
