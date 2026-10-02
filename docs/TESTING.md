@@ -38,6 +38,10 @@ the tests.
   `file:consult/1` and `erl_tar` for `metadata.config` and the
   tarballs, the `zip` module of stdlib for the zip writer, and the `json`
   module of OTP for the values that go to the WebAssembly host.
+- `tests/wasm_diff_test.exs`: the differential test. Each program of
+  `tests/wasm_diff/` runs in the native OTP and in the WebAssembly
+  runtime of `--target wasm32`, and the two outputs must be the same.
+  See "The differential test" below.
 - `examples/studio/test`: the tests of the import rewrite of the studio.
   `./build.sh unit` runs them after the tests of the root project.
 
@@ -71,6 +75,38 @@ The builder tests use the real OTP applications (linked into a temporary
 
 Some code runs only in a real `beam.com`, and the behavior tests cover
 it: `beam_com:main/0` and `beam_com_script` halt the node.
+
+### The differential test
+
+The programs of `tests/wasm_diff/` print the results of integers and
+floats, the external term format, hashes, Unicode, regular expressions,
+JSON, processes, timers, ETS, files, and crypto. They print no pid, no
+time, and no path. The test runs each program three times:
+
+1. In the native OTP of the test, with `LC_ALL=C.UTF-8`.
+2. In the Worker build of `beam.wasm`, in Node.js.
+3. In the same build, with the timers of a plain Worker: all the timers
+   that are due run in one task.
+
+`tests/wasm_diff/run.mjs` runs one program in the runtime. It writes
+kernel, stdlib, crypto, and the programs into the memory file system of
+the runtime.
+
+The test needs `BEAM_COM_WASM_RUNTIME` (the runtime directory, for
+example `build/wasm-runtime`) and Node.js 25 or later (JSPI). The
+runtime and the `erl` of the test must come from the same OTP. Without
+`BEAM_COM_WASM_RUNTIME`, ExUnit skips the test (the tag `wasm_diff`).
+`./build.sh unit` sets the variable when the build has the runtime, so
+CI runs the test in the build job.
+
+```sh
+BEAM_COM_WASM_RUNTIME=build/wasm-runtime mix test tests/wasm_diff_test.exs
+```
+
+The test found one permitted difference. Erlang does not specify the
+order of the keys of a map with more than 32 keys. With atom keys, this
+order in wasm32 is not the order in a 64-bit runtime. The programs print
+the sorted keys and the deterministic encoding of such a map.
 
 ## 2. Models
 
