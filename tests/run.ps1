@@ -169,12 +169,11 @@ if (Test-Path "examples") {
         Check "script_check.b.com" '(?m)^schedulers 1$' @("info")
         Remove-Item Env:ERL_FLAGS
     }
-    # The peer module of OTP: the program starts its own file in erl mode,
-    # with the standard I/O and then a TCP connection as the channel.
+    # The peer module of OTP. Windows has no port programs, so peer cannot
+    # start a node: the program checks that peer gives enotsup.
     Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
     if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
-        $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000'
-        Check "peer_check.b.com" "(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$" @()
+        Check "peer_check.b.com" '(?m)^peer: not supported on windows$' @()
     }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).

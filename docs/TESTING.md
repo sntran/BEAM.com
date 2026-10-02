@@ -170,7 +170,7 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 |---|---|
 | `tests/programs/wasm_tests.erl` | WebAssembly: every value type at its limits, wrong arguments, all trap kinds and the recovery after a trap, stack exhaustion, memory bounds and growth, 50 processes that call one instance, missing imports, and WASI arguments, environment and exit codes. |
 | `tests/programs/wasm_check.erl`, `tests/programs/hello_go` | A WebAssembly module, and a WASI program in Go (`GOOS=wasip1`). |
-| `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB). |
+| `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB). On Windows, which has no port programs, it checks that `peer` gives `enotsup`. |
 | `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS`. |
 | `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. |
 | `tests/programs/jit_maps.erl` | No page of the JIT code is writable and executable. |
