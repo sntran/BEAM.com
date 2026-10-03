@@ -181,7 +181,7 @@ jobs:
           if ! gh attestation verify beam.com --repo sntran/BEAM.com \
                --signer-workflow sntran/BEAM.com/.github/workflows/build.yml \
                --source-ref "$ref" --deny-self-hosted-runners; then
-            echo "::error::beam.com $TAG has no valid attestation of build.yml of sntran/BEAM.com at $ref. Do not use this file."
+            echo "::error::Could not verify the provenance of beam.com $TAG (see the error of gh above): the file is not the one that build.yml of sntran/BEAM.com made at $ref, or the check could not reach GitHub or Sigstore. Do not use this file until the check passes."
             exit 1
           fi
 

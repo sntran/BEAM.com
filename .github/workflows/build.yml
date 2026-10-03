@@ -505,6 +505,17 @@ jobs:
         with:
           subject-path: bin/beam.com
 
+      # The script of pages-app.yml that checks the provenance, on the file
+      # of this run, before the publish: when it fails, the old edge stays.
+      - name: Check the provenance before the publish
+        if: steps.newest.outputs.newest == 'true'
+        run: |
+          yq -r '.jobs.build.steps[] | select(.name == "Check the provenance of beam.com") | .run' \
+            .github/workflows/pages-app.yml > "$RUNNER_TEMP/check.sh"
+          grep -q 'gh attestation verify' "$RUNNER_TEMP/check.sh"
+          cd bin
+          TAG=edge bash -eo pipefail "$RUNNER_TEMP/check.sh"
+
       - name: Publish the prerelease edge
         if: steps.newest.outputs.newest == 'true'
         run: |
@@ -515,28 +526,24 @@ jobs:
             --prerelease --target "$GITHUB_SHA" --title edge \
             --notes "beam.com of main at $GITHUB_SHA. The next merge replaces it. To check where it comes from: \`gh attestation verify beam.com --repo $GITHUB_REPOSITORY\`."
 
-      # The script of pages-app.yml that checks the provenance: it passes on
-      # the beam.com of edge, and it stops on a copy with one changed byte.
-      - name: Check the provenance of edge
+      # The published beam.com is the file that the check took. The same
+      # check stops on a copy with one changed byte.
+      - name: Check the published edge
         if: steps.newest.outputs.newest == 'true'
         run: |
           mkdir -p check
           cd check
           curl -fsSL -o beam.com "https://github.com/$GITHUB_REPOSITORY/releases/download/edge/beam.com"
           cmp beam.com ../bin/beam.com
-          yq -r '.jobs.build.steps[] | select(.name == "Check the provenance of beam.com") | .run' \
-            ../.github/workflows/pages-app.yml > check.sh
-          grep -q 'gh attestation verify' check.sh
-          TAG=edge bash -eo pipefail check.sh
           python3 -c 'import sys; p = sys.argv[1]; b = bytearray(open(p, "rb").read()); b[4096] ^= 1; open(p, "wb").write(b)' beam.com
           if cmp -s beam.com ../bin/beam.com; then echo "the copy did not change" >&2; exit 1; fi
-          if TAG=edge bash -eo pipefail check.sh > out.txt 2>&1; then
+          if TAG=edge bash -eo pipefail "$RUNNER_TEMP/check.sh" > out.txt 2>&1; then
             cat out.txt
             echo "the check took a changed beam.com" >&2
             exit 1
           fi
           cat out.txt
-          grep -q '^::error::beam.com edge has no valid attestation' out.txt
+          grep -q '^::error::Could not verify the provenance of beam.com edge' out.txt
 
       - name: Build the Livebook Worker again
         if: steps.newest.outputs.newest == 'true' && env.HOOK != ''

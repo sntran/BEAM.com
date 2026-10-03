@@ -172,7 +172,8 @@ run shows a warning. A pin to a commit SHA uses the release of that
 commit, and stops with an error when the commit has no release tag.
 Before the build, the workflow checks the SHA-256 of `beam.com` and its
 provenance (`gh attestation verify`). The check stops the build when
-`build.yml` of BEAM.com did not make the file. It needs no other
+`build.yml` of BEAM.com did not make the file, or when the check cannot
+reach GitHub or Sigstore. It needs no other
 permission.
 
 The app needs an HTTP listener on `PORT` (4000 by default), and only the
