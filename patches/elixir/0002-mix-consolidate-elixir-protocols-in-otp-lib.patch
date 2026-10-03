@@ -1,0 +1,31 @@
+Mix.Compilers.Protocol: consolidate the protocols of Elixir in the lib directory of OTP
+
+The consolidation skips each code path in the lib directory of OTP. In
+one file with OTP and Elixir (beam.com), the applications of Elixir are
+in that directory too, so Mix did not consolidate String.Chars,
+Enumerable, Inspect and the other protocols of Elixir for a project.
+
+Keep the code paths of the applications of Elixir. In a usual install,
+Elixir is not in the lib directory of OTP, so nothing changes there.
+
+--- a/lib/mix/lib/mix/compilers/protocol.ex
++++ b/lib/mix/lib/mix/compilers/protocol.ex
+@@ -132,8 +132,17 @@
+   defp consolidation_paths do
+     otp = :code.lib_dir()
+ 
++    # The applications of Elixir can be in the lib directory of OTP, as in
++    # one file with both (beam.com). Their protocols are consolidated too.
++    elixir =
++      for app <- [:elixir, :eex, :ex_unit, :iex, :logger, :mix],
++          dir <- [:code.lib_dir(app)],
++          is_list(dir),
++          do: dir
++
+     # Pre-list the paths in each directory for performance
+-    for path <- :code.get_path(), not :lists.prefix(otp, path) do
++    for path <- :code.get_path(),
++        not :lists.prefix(otp, path) or Enum.any?(elixir, &:lists.prefix(&1, path)) do
+       {path,
+        case :file.list_dir(path) do
+          {:ok, files} -> files

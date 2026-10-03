@@ -797,7 +797,9 @@ step_bundle() {
     # docs (for h/1 in iex) and attributes. They are for "beam.com INPUT -o OUTPUT"
     # of Elixir code, and for the tools of Elixir (mix, iex, elixir,
     # elixirc; bin/mix is the script of mix). A program gets only the
-    # applications that it uses, without docs.
+    # applications that it uses, without docs. A protocol (a module with
+    # __protocol__/1) keeps its debug information: the consolidation of
+    # Mix reads it, else it fails with missing_chunk.
     if [ "$ELIXIR" = 1 ]; then
         for app in $ELIXIR_APPS; do
             src=$BUILD/elixir-$ELIXIR_VERSION/lib/$app/ebin
@@ -805,8 +807,13 @@ step_bundle() {
             mkdir -p "$STAGE/lib/$app-$vsn/ebin"
             cp "$src"/*.beam "$src/$app.app" "$STAGE/lib/$app-$vsn/ebin/"
         done
-        "$ERL_TOP/bin/erl" -noshell -eval \
-            "beam_lib:strip_files([F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")], [\"Attr\", \"Docs\"]), halt()."
+        "$ERL_TOP/bin/erl" -noshell -eval "
+            Fs = [F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")],
+            Protocol = fun(F) -> {ok, {_, [{exports, E}]}} = beam_lib:chunks(F, [exports]), lists:member({'__protocol__', 1}, E) end,
+            {Protocols, Others} = lists:partition(Protocol, Fs),
+            {ok, _} = beam_lib:strip_files(Others, [\"Attr\", \"Docs\"]),
+            {ok, _} = beam_lib:strip_files(Protocols, [\"Attr\", \"Docs\", \"Dbgi\"]),
+            halt()."
         mkdir -p "$STAGE/bin"
         cp "$BUILD/elixir-$ELIXIR_VERSION/bin/mix" "$STAGE/bin/mix"
     fi
