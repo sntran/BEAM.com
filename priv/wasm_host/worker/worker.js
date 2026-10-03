@@ -967,6 +967,9 @@ export class Vm {
     const [release, bundled] = this.given
       ? [this.given.release, this.given.snapshot]
       : await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    // The vars of the host choose a snapshot at the boot point (below);
+    // the vars of autoVars do not.
+    const ownVars = Object.keys(this.vars).length;
     await this.autoVars(env, releaseMeta(release));
     // A snapshot of the build (snapshot.bin), else one that a Worker made
     // (BEAM_SNAPSHOT = "off" turns them off).
@@ -980,7 +983,7 @@ export class Vm {
       // boot point, before the program has the state of one tenant.
       const meta = releaseMeta(release);
       const atBoot = !this.plain && (this.sql || this.hostFiles)
-        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || Object.keys(this.vars).length > 0);
+        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || ownVars > 0);
       key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;

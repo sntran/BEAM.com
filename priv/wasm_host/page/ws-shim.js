@@ -16,9 +16,11 @@
 //   in the fragment of its URL, so a reload and a link keep the page.
 (() => {
   // The same rule as scope.js, which a classic script cannot import.
-  // The scope of the frame (data-app of sw.js): this script can come from
-  // a CDN.
-  const APP = new URL(document.currentScript?.dataset.app ?? './app/', location.href);
+  // The scope of the frame: data-app of sw.js (this script can come from
+  // a CDN), else app/ next to this script (the sw.js of an older site).
+  const script = document.currentScript;
+  const APP = script?.dataset.app ? new URL(script.dataset.app, location.href)
+    : new URL('./app/', script?.src ?? location.href);
   const outside = (u) => u.origin === location.origin && !`${u.pathname}/`.startsWith(APP.pathname);
   const inApp = (u) => new URL(APP.pathname.replace(/\/$/, '') + u.pathname + u.search + u.hash, u).href;
 
