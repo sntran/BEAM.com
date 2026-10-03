@@ -1,9 +1,10 @@
 #!/bin/sh
 # The generated part of the npm package beam.com (package.json at the root
-# of the repository): the runtime of a --target wasm32 directory of
-# beam.com, and the SHA-256 of that beam.com for npx beam.com
-# (js/download.mjs), in runtime/. Then "npm pack" or "npm publish" in the
-# root makes the package.
+# of the repository), in runtime/: the files of a --target wasm32
+# directory of beam.com that are the same for each app (the runtime and
+# its hosts, for js/edge.mjs), and the SHA-256 of that beam.com for npx
+# beam.com (js/download.mjs). Then "npm pack" or "npm publish" in the root
+# makes the package.
 #
 #   scripts/npm.sh BEAM_COM DIR
 #
@@ -33,11 +34,16 @@ fi
 out=$root/runtime
 rm -rf "$out"
 mkdir -p "$out"
-for f in worker.js app-com.js runtime-id.js beam.mjs beam.wasm; do
+# Not the files that depend on the app (beam_com_wasm:host_files/2, in the
+# edge part of app.com), the release, and the copy of beam.wasm in page/.
+(cd "$dir" && find . -type f | sed 's|^\./||') | while IFS= read -r f; do
+    case $f in
+        wrangler*.jsonc|release/wrangler.jsonc|worker.capnp|release/release.bin) continue ;;
+        page/env.json|page/app/*|page/release.bin|page/beam.wasm) continue ;;
+    esac
+    mkdir -p "$out/$(dirname "$f")"
     cp "$dir/$f" "$out/$f"
 done
-# The license texts of the parts of the runtime.
-[ ! -d "$dir/licenses" ] || cp -R "$dir/licenses" "$out/licenses"
 # The files of the runtime are ES modules; package.json at the root has no
 # type, because a Mix project below it can have CommonJS files
 # (examples/phoenix_demo/assets/vendor).

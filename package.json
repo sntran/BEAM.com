@@ -12,10 +12,12 @@
     "node": ">=25"
   },
   "bin": {
-    "beam.com": "js/beam.com.mjs"
+    "beam.com": "js/beam.com.mjs",
+    "beam-edge": "js/edge.mjs"
   },
   "exports": {
     "./node": "./js/node.mjs",
+    "./edge": "./js/edge.mjs",
     "./app-com": "./runtime/app-com.js",
     "./runtime-id": "./runtime/runtime-id.js",
     "./worker": "./runtime/worker.js",

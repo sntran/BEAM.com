@@ -424,6 +424,16 @@ jobs:
             \"DATABASE_PATH\": \"/tmp/phoenix_demo.db\", \"SECRET_KEY_BASE\": \"$key\"}" \
             node tests/host/boot_app_com.mjs "$RUNNER_TEMP/wasm32" "$RUNNER_TEMP/phoenix_demo.com" --get / --expect 'LiveView'
 
+      # The directory of the hosts from the same file and the npm package of
+      # the step "The npm package", with no beam.com (beam-edge,
+      # js/edge.mjs): its page in Chrome of the runner, as the job page
+      # checks the site of --target wasm32.
+      - name: The hosts of phoenix_demo.com
+        run: |
+          (cd "$RUNNER_TEMP/app" && npx beam-edge "$RUNNER_TEMP/phoenix_demo.com" -o "$RUNNER_TEMP/edge")
+          npm install --prefix wasm --no-audit --no-fund
+          node tests/page/check.mjs "$RUNNER_TEMP/edge/page" --base /repo/ --phoenix-demo
+
   test:
     name: Run on ${{ matrix.name }}
     needs: [build, example-release]

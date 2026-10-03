@@ -1,62 +1,16 @@
 // The reader of a native app.com (priv/wasm_host/worker/app-com.js):
-// "node --test tests/host". The zip files of these tests are made here,
-// with the layout that beam.com writes: native code first, then the
-// entries, and the edge part (.wasm/) at the end.
+// "node --test tests/host". The zip files of these tests come from
+// zip.mjs, with the layout that beam.com writes: native code first, then
+// the entries, and the edge part (.wasm/) at the end.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
-import { appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
+import { appHost, appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
+import { zip } from './zip.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const bytes = (d) => (typeof d === 'string' ? enc.encode(d) : d);
-
-async function deflate(b) {
-  const s = new Blob([b]).stream().pipeThrough(new CompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(s).arrayBuffer());
-}
-
-// A zip file: files is [{name, data, method (0 or 8), crc}], with prefix
-// before the first entry (the native code) and a comment after the end
-// record. zip64: the end record of a zip64 file.
-async function zip(files, { prefix = 'MZqFpD native code', comment = '', zip64 = false } = {}) {
-  const parts = [bytes(prefix)];
-  let at = parts[0].length;
-  const central = [];
-  for (const f of files) {
-    const data = bytes(f.data);
-    const name = enc.encode(f.name);
-    const method = f.method ?? 0;
-    const body = method === 8 ? await deflate(data) : data;
-    const crc = f.crc ?? crc32(data);
-    const h = new DataView(new ArrayBuffer(30));
-    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(8, method, true);
-    h.setUint32(14, crc, true); h.setUint32(18, body.length, true); h.setUint32(22, data.length, true);
-    h.setUint16(26, name.length, true);
-    parts.push(new Uint8Array(h.buffer), name, body);
-    central.push({ name, method, crc, csize: body.length, size: data.length, offset: at });
-    at += 30 + name.length + body.length;
-  }
-  const cdAt = at;
-  for (const e of central) {
-    const c = new DataView(new ArrayBuffer(46));
-    c.setUint32(0, 0x02014b50, true); c.setUint16(10, e.method, true); c.setUint32(16, e.crc, true);
-    c.setUint32(20, e.csize, true); c.setUint32(24, e.size, true); c.setUint16(28, e.name.length, true);
-    c.setUint32(42, e.offset, true);
-    parts.push(new Uint8Array(c.buffer), e.name);
-    at += 46 + e.name.length;
-  }
-  const note = bytes(comment);
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true);
-  end.setUint16(8, zip64 ? 0xffff : central.length, true); end.setUint16(10, zip64 ? 0xffff : central.length, true);
-  end.setUint32(12, at - cdAt, true); end.setUint32(16, cdAt, true); end.setUint16(20, note.length, true);
-  parts.push(new Uint8Array(end.buffer), note);
-  const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
-  let i = 0;
-  for (const p of parts) { out.set(p, i); i += p.length; }
-  return out;
-}
 
 // The files of release.bin: [[path, Uint8Array], ...] in their order.
 function unpack(buffer) {
@@ -89,6 +43,26 @@ const app = () => zip([
   { name: '.wasm/releases/1.0.0/vm.args', data: '-noshell\n' },
   { name: '.wasm/lib/wasm_host-0.1.0/ebin/wasm_host.beam', data: BEAM, method: 8 },
 ]);
+
+// The files of the hosts (.wasm/host/): not in the release, and appHost
+// gives them.
+test('the files of the hosts: appHost, and not in the release', async () => {
+  const withHost = await zip([
+    { name: 'lib/a-1.0/ebin/a.app', data: '{application, a, []}.' },
+    { name: '.wasm/.release.json', data: JSON.stringify(META), method: 8 },
+    { name: '.wasm/host/wrangler.jsonc', data: '{ "name": "app" }', method: 8 },
+    { name: '.wasm/host/release/wrangler.jsonc', data: '{ "name": "app-release" }' },
+  ]);
+  const { read, size } = bytesReader(withHost);
+  const names = unpack(await appRelease(read, size)).map(([p]) => p);
+  assert.deepEqual(names, ['.release.json', 'lib/a-1.0/ebin/a.app']);
+  const host = await appHost(read, size);
+  assert.deepEqual([...host.keys()].sort(), ['release/wrangler.jsonc', 'wrangler.jsonc']);
+  assert.equal(dec.decode(host.get('wrangler.jsonc')), '{ "name": "app" }');
+  // A file of an older beam.com has no files of the hosts.
+  const old = bytesReader(await app());
+  assert.equal((await appHost(old.read, old.size)).size, 0);
+});
 
 test('the release of an app.com: lib/ and releases/, with the edge part in its place', async () => {
   const { read, size } = bytesReader(await app());

@@ -45,6 +45,8 @@
                       "LitT", "Line", "Type", "Meta", "Recs"]).
 
 -define(HOST_APP, wasm_host).
+%% The SECRET_KEY_BASE of worker.capnp in the edge part of a native file.
+-define(KEY_MARK, "@SECRET_KEY_BASE@").
 %% The files of the runtime, in the order of runtime_id/1.
 -define(RUNTIME_FILES, ["app-com.js", "beam.mjs", "beam.wasm", "worker.js"]).
 -define(CACERTS, "etc/cacerts.pem").
@@ -151,7 +153,11 @@ overlay(View, Native, #{name := Name, vsn := Vsn, kind := Kind}, Opts) ->
                     %% Without debug information and docs, as in release.bin.
                     Changed = strip_beams([F || {P, D} = F <- Files,
                                                 maps:get(P, Have, none) =/= iolist_to_binary(D)]),
+                    %% The files of the hosts that depend on the app, with no
+                    %% secret: js/edge.mjs puts a new key in place of ?KEY_MARK.
+                    Host = [{".wasm/host/" ++ P, D} || {P, D} <- host_files(Rel, ?KEY_MARK)],
                     [{".wasm/.release.json", json:encode(Meta)} | [{".wasm/" ++ P, D} || {P, D} <- Changed]]
+                        ++ Host
             catch
                 throw:{error, Format, Args} ->
                     warn(maps:get(quiet, Opts, false), "warning: no WebAssembly part: " ++ Format, Args),
@@ -507,8 +513,13 @@ meta(#{name := Name, vsn := Vsn, kind := Kind, files := Files} = Rel) ->
     Args = ["-mode", "interactive" | Config] ++ Certs
         ++ ["-boot", "/app/" ++ Dir ++ "start", "-boot_var", "RELEASE_LIB", "/app/lib"
             | VmArgs],
-    %% Phoenix starts its server only with PHX_SERVER.
-    Env = [{'PHX_SERVER', <<"true">>} || lists:member(phoenix, maps:get(apps, Rel, []))],
+    %% Phoenix starts its server only with PHX_SERVER. DATABASE_PATH: the
+    %% runtime.exs of Ecto SQLite needs it, and the host runs the SQL (as in
+    %% page_env/1). A variable of the host replaces each one (worker.js).
+    Apps = maps:get(apps, Rel, []),
+    Env = [{'PHX_SERVER', <<"true">>} || lists:member(phoenix, Apps)]
+        ++ [{'DATABASE_PATH', unicode:characters_to_binary(["/tmp/", Name, ".db"])}
+            || lists:member(exqlite, Apps)],
     %% sql: Ecto SQLite (exqlite), whose boot can change the database (the
     %% migrations): worker.js then keeps a snapshot for each database.
     #{name => unicode:characters_to_binary(Name), vsn => unicode:characters_to_binary(Vsn),
@@ -554,30 +565,36 @@ worker_name(App) ->
 
 %% The files of DIR: the runtime Worker, the Worker with the release, and
 %% the configuration of workerd.
-worker_files(#{name := App} = Rel, Runtime, Root) ->
-    Name = worker_name(App),
+worker_files(Rel, Runtime, Root) ->
     [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "worker"])),
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
+    %% The VM restored in the global scope (global.js): a runtime Worker,
+    %% or a spare VM for the Durable Objects (durable-global.js).
+    Files = [{F, Worker(F)} || F <- ["worker.js", "app-com.js", "durable.js", "global.js",
+                                     "durable-global.js", "tcp-proxy.mjs"]] ++
+            [{"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
+             {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
+             {"release/app.js", Worker("app.js")}] ++
+            [F || {P, _} = F <- host_files(Rel, base64:encode(crypto:strong_rand_bytes(48))),
+                  not lists:prefix("page/", P)] ++ hosts(Root) ++ licenses(Root),
+    Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
+
+%% The files of DIR that depend on the app: the configurations of Workers
+%% and workerd, and the variables of the VM of the page. The edge part of a
+%% native file has them (.wasm/host/), so that a host makes DIR from the
+%% file and the npm package (js/edge.mjs), with no beam.com. Key: the
+%% SECRET_KEY_BASE of worker.capnp for a Phoenix app.
+host_files(#{name := App} = Rel, Key) ->
+    Name = worker_name(App),
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
     Sqlite = lists:member(exqlite, maps:get(apps, Rel, [])),
-    %% The VM restored in the global scope: a runtime Worker, or a spare VM
-    %% for the Durable Objects.
-    Global = [{"global.js", Worker("global.js")},
-              {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
-              {"durable-global.js", Worker("durable-global.js")},
-              {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)}],
-    Files = [{"worker.js", Worker("worker.js")},
-             {"app-com.js", Worker("app-com.js")},
-             {"durable.js", Worker("durable.js")},
-             {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)}] ++ Global ++
-            [{"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
-             {"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
-             {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
-             {"release/app.js", Worker("app.js")},
-             {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
-             {"release/wrangler.jsonc", wrangler_release(Name)},
-             {"worker.capnp", capnp(Phoenix)}] ++ hosts(Root) ++ licenses(Root),
-    Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
+    [{"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
+     {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)},
+     {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
+     {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)},
+     {"release/wrangler.jsonc", wrangler_release(Name)},
+     {"worker.capnp", capnp(Phoenix, Key)},
+     {"page/env.json", page_env(Rel)}].
 
 %% The other hosts of worker.js: Deno (deno.js, deno.json, deno/) and a web
 %% page (browser.js, browser/). Each one gives worker.js the parts of the
@@ -864,8 +881,7 @@ wrangler_release(Name) ->
      "  ]\n"
      "}\n"].
 
-capnp(Phoenix) ->
-    Key = base64:encode(crypto:strong_rand_bytes(48)),
+capnp(Phoenix, Key) ->
     Bindings = case Phoenix of
                    true -> ["    (name = \"PHX_HOST\", text = \"localhost\"),\n"
                             "    (name = \"SECRET_KEY_BASE\", text = \"", Key, "\"),\n"];
