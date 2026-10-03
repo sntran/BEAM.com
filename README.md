@@ -137,6 +137,10 @@ PHX_SERVER=true ./my_app.com                     # natively
 cd worker && BEAM_APP=../my_app.com deno serve -A deno.js   # the same file on Deno
 ```
 
+The npm package [`beam.com`](npm/README.md) has the runtime for Node.js
+(`import { boot } from 'beam.com/node'`), and `npx beam.com` downloads
+`beam.com` of the same version at its first run.
+
 See "One file, natively and at the edge" in [`docs/WORKERS.md`](docs/WORKERS.md).
 
 ## Publish on GitHub Pages

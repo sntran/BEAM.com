@@ -357,6 +357,40 @@ jobs:
           sh bin/beam.com examples/hashsum.erl -o runtime --target wasm32 > /dev/null
           node tests/host/boot_app_com.mjs runtime hashsum.com --expect 'usage: hashsum TEXT'
 
+      # The npm package of this beam.com (scripts/npm.sh), as a user installs
+      # it: npx beam.com with a download from a local server in place of the
+      # GitHub release, and hashsum.com with beam.com/node.
+      - name: The npm package
+        run: |
+          scripts/npm.sh bin/beam.com runtime "$RUNNER_TEMP/package"
+          (cd "$RUNNER_TEMP" && npm pack ./package)
+          mkdir -p "$RUNNER_TEMP/app/files"
+          cp hashsum.com "$RUNNER_TEMP/app/"
+          cp bin/beam.com "$RUNNER_TEMP/app/files/"
+          cd "$RUNNER_TEMP/app"
+          echo '{"type": "module"}' > package.json
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/beam.com-*.tgz
+          python3 -m http.server 18556 --bind 127.0.0.1 --directory files > server.log 2>&1 &
+          server=$!
+          for i in $(seq 1 100); do curl -fs -o /dev/null -I http://127.0.0.1:18556/beam.com && break; sleep 0.1; done
+          export BEAM_COM_CACHE="$RUNNER_TEMP/cache" BEAM_COM_DOWNLOAD=http://127.0.0.1:18556
+          npx beam.com --version 2>&1 | tee version.txt
+          grep -q '^beam.com: downloading http://127.0.0.1:18556/beam.com' version.txt
+          # The second run reads the cache.
+          kill "$server"
+          npx beam.com --version | head -n 1 | grep '^beam.com '
+          node --input-type=module -e "
+            import { boot } from 'beam.com/node';
+            const lines = [];
+            const log = console.log;
+            console.log = (...a) => { lines.push(a.join(' ')); log(...a); };
+            await boot('hashsum.com');
+            for (let i = 0; i < 300 && !lines.some((l) => l.includes('usage: hashsum TEXT')); i++) {
+              await new Promise((r) => setTimeout(r, 100));
+            }
+            process.exit(lines.some((l) => l.includes('usage: hashsum TEXT')) ? 0 : 1);
+          "
+
       - name: The release of examples/phoenix_demo
         working-directory: examples/phoenix_demo
         env:
@@ -718,3 +752,26 @@ jobs:
           gh release create "$TAG" beam.com beam-emu.com SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "BEAM.com $TAG" --notes-file notes.md --generate-notes
+
+      # npm 11.5.1 or later publishes with the token of this run (trusted
+      # publishing, OIDC), with provenance.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "26"
+
+      # The npm package of the same version (scripts/npm.sh, npm/README.md):
+      # npx beam.com downloads the beam.com of this release, with its
+      # SHA-256. The trusted publisher on npmjs.com is this workflow
+      # (build.yml). Without it, the secret NPM_TOKEN gives the token.
+      - name: Publish the npm package
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          chmod +x bin/beam.com
+          sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/runtime" --target wasm32 > /dev/null
+          scripts/npm.sh bin/beam.com "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/package"
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > "$RUNNER_TEMP/.npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
+          fi
+          npm publish "$RUNNER_TEMP/package" --provenance --access public
