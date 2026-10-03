@@ -35,7 +35,7 @@
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
          strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1,
-         page_files/3, page_env/1, page_worker/1, static_files/2, write_page/2,
+         page_files/3, page_env/1, page_worker/1, host_worker/2, static_files/2, write_page/2,
          edge_runtime/1, runtime_id/1, apps/1]).
 -endif.
 
@@ -570,8 +570,30 @@ worker_files(Rel, Runtime, Root) ->
              {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
              {"release/app.js", Worker("app.js")}] ++
             [F || {P, _} = F <- host_files(Rel, base64:encode(crypto:strong_rand_bytes(48))),
-                  not lists:prefix("page/", P)] ++ hosts(Root) ++ licenses(Root),
+                  not lists:prefix("page/", P)] ++ hosts(Root) ++ licenses(Root) ++
+            app_hosts(Worker),
     Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
+
+%% The hosts that run a native app.com with the runtime of the npm package
+%% (runtime/ of scripts/npm.sh), each with its copy of worker.js
+%% (host_worker/2):
+%%
+%%   deno/worker.js     for deno.js, with no import map: the imports of
+%%                      deno/, so deno.js also runs from node_modules
+%%   cloudflare/        a Worker that Wrangler bundles (index.js, the
+%%                      module beam.com/cloudflare): worker.js (a plain
+%%                      Worker) and durable.js (a Durable Object), with the
+%%                      release of the app.com of the project (release.js)
+%%
+%% The configurations of DIR upload none of them.
+app_hosts(Worker) ->
+    Js = Worker("worker.js"),
+    [{"deno/worker.js", host_worker(deno, Js)},
+     {"cloudflare/worker.js", host_worker(cloudflare, Js)},
+     {"cloudflare/durable.js", Worker("durable.js")},
+     {"cloudflare/index.js", Worker("cloudflare/index.js")},
+     {"cloudflare/release.js", Worker("cloudflare/release.js")},
+     {"cloudflare/snapshot.js", Worker("cloudflare/snapshot.js")}].
 
 %% The files of DIR that depend on the app: the configurations of Workers
 %% and workerd, and the variables of the VM of the page. Key: the
@@ -652,16 +674,35 @@ page_env(#{name := Name} = Rel) ->
 %% The four imports of worker.js that a Web Worker cannot resolve: the
 %% modules of browser/ in their place.
 page_worker(Js) ->
-    Map = [{<<"from 'node:net'">>, <<"from './browser/net.js'">>},
-           {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
-           {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
-           {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}],
-    Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end,
-                      iolist_to_binary(Js), Map),
-    [throw({error, "worker.js: the page cannot import ~ts", [Spec]})
-     || Spec <- [<<"'node:net'">>, <<"'./beam.wasm'">>, <<"'./release.bin'">>,
-                 <<"'./snapshot.bin'">>],
-        binary:match(Out, Spec) =/= nomatch],
+    host_worker(page, Js).
+
+%% worker.js with the imports of the modules of a host in place of the
+%% modules of a Worker. Each import must be in worker.js, and the copy
+%% must have none of the old ones.
+host_worker(Host, Js) ->
+    Map = case Host of
+              page -> [{<<"from 'node:net'">>, <<"from './browser/net.js'">>},
+                       {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
+                       {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
+                       {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}];
+              deno -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
+                       {<<"from './beam.wasm'">>, <<"from './beam-wasm.js'">>},
+                       {<<"import('./release.bin')">>, <<"import('./release-bin.js')">>},
+                       {<<"import('./snapshot.bin')">>, <<"import('./snapshot-bin.js')">>}];
+              cloudflare -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
+                             {<<"from './beam.wasm'">>, <<"from '../beam.wasm'">>},
+                             {<<"(await import('./release.bin')).default">>,
+                              <<"(await import('./release.js')).release()">>},
+                             {<<"import('./snapshot.bin')">>, <<"import('./snapshot.js')">>}]
+          end,
+    In = iolist_to_binary(Js),
+    Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end, In, Map),
+    %% The specifier in quotes: also in another form (new URL(...)).
+    Quoted = fun(A) -> {match, [Q]} = re:run(A, "'[^']*'", [{capture, first, binary}]), Q end,
+    [throw({error, "worker.js: the ~p host cannot import ~ts", [Host, Quoted(A)]})
+     || {A, _} <- Map, binary:match(Out, Quoted(A)) =/= nomatch],
+    [throw({error, "worker.js: no ~ts for the ~p host", [A, Host]})
+     || {A, _} <- Map, binary:match(In, A) =:= nomatch],
     Out.
 
 %% The files of priv/static of the application of the release, as

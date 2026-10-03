@@ -19,6 +19,8 @@
     "./app-com": "./runtime/app-com.js",
     "./runtime-id": "./runtime/runtime-id.js",
     "./worker": "./runtime/worker.js",
+    "./cloudflare": "./runtime/cloudflare/index.js",
+    "./deno": "./runtime/deno.js",
     "./beam.wasm": "./runtime/beam.wasm",
     "./package.json": "./package.json"
   },

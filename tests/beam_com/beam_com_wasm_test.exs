@@ -331,15 +331,30 @@ defmodule BeamComWasmTest do
     for d <- [priv, runtime], do: :ok = :filelib.ensure_path(d)
 
     for f <- [
-          ~c"worker.js",
           ~c"app-com.js",
           ~c"durable.js",
           ~c"global.js",
           ~c"durable-global.js",
           ~c"tcp-proxy.mjs",
-          ~c"app.js"
-        ],
-        do: :ok = :file.write_file(:filename.join(priv, f), f)
+          ~c"app.js",
+          ~c"cloudflare/index.js",
+          ~c"cloudflare/release.js",
+          ~c"cloudflare/snapshot.js"
+        ] do
+      :ok = :filelib.ensure_dir(:filename.join(priv, f))
+      :ok = :file.write_file(:filename.join(priv, f), f)
+    end
+
+    # The imports of worker.js that each host gives (host_worker/2).
+    worker_js = """
+    import net from 'node:net';
+    import createBeam from './beam.mjs';
+    import wasm from './beam.wasm';
+    const release = (await import('./release.bin')).default;
+    const snapshot = await import('./snapshot.bin');
+    """
+
+    :ok = :file.write_file(:filename.join(priv, ~c"worker.js"), worker_js)
 
     for f <- [~c"beam.mjs", ~c"beam.wasm"],
         do: :ok = :file.write_file(:filename.join(runtime, f), f)
@@ -383,7 +398,8 @@ defmodule BeamComWasmTest do
 
     assert id ==
              :beam_com_wasm.runtime_id(
-               for f <- ~w(app-com.js beam.mjs beam.wasm worker.js)c, do: {f, f}
+               [{~c"worker.js", worker_js}] ++
+                 for(f <- ~w(app-com.js beam.mjs beam.wasm)c, do: {f, f})
              )
 
     assert get.(~c"runtime-id.js", plain) =~ "\nexport default '#{id}';\n"
@@ -393,6 +409,24 @@ defmodule BeamComWasmTest do
     assert "browser/browser.js" == get.(~c"browser.js", plain)
     assert "browser/browser/none.js" == get.(~c"browser/none.js", plain)
     assert "global.js" == get.(~c"global.js", plain)
+
+    # The hosts of a native app.com (app_hosts/1): copies of worker.js with
+    # the imports of deno/ and of cloudflare/.
+    deno = get.(~c"deno/worker.js", plain)
+    assert deno =~ "from '../beam.mjs'"
+    assert deno =~ "from './beam-wasm.js'"
+    assert deno =~ "import('./release-bin.js')"
+    assert deno =~ "import('./snapshot-bin.js')"
+    assert deno =~ "from 'node:net'"
+    cloudflare = get.(~c"cloudflare/worker.js", plain)
+    assert cloudflare =~ "from '../beam.mjs'"
+    assert cloudflare =~ "from '../beam.wasm'"
+    assert cloudflare =~ "(await import('./release.js')).release()"
+    assert cloudflare =~ "import('./snapshot.js')"
+    assert "durable.js" == get.(~c"cloudflare/durable.js", plain)
+    assert "cloudflare/index.js" == get.(~c"cloudflare/index.js", plain)
+    assert "cloudflare/release.js" == get.(~c"cloudflare/release.js", plain)
+    assert "cloudflare/snapshot.js" == get.(~c"cloudflare/snapshot.js", plain)
     assert has.(plain, ~c"wrangler.global.jsonc", "\"main\": \"global.js\"")
     assert has.(plain, ~c"wrangler.global.jsonc", "\"BEAM_WARM\": \"/\"")
     assert has.(plain, ~c"wrangler.durable.jsonc", "\"name\": \"app-durable\"")
@@ -433,6 +467,11 @@ defmodule BeamComWasmTest do
              ~c"wrangler.global.jsonc",
              "\"BEAM_WARM\": \"/\", \"PHX_HOST\": \"app.SUBDOMAIN.workers.dev\""
            )
+  end
+
+  test "host_worker_test" do
+    assert {:error, ~c"worker.js: no ~ts for the ~p host", ["from './beam.mjs'", :deno]} ==
+             catch_throw(:beam_com_wasm.host_worker(:deno, "import wasm from './beam.wasm';"))
   end
 
   describe "page_files_test_" do
@@ -509,7 +548,7 @@ defmodule BeamComWasmTest do
     end
 
     test "a worker.js with another import of beam.wasm" do
-      assert {:error, ~c"worker.js: the page cannot import ~ts", ["'./beam.wasm'"]} ==
+      assert {:error, ~c"worker.js: the ~p host cannot import ~ts", [:page, "'./beam.wasm'"]} ==
                catch_throw(:beam_com_wasm.page_worker("const w = new URL('./beam.wasm');"))
     end
 

@@ -1,8 +1,10 @@
 // The BEAM on Deno (Deno Deploy): worker.js of the Workers, with the parts of
 // the Workers runtime that it uses given by Deno: the module imports of
-// beam.wasm, release.bin and snapshot.bin (deno.json), WebSocketPair,
-// caches.default, and a store for Ecto SQLite (Deno KV, or node:sqlite).
-// The TCP sockets use node:net of Deno.
+// beam.wasm, release.bin and snapshot.bin (deno/worker.js, the copy of
+// worker.js with the imports of deno/), WebSocketPair, caches.default, and
+// a store for Ecto SQLite (Deno KV, or node:sqlite). The TCP sockets use
+// node:net of Deno. There is no import map, so this file also runs from
+// node_modules/beam.com/runtime/ (the npm package).
 //
 // A Deno isolate keeps its VM between requests, as a Durable Object does.
 // So the VM runs as in a Durable Object (plain: false): its timers run
@@ -24,9 +26,12 @@
 //   deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
 // or "deno deploy" with the entrypoint deno.js.
 //
-// BEAM_APP: the path of a native app.com (beam.com INPUT -o app.com) in
-// place of release.bin. Then the same file runs natively and here, with
-// the runtime of DIR (of the same beam.com: app-com.js checks it).
+// A native app.com (beam.com INPUT -o app.com) in place of release.bin:
+// its path is the first argument (deno serve -A deno.js app.com, or
+// "args" of the "runtime" of Deno Deploy), else BEAM_APP. Then the same
+// file runs natively and here, with the runtime of DIR or of the npm
+// package (of the same beam.com: app-com.js checks it):
+//   deno serve -A node_modules/beam.com/runtime/deno.js app.com
 
 // WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket),
 // and only with the request. The VM can make the pair outside the call of
@@ -211,7 +216,7 @@ class SqlStorage {
   }
 }
 
-const { Vm } = await import('./worker.js');
+const { Vm } = await import('./deno/worker.js');
 // The environment of the release, as the "vars" of a Worker: the
 // variables of the process, without those of Deno and of the host. Some
 // of those change for each isolate, and the key of a snapshot holds the
