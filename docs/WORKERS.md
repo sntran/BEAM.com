@@ -253,7 +253,11 @@ export default {
 - `serve(app, { binding, name })`: `binding` is the binding of the
   Durable Object (`BEAM`), and `name` is the name of the object, or a
   function of the request that gives it, for one object for each tenant
-  (`main` by default).
+  (the var `BEAM_OBJECT`, else `main`, by default). With no function,
+  the vars of the tenants and the instances (`BEAM_TENANTS`,
+  `BEAM_INSTANCES`, see below) route the requests.
+- `beam.scheduled(controller, env, ctx)`: the sweep of the instances, for
+  the cron trigger of a Worker with `BEAM_INSTANCES`.
 - On Deno, an isolate keeps its VM between requests, as a Durable
   Object does. The second argument of `fetch` is the info of
   `deno serve`, and `Beam` is not used. Deno KV keeps the database and
