@@ -38,7 +38,18 @@ async function loadRelease(env) {
 }
 
 // release.bin: "BEAMFS1\n", then (length, path, length, data) for each file.
+// Or the files of appFiles (app-com.js): {meta, files}, with no copy.
 function unpack(FS, bytes) {
+  if (bytes.files) {
+    const dirs = new Set();
+    for (const [path, data] of bytes.files) {
+      const full = '/app/' + path;
+      const dir = full.slice(0, full.lastIndexOf('/'));
+      if (!dirs.has(dir)) { FS.mkdirTree(dir); dirs.add(dir); }
+      FS.writeFile(full, data, { canOwn: true });
+    }
+    return releaseMeta(bytes);
+  }
   const b = new Uint8Array(bytes);
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const text = new TextDecoder();
@@ -62,6 +73,7 @@ function unpack(FS, bytes) {
 
 // .release.json, the first file of release.bin.
 export function releaseMeta(bytes) {
+  if (bytes.meta) return JSON.parse(new TextDecoder().decode(bytes.meta));
   const b = new Uint8Array(bytes);
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const plen = view.getUint32(8);
@@ -106,6 +118,10 @@ async function snapshotKey(env, meta, host) {
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+// A buffer of the files of the release: release.bin, or a buffer of
+// appFiles (app-com.js).
+const ofRelease = (release, buffer) => (release.buffers ? release.buffers.has(buffer) : buffer === release);
+
 // The memory and the open files of a VM whose threads all returned
 // (erts_wasm_hibernate), as snapshot.bin. The files that the boot wrote
 // are the ones that are not views of release.bin (unpack: canOwn).
@@ -125,7 +141,7 @@ function capture(m, release, listeners, bootPoint = false, skip = () => false) {
       if (p === '/dev' || p === '/proc' || skip(p)) continue;
       const node = m.FS.lookupPath(p).node;
       if (m.FS.isDir(node.mode)) walk(p);
-      else if (m.FS.isFile(node.mode) && node.contents?.buffer !== release) {
+      else if (m.FS.isFile(node.mode) && !ofRelease(release, node.contents?.buffer)) {
         let bin = '';
         for (const c of m.FS.readFile(p)) bin += String.fromCharCode(c);
         files[p] = btoa(bin);
@@ -937,7 +953,11 @@ export class Vm {
     this.nextTimer = 1;
     this.env = env;
     this.waitListen = new Map();  // port -> the resolve functions of listening()
+    // The static files of the release (appFiles of app-com.js), when the
+    // release is loaded: a request for one of them needs no VM.
+    this.statics = new Promise((resolve) => { this.gotStatics = resolve; });
     this.ready = this.boot(env);
+    this.ready.catch(() => this.gotStatics(null));
   }
 
   // The variables that a Phoenix app needs, when the host does not give
@@ -967,6 +987,7 @@ export class Vm {
     const [release, bundled] = this.given
       ? [this.given.release, this.given.snapshot]
       : await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    this.gotStatics(release.statics ?? null);
     // The vars of the host choose a snapshot at the boot point (below);
     // the vars of autoVars do not.
     const ownVars = Object.keys(this.vars).length;
@@ -1294,6 +1315,12 @@ export class Vm {
   }
 
   async request(request, h, finished) {
+    const statics = await this.statics;
+    const file = statics && staticResponse(statics, request);
+    if (file) {
+      finished();
+      return file;
+    }
     await this.ready;
     if (this.resume) {
       const f = this.resume;
@@ -1754,6 +1781,51 @@ export class Vm {
         break;
     }
   }
+}
+
+// The types of the static files, by extension.
+const TYPES = {
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', txt: 'text/plain; charset=utf-8',
+  css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
+  json: 'application/json', map: 'application/json', webmanifest: 'application/manifest+json',
+  xml: 'application/xml', wasm: 'application/wasm', pdf: 'application/pdf',
+  svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', avif: 'image/avif', ico: 'image/vnd.microsoft.icon',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf',
+  mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', ogg: 'audio/ogg',
+};
+
+// A GET or HEAD request for a static file of the release (statics of
+// appFiles), as Plug.Static of Phoenix gives it: an ETag, and a cache of
+// one year for a request with the parameter vsn. Else null: the VM
+// answers.
+export function staticResponse(statics, request) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return null;
+  const url = new URL(request.url);
+  let path;
+  try { path = decodeURIComponent(url.pathname); } catch { return null; }
+  // Only PATH.gz (Phoenix digests give both, some packages only the
+  // .gz file): its data, with no gzip.
+  const plain = statics.get(path);
+  const s = plain ?? statics.get(`${path}.gz`);
+  if (!s) return null;
+  const gz = !plain;
+  // The size of the data of a stored gzip file: its last 4 bytes (ISIZE).
+  const size = !gz ? s.size : s.deflated || s.data.length < 18 ? null
+    : new DataView(s.data.buffer, s.data.byteOffset + s.data.length - 4, 4).getUint32(0, true);
+  const etag = `"${s.crc.toString(16).padStart(8, '0')}${s.size.toString(16)}${gz ? '-gz' : ''}"`;
+  const headers = {
+    'content-type': TYPES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()] ?? 'application/octet-stream',
+    'cache-control': url.searchParams.has('vsn') ? 'public, max-age=31536000, immutable' : 'public',
+    etag,
+  };
+  if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
+  if (size !== null) headers['content-length'] = String(size);
+  if (request.method === 'HEAD') return new Response(null, { headers });
+  let body = new Blob([s.data]).stream();
+  if (s.deflated) body = body.pipeThrough(new DecompressionStream('deflate-raw'));
+  if (gz) body = body.pipeThrough(new DecompressionStream('gzip'));
+  return new Response(body, { headers });
 }
 
 // The position of the bytes pat in b, or -1.

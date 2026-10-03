@@ -594,6 +594,11 @@ if [ -f "$dir/beam.com" ]; then
     check mix.com '2 passed' test
     check mix '' format --check-formatted
     check elixir '^world$' -S mix run -e 'IO.puts(Hello.hello())'
+    # An implementation of a protocol of Elixir: Mix consolidates the
+    # protocols of Elixir too (patches/elixir/0002), with their debug
+    # information (step_bundle of scripts/steps.sh).
+    printf 'defmodule Hello.Box do\n  defstruct [:text]\nend\n\ndefimpl String.Chars, for: Hello.Box do\n  def to_string(%%{text: t}), do: t\nend\n' > lib/box.ex
+    check mix '^true true box$' run -e 'IO.puts("#{Protocol.consolidated?(String.Chars)} #{Protocol.consolidated?(Enumerable)} #{%Hello.Box{text: "box"}}")'
     # iex evaluates .iex.exs after the start of the shell (and of mix).
     printf 'IO.puts("iex: #{Hello.hello()}")\nSystem.halt()\n' > tools.iex.exs
     check iex.com '^iex: world$' --dot-iex tools.iex.exs -S mix

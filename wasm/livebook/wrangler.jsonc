@@ -1,0 +1,36 @@
+// The Worker of Livebook (worker.js), with public instances: each visitor
+// starts an instance of its own (a Durable Object at /t/NAME, see
+// durable.js of beam.com), with a time limit. deploy.sh gives the vars
+// that depend on the account (LIVEBOOK_IFRAME_URL, and BEAM_INSTANCES and
+// BEAM_RETIRE when they are set).
+// - BEAM_ERL_FLAGS "-Mea min": no allocators of ERTS, so less memory.
+// - BEAM_PERSIST "/data": the notebooks and the settings stay in the
+//   SQLite storage of the object, until the time limit.
+{
+  "name": "livebook",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["no_handle_cross_request_promise_resolution"],
+  "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }],
+  // The version of the deploy: a new deploy makes a new snapshot.
+  "version_metadata": { "binding": "BEAM_VERSION" },
+  "durable_objects": { "bindings": [{ "name": "BEAM", "class_name": "Beam" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Beam"] }],
+  "vars": {
+    "LIVEBOOK_PORT": "4000",
+    "LIVEBOOK_DEFAULT_RUNTIME": "embedded",
+    "LIVEBOOK_TOKEN_ENABLED": "false",
+    "LIVEBOOK_DATA_PATH": "/data",
+    "LIVEBOOK_HOME": "/data",
+    "BEAM_TENANTS": "path",
+    "BEAM_INSTANCES": "5",
+    "BEAM_INSTANCE_TTL": "1800",
+    "BEAM_INSTANCE_HOURS": "24",
+    "BEAM_INSTANCES_PER_IP": "2",
+    "BEAM_INSTANCE_TITLE": "Livebook on the edge",
+    "BEAM_ERL_FLAGS": "-Mea min",
+    "BEAM_PERSIST": "/data"
+  },
+  "triggers": { "crons": ["*/30 * * * *"] },
+  "observability": { "enabled": true }
+}

@@ -236,6 +236,20 @@ button{font:inherit;padding:.5rem 1rem;border-radius:.5rem;border:0;background:#
 
 const minutes = (ms) => Math.max(1, Math.ceil(ms / 60000));
 
+// A static file of the app, in the front Worker (no request to the
+// object): BEAM_STATICS (serve(app) of the npm package gives it, for the
+// static files in app.com), else, with assets, the static assets of the
+// binding ASSETS (wasm/erts/host/static.mjs). Cloudflare serves the
+// assets of the root before the Worker runs, so only a path tenant asks
+// ASSETS (after its prefix).
+async function staticFile(env, request, assets = false) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return null;
+  if (env.BEAM_STATICS) return env.BEAM_STATICS(request);
+  if (!assets || !env.ASSETS) return null;
+  const asset = await env.ASSETS.fetch(request);
+  return asset.status !== 404 ? asset : null;
+}
+
 // The instances: the page of /, and POST (the button) or GET (the refresh
 // of the queue) of /.instance. Only a POST makes a ticket, so a crawler
 // that reads / starts no instance.
@@ -297,6 +311,9 @@ export default {
     if (env.BEAM_TENANTS === 'path') {
       const m = /^\/t\/([^/]+)(\/.*)?$/.exec(url.pathname);
       if (!m) {
+        // A path of the app with no prefix (Livebook writes some so).
+        const asset = await staticFile(env, request);
+        if (asset) return asset;
         if (env.BEAM_INSTANCES) return instances(request, env, url);
         return new Response('not found\n', { status: 404 });
       }
@@ -306,11 +323,8 @@ export default {
       // "//host/..." must not change the host).
       const inner = new URL(url);
       inner.pathname = m[2];
-      // The static assets of the app (wasm/erts/host/static.mjs).
-      if (env.ASSETS && (request.method === 'GET' || request.method === 'HEAD')) {
-        const asset = await env.ASSETS.fetch(new Request(inner, request));
-        if (asset.status !== 404) return asset;
-      }
+      const asset = await staticFile(env, new Request(inner, request), true);
+      if (asset) return asset;
       // All the tenants share this origin. A service worker of one tenant
       // could take the requests of the others, so none can register.
       if (request.headers.get('service-worker') === 'script') {
@@ -333,6 +347,8 @@ export default {
         headers: { location: '/', 'set-cookie': `beam_tenant=${set[1]}; Path=/; Secure; HttpOnly; SameSite=Lax` },
       });
     }
+    const asset = await staticFile(env, request);
+    if (asset) return asset;
     let name = env.BEAM_OBJECT ?? 'main';
     const t = tenant(request, env);
     if (t !== undefined && t !== null && !valid(t)) return new Response('bad tenant name\n', { status: 400 });
