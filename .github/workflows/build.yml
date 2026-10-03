@@ -308,7 +308,7 @@ jobs:
         run: |
           for d in sites/*/; do tar -xf "$d/artifact.tar" -C "$d"; done
           npm install --prefix wasm --no-audit --no-fund
-          node tests/page/check.mjs sites/site-phoenix_demo --base /repo/ --phoenix-demo
+          node tests/page/check.mjs sites/site-phoenix_demo --base /repo/ --phoenix-demo --tabs
           node tests/page/check.mjs sites/site-phoenix_demo --phoenix-demo
           node tests/page/check.mjs sites/site-worker --base /repo/
 

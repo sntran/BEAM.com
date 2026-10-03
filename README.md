@@ -168,8 +168,9 @@ NIFs of the WebAssembly runtime. The limits:
 
 - Each browser has its own copy of the app. Two visitors do not share
   data.
-- The data stays in the memory of the VM. When the tab closes, the data
-  goes, and the next visit starts from the snapshot of the boot.
+- The data stays in the memory of the VM. 30 s after the last tab of the
+  site closes, the data goes, and the next visit starts from the snapshot
+  of the boot.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
 - The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
   (3.5 to 14 MB for a Phoenix app).

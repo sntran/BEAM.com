@@ -450,7 +450,7 @@ change.
 | File | What |
 |---|---|
 | `index.html` | The page. It starts the VM, then shows the app in the frame `app/`. |
-| `vm.js` | The VM, in a module Web Worker. It keeps the cookies of the app. |
+| `vm.js` | The VM, in a module SharedWorker for all the tabs of the site. It keeps the cookies of the app. |
 | `sw.js` | The service worker of `app/`: it gives each request of the frame to the VM. |
 | `ws-shim.js` | The `WebSocket` of the pages of the app: a socket to the site goes to the VM. |
 | `env.json` | The name of the app and the variables of its VM. |
@@ -486,6 +486,36 @@ The base path:
 - Each request to the VM has the host `localhost` and the header
   `x-forwarded-proto: https`, as behind a proxy.
 
+One VM for all the tabs of the site:
+
+- `vm.js` runs in a module SharedWorker. So all the tabs of the site use
+  one VM, and one jar of cookies: a login in one tab is a login in all
+  the tabs. One VM also uses less memory than one VM for each tab (a
+  booted VM uses 40 to 58 MB).
+- A service worker cannot open a SharedWorker. So `sw.js` gives a request
+  to the frame that sent it, and `ws-shim.js` of that frame gives it to
+  its tab, which gives it to the VM. When the service worker does not know
+  the frame (a new page of the frame), it gives the request to a tab of
+  `index.html`, a visible one first.
+- The VM stops 30 s after the last tab of the site closes, so a reload
+  keeps the VM and its data. A tab tells the VM when it leaves (`pagehide`)
+  and when it comes back from the back/forward cache (`pageshow`).
+  `extendedLifetime` (Chrome 148 or later) keeps the SharedWorker alive for
+  these 30 s. An older browser stops the SharedWorker with its last tab, so
+  there a reload restores the snapshot. The next visit after the stop
+  restores the snapshot.
+- There is no heartbeat: a browser slows the timers of a hidden tab, so a
+  heartbeat would stop the VM of a tab that is open in the background. A
+  tab that crashes does not tell the VM that it left. Then the VM lives as
+  long as the browser keeps the SharedWorker.
+- When the boot of the VM fails in the SharedWorker, the page starts it
+  one more time on the same port: an error that occurs one time (for
+  example a network error on `release.bin`) does not make two VMs for one
+  site.
+- When the browser has no `SharedWorker`, or the VM does not start in it
+  after the second start, the VM runs in a module Web Worker of one tab.
+  Then another tab of the site shows a message.
+
 The variables of `env.json`:
 
 | Variable | Value | When |
@@ -505,20 +535,30 @@ sites. Then [`tests/page/check.mjs`](../tests/page/check.mjs) serves each
 site at `/repo/` (and the site of `examples/phoenix_demo` also at `/`),
 and checks it in headless Chromium. For
 `examples/phoenix_demo`, it checks the home page, a LiveView event, the
-links, and the login form (a POST). On this computer,
+links, and the login form (a POST). With `--tabs` (at `/repo/`), it also
+checks two tabs: the shared counter (`Phoenix.PubSub`) of one tab shows in
+the other tab, a tab still works when the first tab closes, a reload of
+the only tab keeps the VM (Chrome 148 or later), a visit 35 s after all
+the tabs close restores the snapshot, a boot that fails one time gets one
+more start, a SharedWorker that always fails gives the VM in the tab, and
+the fallback with no `SharedWorker`. On this computer,
 [`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh) builds the
-site of `examples/phoenix_demo`. In headless
-Chromium on a local server (October 2026), the app showed in 2.2 to
-3.4 s at the first visit. The same page works in Firefox 157.
+site of `examples/phoenix_demo`. In headless Chromium on a local server
+(October 2026), the app showed in 1.6 to 3.4 s at the first visit. The
+same page works in Firefox 157, with one VM for two tabs: the second tab
+was ready in 10 ms.
+
+Not tested yet: Safari, and Chrome for Android. Chrome 148 for Android
+has SharedWorker again, but nobody has checked what occurs to the VM when
+Android puts the tab in the background.
 
 The limits:
 
 - Each browser has its own copy of the app. Two visitors do not share
   data.
-- The data stays in the memory of the VM. When the tab closes, the data
-  goes. The next visit starts from the snapshot of the boot.
-- One tab of the site runs the VM. Another tab of the site shows a
-  message.
+- The data stays in the memory of the VM. 30 s after the last tab of the
+  site closes, the data goes. The next visit starts from the snapshot of
+  the boot.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
 - The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
   (3.5 to 14 MB for a Phoenix app).

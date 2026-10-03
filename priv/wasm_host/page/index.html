@@ -37,7 +37,7 @@
   <progress id="bar"></progress>
   <p class="small">This app runs in this page, in BEAM compiled to WebAssembly by
     <a href="https://github.com/sntran/BEAM.com">beam.com</a>. No server runs its code. Its data
-    stays in the memory of this browser, and goes when the tab closes.</p>
+    stays in the memory of this browser, and goes when the last tab of this site closes.</p>
 </div>
 <iframe id="app" title="The app" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
 <script type="module">
@@ -74,36 +74,24 @@
     if (typeof WebAssembly.Suspending !== 'function' || !('serviceWorker' in navigator)) {
       return fail('This browser cannot run the VM. Open this page in Chrome or Edge 137 or later, or in Firefox 153 or later.');
     }
-    // One VM for each browser: the service worker sends all the requests of
-    // the frame to this tab. The sites of one origin (USER.github.io/A/ and
-    // USER.github.io/B/) have different locks.
-    const lock = await new Promise((resolve) =>
-      navigator.locks.request(`beam-page:${SITE.pathname}`, { ifAvailable: true }, (l) => {
-        resolve(l);
-        return l ? new Promise(() => {}) : undefined;
-      }));
-    if (!lock) return fail('The app runs in another tab of this site. Use that tab, or close it and load this page again.');
     const env = { ...config.env };
     for (const name of config.secrets ?? []) env[name] = secret(name);
+    const start = { type: 'start', base: APP.pathname.replace(/\/$/, ''), env };
     const t0 = performance.now();
     say('Loading the runtime and the release…');
-    const vm = new Worker(new URL('./vm.js', import.meta.url), { type: 'module' });
-    const ready = new Promise((resolve, reject) => {
-      vm.addEventListener('message', (e) => {
-        if (e.data.type === 'ready') resolve(e.data);
-        else if (e.data.type === 'error') reject(new Error(e.data.message));
-      });
-      vm.addEventListener('error', (e) => reject(new Error(e.message || 'the VM stopped')));
-    });
-    vm.postMessage({ type: 'start', base: APP.pathname.replace(/\/$/, ''), env });
+    // vm: the port of the SharedWorker of the VM, or the Worker of the VM in
+    // this tab. With no VM, this tab answers noVm to the service worker,
+    // which then gives the request to another tab.
+    let vm = null;
+    const relay = (data, port) => (vm ? vm.postMessage(data, [port]) : port.postMessage({ noVm: true }));
     // The requests of the service worker (sw.js, not another worker of this
     // origin) go to the VM with their reply port.
     const SW = new URL('./sw.js', SITE).href;
     navigator.serviceWorker.addEventListener('message', (e) => {
-      if (e.source?.scriptURL === SW && e.data?.type === 'fetch') vm.postMessage(e.data, [e.ports[0]]);
+      if (e.source?.scriptURL === SW && e.data?.type === 'fetch') relay(e.data, e.ports[0]);
     });
-    // The WebSockets of the frame of the app, and of the frames in it
-    // (ws-shim.js).
+    // The WebSockets and the requests of the frame of the app, and of the
+    // frames in it (ws-shim.js).
     const inFrame = (w) => {
       for (let n = 0; w && n < 10; n++, w = w.parent) {
         if (w === document.getElementById('app').contentWindow) return true;
@@ -112,21 +100,78 @@
       return false;
     };
     addEventListener('message', (e) => {
-      if (e.origin === location.origin && e.data?.type === 'ws' && inFrame(e.source)) vm.postMessage(e.data, [e.ports[0]]);
+      if (e.origin === location.origin && ['ws', 'fetch'].includes(e.data?.type) && inFrame(e.source)) relay(e.data, e.ports[0]);
     });
     // This page is outside the scope, so navigator.serviceWorker.ready does
     // not apply: wait for the registration to be active.
-    const reg = await navigator.serviceWorker.register(SW, { scope: APP.pathname, type: 'module' });
-    const sw = await new Promise((resolve) => {
-      const check = () => { if (reg.active) resolve(reg.active); };
-      check();
-      for (const w of [reg.installing, reg.waiting]) w?.addEventListener('statechange', check);
-      reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', check));
+    const active = navigator.serviceWorker.register(SW, { scope: APP.pathname, type: 'module' }).then((reg) =>
+      new Promise((resolve) => {
+        const check = () => { if (reg.active) resolve(reg.active); };
+        check();
+        for (const w of [reg.installing, reg.waiting]) w?.addEventListener('statechange', check);
+        reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', check));
+      }));
+    // The answer of the VM to start: ready or error. An error that the VM
+    // answered (vm: true) can go away at a second start, for example a
+    // network error on release.bin. An error event of the worker (its script
+    // did not load) occurs one time only.
+    const started = (port, worker) => new Promise((resolve, reject) => {
+      port.onmessage = (e) => {
+        if (e.data.type === 'ready') resolve(e.data);
+        else if (e.data.type === 'error') reject(Object.assign(new Error(e.data.message), { vm: true }));
+      };
+      worker.addEventListener('error', (e) => reject(new Error(e.message || 'the VM stopped')));
+      port.postMessage(start);
     });
-    sw.postMessage({ type: 'boot' });  // this tab is the VM
-    await ready;
+    const script = new URL('./vm.js', import.meta.url);
+    let info = null, where = 'shared';
+    // One VM for all the tabs of the site, in a SharedWorker. The sites of
+    // one origin (USER.github.io/A/ and USER.github.io/B/) have different
+    // scripts, so different VMs.
+    // The VM stops 30 s after the last tab of the site leaves (vm.js), so a
+    // reload keeps the VM and its data. A tab says "bye" when it leaves, and
+    // "hello" when it comes back from the back/forward cache.
+    // extendedLifetime (Chrome 148 or later) lets the SharedWorker live
+    // after its last tab, until that timer of vm.js ends.
+    if (typeof SharedWorker === 'function') {
+      try {
+        const shared = new SharedWorker(script, { type: 'module', name: `beam-page:${SITE.pathname}`, extendedLifetime: true });
+        vm = shared.port;
+        // A failed boot of the VM gets one more start on the same port, so that
+        // an error that occurs one time does not make two VMs for one site.
+        info = await started(shared.port, shared).catch((e) => {
+          if (!e.vm) throw e;
+          console.log(`beam: the VM did not start in the SharedWorker (${e.message}): one more start`);
+          return started(shared.port, shared);
+        });
+        addEventListener('pagehide', () => shared.port.postMessage({ type: 'bye' }));
+        addEventListener('pageshow', (e) => { if (e.persisted) shared.port.postMessage({ type: 'hello' }); });
+      } catch (e) {
+        console.log(`beam: the VM did not start in a SharedWorker (${e.message}): it runs in this tab`);
+        vm?.postMessage({ type: 'bye' });
+        vm?.close();
+        vm = null;
+      }
+    }
+    // Else one VM in one tab: the other tabs of the site show a message.
+    if (!info) {
+      where = 'tab';
+      const lock = await new Promise((resolve) =>
+        navigator.locks.request(`beam-page:${SITE.pathname}`, { ifAvailable: true }, (l) => {
+          resolve(l);
+          return l ? new Promise(() => {}) : undefined;
+        }));
+      if (!lock) return fail('The app runs in another tab of this site. Use that tab, or close it and load this page again.');
+      const worker = new Worker(script, { type: 'module' });
+      vm = worker;
+      info = await started(worker, worker);
+    }
+    (await active).postMessage({ type: 'boot' });  // this tab can reach the VM
     const ms = Math.round(performance.now() - t0);
-    console.log(`beam: the VM started in ${ms} ms`);
+    // For the browser check (tests/page/check.mjs).
+    document.body.dataset.vm = where;
+    document.body.dataset.restored = String(info.restored);
+    console.log(`beam: the VM started in ${ms} ms (${where === 'shared' ? 'a SharedWorker' : 'this tab'}${info.restored ? ', from the snapshot' : ''})`);
     say(`Opening the app (the VM started in ${ms} ms)…`);
     const frame = document.getElementById('app');
     frame.addEventListener('load', () => document.body.classList.add('running'), { once: true });

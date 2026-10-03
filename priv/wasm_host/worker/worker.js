@@ -951,6 +951,8 @@ export class Vm {
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
     }
     const snap = snapBytes && parseSnapshot(snapBytes);
+    // restored: this VM comes from a snapshot (the page shows it).
+    this.restored = !!snap;
     this.bootPointSnap = !!snap?.boot_point;
     // No snapshot yet: this VM makes it, before its first request.
     this.makeKey = !snap && !snapshots.unavailable && !this.bootKey && key;
