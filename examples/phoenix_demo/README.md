@@ -52,10 +52,11 @@ first release of the npm package `beam.com`.
 
 The build step of the host runs `npm run build`
 ([`scripts/app-com.sh`](scripts/app-com.sh)): `npx beam.com` builds the
-release and makes `app.com`, one native file. Then the runtime of the npm
-package runs that file: [`worker.js`](worker.js) and
-[`wrangler.jsonc`](wrangler.jsonc) on Cloudflare Workers, and the
-`deploy` key of [`deno.json`](deno.json) on Deno Deploy. The app needs no
+release and makes `app.com`, one native file. Then the engine of the npm
+package serves that file: the same [`worker.js`](worker.js) runs on
+Cloudflare Workers ([`wrangler.jsonc`](wrangler.jsonc)) and on Deno
+Deploy ([`deno.json`](deno.json)). The app is stateful: on Workers, one
+Durable Object runs its VM and keeps its database. The app needs no
 secret and no variable: the VM makes `SECRET_KEY_BASE` one time and keeps
 it (in the storage of the Durable Object, or in Deno KV), and `PHX_HOST`
 is the host of the first request. On Deno Deploy, assign a Deno KV
@@ -68,7 +69,7 @@ npm install && npm run build
 PHX_SERVER=true PHX_HOST=localhost DATABASE_PATH=demo.db \
   SECRET_KEY_BASE="$(head -c 48 /dev/urandom | base64)" sh app.com   # natively
 npx wrangler dev                 # Cloudflare Workers, in workerd
-npx deno serve -A node_modules/beam.com/runtime/deno.js app.com
+npx deno serve -A worker.js      # Deno
 ```
 
 ## Build a directory, then deploy

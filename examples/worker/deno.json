@@ -1,5 +1,5 @@
 {
-  "unstable": ["kv", "raw-imports"],
+  "unstable": ["raw-imports"],
   "deploy": {
     "install": "npm install",
     "build": "npm run build",

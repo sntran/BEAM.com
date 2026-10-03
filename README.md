@@ -255,8 +255,8 @@ imports it (the conditions of `exports` in `package.json`):
 
 | Runtime (condition) | What |
 |---|---|
-| Cloudflare Workers, with Wrangler (`workerd`) | A Worker that runs the `app.com` of the project: `use(app)`, the default export, and the Durable Object `Beam`. |
-| Deno (`deno`) | `deno.js`: `use(app)` and the default export of `deno serve`. It also runs as it is, with the path of `app.com`: `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. |
+| Cloudflare Workers, with Wrangler (`workerd`) | `serve(app)`, the engine that serves the `app.com` of the project, and the Durable Object `Beam`. |
+| Deno (`deno`) | `serve(app)`, with the same API: the same entry runs on both hosts. |
 | Node.js (`node`) | `boot`, `release`, `appRelease` and `runtimeId`. |
 
 The other modules of the package:
@@ -269,12 +269,32 @@ The other modules of the package:
 | `beam.com/beam.wasm` | The VM: ERTS built for WebAssembly. |
 
 The same `app.com` runs on Cloudflare Workers, on Deno Deploy and in a
-web page, with the runtime of the package. A project deploys at each git
-push: the build step of the host makes `app.com` (`npx beam.com`), and
-the host runs it. A Phoenix app needs no secret and no variable: the VM
+web page, with the runtime of the package. One entry runs on both hosts:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+export { Beam } from 'beam.com';   // stateful only
+
+const beam = serve(app);
+
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+};
+```
+
+With the Durable Object `Beam` and its binding, the app is stateful: one
+VM serves all the requests, its timers run between requests, and its
+SQLite storage keeps the database. With no binding, it is stateless:
+each isolate runs its own VM. A project deploys at each git push: the
+build step of the host makes `app.com` (`npx beam.com`), and the host
+runs it. A Phoenix app needs no secret and no variable: the VM
 makes `SECRET_KEY_BASE` one time and keeps it, and `PHX_HOST` is the
 host of the first request. [`examples/phoenix_demo`](examples/phoenix_demo)
-is such a project, with one-click buttons for both hosts. See "Deploy at
+(stateful) and [`examples/worker`](examples/worker) (stateless) are such
+projects, with one-click buttons for both hosts. See "Deploy at
 each git push" in [`docs/WORKERS.md`](docs/WORKERS.md).
 
 The release job of CI makes the generated part of the package

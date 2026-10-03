@@ -181,19 +181,16 @@ The hosts of `app.com`, in the npm package `beam.com` (["npm" in
 README.md](../README.md#npm)), of the same version as the `beam.com` that
 made the file:
 
-- Cloudflare Workers: the module `beam.com` (its condition `workerd`,
-  which Wrangler uses). Wrangler bundles the file
-  into the Worker as a Data module (a Worker has 64 MiB), and the entry
-  of the Worker gives it to the runtime (see "Deploy at each git push").
-  The default export sends each request to the Durable Object `Beam`;
-  `plain` is a Worker with one VM for each isolate.
-- Deno and Deno Deploy: the module `beam.com` (its condition `deno`) is
-  `deno.js` of the package. It runs as it is, with the path of `app.com`
+- Cloudflare Workers and Deno: `serve(app)` of the module `beam.com`
+  (its condition `workerd`, which Wrangler uses, or `deno`), with the
+  bytes of the file. One entry runs on both hosts (see "Deploy at each
+  git push"). On Workers, Wrangler bundles the file into the Worker as a
+  Data module (a Worker has 64 MiB). On Deno, `deno.js` of the package is
+  the module `beam.com`. It also runs as it is, with the path of `app.com`
   as its first argument (or `BEAM_APP`):
-  `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. An entry
-  can also give the bytes of the file with `use(app)`, as the entry of a
-  Worker does. It needs no import map: `deno/worker.js` is a copy of
-  `worker.js` with the imports of `deno/`.
+  `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. It needs
+  no import map: `deno/worker.js` is a copy of `worker.js` with the
+  imports of `deno/`.
 - A web page: `main.js` of the package, with the option `app` (see
   "A static site of app.com").
 - Node.js: `const vm = await boot('app.com')` of the module `beam.com`. The
@@ -216,19 +213,71 @@ give them:
 
 A project deploys to Cloudflare Workers (Workers Builds) and to Deno
 Deploy at each git push, with these small files, which do not change
-from one app to another ([`examples/phoenix_demo`](../examples/phoenix_demo)):
+from one app to another:
 
 | File | What |
 |---|---|
 | `package.json` | The dev dependencies `beam.com` and `wrangler`, the script `build` (it makes `app.com`), and the script `deploy` (`wrangler deploy`). |
-| `scripts/app-com.sh` | The build: `mix deps.get`, `mix assets.deploy`, `mix release`, then `beam.com _build/prod/rel/NAME -o app.com`, with `npx beam.com`. |
-| `worker.js` | The entry of the Worker: four lines that give `app.com` to the module `beam.com`. |
-| `wrangler.jsonc` | The name of the Worker, the Data rule for `*.com`, and the Durable Object. |
-| `deno.json` | The `deploy` key of Deno Deploy: `npm install`, `npm run build`, and the entrypoint `node_modules/beam.com/runtime/deno.js` with the argument `app.com`. |
+| `worker.js` | The entry, the same on both hosts: `serve(app)` and the `fetch` handler. |
+| `wrangler.jsonc` | The name of the Worker, the flag `no_handle_cross_request_promise_resolution`, the Data rule for `*.com`, and for a stateful app the Durable Object. |
+| `deno.json` | `"unstable": ["kv", "raw-imports"]`, and the `deploy` key of Deno Deploy: `npm install`, `npm run build`, and the entrypoint `worker.js`. |
 
-The entry of the Worker is a file of the project because Wrangler gives
-a Data module only to an import of a file path: an `alias` of
-`wrangler.jsonc` does not get the rules.
+The entry:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+export { Beam } from 'beam.com';   // stateful only
+
+const beam = serve(app);
+
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+};
+```
+
+- The app is stateful or stateless, as the project chooses:
+  - Stateful: the export `Beam` and its binding `BEAM` in
+    `wrangler.jsonc` (with a migration `new_sqlite_classes`). Each
+    request goes to one Durable Object: one VM for all the requests,
+    whose timers run between requests, and its SQLite storage for Ecto
+    SQLite. A Phoenix app with LiveView needs it. Cloudflare reads the
+    class by the name of its export, so the export line stays in the
+    entry. Example: [`examples/phoenix_demo`](../examples/phoenix_demo).
+  - Stateless: no export and no binding. Each isolate runs its own VM,
+    which serves the requests of that isolate. It is for an app with no
+    state between requests and no work between requests. Example:
+    [`examples/worker`](../examples/worker).
+- `serve(app, { binding, name })`: `binding` is the binding of the
+  Durable Object (`BEAM`), and `name` is the name of the object, or a
+  function of the request that gives it, for one object for each tenant
+  (`main` by default).
+- On Deno, an isolate keeps its VM between requests, as a Durable
+  Object does. The second argument of `fetch` is the info of
+  `deno serve`, and `Beam` is not used. Deno KV keeps the database and
+  the key.
+- Wrangler gives a Data module only to an import of a file path, so the
+  import of `app.com` is in the entry. The rule is necessary: without
+  it, Wrangler puts the bytes of the file into the JavaScript.
+
+The other handlers of a Worker (`scheduled`, `email`, `queue`) are the
+code of the project. A handler can make a request to the app:
+
+```js
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+  scheduled(event, env, ctx) {
+    ctx.waitUntil(beam.fetch(new Request('http://app/cron', { method: 'POST' }), env, ctx));
+  },
+};
+```
+
+Caution: a visitor can also send a request to such a path. Refuse the
+path in `fetch`, or check a secret header that only the handler sends.
 
 Both hosts have a button that clones such a repository (or one directory
 of it) into the account of the user, and deploys it at each push:

@@ -1,0 +1,7 @@
+# The native file of "npm run build", and the npm packages.
+/app.com
+/node_modules/
+/package-lock.json
+/.wrangler/
+/_build/
+/rebar.lock

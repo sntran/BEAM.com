@@ -1,0 +1,12 @@
+{
+  "name": "erlang-shell",
+  "private": true,
+  "scripts": {
+    "build": "beam.com . -o app.com",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "beam.com": "0.1.0",
+    "wrangler": "4.142.0"
+  }
+}

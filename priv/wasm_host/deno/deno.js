@@ -33,11 +33,13 @@
 // package (of the same beam.com: app-com.js checks it):
 //   deno serve -A node_modules/beam.com/runtime/deno.js app.com
 // This file is also the module "beam.com" of the npm package in Deno (the
-// condition "deno" of its exports). An entry can give the bytes of the
-// file, as the entry of a Worker does:
-//   import { use } from 'beam.com';
-//   use(await Deno.readFile(new URL('./app.com', import.meta.url)));
-//   export { default } from 'beam.com';
+// condition "deno" of its exports), so the entry of a Worker runs here as
+// it is (see cloudflare/index.js): "deno serve -A worker.js", with
+// "unstable": ["kv", "raw-imports"] in deno.json for the import of
+// app.com as bytes. serve(app) gives the fetch handler; the second
+// argument of fetch is the info of deno serve. Beam is the Durable Object
+// of Workers, and Deno does not use it: an isolate keeps its VM between
+// requests, as a Durable Object does.
 
 // WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket),
 // and only with the request. The VM can make the pair outside the call of
@@ -222,7 +224,7 @@ class SqlStorage {
   }
 }
 
-export { use } from './deno/app.js';
+import { use } from './deno/app.js';
 
 const { Vm } = await import('./deno/worker.js');
 // The environment of the release, as the "vars" of a Worker: the
@@ -306,7 +308,7 @@ async function asset(request) {
   return new Response(request.method === 'HEAD' ? null : file.readable, { headers: { 'content-type': type } });
 }
 
-export default {
+const handler = {
   async fetch(request, info) {
     const file = await asset(request);
     if (file) return file;
@@ -328,3 +330,17 @@ export default {
     return Promise.resolve(vm.fetch(r)).then((res) => (res?.[UPGRADE] ? res[UPGRADE](request) : res));
   },
 };
+
+export default handler;
+
+// The Durable Object of the entry of a Worker (export { Beam } from
+// 'beam.com'): Deno does not use it.
+export class Beam {}
+
+// The engine for the app.com of the entry (the bytes of the file): the
+// fetch handler of its VM. The options of Workers (binding, name) do not
+// apply: one VM runs in each isolate.
+export function serve(app) {
+  use(app);
+  return { fetch: (request, info) => handler.fetch(request, info) };
+}

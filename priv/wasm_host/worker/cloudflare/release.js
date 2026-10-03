@@ -1,16 +1,8 @@
 // The release of a Worker that Wrangler bundles (cloudflare/worker.js and
 // cloudflare/durable.js): the edge part of the app.com of the project, as
-// release.bin gives it. The entry of the Worker gives the file with use(),
-// as a Data module (an ArrayBuffer):
-//
-//   import app from './app.com';
-//   import { use } from 'beam.com';
-//   use(app);
-//   export { default, Beam } from 'beam.com';
-//
-// with this rule in wrangler.jsonc:
-//
-//   "rules": [{ "type": "Data", "globs": ["**/*.com"] }]
+// release.bin gives it. serve(app) of index.js gives the file (use). It
+// runs at the top level of the entry of the Worker, so each isolate has
+// the file, also an isolate that runs only the Durable Object.
 //
 // The file must come from the beam.com of the version of this package:
 // app-com.js refuses a file for another runtime. worker.js reads the
@@ -26,7 +18,7 @@ export function use(bytes) {
 
 export function release() {
   if (!app) {
-    throw new Error("beam.com: no app.com: call use(app) in the entry of the Worker");
+    throw new Error("beam.com: no app.com: call serve(app) in the entry of the Worker");
   }
   const { read, size } = bytesReader(app);
   return appRelease(read, size, { runtime });
