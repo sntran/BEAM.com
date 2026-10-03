@@ -61,7 +61,7 @@ function unpack(FS, bytes) {
 }
 
 // .release.json, the first file of release.bin.
-function releaseMeta(bytes) {
+export function releaseMeta(bytes) {
   const b = new Uint8Array(bytes);
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const plen = view.getUint32(8);

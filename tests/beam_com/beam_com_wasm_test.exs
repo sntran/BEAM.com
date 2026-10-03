@@ -498,6 +498,8 @@ defmodule BeamComWasmTest do
         {~c"browser/none.js", "none.js"},
         {~c"beam.mjs", "beam.mjs"},
         {~c"beam.wasm", "beam.wasm"},
+        {~c"app-com.js", "app-com.js"},
+        {~c"runtime-id.js", "runtime-id.js"},
         {~c"licenses/NOTICE", "notice"},
         {~c"wrangler.jsonc", "{}"},
         {~c"release/app.js", "app.js"}
@@ -529,6 +531,8 @@ defmodule BeamComWasmTest do
                  ~c"browser.js",
                  ~c"browser/none.js",
                  ~c"beam.mjs",
+                 ~c"app-com.js",
+                 ~c"runtime-id.js",
                  ~c"licenses/NOTICE",
                  ~c"app/static.json"
                ])

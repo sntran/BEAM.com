@@ -14,7 +14,9 @@
 // A navigation of a top window in the scope goes to the page, with the path
 // of the app in the fragment (SITE#/PATH).
 // The page of an HTML reply gets ws-shim.js: the WebSocket of LiveView
-// then goes to the VM too. A redirect to a path of this origin outside the
+// then goes to the VM too. The sw.js of a site that runs a native app.com
+// imports this module from the npm package (a CDN): this module finds the
+// site from its scope, not from its own URL. A redirect to a path of this origin outside the
 // scope goes to the same path in the scope (scope.js).
 import { inScope } from './scope.js';
 
@@ -98,7 +100,9 @@ async function handle(request, url, clientId) {
   let data = r.body;
   if ((headers.get('content-type') ?? '').startsWith('text/html') && data) {
     const html = new TextDecoder().decode(data);
-    const shim = `<script src="${new URL('ws-shim.js', BOOT).pathname}"></script>`;
+    // ws-shim.js next to this module (the site, or the CDN of a site that
+    // runs a native app.com), with the scope of the frame.
+    const shim = `<script src="${new URL('./ws-shim.js', import.meta.url).href}" data-app="${SCOPE.pathname}"></script>`;
     data = html.replace(/<head[^>]*>/i, (h) => h + shim);
     headers.delete('content-length');
   }

@@ -10,7 +10,7 @@
      (SITE#/PATH). This page does not know the base path of the site, and a
      repository can have the name "app" (/app/app/users). So it tries each
      prefix of the path before a segment "app/", the longest first, and uses
-     the prefix where env.json exists. -->
+     the prefix where sw.js exists. -->
 <style>
   :root { --bg: #f6f4f1; --text: #1f1a17; --muted: #756c65; }
   @media (prefers-color-scheme: dark) {
@@ -34,7 +34,7 @@
     for (let i = path.indexOf('/app/'); i !== -1; i = path.indexOf('/app/', i + 1)) bases.push(path.slice(0, i + 1));
     for (const base of bases.reverse()) {
       try {
-        const r = await fetch(`${base}env.json`, { method: 'HEAD', cache: 'no-store' });
+        const r = await fetch(`${base}sw.js`, { method: 'HEAD', cache: 'no-store' });
         if (r.ok) {
           const rest = path.slice(base.length + 'app'.length) + location.search + location.hash;
           location.replace(rest === '/' ? base : `${base}#${rest}`);

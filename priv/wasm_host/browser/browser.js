@@ -96,19 +96,57 @@ function request(url, { method = 'GET', headers = {}, body = null } = {}) {
   };
 }
 
-// Boots the release of the URL release, with the environment env (the
-// "vars" of a Worker). BEAM_HOST is "browser".
-export async function start({ release = './release.bin', env = {} } = {}) {
+// A reader of the bytes of the file of url (app-com.js): one range for each
+// read. A server that gives the whole file (no ranges, or no size) gives
+// it one time.
+async function urlReader(url) {
+  const head = await fetch(url, { method: 'HEAD' });
+  if (!head.ok) throw new Error(`${url}: status ${head.status}`);
+  const size = Number(head.headers.get('content-length'));
+  let whole = null;
+  const all = async () => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${url}: status ${r.status}`);
+    whole = new Uint8Array(await r.arrayBuffer());
+  };
+  if (!size || head.headers.get('content-encoding')) await all();
+  return {
+    size: whole ? whole.length : size,
+    async read(at, n) {
+      if (!whole) {
+        const r = await fetch(url, { headers: { range: `bytes=${at}-${at + n - 1}` } });
+        if (r.status === 206) return new Uint8Array(await r.arrayBuffer());
+        if (!r.ok) throw new Error(`${url}: status ${r.status}`);
+        whole = new Uint8Array(await r.arrayBuffer());
+      }
+      return whole.subarray(at, at + n);
+    },
+  };
+}
+
+// Boots the release of the URL release, or of the native app.com of the URL
+// app (its edge part, see app-com.js: for this runtime only), with the
+// environment env (the "vars" of a Worker). BEAM_HOST is "browser".
+export async function start({ release = './release.bin', app = null, env = {} } = {}) {
   if (typeof WebAssembly.Suspending !== 'function') {
     throw new Error('this browser has no JSPI (WebAssembly.Suspending)');
   }
-  const { Vm } = await import('./worker.js');
-  const vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, globalThis.document?.baseURI ?? location.href).href },
-                    { plain: false });
+  const { Vm, releaseMeta } = await import('./worker.js');
+  const where = globalThis.document?.baseURI ?? location.href;
+  let vm;
+  if (app) {
+    const [{ appRelease }, { default: runtime }] = await Promise.all([import('./app-com.js'), import('./runtime-id.js')]);
+    const { read, size } = await urlReader(new URL(app, where).href);
+    const bytes = await appRelease(read, size, { runtime });
+    vm = new Vm({ BEAM_HOST: 'browser', ...env }, { plain: false, release: bytes });
+  } else {
+    vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, where).href }, { plain: false });
+  }
   await vm.ready;
   const origin = new URL('http://localhost');
   return {
     vm,
+    name: releaseMeta(vm.release).name,
     fetch: (path, init) => vm.fetch(request(new URL(path, origin), init)),
     // init.headers: more headers of the upgrade request (a cookie, for example).
     async socket(path, init = {}) {

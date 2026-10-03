@@ -634,12 +634,14 @@ licenses(Root) ->
 %% DIR/page/: a static site that runs the app in the browser of each
 %% visitor (for example on GitHub Pages). It is the root of the site:
 %%
-%%   index.html, sw.js, vm.js, ws-shim.js, scope.js, 404.html
+%%   index.html, main.js, sw.js, vm.js, ws-shim.js, scope.js, 404.html
 %%                 the page (priv/wasm_host/page)
 %%   env.json      the name of the app and the variables of its VM
 %%   worker.js     worker.js with the imports of browser/: the VM runs in a
 %%                 module Web Worker, which has no import map
 %%   browser.js, browser/, beam.mjs, licenses/
+%%   app-com.js, runtime-id.js   the reader of a native app.com, for a site
+%%                 that runs one (main.js, with the option app)
 %%   app/static.json, app/...   the files of priv/static of the app, which
 %%                 the site serves (not the VM)
 %%
@@ -652,7 +654,8 @@ page_files(#{name := Name, files := Files} = Rel, Worker, Root) ->
         ++ [{"env.json", page_env(Rel)},
             {"worker.js", page_worker(proplists:get_value("worker.js", Worker))}]
         ++ [{F, D} || {F, D} <- Worker,
-                      F =:= "browser.js" orelse F =:= "beam.mjs"
+                      F =:= "browser.js" orelse F =:= "beam.mjs" orelse F =:= "app-com.js"
+                          orelse F =:= "runtime-id.js"
                           orelse lists:prefix("browser/", F) orelse lists:prefix("licenses/", F)]
         ++ [{"app/static.json", json:encode([unicode:characters_to_binary(P) || {P, _} <- Statics])}
             | [{"app" ++ P, D} || {P, D} <- Statics]].

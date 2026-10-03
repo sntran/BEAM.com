@@ -44,6 +44,10 @@ mkdir -p "$out"
     mkdir -p "$out/$(dirname "$f")"
     cp "$dir/$f" "$out/$f"
 done
+# The page has no copy of beam.wasm here: its loader takes the one of
+# runtime/ (a site that runs a native app.com imports the page from a CDN).
+sed "s|'../beam.wasm'|'../../beam.wasm'|" "$dir/page/browser/beam-wasm.js" > "$out/page/browser/beam-wasm.js"
+grep -q "'../../beam.wasm'" "$out/page/browser/beam-wasm.js"
 # The files of the runtime are ES modules; package.json at the root has no
 # type, because a Mix project below it can have CommonJS files
 # (examples/phoenix_demo/assets/vendor).
