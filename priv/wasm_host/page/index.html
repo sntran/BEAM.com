@@ -111,11 +111,14 @@
         for (const w of [reg.installing, reg.waiting]) w?.addEventListener('statechange', check);
         reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', check));
       }));
-    // The answer of the VM to start: ready or error.
+    // The answer of the VM to start: ready or error. An error that the VM
+    // answered (vm: true) can go away at a second start, for example a
+    // network error on release.bin. An error event of the worker (its script
+    // did not load) occurs one time only.
     const started = (port, worker) => new Promise((resolve, reject) => {
       port.onmessage = (e) => {
         if (e.data.type === 'ready') resolve(e.data);
-        else if (e.data.type === 'error') reject(new Error(e.data.message));
+        else if (e.data.type === 'error') reject(Object.assign(new Error(e.data.message), { vm: true }));
       };
       worker.addEventListener('error', (e) => reject(new Error(e.message || 'the VM stopped')));
       port.postMessage(start);
@@ -134,7 +137,13 @@
       try {
         const shared = new SharedWorker(script, { type: 'module', name: `beam-page:${SITE.pathname}`, extendedLifetime: true });
         vm = shared.port;
-        info = await started(shared.port, shared);
+        // A failed boot of the VM gets one more start on the same port, so that
+        // an error that occurs one time does not make two VMs for one site.
+        info = await started(shared.port, shared).catch((e) => {
+          if (!e.vm) throw e;
+          console.log(`beam: the VM did not start in the SharedWorker (${e.message}): one more start`);
+          return started(shared.port, shared);
+        });
         addEventListener('pagehide', () => shared.port.postMessage({ type: 'bye' }));
         addEventListener('pageshow', (e) => { if (e.persisted) shared.port.postMessage({ type: 'hello' }); });
       } catch (e) {

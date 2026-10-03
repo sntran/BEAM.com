@@ -24,7 +24,9 @@
 //   later, with extendedLifetime; an older browser restores the snapshot);
 // - 35 s after all the tabs close, the VM stopped: the next visit restores
 //   it from the snapshot;
-// - after a failed boot in the SharedWorker, the next tab boots it again;
+// - a boot in the SharedWorker that fails one time gets one more start, so
+//   the site has one VM; a SharedWorker that always fails gives the VM in
+//   the tab;
 // - with no SharedWorker, the VM runs in one tab, and another tab shows a
 //   message.
 //
@@ -216,18 +218,49 @@ async function tabs(browser, origin) {
   step('all the tabs closed; 35 s later, the next visit restored the VM from the snapshot (the counter is 0)');
   await context.close();
 
-  // A failed boot in the SharedWorker (here: release.bin fails one time). The
-  // first tab then runs the VM in the tab. The next tab boots the
-  // SharedWorker again, and does not get the old error.
-  const failed = await browser.newContext();
+  // A boot in the SharedWorker that fails one time (here: release.bin fails
+  // one time). The page starts it one more time on the same port, so the
+  // first tab runs in the SharedWorker, and the site has one VM.
+  const once = await browser.newContext();
   failRelease = true;
-  const f = await open(await failed.newPage(), origin);
-  if (f.error || f.where !== 'tab') throw new Error(`after a failed boot, the first tab: ${f.error ?? f.where}`);
-  const g = await open(await failed.newPage(), origin);
-  if (g.error || g.where !== 'shared') throw new Error(`after a failed boot, the next tab: ${g.error ?? g.where}`);
-  await live(g.frame);
-  step('after a failed boot in the SharedWorker, the next tab booted it again');
-  await failed.close();
+  const f = await open(await once.newPage(), origin);
+  if (f.error || f.where !== 'shared') throw new Error(`after one failed boot, the first tab: ${f.error ?? f.where}`);
+  await live(f.frame);
+  const g = await open(await once.newPage(), origin);
+  if (g.error || g.where !== 'shared') throw new Error(`after one failed boot, the next tab: ${g.error ?? g.where}`);
+  step('a boot that failed one time got one more start: the tabs run in the SharedWorker');
+  await once.close();
+
+  // A SharedWorker whose VM fails at each start (a stand-in for a browser
+  // that cannot run the VM there): two starts, then the VM runs in the tab,
+  // and another tab shows a message.
+  const each = await browser.newContext();
+  await each.addInitScript(() => {
+    globalThis.starts = 0;
+    globalThis.SharedWorker = class extends EventTarget {
+      constructor() {
+        super();
+        const { port1, port2 } = new MessageChannel();
+        port2.onmessage = (e) => {
+          if (e.data.type !== 'start') return;
+          globalThis.starts += 1;
+          port2.postMessage({ type: 'error', message: 'no VM in this SharedWorker' });
+        };
+        this.port = port1;
+      }
+    };
+  });
+  const p = await each.newPage();
+  const x1 = await open(p, origin);
+  const tries = await p.evaluate(() => globalThis.starts);
+  if (x1.error || x1.where !== 'tab' || tries !== 2) {
+    throw new Error(`a SharedWorker that always fails: ${x1.error ?? x1.where}, ${tries} starts`);
+  }
+  await live(x1.frame);
+  const y1 = await open(await each.newPage(), origin);
+  if (!/another tab/.test(y1.error ?? '')) throw new Error(`a SharedWorker that always fails, the next tab: ${y1.error ?? 'the app'}`);
+  step('a SharedWorker that always fails: two starts, then the VM runs in the tab, and another tab shows a message');
+  await each.close();
 
   // No SharedWorker: one VM in one tab, as before.
   const old = await browser.newContext();
