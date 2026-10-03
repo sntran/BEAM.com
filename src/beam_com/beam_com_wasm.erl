@@ -35,7 +35,7 @@
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
          strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1,
-         page_files/3, page_env/1, page_worker/1, static_files/2, write_page/2,
+         page_files/3, page_env/1, page_worker/1, host_worker/2, static_files/2, write_page/2,
          edge_runtime/1, runtime_id/1, apps/1]).
 -endif.
 
@@ -507,8 +507,13 @@ meta(#{name := Name, vsn := Vsn, kind := Kind, files := Files} = Rel) ->
     Args = ["-mode", "interactive" | Config] ++ Certs
         ++ ["-boot", "/app/" ++ Dir ++ "start", "-boot_var", "RELEASE_LIB", "/app/lib"
             | VmArgs],
-    %% Phoenix starts its server only with PHX_SERVER.
-    Env = [{'PHX_SERVER', <<"true">>} || lists:member(phoenix, maps:get(apps, Rel, []))],
+    %% Phoenix starts its server only with PHX_SERVER. DATABASE_PATH: the
+    %% runtime.exs of Ecto SQLite needs it, and the host runs the SQL (as in
+    %% page_env/1). A variable of the host replaces each one (worker.js).
+    Apps = maps:get(apps, Rel, []),
+    Env = [{'PHX_SERVER', <<"true">>} || lists:member(phoenix, Apps)]
+        ++ [{'DATABASE_PATH', unicode:characters_to_binary(["/tmp/", Name, ".db"])}
+            || lists:member(exqlite, Apps)],
     %% sql: Ecto SQLite (exqlite), whose boot can change the database (the
     %% migrations): worker.js then keeps a snapshot for each database.
     #{name => unicode:characters_to_binary(Name), vsn => unicode:characters_to_binary(Vsn),
@@ -554,30 +559,56 @@ worker_name(App) ->
 
 %% The files of DIR: the runtime Worker, the Worker with the release, and
 %% the configuration of workerd.
-worker_files(#{name := App} = Rel, Runtime, Root) ->
-    Name = worker_name(App),
+worker_files(Rel, Runtime, Root) ->
     [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "worker"])),
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
+    %% The VM restored in the global scope (global.js): a runtime Worker,
+    %% or a spare VM for the Durable Objects (durable-global.js).
+    Files = [{F, Worker(F)} || F <- ["worker.js", "app-com.js", "durable.js", "global.js",
+                                     "durable-global.js", "tcp-proxy.mjs"]] ++
+            [{"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
+             {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
+             {"release/app.js", Worker("app.js")}] ++
+            [F || {P, _} = F <- host_files(Rel, base64:encode(crypto:strong_rand_bytes(48))),
+                  not lists:prefix("page/", P)] ++ hosts(Root) ++ licenses(Root) ++
+            app_hosts(Worker),
+    Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
+
+%% The hosts that run a native app.com with the runtime of the npm package
+%% (runtime/ of scripts/npm.sh), each with its copy of worker.js
+%% (host_worker/2):
+%%
+%%   deno/worker.js     for deno.js, with no import map: the imports of
+%%                      deno/, so deno.js also runs from node_modules
+%%   cloudflare/        a Worker that Wrangler bundles (index.js, the
+%%                      module beam.com/cloudflare): worker.js (a plain
+%%                      Worker) and durable.js (a Durable Object), with the
+%%                      release of the app.com of the project (release.js)
+%%
+%% The configurations of DIR upload none of them.
+app_hosts(Worker) ->
+    Js = Worker("worker.js"),
+    [{"deno/worker.js", host_worker(deno, Js)},
+     {"cloudflare/worker.js", host_worker(cloudflare, Js)},
+     {"cloudflare/durable.js", Worker("durable.js")},
+     {"cloudflare/index.js", Worker("cloudflare/index.js")},
+     {"cloudflare/release.js", Worker("cloudflare/release.js")},
+     {"cloudflare/snapshot.js", Worker("cloudflare/snapshot.js")}].
+
+%% The files of DIR that depend on the app: the configurations of Workers
+%% and workerd, and the variables of the VM of the page. Key: the
+%% SECRET_KEY_BASE of worker.capnp for a Phoenix app.
+host_files(#{name := App} = Rel, Key) ->
+    Name = worker_name(App),
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
     Sqlite = lists:member(exqlite, maps:get(apps, Rel, [])),
-    %% The VM restored in the global scope: a runtime Worker, or a spare VM
-    %% for the Durable Objects.
-    Global = [{"global.js", Worker("global.js")},
-              {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
-              {"durable-global.js", Worker("durable-global.js")},
-              {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)}],
-    Files = [{"worker.js", Worker("worker.js")},
-             {"app-com.js", Worker("app-com.js")},
-             {"durable.js", Worker("durable.js")},
-             {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)}] ++ Global ++
-            [{"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
-             {"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
-             {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
-             {"release/app.js", Worker("app.js")},
-             {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
-             {"release/wrangler.jsonc", wrangler_release(Name)},
-             {"worker.capnp", capnp(Phoenix)}] ++ hosts(Root) ++ licenses(Root),
-    Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
+    [{"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
+     {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)},
+     {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
+     {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)},
+     {"release/wrangler.jsonc", wrangler_release(Name)},
+     {"worker.capnp", capnp(Phoenix, Key)},
+     {"page/env.json", page_env(Rel)}].
 
 %% The other hosts of worker.js: Deno (deno.js, deno.json, deno/) and a web
 %% page (browser.js, browser/). Each one gives worker.js the parts of the
@@ -603,12 +634,14 @@ licenses(Root) ->
 %% DIR/page/: a static site that runs the app in the browser of each
 %% visitor (for example on GitHub Pages). It is the root of the site:
 %%
-%%   index.html, sw.js, vm.js, ws-shim.js, scope.js, 404.html
+%%   index.html, main.js, sw.js, vm.js, ws-shim.js, scope.js, 404.html
 %%                 the page (priv/wasm_host/page)
 %%   env.json      the name of the app and the variables of its VM
 %%   worker.js     worker.js with the imports of browser/: the VM runs in a
 %%                 module Web Worker, which has no import map
 %%   browser.js, browser/, beam.mjs, licenses/
+%%   app-com.js, runtime-id.js   the reader of a native app.com, for a site
+%%                 that runs one (main.js, with the option app)
 %%   app/static.json, app/...   the files of priv/static of the app, which
 %%                 the site serves (not the VM)
 %%
@@ -621,7 +654,8 @@ page_files(#{name := Name, files := Files} = Rel, Worker, Root) ->
         ++ [{"env.json", page_env(Rel)},
             {"worker.js", page_worker(proplists:get_value("worker.js", Worker))}]
         ++ [{F, D} || {F, D} <- Worker,
-                      F =:= "browser.js" orelse F =:= "beam.mjs"
+                      F =:= "browser.js" orelse F =:= "beam.mjs" orelse F =:= "app-com.js"
+                          orelse F =:= "runtime-id.js"
                           orelse lists:prefix("browser/", F) orelse lists:prefix("licenses/", F)]
         ++ [{"app/static.json", json:encode([unicode:characters_to_binary(P) || {P, _} <- Statics])}
             | [{"app" ++ P, D} || {P, D} <- Statics]].
@@ -643,16 +677,35 @@ page_env(#{name := Name} = Rel) ->
 %% The four imports of worker.js that a Web Worker cannot resolve: the
 %% modules of browser/ in their place.
 page_worker(Js) ->
-    Map = [{<<"from 'node:net'">>, <<"from './browser/net.js'">>},
-           {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
-           {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
-           {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}],
-    Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end,
-                      iolist_to_binary(Js), Map),
-    [throw({error, "worker.js: the page cannot import ~ts", [Spec]})
-     || Spec <- [<<"'node:net'">>, <<"'./beam.wasm'">>, <<"'./release.bin'">>,
-                 <<"'./snapshot.bin'">>],
-        binary:match(Out, Spec) =/= nomatch],
+    host_worker(page, Js).
+
+%% worker.js with the imports of the modules of a host in place of the
+%% modules of a Worker. Each import must be in worker.js, and the copy
+%% must have none of the old ones.
+host_worker(Host, Js) ->
+    Map = case Host of
+              page -> [{<<"from 'node:net'">>, <<"from './browser/net.js'">>},
+                       {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
+                       {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
+                       {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}];
+              deno -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
+                       {<<"from './beam.wasm'">>, <<"from './beam-wasm.js'">>},
+                       {<<"import('./release.bin')">>, <<"import('./release-bin.js')">>},
+                       {<<"import('./snapshot.bin')">>, <<"import('./snapshot-bin.js')">>}];
+              cloudflare -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
+                             {<<"from './beam.wasm'">>, <<"from '../beam.wasm'">>},
+                             {<<"(await import('./release.bin')).default">>,
+                              <<"(await import('./release.js')).release()">>},
+                             {<<"import('./snapshot.bin')">>, <<"import('./snapshot.js')">>}]
+          end,
+    In = iolist_to_binary(Js),
+    Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end, In, Map),
+    %% The specifier in quotes: also in another form (new URL(...)).
+    Quoted = fun(A) -> {match, [Q]} = re:run(A, "'[^']*'", [{capture, first, binary}]), Q end,
+    [throw({error, "worker.js: the ~p host cannot import ~ts", [Host, Quoted(A)]})
+     || {A, _} <- Map, binary:match(Out, Quoted(A)) =/= nomatch],
+    [throw({error, "worker.js: no ~ts for the ~p host", [A, Host]})
+     || {A, _} <- Map, binary:match(In, A) =:= nomatch],
     Out.
 
 %% The files of priv/static of the application of the release, as
@@ -864,8 +917,7 @@ wrangler_release(Name) ->
      "  ]\n"
      "}\n"].
 
-capnp(Phoenix) ->
-    Key = base64:encode(crypto:strong_rand_bytes(48)),
+capnp(Phoenix, Key) ->
     Bindings = case Phoenix of
                    true -> ["    (name = \"PHX_HOST\", text = \"localhost\"),\n"
                             "    (name = \"SECRET_KEY_BASE\", text = \"", Key, "\"),\n"];

@@ -1,9 +1,10 @@
 // release.bin as an ArrayBuffer, as the import of a Data module gives it in
 // Workers: next to worker.js (one Worker), else in release/ (the Worker with
-// the release). With BEAM_APP, the path of a native app.com: the release of
-// that file (its edge part, see app-com.js), for this runtime only.
+// the release). With the path of a native app.com (the first argument of
+// deno.js, else BEAM_APP): the release of that file (its edge part, see
+// app-com.js), for this runtime only.
 async function release() {
-  const app = Deno.env.get('BEAM_APP');
+  const app = Deno.args[0] ?? Deno.env.get('BEAM_APP');
   if (app) {
     const { appRelease } = await import('../app-com.js');
     const { default: runtime } = await import('../runtime-id.js');

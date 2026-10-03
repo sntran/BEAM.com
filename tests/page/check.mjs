@@ -34,6 +34,11 @@
 // - with no SharedWorker, the VM runs in one tab, and another tab shows a
 //   message.
 //
+// --cdn RUNTIME: the site of a native app.com (tests/page/app-site.mjs):
+// RUNTIME (runtime/ of the npm package) is on a second origin, as on a CDN
+// (with CORS), and @BEAM_COM@ in the HTML and JavaScript files of the site
+// is that origin. The site reads app.com with ranges.
+//
 // Needs playwright-core (npm install --prefix wasm) and a Chromium with
 // JSPI (137 or later): CHROMIUM, else the browser of Playwright, else
 // Chrome. TIMEOUT (ms, default 180000) bounds the start of the VM.
@@ -49,11 +54,13 @@ const { chromium } = require('playwright-core');
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const option = (name, value) => (args.includes(name) ? args[args.indexOf(name) + 1] : value);
-const dir = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--base');
+const dir = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--base' && args[i - 1] !== '--cdn');
 if (!dir) {
-  console.error('usage: node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo] [--tabs]');
+  console.error('usage: node tests/page/check.mjs DIR/page [--base /repo/] [--cdn RUNTIME] [--phoenix-demo] [--tabs]');
   process.exit(2);
 }
+const cdnDir = option('--cdn', null);
+let cdnOrigin = null;
 const base = `/${option('--base', '/').replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
 const timeout = Number(process.env.TIMEOUT ?? 180000);
 
@@ -61,6 +68,7 @@ const types = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.json': 'application/json', '.wasm': 'application/wasm', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.txt': 'text/plain', '.png': 'image/png',
+  '.com': 'application/x-msdownload',
 };
 
 // GitHub Pages: a directory gives its index.html, a directory without "/"
@@ -87,7 +95,7 @@ const server = createServer(async (req, res) => {
       }
       return send(res, path.join(file, 'index.html'));
     }
-    return send(res, file);
+    return send(res, file, 200, req);
   } catch {
     // GitHub Pages gives the 404.html of the site for a path with no file.
     if (file && existsSync(path.join(dir, '404.html'))) return send(res, path.join(dir, '404.html'), 404);
@@ -96,12 +104,45 @@ const server = createServer(async (req, res) => {
   }
 });
 
-async function send(res, file, status = 200) {
-  const data = await readFile(file);
-  res.writeHead(status, { 'content-type': types[path.extname(file)] ?? 'application/octet-stream',
-                          'cache-control': 'max-age=600' });
-  res.end(data);
+// A file, as GitHub Pages gives it: one range of a Range request, and the
+// size for HEAD. cors: the headers of a CDN. With --cdn, @BEAM_COM@ in the
+// HTML and JavaScript of the site is the origin of the CDN.
+async function send(res, file, status = 200, req = null, cors = false) {
+  let data = await readFile(file);
+  if (cdnOrigin && !cors && ['.html', '.js'].includes(path.extname(file))) {
+    data = Buffer.from(data.toString('utf8').replaceAll('@BEAM_COM@', cdnOrigin));
+  }
+  const headers = { 'content-type': types[path.extname(file)] ?? 'application/octet-stream',
+                    'cache-control': 'max-age=600', 'accept-ranges': 'bytes' };
+  if (cors) headers['access-control-allow-origin'] = '*';
+  const range = /^bytes=(\d+)-(\d+)$/.exec(req?.headers.range ?? '');
+  if (range && status === 200) {
+    const from = Number(range[1]), to = Math.min(Number(range[2]), data.length - 1);
+    headers['content-range'] = `bytes ${from}-${to}/${data.length}`;
+    data = data.subarray(from, to + 1);
+    status = 206;
+  }
+  headers['content-length'] = data.length;
+  res.writeHead(status, headers);
+  res.end(req?.method === 'HEAD' ? undefined : data);
 }
+
+// The CDN of --cdn: RUNTIME at /, with CORS.
+const cdn = cdnDir && createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const file = path.join(cdnDir, decodeURIComponent(url.pathname));
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' });
+    return res.end();
+  }
+  try {
+    if (!path.resolve(file).startsWith(path.resolve(cdnDir)) || !(await stat(file)).isFile()) throw new Error('no file');
+    return send(res, file, 200, req, true);
+  } catch {
+    res.writeHead(404, { 'access-control-allow-origin': '*' });
+    res.end();
+  }
+});
 
 function executable() {
   if (process.env.CHROMIUM) return { executablePath: process.env.CHROMIUM };
@@ -357,9 +398,12 @@ async function tabs(browser, origin) {
   await old.close();
 }
 
+if (cdn) await new Promise((r) => cdn.listen(0, '127.0.0.1', r));
+// The CDN is another origin: localhost, where the site is on 127.0.0.1.
+if (cdn) cdnOrigin = `http://localhost:${cdn.address().port}`;
 server.listen(0, '127.0.0.1', async () => {
   const origin = `http://127.0.0.1:${server.address().port}`;
-  step(`serve ${dir} at ${origin}${base}`);
+  step(`serve ${dir} at ${origin}${base}${cdn ? `, and ${cdnDir} at ${cdnOrigin}` : ''}`);
   const browser = await chromium.launch({ headless: true, ...executable() });
   let status = 0;
   try {
@@ -377,6 +421,7 @@ server.listen(0, '127.0.0.1', async () => {
   } finally {
     await browser.close();
     server.close();
+    cdn?.close();
     process.exit(status);
   }
 });

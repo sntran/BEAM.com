@@ -1,8 +1,9 @@
 // The VM of the page, in a module SharedWorker: one VM for all the tabs of
 // the site. Without SharedWorker, it is a module Web Worker of one tab
 // (index.html). So its work does not stop the page. A tab sends it:
-// - {type: 'start', base, env}: boot the release with the variables env
-//   (env.json), and the base path of the frame in BEAM_BASE_PATH. The
+// - {type: 'start', base, env, app}: boot the release (release.bin, or the
+//   app.com of the URL app) with the variables env (env.json, or those of
+//   a page), and the base path of the frame in BEAM_BASE_PATH. The
 //   first start boots the VM. A later start (another tab) gets the reply
 //   of the same boot;
 // - {type: 'fetch', req} with a port: an HTTP request of a frame (sw.js);
@@ -86,13 +87,14 @@ function handle(e) {
   else if (m.type === 'ws') socketVm(m, e.ports[0]);
 }
 
-function boot({ base: path, env }) {
+// app: the URL of a native app.com, in place of release.bin of the site.
+function boot({ base: path, env, app }) {
   booting ??= (async () => {
     base = path;
     const { start } = await import('./browser.js');
-    beam = await start({ release: './release.bin', env: { ...env, BEAM_BASE_PATH: base } });
+    beam = await start({ release: './release.bin', app, env: { ...env, BEAM_BASE_PATH: base } });
     for (const p of pending.splice(0)) handle(p);
-    return { type: 'ready', restored: !!beam.vm.restored };
+    return { type: 'ready', restored: !!beam.vm.restored, name: beam.name };
   })().catch((err) => {
     // The next start boots again: a SharedWorker lives while a tab of the
     // site is open, so an error at the first visit must not stay.

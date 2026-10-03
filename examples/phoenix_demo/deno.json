@@ -1,0 +1,12 @@
+{
+  "unstable": ["kv"],
+  "deploy": {
+    "install": "npm install",
+    "build": "npm run build",
+    "runtime": {
+      "type": "dynamic",
+      "entrypoint": "node_modules/beam.com/runtime/deno.js",
+      "args": ["app.com"]
+    }
+  }
+}
