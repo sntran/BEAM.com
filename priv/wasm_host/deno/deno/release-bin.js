@@ -2,20 +2,20 @@
 // Workers: next to worker.js (one Worker), else in release/ (the Worker with
 // the release). With a native app.com (the bytes of serve(app) of deno.js,
 // else the path in the first argument of deno.js, else BEAM_APP): the
-// release of that file (its edge part, see app-com.js), for this runtime
-// only.
+// files of the release of that file (its edge part, appFiles of
+// app-com.js), for this runtime only.
 import { app as given } from './app.js';
 
 async function release() {
   if (given) {
-    const [{ appRelease, bytesReader }, { default: runtime }] =
+    const [{ appFiles, bytesReader }, { default: runtime }] =
       await Promise.all([import('../app-com.js'), import('../runtime-id.js')]);
     const { read, size } = bytesReader(given);
-    return appRelease(read, size, { runtime });
+    return appFiles(read, size, { runtime });
   }
   const app = Deno.args[0] ?? Deno.env.get('BEAM_APP');
   if (app) {
-    const { appRelease } = await import('../app-com.js');
+    const { appFiles } = await import('../app-com.js');
     const { default: runtime } = await import('../runtime-id.js');
     const f = await Deno.open(app);
     try {
@@ -29,7 +29,7 @@ async function release() {
         }
         return b;
       };
-      return await appRelease(read, (await f.stat()).size, { runtime });
+      return await appFiles(read, (await f.stat()).size, { runtime });
     } finally {
       f.close();
     }

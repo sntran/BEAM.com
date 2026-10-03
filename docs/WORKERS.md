@@ -197,6 +197,23 @@ made the file:
   check of CI ("Run one file natively and at the edge") also uses
   [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
 
+The host makes no copy of the release. The files of the VM are views of
+the bytes of `app.com` (`appFiles` of `app-com.js`): the zip stores each
+`.beam` file as a gzip file, which ERTS loads. A Worker holds the file as
+a Data module, and it counts in the 128 MB of an isolate. The native
+part of the file (about 25 MB for ERTS of x86_64 and aarch64) stays in
+that memory too.
+
+The static files of a Phoenix app (`PHX_SERVER` in the release, and
+`lib/NAME-VSN/priv/static` of the application with the name of the
+release) do not go into the VM. The host serves them from `app.com`
+before the VM, as Plug.Static does: at the root of the site, with an
+ETag, a cache of one year for a request with `vsn`, and `PATH.gz` for a
+missing `PATH`. On Workers, the front Worker serves them, also for a
+path tenant after its prefix, so they need no request to the Durable
+Object. `cache_manifest.json` stays in the VM, because Phoenix reads it
+at its start.
+
 A Mix release evaluates its `runtime.exs` in the VM at the boot, so the
 host gives its variables. For Ecto SQLite, `.release.json` gives
 `DATABASE_PATH` (`/tmp/NAME.db`) when the host does not. A Phoenix app

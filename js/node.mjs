@@ -13,7 +13,7 @@ import { registerHooks } from 'node:module';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 // app-com.js and runtime-id.js import nothing: they load before the hooks.
-import { appRelease } from '../runtime/app-com.js';
+import { appFiles, appRelease } from '../runtime/app-com.js';
 import runtimeId from '../runtime/runtime-id.js';
 
 const runtimeUrl = new URL('../runtime/', import.meta.url);
@@ -43,7 +43,12 @@ export { appRelease, runtimeId };
 // The release of an app.com for this runtime (release.bin as an
 // ArrayBuffer). The file must come from the beam.com of the version of
 // this package: app-com.js refuses a file for another runtime.
-export async function release(app) {
+export function release(app) {
+  return readApp(app, appRelease);
+}
+
+// The release of app with get (appRelease, or appFiles: no copy).
+async function readApp(app, get) {
   const file = await fs.open(app);
   try {
     const { size } = await file.stat();
@@ -52,7 +57,7 @@ export async function release(app) {
       const { bytesRead } = await file.read(b, 0, n, at);
       return b.subarray(0, bytesRead);
     };
-    return await appRelease(read, size, { runtime: runtimeId });
+    return await get(read, size, { runtime: runtimeId });
   } finally {
     await file.close();
   }
@@ -62,7 +67,7 @@ export async function release(app) {
 // There is no cache for snapshots in Node.js, so BEAM_SNAPSHOT is "off".
 // The VM keeps its state between requests (plain: false), as in Deno.
 export async function boot(app, { env = {} } = {}) {
-  const bin = await release(app);
+  const bin = await readApp(app, appFiles);
   const { Vm } = await import(new URL('worker.js', runtimeUrl).href);
   const vm = new Vm({ BEAM_SNAPSHOT: 'off', ...env }, { release: bin, plain: false });
   await vm.ready;

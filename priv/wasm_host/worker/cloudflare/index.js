@@ -24,8 +24,8 @@
 //
 // wrangler.jsonc gives app.com to the Worker as a Data module:
 //   "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }]
-import { use } from './release.js';
-import plain from './worker.js';
+import { release, use } from './release.js';
+import plain, { staticResponse } from './worker.js';
 import front from './durable.js';
 
 export { Beam } from './durable.js';
@@ -44,11 +44,16 @@ export { Beam } from './durable.js';
 //   },
 export function serve(app, { binding = 'BEAM', name } = {}) {
   use(app);
-  // The env of the front: the binding as BEAM, and the name of the object.
-  const frontEnv = (env) => {
-    if (binding === 'BEAM' && name === undefined) return env;
-    return { ...env, BEAM: env[binding], BEAM_OBJECT: name ?? env.BEAM_OBJECT };
+  // The env of the front: the binding as BEAM, the name of the object, and
+  // the static files of app.com (the front serves them, with no request
+  // to the object).
+  const statics = async (request) => {
+    const files = (await release()).statics;
+    return files ? staticResponse(files, request) : null;
   };
+  const frontEnv = (env) => ({
+    ...env, BEAM: env[binding], BEAM_OBJECT: name ?? env.BEAM_OBJECT, BEAM_STATICS: statics,
+  });
   return {
     fetch(request, env, ctx) {
       const objects = env[binding];

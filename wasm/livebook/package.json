@@ -1,0 +1,5 @@
+{
+  "name": "livebook-worker",
+  "private": true,
+  "type": "module"
+}
