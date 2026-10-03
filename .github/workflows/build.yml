@@ -360,7 +360,7 @@ jobs:
       # The npm package of this beam.com (package.json, and runtime/ of
       # scripts/npm.sh), as a user installs it: npx beam.com with a download
       # from a local server in place of the GitHub release, and hashsum.com
-      # with beam.com/node.
+      # with the module beam.com.
       - name: The npm package
         run: |
           scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
@@ -381,7 +381,7 @@ jobs:
           kill "$server"
           npx beam.com --version | head -n 1 | grep '^beam.com '
           node --input-type=module -e "
-            import { boot } from 'beam.com/node';
+            import { boot } from 'beam.com';
             const lines = [];
             const log = console.log;
             console.log = (...a) => { lines.push(a.join(' ')); log(...a); };

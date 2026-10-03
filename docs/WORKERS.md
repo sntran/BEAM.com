@@ -181,19 +181,22 @@ The hosts of `app.com`, in the npm package `beam.com` (["npm" in
 README.md](../README.md#npm)), of the same version as the `beam.com` that
 made the file:
 
-- Cloudflare Workers: `beam.com/cloudflare`. Wrangler bundles the file
+- Cloudflare Workers: the module `beam.com` (its condition `workerd`,
+  which Wrangler uses). Wrangler bundles the file
   into the Worker as a Data module (a Worker has 64 MiB), and the entry
   of the Worker gives it to the runtime (see "Deploy at each git push").
   The default export sends each request to the Durable Object `Beam`;
   `plain` is a Worker with one VM for each isolate.
-- Deno and Deno Deploy: `deno.js` of the package, with the path of
-  `app.com` as its first argument (or `BEAM_APP`):
-  `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. It needs
-  no import map: `deno/worker.js` is a copy of `worker.js` with the
-  imports of `deno/`.
+- Deno and Deno Deploy: the module `beam.com` (its condition `deno`) is
+  `deno.js` of the package. It runs as it is, with the path of `app.com`
+  as its first argument (or `BEAM_APP`):
+  `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. An entry
+  can also give the bytes of the file with `use(app)`, as the entry of a
+  Worker does. It needs no import map: `deno/worker.js` is a copy of
+  `worker.js` with the imports of `deno/`.
 - A web page: `main.js` of the package, with the option `app` (see
   "A static site of app.com").
-- Node.js: `const vm = await boot('app.com')` of `beam.com/node`. The
+- Node.js: `const vm = await boot('app.com')` of the module `beam.com`. The
   check of CI ("Run one file natively and at the edge") also uses
   [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
 
@@ -219,7 +222,7 @@ from one app to another ([`examples/phoenix_demo`](../examples/phoenix_demo)):
 |---|---|
 | `package.json` | The dev dependencies `beam.com` and `wrangler`, the script `build` (it makes `app.com`), and the script `deploy` (`wrangler deploy`). |
 | `scripts/app-com.sh` | The build: `mix deps.get`, `mix assets.deploy`, `mix release`, then `beam.com _build/prod/rel/NAME -o app.com`, with `npx beam.com`. |
-| `worker.js` | The entry of the Worker: four lines that give `app.com` to `beam.com/cloudflare`. |
+| `worker.js` | The entry of the Worker: four lines that give `app.com` to the module `beam.com`. |
 | `wrangler.jsonc` | The name of the Worker, the Data rule for `*.com`, and the Durable Object. |
 | `deno.json` | The `deploy` key of Deno Deploy: `npm install`, `npm run build`, and the entrypoint `node_modules/beam.com/runtime/deno.js` with the argument `app.com`. |
 

@@ -4,9 +4,9 @@
 // as a Data module (an ArrayBuffer):
 //
 //   import app from './app.com';
-//   import { use } from 'beam.com/cloudflare';
+//   import { use } from 'beam.com';
 //   use(app);
-//   export { default, Beam } from 'beam.com/cloudflare';
+//   export { default, Beam } from 'beam.com';
 //
 // with this rule in wrangler.jsonc:
 //
@@ -26,7 +26,7 @@ export function use(bytes) {
 
 export function release() {
   if (!app) {
-    throw new Error("beam.com/cloudflare: no app.com: call use(app) in the entry of the Worker");
+    throw new Error("beam.com: no app.com: call use(app) in the entry of the Worker");
   }
   const { read, size } = bytesReader(app);
   return appRelease(read, size, { runtime });

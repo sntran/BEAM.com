@@ -32,6 +32,12 @@
 // file runs natively and here, with the runtime of DIR or of the npm
 // package (of the same beam.com: app-com.js checks it):
 //   deno serve -A node_modules/beam.com/runtime/deno.js app.com
+// This file is also the module "beam.com" of the npm package in Deno (the
+// condition "deno" of its exports). An entry can give the bytes of the
+// file, as the entry of a Worker does:
+//   import { use } from 'beam.com';
+//   use(await Deno.readFile(new URL('./app.com', import.meta.url)));
+//   export { default } from 'beam.com';
 
 // WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket),
 // and only with the request. The VM can make the pair outside the call of
@@ -215,6 +221,8 @@ class SqlStorage {
     };
   }
 }
+
+export { use } from './deno/app.js';
 
 const { Vm } = await import('./deno/worker.js');
 // The environment of the release, as the "vars" of a Worker: the

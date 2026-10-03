@@ -240,7 +240,7 @@ The package also has the WebAssembly runtime, for a native `app.com`.
 In Node.js 25 or later (for JSPI):
 
 ```js
-import { boot } from 'beam.com/node';
+import { boot } from 'beam.com';
 
 const vm = await boot('app.com', { env: { PORT: '4000' } });
 const response = await vm.fetch(new Request('http://localhost/'));
@@ -250,11 +250,19 @@ The file must come from `beam.com` of the version of the package: a file
 for another runtime is an error. `release(app)` gives the release of the
 file, without a VM.
 
+`import ... from 'beam.com'` gives the module of the runtime that
+imports it (the conditions of `exports` in `package.json`):
+
+| Runtime (condition) | What |
+|---|---|
+| Cloudflare Workers, with Wrangler (`workerd`) | A Worker that runs the `app.com` of the project: `use(app)`, the default export, and the Durable Object `Beam`. |
+| Deno (`deno`) | `deno.js`: `use(app)` and the default export of `deno serve`. It also runs as it is, with the path of `app.com`: `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. |
+| Node.js (`node`) | `boot`, `release`, `appRelease` and `runtimeId`. |
+
+The other modules of the package:
+
 | Import | What |
 |---|---|
-| `beam.com/node` | `boot`, `release`, `appRelease` and `runtimeId`, for Node.js. |
-| `beam.com/cloudflare` | A Worker that runs the `app.com` of the project: `use(app)`, and the Durable Object `Beam`. |
-| `beam.com/deno` | `deno.js`, the host of Deno and Deno Deploy: `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. |
 | `beam.com/app-com` | The reader of an `app.com`, for any host: `appRelease(read, size, { runtime })`. |
 | `beam.com/runtime-id` | The identity of this runtime, for `appRelease`. |
 | `beam.com/worker` | The runtime (`worker.js` of Cloudflare Workers). |
