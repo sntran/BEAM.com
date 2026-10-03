@@ -47,8 +47,11 @@ export class Beam extends DurableObject {
   }
 
   // The VM starts at the first request: a path tenant gives its name there.
-  makeVm(vars) {
-    return new Vm(this.env, { plain: false, sql: this.ctx.storage.sql, id: this.ctx.id.toString(), vars });
+  // The storage of the object keeps the secrets that the VM makes, and the
+  // host of the request is the default PHX_HOST (Vm.autoVars).
+  makeVm(vars, host) {
+    return new Vm(this.env, { plain: false, sql: this.ctx.storage.sql, id: this.ctx.id.toString(), vars,
+                              secrets: this.ctx.storage, host });
   }
 
   async fetch(request) {
@@ -68,7 +71,7 @@ export class Beam extends DurableObject {
         vars.BEAM_TENANT_PATH = `/t/${tenant}`;
       }
       if (this.expires) vars.BEAM_INSTANCE_EXPIRES = String(Math.floor(this.expires / 1000));
-      this.vm = this.makeVm(vars);
+      this.vm = this.makeVm(vars, new URL(request.url).hostname);
     }
     return this.vm.fetch(request);
   }

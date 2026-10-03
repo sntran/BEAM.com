@@ -235,16 +235,31 @@ if (deployment) env.BEAM_VERSION = { id: deployment };
 env.BEAM_HOST ??= Deno.env.get('DENO_DEPLOY') ? 'deno-deploy' : 'deno';
 const region = Deno.env.get('DENO_REGION');
 const vars = region ? { BEAM_REGION: region } : {};
-let sql = null, files = null;
+let sql = null, files = null, kv = null;
+try {
+  kv = await Deno.openKv(Deno.env.get('BEAM_KV'));
+} catch (e) {
+  console.log(`beam: no Deno KV (${e.message})`);
+}
 let mode = env.BEAM_SQLITE ?? 'kv';
 if (mode === 'kv') {
-  try {
-    files = new KvStore(await Deno.openKv(Deno.env.get('BEAM_KV')));
-  } catch (e) {
-    console.log(`beam: no Deno KV (${e.message}): SQLite runs in node:sqlite, in memory`);
+  if (kv) files = new KvStore(kv);
+  else {
+    console.log('beam: no Deno KV: SQLite runs in node:sqlite, in memory');
     mode = 'memory';
   }
 }
+// The secrets that the VM makes (SECRET_KEY_BASE of a Phoenix app, see
+// Vm.autoVars), in Deno KV: all the isolates share them. The first
+// isolate that writes a value wins, and the others take that value.
+const secrets = kv && {
+  async get(name) { return (await kv.get(['beam-secret', name])).value ?? undefined; },
+  async put(name, value) {
+    const key = ['beam-secret', name];
+    const r = await kv.atomic().check({ key, versionstamp: null }).set(key, value).commit();
+    return r.ok ? value : (await kv.get(key)).value;
+  },
+};
 if (mode !== 'kv' && mode !== 'off') {
   const { DatabaseSync } = await import('node:sqlite');
   sql = new SqlStorage(new DatabaseSync(mode === 'memory' ? ':memory:' : mode));
@@ -288,7 +303,7 @@ export default {
     const file = await asset(request);
     if (file) return file;
     if (!vm) {
-      const v = vm = new Vm(env, { plain: false, sql, vars, files });
+      const v = vm = new Vm(env, { plain: false, sql, vars, files, secrets, host: new URL(request.url).hostname });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
     // The scheme of the client (Deno gives it in the URL; Plug.SSL and

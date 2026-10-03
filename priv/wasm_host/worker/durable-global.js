@@ -27,10 +27,11 @@ if (env.BEAM_WARM) await spare.warm(env.BEAM_WARM);
 // VM: the spare VM booted with no storage, so it has not loaded the
 // persisted files of the object.
 export class Beam extends Base {
-  makeVm(vars) {
+  makeVm(vars, host) {
     const sql = this.ctx.storage.sql, id = this.ctx.id.toString();
     const take = spare && !this.env.BEAM_PERSIST;
-    const vm = take ? spare.adopt({ sql, id, vars }) : new Vm(this.env, { plain: false, sql, id, release, snapshot: null, vars });
+    const vm = take ? spare.adopt({ sql, id, vars })
+      : new Vm(this.env, { plain: false, sql, id, release, snapshot: null, vars, secrets: this.ctx.storage, host });
     if (take) spare = null;
     return vm;
   }
