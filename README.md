@@ -61,6 +61,14 @@ starts faster) and `SHA256SUMS`. The prerelease
 [`edge`](https://github.com/sntran/BEAM.com/releases/tag/edge) has the
 `beam.com` of the last merge to `main`.
 
+To check where the file comes from, use the
+[GitHub CLI](https://cli.github.com/): CI signs each `beam.com` of a
+release and of `edge`.
+
+```sh
+gh attestation verify beam.com --repo sntran/BEAM.com
+```
+
 On NetBSD and OpenBSD, start the file with the APE loader
 (`ape-x86_64.elf ./beam.com`): see [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
@@ -162,6 +170,11 @@ also with `deploy: false`: else GitHub refuses the run when it starts.
 When the workflow uses `edge` (a pin to a branch, such as `@main`), the
 run shows a warning. A pin to a commit SHA uses the release of that
 commit, and stops with an error when the commit has no release tag.
+Before the build, the workflow checks the SHA-256 of `beam.com` and its
+provenance (`gh attestation verify`). The check stops the build when
+`build.yml` of BEAM.com did not make the file, or when the check cannot
+reach GitHub or Sigstore. It needs no other
+permission.
 
 The app needs an HTTP listener on `PORT` (4000 by default), and only the
 NIFs of the WebAssembly runtime. The limits:

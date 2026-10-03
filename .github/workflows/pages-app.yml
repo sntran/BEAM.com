@@ -25,6 +25,9 @@ name: Publish an app on GitHub Pages
 # "GitHub Actions" as its source (Settings > Pages). The GITHUB_TOKEN cannot
 # change this setting.
 #
+# The build checks the SHA-256 and the provenance of beam.com (gh
+# attestation verify) before it uses the file.
+#
 # The input of the build:
 # - a Mix project with Phoenix: mix.com deps.get --only prod, mix.com
 #   assets.deploy (when the project has this alias), and mix.com release
@@ -160,6 +163,26 @@ jobs:
           else
             curl -fsSL -o SHA256SUMS "$url/SHA256SUMS"
             grep ' beam.com$' SHA256SUMS | sha256sum -c
+          fi
+
+      # The SHA-256 finds a broken download, but a person who can change a
+      # release can change both files. The attestation shows that build.yml
+      # of sntran/BEAM.com made the file, at the tag of the release, or at
+      # main for edge. The GITHUB_TOKEN of the caller can read the
+      # attestations of a public repository with no other permission.
+      # The CI of BEAM.com runs this script on a changed copy of beam.com.
+      - name: Check the provenance of beam.com
+        if: inputs.artifact == ''
+        working-directory: ${{ runner.temp }}/beam-com
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$TAG" = edge ]; then ref=refs/heads/main; else ref=refs/tags/$TAG; fi
+          if ! gh attestation verify beam.com --repo sntran/BEAM.com \
+               --signer-workflow sntran/BEAM.com/.github/workflows/build.yml \
+               --source-ref "$ref" --deny-self-hosted-runners; then
+            echo "::error::Could not verify the provenance of beam.com $TAG (see the error of gh above): the file is not the one that build.yml of sntran/BEAM.com made at $ref, or the check could not reach GitHub or Sigstore. Do not use this file until the check passes."
+            exit 1
           fi
 
       - name: Make beam.com a program of the runner
