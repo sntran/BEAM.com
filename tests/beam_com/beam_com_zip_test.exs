@@ -111,6 +111,33 @@ defmodule BeamComZipTest do
     assert text == :proplists.get_value(~c"lib/kernel-11.0/ebin/code.beam", files(out))
   end
 
+  # A gzip file (a .beam file of "mix release") is stored, also when
+  # deflate makes it smaller: so a deflated .beam entry always has a .beam
+  # file in it, which the WebAssembly runtime reads as a gzip file.
+  test "gzip_stored_test" do
+    code = :binary.copy("FOR1 the code ", 200)
+    # A gzip file with no compression (level 0): deflate makes it smaller.
+    z = :zlib.open()
+    :ok = :zlib.deflateInit(z, :none, :deflated, 31, 8, :default)
+    level0 = IO.iodata_to_binary(:zlib.deflate(z, code, :finish))
+    :zlib.close(z)
+    assert <<0x1F, 0x8B, _::binary>> = level0
+    assert byte_size(:zlib.zip(level0)) < byte_size(level0)
+
+    out =
+      write(exe(prefix()), &all/1, [
+        {~c"lib/a-1.0/ebin/gz.beam", :zlib.gzip(code)},
+        {~c"lib/a-1.0/ebin/level0.beam", level0},
+        {~c"lib/a-1.0/ebin/plain.beam", code}
+      ])
+
+    methods = Map.new(central(out), fn {n, m, _} -> {n, m} end)
+    assert 0 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/gz.beam")
+    assert 0 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/level0.beam")
+    assert 8 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/plain.beam")
+    assert level0 == :proplists.get_value(~c"lib/a-1.0/ebin/level0.beam", files(out))
+  end
+
   test "directory_attributes_test" do
     out = write(exe(prefix()), &all/1, [{~c"d/", ""}, {~c"f", "x"}])
     attrs = Map.new(central(out), fn {n, _, a} -> {n, a} end)

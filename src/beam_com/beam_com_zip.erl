@@ -109,7 +109,7 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
     Content = iolist_to_binary(Data0),
     USize = byte_size(Content),
     Dir = binary:last(Name) =:= $/,
-    {Method, Stored} = compress(Dir orelse stored(Name), Content),
+    {Method, Stored} = compress(Dir orelse stored(Name) orelse gzip(Content), Content),
     Flags = case is_ascii(Name) of
                 true -> 0;
                 false -> ?UTF8
@@ -142,6 +142,13 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
 stored(<<"lib/kernel-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
 stored(<<"lib/stdlib-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
 stored(_) -> false.
+
+%% A gzip file (a .beam file of "mix release") is stored: it is compressed
+%% already. So a deflated .beam entry always has a .beam file in it, and
+%% the WebAssembly runtime can read it as a gzip file with no inflate
+%% (app-com.js of wasm_host).
+gzip(<<16#1f, 16#8b, _/binary>>) -> true;
+gzip(_) -> false.
 
 compress(true, Content) ->
     {?STORED, Content};

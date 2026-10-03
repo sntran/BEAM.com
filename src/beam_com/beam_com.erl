@@ -7,7 +7,7 @@
 %%   beam.com --help | --version
 -module(beam_com).
 
--export([main/0, name/0, cache_dir/0]).
+-export([main/0, name/0, cache_dir/0, vsn/0, otp_version/0]).
 
 -ifdef(TEST).
 -export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
@@ -156,6 +156,8 @@ build_options(["--tool", Tool | _], _Opts) ->
     throw({error, "--tool is rebar or mix, not ~ts", [Tool]});
 build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
+build_options(["--no-edge" | Rest], Opts) ->
+    build_options(Rest, Opts#{edge => false});
 build_options(["--cacerts", File | Rest], Opts) ->
     build_options(Rest, Opts#{cacerts => File});
 build_options(["--target", Target | Rest], Opts) ->
@@ -206,11 +208,12 @@ help([]) ->
     Pad = lists:duplicate(length(Name) + 1, $\s),
     {Runtime, Inputs, Tools} =
         case elixir_version() of
-            none -> {[], "a .erl file with main/1, or an application\n"
-                         "            directory (rebar3)\n", []};
+            none -> {[], "a .erl file with main/1, an application directory\n"
+                         "            (rebar3), or a release directory (_build/prod/rel/NAME)\n", []};
             Elixir -> {[" and Elixir ", Elixir],
-                       "a .erl, .ex or .exs file with main/1, or an\n"
-                       "            application directory (rebar3 or Mix)\n",
+                       "a .erl, .ex or .exs file with main/1, an application\n"
+                       "            directory (rebar3 or Mix), or a release directory\n"
+                       "            (_build/prod/rel/NAME)\n",
                        ["  mix, iex, elixir, elixirc [ARGUMENTS]\n"
                         "            the tools of Elixir, as with an Elixir installation\n"
                         "            (\"", Name, " mix test\")\n"]}
@@ -249,8 +252,10 @@ help([]) ->
      "            x86_64-unknown-freebsd or x86_64-apple-darwin (also\n"
      "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos);\n"
      "            or wasm32 (wasm32-unknown-emscripten): OUTPUT is a directory\n"
-     "            with Cloudflare Workers. INPUT can also be a release\n"
-     "            directory (_build/prod/rel/NAME)\n"
+     "            with Cloudflare Workers\n"
+     "  --no-edge (with -o) no WebAssembly part in OUTPUT. By default, the\n"
+     "            same file also runs in the WebAssembly runtime (Workers,\n"
+     "            Deno, a web page), with about 40 to 80 KB more\n"
      "  --cacerts FILE\n"
      "            with --target wasm32: the trusted root certificates of the\n"
      "            runtime (TLS), a PEM file; by default, none\n"
@@ -314,6 +319,7 @@ version() ->
                    [lists:join(" ", [[A, "-", V] || {A, V} <- lists:usort(Apps)])])].
 
 vsn() ->
+    _ = application:load(beam_com),
     case application:get_key(beam_com, vsn) of
         {ok, Vsn} -> Vsn;
         undefined -> "(unknown version)"

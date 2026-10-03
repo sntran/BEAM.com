@@ -600,7 +600,15 @@ defmodule BeamComBuildTest do
         assert has.(p), "#{p}"
       end
 
-      for p <- [~c"lib/beam_com/", ~c"lib/sasl-", crypto ++ ~c"include/", ~c".args", ~c".allow"] do
+      # No edge part: this fake root has no wasm_host.
+      for p <- [
+            ~c"lib/beam_com/",
+            ~c"lib/sasl-",
+            crypto ++ ~c"include/",
+            ~c".args",
+            ~c".allow",
+            ~c".wasm/"
+          ] do
         refute has.(p), "#{p}"
       end
 
@@ -971,6 +979,259 @@ defmodule BeamComBuildTest do
       write(warn, ~c"rebar.config", ~c"{erl_opts, [return_warnings]}.\n")
       app = silent(fn -> :beam_com_build.app_dir(warn) end)
       assert %{beams: [{:warn, _}]} = app
+    end
+  end
+
+  # The edge part of a native file (.wasm/ in its zip): what the
+  # WebAssembly runtime needs beyond the native release.
+  describe "edge_test_" do
+    # The runtime of the edge part comes only from the zip of the test:
+    # not from BEAM_COM_WASM_RUNTIME (step unit sets it) or the cache.
+    setup %{dir: dir} do
+      old = for n <- ["BEAM_COM_CACHE", "BEAM_COM_WASM_RUNTIME"], do: {n, System.get_env(n)}
+      System.put_env("BEAM_COM_CACHE", Path.join(List.to_string(dir), "empty-cache"))
+      System.delete_env("BEAM_COM_WASM_RUNTIME")
+
+      on_exit(fn ->
+        for {n, v} <- old, do: if(v, do: System.put_env(n, v), else: System.delete_env(n))
+      end)
+    end
+
+    @tag timeout: 120_000
+    test "run/1: the edge part, at the end of the zip", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      out = edge_build(dir, root, exe, %{})
+      {:ok, bin} = :file.read_file(out)
+      names = :beam_com_zip.entries(bin)
+      edge = Enum.filter(names, &:lists.prefix(~c".wasm/", &1))
+
+      # The edge part is the last part of the central directory, so a
+      # reader gets both with one read at the end of the file.
+      assert edge == Enum.take(names, -length(edge))
+
+      for p <- [
+            ~c".wasm/.release.json",
+            ~c".wasm/releases/0.1.0/start.boot",
+            ~c".wasm/lib/wasm_host-0.1.0/ebin/wasm_host.app",
+            ~c".wasm/lib/wasm_host-0.1.0/ebin/wasm_tcp.beam",
+            ~c".wasm/lib/wasm_host-0.1.0/ebin/wasm.beam"
+          ] do
+        assert p in edge, "#{p}"
+      end
+
+      # The files of the native release that the runtime reads as they
+      # are: not in the edge part.
+      for p <- edge do
+        refute :lists.prefix(~c".wasm/lib/kernel-", p) or :lists.prefix(~c".wasm/lib/hasher-", p),
+               "#{p}"
+      end
+
+      {:ok, files} = :zip.unzip(bin, [:memory])
+      meta = :json.decode(:proplists.get_value(~c".wasm/.release.json", files))
+      assert %{"name" => "hasher", "vsn" => "0.1.0", "sql" => false} = meta
+
+      assert meta["runtime"] ==
+               :beam_com_wasm.runtime_id([
+                 {~c"app-com.js", "the reader"},
+                 {~c"beam.mjs", "the loader"},
+                 {~c"beam.wasm", "the runtime"},
+                 {~c"worker.js", "the worker"}
+               ])
+
+      assert meta["snapshot_key"] =~ ~r/\A[0-9a-f]{64}\z/
+      assert meta["otp"] == to_string(:beam_com.otp_version())
+      assert ["-mode", "interactive", "-boot", "/app/releases/0.1.0/start" | _] = meta["args"]
+
+      # The boot script of the runtime starts wasm_host; the native one
+      # does not change.
+      started = fn boot ->
+        {:script, _, cmds} = :erlang.binary_to_term(boot)
+        for {:apply, {:application, :start_boot, [a | _]}} <- cmds, do: a
+      end
+
+      assert :wasm_host in started.(
+               :proplists.get_value(~c".wasm/releases/0.1.0/start.boot", files)
+             )
+
+      refute :wasm_host in started.(:proplists.get_value(~c"releases/0.1.0/start.boot", files))
+    end
+
+    @tag timeout: 120_000
+    test "run/1 with --no-edge: no edge part", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      out = edge_build(dir, root, exe, %{edge: false})
+      {:ok, bin} = :file.read_file(out)
+      assert [] == Enum.filter(:beam_com_zip.entries(bin), &:lists.prefix(~c".wasm/", &1))
+
+      assert {:error, ~c"--no-edge is for native files, not for --target wasm32", []} ==
+               catch_throw(
+                 :beam_com_build.run(%{
+                   input: ~c"x.erl",
+                   apps: [],
+                   output: ~c"x",
+                   root: root,
+                   exe: exe,
+                   edge: false,
+                   target: ~c"wasm32-unknown-emscripten"
+                 })
+               )
+    end
+
+    # wasm_host with no runtime (no beam.wasm in the zip, the cache or
+    # BEAM_COM_WASM_RUNTIME): the native file has no edge part.
+    @tag timeout: 120_000
+    test "run/1 with no runtime: no edge part", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+
+      :ok =
+        :file.del_dir_r(
+          :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"runtime"])
+        )
+
+      out = edge_build(dir, root, exe, %{})
+      {:ok, bin} = :file.read_file(out)
+      assert [] == Enum.filter(:beam_com_zip.entries(bin), &:lists.prefix(~c".wasm/", &1))
+    end
+
+    # A release directory of "mix release": its applications, the
+    # applications of the zip that it names, and the variables of its
+    # start script.
+    @tag timeout: 120_000
+    test "run/1 with a Mix release directory", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      rel = mix_release(dir, [{:kernel, app_vsn(:kernel)}, {:stdlib, app_vsn(:stdlib)}])
+      out = :filename.join(dir, ~c"myrel.com")
+
+      :ok =
+        silent(fn ->
+          :beam_com_build.run(%{input: rel, apps: [], output: out, root: root, exe: exe})
+        end)
+
+      {:ok, bin} = :file.read_file(out)
+      {:ok, files} = :zip.unzip(bin, [:memory])
+      names = :beam_com_zip.entries(bin)
+      has = fn prefix -> Enum.any?(names, &:lists.prefix(prefix, &1)) end
+
+      for p <- [
+            ~c"lib/myapp-1.0.0/ebin/myapp.beam",
+            ~c"lib/myapp-1.0.0/priv/data.txt",
+            ~c"lib/kernel-" ++ app_vsn(:kernel) ++ ~c"/ebin/",
+            ~c"releases/1.0.0/runtime.exs",
+            ~c"releases/1.0.0/consolidated/Elixir.Proto.beam",
+            ~c"releases/1.0.0/myrel.rel",
+            ~c"releases/start_erl.data"
+          ] do
+        assert has.(p), "#{p}"
+      end
+
+      for p <- [
+            ~c"releases/1.0.0/env.sh",
+            ~c"releases/1.0.0/start.script",
+            ~c"bin/myrel",
+            ~c"tmp/"
+          ] do
+        refute has.(p), "#{p}"
+      end
+
+      # The variables of the start script, before the config providers.
+      {:script, _, cmds} =
+        :erlang.binary_to_term(:proplists.get_value(~c"releases/1.0.0/start.boot", files))
+
+      provider = Enum.find_index(cmds, &(&1 == {:apply, {:"Elixir.Config.Provider", :boot, []}}))
+
+      assert [
+               {:apply, {:os, :putenv, [~c"RELEASE_ROOT", ~c"/zip"]}},
+               {:apply, {:os, :putenv, [~c"RELEASE_NAME", ~c"myrel"]}},
+               {:apply, {:os, :putenv, [~c"RELEASE_VSN", ~c"1.0.0"]}},
+               {:apply, {:os, :putenv, [~c"RELEASE_PROG", ~c"myrel"]}},
+               {:apply, {:os, :putenv, [~c"RELEASE_MODE", ~c"interactive"]}},
+               {:apply, {:os, :putenv, [~c"RELEASE_SYS_CONFIG", ~c"/zip/releases/1.0.0/sys"]}}
+             ] == Enum.slice(cmds, provider - 6, 6)
+
+      assert "## the vm.args of the release\n\n-noshell\n-boot_var RELEASE_LIB /zip/lib\n" ==
+               :proplists.get_value(~c"releases/1.0.0/vm.args", files)
+
+      # The runtime gets the files of the release as they are.
+      assert "## the vm.args of the release\n" ==
+               :proplists.get_value(~c".wasm/releases/1.0.0/vm.args", files)
+
+      assert "[]." == :proplists.get_value(~c".wasm/tmp/run.runtime.config", files)
+
+      {:script, _, edge_cmds} =
+        :erlang.binary_to_term(:proplists.get_value(~c".wasm/releases/1.0.0/start.boot", files))
+
+      assert [] == for({:apply, {:os, :putenv, _}} = c <- edge_cmds, do: c)
+      assert {:apply, {:application, :start_boot, [:wasm_host, :permanent]}} in edge_cmds
+
+      meta = :json.decode(:proplists.get_value(~c".wasm/.release.json", files))
+      assert %{"name" => "myrel", "vsn" => "1.0.0"} = meta
+      assert "/app/tmp/run.runtime" in meta["args"]
+    end
+
+    # A rebar3 release (no env.sh): its files do not change.
+    @tag timeout: 120_000
+    test "run/1 with a rebar3 release directory", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      rel = mix_release(dir, [{:kernel, app_vsn(:kernel)}, {:stdlib, app_vsn(:stdlib)}])
+      :ok = :file.delete(:filename.join([rel, ~c"releases", ~c"1.0.0", ~c"env.sh"]))
+      out = :filename.join(dir, ~c"myrel.com")
+
+      :ok =
+        silent(fn ->
+          :beam_com_build.run(%{input: rel, apps: [], output: out, root: root, exe: exe})
+        end)
+
+      {:ok, bin} = :file.read_file(out)
+      {:ok, files} = :zip.unzip(bin, [:memory])
+
+      assert "## the vm.args of the release\n" ==
+               :proplists.get_value(~c"releases/1.0.0/vm.args", files)
+
+      {:script, _, cmds} =
+        :erlang.binary_to_term(:proplists.get_value(~c"releases/1.0.0/start.boot", files))
+
+      assert [] == for({:apply, {:os, :putenv, _}} = c <- cmds, do: c)
+      refute :lists.keymember(~c".wasm/tmp/run.runtime.config", 1, files)
+      refute :lists.keymember(~c".wasm/releases/1.0.0/vm.args", 1, files)
+    end
+
+    # The file has no start script, so env.sh does not run: a warning
+    # when env.sh has a command, and none for comments only (mix_release/2).
+    @tag timeout: 120_000
+    test "run/1 with a Mix release whose env.sh has commands", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      rel = mix_release(dir, [{:kernel, app_vsn(:kernel)}, {:stdlib, app_vsn(:stdlib)}])
+      out = :filename.join(dir, ~c"myrel.com")
+      opts = %{input: rel, apps: [], output: out, root: root, exe: exe}
+
+      {:ok, err} = with_io(:stderr, fn -> silent(fn -> :beam_com_build.run(opts) end) end)
+      refute err =~ "env.sh"
+
+      env = :filename.join([rel, ~c"releases", ~c"1.0.0", ~c"env.sh"])
+      :ok = :file.write_file(env, "#!/bin/sh\n# a comment\n\n  export DATABASE_PATH=/tmp/db\n")
+
+      {:ok, err} = with_io(:stderr, fn -> silent(fn -> :beam_com_build.run(opts) end) end)
+      assert err =~ "warning: #{env} has commands, and the file does not run them"
+
+      {_, err} =
+        with_io(:stderr, fn ->
+          silent(fn -> :beam_com_build.run(Map.put(opts, :quiet, true)) end)
+        end)
+
+      refute err =~ "env.sh"
+    end
+
+    test "run/1 with a release that names an application that is nowhere", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      rel = mix_release(dir, [{:kernel, app_vsn(:kernel)}, {:stdlib, ~c"0.0.0-none"}])
+      out = :filename.join(dir, ~c"myrel.com")
+
+      assert {:error, ~c"~ts is not in the release or in ~ts", [~c"stdlib-0.0.0-none", _]} =
+               catch_throw(
+                 :beam_com_build.run(%{input: rel, apps: [], output: out, root: root, exe: exe})
+               )
+
+      refute :filelib.is_regular(out)
     end
   end
 
@@ -1649,6 +1910,113 @@ defmodule BeamComBuildTest do
       )
 
     Enum.sort(:filelib.wildcard(:filename.join(base, ~c"beam_com_gen_*")))
+  end
+
+  # The fake root of prepare/1 with wasm_host: its application (wasm_tcp,
+  # with debug information), worker.js, app-com.js, and a runtime ("the
+  # runtime" in beam.wasm). The fake executable has the new application too.
+  defp edge_prepare(dir) do
+    {root, _} = prepare(dir)
+    host = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0"])
+
+    write(
+      :filename.join(host, ~c"ebin"),
+      ~c"wasm_host.app",
+      :io_lib.format(~c"~p.~n", [
+        {:application, :wasm_host,
+         [vsn: ~c"0.1.0", modules: [:wasm_tcp], applications: [:kernel, :stdlib]]}
+      ])
+    )
+
+    {:ok, :wasm_tcp, beam} =
+      :compile.forms([{:attribute, 1, :module, :wasm_tcp}], [:binary, :debug_info])
+
+    write(:filename.join(host, ~c"ebin"), ~c"wasm_tcp.beam", beam)
+    write(:filename.join([host, ~c"priv", ~c"worker"]), ~c"worker.js", "the worker")
+    write(:filename.join([host, ~c"priv", ~c"worker"]), ~c"app-com.js", "the reader")
+    write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.wasm", "the runtime")
+    write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.mjs", "the loader")
+    {root, fake_exe(dir, root)}
+  end
+
+  # hasher.erl (with crypto) as a native file, with more options.
+  defp edge_build(dir, root, exe, opts) do
+    f =
+      write(
+        dir,
+        ~c"hasher.erl",
+        ~c"-module(hasher).\n-export([main/1]).\nmain(A) -> crypto:hash(sha256, A).\n"
+      )
+
+    out = :filename.join(dir, ~c"hasher.com")
+    run = Map.merge(%{input: f, apps: [], output: out, root: root, exe: exe}, opts)
+    :ok = silent(fn -> :beam_com_build.run(run) end)
+    out
+  end
+
+  # A release directory as "mix release" writes it (env.sh tells), with
+  # the application myapp and the applications otp of the zip.
+  defp mix_release(dir, otp) do
+    rel = :filename.join(dir, ~c"rel")
+    vsn_dir = :filename.join([rel, ~c"releases", ~c"1.0.0"])
+    lib = :filename.join([rel, ~c"lib", ~c"myapp-1.0.0"])
+    {:ok, :myapp, beam} = :compile.forms([{:attribute, 1, :module, :myapp}], [:binary])
+    write(:filename.join(lib, ~c"ebin"), ~c"myapp.beam", beam)
+
+    write(
+      :filename.join(lib, ~c"ebin"),
+      ~c"myapp.app",
+      :io_lib.format(~c"~p.~n", [
+        {:application, :myapp,
+         [vsn: ~c"1.0.0", modules: [:myapp], applications: [:kernel, :stdlib]]}
+      ])
+    )
+
+    write(:filename.join(lib, ~c"priv"), ~c"data.txt", "data")
+
+    write(
+      :filename.join(rel, ~c"releases"),
+      ~c"start_erl.data",
+      :erlang.system_info(:version) ++ ~c" 1.0.0\n"
+    )
+
+    write(
+      vsn_dir,
+      ~c"myrel.rel",
+      :io_lib.format(~c"~p.~n", [
+        {:release, {~c"myrel", ~c"1.0.0"}, {:erts, :erlang.system_info(:version)},
+         otp ++ [{:myapp, ~c"1.0.0"}]}
+      ])
+    )
+
+    cmds = [
+      {:progress, :preloaded},
+      {:path, [~c"$ROOT/lib/kernel-" ++ app_vsn(:kernel) ++ ~c"/ebin"]},
+      {:apply, {:application, :start_boot, [:kernel, :permanent]}},
+      {:apply, {:application, :start_boot, [:stdlib, :permanent]}},
+      {:apply, {:"Elixir.Config.Provider", :boot, []}},
+      {:apply, {:application, :start_boot, [:myapp, :permanent]}},
+      {:progress, :started}
+    ]
+
+    write(
+      vsn_dir,
+      ~c"start.boot",
+      :erlang.term_to_binary({:script, {~c"myrel", ~c"1.0.0"}, cmds})
+    )
+
+    write(vsn_dir, ~c"start.script", ~c"%% the script of the boot\n")
+    write(vsn_dir, ~c"sys.config", ~c"[].")
+    write(vsn_dir, ~c"vm.args", ~c"## the vm.args of the release\n")
+    write(vsn_dir, ~c"env.sh", ~c"#!/bin/sh\n")
+    write(vsn_dir, ~c"runtime.exs", ~c"import Config\n")
+
+    {:ok, :"Elixir.Proto", proto} =
+      :compile.forms([{:attribute, 1, :module, :"Elixir.Proto"}], [:binary])
+
+    write(:filename.join(vsn_dir, ~c"consolidated"), ~c"Elixir.Proto.beam", proto)
+    write(:filename.join(rel, ~c"bin"), ~c"myrel", ~c"#!/bin/sh\n")
+    rel
   end
 
   defp write(dir, name, content) do

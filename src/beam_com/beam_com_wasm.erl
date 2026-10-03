@@ -13,6 +13,8 @@
 %%                    runtime gets at the first request of an isolate
 %%   worker.capnp     both Workers for workerd, to test on this computer
 %%   tcp-proxy.mjs    a local TCP port for a listener of the program
+%%   runtime-id.js    the identity of the runtime (runtime_id/1), for the
+%%                    hosts that read a native app.com (app-com.js)
 %%
 %% The release gets the application wasm_host (the TCP sockets of the
 %% host, and distributed Erlang over them), which starts after stdlib.
@@ -26,14 +28,15 @@
 %% arguments and the environment.
 -module(beam_com_wasm).
 
--export([release_dir/2, write/3]).
+-export([release_dir/2, write/3, overlay/4]).
 -export([sqlite_shim/1, wasm_shim/0]).
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
          strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1,
-         page_files/3, page_env/1, page_worker/1, static_files/2, write_page/2]).
+         page_files/3, page_env/1, page_worker/1, static_files/2, write_page/2,
+         edge_runtime/1, runtime_id/1, apps/1]).
 -endif.
 
 %% The chunks of a .beam file in a release: the loader, the line numbers and
@@ -42,6 +45,8 @@
                       "LitT", "Line", "Type", "Meta", "Recs"]).
 
 -define(HOST_APP, wasm_host).
+%% The files of the runtime, in the order of runtime_id/1.
+-define(RUNTIME_FILES, ["app-com.js", "beam.mjs", "beam.wasm", "worker.js"]).
 -define(CACERTS, "etc/cacerts.pem").
 
 %% A release directory (with releases/start_erl.data) as the input.
@@ -58,8 +63,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
         true -> throw({error, "~ts: a file; --target wasm32 writes a directory", [Output]});
         false -> ok
     end,
-    Apps = [A || {"lib/" ++ P, _} <- Files0, [D, "ebin", F] <- [string:split(P, "/", all)],
-                 {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"],
+    Apps = apps(Files0),
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
      || A <- lists:usort(Apps), lists:member(A, native_nifs() -- runtime_nifs(Runtime))],
     Files1 = with_cacerts(with_wasm(with_sqlite(with_host(Files0, Root), Root)), Opts),
@@ -101,6 +105,99 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                                 false -> ""
                             end]),
     ok.
+
+%% The applications of the files of a release: lib/NAME-VSN/ebin/NAME.app.
+apps(Files) ->
+    [A || {"lib/" ++ P, _} <- Files, [D, "ebin", F] <- [string:split(P, "/", all)],
+          {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"].
+
+%% The edge part of a native app.com (beam_com_build): the files that the
+%% WebAssembly runtime needs beyond the files of the native release, under
+%% .wasm/ in the zip. The runtime reads lib/ and releases/ of the zip, with
+%% the files of .wasm/ in their place (app-com.js of wasm_host):
+%%
+%%   .wasm/.release.json    the boot of the VM (meta/1), the snapshot key,
+%%                          and the runtime and the beam.com of the build
+%%   .wasm/lib/wasm_host-VSN/ebin/   the application wasm_host
+%%   .wasm/releases/VSN/start.boot   the boot script, with wasm_host
+%%
+%% and the other files that the runtime reads with other content: the
+%% modules in the place of NIFs (exqlite, wasm), the files of the release
+%% that the native file changes (Originals of beam_com_build), and
+%% etc/cacerts.pem of --cacerts.
+%%
+%% View: the files of the release as the runtime sees them (lib/,
+%% releases/). Native: the files of the zip ([{Path, Data}]), where a file
+%% that the zip of beam.com gives can have no data (<<>>, in View too).
+%% The build does not run the release (--target wasm32 does): the boot
+%% loads the modules one by one, and the zip deflates them. The result is
+%% [] when the zip of beam.com has no wasm_host or no runtime, or when the
+%% release cannot have wasm_host (Warn: a warning).
+overlay(View, Native, #{name := Name, vsn := Vsn, kind := Kind}, Opts) ->
+    Root = maps:get(root, Opts, "/zip"),
+    case edge_runtime(Root) of
+        none ->
+            [];
+        Runtime ->
+            try with_cacerts(with_wasm(with_sqlite(with_host(View, Root), Root)), Opts) of
+                Files ->
+                    Rel = #{name => Name, vsn => Vsn, kind => Kind, files => Files,
+                            apps => apps(View), cacerts => lists:keymember(?CACERTS, 1, Files)},
+                    Meta = (meta(Rel))#{snapshot_key => snapshot_key(Files, Runtime),
+                                        runtime => runtime_id(Runtime),
+                                        beam_com => unicode:characters_to_binary(beam_com:vsn()),
+                                        otp => unicode:characters_to_binary(beam_com:otp_version())},
+                    Have = maps:from_list([{P, iolist_to_binary(D)} || {P, D} <- Native]),
+                    %% Without debug information and docs, as in release.bin.
+                    Changed = strip_beams([F || {P, D} = F <- Files,
+                                                maps:get(P, Have, none) =/= iolist_to_binary(D)]),
+                    [{".wasm/.release.json", json:encode(Meta)} | [{".wasm/" ++ P, D} || {P, D} <- Changed]]
+            catch
+                throw:{error, Format, Args} ->
+                    warn(maps:get(quiet, Opts, false), "warning: no WebAssembly part: " ++ Format, Args),
+                    []
+            end
+    end.
+
+%% The runtime of the edge part: worker.js and app-com.js of wasm_host,
+%% beam.mjs and beam.wasm (runtime_dir/1). none when the zip has no
+%% runtime.
+edge_runtime(Root) ->
+    Js = [filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "worker", F]))
+          || F <- ["worker.js", "app-com.js"]],
+    case Js of
+        [[WorkerJs], [AppComJs]] ->
+            try runtime_dir(Root) of
+                Dir -> [{"worker.js", read(WorkerJs)},
+                        {"app-com.js", read(AppComJs)},
+                        {"beam.mjs", read(filename:join(Dir, "beam.mjs"))},
+                        {"beam.wasm", read(filename:join(Dir, "beam.wasm"))}]
+            catch
+                throw:{error, _, _} -> none
+            end;
+        _ ->
+            none
+    end.
+
+%% The identity of a runtime: the SHA-256 of the output of
+%% "sha256sum app-com.js beam.mjs beam.wasm worker.js" (?RUNTIME_FILES).
+%% The edge part of a native file holds the identity of the runtime of the
+%% build, and the hosts give the identity of their runtime (runtime-id.js
+%% of DIR): the loader (app-com.js) refuses a file for another runtime. A
+%% Worker cannot calculate it (it gets beam.wasm as a module, not as
+%% bytes), so DIR has it as a value.
+runtime_id(Files) ->
+    Line = fun(F) ->
+                   {F, D} = lists:keyfind(F, 1, Files),
+                   [binary:encode_hex(crypto:hash(sha256, D), lowercase), "  ", F, "\n"]
+           end,
+    binary:encode_hex(crypto:hash(sha256, lists:map(Line, ?RUNTIME_FILES)), lowercase).
+
+%% runtime-id.js of DIR: the identity of its runtime, as a module.
+runtime_id_module(Files) ->
+    ["// The identity of this runtime (beam_com_wasm:runtime_id/1): the SHA-256 of\n"
+     "// the output of \"sha256sum app-com.js beam.mjs beam.wasm worker.js\".\n"
+     "export default '", runtime_id(Files), "';\n"].
 
 warn(true, _Format, _Args) -> ok;
 warn(false, Format, Args) ->
@@ -469,16 +566,18 @@ worker_files(#{name := App} = Rel, Runtime, Root) ->
               {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
               {"durable-global.js", Worker("durable-global.js")},
               {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)}],
-    [{"worker.js", Worker("worker.js")},
-     {"durable.js", Worker("durable.js")},
-     {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)}] ++ Global ++
-    [{"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
-     {"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
-     {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
-     {"release/app.js", Worker("app.js")},
-     {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
-     {"release/wrangler.jsonc", wrangler_release(Name)},
-     {"worker.capnp", capnp(Phoenix)}] ++ hosts(Root) ++ licenses(Root).
+    Files = [{"worker.js", Worker("worker.js")},
+             {"app-com.js", Worker("app-com.js")},
+             {"durable.js", Worker("durable.js")},
+             {"wrangler.durable.jsonc", wrangler_durable(Name, Phoenix)}] ++ Global ++
+            [{"tcp-proxy.mjs", Worker("tcp-proxy.mjs")},
+             {"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
+             {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
+             {"release/app.js", Worker("app.js")},
+             {"wrangler.jsonc", wrangler(Name, Phoenix, Sqlite)},
+             {"release/wrangler.jsonc", wrangler_release(Name)},
+             {"worker.capnp", capnp(Phoenix)}] ++ hosts(Root) ++ licenses(Root),
+    Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
 
 %% The other hosts of worker.js: Deno (deno.js, deno.json, deno/) and a web
 %% page (browser.js, browser/). Each one gives worker.js the parts of the

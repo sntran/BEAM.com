@@ -92,6 +92,114 @@ node wasm/snapshot/snapshot.mjs worker --boot-point         # with Ecto SQLite: 
 npx wrangler deploy -c wrangler.global.jsonc
 ```
 
+## One file, natively and at the edge
+
+`beam.com INPUT -o app.com` writes the edge part of the program into the
+zip of `app.com`, under `.wasm/`. Then the same file runs natively and in
+the WebAssembly runtime. The native run never reads `.wasm/`.
+
+| Entry | What |
+|---|---|
+| `.wasm/.release.json` | The boot of the VM, the snapshot key, and the identity of the runtime of the build. |
+| `.wasm/lib/wasm_host-VSN/` | The application `wasm_host`. |
+| `.wasm/releases/VSN/start.boot` | The boot script, with `wasm_host`. |
+| The other entries | The modules in the place of NIFs (exqlite, wasm), `etc/cacerts.pem` of `--cacerts`, and the files of a Mix release that the native file changes. |
+
+The runtime reads `lib/` and `releases/` of the zip, with the files of
+`.wasm/` in their place (`app-com.js`, which `--target wasm32` writes
+into DIR):
+
+- It reads three parts of the file: the end, the central directory, and
+  the span of the release. The edge part is at the end of that span. So a
+  host can read the file from a URL with ranges, but only when the server
+  sends the bytes of the file as they are (see below).
+- A deflated `.beam` entry becomes a gzip file, with no inflate: the
+  loader of ERTS reads it so. The release stays small in the memory of
+  the host. The other entries are checked with their CRC-32.
+- A file for another runtime is an error. Use the runtime of the
+  `beam.com` that built the file.
+
+Caution: a deflated `.beam` entry must hold a module, not a gzip file.
+Else the loader makes a gzip file in a gzip file, and the VM cannot load
+that module. In interactive mode, the error comes only at the first call
+to the module. The zip writer of `beam.com` stores a `.beam` file that is
+gzip data already. But the zip of `beam.com` itself comes from Info-ZIP,
+and 13 modules of `elixir` in it are gzip files in deflated entries. They
+do not get into an app.com today, because the build puts copies with no
+docs in their place. The Node.js check of CI
+([`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs)) makes
+sure that each `.beam` of the release is a module after one gunzip at
+most.
+
+The identity of a runtime is the SHA-256 of the output of `sha256sum
+app-com.js beam.mjs beam.wasm worker.js`. `--target wasm32` writes it
+into DIR as the module `runtime-id.js`, and `.wasm/.release.json` of a
+native file holds the identity of the runtime of the build. A host gives
+the identity of its runtime to the loader, and does not calculate a hash
+at the start: a Worker cannot, because it gets `beam.wasm` as a module.
+So a file that passes the check also has the correct snapshot key for
+the runtime that boots it.
+
+Caution: a server that compresses a response to a range request breaks
+the reads, and a script in a web page cannot stop it, because it cannot
+set `Accept-Encoding`. Then the loader stops with "not a zip file" or
+with an error of the CRC-32, so the failure is clear. A test of GitHub
+Pages in October 2026 found:
+
+- GitHub Pages does not compress `.com` (`application/x-msdownload`) or
+  `.zip`, also for a range.
+- It compresses `.wasm` and `.bin`, also for a range.
+
+So a file that a web page reads with ranges must keep the name `.com`.
+
+The build of a native file does not run the program (`--target wasm32`
+does, to find the modules of the boot). So the VM loads the modules one
+by one. `--no-edge` leaves the edge part out, and a `beam.com` with no
+WebAssembly runtime writes none.
+
+A release directory (`_build/prod/rel/NAME` of `mix release`, or of
+rebar3) is an input of `-o` too. The file has the applications of the
+release, and the applications of the zip of `beam.com` that the release
+names. A Mix release has no start script in the file: its boot script
+sets `RELEASE_ROOT`, `RELEASE_SYS_CONFIG` and the other variables of the
+start script, and its `vm.args` gives `-noshell` and `-boot_var
+RELEASE_LIB`. Run it as `bin/NAME start`, with the same variables
+(`PHX_SERVER=true` for a Phoenix server).
+
+These parts of the start script of a Mix release are not in the file:
+
+- `releases/VSN/env.sh` does not run. The build gives a warning when
+  `env.sh` has a line that is not a comment. Set its variables when you
+  start the file.
+- The release starts no distribution: `RELEASE_DISTRIBUTION` and
+  `RELEASE_COOKIE` do nothing.
+- There are no `eval`, `rpc` or `remote` commands. So `bin/migrate` of
+  `mix phx.gen.release` (`bin/NAME eval "App.Release.migrate"`) has no
+  equivalent in the file.
+
+The hosts of `app.com`:
+
+- Deno: `BEAM_APP`, the path of `app.com`, with the `deno.js` of a
+  `--target wasm32` directory of the same `beam.com`:
+  `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
+- Node.js: [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs),
+  the check of CI ("Run one file natively and at the edge").
+- Not yet: Workers (the app part from `app.com` at each deploy), the web
+  page, and a package on npm with the runtime.
+
+Measured with the `edge` build of October 2026 and this change, in
+Node.js 26 on Linux x86_64:
+
+| File | Size | Edge part | Release in memory | VM ready | VM memory |
+|---|---|---|---|---|---|
+| `hashsum.com` (`examples/hashsum.erl`) | 29.0 MB | 13 files, 62 KB | 3.7 MB | 283 ms | 32 MB |
+| `worker.com` (`examples/worker`) | 31.0 MB | 13 files, 71 KB | 5.7 MB | 331 ms | 32 MB |
+| `phoenix_demo.com` (its Mix release) | 37.3 MB | 16 files, 177 KB | 12.9 MB | 440 ms | 40 MB |
+
+For `examples/phoenix_demo`, `release.bin` of `--target wasm32` has
+13.5 MB, and its VM uses 56 MB: it loads the modules of the boot in one
+batch.
+
 ## The program does not change
 
 - The application `wasm_host` goes into the release, and the boot script

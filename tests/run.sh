@@ -513,7 +513,7 @@ if [ -d examples ]; then
   beam.com --target wasm32: beam.wasm"
         fail=1
     fi
-    for f in worker.js beam.mjs beam.wasm wrangler.jsonc worker.capnp tcp-proxy.mjs \
+    for f in worker.js app-com.js runtime-id.js beam.mjs beam.wasm wrangler.jsonc worker.capnp tcp-proxy.mjs \
              durable.js wrangler.durable.jsonc global.js wrangler.global.jsonc \
              durable-global.js wrangler.durable-global.jsonc \
              deno.js deno.json deno/sockets.js browser.js browser/beam-wasm.js \

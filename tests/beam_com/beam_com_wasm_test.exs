@@ -314,6 +314,7 @@ defmodule BeamComWasmTest do
 
     for f <- [
           ~c"worker.js",
+          ~c"app-com.js",
           ~c"durable.js",
           ~c"global.js",
           ~c"durable-global.js",
@@ -356,7 +357,18 @@ defmodule BeamComWasmTest do
     # The license texts of the zip, with the texts of OTP.
     assert "text" == get.(~c"licenses/NOTICE", plain)
     assert "text" == get.(~c"licenses/otp/MIT.txt", plain)
-    # The files of Deno and of a web page, next to worker.js.
+    # The files of Deno and of a web page, next to worker.js, and the
+    # reader of a native app.com (BEAM_APP of Deno).
+    assert "app-com.js" == get.(~c"app-com.js", plain)
+    # The identity of the runtime, as a module (runtime_id_test_).
+    id = :beam_com_wasm.runtime_id(plain)
+
+    assert id ==
+             :beam_com_wasm.runtime_id(
+               for f <- ~w(app-com.js beam.mjs beam.wasm worker.js)c, do: {f, f}
+             )
+
+    assert get.(~c"runtime-id.js", plain) =~ "\nexport default '#{id}';\n"
     assert "deno/deno.js" == get.(~c"deno.js", plain)
     assert "deno/deno.json" == get.(~c"deno.json", plain)
     assert "deno/deno/sockets.js" == get.(~c"deno/sockets.js", plain)
@@ -643,6 +655,153 @@ defmodule BeamComWasmTest do
     } do
       assert [host, {~c"lib/wasm-0.1.0/ebin/wasm.beam", shim}] ==
                :beam_com_wasm.with_wasm([host, {~c"lib/wasm-0.1.0/ebin/wasm.beam", "native"}])
+    end
+  end
+
+  # The edge part of a native app.com (beam_com_build): the files of View
+  # that the runtime changes or adds, under .wasm/.
+  # The identity of a runtime is the SHA-256 of the output of
+  # "sha256sum app-com.js beam.mjs beam.wasm worker.js": a person can
+  # calculate it again with the shell. Each file here holds its own name.
+  test "runtime_id_test_" do
+    files = for f <- ~w(worker.js beam.wasm app-com.js beam.mjs)c, do: {f, List.to_string(f)}
+
+    assert "8202813e4be300cab28f6919fed813c06bb603967052a5e3cfc04fdaff402afe" ==
+             :beam_com_wasm.runtime_id(files)
+
+    # A change of each file is another runtime.
+    for {f, _} <- files do
+      other = :lists.keyreplace(f, 1, files, {f, "changed"})
+      assert :beam_com_wasm.runtime_id(other) != :beam_com_wasm.runtime_id(files)
+    end
+  end
+
+  describe "overlay_test_" do
+    # The runtime of the edge part comes only from the zip (root/): not
+    # from BEAM_COM_WASM_RUNTIME (step unit sets it) or the cache.
+    setup %{tmp_dir: dir} do
+      old_cache = System.get_env("BEAM_COM_CACHE")
+      old_runtime = System.get_env("BEAM_COM_WASM_RUNTIME")
+      System.put_env("BEAM_COM_CACHE", Path.join(dir, "empty-cache"))
+      System.delete_env("BEAM_COM_WASM_RUNTIME")
+
+      on_exit(fn ->
+        restore_env("BEAM_COM_WASM_RUNTIME", old_runtime)
+        restore_env("BEAM_COM_CACHE", old_cache)
+      end)
+
+      root = root(dir)
+      host = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv"])
+      :ok = :filelib.ensure_path(:filename.join(host, ~c"worker"))
+      :ok = :filelib.ensure_path(:filename.join(host, ~c"runtime"))
+      :ok = :file.write_file(:filename.join([host, ~c"worker", ~c"worker.js"]), "worker")
+      :ok = :file.write_file(:filename.join([host, ~c"worker", ~c"app-com.js"]), "reader")
+      :ok = :file.write_file(:filename.join([host, ~c"runtime", ~c"beam.wasm"]), "runtime")
+      :ok = :file.write_file(:filename.join([host, ~c"runtime", ~c"beam.mjs"]), "loader")
+      mod = :"Elixir.Exqlite.Sqlite3NIF"
+
+      {:ok, ^mod, nif} =
+        :compile.forms(
+          [
+            {:attribute, 1, :module, mod},
+            {:attribute, 1, :export, [load_nif: 0]},
+            {:function, 1, :load_nif, 0, [{:clause, 1, [], [], [{:atom, 1, :native}]}]}
+          ],
+          [:binary]
+        )
+
+      app = fn a, v -> :io_lib.format(~c"~p.~n", [{:application, a, [vsn: v]}]) end
+
+      view = [
+        {~c"releases/1/start.boot", boot()},
+        {~c"releases/1/vm.args", "-noshell\n"},
+        {~c"lib/app-1/ebin/app.app", app.(:app, ~c"1")},
+        {~c"lib/exqlite-0.41.0/ebin/exqlite.app", app.(:exqlite, ~c"0.41.0")},
+        {~c"lib/exqlite-0.41.0/ebin/Elixir.Exqlite.Sqlite3NIF.beam", nif}
+      ]
+
+      %{root: root, view: view, rel: %{name: ~c"app", vsn: ~c"1", kind: :beam_com}}
+    end
+
+    test "the files that the runtime changes or adds", %{root: root, view: view, rel: rel} do
+      edge = :beam_com_wasm.overlay(view, view, rel, %{root: root})
+      names = for {p, _} <- edge, do: p
+
+      for p <- [
+            ~c".wasm/.release.json",
+            ~c".wasm/releases/1/start.boot",
+            ~c".wasm/lib/wasm_host-0.1.0/ebin/wasm_host.app",
+            ~c".wasm/lib/wasm_host-0.1.0/ebin/wasm_tcp.beam",
+            ~c".wasm/lib/wasm_host-0.1.0/ebin/wasm.beam",
+            ~c".wasm/lib/exqlite-0.41.0/ebin/Elixir.Exqlite.Sqlite3NIF.beam"
+          ] do
+        assert p in names, "#{p}"
+      end
+
+      # The files that the runtime reads as they are.
+      refute ~c".wasm/lib/app-1/ebin/app.app" in names
+      refute ~c".wasm/releases/1/vm.args" in names
+      assert ~c".wasm/.release.json" == hd(names)
+
+      meta =
+        :json.decode(IO.iodata_to_binary(:proplists.get_value(~c".wasm/.release.json", edge)))
+
+      assert %{"name" => "app", "vsn" => "1", "sql" => true} = meta
+
+      assert meta["runtime"] ==
+               :beam_com_wasm.runtime_id([
+                 {~c"worker.js", "worker"},
+                 {~c"app-com.js", "reader"},
+                 {~c"beam.mjs", "loader"},
+                 {~c"beam.wasm", "runtime"}
+               ])
+    end
+
+    # A file of View that differs from the native file: the runtime gets
+    # the file of View (a Mix release in beam_com_build).
+    test "a file of the release that the native file changes", %{root: root, view: view, rel: rel} do
+      native =
+        :lists.keyreplace(~c"releases/1/vm.args", 1, view, {~c"releases/1/vm.args", "native"})
+
+      edge = :beam_com_wasm.overlay(view, native, rel, %{root: root})
+      assert "-noshell\n" == :proplists.get_value(~c".wasm/releases/1/vm.args", edge)
+    end
+
+    test "--cacerts: etc/cacerts.pem", %{root: root, view: view, rel: rel, tmp_dir: dir} do
+      %{cert: der} = :public_key.pkix_test_root_cert(~c"beam_com test root", [])
+      pem = String.to_charlist(Path.join(dir, "roots.pem"))
+      :ok = :file.write_file(pem, :public_key.pem_encode([{:Certificate, der, :not_encrypted}]))
+      edge = :beam_com_wasm.overlay(view, view, rel, %{root: root, cacerts: pem})
+      assert List.keymember?(edge, ~c".wasm/etc/cacerts.pem", 0)
+
+      meta =
+        :json.decode(IO.iodata_to_binary(:proplists.get_value(~c".wasm/.release.json", edge)))
+
+      assert "/app/etc/cacerts.pem" in Enum.map(meta["args"], &String.trim(&1, "\""))
+    end
+
+    # A release with its own module of wasm_host: no edge part, and a
+    # warning (the native file does not change).
+    test "a release that has a module of wasm_host", %{root: root, view: view, rel: rel} do
+      own = view ++ [{~c"lib/app-1/ebin/wasm_tcp.beam", "own"}]
+
+      out =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert [] == :beam_com_wasm.overlay(own, own, rel, %{root: root})
+        end)
+
+      assert out =~ "warning: no WebAssembly part: lib/app-1/ebin/wasm_tcp.beam"
+      assert [] == :beam_com_wasm.overlay(own, own, rel, %{root: root, quiet: true})
+    end
+
+    test "no worker.js or no runtime: no edge part", %{root: root, view: view, rel: rel} do
+      runtime = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"runtime"])
+      worker = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"worker"])
+      :ok = :file.del_dir_r(runtime)
+      assert :none == :beam_com_wasm.edge_runtime(root)
+      assert [] == :beam_com_wasm.overlay(view, view, rel, %{root: root})
+      :ok = :file.del_dir_r(worker)
+      assert :none == :beam_com_wasm.edge_runtime(root)
     end
   end
 

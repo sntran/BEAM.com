@@ -93,6 +93,7 @@ $ sh ./beam.com examples/hashsum.erl -o hashsum.com
 beam.com: wrote hashsum.com (25304313 bytes)
   release: hashsum 0.1.0
   applications: beam_com_script kernel stdlib crypto
+  edge: 13 files (62171 bytes) for the WebAssembly runtime
 $ sh ./hashsum.com abc
 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc
 ```
@@ -125,6 +126,18 @@ cd worker
 npx workerd serve worker.capnp                   # test on this computer (Workers)
 deno serve -A deno.js                            # or on Deno
 ```
+
+One file runs natively and in the WebAssembly runtime. Each executable of
+`-o` also has its edge part, of 40 to 180 KB (`--no-edge` leaves it out).
+A release directory of `mix release` is an input too:
+
+```sh
+beam.com _build/prod/rel/my_app -o my_app.com     # a Phoenix app
+PHX_SERVER=true ./my_app.com                     # natively
+cd worker && BEAM_APP=../my_app.com deno serve -A deno.js   # the same file on Deno
+```
+
+See "One file, natively and at the edge" in [`docs/WORKERS.md`](docs/WORKERS.md).
 
 ## Publish on GitHub Pages
 
