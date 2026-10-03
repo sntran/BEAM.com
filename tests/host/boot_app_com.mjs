@@ -6,14 +6,17 @@
 //   node tests/host/boot_app_com.mjs DIR APP.com [--get PATH] [--expect TEXT]
 //
 // The release comes from APP.com through app-com.js of DIR, with the
-// SHA-256 of DIR/beam.wasm as the runtime. With --get, the check sends GET
+// identity of the runtime of DIR (runtime-id.js). Before the boot, each
+// .beam of the release must be a module after one gunzip at most: a
+// deflated entry of a gzip file would give a gzip file in a gzip file,
+// and the VM would not load that module. With --get, the check sends GET
 // PATH to the app when it is ready: the status must be 200, and the body
 // must have TEXT. Without --get, the output of the program must have TEXT
 // (a program that stops, as a script). BOOT_ENV (JSON) gives more
 // variables of the VM, for example SECRET_KEY_BASE. The check stops after
 // 120 s.
 import { registerHooks } from 'node:module';
-import { createHash } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -50,7 +53,7 @@ registerHooks({
 });
 
 const t0 = performance.now();
-const runtime = createHash('sha256').update(await fs.readFile(wasmFile)).digest('hex');
+const { default: runtime } = await import(pathToFileURL(path.join(runtimeDir, 'runtime-id.js')).href);
 const { appRelease } = await import(pathToFileURL(path.join(runtimeDir, 'app-com.js')).href);
 const file = await fs.open(app);
 const { size } = await file.stat();
@@ -66,6 +69,25 @@ try {
   done(false, e.message);
 }
 console.log(`boot_app_com: the release of ${path.basename(app)}: ${(release.byteLength / 1048576).toFixed(2)} MB in ${Math.round(performance.now() - t0)} ms`);
+
+// The files of release.bin: "BEAMFS1\n", then for each file a 32-bit
+// big-endian length and the path, a 32-bit length and the data.
+const bytes = new Uint8Array(release);
+const view = new DataView(release);
+const utf8 = new TextDecoder();
+let beams = 0;
+for (let at = 8; at < bytes.length;) {
+  const n = view.getUint32(at);
+  const name = utf8.decode(bytes.subarray(at + 4, at + 4 + n));
+  const m = view.getUint32(at + 4 + n);
+  let data = bytes.subarray(at + 8 + n, at + 8 + n + m);
+  at += 8 + n + m;
+  if (!name.endsWith('.beam')) continue;
+  if (data[0] === 0x1f && data[1] === 0x8b) data = gunzipSync(data);
+  if (utf8.decode(data.subarray(0, 4)) !== 'FOR1') done(false, `${name}: not a module after one gunzip`);
+  beams++;
+}
+console.log(`boot_app_com: ${beams} modules, each one a module after one gunzip at most`);
 
 // The output of the VM, for --expect without --get.
 const native = console.log;

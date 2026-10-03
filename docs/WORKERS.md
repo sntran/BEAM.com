@@ -100,7 +100,7 @@ the WebAssembly runtime. The native run never reads `.wasm/`.
 
 | Entry | What |
 |---|---|
-| `.wasm/.release.json` | The boot of the VM, the snapshot key, and the runtime of the build (the SHA-256 of `beam.wasm`). |
+| `.wasm/.release.json` | The boot of the VM, the snapshot key, and the identity of the runtime of the build. |
 | `.wasm/lib/wasm_host-VSN/` | The application `wasm_host`. |
 | `.wasm/releases/VSN/start.boot` | The boot script, with `wasm_host`. |
 | The other entries | The modules in the place of NIFs (exqlite, wasm), `etc/cacerts.pem` of `--cacerts`, and the files of a Mix release that the native file changes. |
@@ -111,14 +111,46 @@ into DIR):
 
 - It reads three parts of the file: the end, the central directory, and
   the span of the release. The edge part is at the end of that span. So a
-  host can read the file from a URL with ranges.
+  host can read the file from a URL with ranges, but only when the server
+  sends the bytes of the file as they are (see below).
 - A deflated `.beam` entry becomes a gzip file, with no inflate: the
   loader of ERTS reads it so. The release stays small in the memory of
-  the host. The zip of `beam.com` stores a `.beam` file that is gzip data
-  already, so a deflated entry always has a `.beam` file in it. The other
-  entries are checked with their CRC-32.
+  the host. The other entries are checked with their CRC-32.
 - A file for another runtime is an error. Use the runtime of the
   `beam.com` that built the file.
+
+Caution: a deflated `.beam` entry must hold a module, not a gzip file.
+Else the loader makes a gzip file in a gzip file, and the VM cannot load
+that module. In interactive mode, the error comes only at the first call
+to the module. The zip writer of `beam.com` stores a `.beam` file that is
+gzip data already. But the zip of `beam.com` itself comes from Info-ZIP,
+and 13 modules of `elixir` in it are gzip files in deflated entries. They
+do not get into an app.com today, because the build puts copies with no
+docs in their place. The Node.js check of CI
+([`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs)) makes
+sure that each `.beam` of the release is a module after one gunzip at
+most.
+
+The identity of a runtime is the SHA-256 of the output of `sha256sum
+app-com.js beam.mjs beam.wasm worker.js`. `--target wasm32` writes it
+into DIR as the module `runtime-id.js`, and `.wasm/.release.json` of a
+native file holds the identity of the runtime of the build. A host gives
+the identity of its runtime to the loader, and does not calculate a hash
+at the start: a Worker cannot, because it gets `beam.wasm` as a module.
+So a file that passes the check also has the correct snapshot key for
+the runtime that boots it.
+
+Caution: a server that compresses a response to a range request breaks
+the reads, and a script in a web page cannot stop it, because it cannot
+set `Accept-Encoding`. Then the loader stops with "not a zip file" or
+with an error of the CRC-32, so the failure is clear. A test of GitHub
+Pages in October 2026 found:
+
+- GitHub Pages does not compress `.com` (`application/x-msdownload`) or
+  `.zip`, also for a range.
+- It compresses `.wasm` and `.bin`, also for a range.
+
+So a file that a web page reads with ranges must keep the name `.com`.
 
 The build of a native file does not run the program (`--target wasm32`
 does, to find the modules of the boot). So the VM loads the modules one
@@ -133,6 +165,17 @@ sets `RELEASE_ROOT`, `RELEASE_SYS_CONFIG` and the other variables of the
 start script, and its `vm.args` gives `-noshell` and `-boot_var
 RELEASE_LIB`. Run it as `bin/NAME start`, with the same variables
 (`PHX_SERVER=true` for a Phoenix server).
+
+These parts of the start script of a Mix release are not in the file:
+
+- `releases/VSN/env.sh` does not run. The build gives a warning when
+  `env.sh` has a line that is not a comment. Set its variables when you
+  start the file.
+- The release starts no distribution: `RELEASE_DISTRIBUTION` and
+  `RELEASE_COOKIE` do nothing.
+- There are no `eval`, `rpc` or `remote` commands. So `bin/migrate` of
+  `mix phx.gen.release` (`bin/NAME eval "App.Release.migrate"`) has no
+  equivalent in the file.
 
 The hosts of `app.com`:
 

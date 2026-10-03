@@ -1029,7 +1029,15 @@ defmodule BeamComBuildTest do
       {:ok, files} = :zip.unzip(bin, [:memory])
       meta = :json.decode(:proplists.get_value(~c".wasm/.release.json", files))
       assert %{"name" => "hasher", "vsn" => "0.1.0", "sql" => false} = meta
-      assert meta["runtime"] == Base.encode16(:crypto.hash(:sha256, "the runtime"), case: :lower)
+
+      assert meta["runtime"] ==
+               :beam_com_wasm.runtime_id([
+                 {~c"app-com.js", "the reader"},
+                 {~c"beam.mjs", "the loader"},
+                 {~c"beam.wasm", "the runtime"},
+                 {~c"worker.js", "the worker"}
+               ])
+
       assert meta["snapshot_key"] =~ ~r/\A[0-9a-f]{64}\z/
       assert meta["otp"] == to_string(:beam_com.otp_version())
       assert ["-mode", "interactive", "-boot", "/app/releases/0.1.0/start" | _] = meta["args"]
@@ -1185,6 +1193,32 @@ defmodule BeamComBuildTest do
       assert [] == for({:apply, {:os, :putenv, _}} = c <- cmds, do: c)
       refute :lists.keymember(~c".wasm/tmp/run.runtime.config", 1, files)
       refute :lists.keymember(~c".wasm/releases/1.0.0/vm.args", 1, files)
+    end
+
+    # The file has no start script, so env.sh does not run: a warning
+    # when env.sh has a command, and none for comments only (mix_release/2).
+    @tag timeout: 120_000
+    test "run/1 with a Mix release whose env.sh has commands", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      rel = mix_release(dir, [{:kernel, app_vsn(:kernel)}, {:stdlib, app_vsn(:stdlib)}])
+      out = :filename.join(dir, ~c"myrel.com")
+      opts = %{input: rel, apps: [], output: out, root: root, exe: exe}
+
+      {:ok, err} = with_io(:stderr, fn -> silent(fn -> :beam_com_build.run(opts) end) end)
+      refute err =~ "env.sh"
+
+      env = :filename.join([rel, ~c"releases", ~c"1.0.0", ~c"env.sh"])
+      :ok = :file.write_file(env, "#!/bin/sh\n# a comment\n\n  export DATABASE_PATH=/tmp/db\n")
+
+      {:ok, err} = with_io(:stderr, fn -> silent(fn -> :beam_com_build.run(opts) end) end)
+      assert err =~ "warning: #{env} has commands, and the file does not run them"
+
+      {_, err} =
+        with_io(:stderr, fn ->
+          silent(fn -> :beam_com_build.run(Map.put(opts, :quiet, true)) end)
+        end)
+
+      refute err =~ "env.sh"
     end
 
     test "run/1 with a release that names an application that is nowhere", %{dir: dir} do
@@ -1879,8 +1913,8 @@ defmodule BeamComBuildTest do
   end
 
   # The fake root of prepare/1 with wasm_host: its application (wasm_tcp,
-  # with debug information), worker.js, and a runtime ("the runtime" in
-  # beam.wasm). The fake executable has the new application too.
+  # with debug information), worker.js, app-com.js, and a runtime ("the
+  # runtime" in beam.wasm). The fake executable has the new application too.
   defp edge_prepare(dir) do
     {root, _} = prepare(dir)
     host = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0"])
@@ -1899,6 +1933,7 @@ defmodule BeamComBuildTest do
 
     write(:filename.join(host, ~c"ebin"), ~c"wasm_tcp.beam", beam)
     write(:filename.join([host, ~c"priv", ~c"worker"]), ~c"worker.js", "the worker")
+    write(:filename.join([host, ~c"priv", ~c"worker"]), ~c"app-com.js", "the reader")
     write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.wasm", "the runtime")
     write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.mjs", "the loader")
     {root, fake_exe(dir, root)}

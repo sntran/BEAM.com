@@ -149,6 +149,7 @@ release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files :
     Own = [F || {P, _} = F <- Files0, not lists:prefix("tmp/", P),
                 not lists:any(fun(D) -> lists:prefix(D, P) end, ZipDirs)],
     {Native, Changed} = native_release(Own, Kind, Rel),
+    Kind =:= mix andalso env_warning(Dir, Vsn, Opts),
     %% The runtime reads the files of the release as they are, and
     %% tmp/run.runtime.config of a Mix release (beam_com_wasm:meta/1).
     Originals = [F || {P, _} = F <- Own, lists:member(P, Changed)]
@@ -198,6 +199,24 @@ native_release(Files, mix, #{name := Name, vsn := Vsn}) ->
                 (F) -> F
              end,
     {[Change(F) || F <- Files], [Boot, VmArgs]}.
+
+%% The start script of a Mix release runs releases/VSN/env.sh, and a
+%% native file has no start script: a warning when env.sh has a line that
+%% is not a comment.
+env_warning(Dir, Vsn, Opts) ->
+    File = filename:join([Dir, "releases", Vsn, "env.sh"]),
+    Commands = case file:read_file(File) of
+                   {ok, Data} ->
+                       [L || L0 <- string:split(unicode:characters_to_list(Data), "\n", all),
+                             L <- [string:trim(L0)], L =/= "", hd(L) =/= $#];
+                   {error, _} ->
+                       []
+               end,
+    Commands =:= [] orelse maps:get(quiet, Opts, false) orelse
+        io:format(standard_error,
+                  "~ts: warning: ~ts has commands, and the file does not run them: "
+                  "set its variables when you start the file~n",
+                  [beam_com:name(), File]).
 
 %% The commands of the variables, before the config providers of Elixir,
 %% else after the start of stdlib.

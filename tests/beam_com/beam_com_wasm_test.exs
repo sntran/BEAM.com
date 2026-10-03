@@ -360,6 +360,15 @@ defmodule BeamComWasmTest do
     # The files of Deno and of a web page, next to worker.js, and the
     # reader of a native app.com (BEAM_APP of Deno).
     assert "app-com.js" == get.(~c"app-com.js", plain)
+    # The identity of the runtime, as a module (runtime_id_test_).
+    id = :beam_com_wasm.runtime_id(plain)
+
+    assert id ==
+             :beam_com_wasm.runtime_id(
+               for f <- ~w(app-com.js beam.mjs beam.wasm worker.js)c, do: {f, f}
+             )
+
+    assert get.(~c"runtime-id.js", plain) =~ "\nexport default '#{id}';\n"
     assert "deno/deno.js" == get.(~c"deno.js", plain)
     assert "deno/deno.json" == get.(~c"deno.json", plain)
     assert "deno/deno/sockets.js" == get.(~c"deno/sockets.js", plain)
@@ -651,6 +660,22 @@ defmodule BeamComWasmTest do
 
   # The edge part of a native app.com (beam_com_build): the files of View
   # that the runtime changes or adds, under .wasm/.
+  # The identity of a runtime is the SHA-256 of the output of
+  # "sha256sum app-com.js beam.mjs beam.wasm worker.js": a person can
+  # calculate it again with the shell. Each file here holds its own name.
+  test "runtime_id_test_" do
+    files = for f <- ~w(worker.js beam.wasm app-com.js beam.mjs)c, do: {f, List.to_string(f)}
+
+    assert "8202813e4be300cab28f6919fed813c06bb603967052a5e3cfc04fdaff402afe" ==
+             :beam_com_wasm.runtime_id(files)
+
+    # A change of each file is another runtime.
+    for {f, _} <- files do
+      other = :lists.keyreplace(f, 1, files, {f, "changed"})
+      assert :beam_com_wasm.runtime_id(other) != :beam_com_wasm.runtime_id(files)
+    end
+  end
+
   describe "overlay_test_" do
     # The runtime of the edge part comes only from the zip (root/): not
     # from BEAM_COM_WASM_RUNTIME (step unit sets it) or the cache.
@@ -670,6 +695,7 @@ defmodule BeamComWasmTest do
       :ok = :filelib.ensure_path(:filename.join(host, ~c"worker"))
       :ok = :filelib.ensure_path(:filename.join(host, ~c"runtime"))
       :ok = :file.write_file(:filename.join([host, ~c"worker", ~c"worker.js"]), "worker")
+      :ok = :file.write_file(:filename.join([host, ~c"worker", ~c"app-com.js"]), "reader")
       :ok = :file.write_file(:filename.join([host, ~c"runtime", ~c"beam.wasm"]), "runtime")
       :ok = :file.write_file(:filename.join([host, ~c"runtime", ~c"beam.mjs"]), "loader")
       mod = :"Elixir.Exqlite.Sqlite3NIF"
@@ -721,7 +747,14 @@ defmodule BeamComWasmTest do
         :json.decode(IO.iodata_to_binary(:proplists.get_value(~c".wasm/.release.json", edge)))
 
       assert %{"name" => "app", "vsn" => "1", "sql" => true} = meta
-      assert meta["runtime"] == Base.encode16(:crypto.hash(:sha256, "runtime"), case: :lower)
+
+      assert meta["runtime"] ==
+               :beam_com_wasm.runtime_id([
+                 {~c"worker.js", "worker"},
+                 {~c"app-com.js", "reader"},
+                 {~c"beam.mjs", "loader"},
+                 {~c"beam.wasm", "runtime"}
+               ])
     end
 
     # A file of View that differs from the native file: the runtime gets

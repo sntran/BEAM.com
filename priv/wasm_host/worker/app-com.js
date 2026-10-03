@@ -13,8 +13,9 @@
 // - read(at, n): n bytes (a Uint8Array) at the offset at of app.com: a
 //   file, a range of a URL, or bytes in memory (bytesReader).
 // - size: the size of app.com in bytes.
-// - runtime: the SHA-256 of beam.wasm of this runtime (hex). With it, a
-//   file for another runtime is an error.
+// - runtime: the identity of this runtime (the text of runtime-id.js of
+//   DIR, beam_com_wasm:runtime_id/1). With it, a file for another runtime
+//   is an error.
 // It reads three parts: the end of the file, the central directory, and
 // the span of the release (the edge part is at the end of it).
 //
