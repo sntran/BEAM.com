@@ -1,13 +1,12 @@
 // The files of SQLite in the host (HostFiles of worker.js) on a
-// MemoryStore: "node --test tests/host". The imports of Cloudflare and of
-// the runtime are stand-ins, because these tests do not start a VM.
+// MemoryStore: "node --test tests/host". The imports of the runtime are
+// stand-ins, because these tests do not start a VM.
 import { register } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 register(`data:text/javascript,${encodeURIComponent(`
-  const stub = { 'cloudflare:sockets': 'export const connect = () => {};',
-                 './beam.mjs': 'export default () => {};', './beam.wasm': 'export default null;' };
+  const stub = { './beam.mjs': 'export default () => {};', './beam.wasm': 'export default null;' };
   export async function resolve(spec, ctx, next) {
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);

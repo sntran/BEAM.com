@@ -405,7 +405,7 @@ with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
 
 | Workers | Deno |
 |---|---|
-| `connect()` of `cloudflare:sockets` | `Deno.connect` (`deno/sockets.js`). TLS stays in `ssl` of OTP. |
+| `node:net` (`nodejs_compat`, the default from the compatibility date 2026-08-04) | `node:net` of Deno. TLS stays in `ssl` of OTP. |
 | The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files. `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
 | `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
 | `caches.default` | `caches.open('beam')` |
@@ -540,7 +540,7 @@ The page needs an import map before its first module, and then calls
 
 ```html
 <script type="importmap">{ "imports": {
-  "cloudflare:sockets": "./browser/sockets.js",
+  "node:net": "./browser/net.js",
   "./beam.wasm": "./browser/beam-wasm.js",
   "./release.bin": "./browser/none.js",
   "./snapshot.bin": "./browser/none.js" } }</script>

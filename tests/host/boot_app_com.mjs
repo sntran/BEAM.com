@@ -34,12 +34,11 @@ const runtimeDir = path.resolve(dir);
 const done = (ok, text) => { console.log(`boot_app_com: ${ok ? 'ok' : 'FAIL'}: ${text}`); process.exit(ok ? 0 : 1); };
 setTimeout(() => done(false, 'no result in 120 s'), 120000).unref();
 
-// worker.js imports the sockets of Workers and beam.wasm as a module: the
-// sockets of a web page (browser/sockets.js), and the module compiled here.
+// worker.js imports beam.wasm as a module, as in Workers: the module
+// compiled here. Its TCP sockets use node:net of Node.js.
 const wasmFile = path.join(runtimeDir, 'beam.wasm');
 registerHooks({
   resolve(spec, ctx, next) {
-    if (spec === 'cloudflare:sockets') return { url: pathToFileURL(path.join(runtimeDir, 'browser', 'sockets.js')).href, shortCircuit: true };
     if (spec === './beam.wasm') return { url: 'beam-com:beam.wasm', shortCircuit: true };
     return next(spec, ctx);
   },

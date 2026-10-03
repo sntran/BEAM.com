@@ -36,12 +36,12 @@ cp "$TMP"/out/browser/*.js "$OUT/browser/"
 cp "$TMP/out/release/release.bin" "$OUT/release.bin"
 rm -rf "$OUT/licenses"
 cp -R "$TMP/out/licenses" "$OUT/licenses"
-sed -e "s#from 'cloudflare:sockets'#from './browser/sockets.js'#" \
+sed -e "s#from 'node:net'#from './browser/net.js'#" \
     -e "s#from './beam.wasm'#from './browser/beam-wasm.js'#" \
     -e "s#import('./release.bin')#import('./browser/none.js')#" \
     -e "s#import('./snapshot.bin')#import('./browser/none.js')#" \
     "$TMP/out/worker.js" > "$OUT/worker.js"
-for spec in cloudflare:sockets ./beam.wasm ./release.bin ./snapshot.bin; do
+for spec in node:net ./beam.wasm ./release.bin ./snapshot.bin; do
     if grep -q "'$spec'" "$OUT/worker.js"; then
         echo "page.sh: worker.js still imports $spec" >&2
         exit 1

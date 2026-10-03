@@ -332,7 +332,7 @@ defmodule BeamComWasmTest do
     for f <- [
           ~c"deno/deno.js",
           ~c"deno/deno.json",
-          ~c"deno/deno/sockets.js",
+          ~c"deno/deno/beam-wasm.js",
           ~c"browser/browser.js",
           ~c"browser/browser/none.js"
         ] do
@@ -371,7 +371,7 @@ defmodule BeamComWasmTest do
     assert get.(~c"runtime-id.js", plain) =~ "\nexport default '#{id}';\n"
     assert "deno/deno.js" == get.(~c"deno.js", plain)
     assert "deno/deno.json" == get.(~c"deno.json", plain)
-    assert "deno/deno/sockets.js" == get.(~c"deno/sockets.js", plain)
+    assert "deno/deno/beam-wasm.js" == get.(~c"deno/beam-wasm.js", plain)
     assert "browser/browser.js" == get.(~c"browser.js", plain)
     assert "browser/browser/none.js" == get.(~c"browser/none.js", plain)
     assert "global.js" == get.(~c"global.js", plain)
@@ -421,7 +421,7 @@ defmodule BeamComWasmTest do
     # The worker.js of the Workers: the four imports that a module Web
     # Worker cannot resolve.
     @worker_js """
-    import { connect } from 'cloudflare:sockets';
+    import net from 'node:net';
     import wasm from './beam.wasm';
     const release = await import('./release.bin');
     const snapshot = await import('./snapshot.bin');
@@ -482,10 +482,10 @@ defmodule BeamComWasmTest do
     test "worker.js imports the modules of browser/", %{files: files} do
       js = :proplists.get_value(~c"worker.js", files.([], []))
 
-      for spec <- ["'cloudflare:sockets'", "'./beam.wasm'", "'./release.bin'", "'./snapshot.bin'"],
+      for spec <- ["'node:net'", "'./beam.wasm'", "'./release.bin'", "'./snapshot.bin'"],
           do: refute(js =~ spec)
 
-      assert js =~ "from './browser/sockets.js'"
+      assert js =~ "import net from './browser/net.js'"
       assert js =~ "from './browser/beam-wasm.js'"
       assert js =~ "import('./browser/none.js')"
     end

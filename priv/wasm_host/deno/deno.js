@@ -1,8 +1,8 @@
 // The BEAM on Deno (Deno Deploy): worker.js of the Workers, with the parts of
-// the Workers runtime that it uses given by Deno: connect() of
-// cloudflare:sockets (deno/sockets.js), the module imports of beam.wasm,
-// release.bin and snapshot.bin (deno.json), WebSocketPair, caches.default,
-// and a store for Ecto SQLite (Deno KV, or node:sqlite).
+// the Workers runtime that it uses given by Deno: the module imports of
+// beam.wasm, release.bin and snapshot.bin (deno.json), WebSocketPair,
+// caches.default, and a store for Ecto SQLite (Deno KV, or node:sqlite).
+// The TCP sockets use node:net of Deno.
 //
 // A Deno isolate keeps its VM between requests, as a Durable Object does.
 // So the VM runs as in a Durable Object (plain: false): its timers run

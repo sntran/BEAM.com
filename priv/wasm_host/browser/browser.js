@@ -3,7 +3,7 @@
 // (WebAssembly.Suspending), and this import map before its first module:
 //
 //   <script type="importmap">{ "imports": {
-//     "cloudflare:sockets": "./browser/sockets.js",
+//     "node:net": "./browser/net.js",
 //     "./beam.wasm": "./browser/beam-wasm.js",
 //     "./release.bin": "./browser/none.js",
 //     "./snapshot.bin": "./browser/none.js" } }</script>
