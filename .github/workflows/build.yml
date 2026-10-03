@@ -336,9 +336,11 @@ jobs:
 
       # Mix runs mix.com as a program, and rebar3 as an escript: an ELF
       # copy of beam.com (--assimilate) for them. The builds of app.com use
-      # the APE file: a copy of an ELF file is not an APE file.
+      # the APE file: a copy of an ELF file is not an APE file. The APE
+      # file starts itself again (inet_gethost), so it must be executable.
       - name: Make the tools of Mix programs of the runner
         run: |
+          chmod +x bin/beam.com
           mkdir -p tools
           cp bin/beam.com tools/beam.com
           sh tools/beam.com --assimilate
