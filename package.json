@@ -12,8 +12,7 @@
     "node": ">=25"
   },
   "bin": {
-    "beam.com": "js/beam.com.mjs",
-    "beam-edge": "js/edge.mjs"
+    "beam.com": "js/beam.com.mjs"
   },
   "exports": {
     "./node": "./js/node.mjs",

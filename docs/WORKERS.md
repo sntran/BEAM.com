@@ -179,16 +179,21 @@ These parts of the start script of a Mix release are not in the file:
 
 The hosts of `app.com`:
 
-- `npx beam-edge app.com -o DIR` (the npm package `beam.com`, see ["npm"
-  in README.md](../README.md#npm)) writes the same `DIR` as `beam.com
-  INPUT -o DIR --target wasm32`, with no `beam.com`: the runtime of the
-  package, the files of the hosts in the edge part (`.wasm/host/`: the
-  configurations of Workers and workerd, and `page/env.json`), the
-  release of the file, and the files of `priv/static` of the app for the
+- `beam.com app.com -o DIR --target wasm32` writes `DIR` from the file,
+  with the runtime of `beam.com`. The file has the release and the files
+  of the hosts in its edge part (`.wasm/host/`: the configurations of
+  Workers and workerd, and `page/env.json`), so the build does not run
+  again. `DIR` also gets the files of `priv/static` of the app for the
   page. Then `DIR` deploys as above: to Workers (`wrangler deploy`), to
-  Deno Deploy (`deno.js`), and as a static site (`DIR/page/`). A build
-  step of Workers Builds, Deno Deploy or a GitHub workflow can run it
-  with Node.js only.
+  Deno Deploy (`deno.js`), and as a static site (`DIR/page/`).
+- `npx beam.com app.com -o DIR --target wasm32` (the npm package
+  `beam.com`, see ["npm" in README.md](../README.md#npm)) writes the
+  same `DIR` with Node.js only: the runtime of the package does the
+  work, and `npx` downloads no `beam.com`. So a build step of Workers
+  Builds, Deno Deploy or a GitHub workflow can run it. CI checks that
+  the two `DIR`s are the same, except the key of `worker.capnp`.
+- The file must come from a `beam.com` with the same runtime: a file for
+  another runtime is an error.
 - Deno: also `BEAM_APP`, the path of `app.com`, with the `deno.js` of
   `DIR`: `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
 - Node.js: `boot` of the npm package, with the runtime of the same
@@ -197,7 +202,7 @@ The hosts of `app.com`:
   [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
 
 The edge part has no secret: `worker.capnp` gets a new `SECRET_KEY_BASE`
-from `beam-edge`, and a Worker gets it with `wrangler secret put
+for each `DIR`, and a Worker gets it with `wrangler secret put
 SECRET_KEY_BASE`. A Mix release evaluates its `runtime.exs` in the VM at
 the boot, so the host gives its variables. For Ecto SQLite,
 `.release.json` gives `DATABASE_PATH` (`/tmp/NAME.db`) when the host

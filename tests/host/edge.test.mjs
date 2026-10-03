@@ -1,4 +1,5 @@
-// beam-edge APP.com -o DIR (js/edge.mjs): "node --test tests/host". A fake
+// npx beam.com APP.com -o DIR --target wasm32 (js/edge.mjs): "node --test
+// tests/host". A fake
 // runtime/ of the package, and an app.com from zip.mjs with an edge part
 // and the files of the hosts.
 import { test } from 'node:test';
@@ -6,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { edge, staticFiles, unpack } from '../../js/edge.mjs';
+import { edge, isAppCom, staticFiles, unpack, wasm32Command } from '../../js/edge.mjs';
 import { zip } from './zip.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'edge-'));
@@ -55,7 +56,8 @@ async function app(dir, { runtime: id = 'rid', host = true } = {}) {
 test('DIR: the runtime, the files of the hosts, the release and the static files', async () => {
   const rt = runtime(), dir = tmp(), out = path.join(dir, 'out');
   const result = await edge(await app(dir), out, { runtime: rt, key: 'the key' });
-  assert.deepEqual(result, { name: 'my_app', files: 6, statics: 1 });
+  const size = fs.statSync(path.join(out, 'release', 'release.bin')).size;
+  assert.deepEqual(result, { name: 'my_app', vsn: '1', files: 5, bytes: size, statics: 1 });
   // The runtime, but not the files of the package only.
   assert.equal(read(out, 'worker.js'), 'the worker');
   assert.equal(read(out, 'deno.js'), 'the host of Deno');
@@ -110,4 +112,24 @@ test('staticFiles: priv/static of the app, sorted, with no compressed copy and n
 
 test('unpack: not a release.bin', () => {
   assert.throws(() => unpack(new TextEncoder().encode('NOTBEAM!').buffer), /not a release\.bin/);
+});
+
+test('wasm32Command: only "INPUT -o DIR --target wasm32", in any order', () => {
+  assert.deepEqual(wasm32Command(['a.com', '-o', 'd', '--target', 'wasm32']), { input: 'a.com', out: 'd' });
+  assert.deepEqual(wasm32Command(['--target', 'wasm32-unknown-emscripten', '-o', 'd', 'a.com']), { input: 'a.com', out: 'd' });
+  for (const args of [['a.com', '-o', 'd'], ['a.com', '-o', 'd', '--target', 'x86_64-linux'],
+                      ['a.com', '-o', 'd', '--target', 'wasm32', '--cacerts', 'c.pem'],
+                      ['a.com', 'b.com', '-o', 'd', '--target', 'wasm32'], ['-o', 'd', '--target', 'wasm32'],
+                      ['a.com', '--target', 'wasm32', '-o'], []]) {
+    assert.equal(wasm32Command(args), null, args.join(' '));
+  }
+});
+
+test('isAppCom: a file with a zip, not a source file or a directory', async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'app.erl'), '-module(app).\n');
+  assert.equal(isAppCom(await app(dir)), true);
+  assert.equal(isAppCom(path.join(dir, 'app.erl')), false);
+  assert.equal(isAppCom(dir), false);
+  assert.equal(isAppCom(path.join(dir, 'none')), false);
 });

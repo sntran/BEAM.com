@@ -44,6 +44,17 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
+    case {Wasm, Wasm andalso beam_com_wasm:app_com(Input)} of
+        {true, App} when is_binary(App) ->
+            %% A native app.com: its edge part has the release.
+            maps:is_key(cacerts, Opts) andalso
+                throw({error, "--cacerts is for a build; ~ts has its certificates", [Input]}),
+            beam_com_wasm:write_app(Output, Input, App, Opts#{root => Root});
+        _ ->
+            run(Input, Output, Opts, ExtraApps, Base, Root, Wasm)
+    end.
+
+run(Input, Output, Opts, ExtraApps, Base, Root, Wasm) ->
     case {Wasm, beam_com_wasm:release_dir(Input, Root)} of
         {_, false} -> build_input(Input, Output, Opts, ExtraApps, Base, Root);
         {true, Rel} -> beam_com_wasm:write(Output, Rel, Opts#{root => Root});

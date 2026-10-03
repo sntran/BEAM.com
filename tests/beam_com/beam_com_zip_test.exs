@@ -447,6 +447,44 @@ defmodule BeamComZipTest do
       byte_size(prefix) + byte_size(locals)::32-little, 0::16>>
   end
 
+  # files/1: the files as the WebAssembly runtime reads them (app-com.js),
+  # with no directories. The oracle is the zip module of stdlib.
+  test "files_test" do
+    out = write(exe(prefix()), &all/1, sample())
+    assert files(out) == Enum.sort(:beam_com_zip.files(out))
+
+    assert [~c"a.txt", ~c"dir/b.bin", ~c"dir/c.txt"] ==
+             for({n, _} <- :beam_com_zip.files(out), do: n)
+  end
+
+  # A deflated .beam entry becomes a gzip file with the same deflate data;
+  # a .beam file that is gzip data already is stored, so it stays as it is.
+  test "files_beam_test" do
+    beam = :binary.copy("FOR1 code ", 300)
+    gz = :zlib.gzip("FOR1 other")
+    out = write(exe(prefix()), &all/1, [{~c"a.beam", beam}, {~c"b.beam", gz}])
+    [{~c"a.beam", a}, {~c"b.beam", b}] = :beam_com_zip.files(out)
+    assert <<0x1F, 0x8B, 8, _::binary>> = a
+    assert beam == :zlib.gunzip(a)
+    assert gz == b
+  end
+
+  test "files_foreign_zip_test" do
+    data = :binary.copy("deflate me ", 100)
+    {:ok, {_, zip}} = :zip.create(~c"z.zip", [{~c"one", "1"}, {~c"two", data}], [:memory])
+    assert [{~c"one", "1"}, {~c"two", data}] == :beam_com_zip.files(relocate(prefix(), zip))
+  end
+
+  test "files_crc_test" do
+    out = write(exe(prefix()), &all/1, [{~c"a.txt", "hello"}])
+    at = byte_size(prefix()) + 30 + 5
+    <<head::binary-size(^at), ?h, rest::binary>> = out
+    bad = <<head::binary, ?j, rest::binary>>
+
+    assert {:error, ~c"~ts: the CRC-32 does not match", ["a.txt"]} ==
+             catch_throw(:beam_com_zip.files(bad))
+  end
+
   # The reason of an Erlang error, as erlang:error/1 gave it.
   defp error_of(fun) do
     fun.()
@@ -465,6 +503,16 @@ defmodule BeamComZipTest do
 
         assert files(out) ==
                  Enum.sort(for {name, data} <- new, List.last(name) != ?/, do: {name, data})
+      end
+    end
+
+    # The names have no .beam file (files_beam_test has them).
+    property "files/1 reads each file that write/3 writes, as stdlib does" do
+      check all(prefix <- binary(), new <- entries()) do
+        out = write(exe(prefix), &all/1, new)
+        read = :beam_com_zip.files(out)
+        assert names_of(read) == for({name, _} <- new, List.last(name) != ?/, do: name)
+        assert Enum.sort(read) == files(out)
       end
     end
 

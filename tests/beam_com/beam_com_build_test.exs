@@ -16,6 +16,8 @@ defmodule BeamComBuildTest do
   import Bitwise
   import ExUnit.CaptureIO
 
+  @wasm ~c"wasm32-unknown-emscripten"
+
   alias BeamCom.HexFixture
 
   # The tests compile and load these modules while they run.
@@ -1077,6 +1079,93 @@ defmodule BeamComBuildTest do
                )
     end
 
+    # beam.com APP.com -o DIR --target wasm32: DIR from the edge part of a
+    # native file, with the runtime of the zip (the same DIR as the npm
+    # package, js/edge.mjs).
+    @tag timeout: 120_000
+    test "run/1 with an app.com and --target wasm32", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      edge_runtime_files(root)
+      app = edge_build(dir, root, exe, %{})
+      out = :filename.join(dir, ~c"dist")
+      run = %{input: app, apps: [], output: out, root: root, exe: exe, target: @wasm}
+      {:ok, text} = with_io(fn -> :beam_com_build.run(run) end)
+      assert text =~ "wrote #{out} from #{app} (the Workers hasher and hasher-release)"
+
+      read = fn f ->
+        {:ok, d} = :file.read_file(:filename.join(out, f))
+        d
+      end
+
+      assert "the worker" == read.(~c"worker.js")
+      assert "the durable object" == read.(~c"durable.js")
+      assert read.(~c"runtime-id.js") =~ "export default '"
+      assert read.(~c"wrangler.jsonc") =~ ~s("name": "hasher")
+      assert read.(~c"release/wrangler.jsonc") =~ ~s("name": "hasher-release")
+      refute read.(~c"worker.capnp") =~ "@SECRET_KEY_BASE@"
+      assert %{"name" => "hasher"} = :json.decode(read.(~c"page/env.json"))
+      assert "the page" == read.(~c"page/index.html")
+      assert read.(~c"release/release.bin") == read.(~c"page/release.bin")
+
+      # release.bin: .release.json of the edge part first, then the files
+      # of lib/ and releases/, with the files of .wasm/ in their place.
+      {:ok, bin} = :file.read_file(app)
+      {:ok, zip} = :zip.unzip(bin, [:memory])
+      [{".release.json", meta} | files] = unpack(read.(~c"release/release.bin"))
+      assert meta == :proplists.get_value(~c".wasm/.release.json", zip)
+      paths = for {p, _} <- files, do: p
+      assert "lib/wasm_host-0.1.0/ebin/wasm_host.app" in paths
+      refute Enum.any?(paths, &String.starts_with?(&1, ".wasm/"))
+
+      assert :proplists.get_value(~c".wasm/releases/0.1.0/start.boot", zip) ==
+               :proplists.get_value("releases/0.1.0/start.boot", files)
+
+      assert {:error, ~c"--cacerts is for a build; ~ts has its certificates", [app]} ==
+               catch_throw(:beam_com_build.run(Map.put(run, :cacerts, ~c"c.pem")))
+
+      # A file for another runtime.
+      write(
+        :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"worker"]),
+        ~c"worker.js",
+        "new"
+      )
+
+      assert {:error, ~c"~ts: it was built for the runtime ~ts, and this runtime is ~ts: " ++ _,
+              [^app | _]} =
+               catch_throw(:beam_com_build.run(%{run | output: :filename.join(dir, ~c"d2")}))
+    end
+
+    @tag timeout: 120_000
+    test "run/1 with an app.com with no edge part, and --target wasm32", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      edge_runtime_files(root)
+      app = edge_build(dir, root, exe, %{edge: false})
+
+      run = %{
+        input: app,
+        apps: [],
+        output: :filename.join(dir, ~c"dist"),
+        root: root,
+        exe: exe,
+        target: @wasm
+      }
+
+      assert {:error, ~c"~ts: no edge part (.wasm/.release.json): " ++ _, [^app]} =
+               catch_throw(:beam_com_build.run(run))
+
+      # A file as DIR.
+      file = write(dir, ~c"file", "")
+
+      assert {:error, ~c"~ts: a file; --target wasm32 writes a directory", [^file]} =
+               catch_throw(
+                 :beam_com_build.run(%{
+                   run
+                   | input: edge_build(dir, root, exe, %{}),
+                     output: file
+                 })
+               )
+    end
+
     # wasm_host with no runtime (no beam.wasm in the zip, the cache or
     # BEAM_COM_WASM_RUNTIME): the native file has no edge part.
     @tag timeout: 120_000
@@ -1938,6 +2027,26 @@ defmodule BeamComBuildTest do
     write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.mjs", "the loader")
     {root, fake_exe(dir, root)}
   end
+
+  # The other files of DIR in the zip of the test (runtime_files/2 and
+  # page_files/3 of beam_com_wasm).
+  defp edge_runtime_files(root) do
+    priv = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv"])
+
+    for f <- [~c"durable.js", ~c"global.js", ~c"durable-global.js", ~c"tcp-proxy.mjs", ~c"app.js"],
+        do: write(:filename.join(priv, ~c"worker"), f, "the durable object")
+
+    write(:filename.join(priv, ~c"page"), ~c"index.html", "the page")
+    write(:filename.join(priv, ~c"deno"), ~c"deno.js", "the host of Deno")
+  end
+
+  # The files of a release.bin: [{path, data}].
+  defp unpack(<<"BEAMFS1\n", rest::binary>>), do: unpack_files(rest)
+
+  defp unpack_files(<<>>), do: []
+
+  defp unpack_files(<<n::32, name::binary-size(n), m::32, data::binary-size(m), rest::binary>>),
+    do: [{name, data} | unpack_files(rest)]
 
   # hasher.erl (with crypto) as a native file, with more options.
   defp edge_build(dir, root, exe, opts) do

@@ -13,7 +13,7 @@
 %% supported.
 -module(beam_com_zip).
 
--export([entries/1, write/3]).
+-export([entries/1, files/1, write/3]).
 
 -define(LOCAL, 16#04034b50).
 -define(CENTRAL, 16#02014b50).
@@ -38,6 +38,39 @@
 -spec entries(binary()) -> [string()].
 entries(Bin) ->
     [binary_to_list(E#entry.name) || E <- central_directory(Bin)].
+
+%% The files of the zip of Bin, as the WebAssembly runtime reads them
+%% (app-com.js of wasm_host): [{Name, Data}] in the order of the central
+%% directory, with no directories. A deflated .beam entry becomes a gzip
+%% file with the same data, with no inflate (gzip/1). The data of each
+%% other entry must match its CRC-32.
+-spec files(binary()) -> [{string(), binary()}].
+files(Bin) ->
+    [{binary_to_list(E#entry.name), data(Bin, E)}
+     || E <- central_directory(Bin), binary:last(E#entry.name) =/= $/].
+
+data(Bin, #entry{name = Name, offset = Offset, csize = CSize, usize = USize,
+                 method = Method, crc = Crc}) ->
+    <<?LOCAL:32/little, _:22/binary, N:16/little, M:16/little>> =
+        binary:part(Bin, Offset, 30),
+    Raw = binary:part(Bin, Offset + 30 + N + M, CSize),
+    Beam = filename:extension(binary_to_list(Name)) =:= ".beam",
+    case Method of
+        ?DEFLATED when Beam ->
+            <<16#1f, 16#8b, 8, 0, 0:32, 0, 255, Raw/binary, Crc:32/little, USize:32/little>>;
+        ?DEFLATED ->
+            checked(Name, zlib:unzip(Raw), USize, Crc);
+        ?STORED ->
+            checked(Name, Raw, USize, Crc);
+        _ ->
+            throw({error, "~ts: the compression method ~b is not supported", [Name, Method]})
+    end.
+
+checked(Name, Data, USize, Crc) ->
+    case byte_size(Data) =:= USize andalso erlang:crc32(Data) =:= Crc of
+        true -> Data;
+        false -> throw({error, "~ts: the CRC-32 does not match", [Name]})
+    end.
 
 %% Make a new executable from Bin (an executable with a zip).
 %%   Keep: fun((Name :: string()) -> boolean()), for the entries of Bin.
