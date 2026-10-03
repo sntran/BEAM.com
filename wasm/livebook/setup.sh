@@ -7,25 +7,24 @@
 # SQLite storage of the object (BEAM_PERSIST) until the limit. The Learn
 # section has the documentation of beam.com as notebooks (docs/notebooks).
 #
-#   BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME wasm/livebook/setup.sh [DIR]
+#   BEAM_COM=/path/to/beam.com wasm/livebook/setup.sh [DIR]
 #
-# SUBDOMAIN is the workers.dev subdomain of the account (for the URL of the
-# iframe Worker), and INSTANCES the instances at one time (5). It makes
-# DIR/livebook (the Hex package of Livebook with the changes of
-# livebook.patch), its release, the Worker (DIR/worker, with the release
-# in it) and the iframe Worker (DIR/iframe), and prints the commands to
-# deploy. RETIRE ("a,b,c") names objects of an earlier mode to delete once.
-# It needs curl, patch and Node.js 22 or later.
+# It makes DIR/livebook (the Hex package of Livebook with the changes of
+# livebook.patch) and its release, DIR/livebook.com (the release as one
+# app.com), DIR/iframe (the iframe Worker), and node_modules/beam.com (the
+# npm package of BEAM_COM). worker.js and wrangler.jsonc are the Worker,
+# and deploy.sh deploys both Workers (DIR must be wasm/livebook/build). It
+# needs curl, patch, unzip and Node.js 22 or later.
 #
 # Caution: each visitor can run code in its instance, with the network, and
 # instances have no password. The code of a visitor can read the vars and
 # the secrets of the Worker: give it no secret. Livebook makes a random
 # secret_key_base in each VM.
 #
-# The same DIR/worker runs on Deno Deploy (deno.js, with release.bin and
-# static/ in it). Deno has no Durable Objects: all the visitors of an
-# isolate share one Livebook and see the sessions of the others. The app
-# "livebook" of beam.com on Deno Deploy has these variables:
+# The same worker.js runs on Deno (deno serve). Deno has no Durable
+# Objects: all the visitors of an isolate share one Livebook and see the
+# sessions of the others. On Deno Deploy, the app "livebook" of beam.com
+# has these variables:
 #   LIVEBOOK_PORT=4000 LIVEBOOK_DEFAULT_RUNTIME=embedded
 #   LIVEBOOK_TOKEN_ENABLED=false LIVEBOOK_DATA_PATH=/tmp LIVEBOOK_HOME=/tmp
 #   LIVEBOOK_IFRAME_URL=https://livebook-iframe.SUBDOMAIN.workers.dev/iframe/vN.html
@@ -36,9 +35,6 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${BEAM_COM:?set BEAM_COM}"
 DIR=${1:-$HERE/build}
-NODE=${NODE:-node}
-SUBDOMAIN=${SUBDOMAIN:-SUBDOMAIN}
-INSTANCES=${INSTANCES:-5}
 VSN=${LIVEBOOK_VSN:-0.19.10}
 # The pins of the downloads: the SHA-256 of the Hex package of Livebook,
 # the commit of the OTP tag (for the files of os_mon), and the dated CA
@@ -112,14 +108,23 @@ elixir.com "$HERE/../../docs/notebooks/build.exs" \
 curl -sSfL -o cacert.pem "https://curl.se/ca/cacert-$CACERT_DATE.pem"
 check_sha256 cacert.pem "$CACERT_SHA256"
 
-rm -rf worker
-"$BEAM_COM" livebook/_build/prod/rel/livebook -o worker --target wasm32 --cacerts cacert.pem
-# The static files of Livebook (12 MB) as the static assets of the Worker.
-"$NODE" "$HERE/../erts/host/static.mjs" worker livebook
+# Livebook as one app.com: the same file runs natively and in the Worker
+# (worker.js, with the engine of the npm package beam.com). The engine
+# serves the static files of Livebook from the file, before the VM.
+"$BEAM_COM" livebook/_build/prod/rel/livebook -o livebook.com --cacerts cacert.pem
+# The npm package beam.com of this beam.com (the runtime must be the one
+# that built livebook.com), in node_modules/ of wasm/livebook.
+rm -rf runtime-dir npm && mkdir npm
+"$BEAM_COM" "$HERE/../../examples/hashsum.erl" -o runtime-dir --target wasm32 > /dev/null
+(cd "$HERE/../.." && sh scripts/npm.sh "$BEAM_COM" "$DIR/runtime-dir" && npm pack --pack-destination "$DIR/npm" > /dev/null)
+rm -rf runtime-dir
+(cd "$HERE" && npm install --no-save --no-package-lock --no-audit --no-fund "$DIR"/npm/beam.com-*.tgz)
 # The iframe pages of Livebook on their own site: Kino draws its JS outputs
 # there. livebookusercontent.com does not have the page of this version.
 rm -rf iframe && mkdir -p iframe/static/iframe
-cp worker/static/iframe/*.html iframe/static/iframe/
+# Livebook has them as .gz files only.
+unzip -j -q livebook.com 'lib/livebook-*/priv/static/iframe/*.html.gz' -d iframe/static/iframe
+gunzip iframe/static/iframe/*.html.gz
 IFRAME=$(cd iframe/static/iframe && ls v*.html | sort -V | tail -1)
 printf '/iframe/*\n  Access-Control-Allow-Origin: *\n  Content-Type: text/html; charset=utf-8\n  Cache-Control: public, max-age=31536000\n' \
     > iframe/static/_headers
@@ -132,33 +137,9 @@ cat > iframe/wrangler.jsonc <<'JSON'
   "assets": { "directory": "static", "html_handling": "none" }
 }
 JSON
-# One Worker for Livebook: release.bin is a module of the runtime Worker
-# (worker.js imports it when there is no binding APP), not a second Worker.
-mv worker/release/release.bin worker/release.bin
-rm -rf worker/release
-# Instances (BEAM_TENANTS "path", BEAM_INSTANCES), with -Mea min (no
-# allocators of ERTS: 20 MB less memory), /data in the storage, a sweep
-# each 30 minutes, and the logs of the Worker in Cloudflare
-# (observability). RETIRE: objects of an earlier mode, which the sweep
-# deletes once (BEAM_RETIRE).
-IFRAME_URL="https://livebook-iframe.$SUBDOMAIN.workers.dev/iframe/$IFRAME" INSTANCES="$INSTANCES" \
-RETIRE="${RETIRE:-}" "$NODE" -e '
-const fs = require("fs"), p = "worker/wrangler.durable.jsonc";
-const vars = { LIVEBOOK_PORT: "4000", LIVEBOOK_DEFAULT_RUNTIME: "embedded", LIVEBOOK_TOKEN_ENABLED: "false",
-  LIVEBOOK_IFRAME_URL: process.env.IFRAME_URL, BEAM_TENANTS: "path", BEAM_INSTANCES: process.env.INSTANCES,
-  BEAM_INSTANCE_TTL: "1800", BEAM_INSTANCE_HOURS: "24", BEAM_INSTANCES_PER_IP: "2",
-  BEAM_INSTANCE_TITLE: "Livebook on the edge",
-  BEAM_ERL_FLAGS: "-Mea min", BEAM_PERSIST: "/data", LIVEBOOK_DATA_PATH: "/data", LIVEBOOK_HOME: "/data" };
-if (process.env.RETIRE) vars.BEAM_RETIRE = process.env.RETIRE;
-fs.writeFileSync(p, fs.readFileSync(p, "utf8")
-  .replace(/"name": "livebook-durable"/, "\"name\": \"livebook\"")
-  .replace(/\n\s*"services": \[[^\]]*\],/, "")
-  .replace(/"vars": \{[^}]*\}/, "\"vars\": " + JSON.stringify(vars))
-  .replace(/\n}\s*$/, ",\n  \"triggers\": { \"crons\": [\"*/30 * * * *\"] },\n  \"observability\": { \"enabled\": true }\n}\n"));'
+echo "$IFRAME" > iframe/version
 cat <<EOF
 
-Deploy (the iframe Worker first):
-  (cd $DIR/iframe && wrangler deploy)
-  (cd $DIR/worker && wrangler deploy -c wrangler.durable.jsonc)
-Then open https://livebook.$SUBDOMAIN.workers.dev/ and start an instance.
+Deploy (the iframe Worker first): SUBDOMAIN=NAME sh $HERE/deploy.sh
+Then open https://livebook.NAME.workers.dev/ and start an instance.
 EOF

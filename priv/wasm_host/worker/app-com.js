@@ -19,11 +19,22 @@
 // It reads three parts: the end of the file, the central directory, and
 // the span of the release (the edge part is at the end of it).
 //
-// A deflated .beam entry becomes a gzip file with the same data (the
-// loader of ERTS reads it so), with no inflate: the release stays small
-// in the memory of the host. The zip of beam.com stores a .beam file that
-// is gzip data already (beam_com_zip). Each other entry is checked with
-// its CRC-32.
+// appFiles(read, size, { runtime }) gives the same files with no copy:
+// {meta, files, byteLength, buffers, statics}, which worker.js takes in
+// the place of release.bin.
+// - files: [path, bytes] for each file of the release. A stored entry is a
+//   view of the bytes that read gives (with bytesReader, of app.com).
+// - buffers: the ArrayBuffers of these bytes. A file of the VM in another
+//   buffer is a file that the boot wrote (the snapshot keeps it).
+// - statics: the static files of a Phoenix app (lib/NAME-VSN/priv/static,
+//   NAME the name of the release), a Map of path to {data, size, crc, deflated}, which
+//   the host serves before the VM (worker.js). They are not in files,
+//   except cache_manifest.json, which Phoenix reads at its start.
+//
+// The zip of beam.com stores each .beam file as a gzip file (the loader of
+// ERTS reads it so, beam_com_zip), so it is a view too. A deflated .beam
+// entry (an older app.com) becomes a gzip file with the same data, with
+// no inflate. Each other entry is checked with its CRC-32.
 
 const text = new TextDecoder();
 const u16 = (b, i) => b[i] | (b[i + 1] << 8);
@@ -118,7 +129,12 @@ async function entryData(span, base, e) {
 const EDGE = '.wasm/';
 const inRelease = (name) => name.startsWith('lib/') || name.startsWith('releases/') || name.startsWith(EDGE);
 
-export async function appRelease(read, size, { runtime } = {}) {
+export async function appRelease(read, size, options = {}) {
+  const { meta, files } = await appFiles(read, size, { ...options, statics: false });
+  return pack(meta, files);
+}
+
+export async function appFiles(read, size, { runtime, statics: split = true } = {}) {
   const { entries, cdAt } = await zipEntries(read, size);
   const want = entries.filter((e) => inRelease(e.name) && !e.name.endsWith('/'));
   const json = want.find((e) => e.name === `${EDGE}.release.json`);
@@ -133,10 +149,41 @@ export async function appRelease(read, size, { runtime } = {}) {
     fail(`it was built for the runtime ${String(release.runtime).slice(0, 12)}, and this runtime is ${runtime.slice(0, 12)}: `
          + 'use the runtime of the beam.com that built it');
   }
+  // The static files of a Phoenix app (PHX_SERVER in the environment of
+  // the release): lib/NAME-VSN/priv/static/, for the application with the
+  // name of the release. Plug.Static serves them at the root of the site.
+  const app = split && release.env?.PHX_SERVER === 'true' && typeof release.name === 'string'
+    && `lib/${release.name}-`;
+  const prefix = app && want.map((e) => /^lib\/[^/]+\/priv\/static\//.exec(e.name)?.[0])
+    .find((p) => p?.startsWith(app) && /^[0-9]/.test(p.slice(app.length)));
+  const statics = new Map();
   const files = new Map();
-  for (const e of want) if (!e.name.startsWith(EDGE)) files.set(e.name, await entryData(span, lo, e));
+  for (const e of want) {
+    if (e.name.startsWith(EDGE)) continue;
+    if (prefix && e.name.startsWith(prefix) && e.name !== `${prefix}cache_manifest.json`) {
+      statics.set(e.name.slice(prefix.length - 1), staticEntry(span, lo, e));
+      continue;
+    }
+    files.set(e.name, await entryData(span, lo, e));
+  }
   for (const e of want) if (e.name.startsWith(EDGE) && e !== json) files.set(e.name.slice(EDGE.length), await entryData(span, lo, e));
-  return pack(meta, files);
+  const list = [...files];
+  return {
+    meta, files: list, statics,
+    byteLength: list.reduce((n, [, d]) => n + d.length, meta.length),
+    buffers: new Set([meta.buffer, ...list.map(([, d]) => d.buffer)]),
+  };
+}
+
+// A static file: its bytes in the zip (stored or deflated), not checked
+// here (the host checks the CRC-32 when it inflates them).
+function staticEntry(span, base, e) {
+  const h = e.offset - base;
+  if (h < 0 || h + 30 > span.length || u32(span, h) !== LOCAL) fail(`${e.name}: no local header`);
+  const start = h + 30 + u16(span, h + 26) + u16(span, h + 28);
+  if (start + e.csize > span.length) fail(`${e.name}: the data is outside the file`);
+  if (e.method !== STORED && e.method !== DEFLATED) fail(`${e.name}: the compression method ${e.method} is not supported`);
+  return { data: span.subarray(start, start + e.csize), size: e.size, crc: e.crc, deflated: e.method === DEFLATED };
 }
 
 // release.bin: "BEAMFS1\n", then (length, path, length, data) for each

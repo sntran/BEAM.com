@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
-import { appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
+import { appFiles, appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
 import { zip } from './zip.mjs';
 
 const enc = new TextEncoder();
@@ -131,6 +131,59 @@ test('bytesReader: an ArrayBuffer, and a view into a larger buffer', async () =>
     assert.equal(r.size, file.length);
     assert.equal(unpack(await appRelease(r.read, r.size))[0][0], '.release.json');
   }
+});
+
+// A Phoenix app (PHX_SERVER): its static files, stored and deflated, and a
+// gzip .beam file, which the zip of beam.com stores.
+const PHX = { ...META, name: 'web', env: { PHX_SERVER: 'true' } };
+const GZ_BEAM = new Uint8Array([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 1, 2, 3]);
+const phoenix = () => zip([
+  { name: 'lib/web-1.0/ebin/web.beam', data: GZ_BEAM },
+  { name: 'lib/web-1.0/priv/static/app.js', data: 'console.log(1)', method: 8 },
+  { name: 'lib/web-1.0/priv/static/images/logo.png', data: 'PNG' },
+  { name: 'lib/web-1.0/priv/static/cache_manifest.json', data: '{}' },
+  { name: 'lib/web-1.0/priv/other.txt', data: 'not static' },
+  { name: 'lib/dep-2.0/priv/static/dep.js', data: 'of a dependency' },
+  { name: '.wasm/.release.json', data: JSON.stringify(PHX) },
+]);
+
+test('appFiles: the files with no copy, and the static files of a Phoenix app', async () => {
+  const file = await phoenix();
+  const { read, size } = bytesReader(file);
+  const r = await appFiles(read, size);
+  const paths = r.files.map(([p]) => p).sort();
+  assert.deepEqual(paths, [
+    'lib/dep-2.0/priv/static/dep.js', 'lib/web-1.0/ebin/web.beam', 'lib/web-1.0/priv/other.txt',
+    'lib/web-1.0/priv/static/cache_manifest.json',
+  ]);
+  assert.deepEqual(JSON.parse(dec.decode(r.meta)), PHX);
+  // A stored entry is a view of the file: the .beam file too.
+  const beam = r.files.find(([p]) => p === 'lib/web-1.0/ebin/web.beam')[1];
+  assert.equal(beam.buffer, file.buffer);
+  assert.deepEqual([...beam], [...GZ_BEAM]);
+  assert.ok(r.buffers.has(file.buffer));
+  assert.equal(r.byteLength, r.meta.length + r.files.reduce((n, [, d]) => n + d.length, 0));
+  // The static files, at their paths on the site.
+  assert.deepEqual([...r.statics.keys()].sort(), ['/app.js', '/images/logo.png']);
+  const logo = r.statics.get('/images/logo.png');
+  assert.equal(logo.data.buffer, file.buffer);
+  assert.deepEqual({ size: logo.size, deflated: logo.deflated }, { size: 3, deflated: false });
+  const js = r.statics.get('/app.js');
+  assert.equal(js.deflated, true);
+  assert.equal(js.crc, crc32(enc.encode('console.log(1)')));
+  // appRelease keeps the static files in the release.
+  const all = unpack(await appRelease(read, size)).map(([p]) => p);
+  assert.ok(all.includes('lib/web-1.0/priv/static/app.js'));
+});
+
+test('appFiles: no static files for an app that is not a Phoenix app', async () => {
+  const { read, size } = bytesReader(await zip([
+    { name: 'lib/app-1.0/priv/static/app.js', data: 'x' },
+    { name: '.wasm/.release.json', data: JSON.stringify({ ...META, name: 'app' }) },
+  ]));
+  const r = await appFiles(read, size);
+  assert.equal(r.statics.size, 0);
+  assert.deepEqual(r.files.map(([p]) => p), ['lib/app-1.0/priv/static/app.js']);
 });
 
 test('crc32: the check value of CRC-32', () => {

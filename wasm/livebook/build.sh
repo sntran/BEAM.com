@@ -7,12 +7,11 @@
 #   Deploy command:  sh deploy.sh
 #   Build watch paths: include wasm/livebook/*
 #   Build variables: SUBDOMAIN (the workers.dev subdomain of the account),
-#     and optionally INSTANCES, RETIRE (see setup.sh) and BEAM_COM_URL
+#     and optionally INSTANCES, RETIRE (see deploy.sh) and BEAM_COM_URL
 #     (another beam.com; the default is the prerelease "edge" of
 #     beam.com, from its branch main).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
-: "${SUBDOMAIN:?set the build variable SUBDOMAIN}"
 URL=${BEAM_COM_URL:-https://github.com/sntran/beam.com/releases/download/edge/beam.com}
 mkdir -p "$HERE/build/beam"
 curl -sSfL -o "$HERE/build/beam/beam.com" "$URL"

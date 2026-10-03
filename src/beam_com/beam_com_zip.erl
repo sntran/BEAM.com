@@ -106,7 +106,7 @@ add([], Pos, Data, Entries) ->
     {lists:reverse(Data), lists:reverse(Entries), Pos};
 add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
     Name = unicode:characters_to_binary(Name0),
-    Content = iolist_to_binary(Data0),
+    Content = gzip_beam(Name, iolist_to_binary(Data0)),
     USize = byte_size(Content),
     Dir = binary:last(Name) =:= $/,
     {Method, Stored} = compress(Dir orelse stored(Name) orelse gzip(Content), Content),
@@ -143,12 +143,20 @@ stored(<<"lib/kernel-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =
 stored(<<"lib/stdlib-", _/binary>> = Name) -> binary:match(Name, <<"/ebin/">>) =/= nomatch;
 stored(_) -> false.
 
-%% A gzip file (a .beam file of "mix release") is stored: it is compressed
-%% already. So a deflated .beam entry always has a .beam file in it, and
-%% the WebAssembly runtime can read it as a gzip file with no inflate
-%% (app-com.js of wasm_host).
+%% A gzip file is stored: it is compressed already.
 gzip(<<16#1f, 16#8b, _/binary>>) -> true;
 gzip(_) -> false.
+
+%% A .beam file becomes a gzip file (ERTS loads a gzip .beam file), and
+%% gzip/1 then stores it. The WebAssembly runtime uses the stored bytes of
+%% the zip with no copy (app-com.js of wasm_host). The code of kernel and
+%% stdlib stays as it is (stored/1).
+gzip_beam(Name, Content) ->
+    case binary:longest_common_suffix([Name, <<".beam">>]) =:= 5
+        andalso not stored(Name) andalso not gzip(Content) of
+        true -> zlib:gzip(Content);
+        false -> Content
+    end.
 
 compress(true, Content) ->
     {?STORED, Content};

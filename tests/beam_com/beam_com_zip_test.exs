@@ -91,7 +91,7 @@ defmodule BeamComZipTest do
   end
 
   # The code of kernel and stdlib is stored (the boot reads it without
-  # inflation). Other code is compressed.
+  # inflation). Other code becomes a gzip file, which is stored.
   test "kernel_stdlib_stored_test" do
     text = :binary.copy("compress me ", 200)
 
@@ -107,13 +107,14 @@ defmodule BeamComZipTest do
     assert 0 == Map.fetch!(methods, ~c"lib/kernel-11.0/ebin/code.beam")
     assert 0 == Map.fetch!(methods, ~c"lib/stdlib-8.1/ebin/lists.beam")
     assert 8 == Map.fetch!(methods, ~c"lib/stdlib-8.1/include/x.hrl")
-    assert 8 == Map.fetch!(methods, ~c"lib/other-1.0/ebin/o.beam")
+    assert 0 == Map.fetch!(methods, ~c"lib/other-1.0/ebin/o.beam")
     assert text == :proplists.get_value(~c"lib/kernel-11.0/ebin/code.beam", files(out))
+    assert text == :zlib.gunzip(:proplists.get_value(~c"lib/other-1.0/ebin/o.beam", files(out)))
   end
 
-  # A gzip file (a .beam file of "mix release") is stored, also when
-  # deflate makes it smaller: so a deflated .beam entry always has a .beam
-  # file in it, which the WebAssembly runtime reads as a gzip file.
+  # A gzip file is stored, also when deflate makes it smaller. A .beam file
+  # that is not a gzip file becomes one: so each .beam entry is stored, and
+  # the WebAssembly runtime uses its bytes with no copy.
   test "gzip_stored_test" do
     code = :binary.copy("FOR1 the code ", 200)
     # A gzip file with no compression (level 0): deflate makes it smaller.
@@ -134,8 +135,9 @@ defmodule BeamComZipTest do
     methods = Map.new(central(out), fn {n, m, _} -> {n, m} end)
     assert 0 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/gz.beam")
     assert 0 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/level0.beam")
-    assert 8 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/plain.beam")
+    assert 0 == Map.fetch!(methods, ~c"lib/a-1.0/ebin/plain.beam")
     assert level0 == :proplists.get_value(~c"lib/a-1.0/ebin/level0.beam", files(out))
+    assert :zlib.gzip(code) == :proplists.get_value(~c"lib/a-1.0/ebin/plain.beam", files(out))
   end
 
   test "directory_attributes_test" do
