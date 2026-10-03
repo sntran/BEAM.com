@@ -452,7 +452,8 @@ change.
 | `index.html` | The page. It starts the VM, then shows the app in the frame `app/`. |
 | `vm.js` | The VM, in a module SharedWorker for all the tabs of the site. It keeps the cookies of the app. |
 | `sw.js` | The service worker of `app/`: it gives each request of the frame to the VM. |
-| `ws-shim.js` | The `WebSocket` of the pages of the app: a socket to the site goes to the VM. |
+| `ws-shim.js` | The `WebSocket` of the pages of the app: a socket to the site goes to the VM. It also tells the page the path of the frame. |
+| `404.html` | The page of GitHub Pages for a path with no file. It sends a link to a page of the app to `index.html`. |
 | `env.json` | The name of the app and the variables of its VM. |
 | `worker.js` | `worker.js` with the imports of `browser/`, because a module Web Worker has no import map. |
 | `browser.js`, `browser/`, `beam.mjs`, `beam.wasm` | The runtime. |
@@ -485,6 +486,24 @@ The base path:
   path of the app.
 - Each request to the VM has the host `localhost` and the header
   `x-forwarded-proto: https`, as behind a proxy.
+
+The path of the frame:
+
+- The URL of the page keeps the path of the frame in its fragment, for
+  example `https://USER.github.io/REPO/#/users/log-in`. Each navigation
+  of the frame changes the fragment (`ws-shim.js`), also a LiveView
+  navigation. The page replaces its history entry, so the back button of
+  the browser goes back in the frame, not in the page.
+- A reload, a bookmark, or a link with such a fragment opens the frame at
+  that path. The page accepts only a path that starts with one `/`. Another
+  fragment, such as `#//example.com` or `#javascript:x`, opens the home
+  page of the app.
+- A link to `BASE/app/PATH` (for example a link in an email) opens
+  `BASE/#/PATH`. When the service worker is on, it sends the browser to
+  the page (`sw.js`). At the first visit, GitHub Pages has no file at that
+  path and gives `404.html`. That page finds the base path of the site
+  with `env.json`, and goes to `BASE/#/PATH`. Another missing path shows
+  a 404 text.
 
 One VM for all the tabs of the site:
 
@@ -532,10 +551,13 @@ The CI of BEAM.com calls this workflow
 ([`pages-app.yml`](../.github/workflows/pages-app.yml)) for
 `examples/phoenix_demo` and `examples/worker`, and does not publish the
 sites. Then [`tests/page/check.mjs`](../tests/page/check.mjs) serves each
-site at `/repo/` (and the site of `examples/phoenix_demo` also at `/`),
+site at `/repo/` (and the site of `examples/phoenix_demo` also at `/` and
+at `/app/`, a repository with the name `app`),
 and checks it in headless Chromium. For
 `examples/phoenix_demo`, it checks the home page, a LiveView event, the
-links, and the login form (a POST). With `--tabs` (at `/repo/`), it also
+links, the login form (a POST), and the path of the frame in the fragment
+(a reload, a LiveView navigation, a link to `BASE/app/PATH` with and
+without the service worker, and a fragment that is not a path). With `--tabs` (at `/repo/`), it also
 checks two tabs: the shared counter (`Phoenix.PubSub`) of one tab shows in
 the other tab, a tab still works when the first tab closes, a reload of
 the only tab keeps the VM (Chrome 148 or later), a visit 35 s after all

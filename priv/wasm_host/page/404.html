@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found</title>
+<!-- GitHub Pages gives this page for a path with no file. A path of the app
+     (SITE/app/PATH, for example a link to a page of the app before the first
+     visit) goes to the page of the site, with the path in the fragment
+     (SITE#/PATH). This page does not know the base path of the site, and a
+     repository can have the name "app" (/app/app/users). So it tries each
+     prefix of the path before a segment "app/", the longest first, and uses
+     the prefix where env.json exists. -->
+<style>
+  :root { --bg: #f6f4f1; --text: #1f1a17; --muted: #756c65; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #171412; --text: #efe9e4; --muted: #a2978f; }
+  }
+  :root[data-theme="dark"] { --bg: #171412; --text: #efe9e4; --muted: #a2978f; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+  main { max-width: 40rem; margin: 0 auto; padding: 15vh 16px 0; }
+  p { color: var(--muted); }
+</style>
+</head>
+<body>
+<main id="missing" hidden>
+  <h1>404</h1>
+  <p>This page does not exist.</p>
+</main>
+<script>
+  (async () => {
+    const path = location.pathname;
+    const bases = [];
+    for (let i = path.indexOf('/app/'); i !== -1; i = path.indexOf('/app/', i + 1)) bases.push(path.slice(0, i + 1));
+    for (const base of bases.reverse()) {
+      try {
+        const r = await fetch(`${base}env.json`, { method: 'HEAD', cache: 'no-store' });
+        if (r.ok) {
+          const rest = path.slice(base.length + 'app'.length) + location.search + location.hash;
+          location.replace(rest === '/' ? base : `${base}#${rest}`);
+          return;
+        }
+      } catch {}
+    }
+    document.getElementById('missing').hidden = false;
+  })();
+</script>
+</body>
+</html>

@@ -14,7 +14,11 @@
 // - a link of the app with the path "/" stays in the frame;
 // - the link to the login page stays under BASE/app/;
 // - the login form (a POST through the service worker) works: the app
-//   answers "Invalid email or password".
+//   answers "Invalid email or password";
+// - the URL of the page keeps the path of the frame in its fragment
+//   (#/users/log-in): a reload, a LiveView navigation, a link to
+//   BASE/app/PATH with the service worker and at the first visit (404.html),
+//   and a fragment that is not a path.
 //
 // --tabs: also the checks of the tabs of a site (examples/phoenix_demo):
 // - two tabs show the app, with one VM in a SharedWorker;
@@ -60,7 +64,8 @@ const types = {
 };
 
 // GitHub Pages: a directory gives its index.html, a directory without "/"
-// is a redirect, and another path outside the site is a 404.
+// is a redirect, a path of the site with no file gives 404.html of the site,
+// and another path outside the site is a 404.
 // failRelease: the next request of release.bin fails (the check of a failed
 // boot).
 let failRelease = false;
@@ -84,15 +89,17 @@ const server = createServer(async (req, res) => {
     }
     return send(res, file);
   } catch {
+    // GitHub Pages gives the 404.html of the site for a path with no file.
+    if (file && existsSync(path.join(dir, '404.html'))) return send(res, path.join(dir, '404.html'), 404);
     res.writeHead(404, { 'content-type': 'text/html' });
     res.end('<h1>404</h1>');
   }
 });
 
-async function send(res, file) {
+async function send(res, file, status = 200) {
   const data = await readFile(file);
-  res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'application/octet-stream',
-                       'cache-control': 'max-age=600' });
+  res.writeHead(status, { 'content-type': types[path.extname(file)] ?? 'application/octet-stream',
+                          'cache-control': 'max-age=600' });
   res.end(data);
 }
 
@@ -119,6 +126,83 @@ async function open(page, origin) {
   if (frame.url() !== app) throw new Error(`the frame is at ${frame.url()}, not ${app}`);
   const vm = await page.evaluate(() => ({ where: document.body.dataset.vm, restored: document.body.dataset.restored }));
   return { frame, ...vm };
+}
+
+// Waits for the page of the site in page (after a goto or a reload), and
+// gives the frame of the app.
+async function land(page) {
+  await page.waitForFunction(() => document.body?.classList.contains('running')
+                             || document.getElementById('status')?.classList.contains('err'), null, { timeout });
+  const error = await page.$eval('#status', (s) => (s.classList.contains('err') ? s.textContent : null));
+  if (error) throw new Error(`the page says: ${error}`);
+  return page.frames().find((f) => f.parentFrame() === page.mainFrame());
+}
+
+// Polls the URL of page until it ends with end.
+async function urlEnds(page, end) {
+  for (let t = 0; t < 300; t++) {
+    if (page.url().endsWith(end)) return;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  throw new Error(`the URL of the page is ${page.url()}, not ...${end}`);
+}
+
+// The path of the frame in the fragment of the URL of the page (#67).
+async function links(browser, origin) {
+  const site = `${origin}${base}`;
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto(site);
+  let frame = await land(page);
+  await live(frame);
+  await frame.click('a[href$="/users/log-in"]');
+  await urlEnds(page, '#/users/log-in');
+  await page.reload();
+  frame = await land(page);
+  await frame.waitForSelector('#login_form_password', { timeout: 30000 });
+  if (frame.url() !== `${site}app/users/log-in`) throw new Error(`after the reload, the frame is at ${frame.url()}`);
+  step('the URL of the page ends with #/users/log-in, and a reload shows the login page');
+
+  await frame.click('a[href$="/users/register"]');
+  await urlEnds(page, '#/users/register');
+  step('after a LiveView navigation in the frame, the fragment has the new path');
+
+  // With the service worker: a top window in the scope goes to the page.
+  const tab = await context.newPage();
+  await tab.goto(`${site}app/users/log-in`);
+  await urlEnds(tab, '#/users/log-in');
+  frame = await land(tab);
+  await frame.waitForSelector('#login_form_password', { timeout: 30000 });
+  step('with the VM on, BASE/app/users/log-in in a new tab shows the login page at BASE#/users/log-in');
+
+  for (const fragment of ['#//example.com', '#https://example.com', '#javascript:x', '#/\\example.com']) {
+    const p = await context.newPage();
+    await p.goto(`${site}${fragment}`);
+    const f = await land(p);
+    await f.waitForLoadState('load');
+    if (new URL(f.url()).origin !== origin || !f.url().startsWith(`${site}app/`)) {
+      throw new Error(`the fragment ${fragment} opened ${f.url()}`);
+    }
+    await p.close();
+  }
+  step('a fragment that is not a path keeps the frame in the app');
+  await context.close();
+
+  // No service worker yet: GitHub Pages gives 404.html, which goes to the page.
+  const fresh = await browser.newContext();
+  const first = await fresh.newPage();
+  await first.goto(`${site}app/users/log-in?x=1`);
+  await urlEnds(first, '#/users/log-in?x=1');
+  frame = await land(first);
+  await frame.waitForSelector('#login_form_password', { timeout: 30000 });
+  if (frame.url() !== `${site}app/users/log-in?x=1`) throw new Error(`at the first visit, the frame is at ${frame.url()}`);
+  step('at the first visit, BASE/app/users/log-in goes through 404.html to the login page at BASE#/users/log-in');
+  const miss = await fresh.newPage();
+  const r = await miss.goto(`${site}no-such-file`);
+  await miss.waitForSelector('#missing:not([hidden])', { timeout: 30000 });
+  if (r.status() !== 404) throw new Error(`a missing file gave ${r.status()}`);
+  step('another missing path shows the 404 text');
+  await fresh.close();
 }
 
 const clicks = async (frame) => Number(await frame.textContent('#clicks'));
@@ -283,6 +367,7 @@ server.listen(0, '127.0.0.1', async () => {
     page.on('console', (m) => log.push(`console ${m.type()}: ${m.text()}`));
     page.on('pageerror', (e) => log.push(`page error: ${e.message}`));
     await check(page, origin);
+    if (flag('--phoenix-demo')) await links(browser, origin);
     if (flag('--tabs')) await tabs(browser, origin);
     step('ok');
   } catch (e) {

@@ -1,5 +1,5 @@
 // The service worker of the page (sw.js) adds this script to each HTML page
-// of the VM. It does three things:
+// of the VM. It does four things:
 // - A service worker cannot take a WebSocket. So a socket to this site goes
 //   to the VM through the tab of index.html (a message port), and the VM
 //   runs its upgrade. The message goes to the top window, the tab of
@@ -11,6 +11,9 @@
 //   example href="/", which an app writes without its base path) goes to
 //   the same path in the frame. Without this, the browser leaves the scope
 //   of the service worker, and the site gives a 404.
+// - The frame of the app gives its path to its tab at each load and after
+//   each change of its history (a navigation of LiveView). The tab keeps it
+//   in the fragment of its URL, so a reload and a link keep the page.
 (() => {
   // The same rule as scope.js, which a classic script cannot import.
   const APP = new URL('./app/', document.currentScript?.src ?? location.href);
@@ -33,6 +36,25 @@
   const Native = window.WebSocket;
   const top = window.top;
   if (!top || top === window) return;
+
+  // Only the frame of the app (not a frame in it) gives its path.
+  if (window.parent === top && location.pathname.startsWith(APP.pathname)) {
+    const report = () => top.postMessage({
+      type: 'path',
+      path: location.pathname.slice(APP.pathname.length - 1) + location.search + location.hash,
+    }, location.origin);
+    for (const name of ['pushState', 'replaceState']) {
+      const native = history[name];
+      history[name] = function (...args) {
+        const result = native.apply(this, args);
+        report();
+        return result;
+      };
+    }
+    addEventListener('popstate', report);
+    addEventListener('hashchange', report);
+    report();
+  }
 
   const sw = navigator.serviceWorker;
   if (sw) {

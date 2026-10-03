@@ -285,8 +285,8 @@ jobs:
       artifact: beam.com
       name: site-${{ matrix.name }}
 
-  # The sites in Chromium, at /repo/ (a project site of GitHub Pages) and at
-  # / (a custom domain).
+  # The sites in Chromium, at /repo/ (a project site of GitHub Pages), at /
+  # (a custom domain), and at /app/ (a repository with the name "app").
   page:
     name: Run the sites in a web page
     needs: pages-app
@@ -310,6 +310,7 @@ jobs:
           npm install --prefix wasm --no-audit --no-fund
           node tests/page/check.mjs sites/site-phoenix_demo --base /repo/ --phoenix-demo --tabs
           node tests/page/check.mjs sites/site-phoenix_demo --phoenix-demo
+          node tests/page/check.mjs sites/site-phoenix_demo --base /app/ --phoenix-demo
           node tests/page/check.mjs sites/site-worker --base /repo/
 
   test:

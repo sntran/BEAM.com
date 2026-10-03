@@ -11,6 +11,8 @@
 //   The VM gets the path without the prefix of the scope, as behind a
 //   proxy. The app makes its links with the prefix (BEAM_BASE_PATH, see
 //   wasm_host_base).
+// A navigation of a top window in the scope goes to the page, with the path
+// of the app in the fragment (SITE#/PATH).
 // The page of an HTML reply gets ws-shim.js: the WebSocket of LiveView
 // then goes to the VM too. A redirect to a path of this origin outside the
 // scope goes to the same path in the scope (scope.js).
@@ -60,6 +62,14 @@ async function relays(clientId) {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== SCOPE.origin || !url.pathname.startsWith(SCOPE.pathname)) return;
+  // A page of the app in a top window (a reload, a link from another site,
+  // a new tab) goes to the page of the site, with its path in the fragment.
+  // The page then opens that path in the frame (index.html).
+  if (e.request.mode === 'navigate' && e.request.destination === 'document') {
+    const path = url.pathname.slice(SCOPE.pathname.length - 1) + url.search;
+    e.respondWith(Response.redirect(path === '/' ? BOOT.href : `${BOOT.href}#${path}`, 302));
+    return;
+  }
   e.respondWith(handle(e.request, url, e.clientId));
 });
 
