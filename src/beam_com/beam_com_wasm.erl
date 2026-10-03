@@ -504,7 +504,8 @@ licenses(Root) ->
 %% DIR/page/: a static site that runs the app in the browser of each
 %% visitor (for example on GitHub Pages). It is the root of the site:
 %%
-%%   index.html, sw.js, vm.js, ws-shim.js   the page (priv/wasm_host/page)
+%%   index.html, sw.js, vm.js, ws-shim.js, scope.js, 404.html
+%%                 the page (priv/wasm_host/page)
 %%   env.json      the name of the app and the variables of its VM
 %%   worker.js     worker.js with the imports of browser/: the VM runs in a
 %%                 module Web Worker, which has no import map

@@ -420,7 +420,7 @@ defmodule BeamComWasmTest do
       page = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"page"])
       :ok = :filelib.ensure_path(page)
 
-      for f <- [~c"index.html", ~c"sw.js", ~c"vm.js", ~c"ws-shim.js"],
+      for f <- [~c"index.html", ~c"sw.js", ~c"vm.js", ~c"ws-shim.js", ~c"404.html"],
           do: :ok = :file.write_file(:filename.join(page, f), f)
 
       worker = [
@@ -454,6 +454,7 @@ defmodule BeamComWasmTest do
                  ~c"sw.js",
                  ~c"vm.js",
                  ~c"ws-shim.js",
+                 ~c"404.html",
                  ~c"env.json",
                  ~c"worker.js",
                  ~c"browser.js",

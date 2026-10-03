@@ -48,6 +48,17 @@
   const SITE = new URL('./', location.href);
   const APP = new URL('./app/', SITE);
 
+  // The path of the frame is in the fragment of the URL of this page
+  // (SITE#/users/log-in), so a reload and a link keep the page of the app.
+  // Only a path: it starts with "/", not with "//", and it stays in app/ of
+  // this origin. Another fragment opens the home page of the app.
+  function startUrl() {
+    const path = location.hash.slice(1);
+    if (!path.startsWith('/') || path.startsWith('//')) return APP.href;
+    const url = new URL(APP.pathname.replace(/\/$/, '') + path, SITE);
+    return url.origin === SITE.origin && url.pathname.startsWith(APP.pathname) ? url.href : APP.href;
+  }
+
   // The variables of the VM (env.json, from the build). A secret gets a
   // random value, one for each browser. It stays in localStorage, so that
   // the snapshot of the VM (its key has the variables) serves the next visit.
@@ -101,6 +112,11 @@
     };
     addEventListener('message', (e) => {
       if (e.origin === location.origin && ['ws', 'fetch'].includes(e.data?.type) && inFrame(e.source)) relay(e.data, e.ports[0]);
+      // The path of the frame of the app (ws-shim.js), for the fragment.
+      if (e.origin === location.origin && e.data?.type === 'path' && e.source === document.getElementById('app').contentWindow
+          && typeof e.data.path === 'string' && e.data.path.startsWith('/') && !e.data.path.startsWith('//')) {
+        history.replaceState(history.state, '', e.data.path === '/' ? location.pathname + location.search : `#${e.data.path}`);
+      }
     });
     // This page is outside the scope, so navigator.serviceWorker.ready does
     // not apply: wait for the registration to be active.
@@ -175,7 +191,7 @@
     say(`Opening the app (the VM started in ${ms} ms)…`);
     const frame = document.getElementById('app');
     frame.addEventListener('load', () => document.body.classList.add('running'), { once: true });
-    frame.src = APP.href;
+    frame.src = startUrl();
   }
 
   main().catch((e) => { fail(e.message); console.error(e); });
