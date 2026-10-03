@@ -45,8 +45,6 @@
                       "LitT", "Line", "Type", "Meta", "Recs"]).
 
 -define(HOST_APP, wasm_host).
-%% The SECRET_KEY_BASE of worker.capnp in the edge part of a native file.
--define(KEY_MARK, "@SECRET_KEY_BASE@").
 %% The files of the runtime, in the order of runtime_id/1.
 -define(RUNTIME_FILES, ["app-com.js", "beam.mjs", "beam.wasm", "worker.js"]).
 -define(CACERTS, "etc/cacerts.pem").
@@ -153,11 +151,7 @@ overlay(View, Native, #{name := Name, vsn := Vsn, kind := Kind}, Opts) ->
                     %% Without debug information and docs, as in release.bin.
                     Changed = strip_beams([F || {P, D} = F <- Files,
                                                 maps:get(P, Have, none) =/= iolist_to_binary(D)]),
-                    %% The files of the hosts that depend on the app, with no
-                    %% secret: js/edge.mjs puts a new key in place of ?KEY_MARK.
-                    Host = [{".wasm/host/" ++ P, D} || {P, D} <- host_files(Rel, ?KEY_MARK)],
                     [{".wasm/.release.json", json:encode(Meta)} | [{".wasm/" ++ P, D} || {P, D} <- Changed]]
-                        ++ Host
             catch
                 throw:{error, Format, Args} ->
                     warn(maps:get(quiet, Opts, false), "warning: no WebAssembly part: " ++ Format, Args),
@@ -580,9 +574,7 @@ worker_files(Rel, Runtime, Root) ->
     Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
 
 %% The files of DIR that depend on the app: the configurations of Workers
-%% and workerd, and the variables of the VM of the page. The edge part of a
-%% native file has them (.wasm/host/), so that a host makes DIR from the
-%% file and the npm package (js/edge.mjs), with no beam.com. Key: the
+%% and workerd, and the variables of the VM of the page. Key: the
 %% SECRET_KEY_BASE of worker.capnp for a Phoenix app.
 host_files(#{name := App} = Rel, Key) ->
     Name = worker_name(App),

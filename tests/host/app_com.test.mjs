@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
-import { appHost, appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
+import { appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
 import { zip } from './zip.mjs';
 
 const enc = new TextEncoder();
@@ -43,26 +43,6 @@ const app = () => zip([
   { name: '.wasm/releases/1.0.0/vm.args', data: '-noshell\n' },
   { name: '.wasm/lib/wasm_host-0.1.0/ebin/wasm_host.beam', data: BEAM, method: 8 },
 ]);
-
-// The files of the hosts (.wasm/host/): not in the release, and appHost
-// gives them.
-test('the files of the hosts: appHost, and not in the release', async () => {
-  const withHost = await zip([
-    { name: 'lib/a-1.0/ebin/a.app', data: '{application, a, []}.' },
-    { name: '.wasm/.release.json', data: JSON.stringify(META), method: 8 },
-    { name: '.wasm/host/wrangler.jsonc', data: '{ "name": "app" }', method: 8 },
-    { name: '.wasm/host/release/wrangler.jsonc', data: '{ "name": "app-release" }' },
-  ]);
-  const { read, size } = bytesReader(withHost);
-  const names = unpack(await appRelease(read, size)).map(([p]) => p);
-  assert.deepEqual(names, ['.release.json', 'lib/a-1.0/ebin/a.app']);
-  const host = await appHost(read, size);
-  assert.deepEqual([...host.keys()].sort(), ['release/wrangler.jsonc', 'wrangler.jsonc']);
-  assert.equal(dec.decode(host.get('wrangler.jsonc')), '{ "name": "app" }');
-  // A file of an older beam.com has no files of the hosts.
-  const old = bytesReader(await app());
-  assert.equal((await appHost(old.read, old.size)).size, 0);
-});
 
 test('the release of an app.com: lib/ and releases/, with the edge part in its place', async () => {
   const { read, size } = bytesReader(await app());

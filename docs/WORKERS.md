@@ -179,29 +179,20 @@ These parts of the start script of a Mix release are not in the file:
 
 The hosts of `app.com`:
 
-- `npx beam-edge app.com -o DIR` (the npm package `beam.com`, see ["npm"
-  in README.md](../README.md#npm)) writes the same `DIR` as `beam.com
-  INPUT -o DIR --target wasm32`, with no `beam.com`: the runtime of the
-  package, the files of the hosts in the edge part (`.wasm/host/`: the
-  configurations of Workers and workerd, and `page/env.json`), the
-  release of the file, and the files of `priv/static` of the app for the
-  page. Then `DIR` deploys as above: to Workers (`wrangler deploy`), to
-  Deno Deploy (`deno.js`), and as a static site (`DIR/page/`). A build
-  step of Workers Builds, Deno Deploy or a GitHub workflow can run it
-  with Node.js only.
-- Deno: also `BEAM_APP`, the path of `app.com`, with the `deno.js` of
-  `DIR`: `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
-- Node.js: `boot` of the npm package, with the runtime of the same
+- Deno: `BEAM_APP`, the path of `app.com`, with the `deno.js` of a
+  `--target wasm32` directory of the same `beam.com`:
+  `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
+- Node.js: `boot` of the npm package `beam.com`
+  (["npm" in README.md](../README.md#npm)), with the runtime of the same
   version: `const vm = await boot('app.com')`. The check of CI ("Run
   one file natively and at the edge") also uses
   [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
+- Not yet: Workers (the app part from `app.com` at each deploy) and the
+  web page.
 
-The edge part has no secret: `worker.capnp` gets a new `SECRET_KEY_BASE`
-from `beam-edge`, and a Worker gets it with `wrangler secret put
-SECRET_KEY_BASE`. A Mix release evaluates its `runtime.exs` in the VM at
-the boot, so the host gives its variables. For Ecto SQLite,
-`.release.json` gives `DATABASE_PATH` (`/tmp/NAME.db`) when the host
-does not.
+A Mix release evaluates its `runtime.exs` in the VM at the boot, so the
+host gives its variables. For Ecto SQLite, `.release.json` gives
+`DATABASE_PATH` (`/tmp/NAME.db`) when the host does not.
 
 The npm package `beam.com` has the runtime (`beam.wasm`, `worker.js`,
 `app-com.js` and `runtime-id.js`), the Node.js host, and `npx beam.com`.

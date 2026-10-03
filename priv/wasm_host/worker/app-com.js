@@ -116,11 +116,7 @@ async function entryData(span, base, e) {
 }
 
 const EDGE = '.wasm/';
-// The files of the hosts that depend on the app (the configurations of
-// Workers, the variables of the page): not in the release (appHost).
-const HOST = '.wasm/host/';
-const inRelease = (name) => !name.startsWith(HOST)
-  && (name.startsWith('lib/') || name.startsWith('releases/') || name.startsWith(EDGE));
+const inRelease = (name) => name.startsWith('lib/') || name.startsWith('releases/') || name.startsWith(EDGE);
 
 export async function appRelease(read, size, { runtime } = {}) {
   const { entries, cdAt } = await zipEntries(read, size);
@@ -141,21 +137,6 @@ export async function appRelease(read, size, { runtime } = {}) {
   for (const e of want) if (!e.name.startsWith(EDGE)) files.set(e.name, await entryData(span, lo, e));
   for (const e of want) if (e.name.startsWith(EDGE) && e !== json) files.set(e.name.slice(EDGE.length), await entryData(span, lo, e));
   return pack(meta, files);
-}
-
-// The files of the hosts in the edge part (.wasm/host/), as a Map of their
-// paths in DIR to their data: wrangler.jsonc, worker.capnp, page/env.json
-// and the others of beam_com_wasm:host_files/2. One read, after the
-// central directory.
-export async function appHost(read, size) {
-  const { entries, cdAt } = await zipEntries(read, size);
-  const want = entries.filter((e) => e.name.startsWith(HOST) && !e.name.endsWith('/'));
-  const files = new Map();
-  if (want.length === 0) return files;
-  const lo = Math.min(...want.map((e) => e.offset));
-  const span = await read(lo, cdAt - lo);
-  for (const e of want) files.set(e.name.slice(HOST.length), await entryData(span, lo, e));
-  return files;
 }
 
 // release.bin: "BEAMFS1\n", then (length, path, length, data) for each

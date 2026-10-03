@@ -775,39 +775,6 @@ defmodule BeamComWasmTest do
                ])
     end
 
-    # The files of the hosts that depend on the app (host_files/2), for
-    # js/edge.mjs: no secret in the file, only the mark of KEY_MARK.
-    test "the files of the hosts, with no secret", %{root: root, view: view} do
-      rel = %{name: ~c"my_app", vsn: ~c"1", kind: :mix}
-
-      edge =
-        :beam_com_wasm.overlay(view ++ [{~c"lib/phoenix-1/ebin/phoenix.app", ""}], view, rel, %{
-          root: root
-        })
-
-      host =
-        for {~c".wasm/host/" ++ p, d} <- edge,
-            into: %{},
-            do: {List.to_string(p), IO.iodata_to_binary(d)}
-
-      assert ~w(page/env.json release/wrangler.jsonc worker.capnp wrangler.durable-global.jsonc
-                wrangler.durable.jsonc wrangler.global.jsonc wrangler.jsonc) ==
-               Enum.sort(Map.keys(host))
-
-      assert host["wrangler.jsonc"] =~ ~s("name": "my-app")
-      assert host["release/wrangler.jsonc"] =~ ~s("name": "my-app-release")
-      assert host["worker.capnp"] =~ ~s|(name = "SECRET_KEY_BASE", text = "@SECRET_KEY_BASE@")|
-
-      assert %{"name" => "my_app", "secrets" => ["SECRET_KEY_BASE"]} =
-               :json.decode(host["page/env.json"])
-
-      # The host files are the last entries: the release ends before them.
-      assert Enum.all?(
-               Enum.drop_while(edge, fn {p, _} -> not :lists.prefix(~c".wasm/host/", p) end),
-               fn {p, _} -> :lists.prefix(~c".wasm/host/", p) end
-             )
-    end
-
     # A file of View that differs from the native file: the runtime gets
     # the file of View (a Mix release in beam_com_build).
     test "a file of the release that the native file changes", %{root: root, view: view, rel: rel} do
