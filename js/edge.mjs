@@ -1,9 +1,8 @@
-// npx beam.com APP.com -o DIR --target wasm32: the directory of "beam.com
-// INPUT -o DIR --target wasm32" from a native app.com and the runtime of
-// this package, with Node.js only (beam.com.mjs runs it, with no download
-// of beam.com). Native beam.com gives the same DIR for the same command
-// (beam_com_wasm:write_app/4). The same DIR deploys to Cloudflare Workers
-// (wrangler deploy), Deno Deploy (deno.js) and a static site (DIR/page/).
+#!/usr/bin/env node
+// npx beam-edge APP.com -o DIR: the directory of "beam.com INPUT -o DIR
+// --target wasm32" from a native app.com and the runtime of this package,
+// with no beam.com. The same DIR deploys to Cloudflare Workers (wrangler
+// deploy), Deno Deploy (deno.js) and a static site (DIR/page/).
 //
 // - The runtime: the files of runtime/ (scripts/npm.sh), the same for
 //   each app.
@@ -23,46 +22,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const KEY_MARK = '@SECRET_KEY_BASE@';
-const TARGETS = new Set(['wasm32', 'wasm32-unknown-emscripten']);
 // The files of runtime/ that are not files of DIR.
 const PACKAGE_ONLY = new Set(['package.json', 'release.json']);
-
-// The command that this package runs with no beam.com: {input, out} for
-// exactly "INPUT -o DIR --target wasm32" (in any order), else null.
-export function wasm32Command(args) {
-  let input = null, out = null, target = null;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if ((a === '-o' || a === '--target') && i + 1 < args.length) {
-      if (a === '-o') out = args[++i]; else target = args[++i];
-    } else if (!a.startsWith('-') && input === null) {
-      input = a;
-    } else {
-      return null;
-    }
-  }
-  return input && out && TARGETS.has(target) ? { input, out } : null;
-}
-
-// A file with a zip (an executable that "beam.com INPUT -o OUTPUT" made),
-// not a source file: the end record of a zip in its last 65557 bytes.
-export function isAppCom(file) {
-  let fd;
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile()) return false;
-    const { size } = stat;
-    const n = Math.min(size, 22 + 0xffff);
-    const tail = Buffer.alloc(n);
-    fd = fs.openSync(file, 'r');
-    fs.readSync(fd, tail, 0, n, size - n);
-    return tail.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
-}
 
 // The files of a release.bin (ArrayBuffer): [[path, Uint8Array]].
 export function unpack(bin) {
@@ -111,9 +72,7 @@ function write(file, data) {
 }
 
 // Writes DIR. runtime: the directory of the runtime (runtime/ of this
-// package). Gives the name and the version of the app, the number of files
-// of the release (without .release.json), the size of release.bin, and the
-// number of static files.
+// package). Gives the name of the app and the number of files.
 export async function edge(app, out, { runtime = fileURLToPath(new URL('../runtime/', import.meta.url)), key } = {}) {
   const { appHost, appRelease } = await import(pathToFileURL(path.join(runtime, 'app-com.js')).href);
   const { default: runtimeId } = await import(pathToFileURL(path.join(runtime, 'runtime-id.js')).href);
@@ -146,9 +105,30 @@ export async function edge(app, out, { runtime = fileURLToPath(new URL('../runti
   write(path.join(out, 'page', 'release.bin'), release);
   write(path.join(out, 'page', 'beam.wasm'), fs.readFileSync(path.join(runtime, 'beam.wasm')));
   const files = unpack(bin);
-  const { name, vsn } = JSON.parse(new TextDecoder().decode(files[0][1]));
+  const { name } = JSON.parse(new TextDecoder().decode(files[0][1]));
   const statics = staticFiles(name, files);
   write(path.join(out, 'page', 'app', 'static.json'), JSON.stringify(statics.map(([p]) => p)));
   for (const [p, d] of statics) write(path.join(out, 'page', 'app', p), d);
-  return { name, vsn, files: files.length - 1, bytes: release.length, statics: statics.length };
+  return { name, files: files.length, statics: statics.length };
+}
+
+const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+if (main) {
+  const args = process.argv.slice(2);
+  const o = args.indexOf('-o');
+  const out = o < 0 ? null : args.splice(o, 2)[1];
+  if (args.length !== 1 || !out) {
+    console.error('usage: beam-edge APP.com -o DIR');
+    process.exit(2);
+  }
+  try {
+    const { name, files, statics } = await edge(args[0], out);
+    console.log(`beam-edge: wrote ${out} (${name}: ${files} files in the release, ${statics} static files)\n`
+      + `  Workers: (cd ${out}/release && wrangler deploy) && (cd ${out} && wrangler deploy)\n`
+      + `  Deno: cd ${out} && deno serve -A deno.js\n`
+      + `  web page: ${out}/page (a static site)`);
+  } catch (e) {
+    console.error(`beam-edge: ${e.message}`);
+    process.exit(1);
+  }
 }

@@ -253,23 +253,21 @@ file, without a VM.
 | Import | What |
 |---|---|
 | `beam.com/node` | `boot`, `release`, `appRelease` and `runtimeId`, for Node.js. |
-| `beam.com/edge` | `edge(app, dir)`: the function of `npx beam.com app.com -o DIR --target wasm32`. |
+| `beam.com/edge` | `edge(app, dir)`: the function of `npx beam-edge`. |
 | `beam.com/app-com` | The reader of an `app.com`, for any host: `appRelease(read, size, { runtime })`. |
 | `beam.com/runtime-id` | The identity of this runtime, for `appRelease`. |
 | `beam.com/worker` | The runtime (`worker.js` of Cloudflare Workers). |
 | `beam.com/beam.wasm` | The VM: ERTS built for WebAssembly. |
 
-For Cloudflare Workers, Deno Deploy and a web page, the same command as
-`beam.com` writes the directory of these hosts from the file. With an
-`app.com` as the input, `npx` downloads no `beam.com`: the runtime of the
-package does the work.
+For Cloudflare Workers, Deno Deploy and a web page, `beam-edge` writes
+the directory of these hosts from the file, with no `beam.com`:
 
 ```sh
-npx beam.com app.com -o dist --target wasm32
+npx beam-edge app.com -o dist
 (cd dist/release && npx wrangler deploy) && (cd dist && npx wrangler deploy)
 ```
 
-`dist` is the same as the output of `beam.com app.com -o dist --target
+`dist` is the same as the output of `beam.com INPUT -o dist --target
 wasm32` (see [`docs/WORKERS.md`](docs/WORKERS.md)): `deno.js` for Deno
 Deploy, and `dist/page/` for a static site.
 

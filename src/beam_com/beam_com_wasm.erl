@@ -3,9 +3,8 @@
 %% Cloudflare Workers.
 %%
 %% The input is what beam.com builds (a .erl or .ex file, an application
-%% directory, a Mix project), a release directory (mix release or rebar3
-%% release, without ERTS: _build/prod/rel/NAME), or a native file that
-%% beam.com made (write_app/4: its edge part has the release). DIR gets:
+%% directory, a Mix project), or a release directory (mix release or
+%% rebar3 release, without ERTS: _build/prod/rel/NAME). DIR gets:
 %%
 %%   wrangler.jsonc, worker.js, beam.mjs, beam.wasm
 %%                    the runtime Worker (NAME): the BEAM, with no program
@@ -29,7 +28,7 @@
 %% arguments and the environment.
 -module(beam_com_wasm).
 
--export([release_dir/2, write/3, overlay/4, app_com/1, write_app/4]).
+-export([release_dir/2, write/3, overlay/4]).
 -export([sqlite_shim/1, wasm_shim/0]).
 
 -ifdef(TEST).
@@ -114,89 +113,6 @@ apps(Files) ->
     [A || {"lib/" ++ P, _} <- Files, [D, "ebin", F] <- [string:split(P, "/", all)],
           {A, _} <- [beam_com_build:split_dir(D)], F =:= atom_to_list(A) ++ ".app"].
 
-%% A native app.com as the input (a file with a zip): its bytes, or false.
-app_com(Input) ->
-    filelib:is_regular(Input) andalso
-        begin
-            Bin = read(Input),
-            try beam_com_zip:entries(Bin) of
-                _ -> Bin
-            catch
-                error:_ -> false
-            end
-        end.
-
-%% beam.com APP.com -o DIR --target wasm32: DIR from the edge part of a
-%% native file, with the runtime of this beam.com (the same files as the
-%% npm package, js/edge.mjs). The file holds the release and the files of
-%% the hosts (overlay/4), so the build does not run again: the boot loads
-%% the modules one by one. The runtime of the file must be the runtime of
-%% this beam.com.
-write_app(Output, Input, Bin, Opts) ->
-    Root = maps:get(root, Opts, "/zip"),
-    filelib:is_regular(Output) andalso
-        throw({error, "~ts: a file; --target wasm32 writes a directory", [Output]}),
-    Zip = beam_com_zip:files(Bin),
-    Json = case lists:keyfind(".wasm/.release.json", 1, Zip) of
-               {_, J} -> J;
-               false -> throw({error, "~ts: no edge part (.wasm/.release.json): build it with a "
-                               "beam.com that has the WebAssembly runtime, and without --no-edge",
-                               [Input]})
-           end,
-    Meta = json:decode(Json),
-    Runtime = case edge_runtime(Root) of
-                  none -> throw({error, "~ts has no WebAssembly runtime", [beam_com:name()]});
-                  R -> R
-              end,
-    Id = runtime_id(Runtime),
-    case maps:get(<<"runtime">>, Meta, none) of
-        Id -> ok;
-        Other -> throw({error, "~ts: it was built for the runtime ~ts, and this runtime is ~ts: "
-                        "build it with this beam.com", [Input, short(Other), short(Id)]})
-    end,
-    Host = [{P, D} || {".wasm/host/" ++ P, D} <- Zip],
-    Host =:= [] andalso
-        throw({error, "~ts: no files of the hosts (.wasm/host/): build it with a newer beam.com", [Input]}),
-    %% The files of lib/ and releases/, with the files of .wasm/ in their
-    %% place (appRelease of app-com.js).
-    Edge = [{P, D} || {".wasm/" ++ P, D} <- Zip, not lists:prefix("host/", P), P =/= ".release.json"],
-    Files = [{P, proplists:get_value(P, Edge, D)} || {P, D} <- Zip,
-                                                    lists:prefix("lib/", P) orelse lists:prefix("releases/", P)]
-        ++ [F || {P, _} = F <- Edge, not lists:keymember(P, 1, Zip)],
-    Name = binary_to_list(maps:get(<<"name">>, Meta)),
-    Rel = #{name => Name, files => Files, apps => apps(Files)},
-    Key = new_key(),
-    Hosts = [{P, case P of
-                     "worker.capnp" -> binary:replace(D, <<?KEY_MARK>>, Key, [global]);
-                     _ -> D
-                 end} || {P, D} <- Host],
-    Worker = runtime_files(runtime_dir(Root), Root)
-        ++ [F || {P, _} = F <- Hosts, not lists:prefix("page/", P)],
-    Bin1 = pack([{".release.json", Json} | Files]),
-    [ok = filelib:ensure_path(filename:join(Output, D)) || D <- ["", "release"]],
-    [begin ok = filelib:ensure_dir(P), write_file(P, D) end
-     || {F, D} <- Worker, P <- [filename:join(Output, F)]],
-    write_file(filename:join([Output, "release", "release.bin"]), Bin1),
-    Page = [case F of
-                "env.json" -> {F, proplists:get_value("page/env.json", Hosts, D)};
-                _ -> {F, D}
-            end || {F, D} <- page_files(Rel, Worker, Root)],
-    write_page(Output, Page),
-    maps:get(quiet, Opts, false) orelse
-        io:format("~ts: wrote ~ts from ~ts (the Workers ~ts and ~ts-release)~n"
-                  "  release: ~ts ~ts, ~b files, ~.1f MB~n"
-                  "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n"
-                  "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n"
-                  "  Deno: cd ~ts && deno serve -A deno.js~n"
-                  "  web page: ~ts (a static site)~n",
-                  [beam_com:name(), Output, Input, worker_name(Name), worker_name(Name), Name,
-                   maps:get(<<"vsn">>, Meta, <<>>), length(Files), iolist_size(Bin1) / 1048576,
-                   Output, Output, Output, filename:join(Output, "page")]),
-    ok.
-
-short(Id) when is_binary(Id) -> binary:part(Id, 0, min(12, byte_size(Id)));
-short(_) -> <<"(none)">>.
-
 %% The edge part of a native app.com (beam_com_build): the files that the
 %% WebAssembly runtime needs beyond the files of the native release, under
 %% .wasm/ in the zip. The runtime reads lib/ and releases/ of the zip, with
@@ -238,8 +154,7 @@ overlay(View, Native, #{name := Name, vsn := Vsn, kind := Kind}, Opts) ->
                     Changed = strip_beams([F || {P, D} = F <- Files,
                                                 maps:get(P, Have, none) =/= iolist_to_binary(D)]),
                     %% The files of the hosts that depend on the app, with no
-                    %% secret: write_app/4 and js/edge.mjs put a new key in
-                    %% place of ?KEY_MARK.
+                    %% secret: js/edge.mjs puts a new key in place of ?KEY_MARK.
                     Host = [{".wasm/host/" ++ P, D} || {P, D} <- host_files(Rel, ?KEY_MARK)],
                     [{".wasm/.release.json", json:encode(Meta)} | [{".wasm/" ++ P, D} || {P, D} <- Changed]]
                         ++ Host
@@ -651,15 +566,6 @@ worker_name(App) ->
 %% The files of DIR: the runtime Worker, the Worker with the release, and
 %% the configuration of workerd.
 worker_files(Rel, Runtime, Root) ->
-    runtime_files(Runtime, Root)
-        ++ [F || {P, _} = F <- host_files(Rel, new_key()), not lists:prefix("page/", P)].
-
-%% A new SECRET_KEY_BASE for worker.capnp.
-new_key() -> base64:encode(crypto:strong_rand_bytes(48)).
-
-%% The files of DIR that are the same for each app (the npm package has
-%% them, scripts/npm.sh): the runtime, the hosts and the licenses.
-runtime_files(Runtime, Root) ->
     [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "worker"])),
     Worker = fun(F) -> read(filename:join(Priv, F)) end,
     %% The VM restored in the global scope (global.js): a runtime Worker,
@@ -668,14 +574,16 @@ runtime_files(Runtime, Root) ->
                                      "durable-global.js", "tcp-proxy.mjs"]] ++
             [{"beam.mjs", read(filename:join(Runtime, "beam.mjs"))},
              {"beam.wasm", read(filename:join(Runtime, "beam.wasm"))},
-             {"release/app.js", Worker("app.js")}] ++ hosts(Root) ++ licenses(Root),
+             {"release/app.js", Worker("app.js")}] ++
+            [F || {P, _} = F <- host_files(Rel, base64:encode(crypto:strong_rand_bytes(48))),
+                  not lists:prefix("page/", P)] ++ hosts(Root) ++ licenses(Root),
     Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
 
 %% The files of DIR that depend on the app: the configurations of Workers
 %% and workerd, and the variables of the VM of the page. The edge part of a
-%% native file has them (.wasm/host/), so that DIR comes from the file
-%% (write_app/4), also with the npm package and no beam.com (js/edge.mjs).
-%% Key: the SECRET_KEY_BASE of worker.capnp for a Phoenix app.
+%% native file has them (.wasm/host/), so that a host makes DIR from the
+%% file and the npm package (js/edge.mjs), with no beam.com. Key: the
+%% SECRET_KEY_BASE of worker.capnp for a Phoenix app.
 host_files(#{name := App} = Rel, Key) ->
     Name = worker_name(App),
     Phoenix = lists:member(phoenix, maps:get(apps, Rel, [])),
