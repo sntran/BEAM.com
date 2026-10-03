@@ -1,8 +1,10 @@
 // The BEAM on Deno (Deno Deploy): worker.js of the Workers, with the parts of
 // the Workers runtime that it uses given by Deno: the module imports of
-// beam.wasm, release.bin and snapshot.bin (deno.json), WebSocketPair,
-// caches.default, and a store for Ecto SQLite (Deno KV, or node:sqlite).
-// The TCP sockets use node:net of Deno.
+// beam.wasm, release.bin and snapshot.bin (deno/worker.js, the copy of
+// worker.js with the imports of deno/), WebSocketPair, caches.default, and
+// a store for Ecto SQLite (Deno KV, or node:sqlite). The TCP sockets use
+// node:net of Deno. There is no import map, so this file also runs from
+// node_modules/beam.com/runtime/ (the npm package).
 //
 // A Deno isolate keeps its VM between requests, as a Durable Object does.
 // So the VM runs as in a Durable Object (plain: false): its timers run
@@ -24,9 +26,20 @@
 //   deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
 // or "deno deploy" with the entrypoint deno.js.
 //
-// BEAM_APP: the path of a native app.com (beam.com INPUT -o app.com) in
-// place of release.bin. Then the same file runs natively and here, with
-// the runtime of DIR (of the same beam.com: app-com.js checks it).
+// A native app.com (beam.com INPUT -o app.com) in place of release.bin:
+// its path is the first argument (deno serve -A deno.js app.com, or
+// "args" of the "runtime" of Deno Deploy), else BEAM_APP. Then the same
+// file runs natively and here, with the runtime of DIR or of the npm
+// package (of the same beam.com: app-com.js checks it):
+//   deno serve -A node_modules/beam.com/runtime/deno.js app.com
+// This file is also the module "beam.com" of the npm package in Deno (the
+// condition "deno" of its exports), so the entry of a Worker runs here as
+// it is (see cloudflare/index.js): "deno serve -A worker.js", with
+// "unstable": ["kv", "raw-imports"] in deno.json for the import of
+// app.com as bytes. serve(app) gives the fetch handler; the second
+// argument of fetch is the info of deno serve. Beam is the Durable Object
+// of Workers, and Deno does not use it: an isolate keeps its VM between
+// requests, as a Durable Object does.
 
 // WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket),
 // and only with the request. The VM can make the pair outside the call of
@@ -211,7 +224,9 @@ class SqlStorage {
   }
 }
 
-const { Vm } = await import('./worker.js');
+import { use } from './deno/app.js';
+
+const { Vm } = await import('./deno/worker.js');
 // The environment of the release, as the "vars" of a Worker: the
 // variables of the process, without those of Deno and of the host. Some
 // of those change for each isolate, and the key of a snapshot holds the
@@ -230,16 +245,31 @@ if (deployment) env.BEAM_VERSION = { id: deployment };
 env.BEAM_HOST ??= Deno.env.get('DENO_DEPLOY') ? 'deno-deploy' : 'deno';
 const region = Deno.env.get('DENO_REGION');
 const vars = region ? { BEAM_REGION: region } : {};
-let sql = null, files = null;
+let sql = null, files = null, kv = null;
+try {
+  kv = await Deno.openKv(Deno.env.get('BEAM_KV'));
+} catch (e) {
+  console.log(`beam: no Deno KV (${e.message})`);
+}
 let mode = env.BEAM_SQLITE ?? 'kv';
 if (mode === 'kv') {
-  try {
-    files = new KvStore(await Deno.openKv(Deno.env.get('BEAM_KV')));
-  } catch (e) {
-    console.log(`beam: no Deno KV (${e.message}): SQLite runs in node:sqlite, in memory`);
+  if (kv) files = new KvStore(kv);
+  else {
+    console.log('beam: no Deno KV: SQLite runs in node:sqlite, in memory');
     mode = 'memory';
   }
 }
+// The secrets that the VM makes (SECRET_KEY_BASE of a Phoenix app, see
+// Vm.autoVars), in Deno KV: all the isolates share them. The first
+// isolate that writes a value wins, and the others take that value.
+const secrets = kv && {
+  async get(name) { return (await kv.get(['beam-secret', name])).value ?? undefined; },
+  async put(name, value) {
+    const key = ['beam-secret', name];
+    const r = await kv.atomic().check({ key, versionstamp: null }).set(key, value).commit();
+    return r.ok ? value : (await kv.get(key)).value;
+  },
+};
 if (mode !== 'kv' && mode !== 'off') {
   const { DatabaseSync } = await import('node:sqlite');
   sql = new SqlStorage(new DatabaseSync(mode === 'memory' ? ':memory:' : mode));
@@ -278,12 +308,12 @@ async function asset(request) {
   return new Response(request.method === 'HEAD' ? null : file.readable, { headers: { 'content-type': type } });
 }
 
-export default {
+const handler = {
   async fetch(request, info) {
     const file = await asset(request);
     if (file) return file;
     if (!vm) {
-      const v = vm = new Vm(env, { plain: false, sql, vars, files });
+      const v = vm = new Vm(env, { plain: false, sql, vars, files, secrets, host: new URL(request.url).hostname });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
     // The scheme of the client (Deno gives it in the URL; Plug.SSL and
@@ -300,3 +330,17 @@ export default {
     return Promise.resolve(vm.fetch(r)).then((res) => (res?.[UPGRADE] ? res[UPGRADE](request) : res));
   },
 };
+
+export default handler;
+
+// The Durable Object of the entry of a Worker (export { Beam } from
+// 'beam.com'): Deno does not use it.
+export class Beam {}
+
+// The engine for the app.com of the entry (the bytes of the file): the
+// fetch handler of its VM. The options of Workers (binding, name) do not
+// apply: one VM runs in each isolate.
+export function serve(app) {
+  use(app);
+  return { fetch: (request, info) => handler.fetch(request, info) };
+}

@@ -240,7 +240,7 @@ The package also has the WebAssembly runtime, for a native `app.com`.
 In Node.js 25 or later (for JSPI):
 
 ```js
-import { boot } from 'beam.com/node';
+import { boot } from 'beam.com';
 
 const vm = await boot('app.com', { env: { PORT: '4000' } });
 const response = await vm.fetch(new Request('http://localhost/'));
@@ -250,19 +250,55 @@ The file must come from `beam.com` of the version of the package: a file
 for another runtime is an error. `release(app)` gives the release of the
 file, without a VM.
 
+`import ... from 'beam.com'` gives the module of the runtime that
+imports it (the conditions of `exports` in `package.json`):
+
+| Runtime (condition) | What |
+|---|---|
+| Cloudflare Workers, with Wrangler (`workerd`) | `serve(app)`, the engine that serves the `app.com` of the project, and the Durable Object `Beam`. |
+| Deno (`deno`) | `serve(app)`, with the same API: the same entry runs on both hosts. |
+| Node.js (`node`) | `boot`, `release`, `appRelease` and `runtimeId`. |
+
+The other modules of the package:
+
 | Import | What |
 |---|---|
-| `beam.com/node` | `boot`, `release`, `appRelease` and `runtimeId`, for Node.js. |
 | `beam.com/app-com` | The reader of an `app.com`, for any host: `appRelease(read, size, { runtime })`. |
 | `beam.com/runtime-id` | The identity of this runtime, for `appRelease`. |
 | `beam.com/worker` | The runtime (`worker.js` of Cloudflare Workers). |
 | `beam.com/beam.wasm` | The VM: ERTS built for WebAssembly. |
 
+The same `app.com` runs on Cloudflare Workers, on Deno Deploy and in a
+web page, with the runtime of the package. One entry runs on both hosts:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+export { Beam } from 'beam.com';   // stateful only
+
+const beam = serve(app);
+
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+};
+```
+
+With the Durable Object `Beam` and its binding, the app is stateful: one
+VM serves all the requests, its timers run between requests, and its
+SQLite storage keeps the database. With no binding, it is stateless:
+each isolate runs its own VM. A project deploys at each git push: the
+build step of the host makes `app.com` (`npx beam.com`), and the host
+runs it. A Phoenix app needs no secret and no variable: the VM
+makes `SECRET_KEY_BASE` one time and keeps it, and `PHX_HOST` is the
+host of the first request. [`examples/phoenix_demo`](examples/phoenix_demo)
+(stateful) and [`examples/worker`](examples/worker) (stateless) are such
+projects, with one-click buttons for both hosts. See "Deploy at
+each git push" in [`docs/WORKERS.md`](docs/WORKERS.md).
+
 The release job of CI makes the generated part of the package
 (`runtime/`, with `scripts/npm.sh`) and publishes it with each tag `v*`.
-Not yet: an adapter for Cloudflare Workers, Deno and a web page in the
-package. Today, `beam.com INPUT -o DIR --target wasm32` writes these
-hosts into `DIR`.
 
 ## Documentation
 

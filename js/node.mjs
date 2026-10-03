@@ -1,7 +1,7 @@
 // The BEAM in Node.js (25 or later, for JSPI): a native app.com (beam.com
 // INPUT -o app.com) with the WebAssembly runtime of this package.
 //
-//   import { boot } from 'beam.com/node';
+//   import { boot } from 'beam.com';
 //   const vm = await boot('app.com', { env: { PORT: '4000' } });
 //   const response = await vm.fetch(new Request('http://localhost/'));
 //

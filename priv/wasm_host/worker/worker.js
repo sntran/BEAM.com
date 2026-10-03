@@ -61,7 +61,7 @@ function unpack(FS, bytes) {
 }
 
 // .release.json, the first file of release.bin.
-function releaseMeta(bytes) {
+export function releaseMeta(bytes) {
   const b = new Uint8Array(bytes);
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const plen = view.getUint32(8);
@@ -402,7 +402,7 @@ let vm;  // the VM of this isolate
 export default {
   fetch(request, env, ctx) {
     if (!vm) {
-      const v = vm = new Vm(env);
+      const v = vm = new Vm(env, { host: new URL(request.url).hostname });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
     }
     return vm.fetch(request, ctx);
@@ -901,6 +901,9 @@ function fromWasm(v) {
 //     constructor(ctx, env) { super(ctx, env); this.vm = new Vm(env, { plain: false, sql: ctx.storage.sql }); }
 //     fetch(request) { return this.vm.fetch(request); }
 //   }
+// The key of SECRET_KEY_BASE in the store of secrets (autoVars).
+const SECRET = 'beam:SECRET_KEY_BASE';
+
 export class Vm {
   // release and snapshot: the bytes of release.bin and snapshot.bin, for a
   // VM that the global scope of a Worker restores (global.js).
@@ -911,8 +914,14 @@ export class Vm {
   // files: a store of HostFiles (for example the Deno KV of deno.js):
   // SQLite in the VM keeps its databases there, when the host does not run
   // the SQL itself (sql, or a D1 binding).
-  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {}, files = null } = {}) {
+  // secrets: a store of the secrets that the VM makes itself ({get(name),
+  // put(name, value)}: the storage of a Durable Object, the Deno KV of
+  // deno.js), and host: the host of the first request (autoVars).
+  constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {}, files = null,
+                     secrets = null, host = null } = {}) {
     this.vars = vars;
+    this.secrets = secrets;
+    this.host = host;
     this.hostFiles = files && new HostFiles(files, { debug: env.BEAM_SQLITE_DEBUG === '1' });
     this.given = release && { release, snapshot };
     this.handles = new Map();  // id -> setTimeout handle: timers after adopt()
@@ -931,11 +940,37 @@ export class Vm {
     this.ready = this.boot(env);
   }
 
+  // The variables that a Phoenix app needs, when the host does not give
+  // them, so that it runs with no setup:
+  // - SECRET_KEY_BASE: a random key, made one time and kept in the store
+  //   of secrets, so that all the VMs of the app share it. With no store,
+  //   each VM makes its own key (the sessions of one VM only).
+  // - PHX_HOST: the host name of the first request (with no port: the app
+  //   gets the origin of PHX_HOST on port 443, see appOrigin).
+  // They go to the VM as vars: not in the key of a snapshot.
+  async autoVars(env, meta) {
+    if (meta.env?.PHX_SERVER !== 'true') return;
+    if (!env.SECRET_KEY_BASE && !this.vars.SECRET_KEY_BASE) {
+      let key = await this.secrets?.get(SECRET);
+      if (!key) {
+        const made = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(48))));
+        key = this.secrets ? (await this.secrets.put(SECRET, made)) ?? made : made;
+        if (!this.secrets) console.log('beam: SECRET_KEY_BASE is not set, and the host has no store: a new key for this VM');
+      }
+      this.vars.SECRET_KEY_BASE = key;
+    }
+    if (!env.PHX_HOST && !this.vars.PHX_HOST && this.host) this.vars.PHX_HOST = this.host;
+  }
+
   async boot(env) {
     const t0 = Date.now();
     const [release, bundled] = this.given
       ? [this.given.release, this.given.snapshot]
       : await Promise.all([loadRelease(env), loadSnapshot(env)]);
+    // The vars of the host choose a snapshot at the boot point (below);
+    // the vars of autoVars do not.
+    const ownVars = Object.keys(this.vars).length;
+    await this.autoVars(env, releaseMeta(release));
     // A snapshot of the build (snapshot.bin), else one that a Worker made
     // (BEAM_SNAPSHOT = "off" turns them off).
     let snapBytes = bundled, key = null;
@@ -948,7 +983,7 @@ export class Vm {
       // boot point, before the program has the state of one tenant.
       const meta = releaseMeta(release);
       const atBoot = !this.plain && (this.sql || this.hostFiles)
-        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || Object.keys(this.vars).length > 0);
+        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || ownVars > 0);
       key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
       snapBytes = await snapshots.get(env, key);
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
@@ -1397,7 +1432,7 @@ export class Vm {
   // as it is, and the app refuses it as before (check_origin: :conn of
   // Phoenix does the same check).
   appOrigin(origin, url) {
-    const host = this.env.PHX_HOST;
+    const host = this.env.PHX_HOST ?? this.vars.PHX_HOST;
     return origin && host && origin === url.origin ? `https://${host}` : origin;
   }
 
@@ -1465,7 +1500,7 @@ export class Vm {
       if (c.status === 101 && c.upgrade) return this.bridgeUpgrade(c);
       if (c.upgrade && c.status === 403) {
         console.log(`beam: the app refused the WebSocket of ${c.path} (403) from the origin ${c.origin}. ` +
-          `A Phoenix app compares the Origin with the host of its config (PHX_HOST=${this.env.PHX_HOST ?? ''}): see check_origin.`);
+          `A Phoenix app compares the Origin with the host of its config (PHX_HOST=${this.env.PHX_HOST ?? this.vars.PHX_HOST ?? ''}): see check_origin.`);
       }
       c.length = headers.has('content-length') ? Number(headers.get('content-length')) : null;
       c.chunked = /chunked/i.test(headers.get('transfer-encoding') ?? '');

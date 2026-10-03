@@ -1,0 +1,21 @@
+// Cloudflare Workers: npm run build, then npm run deploy (Workers Builds
+// and the button "Deploy to Cloudflare" run both). The Worker needs no
+// secret: the VM makes SECRET_KEY_BASE one time and keeps it in the storage
+// of the Durable Object, and PHX_HOST is the host of the first request.
+{
+  "name": "phoenix-demo",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  // The VM of the Durable Object serves all its requests.
+  "compatibility_flags": ["no_handle_cross_request_promise_resolution"],
+  // app.com goes into the Worker as bytes (37 MB; a Worker has 64 MiB).
+  // Without this rule, the import of worker.js puts the bytes into the
+  // JavaScript.
+  "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }],
+  // Stateful: the Durable Object Beam of worker.js. A stateless app has no
+  // binding and no migration.
+  "durable_objects": { "bindings": [{ "name": "BEAM", "class_name": "Beam" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Beam"] }],
+  // A new deploy makes a new snapshot of the VM.
+  "version_metadata": { "binding": "BEAM_VERSION" }
+}

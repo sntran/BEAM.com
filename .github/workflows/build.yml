@@ -360,7 +360,7 @@ jobs:
       # The npm package of this beam.com (package.json, and runtime/ of
       # scripts/npm.sh), as a user installs it: npx beam.com with a download
       # from a local server in place of the GitHub release, and hashsum.com
-      # with beam.com/node.
+      # with the module beam.com.
       - name: The npm package
         run: |
           scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
@@ -381,7 +381,7 @@ jobs:
           kill "$server"
           npx beam.com --version | head -n 1 | grep '^beam.com '
           node --input-type=module -e "
-            import { boot } from 'beam.com/node';
+            import { boot } from 'beam.com';
             const lines = [];
             const log = console.log;
             console.log = (...a) => { lines.push(a.join(' ')); log(...a); };
@@ -423,6 +423,34 @@ jobs:
           BOOT_ENV="{\"PORT\": \"4000\", \"HOME\": \"/tmp\", \"PHX_SERVER\": \"true\", \"PHX_HOST\": \"localhost\",
             \"DATABASE_PATH\": \"/tmp/phoenix_demo.db\", \"SECRET_KEY_BASE\": \"$key\"}" \
             node tests/host/boot_app_com.mjs "$RUNNER_TEMP/wasm32" "$RUNNER_TEMP/phoenix_demo.com" --get / --expect 'LiveView'
+
+      # Projects that deploy at each git push, with the npm package of the
+      # step "The npm package": the same worker.js in workerd and in Deno.
+      # examples/phoenix_demo is stateful (a Durable Object), and
+      # examples/worker is stateless (a VM in each isolate).
+      - name: The apps on Workers and Deno, from the npm package
+        run: |
+          sh bin/beam.com examples/worker -o "$RUNNER_TEMP/worker.com"
+          for name in phoenix_demo worker; do
+            app="$RUNNER_TEMP/hosts-$name"
+            mkdir -p "$app"
+            for f in package.json worker.js wrangler.jsonc deno.json; do cp "examples/$name/$f" "$app/"; done
+            cp "$RUNNER_TEMP/$name.com" "$app/app.com"
+            (cd "$app" && npm install --no-audit --no-fund "$RUNNER_TEMP"/beam.com-*.tgz wrangler@4.142.0 deno@2.9.6)
+          done
+          sh tests/host/app_hosts.sh "$RUNNER_TEMP/hosts-phoenix_demo" / \
+            'LiveView on Cloudflare Workers' 'LiveView on Deno' '/live/websocket?vsn=2.0.0'
+          sh tests/host/app_hosts.sh "$RUNNER_TEMP/hosts-worker" /hello \
+            'Hello from Erlang/OTP' 'Hello from Erlang/OTP' /ws
+
+      # The static site of phoenix_demo.com: its own small files, with the
+      # code of the page from the npm package on a second origin, as from
+      # jsDelivr (tests/page/app-site.mjs, check.mjs --cdn).
+      - name: The site of phoenix_demo.com, with the page from a CDN
+        run: |
+          node tests/page/app-site.mjs runtime "$RUNNER_TEMP/phoenix_demo.com" "$RUNNER_TEMP/site"
+          npm install --prefix wasm --no-audit --no-fund
+          node tests/page/check.mjs "$RUNNER_TEMP/site" --base /repo/ --cdn runtime --phoenix-demo
 
   test:
     name: Run on ${{ matrix.name }}

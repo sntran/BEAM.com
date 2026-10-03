@@ -1,0 +1,14 @@
+// Cloudflare Workers: npm run build, then npm run deploy. Stateless: no
+// Durable Object (see examples/phoenix_demo for a stateful app).
+{
+  "name": "erlang-shell",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  // The VM of an isolate serves all its requests.
+  "compatibility_flags": ["no_handle_cross_request_promise_resolution"],
+  // app.com goes into the Worker as bytes. Without this rule, the import of
+  // worker.js puts the bytes into the JavaScript.
+  "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }],
+  // A new deploy makes a new snapshot of the VM.
+  "version_metadata": { "binding": "BEAM_VERSION" }
+}

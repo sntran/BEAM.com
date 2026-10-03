@@ -15,7 +15,12 @@
     "beam.com": "js/beam.com.mjs"
   },
   "exports": {
-    "./node": "./js/node.mjs",
+    ".": {
+      "workerd": "./runtime/cloudflare/index.js",
+      "deno": "./runtime/deno.js",
+      "node": "./js/node.mjs",
+      "default": "./js/node.mjs"
+    },
     "./app-com": "./runtime/app-com.js",
     "./runtime-id": "./runtime/runtime-id.js",
     "./worker": "./runtime/worker.js",

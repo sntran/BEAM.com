@@ -177,18 +177,152 @@ These parts of the start script of a Mix release are not in the file:
   `mix phx.gen.release` (`bin/NAME eval "App.Release.migrate"`) has no
   equivalent in the file.
 
-The hosts of `app.com`:
+The hosts of `app.com`, in the npm package `beam.com` (["npm" in
+README.md](../README.md#npm)), of the same version as the `beam.com` that
+made the file:
 
-- Deno: `BEAM_APP`, the path of `app.com`, with the `deno.js` of a
-  `--target wasm32` directory of the same `beam.com`:
-  `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
-- Node.js: `boot` of the npm package `beam.com`
-  (["npm" in README.md](../README.md#npm)), with the runtime of the same
-  version: `const vm = await boot('app.com')`. The check of CI ("Run
-  one file natively and at the edge") also uses
+- Cloudflare Workers and Deno: `serve(app)` of the module `beam.com`
+  (its condition `workerd`, which Wrangler uses, or `deno`), with the
+  bytes of the file. One entry runs on both hosts (see "Deploy at each
+  git push"). On Workers, Wrangler bundles the file into the Worker as a
+  Data module (a Worker has 64 MiB). On Deno, `deno.js` of the package is
+  the module `beam.com`. It also runs as it is, with the path of `app.com`
+  as its first argument (or `BEAM_APP`):
+  `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. It needs
+  no import map: `deno/worker.js` is a copy of `worker.js` with the
+  imports of `deno/`.
+- A web page: `main.js` of the package, with the option `app` (see
+  "A static site of app.com").
+- Node.js: `const vm = await boot('app.com')` of the module `beam.com`. The
+  check of CI ("Run one file natively and at the edge") also uses
   [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
-- Not yet: Workers (the app part from `app.com` at each deploy) and the
-  web page.
+
+A Mix release evaluates its `runtime.exs` in the VM at the boot, so the
+host gives its variables. For Ecto SQLite, `.release.json` gives
+`DATABASE_PATH` (`/tmp/NAME.db`) when the host does not. A Phoenix app
+(`PHX_SERVER` in `.release.json`) also gets these when the host does not
+give them:
+
+- `SECRET_KEY_BASE`: a random key that the VM makes one time and keeps
+  in the storage of the Durable Object, or in Deno KV. All the VMs of
+  the app share it. With no store (a plain Worker, or Deno with no KV),
+  each VM makes its own key, and a session stays in that VM only.
+- `PHX_HOST`: the host name of the first request.
+
+### Deploy at each git push
+
+A project deploys to Cloudflare Workers (Workers Builds) and to Deno
+Deploy at each git push, with these small files, which do not change
+from one app to another:
+
+| File | What |
+|---|---|
+| `package.json` | The dev dependencies `beam.com` and `wrangler`, the script `build` (it makes `app.com`), and the script `deploy` (`wrangler deploy`). |
+| `worker.js` | The entry, the same on both hosts: `serve(app)` and the `fetch` handler. |
+| `wrangler.jsonc` | The name of the Worker, the flag `no_handle_cross_request_promise_resolution`, the Data rule for `*.com`, and for a stateful app the Durable Object. |
+| `deno.json` | `"unstable": ["kv", "raw-imports"]`, and the `deploy` key of Deno Deploy: `npm install`, `npm run build`, and the entrypoint `worker.js`. |
+
+The entry:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+export { Beam } from 'beam.com';   // stateful only
+
+const beam = serve(app);
+
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+};
+```
+
+- The app is stateful or stateless, as the project chooses:
+  - Stateful: the export `Beam` and its binding `BEAM` in
+    `wrangler.jsonc` (with a migration `new_sqlite_classes`). Each
+    request goes to one Durable Object: one VM for all the requests,
+    whose timers run between requests, and its SQLite storage for Ecto
+    SQLite. A Phoenix app with LiveView needs it. Cloudflare reads the
+    class by the name of its export, so the export line stays in the
+    entry. Example: [`examples/phoenix_demo`](../examples/phoenix_demo).
+  - Stateless: no export and no binding. Each isolate runs its own VM,
+    which serves the requests of that isolate. It is for an app with no
+    state between requests and no work between requests. Example:
+    [`examples/worker`](../examples/worker).
+- `serve(app, { binding, name })`: `binding` is the binding of the
+  Durable Object (`BEAM`), and `name` is the name of the object, or a
+  function of the request that gives it, for one object for each tenant
+  (`main` by default).
+- On Deno, an isolate keeps its VM between requests, as a Durable
+  Object does. The second argument of `fetch` is the info of
+  `deno serve`, and `Beam` is not used. Deno KV keeps the database and
+  the key.
+- Wrangler gives a Data module only to an import of a file path, so the
+  import of `app.com` is in the entry. The rule is necessary: without
+  it, Wrangler puts the bytes of the file into the JavaScript.
+
+The other handlers of a Worker (`scheduled`, `email`, `queue`) are the
+code of the project. A handler can make a request to the app:
+
+```js
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+  scheduled(event, env, ctx) {
+    ctx.waitUntil(beam.fetch(new Request('http://app/cron', { method: 'POST' }), env, ctx));
+  },
+};
+```
+
+Caution: a visitor can also send a request to such a path. Refuse the
+path in `fetch`, or check a secret header that only the handler sends.
+
+Both hosts have a button that clones such a repository (or one directory
+of it) into the account of the user, and deploys it at each push:
+
+```md
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=REPO)
+[![Deploy on Deno](https://deno.com/button)](https://console.deno.com/new?clone=REPO)
+```
+
+The limits:
+
+- `npx beam.com` downloads `beam.com` of the GitHub release of the
+  version of the package. So a build works after the release of that
+  version on npm.
+- The Cloudflare button needs a public repository.
+- The Deno button does not make a database. For data that all the
+  isolates share and that a new deploy keeps, assign a Deno KV database
+  to the app (`deno deploy database provision`, then `assign`). With no
+  KV, SQLite runs in the memory of each isolate.
+- The build of Deno Deploy has 5 minutes by default, 2 CPUs and 3 GB of
+  memory. Its build command runs in a small shell: `&&` works, but a
+  quoted `sh -c "..."` does not. So the command is `npm run build`.
+- `deno deploy create` of the Deno CLI 0.0.9908 made apps with an empty
+  build configuration, and their builds failed at "building". A `deploy`
+  key in `deno.json` gives the configuration.
+
+### A static site of app.com
+
+GitHub Pages can serve a static site from a directory of a branch, with
+no GitHub Actions ("Deploy from a branch"). The site needs these files
+on its own origin, with the code of the page from the npm package on a
+CDN (for example jsDelivr, at the version of the package):
+
+| File | What |
+|---|---|
+| `app.com` | The app. The page reads its release with range requests. GitHub Pages does not compress a `.com` file, also for a range. |
+| `index.html`, `404.html` | The page of the package. `index.html` imports `main.js` of the CDN and starts it with `{ app: './app.com' }`. |
+| `sw.js`, `vm.js` | One line each, which imports `page/sw.js` or `page/vm.js` of the CDN: a service worker and a SharedWorker must come from the origin of the site. |
+| `.nojekyll` | GitHub Pages runs no Jekyll. |
+
+[`tests/page/app-site.mjs`](../tests/page/app-site.mjs) writes these
+files, and CI checks the site of `phoenix_demo.com` in Chrome, with the
+package on a second origin (`check.mjs --cdn`). Not yet: `beam.com INPUT
+-o DIR --target wasm32` writes this small site in place of the full
+directory.
 
 The npm package `beam.com` has the runtime (`beam.wasm`, `worker.js`,
 `app-com.js` and `runtime-id.js`), the Node.js host, and `npx beam.com`.
@@ -407,7 +541,7 @@ with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
 | Workers | Deno |
 |---|---|
 | `node:net` (`nodejs_compat`, the default from the compatibility date 2026-08-04) | `node:net` of Deno. TLS stays in `ssl` of OTP. |
-| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files. `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
+| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | Small modules in `deno/` that read the files, with `deno/worker.js`, a copy of `worker.js` with their imports (no import map). `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
 | `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
 | `caches.default` | `caches.open('beam')` |
 | The SQL storage of a Durable Object | SQLite in the VM, with its pages in Deno KV (see below) |

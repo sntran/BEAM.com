@@ -1,9 +1,4 @@
 {
-  "imports": {
-    "./beam.wasm": "./deno/beam-wasm.js",
-    "./release.bin": "./deno/release-bin.js",
-    "./snapshot.bin": "./deno/snapshot-bin.js"
-  },
   "unstable": [
     "kv"
   ]

@@ -1,0 +1,11 @@
+{
+  "unstable": ["kv", "raw-imports"],
+  "deploy": {
+    "install": "npm install",
+    "build": "npm run build",
+    "runtime": {
+      "type": "dynamic",
+      "entrypoint": "worker.js"
+    }
+  }
+}
