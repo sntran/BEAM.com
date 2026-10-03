@@ -182,10 +182,21 @@ The hosts of `app.com`:
 - Deno: `BEAM_APP`, the path of `app.com`, with the `deno.js` of a
   `--target wasm32` directory of the same `beam.com`:
   `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
-- Node.js: [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs),
-  the check of CI ("Run one file natively and at the edge").
-- Not yet: Workers (the app part from `app.com` at each deploy), the web
-  page, and a package on npm with the runtime.
+- Node.js: `boot` of the npm package `beam.com`
+  (["npm" in README.md](../README.md#npm)), with the runtime of the same
+  version: `const vm = await boot('app.com')`. The check of CI ("Run
+  one file natively and at the edge") also uses
+  [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
+- Not yet: Workers (the app part from `app.com` at each deploy) and the
+  web page.
+
+The npm package `beam.com` has the runtime (`beam.wasm`, `worker.js`,
+`app-com.js` and `runtime-id.js`), the Node.js host, and `npx beam.com`.
+The package does not hold `beam.com`: `npx beam.com` downloads the file
+of the GitHub release of the same version at its first run, and checks
+its SHA-256. `package.json` is at the root of this repository.
+`scripts/npm.sh` writes the generated part (`runtime/`), and the release
+job of CI publishes the package with each tag `v*`.
 
 Measured with the `edge` build of October 2026 and this change, in
 Node.js 26 on Linux x86_64:
@@ -395,7 +406,7 @@ with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
 
 | Workers | Deno |
 |---|---|
-| `connect()` of `cloudflare:sockets` | `Deno.connect` (`deno/sockets.js`). TLS stays in `ssl` of OTP. |
+| `node:net` (`nodejs_compat`, the default from the compatibility date 2026-08-04) | `node:net` of Deno. TLS stays in `ssl` of OTP. |
 | The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | An import map (`deno.json`) and small modules that read the files. `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
 | `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
 | `caches.default` | `caches.open('beam')` |
@@ -530,7 +541,7 @@ The page needs an import map before its first module, and then calls
 
 ```html
 <script type="importmap">{ "imports": {
-  "cloudflare:sockets": "./browser/sockets.js",
+  "node:net": "./browser/net.js",
   "./beam.wasm": "./browser/beam-wasm.js",
   "./release.bin": "./browser/none.js",
   "./snapshot.bin": "./browser/none.js" } }</script>

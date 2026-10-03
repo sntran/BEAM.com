@@ -2,8 +2,8 @@
 %% inet_db:set_tcp_module(wasm_tcp), gen_tcp and inet dispatch to this
 %% module ({'$inet', wasm_tcp, Pid}, as for the socket backend):
 %%
-%% - gen_tcp:connect/3,4: node:net in Node.js, connect() of
-%%   cloudflare:sockets in Workers;
+%% - gen_tcp:connect/3,4: node:net in each host (in Workers, with
+%%   nodejs_compat, the default from the compatibility date 2026-08-04);
 %% - gen_tcp:listen/2 and accept/1,2: a server of node:net in Node.js; in
 %%   Workers (which get no TCP connections), each WebSocket to
 %%   /.tcp/PORT is a connection to the listener of PORT.

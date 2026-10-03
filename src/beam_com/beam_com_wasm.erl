@@ -643,14 +643,14 @@ page_env(#{name := Name} = Rel) ->
 %% The four imports of worker.js that a Web Worker cannot resolve: the
 %% modules of browser/ in their place.
 page_worker(Js) ->
-    Map = [{<<"from 'cloudflare:sockets'">>, <<"from './browser/sockets.js'">>},
+    Map = [{<<"from 'node:net'">>, <<"from './browser/net.js'">>},
            {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
            {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
            {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}],
     Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end,
                       iolist_to_binary(Js), Map),
     [throw({error, "worker.js: the page cannot import ~ts", [Spec]})
-     || Spec <- [<<"'cloudflare:sockets'">>, <<"'./beam.wasm'">>, <<"'./release.bin'">>,
+     || Spec <- [<<"'node:net'">>, <<"'./beam.wasm'">>, <<"'./release.bin'">>,
                  <<"'./snapshot.bin'">>],
         binary:match(Out, Spec) =/= nomatch],
     Out.
@@ -683,6 +683,8 @@ link_file(From, To) ->
         {error, _} -> write_file(To, read(From))
     end.
 
+%% The compatibility date of the Workers: 2026-08-04 or later, so that
+%% nodejs_compat is on (node:net of worker.js).
 -define(DATE, "2026-09-01").
 %% The version of the deploy is in the key of the snapshot (worker.js).
 -define(VERSION, "  // The version of the deploy: a new deploy makes a new snapshot.\n"
@@ -709,7 +711,8 @@ wrangler(Name, Phoenix, Sqlite) ->
      "  \"name\": \"", Name, "\",\n"
      "  \"main\": \"worker.js\",\n"
      "  \"compatibility_date\": \"", ?DATE, "\",\n"
-     "  // The VM of an isolate serves all its requests.\n"
+     "  // The VM of an isolate serves all its requests. From this date,\n"
+     "  // nodejs_compat is on: the TCP sockets of the VM use node:net.\n"
      "  \"compatibility_flags\": [\"no_handle_cross_request_promise_resolution\"],\n"
      "  // The files as they are (no bundle): an optional module that is not\n"
      "  // here (release.bin) is an error only at run time.\n"

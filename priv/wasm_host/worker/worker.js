@@ -20,11 +20,14 @@
 // makes a local TCP port of it).
 //
 // The events between the host and Erlang (wasm_host) are those of
-// wasm_host_server.erl; outgoing wasm_tcp sockets use connect().
+// wasm_host_server.erl; outgoing wasm_tcp sockets use node:net. Node.js
+// and Deno have it, and Workers have it with nodejs_compat (on
+// cloudflare:sockets), the default from the compatibility date 2026-08-04.
+// TLS runs in Erlang (ssl), over this socket.
 //
 // "beam.com INPUT -o DIR --target wasm32" writes this file into DIR, with
 // the runtime (beam.mjs, beam.wasm) and the release (release.bin).
-import { connect } from 'cloudflare:sockets';
+import net from 'node:net';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
 
@@ -1599,33 +1602,39 @@ export class Vm {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // A TCP socket of wasm_tcp: connect() of cloudflare:sockets. In a plain
+  // A TCP socket of wasm_tcp: net.connect() of node:net. In a plain
   // Worker it belongs to the handler h, and closes with that request.
   async tcpConnect({ id, host, port }, h) {
     let socket;
     if (h) h.sockets++;
     try {
       if (!connectAllowed(this.env.BEAM_CONNECT, host, port)) throw new Error('not in BEAM_CONNECT');
-      socket = connect({ hostname: host, port });
-      const writer = socket.writable.getWriter();
-      this.tcps.set(id, { send: (b) => writer.write(b), close: () => socket.close().catch(() => {}), h });
-      await socket.opened;
+      socket = net.connect({ host, port });
+      // A send resolves when the bytes are written; a close sends the
+      // bytes that wait, and then ends the socket.
+      this.tcps.set(id, {
+        send: (b) => new Promise((resolve) => socket.write(b, () => resolve())),
+        close: () => socket.end(() => socket.destroy()),
+        h,
+      });
+      await new Promise((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
     } catch (e) {
       console.log(`beam: connect ${host}:${port}: ${e.message}`);
+      socket?.destroy();
       this.tcps.delete(id);
       this.event({ t: 'tcp_error', id, reason: 'econnrefused' });
       if (h) { h.sockets--; h.wake?.(); }
       return;
     }
     this.event({ t: 'tcp_open', id });
-    try {
-      const reader = socket.readable.getReader();
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        this.tcpData(id, value);
-      }
-    } catch (e) {}
+    await new Promise((resolve) => {
+      socket.on('data', (b) => this.tcpData(id, new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
+      socket.on('error', () => {});
+      socket.once('close', resolve);
+    });
     this.tcpClosed(id);
     if (h) { h.sockets--; h.wake?.(); }
   }

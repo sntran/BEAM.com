@@ -23,8 +23,8 @@ host = System.get_env("BEAM_HOST", "native")
 
 In the runtime, `:gen_tcp` uses the socket module `wasm_tcp` of beam.com. A connect goes to the host:
 
-* On Cloudflare, the Worker opens the connection with `connect()` of `cloudflare:sockets`.
-* On Deno, the host opens it with `Deno.connect`.
+* On Cloudflare, the Worker opens the connection with `node:net` (`nodejs_compat`, on `cloudflare:sockets`).
+* On Deno and Node.js, the host opens it with `node:net`.
 * In a web page, there is no TCP. A connect gets `{:error, :econnrefused}`.
 
 The host resolves the name. So the VM connects to a name, not to an address that it chooses.
