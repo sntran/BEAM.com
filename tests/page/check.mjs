@@ -20,8 +20,11 @@
 // - two tabs show the app, with one VM in a SharedWorker;
 // - a click on the shared counter in one tab shows in the other tab;
 // - when the first tab closes, the second tab still works;
+// - a reload of the only tab restores the VM from the snapshot, or keeps the
+//   VM (extendedLifetime);
 // - when all the tabs close, the VM stops: the next visit restores it from
 //   the snapshot;
+// - after a failed boot in the SharedWorker, the next tab boots it again;
 // - with no SharedWorker, the VM runs in one tab, and another tab shows a
 //   message.
 //
@@ -56,8 +59,16 @@ const types = {
 
 // GitHub Pages: a directory gives its index.html, a directory without "/"
 // is a redirect, and another path outside the site is a 404.
+// failRelease: the next request of release.bin fails (the check of a failed
+// boot).
+let failRelease = false;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (failRelease && url.pathname.endsWith('/release.bin')) {
+    failRelease = false;
+    res.writeHead(503);
+    return res.end();
+  }
   const file = url.pathname.startsWith(base) && path.join(dir, decodeURIComponent(url.pathname.slice(base.length)));
   try {
     if (!file || !path.resolve(file).startsWith(path.resolve(dir))) throw new Error('outside');
@@ -173,7 +184,24 @@ async function tabs(browser, origin) {
   await b.frame.click('#click');
   await counted(b.frame, n + 2);
   step('the first tab closed, and the second tab still works');
+
+  // A reload of the only tab: the VM stops, and the reload restores it from
+  // the snapshot. With extendedLifetime (if a page asks for it), the
+  // SharedWorker stays after its last tab unloads, so the VM and the counter
+  // stay.
+  const r = await open(two, origin);
+  if (r.error) throw new Error(`the reload says: ${r.error}`);
+  await live(r.frame);
+  const after = await clicks(r.frame);
+  if (r.restored === 'false' && after === n + 2) {
+    step(`a reload of the only tab kept the VM (extendedLifetime): the counter is still ${after}`);
+  } else if (r.restored === 'true' && after === 0) {
+    step('a reload of the only tab stopped the VM, and restored it from the snapshot');
+  } else {
+    throw new Error(`after a reload of the only tab: restored ${r.restored}, counter ${after}`);
+  }
   await two.close();
+
   // The SharedWorker stops when its last tab closes. Its stop takes a moment,
   // so a page that comes too soon can still get the old VM: then open again.
   let c = null;
@@ -183,13 +211,26 @@ async function tabs(browser, origin) {
     if (c.error) throw new Error(`the next visit says: ${c.error}`);
     if (c.restored === 'true') break;
     await page.close();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((done) => setTimeout(done, 100));
   }
   if (c.restored !== 'true') throw new Error('the next visit did not restore the VM from the snapshot');
   await live(c.frame);
   await counted(c.frame, 0);
   step('all the tabs closed, and the next visit restored the VM from the snapshot (the counter is 0)');
   await context.close();
+
+  // A failed boot in the SharedWorker (here: release.bin fails one time). The
+  // first tab then runs the VM in the tab. The next tab boots the
+  // SharedWorker again, and does not get the old error.
+  const failed = await browser.newContext();
+  failRelease = true;
+  const f = await open(await failed.newPage(), origin);
+  if (f.error || f.where !== 'tab') throw new Error(`after a failed boot, the first tab: ${f.error ?? f.where}`);
+  const g = await open(await failed.newPage(), origin);
+  if (g.error || g.where !== 'shared') throw new Error(`after a failed boot, the next tab: ${g.error ?? g.where}`);
+  await live(g.frame);
+  step('after a failed boot in the SharedWorker, the next tab booted it again');
+  await failed.close();
 
   // No SharedWorker: one VM in one tab, as before.
   const old = await browser.newContext();

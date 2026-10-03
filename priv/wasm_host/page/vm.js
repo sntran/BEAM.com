@@ -93,7 +93,12 @@ function boot({ base: path, env }) {
     beam = await start({ release: './release.bin', env: { ...env, BEAM_BASE_PATH: base } });
     for (const p of pending.splice(0)) handle(p);
     return { type: 'ready', restored: !!beam.vm.restored };
-  })().catch((err) => ({ type: 'error', message: `The VM did not start: ${err?.message ?? err}` }));
+  })().catch((err) => {
+    // The next start boots again: a SharedWorker lives while a tab of the
+    // site is open, so an error at the first visit must not stay.
+    booting = null;
+    return { type: 'error', message: `The VM did not start: ${err?.message ?? err}` };
+  });
   return booting;
 }
 
