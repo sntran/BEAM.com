@@ -41,6 +41,38 @@ The other changes to the generated app:
 - The default poller of `telemetry_poller` is off in production:
   `erlang:memory/0` is not supported with `-Mea min`.
 
+## Deploy at each git push
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sntran/BEAM.com/tree/main/examples/phoenix_demo)
+[![Deploy on Deno](https://deno.com/button)](https://console.deno.com/new?clone=https://github.com/sntran/BEAM.com&path=examples/phoenix_demo)
+
+A button copies this directory into a new repository of your account, and
+the host builds and deploys it at each push. The buttons work after the
+first release of the npm package `beam.com`.
+
+The build step of the host runs `npm run build`
+([`scripts/app-com.sh`](scripts/app-com.sh)): `npx beam.com` builds the
+release and makes `app.com`, one native file. Then the runtime of the npm
+package runs that file: [`worker.js`](worker.js) and
+[`wrangler.jsonc`](wrangler.jsonc) on Cloudflare Workers, and the
+`deploy` key of [`deno.json`](deno.json) on Deno Deploy. The app needs no
+secret and no variable: the VM makes `SECRET_KEY_BASE` one time and keeps
+it (in the storage of the Durable Object, or in Deno KV), and `PHX_HOST`
+is the host of the first request. On Deno Deploy, assign a Deno KV
+database to the app, so that all the isolates share the data.
+
+The same `app.com` also runs on this computer:
+
+```sh
+npm install && npm run build
+PHX_SERVER=true PHX_HOST=localhost DATABASE_PATH=demo.db \
+  SECRET_KEY_BASE="$(head -c 48 /dev/urandom | base64)" sh app.com   # natively
+npx wrangler dev                 # Cloudflare Workers, in workerd
+npx deno serve -A node_modules/beam.com/runtime/deno.js app.com
+```
+
+## Build a directory, then deploy
+
 Build, then deploy to Cloudflare Workers:
 
 ```sh

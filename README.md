@@ -253,16 +253,24 @@ file, without a VM.
 | Import | What |
 |---|---|
 | `beam.com/node` | `boot`, `release`, `appRelease` and `runtimeId`, for Node.js. |
+| `beam.com/cloudflare` | A Worker that runs the `app.com` of the project: `use(app)`, and the Durable Object `Beam`. |
+| `beam.com/deno` | `deno.js`, the host of Deno and Deno Deploy: `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. |
 | `beam.com/app-com` | The reader of an `app.com`, for any host: `appRelease(read, size, { runtime })`. |
 | `beam.com/runtime-id` | The identity of this runtime, for `appRelease`. |
 | `beam.com/worker` | The runtime (`worker.js` of Cloudflare Workers). |
 | `beam.com/beam.wasm` | The VM: ERTS built for WebAssembly. |
 
+The same `app.com` runs on Cloudflare Workers, on Deno Deploy and in a
+web page, with the runtime of the package. A project deploys at each git
+push: the build step of the host makes `app.com` (`npx beam.com`), and
+the host runs it. A Phoenix app needs no secret and no variable: the VM
+makes `SECRET_KEY_BASE` one time and keeps it, and `PHX_HOST` is the
+host of the first request. [`examples/phoenix_demo`](examples/phoenix_demo)
+is such a project, with one-click buttons for both hosts. See "Deploy at
+each git push" in [`docs/WORKERS.md`](docs/WORKERS.md).
+
 The release job of CI makes the generated part of the package
 (`runtime/`, with `scripts/npm.sh`) and publishes it with each tag `v*`.
-Not yet: an adapter for Cloudflare Workers, Deno and a web page in the
-package. Today, `beam.com INPUT -o DIR --target wasm32` writes these
-hosts into `DIR`.
 
 ## Documentation
 
