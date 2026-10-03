@@ -1,0 +1,269 @@
+name: Publish an app on GitHub Pages
+
+# A reusable workflow: it builds an Erlang or Elixir app with beam.com
+# (beam.com INPUT -o DIR --target wasm32), and publishes DIR/page/ on
+# GitHub Pages. Then the app runs in the browser of each visitor (see "A
+# static site for any app" in docs/WORKERS.md). The repository of the app
+# needs only this file:
+#
+#   # .github/workflows/pages.yml
+#   name: Pages
+#   on:
+#     push:
+#       branches: [main]
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#     pages: write
+#     id-token: write
+#   jobs:
+#     pages:
+#       uses: sntran/BEAM.com/.github/workflows/pages-app.yml@v0.1.0
+#
+# The caller must give pages: write and id-token: write, also with
+# deploy: false: else GitHub refuses the run when it starts. Pages must use
+# "GitHub Actions" as its source (Settings > Pages). The GITHUB_TOKEN cannot
+# change this setting.
+#
+# The input of the build:
+# - a Mix project with Phoenix: mix.com deps.get --only prod, mix.com
+#   assets.deploy (when the project has this alias), and mix.com release
+#   with RELEASE_ERTS=false. The input is the release directory;
+# - another project: the directory itself.
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: The directory of the app.
+        type: string
+        default: "."
+      beam-com:
+        description: >-
+          The version of beam.com: the tag of a release (v0.1.0) or edge.
+          The default is the tag of this workflow, else edge.
+        type: string
+        default: ""
+      deploy:
+        description: "false: build and check the site, and do not publish it."
+        type: boolean
+        default: true
+      name:
+        description: The name of the artifact of the site.
+        type: string
+        default: github-pages
+      artifact:
+        description: >-
+          For the CI of BEAM.com: the name of an artifact of this run with
+          beam.com, in place of a release.
+        type: string
+        default: ""
+    outputs:
+      page_url:
+        description: The URL of the site.
+        value: ${{ jobs.deploy.outputs.page_url }}
+
+jobs:
+  # The OIDC token of a job names the ref of this workflow
+  # (job_workflow_ref, for example
+  # sntran/BEAM.com/.github/workflows/pages-app.yml@refs/tags/v0.1.0). A tag
+  # gives its release. A commit SHA gives the release tag of that commit, or
+  # an error when it has none. A branch gives edge, with a warning. This job
+  # runs no code of the app.
+  version:
+    name: Find the version of beam.com
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          WANT: ${{ inputs.beam-com }}
+          ARTIFACT: ${{ inputs.artifact }}
+        run: |
+          tag=$WANT
+          if [ -z "$tag" ] && [ -z "$ARTIFACT" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            ref=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=beam-com" |
+                  python3 -c 'import base64, json, sys
+          p = json.load(sys.stdin)["value"].split(".")[1]
+          print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["job_workflow_ref"])')
+            case $ref in
+              */.github/workflows/pages-app.yml@refs/tags/v*)
+                tag=${ref##*@refs/tags/} ;;
+              */.github/workflows/pages-app.yml@*)
+                # A pin by a commit SHA: the release tag of that commit.
+                sha=${ref##*@}
+                if printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+                  tag=$(git ls-remote --tags https://github.com/sntran/BEAM.com |
+                        awk -v sha="$sha" '$1 == sha { print $2 }' |
+                        sed -e 's|^refs/tags/||' -e 's|\^{}$||' | grep -E '^v[0-9]' | head -n 1)
+                  if [ -z "$tag" ]; then
+                    echo "::error::pages-app.yml is pinned to the commit $sha, which has no release tag. Give the input beam-com (for example v0.1.0)."
+                    exit 1
+                  fi
+                fi ;;
+            esac
+          fi
+          if [ -z "$tag" ]; then
+            tag=edge
+            # A branch (or no OIDC token): the newest build of main.
+            [ -n "$ARTIFACT" ] ||
+              echo "::warning::beam.com edge (the newest build of main) builds this site. Pin pages-app.yml to a release tag, or give the input beam-com."
+          fi
+          case $tag in
+            edge | v[0-9]*) ;;
+            *) echo "beam-com: $tag is not edge or the tag of a release" >&2; exit 1 ;;
+          esac
+          if printf '%s' "$tag" | grep -q '[^A-Za-z0-9._-]'; then
+            echo "beam-com: $tag has a character that a tag cannot have" >&2
+            exit 1
+          fi
+          echo "beam.com: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build the site
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The build runs the code of the app and of its dependencies: it can
+    # only read the repository.
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Get beam.com of this run
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/beam-com
+
+      - name: Get beam.com ${{ needs.version.outputs.tag }}
+        if: inputs.artifact == ''
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p beam-com
+          cd beam-com
+          url=https://github.com/sntran/BEAM.com/releases/download/$TAG
+          curl -fsSL -o beam.com "$url/beam.com"
+          # The prerelease edge has beam.com.sha256, a release has SHA256SUMS.
+          if [ "$TAG" = edge ]; then
+            curl -fsSL -o beam.com.sha256 "$url/beam.com.sha256"
+            sha256sum -c beam.com.sha256
+          else
+            curl -fsSL -o SHA256SUMS "$url/SHA256SUMS"
+            grep ' beam.com$' SHA256SUMS | sha256sum -c
+          fi
+
+      - name: Make beam.com a program of the runner
+        id: beam
+        working-directory: ${{ runner.temp }}/beam-com
+        # Mix runs mix.com as a program, and the runner has no APE loader:
+        # --assimilate makes the APE file an ELF file for this machine. The
+        # zip in the file does not change. Mix runs rebar3 as an escript:
+        # the link escript is that tool.
+        run: |
+          sh ./beam.com --assimilate
+          chmod +x beam.com
+          ./beam.com --version
+          echo "id=$(sha256sum beam.com | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          mkdir -p bin
+          ln -sf "$PWD/beam.com" bin/beam.com
+          ln -sf "$PWD/beam.com" bin/mix.com
+          ln -sf "$PWD/beam.com" bin/escript
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+
+      - name: Find the kind of the app
+        id: kind
+        working-directory: ${{ inputs.path }}
+        run: |
+          if [ -f mix.exs ] && grep -q '"phoenix": {' mix.lock 2>/dev/null; then
+            echo "phoenix=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "phoenix=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f mix.exs ] && grep -q '"assets.deploy"' mix.exs; then
+            echo "assets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "assets=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache deps and _build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ inputs.path }}/deps
+            ${{ inputs.path }}/_build
+          key: beam-pages-${{ steps.beam.outputs.id }}-${{ hashFiles(format('{0}/mix.lock', inputs.path), format('{0}/rebar.lock', inputs.path)) }}
+
+      - name: Build the release
+        if: steps.kind.outputs.phoenix == 'true'
+        working-directory: ${{ inputs.path }}
+        env:
+          MIX_ENV: prod
+          ASSETS: ${{ steps.kind.outputs.assets }}
+        run: |
+          mix.com local.hex --force --if-missing
+          mix.com deps.get --only prod
+          mix.com compile
+          if [ "$ASSETS" = true ]; then mix.com assets.deploy; fi
+          # mix release keeps the directories of old versions in lib/.
+          rm -rf _build/prod/rel
+          RELEASE_ERTS=false mix.com release --overwrite
+
+      - name: Build the site
+        working-directory: ${{ inputs.path }}
+        env:
+          PHOENIX: ${{ steps.kind.outputs.phoenix }}
+          SITE: ${{ runner.temp }}/site
+        run: |
+          input=.
+          if [ "$PHOENIX" = true ]; then
+            set -- _build/prod/rel/*
+            [ $# -eq 1 ] || { echo "the build has $# releases in _build/prod/rel" >&2; exit 1; }
+            input=$1
+            # The build runs the release once on this machine, to find the
+            # modules of its boot. runtime.exs of mix phx.new needs a
+            # database and a secret for that run.
+            export DATABASE_PATH="$RUNNER_TEMP/native.db"
+            SECRET_KEY_BASE=$(MIX_ENV=prod mix.com phx.gen.secret)
+            export SECRET_KEY_BASE
+          fi
+          beam.com "$input" -o "$SITE" --target wasm32
+          test -f "$SITE/page/index.html"
+
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: ${{ runner.temp }}/site/page
+          name: ${{ inputs.name }}
+
+  deploy:
+    name: Publish the site
+    needs: build
+    if: inputs.deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    # One publish at a time; a newer one waits.
+    concurrency:
+      group: pages-${{ github.repository }}
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        with:
+          artifact_name: ${{ inputs.name }}

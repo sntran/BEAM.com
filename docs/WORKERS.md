@@ -526,20 +526,27 @@ The variables of `env.json`:
 | `SECRET_KEY_BASE` | a random value for each browser, in `localStorage` | the release has Phoenix |
 | `DATABASE_PATH` | `/tmp/NAME.db`, in the memory of the VM | the release has `exqlite` |
 
-A test of CI builds `examples/phoenix_demo` with
-[`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh). Then
-[`tests/page/check.mjs`](../tests/page/check.mjs) serves the site at
-`/repo/` and at `/`, and checks it in headless Chromium: the home page,
-a LiveView event, the links, and the login form (a POST). With `--tabs`,
-it also checks two tabs: the shared counter (`Phoenix.PubSub`) of one
-tab shows in the other tab, a tab still works when the first tab closes,
-a reload of the only tab keeps the VM (Chrome 148 or later), a visit 35 s
-after all the tabs close restores the snapshot, a boot that fails one
-time gets one more start, a SharedWorker that always fails gives the VM in
-the tab, and the fallback with no `SharedWorker`. In headless Chromium on a local server (October 2026),
-the app showed in 1.6 to 3.4 s at the first visit. The same page works
-in Firefox 157, with one VM for two tabs: the second tab was ready in
-10 ms.
+A GitHub workflow builds the site of an app and publishes it on GitHub
+Pages: see "Publish on GitHub Pages" in the [README](../README.md#publish-on-github-pages).
+The CI of BEAM.com calls this workflow
+([`pages-app.yml`](../.github/workflows/pages-app.yml)) for
+`examples/phoenix_demo` and `examples/worker`, and does not publish the
+sites. Then [`tests/page/check.mjs`](../tests/page/check.mjs) serves each
+site at `/repo/` (and the site of `examples/phoenix_demo` also at `/`),
+and checks it in headless Chromium. For
+`examples/phoenix_demo`, it checks the home page, a LiveView event, the
+links, and the login form (a POST). With `--tabs` (at `/repo/`), it also
+checks two tabs: the shared counter (`Phoenix.PubSub`) of one tab shows in
+the other tab, a tab still works when the first tab closes, a reload of
+the only tab keeps the VM (Chrome 148 or later), a visit 35 s after all
+the tabs close restores the snapshot, a boot that fails one time gets one
+more start, a SharedWorker that always fails gives the VM in the tab, and
+the fallback with no `SharedWorker`. On this computer,
+[`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh) builds the
+site of `examples/phoenix_demo`. In headless Chromium on a local server
+(October 2026), the app showed in 1.6 to 3.4 s at the first visit. The
+same page works in Firefox 157, with one VM for two tabs: the second tab
+was ready in 10 ms.
 
 Not tested yet: Safari, and Chrome for Android. Chrome 148 for Android
 has SharedWorker again, but nobody has checked what occurs to the VM when
