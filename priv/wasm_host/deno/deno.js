@@ -23,6 +23,10 @@
 // deno/ into DIR, next to worker.js. In DIR:
 //   deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
 // or "deno deploy" with the entrypoint deno.js.
+//
+// BEAM_APP: the path of a native app.com (beam.com INPUT -o app.com) in
+// place of release.bin. Then the same file runs natively and here, with
+// the runtime of DIR (of the same beam.com: app-com.js checks it).
 
 // WebSocketPair: Deno upgrades the request itself (Deno.upgradeWebSocket),
 // and only with the request. The VM can make the pair outside the call of

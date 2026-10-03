@@ -164,6 +164,11 @@ defmodule BeamComTest do
       assert %{cacerts: ~c"roots.pem"} = opts([~c"d", ~c"--cacerts", ~c"roots.pem"])
     end
 
+    test "--no-edge: no WebAssembly part" do
+      assert %{edge: false} = opts([~c"d", ~c"-o", ~c"d.com", ~c"--no-edge"])
+      refute Map.has_key?(opts([~c"d", ~c"-o", ~c"d.com"]), :edge)
+    end
+
     test "the commands before 0.2: a hint (build)" do
       assert catch_throw(opts([~c"build", ~c"a.erl"])) ==
                {:error, ~c"there is no command ~ts: use \"~ts INPUT -o OUTPUT\"",

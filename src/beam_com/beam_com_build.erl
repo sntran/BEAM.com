@@ -8,7 +8,12 @@
 %% with the applications that the code needs, and writes a copy of this
 %% executable with the release in its zip. It needs no Erlang
 %% installation: the compiler and the OTP applications are in the zip
-%% of beam.com.
+%% of beam.com. The input can also be a release directory
+%% (_build/prod/rel/NAME of "mix release", or of rebar3).
+%%
+%% The zip of the new file also has its edge part (.wasm/, see
+%% beam_com_wasm:overlay/4), unless --no-edge: then the same file runs in
+%% the WebAssembly runtime too (Workers, Deno, a web page).
 -module(beam_com_build).
 
 -export([run/1, allow/2, check_target/1, split_dir/1, temp_dir/1, executable/0]).
@@ -32,13 +37,17 @@
 %% Opts: input, apps, and optionally output. root (the zip, "/zip") and
 %% exe (the path of this executable) are for the tests.
 run(#{input := Input0, apps := ExtraApps} = Opts) ->
+    Wasm = maps:get(target, Opts, none) =:= ?WASM,
+    Wasm andalso maps:get(edge, Opts, true) =:= false andalso
+        throw({error, "--no-edge is for native files, not for --target wasm32", []}),
     Input = string:trim(slashes(Input0, os:type()), trailing, "/\\"),
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
-    case maps:get(target, Opts, none) =:= ?WASM andalso beam_com_wasm:release_dir(Input, Root) of
-        false -> build_input(Input, Output, Opts, ExtraApps, Base, Root);
-        Rel -> beam_com_wasm:write(Output, Rel, Opts#{root => Root})
+    case {Wasm, beam_com_wasm:release_dir(Input, Root)} of
+        {_, false} -> build_input(Input, Output, Opts, ExtraApps, Base, Root);
+        {true, Rel} -> beam_com_wasm:write(Output, Rel, Opts#{root => Root});
+        {false, Rel} -> release_exe(Input, Output, Opts, Rel, Root)
     end.
 
 build_input(Input, Output, Opts, ExtraApps, Base, Root) ->
@@ -115,22 +124,150 @@ write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
               _ -> executable()
           end,
     {ok, Bin} = read_file(Exe),
-    New = with_dirs(app_files(App) ++ DepFiles ++ Release ++ sandbox_files(Opts)
-                    ++ without_docs(Kept, Base0, Root)),
+    Files = app_files(App) ++ DepFiles ++ Release ++ without_docs(Kept, Base0, Root),
     Keep = keep(Kept, Base0),
-    Data = case Opts of
-               #{target := Target} ->
-                   native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
-               _ ->
-                   beam_com_zip:write(Bin, Keep, New)
-           end,
+    Rel = #{name => atom_to_list(maps:get(name, App)), vsn => maps:get(vsn, App), kind => beam_com},
+    Edge = edge(Files, [], Bin, Keep, Rel, Opts, Root),
+    Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
     write_output(Output, Data),
-    maps:get(quiet, Opts, false) orelse io:format("~ts: wrote ~ts (~b bytes)~n"
-              "  release: ~s ~s~n"
-              "  applications: ~s~n",
-              [beam_com:name(), Output, iolist_size(Data), maps:get(name, App),
-               maps:get(vsn, App),
-               lists:join(" ", [atom_to_list(A) || A <- Apps])]).
+    summary(Output, Data, Rel, Apps, Edge, Opts).
+
+%% A release directory: the new file has the applications of the release,
+%% and the applications of the zip of beam.com that the release names but
+%% does not have, in the versions of the zip (beam_com_wasm:release_files/2
+%% checked them). A Mix release also gets the variables of its start
+%% script (native_release/3).
+release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files := Files0} = Rel,
+            Root) ->
+    check_base(Opts),
+    Base0 = base_apps(Root),
+    RelApps = rel_apps(Dir, Name, Vsn),
+    InZip = [{A, V} || {A, V} <- RelApps,
+                       not filelib:is_dir(filename:join([Dir, "lib", atom_to_list(A) ++ "-" ++ V, "ebin"]))],
+    Kept = [A || {A, _} <- InZip],
+    ZipDirs = ["lib/" ++ atom_to_list(A) ++ "-" ++ V ++ "/" || {A, V} <- InZip],
+    Own = [F || {P, _} = F <- Files0, not lists:prefix("tmp/", P),
+                not lists:any(fun(D) -> lists:prefix(D, P) end, ZipDirs)],
+    {Native, Changed} = native_release(Own, Kind, Rel),
+    %% The runtime reads the files of the release as they are, and
+    %% tmp/run.runtime.config of a Mix release (beam_com_wasm:meta/1).
+    Originals = [F || {P, _} = F <- Own, lists:member(P, Changed)]
+        ++ [F || {"tmp/" ++ _, _} = F <- Files0],
+    Exe = case Opts of
+              #{exe := E} -> E;
+              _ -> executable()
+          end,
+    {ok, Bin} = read_file(Exe),
+    Files = Native ++ without_docs(Kept, Base0, Root),
+    Keep = keep(Kept, Base0),
+    Edge = edge(Files, Originals, Bin, Keep, maps:with([name, vsn, kind], Rel), Opts, Root),
+    Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
+    write_output(Output, Data),
+    summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts).
+
+%% The applications of the .rel file of a release directory: [{App, Vsn}].
+rel_apps(Dir, Name, Vsn) ->
+    File = filename:join([Dir, "releases", Vsn, Name ++ ".rel"]),
+    case file:consult(File) of
+        {ok, [{release, _, _, Apps}]} -> [{element(1, A), element(2, A)} || A <- Apps];
+        _ -> throw({error, "~ts: not a .rel file", [File]})
+    end.
+
+%% The files of a release directory in a native file. The start script of
+%% a Mix release sets RELEASE_ROOT, RELEASE_SYS_CONFIG and other
+%% variables, and gives -noshell and -boot_var RELEASE_LIB ("bin/NAME
+%% start"). A native file has no start script: its boot script sets the
+%% variables (os:putenv/2, before the config providers), and its vm.args
+%% gives the flags. The files of a rebar3 release do not change. Returns
+%% the files, and the paths of the files that changed.
+native_release(Files, beam_com, _Rel) ->
+    {Files, []};
+native_release(Files, mix, #{name := Name, vsn := Vsn}) ->
+    Dir = "releases/" ++ Vsn ++ "/",
+    Env = [{"RELEASE_ROOT", ?ROOT}, {"RELEASE_NAME", Name}, {"RELEASE_VSN", Vsn},
+           {"RELEASE_PROG", Name}, {"RELEASE_MODE", "interactive"},
+           {"RELEASE_SYS_CONFIG", ?ROOT ++ "/" ++ Dir ++ "sys"}],
+    Put = [{apply, {os, putenv, [K, V]}} || {K, V} <- Env],
+    Boot = Dir ++ "start.boot",
+    VmArgs = Dir ++ "vm.args",
+    Change = fun({P, D}) when P =:= Boot ->
+                     {script, Id, Cmds} = binary_to_term(iolist_to_binary(D)),
+                     {P, term_to_binary({script, Id, with_env(Cmds, Put)})};
+                ({P, D}) when P =:= VmArgs ->
+                     {P, [D, "\n-noshell\n-boot_var RELEASE_LIB ", ?ROOT, "/lib\n"]};
+                (F) -> F
+             end,
+    {[Change(F) || F <- Files], [Boot, VmArgs]}.
+
+%% The commands of the variables, before the config providers of Elixir,
+%% else after the start of stdlib.
+with_env(Cmds, Put) ->
+    Provider = {apply, {'Elixir.Config.Provider', boot, []}},
+    After = case lists:member(Provider, Cmds) of
+                true -> fun(C) -> C =:= Provider end;
+                false -> fun(C) -> element(1, C) =:= apply andalso
+                                       element(2, C) =:= {application, start_boot, [stdlib, permanent]} end
+            end,
+    lists:flatmap(fun(C) ->
+                          case {After(C), C =:= Provider} of
+                              {true, true} -> Put ++ [C];
+                              {true, false} -> [C | Put];
+                              {false, _} -> [C]
+                          end
+                  end, Cmds).
+
+%% The edge part of the new file (beam_com_wasm:overlay/4), at the end of
+%% its zip: a reader gets it with the central directory. The runtime sees
+%% the files of the zip, with Originals in their place. A file that the
+%% zip of beam.com gives has no data here (the runtime reads it as it
+%% is), but the NIF module of exqlite, which the edge part replaces.
+edge(Files, Originals, Bin, Keep, Rel, Opts, Root) ->
+    case maps:get(edge, Opts, true) of
+        false ->
+            [];
+        true ->
+            Names = sets:from_list([P || {P, _} <- Files], [{version, 2}]),
+            InZip = [{N, kept_data(N, Root)} || N <- beam_com_zip:entries(Bin), Keep(N),
+                                                lists:prefix("lib/", N), lists:last(N) =/= $/,
+                                                not sets:is_element(N, Names)],
+            Native = Files ++ InZip,
+            Release = fun(P) -> lists:prefix("lib/", P) orelse lists:prefix("releases/", P) end,
+            View = [{P, proplists:get_value(P, Originals, D)} || {P, D} <- Native, Release(P)]
+                ++ [F || {P, _} = F <- Originals, not lists:keymember(P, 1, Native)],
+            beam_com_wasm:overlay(View, Native, Rel, Opts#{root => Root})
+    end.
+
+kept_data(Name, Root) ->
+    case lists:suffix("/ebin/Elixir.Exqlite.Sqlite3NIF.beam", Name) of
+        true ->
+            {ok, Data} = read_file(filename:join(Root, Name)),
+            Data;
+        false ->
+            <<>>
+    end.
+
+exe_data(Bin, Keep, New, Opts) ->
+    case Opts of
+        #{target := Target} ->
+            native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
+        _ ->
+            beam_com_zip:write(Bin, Keep, New)
+    end.
+
+summary(Output, Data, #{name := Name, vsn := Vsn}, Apps, Edge, Opts) ->
+    maps:get(quiet, Opts, false) orelse
+        io:format("~ts: wrote ~ts (~b bytes)~n"
+                  "  release: ~ts ~ts~n"
+                  "  applications: ~ts~n"
+                  "  ~ts~n",
+                  [beam_com:name(), Output, iolist_size(Data), Name, Vsn,
+                   lists:join(" ", [atom_to_list(A) || A <- Apps]),
+                   case {Edge, maps:get(edge, Opts, true)} of
+                       {[], false} -> "edge: none (--no-edge)";
+                       {[], true} -> ["edge: none (no WebAssembly runtime in ", beam_com:name(), ")"];
+                       _ -> io_lib:format("edge: ~b files (~b bytes) for the WebAssembly runtime",
+                                          [length(Edge), iolist_size([D || {_, D} <- Edge])])
+                   end]).
 
 %% ERTS in BEAM.com is the Unix build also on Windows (os:type() is
 %% {unix, windows}), so the filename module does not take "\\" as a
