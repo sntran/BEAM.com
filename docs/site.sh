@@ -31,10 +31,6 @@ elixir.com "$SITE/prepare.exs" "$SITE/pages"
 rm -rf "$OUT/docs"
 cp -R "$SITE/doc" "$OUT/docs"
 sh "$ROOT/examples/worker/pages.sh" "$BEAM_COM" "$OUT/repl"
-# TEMPORARY: the files of a test. Does GitHub Pages compress .com, .zip,
-# .wasm and .bin? Remove docs/probe and these lines after the test.
-rm -rf "$OUT/probe"
-cp -R "$ROOT/docs/probe" "$OUT/probe"
 BEAM_COM=$BEAM_COM sh "$ROOT/examples/studio/scripts/page.sh" "$OUT/phx"
 
 # A page that goes to another address, with the part of the address after
