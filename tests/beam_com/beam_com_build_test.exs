@@ -985,6 +985,18 @@ defmodule BeamComBuildTest do
   # The edge part of a native file (.wasm/ in its zip): what the
   # WebAssembly runtime needs beyond the native release.
   describe "edge_test_" do
+    # The runtime of the edge part comes only from the zip of the test:
+    # not from BEAM_COM_WASM_RUNTIME (step unit sets it) or the cache.
+    setup %{dir: dir} do
+      old = for n <- ["BEAM_COM_CACHE", "BEAM_COM_WASM_RUNTIME"], do: {n, System.get_env(n)}
+      System.put_env("BEAM_COM_CACHE", Path.join(List.to_string(dir), "empty-cache"))
+      System.delete_env("BEAM_COM_WASM_RUNTIME")
+
+      on_exit(fn ->
+        for {n, v} <- old, do: if(v, do: System.put_env(n, v), else: System.delete_env(n))
+      end)
+    end
+
     @tag timeout: 120_000
     test "run/1: the edge part, at the end of the zip", %{dir: dir} do
       {root, exe} = edge_prepare(dir)
@@ -1068,18 +1080,9 @@ defmodule BeamComBuildTest do
           :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"runtime"])
         )
 
-      old = System.get_env("BEAM_COM_CACHE")
-      System.put_env("BEAM_COM_CACHE", Path.join(List.to_string(dir), "empty-cache"))
-
-      try do
-        out = edge_build(dir, root, exe, %{})
-        {:ok, bin} = :file.read_file(out)
-        assert [] == Enum.filter(:beam_com_zip.entries(bin), &:lists.prefix(~c".wasm/", &1))
-      after
-        if old,
-          do: System.put_env("BEAM_COM_CACHE", old),
-          else: System.delete_env("BEAM_COM_CACHE")
-      end
+      out = edge_build(dir, root, exe, %{})
+      {:ok, bin} = :file.read_file(out)
+      assert [] == Enum.filter(:beam_com_zip.entries(bin), &:lists.prefix(~c".wasm/", &1))
     end
 
     # A release directory of "mix release": its applications, the

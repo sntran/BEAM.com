@@ -652,7 +652,19 @@ defmodule BeamComWasmTest do
   # The edge part of a native app.com (beam_com_build): the files of View
   # that the runtime changes or adds, under .wasm/.
   describe "overlay_test_" do
+    # The runtime of the edge part comes only from the zip (root/): not
+    # from BEAM_COM_WASM_RUNTIME (step unit sets it) or the cache.
     setup %{tmp_dir: dir} do
+      old_cache = System.get_env("BEAM_COM_CACHE")
+      old_runtime = System.get_env("BEAM_COM_WASM_RUNTIME")
+      System.put_env("BEAM_COM_CACHE", Path.join(dir, "empty-cache"))
+      System.delete_env("BEAM_COM_WASM_RUNTIME")
+
+      on_exit(fn ->
+        restore_env("BEAM_COM_WASM_RUNTIME", old_runtime)
+        restore_env("BEAM_COM_CACHE", old_cache)
+      end)
+
       root = root(dir)
       host = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv"])
       :ok = :filelib.ensure_path(:filename.join(host, ~c"worker"))
@@ -749,26 +761,14 @@ defmodule BeamComWasmTest do
       assert [] == :beam_com_wasm.overlay(own, own, rel, %{root: root, quiet: true})
     end
 
-    test "no worker.js or no runtime: no edge part", %{
-      root: root,
-      view: view,
-      rel: rel,
-      tmp_dir: dir
-    } do
-      old = System.get_env("BEAM_COM_CACHE")
-      System.put_env("BEAM_COM_CACHE", Path.join(dir, "empty-cache"))
+    test "no worker.js or no runtime: no edge part", %{root: root, view: view, rel: rel} do
       runtime = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"runtime"])
       worker = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"worker"])
-
-      try do
-        :ok = :file.del_dir_r(runtime)
-        assert :none == :beam_com_wasm.edge_runtime(root)
-        assert [] == :beam_com_wasm.overlay(view, view, rel, %{root: root})
-        :ok = :file.del_dir_r(worker)
-        assert :none == :beam_com_wasm.edge_runtime(root)
-      after
-        restore_env("BEAM_COM_CACHE", old)
-      end
+      :ok = :file.del_dir_r(runtime)
+      assert :none == :beam_com_wasm.edge_runtime(root)
+      assert [] == :beam_com_wasm.overlay(view, view, rel, %{root: root})
+      :ok = :file.del_dir_r(worker)
+      assert :none == :beam_com_wasm.edge_runtime(root)
     end
   end
 
