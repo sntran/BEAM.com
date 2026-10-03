@@ -125,13 +125,21 @@
     // One VM for all the tabs of the site, in a SharedWorker. The sites of
     // one origin (USER.github.io/A/ and USER.github.io/B/) have different
     // scripts, so different VMs.
+    // The VM stops 30 s after the last tab of the site leaves (vm.js), so a
+    // reload keeps the VM and its data. A tab says "bye" when it leaves, and
+    // "hello" when it comes back from the back/forward cache.
+    // extendedLifetime (Chrome 148 or later) lets the SharedWorker live
+    // after its last tab, until that timer of vm.js ends.
     if (typeof SharedWorker === 'function') {
       try {
-        const shared = new SharedWorker(script, { type: 'module', name: `beam-page:${SITE.pathname}` });
+        const shared = new SharedWorker(script, { type: 'module', name: `beam-page:${SITE.pathname}`, extendedLifetime: true });
         vm = shared.port;
         info = await started(shared.port, shared);
+        addEventListener('pagehide', () => shared.port.postMessage({ type: 'bye' }));
+        addEventListener('pageshow', (e) => { if (e.persisted) shared.port.postMessage({ type: 'hello' }); });
       } catch (e) {
         console.log(`beam: the VM did not start in a SharedWorker (${e.message}): it runs in this tab`);
+        vm?.postMessage({ type: 'bye' });
         vm?.close();
         vm = null;
       }

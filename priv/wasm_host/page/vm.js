@@ -12,7 +12,7 @@
 // the browser), one jar for all the tabs: a login in one tab is a login in
 // all the tabs. Each request and each upgrade gets them. The listeners are
 // here before any import, so the first message does not come before them.
-// The VM stops when the last tab of the site closes.
+// The VM stops 30 s after the last tab of the site leaves (see LINGER).
 
 let beam = null;
 let booting = null;  // the boot: a promise of the first start
@@ -109,10 +109,37 @@ function receive(e, reply) {
   else pending.push(e);
 }
 
+// The lifetime of the SharedWorker: the ports of the open tabs. A tab says
+// "bye" when it leaves (pagehide), and "hello" when it comes back from the
+// back/forward cache. With no open tab, the VM stops after LINGER ms, so a
+// reload keeps the VM and its data. There is no heartbeat: a browser slows
+// the timers of a hidden tab, and a heartbeat would stop the VM of an open
+// tab. A tab that crashes says no "bye": then the VM lives while the
+// browser keeps the SharedWorker.
+const LINGER = 30000;
+const open = new Set();
+let linger = null;
+
+function present(port) {
+  open.add(port);
+  clearTimeout(linger);
+  linger = null;
+}
+
+function gone(port) {
+  open.delete(port);
+  if (open.size === 0 && !linger) linger = setTimeout(() => self.close(), LINGER);
+}
+
 if ('onconnect' in self) {
   self.addEventListener('connect', (c) => {
     const port = c.ports[0];
-    port.onmessage = (e) => receive(e, (m) => port.postMessage(m));
+    present(port);
+    port.onmessage = (e) => {
+      if (e.data.type === 'bye') gone(port);
+      else if (e.data.type === 'hello') present(port);
+      else receive(e, (m) => port.postMessage(m));
+    };
   });
 } else {
   self.addEventListener('message', (e) => receive(e, (m) => self.postMessage(m)));

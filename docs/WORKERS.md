@@ -497,8 +497,17 @@ One VM for all the tabs of the site:
   its tab, which gives it to the VM. When the service worker does not know
   the frame (a new page of the frame), it gives the request to a tab of
   `index.html`, a visible one first.
-- The VM stops when the last tab of the site closes. The next visit
+- The VM stops 30 s after the last tab of the site closes, so a reload
+  keeps the VM and its data. A tab tells the VM when it leaves (`pagehide`)
+  and when it comes back from the back/forward cache (`pageshow`).
+  `extendedLifetime` (Chrome 148 or later) keeps the SharedWorker alive for
+  these 30 s. An older browser stops the SharedWorker with its last tab, so
+  there a reload restores the snapshot. The next visit after the stop
   restores the snapshot.
+- There is no heartbeat: a browser slows the timers of a hidden tab, so a
+  heartbeat would stop the VM of a tab that is open in the background. A
+  tab that crashes does not tell the VM that it left. Then the VM lives as
+  long as the browser keeps the SharedWorker.
 - When the browser has no `SharedWorker`, or the VM does not start in it,
   the VM runs in a module Web Worker of one tab. Then another tab of the
   site shows a message.
@@ -520,7 +529,9 @@ A test of CI builds `examples/phoenix_demo` with
 a LiveView event, the links, and the login form (a POST). With `--tabs`,
 it also checks two tabs: the shared counter (`Phoenix.PubSub`) of one
 tab shows in the other tab, a tab still works when the first tab closes,
-the next visit restores the snapshot, and the fallback with no
+a reload of the only tab keeps the VM (Chrome 148 or later), a visit 35 s
+after all the tabs close restores the snapshot, the next tab after a
+failed boot boots the SharedWorker again, and the fallback with no
 `SharedWorker`. In headless Chromium on a local server (October 2026),
 the app showed in 1.6 to 3.4 s at the first visit. The same page works
 in Firefox 157, with one VM for two tabs: the second tab was ready in
@@ -534,8 +545,9 @@ The limits:
 
 - Each browser has its own copy of the app. Two visitors do not share
   data.
-- The data stays in the memory of the VM. When the tab closes, the data
-  goes. The next visit starts from the snapshot of the boot.
+- The data stays in the memory of the VM. 30 s after the last tab of the
+  site closes, the data goes. The next visit starts from the snapshot of
+  the boot.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
 - The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
   (3.5 to 14 MB for a Phoenix app).
