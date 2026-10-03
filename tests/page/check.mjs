@@ -1,7 +1,7 @@
 // The browser check of the static site of beam.com INPUT -o DIR
 // --target wasm32 (DIR/page/):
 //
-//   node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo]
+//   node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo] [--tabs]
 //
 // It serves DIR/page/ at the path --base (default /), as GitHub Pages does:
 // a project site is at /REPO/, a custom domain at /. Then it opens the site
@@ -15,6 +15,20 @@
 // - the link to the login page stays under BASE/app/;
 // - the login form (a POST through the service worker) works: the app
 //   answers "Invalid email or password".
+//
+// --tabs: also the checks of the tabs of a site (examples/phoenix_demo):
+// - two tabs show the app, with one VM in a SharedWorker;
+// - a click on the shared counter in one tab shows in the other tab;
+// - when the first tab closes, the second tab still works;
+// - a reload of the only tab keeps the VM and the counter (Chrome 148 or
+//   later, with extendedLifetime; an older browser restores the snapshot);
+// - 35 s after all the tabs close, the VM stopped: the next visit restores
+//   it from the snapshot;
+// - a boot in the SharedWorker that fails one time gets one more start, so
+//   the site has one VM; a SharedWorker that always fails gives the VM in
+//   the tab;
+// - with no SharedWorker, the VM runs in one tab, and another tab shows a
+//   message.
 //
 // Needs playwright-core (npm install --prefix wasm) and a Chromium with
 // JSPI (137 or later): CHROMIUM, else the browser of Playwright, else
@@ -33,7 +47,7 @@ const flag = (name) => args.includes(name);
 const option = (name, value) => (args.includes(name) ? args[args.indexOf(name) + 1] : value);
 const dir = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--base');
 if (!dir) {
-  console.error('usage: node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo]');
+  console.error('usage: node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo] [--tabs]');
   process.exit(2);
 }
 const base = `/${option('--base', '/').replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
@@ -47,8 +61,16 @@ const types = {
 
 // GitHub Pages: a directory gives its index.html, a directory without "/"
 // is a redirect, and another path outside the site is a 404.
+// failRelease: the next request of release.bin fails (the check of a failed
+// boot).
+let failRelease = false;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (failRelease && url.pathname.endsWith('/release.bin')) {
+    failRelease = false;
+    res.writeHead(503);
+    return res.end();
+  }
   const file = url.pathname.startsWith(base) && path.join(dir, decodeURIComponent(url.pathname.slice(base.length)));
   try {
     if (!file || !path.resolve(file).startsWith(path.resolve(dir))) throw new Error('outside');
@@ -84,27 +106,43 @@ function executable() {
 const log = [];
 const step = (text) => console.log(`page: ${text}`);
 
-async function check(page, origin) {
-  const t0 = Date.now();
+// Opens the site in page. Gives the frame of the app, or the text of the
+// error of the page.
+async function open(page, origin) {
   await page.goto(`${origin}${base}`);
   await page.waitForFunction(() => document.body.classList.contains('running')
                              || document.getElementById('status')?.classList.contains('err'), null, { timeout });
   const error = await page.$eval('#status', (s) => (s.classList.contains('err') ? s.textContent : null));
-  if (error) throw new Error(`the page says: ${error}`);
-  step(`the app shows in ${Date.now() - t0} ms`);
+  if (error) return { error };
   const frame = page.frames().find((f) => f.parentFrame() === page.mainFrame());
   const app = `${origin}${base}app/`;
   if (frame.url() !== app) throw new Error(`the frame is at ${frame.url()}, not ${app}`);
-  if (!flag('--phoenix-demo')) return;
+  const vm = await page.evaluate(() => ({ where: document.body.dataset.vm, restored: document.body.dataset.restored }));
+  return { frame, ...vm };
+}
 
+const clicks = async (frame) => Number(await frame.textContent('#clicks'));
+const counted = (frame, n) =>
+  frame.waitForFunction((v) => Number(document.getElementById('clicks')?.textContent) === v, n, { timeout: 30000 });
+const live = async (frame) => {
   await frame.waitForSelector('#click', { timeout: 30000 });
   await frame.waitForSelector('[data-phx-main].phx-connected', { timeout: 30000 });
+};
+
+async function check(page, origin) {
+  const t0 = Date.now();
+  const { frame, error } = await open(page, origin);
+  if (error) throw new Error(`the page says: ${error}`);
+  step(`the app shows in ${Date.now() - t0} ms`);
+  const app = `${origin}${base}app/`;
+  if (!flag('--phoenix-demo')) return;
+
+  await live(frame);
   step('the home page shows, and its LiveView is connected');
 
-  const before = Number(await frame.textContent('#clicks'));
+  const before = await clicks(frame);
   await frame.click('#click');
-  await frame.waitForFunction((n) => Number(document.getElementById('clicks').textContent) === n + 1, before,
-                              { timeout: 30000 });
+  await counted(frame, before + 1);
   step(`a LiveView event changes the page: the counter goes from ${before} to ${before + 1}`);
 
   const home = await frame.$('a[href="/"]');
@@ -130,6 +168,111 @@ async function check(page, origin) {
   step('the login form (a POST) works: the app answers "Invalid email or password"');
 }
 
+async function tabs(browser, origin) {
+  const context = await browser.newContext();
+  const [one, two] = [await context.newPage(), await context.newPage()];
+  const a = await open(one, origin), b = await open(two, origin);
+  for (const t of [a, b]) {
+    if (t.error) throw new Error(`a tab says: ${t.error}`);
+    if (t.where !== 'shared') throw new Error(`the VM of a tab is in ${t.where}, not in a SharedWorker`);
+    await live(t.frame);
+  }
+  step('two tabs show the app, with one VM in a SharedWorker');
+  const n = await clicks(b.frame);
+  await a.frame.click('#click');
+  await counted(b.frame, n + 1);
+  step('a click on the shared counter in one tab shows in the other tab');
+  await one.close();
+  await b.frame.click('#click');
+  await counted(b.frame, n + 2);
+  step('the first tab closed, and the second tab still works');
+
+  // A reload of the only tab. The VM stops 30 s after the last tab leaves
+  // (vm.js), and extendedLifetime (Chrome 148 or later) keeps the
+  // SharedWorker that long: the reload keeps the VM and the counter. An older
+  // browser stops the SharedWorker at once: the reload restores the VM from
+  // the snapshot.
+  const lifetime = Number(browser.version().split('.')[0]) >= 148;
+  const r = await open(two, origin);
+  if (r.error) throw new Error(`the reload says: ${r.error}`);
+  await live(r.frame);
+  const after = await clicks(r.frame);
+  if (r.restored === 'false' && after === n + 2) {
+    step(`a reload of the only tab kept the VM: the counter is still ${after}`);
+  } else if (!lifetime && r.restored === 'true' && after === 0) {
+    step('a reload of the only tab restored the VM from the snapshot (this browser has no extendedLifetime)');
+  } else {
+    throw new Error(`after a reload of the only tab: restored ${r.restored}, counter ${after}`);
+  }
+  await two.close();
+
+  // All the tabs closed: the VM stops after 30 s. A visit after 35 s
+  // restores it from the snapshot. No page of the site is open meanwhile,
+  // because a new page would keep the VM.
+  await new Promise((done) => setTimeout(done, 35000));
+  const c = await open(await context.newPage(), origin);
+  if (c.error) throw new Error(`the next visit says: ${c.error}`);
+  if (c.restored !== 'true') throw new Error('35 s after all the tabs closed, the next visit did not restore the VM from the snapshot');
+  await live(c.frame);
+  await counted(c.frame, 0);
+  step('all the tabs closed; 35 s later, the next visit restored the VM from the snapshot (the counter is 0)');
+  await context.close();
+
+  // A boot in the SharedWorker that fails one time (here: release.bin fails
+  // one time). The page starts it one more time on the same port, so the
+  // first tab runs in the SharedWorker, and the site has one VM.
+  const once = await browser.newContext();
+  failRelease = true;
+  const f = await open(await once.newPage(), origin);
+  if (f.error || f.where !== 'shared') throw new Error(`after one failed boot, the first tab: ${f.error ?? f.where}`);
+  await live(f.frame);
+  const g = await open(await once.newPage(), origin);
+  if (g.error || g.where !== 'shared') throw new Error(`after one failed boot, the next tab: ${g.error ?? g.where}`);
+  step('a boot that failed one time got one more start: the tabs run in the SharedWorker');
+  await once.close();
+
+  // A SharedWorker whose VM fails at each start (a stand-in for a browser
+  // that cannot run the VM there): two starts, then the VM runs in the tab,
+  // and another tab shows a message.
+  const each = await browser.newContext();
+  await each.addInitScript(() => {
+    globalThis.starts = 0;
+    globalThis.SharedWorker = class extends EventTarget {
+      constructor() {
+        super();
+        const { port1, port2 } = new MessageChannel();
+        port2.onmessage = (e) => {
+          if (e.data.type !== 'start') return;
+          globalThis.starts += 1;
+          port2.postMessage({ type: 'error', message: 'no VM in this SharedWorker' });
+        };
+        this.port = port1;
+      }
+    };
+  });
+  const p = await each.newPage();
+  const x1 = await open(p, origin);
+  const tries = await p.evaluate(() => globalThis.starts);
+  if (x1.error || x1.where !== 'tab' || tries !== 2) {
+    throw new Error(`a SharedWorker that always fails: ${x1.error ?? x1.where}, ${tries} starts`);
+  }
+  await live(x1.frame);
+  const y1 = await open(await each.newPage(), origin);
+  if (!/another tab/.test(y1.error ?? '')) throw new Error(`a SharedWorker that always fails, the next tab: ${y1.error ?? 'the app'}`);
+  step('a SharedWorker that always fails: two starts, then the VM runs in the tab, and another tab shows a message');
+  await each.close();
+
+  // No SharedWorker: one VM in one tab, as before.
+  const old = await browser.newContext();
+  await old.addInitScript(() => { delete globalThis.SharedWorker; });
+  const x = await open(await old.newPage(), origin), y = await open(await old.newPage(), origin);
+  if (x.error || x.where !== 'tab') throw new Error(`with no SharedWorker, the first tab: ${x.error ?? x.where}`);
+  await live(x.frame);
+  if (!/another tab/.test(y.error ?? '')) throw new Error(`with no SharedWorker, the second tab: ${y.error ?? 'the app'}`);
+  step('with no SharedWorker, the VM runs in one tab, and another tab shows a message');
+  await old.close();
+}
+
 server.listen(0, '127.0.0.1', async () => {
   const origin = `http://127.0.0.1:${server.address().port}`;
   step(`serve ${dir} at ${origin}${base}`);
@@ -140,6 +283,7 @@ server.listen(0, '127.0.0.1', async () => {
     page.on('console', (m) => log.push(`console ${m.type()}: ${m.text()}`));
     page.on('pageerror', (e) => log.push(`page error: ${e.message}`));
     await check(page, origin);
+    if (flag('--tabs')) await tabs(browser, origin);
     step('ok');
   } catch (e) {
     console.error(`page: FAIL ${e.message}`);

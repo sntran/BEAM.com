@@ -1,9 +1,12 @@
 // The service worker of the page (sw.js) adds this script to each HTML page
-// of the VM. It does two things:
+// of the VM. It does three things:
 // - A service worker cannot take a WebSocket. So a socket to this site goes
 //   to the VM through the tab of index.html (a message port), and the VM
 //   runs its upgrade. The message goes to the top window, the tab of
 //   index.html. Another socket is a real one.
+// - A service worker cannot open the SharedWorker of the VM. So it gives a
+//   request of this frame to this frame, and this frame gives it to its
+//   tab, which gives it to the VM.
 // - A link or a form of the app with a path outside the frame (for
 //   example href="/", which an app writes without its base path) goes to
 //   the same path in the frame. Without this, the browser leaves the scope
@@ -30,6 +33,15 @@
   const Native = window.WebSocket;
   const top = window.top;
   if (!top || top === window) return;
+
+  const sw = navigator.serviceWorker;
+  if (sw) {
+    sw.addEventListener('message', (e) => {
+      if (e.data?.type === 'fetch') top.postMessage(e.data, location.origin, [...e.ports]);
+    });
+    sw.startMessages();
+    sw.controller?.postMessage({ type: 'frame' });
+  }
 
   class VmSocket extends EventTarget {
     static CONNECTING = 0;
