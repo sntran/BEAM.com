@@ -157,19 +157,30 @@ the app with `beam.com --target wasm32`, and publishes the static site
 | `beam-com` | the tag of the workflow, else `edge` | The version of `beam.com`. |
 | `deploy` | `true` | `false`: build the site, and do not publish it. |
 
+The workflow that calls it must give `pages: write` and `id-token: write`,
+also with `deploy: false`: else GitHub refuses the run when it starts.
+When the workflow uses `edge` (a pin to a branch, such as `@main`), the
+run shows a warning. A pin to a commit SHA uses the release of that
+commit, and stops with an error when the commit has no release tag.
+
 The app needs an HTTP listener on `PORT` (4000 by default), and only the
 NIFs of the WebAssembly runtime. The limits:
 
 - Each browser has its own copy of the app. Two visitors do not share
   data.
-- The data stays in the memory of the VM. When the last tab of the site
-  closes, the data goes, and the next visit starts from the snapshot of
-  the boot.
+- The data stays in the memory of the VM. When the tab closes, the data
+  goes, and the next visit starts from the snapshot of the boot.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
 - The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
   (3.5 to 14 MB for a Phoenix app).
 - The browser needs JSPI: Chrome and Edge 137 or later, or Firefox 153
   or later.
+
+Caution: all the project sites of one GitHub account share one origin
+(`USER.github.io`), also the user site. A page of another site of the
+same account can read the data of the app in the browser: its secret,
+the snapshot of its VM, and its frame. Give an app with private data its
+own custom domain (Settings, Pages, Custom domain).
 
 See "A static site for any app" in [`docs/WORKERS.md`](docs/WORKERS.md).
 

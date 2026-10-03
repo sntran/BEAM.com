@@ -20,8 +20,10 @@ name: Publish an app on GitHub Pages
 #     pages:
 #       uses: sntran/BEAM.com/.github/workflows/pages-app.yml@v0.1.0
 #
-# Pages must use "GitHub Actions" as its source (Settings > Pages). The
-# GITHUB_TOKEN cannot change this setting.
+# The caller must give pages: write and id-token: write, also with
+# deploy: false: else GitHub refuses the run when it starts. Pages must use
+# "GitHub Actions" as its source (Settings > Pages). The GITHUB_TOKEN cannot
+# change this setting.
 #
 # The input of the build:
 # - a Mix project with Phoenix: mix.com deps.get --only prod, mix.com
@@ -63,8 +65,10 @@ on:
 jobs:
   # The OIDC token of a job names the ref of this workflow
   # (job_workflow_ref, for example
-  # sntran/BEAM.com/.github/workflows/pages-app.yml@refs/tags/v0.1.0). This
-  # job runs no code of the app.
+  # sntran/BEAM.com/.github/workflows/pages-app.yml@refs/tags/v0.1.0). A tag
+  # gives its release. A commit SHA gives the release tag of that commit, or
+  # an error when it has none. A branch gives edge, with a warning. This job
+  # runs no code of the app.
   version:
     name: Find the version of beam.com
     runs-on: ubuntu-latest
@@ -87,10 +91,28 @@ jobs:
           p = json.load(sys.stdin)["value"].split(".")[1]
           print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["job_workflow_ref"])')
             case $ref in
-              */.github/workflows/pages-app.yml@refs/tags/v*) tag=${ref##*@refs/tags/} ;;
+              */.github/workflows/pages-app.yml@refs/tags/v*)
+                tag=${ref##*@refs/tags/} ;;
+              */.github/workflows/pages-app.yml@*)
+                # A pin by a commit SHA: the release tag of that commit.
+                sha=${ref##*@}
+                if printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+                  tag=$(git ls-remote --tags https://github.com/sntran/BEAM.com |
+                        awk -v sha="$sha" '$1 == sha { print $2 }' |
+                        sed -e 's|^refs/tags/||' -e 's|\^{}$||' | grep -E '^v[0-9]' | head -n 1)
+                  if [ -z "$tag" ]; then
+                    echo "::error::pages-app.yml is pinned to the commit $sha, which has no release tag. Give the input beam-com (for example v0.1.0)."
+                    exit 1
+                  fi
+                fi ;;
             esac
           fi
-          tag=${tag:-edge}
+          if [ -z "$tag" ]; then
+            tag=edge
+            # A branch (or no OIDC token): the newest build of main.
+            [ -n "$ARTIFACT" ] ||
+              echo "::warning::beam.com edge (the newest build of main) builds this site. Pin pages-app.yml to a release tag, or give the input beam-com."
+          fi
           case $tag in
             edge | v[0-9]*) ;;
             *) echo "beam-com: $tag is not edge or the tag of a release" >&2; exit 1 ;;
