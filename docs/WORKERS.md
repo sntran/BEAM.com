@@ -57,6 +57,7 @@ see "Deno and Deno Deploy" and "In a web page" below.
 | `licenses/` | The license texts of the software in `beam.wasm`. Wrangler uploads them with the runtime (about 80 KB). |
 | `deno.js`, `deno.json`, `deno/` | The same runtime on Deno and Deno Deploy (see below). |
 | `browser.js`, `browser/` | The same runtime in a web page (see below). |
+| `page/` | A static site that runs the app in the browser of each visitor, for example on GitHub Pages (see "A static site for any app"). |
 
 The build also runs the release one time on this computer, to find the
 modules of its boot. The Worker then loads them in one batch, and the
@@ -408,7 +409,9 @@ the same time in 4.2 s, and the counter got all of them.
 
 ## In a web page
 
-The output also runs in a browser tab with JSPI (Chrome 137 or later).
+The output also runs in a browser tab with JSPI: Chrome and Edge 137 or
+later, and Firefox 153 or later. Safari 27 also has JSPI, but nobody has
+tested the pages of beam.com in Safari yet.
 `browser.js` gives `worker.js` the parts of the Workers runtime that it
 uses: a `WebSocketPair` of two ends in the page, and the Cache API of the
 site for the snapshot. A page has no TCP connections (a connection of
@@ -436,6 +439,96 @@ The app runs in the page as in a Durable Object. The shell of
 BEAM.com on GitHub Pages ([`pages.sh`](../examples/worker/pages.sh)). In Chromium, its VM is
 ready in about 1.0 s at the first visit, and in 0.4 to 0.5 s at the next
 visits (a restore of the snapshot).
+
+### A static site for any app
+
+`DIR/page/` is a static site that runs the app in the browser of each
+visitor. Publish only this directory: it is the root of the site. Then
+the app runs at `https://USER.github.io/REPO/`, and its code does not
+change.
+
+| File | What |
+|---|---|
+| `index.html` | The page. It starts the VM, then shows the app in the frame `app/`. |
+| `vm.js` | The VM, in a module Web Worker. It keeps the cookies of the app. |
+| `sw.js` | The service worker of `app/`: it gives each request of the frame to the VM. |
+| `ws-shim.js` | The `WebSocket` of the pages of the app: a socket to the site goes to the VM. |
+| `env.json` | The name of the app and the variables of its VM. |
+| `worker.js` | `worker.js` with the imports of `browser/`, because a module Web Worker has no import map. |
+| `browser.js`, `browser/`, `beam.mjs`, `beam.wasm` | The runtime. |
+| `release.bin` | The release. |
+| `app/static.json`, `app/...` | The files of `priv/static` of the app. The site serves them, not the VM. |
+| `licenses/` | The license texts of the software in `beam.wasm`. |
+
+`page/beam.wasm` and `page/release.bin` are hard links to `beam.wasm` and
+`release/release.bin` of `DIR`, or copies when the file system has no hard
+links.
+
+The base path:
+
+- The page finds its base path from its own URL. So the same files work
+  at `/REPO/` of a project site, at `/` of a custom domain, and on
+  `localhost`.
+- The service worker gives the VM the path without the prefix of the
+  frame (`/REPO/app`), as a proxy does.
+- The VM gets the prefix in `BEAM_BASE_PATH`. The application `wasm_host`
+  puts it in `url: [path: ...]` of each Phoenix endpoint (each module
+  with the behaviour `Phoenix.Endpoint`). The other keys of `url` stay.
+  This occurs after the config providers (`runtime.exs`), and before the
+  applications of the program start. So the links and the forms of
+  Phoenix (`~p`) stay in the frame.
+- A link or a form with a path outside the frame, such as `href="/"` of
+  the layout of `mix phx.new`, goes to the same path in the frame
+  (`ws-shim.js`). A redirect of the app to such a path does the same
+  (`sw.js`). So a link to another site of the same origin (`/OTHER-REPO/`)
+  also goes into the frame: the page cannot see the difference from a
+  path of the app.
+- Each request to the VM has the host `localhost` and the header
+  `x-forwarded-proto: https`, as behind a proxy.
+
+The variables of `env.json`:
+
+| Variable | Value | When |
+|---|---|---|
+| `PORT`, `HOME` | `4000`, `/tmp` | always |
+| `PHX_SERVER` | `true` | the release has Phoenix |
+| `PHX_HOST` | `localhost`: the host that `vm.js` sends, so that `check_origin` takes the WebSocket | the release has Phoenix |
+| `SECRET_KEY_BASE` | a random value for each browser, in `localStorage` | the release has Phoenix |
+| `DATABASE_PATH` | `/tmp/NAME.db`, in the memory of the VM | the release has `exqlite` |
+
+A test of CI builds `examples/phoenix_demo` with
+[`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh). Then
+[`tests/page/check.mjs`](../tests/page/check.mjs) serves the site at
+`/repo/` and at `/`, and checks it in headless Chromium: the home page,
+a LiveView event, the links, and the login form (a POST). In headless
+Chromium on a local server (October 2026), the app showed in 2.2 to
+3.4 s at the first visit. The same page works in Firefox 157.
+
+The limits:
+
+- Each browser has its own copy of the app. Two visitors do not share
+  data.
+- The data stays in the memory of the VM. When the tab closes, the data
+  goes. The next visit starts from the snapshot of the boot.
+- One tab of the site runs the VM. Another tab of the site shows a
+  message.
+- No outgoing TCP: a connection of Erlang gets `econnrefused`.
+- The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
+  (3.5 to 14 MB for a Phoenix app).
+- The app needs an HTTP listener on `PORT`, and only the NIFs of the
+  runtime (see "NIFs").
+- An app with `force_ssl` must have `rewrite_on: [:x_forwarded_proto]`
+  (as `mix phx.new` writes it), or exclude the host `localhost`. Else it
+  redirects each request to `https://localhost/`.
+
+Caution: all the project sites of one GitHub account share one origin
+(`USER.github.io`). A page of another site of the same account can read
+the secret in `localStorage`, the snapshot in the Cache API (all the
+memory of the VM), and the frame of the app. The site of BEAM.com runs
+Livebook with notebooks of other people on `sntran.github.io` (see the
+caution about Kino below). The user site (`USER.github.io` itself) has
+the same origin. Give an app with private data its own custom domain
+(Settings, Pages, Custom domain): then the site has its own origin.
 
 ### Livebook in a web page
 

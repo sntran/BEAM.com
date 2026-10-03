@@ -32,7 +32,8 @@
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1]).
+         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1,
+         page_files/3, page_env/1, page_worker/1, static_files/2, write_page/2]).
 -endif.
 
 %% The chunks of a .beam file in a release: the loader, the line numbers and
@@ -77,12 +78,14 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     [begin ok = filelib:ensure_dir(P), write_file(P, D) end
      || {F, D} <- Worker, P <- [filename:join(Output, F)]],
     write_file(filename:join([Output, "release", "release.bin"]), Bin),
+    write_page(Output, page_files(Rel#{apps => Apps}, Worker, Root)),
     Quiet orelse io:format("~ts: wrote ~ts (the Workers ~ts and ~ts-release)~n"
                            "  release: ~ts ~ts, ~b files, ~.1f MB (~b modules compressed)~n"
                            "  boot: ~ts~n"
                            "  test: workerd serve ~ts~n"
                            "  deploy: (cd ~ts/release && wrangler deploy) && (cd ~ts && wrangler deploy)~n"
                            "  (or one Durable Object: wrangler deploy -c wrangler.durable.jsonc)~n"
+                           "  web page: ~ts (a static site, for example on GitHub Pages)~n"
                            "~ts",
                            [beam_com:name(), Output, worker_name(Name), worker_name(Name), Name, Vsn, length(Files),
                             iolist_size(Bin) / 1048576, Compressed,
@@ -91,6 +94,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
                                 _ -> io_lib:format("~b modules in one batch", [length(Mods)])
                             end,
                             filename:join(Output, "worker.capnp"), Output, Output,
+                            filename:join(Output, "page"),
                             case lists:keymember("global.js", 1, Worker) of
                                 true -> "  (or the VM restored in the global scope: see "
                                         "wrangler.global.jsonc and wrangler.durable-global.jsonc)\n";
@@ -209,7 +213,11 @@ with_host(Files, Root) ->
     {ok, [{application, ?HOST_APP, Props}]} =
         file:consult(filename:join([Src, "ebin", "wasm_host.app"])),
     Ebin = "$ROOT/" ++ Dir ++ "/ebin",
+    %% The base path of a web app (wasm_host_base): after the config
+    %% providers of a Mix release (runtime.exs), else after wasm_host.
+    Base = {apply, {wasm_host_base, set, []}},
     Boot = fun(Cmds) ->
+                   Providers = lists:member({apply, {'Elixir.Config.Provider', boot, []}}, Cmds),
                    lists:flatmap(
                      %% A path command gives the path of the next
                      %% commands (it does not add to the one before).
@@ -220,7 +228,10 @@ with_host(Files, Root) ->
                              end;
                         ({apply, {application, start_boot, [stdlib | _]}} = C) ->
                              [C, {apply, {application, load, [{application, ?HOST_APP, Props}]}},
-                              {apply, {application, start_boot, [?HOST_APP, permanent]}}];
+                              {apply, {application, start_boot, [?HOST_APP, permanent]}}
+                              | [Base || not Providers]];
+                        ({apply, {'Elixir.Config.Provider', boot, []}} = C) ->
+                             [C, Base];
                         (C) -> [C]
                      end, Cmds)
            end,
@@ -489,6 +500,88 @@ licenses(Root) ->
     Dir = filename:join(Root, "licenses"),
     [{"licenses/" ++ F, read(filename:join(Dir, F))}
      || F <- filelib:wildcard("**", Dir), filelib:is_regular(filename:join(Dir, F))].
+
+%% DIR/page/: a static site that runs the app in the browser of each
+%% visitor (for example on GitHub Pages). It is the root of the site:
+%%
+%%   index.html, sw.js, vm.js, ws-shim.js   the page (priv/wasm_host/page)
+%%   env.json      the name of the app and the variables of its VM
+%%   worker.js     worker.js with the imports of browser/: the VM runs in a
+%%                 module Web Worker, which has no import map
+%%   browser.js, browser/, beam.mjs, licenses/
+%%   app/static.json, app/...   the files of priv/static of the app, which
+%%                 the site serves (not the VM)
+%%
+%% beam.wasm and release.bin are hard links to the files of DIR
+%% (write_page/2).
+page_files(#{name := Name, files := Files} = Rel, Worker, Root) ->
+    [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "page"])),
+    Statics = static_files(Name, Files),
+    [{F, read(filename:join(Priv, F))} || F <- files(Priv)]
+        ++ [{"env.json", page_env(Rel)},
+            {"worker.js", page_worker(proplists:get_value("worker.js", Worker))}]
+        ++ [{F, D} || {F, D} <- Worker,
+                      F =:= "browser.js" orelse F =:= "beam.mjs"
+                          orelse lists:prefix("browser/", F) orelse lists:prefix("licenses/", F)]
+        ++ [{"app/static.json", json:encode([unicode:characters_to_binary(P) || {P, _} <- Statics])}
+            | [{"app" ++ P, D} || {P, D} <- Statics]].
+
+%% The variables of the VM of the page. secrets: the names of the variables
+%% that the page sets to random values, one for each browser.
+page_env(#{name := Name} = Rel) ->
+    Apps = maps:get(apps, Rel, []),
+    Phoenix = lists:member(phoenix, Apps),
+    %% PHX_HOST: the host that vm.js sends, so that check_origin of Phoenix
+    %% takes the WebSocket.
+    Env = [{'PORT', <<"4000">>}, {'HOME', <<"/tmp">>}]
+        ++ [{K, V} || Phoenix, {K, V} <- [{'PHX_SERVER', <<"true">>}, {'PHX_HOST', <<"localhost">>}]]
+        ++ [{'DATABASE_PATH', unicode:characters_to_binary(["/tmp/", Name, ".db"])}
+            || lists:member(exqlite, Apps)],
+    json:encode(#{name => unicode:characters_to_binary(Name), env => maps:from_list(Env),
+                  secrets => [<<"SECRET_KEY_BASE">> || Phoenix]}).
+
+%% The four imports of worker.js that a Web Worker cannot resolve: the
+%% modules of browser/ in their place.
+page_worker(Js) ->
+    Map = [{<<"from 'cloudflare:sockets'">>, <<"from './browser/sockets.js'">>},
+           {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
+           {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
+           {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}],
+    Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end,
+                      iolist_to_binary(Js), Map),
+    [throw({error, "worker.js: the page cannot import ~ts", [Spec]})
+     || Spec <- [<<"'cloudflare:sockets'">>, <<"'./beam.wasm'">>, <<"'./release.bin'">>,
+                 <<"'./snapshot.bin'">>],
+        binary:match(Out, Spec) =/= nomatch],
+    Out.
+
+%% The files of priv/static of the application of the release, as
+%% {"/PATH", Data}, without the copies that Plug.Static compresses (the
+%% site compresses its files). Not a path with a name that starts with "."
+%% (.well-known/): actions/upload-pages-artifact leaves them out of the
+%% site, so the VM serves them.
+static_files(Name, Files) ->
+    Prefix = "lib/" ++ Name ++ "-",
+    lists:sort([{"/" ++ string:join(Parts, "/"), D}
+                || {P, D} <- Files, lists:prefix(Prefix, P),
+                   [_Vsn, "priv", "static" | Parts] <- [string:split(lists:nthtail(length(Prefix), P), "/", all)],
+                   Parts =/= [], not lists:member(filename:extension(P), [".gz", ".br"]),
+                   not lists:any(fun(F) -> lists:prefix(".", F) end, Parts)]).
+
+write_page(Output, Files) ->
+    Page = filename:join(Output, "page"),
+    [begin ok = filelib:ensure_dir(P), write_file(P, D) end
+     || {F, D} <- Files, P <- [filename:join(Page, F)]],
+    link_file(filename:join(Output, "beam.wasm"), filename:join(Page, "beam.wasm")),
+    link_file(filename:join([Output, "release", "release.bin"]), filename:join(Page, "release.bin")).
+
+%% A hard link, or a copy when the file system has no hard links.
+link_file(From, To) ->
+    _ = file:delete(To),
+    case file:make_link(From, To) of
+        ok -> ok;
+        {error, _} -> write_file(To, read(From))
+    end.
 
 -define(DATE, "2026-09-01").
 %% The version of the deploy is in the key of the snapshot (worker.js).

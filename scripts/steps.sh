@@ -865,11 +865,11 @@ step_bundle() {
     # WORKER=1), the runtime too (5 MB).
     wh=$STAGE/lib/wasm_host-0.1.0
     # The hosts of worker.js: Workers (priv/worker), Deno (priv/deno) and a
-    # web page (priv/browser).
+    # web page (priv/browser), and the static site of an app (priv/page).
     mkdir -p "$wh/ebin" "$wh/priv"
     "$ERL_TOP/bin/erlc" -o "$wh/ebin" "$ROOT"/src/wasm_host/*.erl
     cp "$ROOT/src/wasm_host/wasm_host.app.src" "$wh/ebin/wasm_host.app"
-    for host in worker deno browser; do
+    for host in worker deno browser page; do
         rm -rf "$wh/priv/$host"
         cp -R "$ROOT/priv/wasm_host/$host" "$wh/priv/$host"
     done
