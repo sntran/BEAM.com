@@ -137,9 +137,8 @@ PHX_SERVER=true ./my_app.com                     # natively
 cd worker && BEAM_APP=../my_app.com deno serve -A deno.js   # the same file on Deno
 ```
 
-The npm package [`beam.com`](npm/README.md) has the runtime for Node.js
-(`import { boot } from 'beam.com/node'`), and `npx beam.com` downloads
-`beam.com` of the same version at its first run.
+The npm package `beam.com` has the runtime for Node.js, and `npx
+beam.com` (see [npm](#npm)).
 
 See "One file, natively and at the edge" in [`docs/WORKERS.md`](docs/WORKERS.md).
 
@@ -214,6 +213,56 @@ the snapshot of its VM, and its frame. Give an app with private data its
 own custom domain (Settings, Pages, Custom domain).
 
 See "A static site for any app" in [`docs/WORKERS.md`](docs/WORKERS.md).
+
+## npm
+
+This repository is also the npm package `beam.com`, of the same version
+as `beam.com`:
+
+```sh
+npx beam.com app.erl -o app.com
+npx beam.com mix phx.server
+```
+
+The package does not hold `beam.com` (about 50 MB). At the first run,
+`npx beam.com` downloads `beam.com` of the same version from the GitHub
+release, and checks its SHA-256 against the value that the package
+holds. Then the file stays in the cache (`~/.cache/beam.com/npm/`). A
+host that only uses the runtime never downloads it.
+
+- `BEAM_COM`: the path of a `beam.com` to use. Then nothing is
+  downloaded.
+- `BEAM_COM_DOWNLOAD`: the URL of a directory with the file `beam.com`,
+  in place of the GitHub release.
+- `BEAM_COM_CACHE`: the cache directory.
+
+The package also has the WebAssembly runtime, for a native `app.com`.
+In Node.js 25 or later (for JSPI):
+
+```js
+import { boot } from 'beam.com/node';
+
+const vm = await boot('app.com', { env: { PORT: '4000' } });
+const response = await vm.fetch(new Request('http://localhost/'));
+```
+
+The file must come from `beam.com` of the version of the package: a file
+for another runtime is an error. `release(app)` gives the release of the
+file, without a VM.
+
+| Import | What |
+|---|---|
+| `beam.com/node` | `boot`, `release`, `appRelease` and `runtimeId`, for Node.js. |
+| `beam.com/app-com` | The reader of an `app.com`, for any host: `appRelease(read, size, { runtime })`. |
+| `beam.com/runtime-id` | The identity of this runtime, for `appRelease`. |
+| `beam.com/worker` | The runtime (`worker.js` of Cloudflare Workers). |
+| `beam.com/beam.wasm` | The VM: ERTS built for WebAssembly. |
+
+The release job of CI makes the generated part of the package
+(`runtime/`, with `scripts/npm.sh`) and publishes it with each tag `v*`.
+Not yet: an adapter for Cloudflare Workers, Deno and a web page in the
+package. Today, `beam.com INPUT -o DIR --target wasm32` writes these
+hosts into `DIR`.
 
 ## Documentation
 

@@ -11,3 +11,7 @@ deps/
 /cover/
 # The directories of the tmp_dir tag of ExUnit.
 /tmp/
+# The generated part of the npm package (scripts/npm.sh), and npm itself.
+/runtime/
+/node_modules/
+/beam.com-*.tgz

@@ -1,4 +1,4 @@
-// The download of beam.com for npx beam.com (npm/lib/download.js): "node
+// The download of beam.com for npx beam.com (js/download.mjs): "node
 // --test tests/host". A local HTTP server gives the files, in place of the
 // GitHub release (BEAM_COM_DOWNLOAD).
 import { test } from 'node:test';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { cacheDir, cachePath, command, downloadUrl, ensure } from '../../npm/lib/download.js';
+import { cacheDir, cachePath, command, downloadUrl, ensure } from '../../js/download.mjs';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'npm-download-'));

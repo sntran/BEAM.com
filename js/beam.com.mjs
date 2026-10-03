@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // npx beam.com ARGS: beam.com of the version of this package, with ARGS
-// (lib/download.js). For example: npx beam.com app.erl -o app.com
+// (download.mjs). For example: npx beam.com app.erl -o app.com
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { constants } from 'node:os';
-import { command, ensure } from '../lib/download.js';
+import { command, ensure } from './download.mjs';
 
 let release = null;
 try {
-  release = JSON.parse(readFileSync(new URL('./release.json', import.meta.url), 'utf8'));
+  release = JSON.parse(readFileSync(new URL('../runtime/release.json', import.meta.url), 'utf8'));
 } catch {}
 
 let file;

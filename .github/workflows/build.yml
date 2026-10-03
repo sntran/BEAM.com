@@ -354,16 +354,17 @@ jobs:
           sh bin/beam.com examples/hashsum.erl -o hashsum.com | tee build.txt
           grep -q 'edge: [0-9]* files' build.txt
           sh ./hashsum.com abc | grep '^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
-          sh bin/beam.com examples/hashsum.erl -o runtime --target wasm32 > /dev/null
-          node tests/host/boot_app_com.mjs runtime hashsum.com --expect 'usage: hashsum TEXT'
+          sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/wasm32" --target wasm32 > /dev/null
+          node tests/host/boot_app_com.mjs "$RUNNER_TEMP/wasm32" hashsum.com --expect 'usage: hashsum TEXT'
 
-      # The npm package of this beam.com (scripts/npm.sh), as a user installs
-      # it: npx beam.com with a download from a local server in place of the
-      # GitHub release, and hashsum.com with beam.com/node.
+      # The npm package of this beam.com (package.json, and runtime/ of
+      # scripts/npm.sh), as a user installs it: npx beam.com with a download
+      # from a local server in place of the GitHub release, and hashsum.com
+      # with beam.com/node.
       - name: The npm package
         run: |
-          scripts/npm.sh bin/beam.com runtime "$RUNNER_TEMP/package"
-          (cd "$RUNNER_TEMP" && npm pack ./package)
+          scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
+          npm pack --pack-destination "$RUNNER_TEMP"
           mkdir -p "$RUNNER_TEMP/app/files"
           cp hashsum.com "$RUNNER_TEMP/app/"
           cp bin/beam.com "$RUNNER_TEMP/app/files/"
@@ -421,7 +422,7 @@ jobs:
           key=$(head -c 48 /dev/urandom | base64 -w0 | tr '+/' '-_')
           BOOT_ENV="{\"PORT\": \"4000\", \"HOME\": \"/tmp\", \"PHX_SERVER\": \"true\", \"PHX_HOST\": \"localhost\",
             \"DATABASE_PATH\": \"/tmp/phoenix_demo.db\", \"SECRET_KEY_BASE\": \"$key\"}" \
-            node tests/host/boot_app_com.mjs runtime "$RUNNER_TEMP/phoenix_demo.com" --get / --expect 'LiveView'
+            node tests/host/boot_app_com.mjs "$RUNNER_TEMP/wasm32" "$RUNNER_TEMP/phoenix_demo.com" --get / --expect 'LiveView'
 
   test:
     name: Run on ${{ matrix.name }}
@@ -759,7 +760,7 @@ jobs:
         with:
           node-version: "26"
 
-      # The npm package of the same version (scripts/npm.sh, npm/README.md):
+      # The npm package of the same version (package.json, scripts/npm.sh):
       # npx beam.com downloads the beam.com of this release, with its
       # SHA-256. The trusted publisher on npmjs.com is this workflow
       # (build.yml). Without it, the secret NPM_TOKEN gives the token.
@@ -768,10 +769,10 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           chmod +x bin/beam.com
-          sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/runtime" --target wasm32 > /dev/null
-          scripts/npm.sh bin/beam.com "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/package"
+          sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/wasm32" --target wasm32 > /dev/null
+          scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
           if [ -n "$NPM_TOKEN" ]; then
             echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > "$RUNNER_TEMP/.npmrc"
             export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
           fi
-          npm publish "$RUNNER_TEMP/package" --provenance --access public
+          npm publish --provenance --access public

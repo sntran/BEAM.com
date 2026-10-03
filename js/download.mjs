@@ -1,7 +1,7 @@
 // The beam.com of this package: the file of the GitHub release of the same
 // version, in the cache, with the SHA-256 that the package holds
-// (bin/release.json, from scripts/npm.sh). The package does not hold the
-// file: a host that only uses the runtime never downloads it.
+// (runtime/release.json, from scripts/npm.sh). The package does not hold
+// the file: a host that only uses the runtime never downloads it.
 //
 // - BEAM_COM: the path of a beam.com to use. Then nothing is downloaded.
 // - BEAM_COM_DOWNLOAD: the URL of the directory of the files, in place of
@@ -40,7 +40,7 @@ export function downloadUrl({ version }, env = process.env) {
 export async function ensure(release, { env = process.env, platform = process.platform, fetch = globalThis.fetch, log = () => {} } = {}) {
   if (env.BEAM_COM) return env.BEAM_COM;
   if (!release?.version || !/^[0-9a-f]{64}$/.test(release?.sha256 ?? '')) {
-    throw new Error('this package has no release of beam.com (bin/release.json): set BEAM_COM to the path of a beam.com');
+    throw new Error('this package has no release of beam.com (runtime/release.json): set BEAM_COM to the path of a beam.com');
   }
   const file = cachePath(release, env, platform);
   if (fs.existsSync(file)) return file;

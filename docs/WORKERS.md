@@ -183,7 +183,7 @@ The hosts of `app.com`:
   `--target wasm32` directory of the same `beam.com`:
   `cd DIR && BEAM_APP=../app.com deno serve -A deno.js`.
 - Node.js: `boot` of the npm package `beam.com`
-  ([`npm/README.md`](../npm/README.md)), with the runtime of the same
+  (["npm" in README.md](../README.md#npm)), with the runtime of the same
   version: `const vm = await boot('app.com')`. The check of CI ("Run
   one file natively and at the edge") also uses
   [`tests/host/boot_app_com.mjs`](../tests/host/boot_app_com.mjs).
@@ -194,8 +194,9 @@ The npm package `beam.com` has the runtime (`beam.wasm`, `worker.js`,
 `app-com.js` and `runtime-id.js`), the Node.js host, and `npx beam.com`.
 The package does not hold `beam.com`: `npx beam.com` downloads the file
 of the GitHub release of the same version at its first run, and checks
-its SHA-256. `scripts/npm.sh` makes the package, and the release job of
-CI publishes it with each tag `v*`.
+its SHA-256. `package.json` is at the root of this repository.
+`scripts/npm.sh` writes the generated part (`runtime/`), and the release
+job of CI publishes the package with each tag `v*`.
 
 Measured with the `edge` build of October 2026 and this change, in
 Node.js 26 on Linux x86_64:

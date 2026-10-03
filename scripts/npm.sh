@@ -1,21 +1,26 @@
 #!/bin/sh
-# The npm package beam.com (npm/README.md): the files of npm/, the runtime
-# of a --target wasm32 directory of beam.com, and the SHA-256 of that
-# beam.com for npx beam.com (npm/lib/download.js).
+# The generated part of the npm package beam.com (package.json at the root
+# of the repository): the runtime of a --target wasm32 directory of
+# beam.com, and the SHA-256 of that beam.com for npx beam.com
+# (js/download.mjs), in runtime/. Then "npm pack" or "npm publish" in the
+# root makes the package.
 #
-#   scripts/npm.sh BEAM_COM DIR OUT
+#   scripts/npm.sh BEAM_COM DIR
 #
 # BEAM_COM: the beam.com of the release. DIR: the output of "BEAM_COM
 # INPUT -o DIR --target wasm32" (any INPUT: the runtime does not depend on
-# it). OUT: a new directory for the package ("npm pack OUT" or "npm
-# publish OUT"). The version is the version of beam.com.
+# it). The version of package.json must be the version of beam.com.
 set -eu
-[ $# -eq 3 ] || { echo "usage: $0 BEAM_COM DIR OUT" >&2; exit 2; }
-beam_com=$1 dir=$2 out=$3
+[ $# -eq 2 ] || { echo "usage: $0 BEAM_COM DIR" >&2; exit 2; }
+beam_com=$1 dir=$2
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$root/src/beam_com/beam_com.app.src")
-[ -n "$vsn" ] || { echo "$0: no version in src/beam_com/beam_com.app.src" >&2; exit 1; }
+pkg=$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$root/package.json")
+if [ -z "$vsn" ] || [ "$vsn" != "$pkg" ]; then
+    echo "$0: the version of package.json ($pkg) is not the version of beam.com ($vsn)" >&2
+    exit 1
+fi
 for f in worker.js app-com.js runtime-id.js beam.mjs beam.wasm; do
     [ -f "$dir/$f" ] || { echo "$0: $dir/$f: no such file (DIR of --target wasm32)" >&2; exit 1; }
 done
@@ -25,16 +30,17 @@ else
     sha=$(shasum -a 256 "$beam_com" | cut -d' ' -f1)
 fi
 
-[ ! -e "$out" ] || { echo "$0: $out exists" >&2; exit 1; }
-mkdir -p "$out/runtime"
-cp -R "$root/npm/." "$out/"
+out=$root/runtime
+rm -rf "$out"
+mkdir -p "$out"
 for f in worker.js app-com.js runtime-id.js beam.mjs beam.wasm; do
-    cp "$dir/$f" "$out/runtime/$f"
+    cp "$dir/$f" "$out/$f"
 done
-# The license texts: of BEAM.com, and of the parts of the runtime.
-cp "$root/LICENSE" "$root/NOTICE" "$out/"
+# The license texts of the parts of the runtime.
 [ ! -d "$dir/licenses" ] || cp -R "$dir/licenses" "$out/licenses"
-sed "s/\"version\": \"0.0.0\"/\"version\": \"$vsn\"/" "$root/npm/package.json" > "$out/package.json"
-printf '{"version": "%s", "sha256": "%s"}\n' "$vsn" "$sha" > "$out/bin/release.json"
-chmod +x "$out/bin/beam.com.js"
-echo "$0: wrote $out (beam.com $vsn, runtime $(sed -n "s/^export default '\(.*\)';$/\1/p" "$out/runtime/runtime-id.js"))"
+# The files of the runtime are ES modules; package.json at the root has no
+# type, because a Mix project below it can have CommonJS files
+# (examples/phoenix_demo/assets/vendor).
+echo '{ "type": "module" }' > "$out/package.json"
+printf '{"version": "%s", "sha256": "%s"}\n' "$vsn" "$sha" > "$out/release.json"
+echo "$0: wrote $out (beam.com $vsn, runtime $(sed -n "s/^export default '\(.*\)';$/\1/p" "$out/runtime-id.js"))"

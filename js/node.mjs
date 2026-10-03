@@ -5,27 +5,25 @@
 //   const vm = await boot('app.com', { env: { PORT: '4000' } });
 //   const response = await vm.fetch(new Request('http://localhost/'));
 //
-// worker.js of the runtime is the code of the Workers. It imports two
-// modules that only Workers has: cloudflare:sockets (node/sockets.js
-// here), and beam.wasm as a WebAssembly.Module. The hooks give them to
-// the modules of runtime/ only.
+// worker.js of the runtime is the code of the Workers. Its TCP sockets use
+// node:net. It imports beam.wasm as a WebAssembly.Module, as in Workers,
+// and Node.js imports a .wasm file as an instance: the hook gives the
+// module to the files of runtime/ only.
 import { registerHooks } from 'node:module';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 // app-com.js and runtime-id.js import nothing: they load before the hooks.
-import { appRelease } from './runtime/app-com.js';
-import runtimeId from './runtime/runtime-id.js';
+import { appRelease } from '../runtime/app-com.js';
+import runtimeId from '../runtime/runtime-id.js';
 
-const runtimeUrl = new URL('./runtime/', import.meta.url);
+const runtimeUrl = new URL('../runtime/', import.meta.url);
 const wasmUrl = new URL('beam.wasm', runtimeUrl);
-const SOCKETS = new URL('./node/sockets.js', import.meta.url).href;
 const WASM = 'beam-com:beam.wasm';
 
 registerHooks({
   resolve(spec, ctx, next) {
-    if (ctx.parentURL?.startsWith(runtimeUrl.href)) {
-      if (spec === 'cloudflare:sockets') return { url: SOCKETS, shortCircuit: true };
-      if (spec === './beam.wasm') return { url: WASM, shortCircuit: true };
+    if (spec === './beam.wasm' && ctx.parentURL?.startsWith(runtimeUrl.href)) {
+      return { url: WASM, shortCircuit: true };
     }
     return next(spec, ctx);
   },
