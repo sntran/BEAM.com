@@ -145,6 +145,7 @@ typedef struct ctx {
     wasm_module_inst_t inst;
     wasm_exec_env_t exec;
     ErlNifMutex *lock;
+    uint32_t npend;             /* the binaries of enif_make_new_binary in all slots */
     const void *owner;          /* the thread in the library (thread_id()) */
     int depth;
     wasm_function_inst_t malloc_fn, free_fn;
@@ -334,12 +335,15 @@ static void flush_slot(ctx *c, slot_t *sl)
     }
 }
 
+/* Most calls make no new binary: then there is no slot to look at. */
 static void flush_all(ctx *c)
 {
-    int s;
-    for (s = 0; s < MAX_SLOTS; s++)
-        if (c->slots[s].used && c->slots[s].npend)
+    uint32_t s, seen = 0;
+    for (s = 0; s < MAX_SLOTS && seen < c->npend; s++)
+        if (c->slots[s].used && c->slots[s].npend) {
             flush_slot(c, &c->slots[s]);
+            seen += c->slots[s].npend;
+        }
 }
 
 /* Empty the slot (its terms, its memory in the module), and keep it. */
@@ -348,6 +352,7 @@ static void slot_reset(ctx *c, slot_t *sl)
     uint32_t i;
     for (i = 0; i < sl->nfree; i++)
         gfree(c, sl->frees[i]);
+    c->npend -= sl->npend;
     sl->n = sl->nfree = sl->npend = 0;
 }
 
@@ -492,19 +497,20 @@ static int get_terms(ctx *c, uint32_t off, uint32_t n, ERL_NIF_TERM *out)
  * address in the module, or 0. */
 static uint32_t put_terms(ctx *c, uint32_t e, const ERL_NIF_TERM *ts, uint32_t n)
 {
-    uint32_t *hs = malloc((n ? n : 1) * 4), g, i;
+    /* Most calls have few arguments: no malloc for them. */
+    uint32_t local[16], *hs = n <= 16 ? local : malloc((size_t)n * 4), g = 0, i;
     void *p;
     if (!hs)
         return 0;
     for (i = 0; i < n; i++)
-        if (!(hs[i] = handle(c, e, ts[i]))) {
-            free(hs);
-            return 0;
-        }
+        if (!(hs[i] = handle(c, e, ts[i])))
+            goto done;
     g = scratch(c, e, 4 * n);
     if (g && n && (p = gaddr(c, g, 4 * n)))
         memcpy(p, hs, 4 * n);
-    free(hs);
+done:
+    if (hs != local)
+        free(hs);
     return g;
 }
 
@@ -968,6 +974,7 @@ static uint32_t w_make_new_binary(wasm_exec_env_t x, uint32_t e, uint32_t n, uin
     if (!(hp = enif_make_new_binary(env, n, &t)))
         return 0;
     sl->pend[sl->npend++] = (pending_t){ hp, g, n };
+    c->npend++;
     if (!(h = handle(c, e, t)) || !put32(c, termp, h))
         return fail(c, "enif_make_new_binary: bad pointer");
     return g;

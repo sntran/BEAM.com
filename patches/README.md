@@ -62,6 +62,7 @@ lazy_html as a NIF library in WebAssembly ([`docs/NIFS.md`](../docs/NIFS.md),
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `fine/0001-no-exceptions.patch` | `c_include/fine.hpp` | With `FINE_NO_EXCEPTIONS`, fine raises a pending error when the NIF function returns, with no C++ exception. | F1 |
+| `fine/0002-quiet-variant.patch` | `c_include/fine.hpp` | A variant does not format the term for the error of a type that it tries before the last one. | F2 |
 | `lazy_html/0001-no-exceptions.patch` | `c_src/lazy_html.cpp` | Each `throw` returns the pending error of fine. | F1 |
 
 ## WAMR (`patches/wamr/`)
@@ -72,7 +73,7 @@ order, with `git apply`.
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `0001-cosmopolitan-aarch64-jit.patch` | `core/shared/platform/common/posix/posix_memmap.c`, `posix_thread.c` | `MAP_JIT` and the write protection of macOS on Apple silicon at run time, and the cache flush on aarch64. | W5, W6 |
-| `0002-reserve-linear-memory.patch` | `core/iwasm/common/wasm_memory.c` | A linear memory of wasm32 has its maximum size in virtual memory from the start, so a growth copies nothing (not on Windows and OpenBSD). | W10 |
+| `0002-reserve-linear-memory.patch` | `core/iwasm/common/wasm_memory.c` | A linear memory of wasm32 has its maximum size in virtual memory from the start, so a growth copies nothing. On Windows and OpenBSD, its mapping has room for twice its pages, so the copies take linear time. | W10 |
 
 ## Changes that are not patch files
 

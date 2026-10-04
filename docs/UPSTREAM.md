@@ -959,10 +959,13 @@ maximum size in virtual memory from the start (with no access after its
 pages), and a growth makes the next pages accessible, as with hardware
 bounds checks. The test then takes 0.5 s. Only on Linux, macOS, FreeBSD
 and NetBSD: on Windows a mapping takes its whole size from the commit
-limit, and on OpenBSD from the data size limit.
+limit, and on OpenBSD from the data size limit. On Windows and OpenBSD,
+the mapping has the page count rounded up to a power of two: a growth
+inside it copies nothing, and a growth past it maps twice the pages and
+copies once. The test then takes 0.6 s.
 
 **Possible upstream fix.** An option of WAMR to reserve the maximum size
-without hardware bounds checks, or a capacity that doubles at each
+without hardware bounds checks, and a capacity that doubles at each
 copy.
 
 ## Erlang/OTP
@@ -1966,6 +1969,34 @@ NIF function returns, and the wrapper of fine raises it
 
 **Possible upstream fix.** A mode of fine with no exceptions, as in the
 patch.
+
+### F2. A variant formats the whole term for each type that it tries
+
+**Status:** fine 0.1.6 (`Decoder<std::variant<...>>`), with and without
+exceptions.
+
+**Symptom.** `LazyHTML.from_tree/1` of a tree with a depth of 20,000
+takes 14.7 s with the native NIF of the hex package (96 s with the AOT
+file of a NIF library in WebAssembly). The time grows with the square of
+the depth. All the samples of gdb were in `fine::format_term()`, in
+`enif_snprintf()`.
+
+**Cause.** lazy_html decodes each node of the tree as
+`std::variant<binary, tuple, comment>`. For an element, the decoder of
+the binary fails first, and its error message holds
+`format_term(term)`. `enif_snprintf("%T")` formats the whole term (the
+subtree) before it cuts the text at 100 characters. The variant then
+drops the error and tries the next type. So each level formats all the
+levels below it.
+
+**Workaround in BEAM.com.**
+[`patches/fine/0002-quiet-variant.patch`](../patches/fine/0002-quiet-variant.patch):
+while a variant tries a type that is not its last one, `format_term()`
+gives an empty text. The error of the last type has the term as before.
+`from_tree` then takes 51 ms with the AOT file.
+
+**Possible upstream fix.** The same in fine, or an error message that is
+made only when the error leaves the decoder.
 
 ## wasi-libc
 

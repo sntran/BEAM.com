@@ -1,0 +1,65 @@
+BEAM.com: a variant of fine 0.1.6 does not format the term for the
+error of a type that it tries before the last one (docs/UPSTREAM.md,
+F2). That error is dropped, but format_term formatted the whole term
+for its message: in from_tree of lazy_html, each level of a deep tree
+formatted its subtree, and the time was quadratic in the depth. Apply
+in deps/fine after 0001-no-exceptions.patch.
+
+diff --git a/c_include/fine.hpp b/c_include/fine.hpp
+index d46b7f1..13b50a7 100644
+--- a/c_include/fine.hpp
++++ b/c_include/fine.hpp
+@@ -38,6 +38,23 @@ struct PendingError {
+ // A NIF library in WebAssembly runs one call at a time.
+ inline PendingError pending_error = {};
+ 
++// BEAM.com: above 0 while a variant tries a type that is not its last
++// one. The error of that try is dropped, so format_term does not format
++// the term for its message: the term can be a large tree.
++inline thread_local int quiet_depth = 0;
++
++struct Quiet {
++  bool on;
++  explicit Quiet(bool on) : on(on) {
++    if (on)
++      quiet_depth++;
++  }
++  ~Quiet() {
++    if (on)
++      quiet_depth--;
++  }
++};
++
+ inline bool failed() noexcept {
+   return pending_error.kind != ErrorKind::none;
+ }
+@@ -488,6 +505,9 @@ inline Term make_new_binary(ErlNifEnv *env, const char *data, size_t size) {
+ // recommended to format very large terms.
+ inline std::string format_term(ErlNifEnv *, ERL_NIF_TERM term,
+                                size_t limit = 100) {
++  if (__private__::quiet_depth > 0) {
++    return std::string();
++  }
+   auto buffer = std::string(limit + 3 + 1, '\0');
+   enif_snprintf(buffer.data(), buffer.size(), "%T", term);
+   buffer.resize(std::strlen(buffer.data()));
+@@ -684,7 +704,10 @@ private:
+     if (__private__::failed()) {
+       return __private__::AnyFailedValue{};
+     }
+-    auto value = fine::decode<T>(env, term);
++    auto value = [&] {
++      __private__::Quiet quiet(sizeof...(Rest) > 0);
++      return fine::decode<T>(env, term);
++    }();
+     if (!__private__::failed()) {
+       return value;
+     }
+@@ -703,6 +726,7 @@ private:
+     }
+ #else
+     try {
++      __private__::Quiet quiet(sizeof...(Rest) > 0);
+       return fine::decode<T>(env, term);
+     } catch (const std::invalid_argument &) {
+       if constexpr (sizeof...(Rest) > 0) {
