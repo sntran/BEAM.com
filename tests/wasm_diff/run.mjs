@@ -3,7 +3,8 @@
 //   node run.mjs JOB.json
 //
 // JOB.json: {"runtime": DIR, "root": OTP_ROOT, "libs": [EBIN...],
-//   "boot": BOOT_FILE, "pa": DIR, "eval": EXPR, "schedule": "node" | "plain"}
+//   "boot": BOOT_FILE, "pa": DIR, "eval": EXPR, "schedule": "node" | "plain",
+//   "nifs": {FILE: MODULE_FILE} (optional)}
 //
 // The driver copies the boot file, each EBIN directory, and the files of
 // "pa" into the memory file system, below the same names as on the disk.
@@ -23,6 +24,16 @@ if (typeof WebAssembly.Suspending !== 'function') {
 }
 const { default: createBeam } = await import(pathToFileURL(path.join(job.runtime, 'beam.mjs')));
 const wasm = await WebAssembly.compile(fs.readFileSync(path.join(job.runtime, 'beam.wasm')));
+// "nifs": {FILE: MODULE_FILE}, the NIF libraries in WebAssembly as
+// compiled modules, as nifs.js gives them to a Worker. Then nothing
+// compiles WebAssembly at run time, as in a Worker.
+const nifs = {};
+for (const [file, mod] of Object.entries(job.nifs ?? {})) nifs[file] = await WebAssembly.compile(fs.readFileSync(mod));
+if (job.nifs) {
+  const { imports, exports, customSections } = WebAssembly.Module;
+  WebAssembly.Module = function () { throw new WebAssembly.CompileError('Wasm code generation disallowed by embedder'); };
+  Object.assign(WebAssembly.Module, { imports, exports, customSections });
+}
 
 function copyTree(FS, from) {
   FS.mkdirTree(from);
@@ -81,6 +92,7 @@ const exit = new Promise((resolve) => {
       return {};
     },
     jspiSchedule: job.schedule === 'plain' ? plainSchedule() : undefined,
+    nifModule: (file) => nifs[file] ?? null,
     onExit: (code) => resolve(code),
   }).catch((e) => { process.stderr.write(`run.mjs: ${e}\n`); resolve(2); });
 });

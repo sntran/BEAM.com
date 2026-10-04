@@ -32,7 +32,7 @@ The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 | Native NIF | 255 ms |
 | AOT file (`--bounds-checks=1`, generic CPU) | 318 ms |
 | Interpreter (`.wasm`) | 2,400 ms |
-| Interpreter in the WebAssembly runtime of `--target wasm32` (Node.js 26) | 6,100 ms |
+| The WebAssembly runtime of `--target wasm32` (the engine of Node.js 26) | 339 ms |
 
 `exqlite` (SQLite), 10,000 inserts in one transaction into a database
 file: 195 ms with the AOT file, 543 ms with the interpreter.
@@ -172,21 +172,29 @@ The limits:
 
 The WebAssembly runtime of `--target wasm32` (Cloudflare Workers, Deno,
 Node.js, a web page) loads the same `.wasm` file. ERTS itself runs in
-WebAssembly there, and WAMR runs in it, with these differences:
+WebAssembly there, and the engine of the host (V8) compiles and runs the
+module, at about the speed of an AOT file (see "Speed"). The AOT files
+are not used, and `beam.com --target wasm32` leaves them out of
+`release.bin`.
 
-- **Only the interpreter.** The runtime does not read the AOT files, and
-  `beam.com --target wasm32` leaves them out of `release.bin`. The code
-  runs about 2.5 times slower than in the interpreter of the native
-  `beam.com` (see "Speed"). A Worker has a limit of CPU time for each
-  request, so use a NIF for short calls there.
+- **Workers.** A Worker cannot compile WebAssembly at run time. So
+  `beam.com --target wasm32` writes each NIF library of the release
+  into the runtime Worker (`nifs/`, and `nifs.js`), and Wrangler
+  compiles them. A Worker that runs an `app.com` (the `beam.com/cloudflare`
+  module of the npm package) has no NIF libraries in WebAssembly yet.
+- **Calls.** A call into the library costs about 5 µs more than in the
+  native `beam.com`. A trap stops only that call, with
+  `error:{wasm_trap, Message}`.
 - **No files.** WASI has no directories there: the standard output and
   error, the clocks and random bytes work. Other functions of WASI fail
   or stop the call with an exception.
-- The engine of the host does not compile the module, so a Worker, which
-  cannot compile WebAssembly at run time, loads it too.
-- WAMR and the loader add about 230 KB to `beam.wasm` (70 KB with gzip).
+- **No snapshot.** A VM with a NIF library in WebAssembly makes no
+  snapshot of its memory (`docs/WORKERS.md`): the module runs out of
+  that memory.
+- The loader adds about 95 KB to `beam.wasm` (26 KB with gzip).
 
-`tests/wasm_diff_test.exs` runs `nif_check` in the runtime.
+`tests/wasm_diff_test.exs` runs `nif_check` in the runtime, also with
+the compiled module of a Worker.
 
 ## Debug
 
@@ -214,7 +222,11 @@ file and with the interpreter.
   handles of the module into terms, and back. The comment at the start
   of the file gives the rules.
 - The WebAssembly runtime: `wasm/erts/build.sh` applies the same patch,
-  and links the same file with the interpreter of WAMR, built with
-  Emscripten (the step `wamr_edge` of `scripts/steps.sh`). WAMR calls
-  each `enif_*` function as a raw native there (W11 in
-  [`UPSTREAM.md`](UPSTREAM.md)).
+  and links the same file with `c_src/wasm/nif_wasm_host.c` in place of
+  WAMR (the step `nif_edge` of `scripts/steps.sh`). That file gives the
+  functions of WAMR on the engine of the host
+  (`c_src/wasm/nif_wasm_host.js`): the module imports each `enif_*`
+  function as an export of ERTS, the bridge reads and writes the memory
+  of the module through copies, and each call into the module runs on
+  its own JSPI stack. The comment at the start of
+  `nif_wasm_host.c` gives the rules.

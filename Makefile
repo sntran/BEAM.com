@@ -50,7 +50,7 @@ all: bundle
 files = $(shell git -C $(CURDIR) ls-files $(1))
 OTP_FILES := $(call files,patches/otp c_src/cosmo/*.c c_src/cosmo/*.h)
 WASM_FILES := $(call files,c_src/wasm)
-RUNTIME_FILES := $(call files,wasm/erts c_src/erts_wasm c_src/wasm patches/otp/0003-wasm-nif.patch patches/wamr)
+RUNTIME_FILES := $(call files,wasm/erts c_src/erts_wasm c_src/wasm patches/otp/0003-wasm-nif.patch)
 BUNDLE_FILES := $(call files,src priv licenses c_src/cosmo/*.inetrc LICENSE NOTICE)
 
 $(STAMPS):

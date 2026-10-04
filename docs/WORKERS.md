@@ -494,9 +494,10 @@ The runtime has the NIFs of `crypto` and `asn1`, those of
 example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 
 A NIF library in WebAssembly (`priv/NAME.wasm`, see
-[`NIFS.md`](NIFS.md)) loads in the runtime too, with the interpreter of
-WAMR: about 2.5 times slower than in the native `beam.com`, and with no
-files.
+[`NIFS.md`](NIFS.md)) loads in the runtime too: the engine of the host
+runs it. `beam.com --target wasm32` gives it to Wrangler as a module
+(`nifs.js`), because a Worker cannot compile WebAssembly at run time. A
+VM with such a library makes no snapshot.
 
 ## Variables and bindings
 

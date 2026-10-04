@@ -13,8 +13,8 @@
 #   scripts/steps.sh step...
 #   Steps: toolchain openssl otp configure sqlite nifs wasm make elixir
 #          release multicall wasm_runtime bundle test unit hex_nifs
-#          wamr_edge
-#   With no step, all steps run in order (not hex_nifs and wamr_edge).
+#          nif_edge
+#   With no step, all steps run in order (not hex_nifs and nif_edge).
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
@@ -654,78 +654,24 @@ step_wasm() {
     (cd "$obj" && "$AR" rcs "$WAMR/wasm.a" ./*.o)
 }
 
-# The WAMR sources for the WebAssembly runtime of --target wasm32: the
-# interpreter only, with no AOT loader, no WASI and no sockets. The memory
-# functions of the platform are in c_src/wasm/wamr_emscripten.c.
-WAMR_EDGE_SOURCES="
-    core/shared/platform/linux/platform_init.c
-    core/shared/platform/common/posix/posix_malloc.c
-    core/shared/platform/common/posix/posix_sleep.c
-    core/shared/platform/common/posix/posix_thread.c
-    core/shared/platform/common/posix/posix_time.c
-    core/shared/mem-alloc/ems/ems_alloc.c
-    core/shared/mem-alloc/ems/ems_gc.c
-    core/shared/mem-alloc/ems/ems_hmu.c
-    core/shared/mem-alloc/ems/ems_kfc.c
-    core/shared/mem-alloc/mem_alloc.c
-    core/shared/utils/bh_assert.c
-    core/shared/utils/bh_bitmap.c
-    core/shared/utils/bh_common.c
-    core/shared/utils/bh_hashmap.c
-    core/shared/utils/bh_leb128.c
-    core/shared/utils/bh_list.c
-    core/shared/utils/bh_log.c
-    core/shared/utils/bh_queue.c
-    core/shared/utils/bh_vector.c
-    core/shared/utils/runtime_timer.c
-    core/iwasm/common/arch/invokeNative_general.c
-    core/iwasm/common/wasm_application.c
-    core/iwasm/common/wasm_c_api.c
-    core/iwasm/common/wasm_exec_env.c
-    core/iwasm/common/wasm_loader_common.c
-    core/iwasm/common/wasm_memory.c
-    core/iwasm/common/wasm_native.c
-    core/iwasm/common/wasm_runtime_common.c
-    core/iwasm/common/wasm_shared_memory.c
-    core/iwasm/interpreter/wasm_interp_fast.c
-    core/iwasm/interpreter/wasm_loader.c
-    core/iwasm/interpreter/wasm_runtime.c"
-
-# WAMR and the loader of NIF libraries in WebAssembly for the WebAssembly
-# runtime (wasm/erts/build.sh runs this step): one object WAMR_EDGE_OUT,
-# made with the compiler WAMR_EDGE_CC (emcc) and the flags
-# WAMR_EDGE_CFLAGS (the include directories of its ERTS). The
-# constructor of nif_wasm.c sets the hook of ERTS.
-step_wamr_edge() {
+# The loader of NIF libraries in WebAssembly for the WebAssembly runtime
+# of --target wasm32 (wasm/erts/build.sh runs this step): one object
+# NIF_EDGE_OUT, made with the compiler NIF_EDGE_CC (emcc) and the flags
+# NIF_EDGE_CFLAGS (the include directories of its ERTS). The engine of
+# the host runs the modules there (c_src/wasm/nif_wasm_host.c), so only
+# the headers of WAMR are used. The constructor of nif_wasm.c sets the
+# hook of ERTS.
+step_nif_edge() {
     wamr_clone
     obj=$WAMR/obj-edge
     rm -rf "$obj"
     mkdir -p "$obj"
-    cd "$WAMR"
-    # WASM_DISABLE_WAKEUP_BLOCKING_OP: no signals in WebAssembly. See
-    # step_wasm and c_src/wasm/wamr_emscripten.h for the other options.
-    flags="-O2 -include $ROOT/c_src/wasm/wamr_emscripten.h
-        -DBH_PLATFORM_LINUX -DBH_MALLOC=wasm_runtime_malloc
-        -DBH_FREE=wasm_runtime_free -D_GNU_SOURCE
-        -DWASM_ENABLE_INTERP=1 -DWASM_ENABLE_FAST_INTERP=1 -DWASM_ENABLE_AOT=0
-        -DWASM_ENABLE_REF_TYPES=1 -DWASM_ENABLE_LIBC_WASI=0
-        -DWASM_ENABLE_LIBC_BUILTIN=0 -DWASM_ENABLE_BULK_MEMORY=1
-        -DWASM_ENABLE_BULK_MEMORY_OPT=1 -DWASM_ENABLE_SHRUNK_MEMORY=1
-        -DWASM_ENABLE_SIMD=0 -DWASM_DISABLE_HW_BOUND_CHECK=1
-        -DWASM_DISABLE_STACK_HW_BOUND_CHECK=1 -DWASM_DISABLE_WAKEUP_BLOCKING_OP=1
-        -DWASM_HAVE_MREMAP=0 -DWASM_GLOBAL_HEAP_SIZE=10485760
-        -Icore/iwasm/include -Icore/iwasm/common -Icore/iwasm/interpreter
-        -Icore/shared/platform/linux -Icore/shared/platform/include
-        -Icore/shared/platform/common/libc-util -Icore/shared/mem-alloc
-        -Icore/shared/utils -Icore/shared/utils/uncommon"
-    for src in $WAMR_EDGE_SOURCES "$ROOT/c_src/wasm/wamr_emscripten.c"; do
+    for src in nif_wasm nif_wasm_host; do
         # shellcheck disable=SC2086
-        $WAMR_EDGE_CC $flags -w -c "$src" -o "$obj/$(basename "$src" .c).o"
+        $NIF_EDGE_CC -O2 -Wall -DBEAM_COM_ERTS_HOOK -I"$WAMR/core/iwasm/include" \
+            -I"$ROOT/c_src/wasm" $NIF_EDGE_CFLAGS -c "$ROOT/c_src/wasm/$src.c" -o "$obj/$src.o"
     done
-    # shellcheck disable=SC2086
-    $WAMR_EDGE_CC -O2 -Wall -DBEAM_COM_ERTS_HOOK -Icore/iwasm/include -I"$ROOT/c_src/wasm" \
-        $WAMR_EDGE_CFLAGS -c "$ROOT/c_src/wasm/nif_wasm.c" -o "$obj/nif_wasm.o"
-    $WAMR_EDGE_CC -r -o "$WAMR_EDGE_OUT" "$obj"/*.o
+    $NIF_EDGE_CC -r -o "$NIF_EDGE_OUT" "$obj"/*.o
 }
 
 # The STATIC_NIFS value for the emulator Makefile. Empty: the configured

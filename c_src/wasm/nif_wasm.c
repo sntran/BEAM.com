@@ -53,10 +53,12 @@
 void wasm_exec_env_set_thread_info(wasm_exec_env_t exec_env);
 
 /* The WebAssembly runtime of --target wasm32: ERTS built with
- * Emscripten. WAMR has no AOT code and no WASI there (see "the
- * WebAssembly runtime of --target wasm32" below). */
+ * Emscripten. The engine of the host runs the module there, not WAMR:
+ * nif_wasm_host.c gives the functions of WAMR that this file calls. */
 #ifdef __EMSCRIPTEN__
 #define NIF_WASM_EDGE 1
+#include <emscripten.h>
+#include "nif_wasm_host.h"
 #endif
 
 #define MAX_FUNCS 256
@@ -143,7 +145,7 @@ typedef struct ctx {
     wasm_module_inst_t inst;
     wasm_exec_env_t exec;
     ErlNifMutex *lock;
-    const void *owner;          /* the thread in the library (thread_mark) */
+    const void *owner;          /* the thread in the library (thread_id()) */
     int depth;
     wasm_function_inst_t malloc_fn, free_fn;
     uint32_t arena, arena_used;
@@ -179,8 +181,6 @@ typedef struct ctx {
  * entry. */
 static __thread ctx *loading;
 static __thread int thread_ready;
-/* The address of this variable marks the thread. */
-static __thread char thread_mark;
 static ERL_NIF_TERM nil_term;
 static int debug;
 
@@ -216,18 +216,29 @@ static int nil_ready(void)
 
 /* --- memory of the module --- */
 
+/* The address of SIZE bytes at OFF of the module. In the WebAssembly
+ * runtime of --target wasm32, it is a copy (a window, see
+ * nif_wasm_host.c) that goes back at the next call into the module. */
 static void *gaddr(ctx *c, uint32_t off, uint32_t size)
 {
+#ifdef NIF_WASM_EDGE
+    return host_window(c->inst, off, size ? size : 1);
+#else
     if (!wasm_runtime_validate_app_addr(c->inst, off, size ? size : 1))
         return NULL;
     return wasm_runtime_addr_app_to_native(c->inst, off);
+#endif
 }
 
 static const char *gstr(ctx *c, uint32_t off)
 {
+#ifdef NIF_WASM_EDGE
+    return off ? host_string(c->inst, off) : NULL;
+#else
     if (!off || !wasm_runtime_validate_app_str_addr(c->inst, off))
         return NULL;
     return wasm_runtime_addr_app_to_native(c->inst, off);
+#endif
 }
 
 static int put32(ctx *c, uint32_t off, uint32_t v)
@@ -499,15 +510,23 @@ static uint32_t put_terms(ctx *c, uint32_t e, const ERL_NIF_TERM *ts, uint32_t n
 
 /* --- locks and calls into the module --- */
 
+/* The thread that calls. Not the address of a thread-local variable:
+ * the green threads of the WebAssembly runtime share those. */
+static const void *thread_id(void)
+{
+    return (const void *)enif_thread_self();
+}
+
 static void enter(ctx *c)
 {
-    /* Only this thread writes its own mark into owner. */
-    if (c->owner == &thread_mark) {
+    const void *self = thread_id();
+    /* Only this thread writes its own identity into owner. */
+    if (c->owner == self) {
         c->depth++;
         return;
     }
     enif_mutex_lock(c->lock);
-    c->owner = &thread_mark;
+    c->owner = self;
     c->depth = 1;
 }
 
@@ -516,6 +535,9 @@ static void leave(ctx *c)
     if (--c->depth > 0)
         return;
     c->arena_used = 0;
+#ifdef NIF_WASM_EDGE
+    host_release(c->inst);
+#endif
     c->owner = NULL;
     enif_mutex_unlock(c->lock);
 }
@@ -2951,446 +2973,262 @@ static uint32_t w_term_size(wasm_exec_env_t x, uint32_t h)
     return (uint32_t)enif_term_size(t);
 }
 
-static NativeSymbol natives[] = {
-    { "enif_priv_data", w_priv_data, "(i)i", NULL },
-    { "enif_alloc", w_alloc, "(i)i", NULL },
-    { "enif_free", w_free, "(i)", NULL },
-    { "enif_realloc", w_realloc, "(ii)i", NULL },
-    { "enif_is_atom", w_is_atom, "(ii)i", NULL },
-    { "enif_is_binary", w_is_binary, "(ii)i", NULL },
-    { "enif_is_ref", w_is_ref, "(ii)i", NULL },
-    { "enif_is_fun", w_is_fun, "(ii)i", NULL },
-    { "enif_is_pid", w_is_pid, "(ii)i", NULL },
-    { "enif_is_port", w_is_port, "(ii)i", NULL },
-    { "enif_is_list", w_is_list, "(ii)i", NULL },
-    { "enif_is_tuple", w_is_tuple, "(ii)i", NULL },
-    { "enif_is_map", w_is_map, "(ii)i", NULL },
-    { "enif_is_number", w_is_number, "(ii)i", NULL },
-    { "enif_is_empty_list", w_is_empty_list, "(ii)i", NULL },
-    { "enif_is_exception", w_is_exception, "(ii)i", NULL },
-    { "enif_term_type", w_term_type, "(ii)i", NULL },
-    { "enif_is_identical", w_is_identical, "(ii)i", NULL },
-    { "enif_compare", w_compare, "(ii)i", NULL },
-    { "enif_hash", w_hash, "(iiI)I", NULL },
-    { "enif_inspect_binary", w_inspect_binary, "(iii)i", NULL },
-    { "enif_inspect_iolist_as_binary", w_inspect_iolist_as_binary, "(iii)i", NULL },
-    { "enif_alloc_binary", w_alloc_binary, "(ii)i", NULL },
-    { "enif_realloc_binary", w_realloc_binary, "(ii)i", NULL },
-    { "enif_release_binary", w_release_binary, "(i)", NULL },
-    { "enif_make_binary", w_make_binary, "(ii)i", NULL },
-    { "enif_make_new_binary", w_make_new_binary, "(iii)i", NULL },
-    { "enif_make_sub_binary", w_make_sub_binary, "(iiii)i", NULL },
-    { "enif_term_to_binary", w_term_to_binary, "(iii)i", NULL },
-    { "enif_binary_to_term", w_binary_to_term, "(iiiii)i", NULL },
-    { "enif_get_int", w_get_int, "(iii)i", NULL },
-    { "enif_get_uint", w_get_uint, "(iii)i", NULL },
-    { "enif_get_long", w_get_long, "(iii)i", NULL },
-    { "enif_get_ulong", w_get_ulong, "(iii)i", NULL },
-    { "enif_get_int64", w_get_int64, "(iii)i", NULL },
-    { "enif_get_uint64", w_get_uint64, "(iii)i", NULL },
-    { "enif_get_double", w_get_double, "(iii)i", NULL },
-    { "enif_make_int", w_make_int, "(ii)i", NULL },
-    { "enif_make_uint", w_make_uint, "(ii)i", NULL },
-    { "enif_make_long", w_make_long, "(ii)i", NULL },
-    { "enif_make_ulong", w_make_ulong, "(ii)i", NULL },
-    { "enif_make_int64", w_make_int64, "(iI)i", NULL },
-    { "enif_make_uint64", w_make_uint64, "(iI)i", NULL },
-    { "enif_make_double", w_make_double, "(iF)i", NULL },
-    { "enif_make_atom", w_make_atom, "(ii)i", NULL },
-    { "enif_make_atom_len", w_make_atom_len, "(iii)i", NULL },
-    { "enif_make_existing_atom", w_make_existing_atom, "(iiii)i", NULL },
-    { "enif_make_existing_atom_len", w_make_existing_atom_len, "(iiiii)i", NULL },
-    { "enif_make_new_atom", w_make_new_atom, "(iiii)i", NULL },
-    { "enif_make_new_atom_len", w_make_new_atom_len, "(iiiii)i", NULL },
-    { "enif_get_atom", w_get_atom, "(iiiii)i", NULL },
-    { "enif_get_atom_length", w_get_atom_length, "(iiii)i", NULL },
-    { "enif_make_string", w_make_string, "(iii)i", NULL },
-    { "enif_make_string_len", w_make_string_len, "(iiii)i", NULL },
-    { "enif_get_string", w_get_string, "(iiiii)i", NULL },
-    { "enif_get_string_length", w_get_string_length, "(iiii)i", NULL },
-    { "enif_make_tuple", w_make_tuple, "(iii)i", NULL },
-    { "enif_make_tuple_from_array", w_make_tuple_from_array, "(iii)i", NULL },
-    { "enif_get_tuple", w_get_tuple, "(iiii)i", NULL },
-    { "enif_make_list", w_make_list, "(iii)i", NULL },
-    { "enif_make_list_cell", w_make_list_cell, "(iii)i", NULL },
-    { "enif_make_list_from_array", w_make_list_from_array, "(iii)i", NULL },
-    { "enif_get_list_cell", w_get_list_cell, "(iiii)i", NULL },
-    { "enif_get_list_length", w_get_list_length, "(iii)i", NULL },
-    { "enif_make_reverse_list", w_make_reverse_list, "(iii)i", NULL },
-    { "enif_make_new_map", w_make_new_map, "(i)i", NULL },
-    { "enif_make_map_put", w_make_map_put, "(iiiii)i", NULL },
-    { "enif_make_map_update", w_make_map_update, "(iiiii)i", NULL },
-    { "enif_make_map_remove", w_make_map_remove, "(iiii)i", NULL },
-    { "enif_get_map_value", w_get_map_value, "(iiii)i", NULL },
-    { "enif_get_map_size", w_get_map_size, "(iii)i", NULL },
-    { "enif_make_map_from_arrays", w_make_map_from_arrays, "(iiiii)i", NULL },
-    { "enif_map_iterator_create", w_map_iterator_create, "(iiii)i", NULL },
-    { "enif_map_iterator_destroy", w_map_iterator_destroy, "(ii)", NULL },
-    { "enif_map_iterator_is_head", w_map_iterator_is_head, "(ii)i", NULL },
-    { "enif_map_iterator_is_tail", w_map_iterator_is_tail, "(ii)i", NULL },
-    { "enif_map_iterator_next", w_map_iterator_next, "(ii)i", NULL },
-    { "enif_map_iterator_prev", w_map_iterator_prev, "(ii)i", NULL },
-    { "enif_map_iterator_get_pair", w_map_iterator_get_pair, "(iiii)i", NULL },
-    { "enif_make_ref", w_make_ref, "(i)i", NULL },
-    { "enif_make_unique_integer", w_make_unique_integer, "(ii)i", NULL },
-    { "enif_make_copy", w_make_copy, "(ii)i", NULL },
-    { "enif_cpu_time", w_cpu_time, "(i)i", NULL },
-    { "enif_now_time", w_now_time, "(i)i", NULL },
-    { "enif_alloc_env", w_alloc_env, "()i", NULL },
-    { "enif_free_env", w_free_env, "(i)", NULL },
-    { "enif_clear_env", w_clear_env, "(i)", NULL },
-    { "enif_send", w_send, "(iiii)i", NULL },
-    { "enif_self", w_self, "(ii)i", NULL },
-    { "enif_get_local_pid", w_get_local_pid, "(iii)i", NULL },
-    { "enif_is_process_alive", w_is_process_alive, "(ii)i", NULL },
-    { "enif_is_current_process_alive", w_is_current_process_alive, "(i)i", NULL },
-    { "enif_whereis_pid", w_whereis_pid, "(iii)i", NULL },
-    { "enif_set_pid_undefined", w_set_pid_undefined, "(i)", NULL },
-    { "enif_is_pid_undefined", w_is_pid_undefined, "(i)i", NULL },
-    { "enif_open_resource_type", w_open_resource_type, "(iiiiii)i", NULL },
-    { "enif_open_resource_type_x", w_open_resource_type_x, "(iiiii)i", NULL },
-    { "enif_init_resource_type", w_init_resource_type, "(iiiii)i", NULL },
-    { "enif_alloc_resource", w_alloc_resource, "(ii)i", NULL },
-    { "enif_release_resource", w_release_resource, "(i)", NULL },
-    { "enif_keep_resource", w_keep_resource, "(i)", NULL },
-    { "enif_make_resource", w_make_resource, "(ii)i", NULL },
-    { "enif_get_resource", w_get_resource, "(iiii)i", NULL },
-    { "enif_sizeof_resource", w_sizeof_resource, "(i)i", NULL },
-    { "enif_make_badarg", w_make_badarg, "(i)i", NULL },
-    { "enif_raise_exception", w_raise_exception, "(ii)i", NULL },
-    { "enif_has_pending_exception", w_has_pending_exception, "(ii)i", NULL },
-    { "enif_consume_timeslice", w_consume_timeslice, "(ii)i", NULL },
-    { "enif_schedule_nif", w_schedule_nif, "(iiiiii)i", NULL },
-    { "enif_thread_type", w_thread_type, "()i", NULL },
-    { "enif_monotonic_time", w_monotonic_time, "(i)I", NULL },
-    { "enif_time_offset", w_time_offset, "(i)I", NULL },
-    { "enif_convert_time_unit", w_convert_time_unit, "(Iii)I", NULL },
-    { "enif_mutex_create", w_lock_create, "(i)i", NULL },
-    { "enif_mutex_destroy", w_lock_op, "(i)", NULL },
-    { "enif_mutex_lock", w_lock_op, "(i)", NULL },
-    { "enif_mutex_unlock", w_lock_op, "(i)", NULL },
-    { "enif_mutex_trylock", w_lock_try, "(i)i", NULL },
-    { "enif_cond_create", w_lock_create, "(i)i", NULL },
-    { "enif_cond_destroy", w_lock_op, "(i)", NULL },
-    { "enif_cond_signal", w_lock_op, "(i)", NULL },
-    { "enif_cond_broadcast", w_lock_op, "(i)", NULL },
-    { "enif_cond_wait", w_cond_wait, "(ii)", NULL },
-    { "enif_rwlock_create", w_lock_create, "(i)i", NULL },
-    { "enif_rwlock_destroy", w_lock_op, "(i)", NULL },
-    { "enif_rwlock_rlock", w_lock_op, "(i)", NULL },
-    { "enif_rwlock_runlock", w_lock_op, "(i)", NULL },
-    { "enif_rwlock_rwlock", w_lock_op, "(i)", NULL },
-    { "enif_rwlock_rwunlock", w_lock_op, "(i)", NULL },
-    { "enif_rwlock_tryrlock", w_lock_try, "(i)i", NULL },
-    { "enif_rwlock_tryrwlock", w_lock_try, "(i)i", NULL },
-    { "enif_thread_create", w_thread_create, "(iiiii)i", NULL },
-    { "enif_thread_self", w_thread_self, "()i", NULL },
-    { "enif_equal_tids", w_equal_tids, "(ii)i", NULL },
-    { "enif_thread_opts_create", w_lock_create, "(i)i", NULL },
-    { "enif_thread_opts_destroy", w_lock_op, "(i)", NULL },
-    { "enif_tsd_key_create", w_tsd_key_create, "(ii)i", NULL },
-    { "enif_tsd_key_destroy", w_lock_op, "(i)", NULL },
-    { "enif_tsd_set", w_tsd_set, "(ii)", NULL },
-    { "enif_tsd_get", w_tsd_get, "(i)i", NULL },
-    { "enif_getenv", w_getenv, "(iii)i", NULL },
-    { "enif_get_local_port", w_get_local_port, "(iii)i", NULL },
-    { "enif_is_port_alive", w_is_port_alive, "(ii)i", NULL },
-    { "enif_whereis_port", w_whereis_port, "(iii)i", NULL },
-    { "enif_port_command", w_port_command, "(iiii)i", NULL },
-    { "enif_select", w_select, "(iiiiii)i", NULL },
-    { "enif_dlopen", w_dlopen, "(iii)i", NULL },
-    { "enif_dlsym", w_dlsym, "(iiii)i", NULL },
-    { "enif_set_option", w_set_option, "(iii)i", NULL },
-    { "enif_make_resource_binary", w_make_resource_binary, "(iiii)i", NULL },
-    { "enif_system_info", w_system_info, "(ii)", NULL },
-    { "enif_monitor_process", w_monitor_process, "(iiii)i", NULL },
-    { "enif_demonitor_process", w_demonitor_process, "(iii)i", NULL },
-    { "enif_compare_monitors", w_compare_monitors, "(ii)i", NULL },
-    { "enif_make_monitor_term", w_make_monitor_term, "(ii)i", NULL },
-    { "enif_snprintf", w_snprintf, "(iiii)i", NULL },
-    { "enif_vsnprintf", w_snprintf, "(iiii)i", NULL },
-    { "enif_fprintf", w_fprintf, "(iii)i", NULL },
-    { "enif_vfprintf", w_fprintf, "(iii)i", NULL },
-    { "enif_ioq_create", w_ioq_create, "(i)i", NULL },
-    { "enif_ioq_destroy", w_ioq_destroy, "(i)", NULL },
-    { "enif_ioq_enq_binary", w_ioq_enq_binary, "(iii)i", NULL },
-    { "enif_ioq_enqv", w_ioq_enqv, "(iii)i", NULL },
-    { "enif_ioq_size", w_ioq_size, "(i)i", NULL },
-    { "enif_ioq_deq", w_ioq_deq, "(iii)i", NULL },
-    { "enif_ioq_peek", w_ioq_peek, "(ii)i", NULL },
-    { "enif_ioq_peek_head", w_ioq_peek_head, "(iiii)i", NULL },
-    { "enif_inspect_iovec", w_inspect_iovec, "(iiiii)i", NULL },
-    { "enif_free_iovec", w_free_iovec, "(i)", NULL },
-    { "enif_term_size", w_term_size, "(i)i", NULL },
-};
+/* The enif_* functions that the module imports: X(name, function,
+ * signature). S_PARAMS_RESULT: i is i32, I is i64, F is f64, v is no
+ * result. */
+#define NIF_NATIVES(X) \
+    X(enif_priv_data, w_priv_data, S_i_i) \
+    X(enif_alloc, w_alloc, S_i_i) \
+    X(enif_free, w_free, S_i_v) \
+    X(enif_realloc, w_realloc, S_ii_i) \
+    X(enif_is_atom, w_is_atom, S_ii_i) \
+    X(enif_is_binary, w_is_binary, S_ii_i) \
+    X(enif_is_ref, w_is_ref, S_ii_i) \
+    X(enif_is_fun, w_is_fun, S_ii_i) \
+    X(enif_is_pid, w_is_pid, S_ii_i) \
+    X(enif_is_port, w_is_port, S_ii_i) \
+    X(enif_is_list, w_is_list, S_ii_i) \
+    X(enif_is_tuple, w_is_tuple, S_ii_i) \
+    X(enif_is_map, w_is_map, S_ii_i) \
+    X(enif_is_number, w_is_number, S_ii_i) \
+    X(enif_is_empty_list, w_is_empty_list, S_ii_i) \
+    X(enif_is_exception, w_is_exception, S_ii_i) \
+    X(enif_term_type, w_term_type, S_ii_i) \
+    X(enif_is_identical, w_is_identical, S_ii_i) \
+    X(enif_compare, w_compare, S_ii_i) \
+    X(enif_hash, w_hash, S_iiI_I) \
+    X(enif_inspect_binary, w_inspect_binary, S_iii_i) \
+    X(enif_inspect_iolist_as_binary, w_inspect_iolist_as_binary, S_iii_i) \
+    X(enif_alloc_binary, w_alloc_binary, S_ii_i) \
+    X(enif_realloc_binary, w_realloc_binary, S_ii_i) \
+    X(enif_release_binary, w_release_binary, S_i_v) \
+    X(enif_make_binary, w_make_binary, S_ii_i) \
+    X(enif_make_new_binary, w_make_new_binary, S_iii_i) \
+    X(enif_make_sub_binary, w_make_sub_binary, S_iiii_i) \
+    X(enif_term_to_binary, w_term_to_binary, S_iii_i) \
+    X(enif_binary_to_term, w_binary_to_term, S_iiiii_i) \
+    X(enif_get_int, w_get_int, S_iii_i) \
+    X(enif_get_uint, w_get_uint, S_iii_i) \
+    X(enif_get_long, w_get_long, S_iii_i) \
+    X(enif_get_ulong, w_get_ulong, S_iii_i) \
+    X(enif_get_int64, w_get_int64, S_iii_i) \
+    X(enif_get_uint64, w_get_uint64, S_iii_i) \
+    X(enif_get_double, w_get_double, S_iii_i) \
+    X(enif_make_int, w_make_int, S_ii_i) \
+    X(enif_make_uint, w_make_uint, S_ii_i) \
+    X(enif_make_long, w_make_long, S_ii_i) \
+    X(enif_make_ulong, w_make_ulong, S_ii_i) \
+    X(enif_make_int64, w_make_int64, S_iI_i) \
+    X(enif_make_uint64, w_make_uint64, S_iI_i) \
+    X(enif_make_double, w_make_double, S_iF_i) \
+    X(enif_make_atom, w_make_atom, S_ii_i) \
+    X(enif_make_atom_len, w_make_atom_len, S_iii_i) \
+    X(enif_make_existing_atom, w_make_existing_atom, S_iiii_i) \
+    X(enif_make_existing_atom_len, w_make_existing_atom_len, S_iiiii_i) \
+    X(enif_make_new_atom, w_make_new_atom, S_iiii_i) \
+    X(enif_make_new_atom_len, w_make_new_atom_len, S_iiiii_i) \
+    X(enif_get_atom, w_get_atom, S_iiiii_i) \
+    X(enif_get_atom_length, w_get_atom_length, S_iiii_i) \
+    X(enif_make_string, w_make_string, S_iii_i) \
+    X(enif_make_string_len, w_make_string_len, S_iiii_i) \
+    X(enif_get_string, w_get_string, S_iiiii_i) \
+    X(enif_get_string_length, w_get_string_length, S_iiii_i) \
+    X(enif_make_tuple, w_make_tuple, S_iii_i) \
+    X(enif_make_tuple_from_array, w_make_tuple_from_array, S_iii_i) \
+    X(enif_get_tuple, w_get_tuple, S_iiii_i) \
+    X(enif_make_list, w_make_list, S_iii_i) \
+    X(enif_make_list_cell, w_make_list_cell, S_iii_i) \
+    X(enif_make_list_from_array, w_make_list_from_array, S_iii_i) \
+    X(enif_get_list_cell, w_get_list_cell, S_iiii_i) \
+    X(enif_get_list_length, w_get_list_length, S_iii_i) \
+    X(enif_make_reverse_list, w_make_reverse_list, S_iii_i) \
+    X(enif_make_new_map, w_make_new_map, S_i_i) \
+    X(enif_make_map_put, w_make_map_put, S_iiiii_i) \
+    X(enif_make_map_update, w_make_map_update, S_iiiii_i) \
+    X(enif_make_map_remove, w_make_map_remove, S_iiii_i) \
+    X(enif_get_map_value, w_get_map_value, S_iiii_i) \
+    X(enif_get_map_size, w_get_map_size, S_iii_i) \
+    X(enif_make_map_from_arrays, w_make_map_from_arrays, S_iiiii_i) \
+    X(enif_map_iterator_create, w_map_iterator_create, S_iiii_i) \
+    X(enif_map_iterator_destroy, w_map_iterator_destroy, S_ii_v) \
+    X(enif_map_iterator_is_head, w_map_iterator_is_head, S_ii_i) \
+    X(enif_map_iterator_is_tail, w_map_iterator_is_tail, S_ii_i) \
+    X(enif_map_iterator_next, w_map_iterator_next, S_ii_i) \
+    X(enif_map_iterator_prev, w_map_iterator_prev, S_ii_i) \
+    X(enif_map_iterator_get_pair, w_map_iterator_get_pair, S_iiii_i) \
+    X(enif_make_ref, w_make_ref, S_i_i) \
+    X(enif_make_unique_integer, w_make_unique_integer, S_ii_i) \
+    X(enif_make_copy, w_make_copy, S_ii_i) \
+    X(enif_cpu_time, w_cpu_time, S_i_i) \
+    X(enif_now_time, w_now_time, S_i_i) \
+    X(enif_alloc_env, w_alloc_env, S__i) \
+    X(enif_free_env, w_free_env, S_i_v) \
+    X(enif_clear_env, w_clear_env, S_i_v) \
+    X(enif_send, w_send, S_iiii_i) \
+    X(enif_self, w_self, S_ii_i) \
+    X(enif_get_local_pid, w_get_local_pid, S_iii_i) \
+    X(enif_is_process_alive, w_is_process_alive, S_ii_i) \
+    X(enif_is_current_process_alive, w_is_current_process_alive, S_i_i) \
+    X(enif_whereis_pid, w_whereis_pid, S_iii_i) \
+    X(enif_set_pid_undefined, w_set_pid_undefined, S_i_v) \
+    X(enif_is_pid_undefined, w_is_pid_undefined, S_i_i) \
+    X(enif_open_resource_type, w_open_resource_type, S_iiiiii_i) \
+    X(enif_open_resource_type_x, w_open_resource_type_x, S_iiiii_i) \
+    X(enif_init_resource_type, w_init_resource_type, S_iiiii_i) \
+    X(enif_alloc_resource, w_alloc_resource, S_ii_i) \
+    X(enif_release_resource, w_release_resource, S_i_v) \
+    X(enif_keep_resource, w_keep_resource, S_i_v) \
+    X(enif_make_resource, w_make_resource, S_ii_i) \
+    X(enif_get_resource, w_get_resource, S_iiii_i) \
+    X(enif_sizeof_resource, w_sizeof_resource, S_i_i) \
+    X(enif_make_badarg, w_make_badarg, S_i_i) \
+    X(enif_raise_exception, w_raise_exception, S_ii_i) \
+    X(enif_has_pending_exception, w_has_pending_exception, S_ii_i) \
+    X(enif_consume_timeslice, w_consume_timeslice, S_ii_i) \
+    X(enif_schedule_nif, w_schedule_nif, S_iiiiii_i) \
+    X(enif_thread_type, w_thread_type, S__i) \
+    X(enif_monotonic_time, w_monotonic_time, S_i_I) \
+    X(enif_time_offset, w_time_offset, S_i_I) \
+    X(enif_convert_time_unit, w_convert_time_unit, S_Iii_I) \
+    X(enif_mutex_create, w_lock_create, S_i_i) \
+    X(enif_mutex_destroy, w_lock_op, S_i_v) \
+    X(enif_mutex_lock, w_lock_op, S_i_v) \
+    X(enif_mutex_unlock, w_lock_op, S_i_v) \
+    X(enif_mutex_trylock, w_lock_try, S_i_i) \
+    X(enif_cond_create, w_lock_create, S_i_i) \
+    X(enif_cond_destroy, w_lock_op, S_i_v) \
+    X(enif_cond_signal, w_lock_op, S_i_v) \
+    X(enif_cond_broadcast, w_lock_op, S_i_v) \
+    X(enif_cond_wait, w_cond_wait, S_ii_v) \
+    X(enif_rwlock_create, w_lock_create, S_i_i) \
+    X(enif_rwlock_destroy, w_lock_op, S_i_v) \
+    X(enif_rwlock_rlock, w_lock_op, S_i_v) \
+    X(enif_rwlock_runlock, w_lock_op, S_i_v) \
+    X(enif_rwlock_rwlock, w_lock_op, S_i_v) \
+    X(enif_rwlock_rwunlock, w_lock_op, S_i_v) \
+    X(enif_rwlock_tryrlock, w_lock_try, S_i_i) \
+    X(enif_rwlock_tryrwlock, w_lock_try, S_i_i) \
+    X(enif_thread_create, w_thread_create, S_iiiii_i) \
+    X(enif_thread_self, w_thread_self, S__i) \
+    X(enif_equal_tids, w_equal_tids, S_ii_i) \
+    X(enif_thread_opts_create, w_lock_create, S_i_i) \
+    X(enif_thread_opts_destroy, w_lock_op, S_i_v) \
+    X(enif_tsd_key_create, w_tsd_key_create, S_ii_i) \
+    X(enif_tsd_key_destroy, w_lock_op, S_i_v) \
+    X(enif_tsd_set, w_tsd_set, S_ii_v) \
+    X(enif_tsd_get, w_tsd_get, S_i_i) \
+    X(enif_getenv, w_getenv, S_iii_i) \
+    X(enif_get_local_port, w_get_local_port, S_iii_i) \
+    X(enif_is_port_alive, w_is_port_alive, S_ii_i) \
+    X(enif_whereis_port, w_whereis_port, S_iii_i) \
+    X(enif_port_command, w_port_command, S_iiii_i) \
+    X(enif_select, w_select, S_iiiiii_i) \
+    X(enif_dlopen, w_dlopen, S_iii_i) \
+    X(enif_dlsym, w_dlsym, S_iiii_i) \
+    X(enif_set_option, w_set_option, S_iii_i) \
+    X(enif_make_resource_binary, w_make_resource_binary, S_iiii_i) \
+    X(enif_system_info, w_system_info, S_ii_v) \
+    X(enif_monitor_process, w_monitor_process, S_iiii_i) \
+    X(enif_demonitor_process, w_demonitor_process, S_iii_i) \
+    X(enif_compare_monitors, w_compare_monitors, S_ii_i) \
+    X(enif_make_monitor_term, w_make_monitor_term, S_ii_i) \
+    X(enif_snprintf, w_snprintf, S_iiii_i) \
+    X(enif_vsnprintf, w_snprintf, S_iiii_i) \
+    X(enif_fprintf, w_fprintf, S_iii_i) \
+    X(enif_vfprintf, w_fprintf, S_iii_i) \
+    X(enif_ioq_create, w_ioq_create, S_i_i) \
+    X(enif_ioq_destroy, w_ioq_destroy, S_i_v) \
+    X(enif_ioq_enq_binary, w_ioq_enq_binary, S_iii_i) \
+    X(enif_ioq_enqv, w_ioq_enqv, S_iii_i) \
+    X(enif_ioq_size, w_ioq_size, S_i_i) \
+    X(enif_ioq_deq, w_ioq_deq, S_iii_i) \
+    X(enif_ioq_peek, w_ioq_peek, S_ii_i) \
+    X(enif_ioq_peek_head, w_ioq_peek_head, S_iiii_i) \
+    X(enif_inspect_iovec, w_inspect_iovec, S_iiiii_i) \
+    X(enif_free_iovec, w_free_iovec, S_i_v) \
+    X(enif_term_size, w_term_size, S_i_i)
+
+#define SIG_S__i "()i"
+#define SIG_S_Iii_I "(Iii)I"
+#define SIG_S_i_v "(i)"
+#define SIG_S_i_I "(i)I"
+#define SIG_S_i_i "(i)i"
+#define SIG_S_iF_i "(iF)i"
+#define SIG_S_iI_i "(iI)i"
+#define SIG_S_ii_v "(ii)"
+#define SIG_S_ii_i "(ii)i"
+#define SIG_S_iiI_I "(iiI)I"
+#define SIG_S_iii_i "(iii)i"
+#define SIG_S_iiii_i "(iiii)i"
+#define SIG_S_iiiii_i "(iiiii)i"
+#define SIG_S_iiiiii_i "(iiiiii)i"
+
+#define NATIVE_ENTRY(name, fn, sig) { #name, fn, SIG_##sig, NULL },
+static NativeSymbol natives[] = { NIF_NATIVES(NATIVE_ENTRY) };
 
 #ifdef NIF_WASM_EDGE
 /* --- the WebAssembly runtime of --target wasm32 ---
  *
- * There, ERTS itself runs in WebAssembly (Emscripten), and WAMR runs in
- * it with its interpreter only. A call through a function pointer in
- * WebAssembly must have the exact type of the function, so the generic
- * call of WAMR (invokeNative) cannot call the functions of the table
- * above. WAMR calls each one as a raw native: raw_native() gets the
- * arguments as an array, and calls the function with its type. */
+ * The engine of the host runs the module there (nif_wasm_host.c). The
+ * module imports each function of NIF_NATIVES as the export
+ * nifx_NAME of ERTS, which has the exact type of the import: a call
+ * has no JavaScript between the module and ERTS, so ERTS can wait (and
+ * suspend the thread) in it. host_enter() gives the execution
+ * environment of the call, and host_leave() writes back the windows on
+ * the memory of the module (and stops the module after a failure). */
+#define P_i uint32_t
+#define P_I uint64_t
+#define P_F double
+#define EXPORT_S__i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(void) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x); host_leave(x); return r; }
+#define EXPORT_S_i_v(name, fn) \
+    EMSCRIPTEN_KEEPALIVE void nifx_##name(P_i a) \
+    { wasm_exec_env_t x = host_enter(); fn(x, a); host_leave(x); }
+#define EXPORT_S_i_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a); host_leave(x); return r; }
+#define EXPORT_S_i_I(name, fn) \
+    EMSCRIPTEN_KEEPALIVE int64_t nifx_##name(P_i a) \
+    { wasm_exec_env_t x = host_enter(); int64_t r = fn(x, a); host_leave(x); return r; }
+#define EXPORT_S_ii_v(name, fn) \
+    EMSCRIPTEN_KEEPALIVE void nifx_##name(P_i a, P_i b) \
+    { wasm_exec_env_t x = host_enter(); fn(x, a, b); host_leave(x); }
+#define EXPORT_S_ii_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_i b) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b); host_leave(x); return r; }
+#define EXPORT_S_iii_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_i b, P_i c) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b, c); host_leave(x); return r; }
+#define EXPORT_S_iiii_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_i b, P_i c, P_i d) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b, c, d); host_leave(x); return r; }
+#define EXPORT_S_iiiii_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_i b, P_i c, P_i d, P_i e) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b, c, d, e); host_leave(x); return r; }
+#define EXPORT_S_iiiiii_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_i b, P_i c, P_i d, P_i e, P_i f) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b, c, d, e, f); host_leave(x); return r; }
+#define EXPORT_S_iI_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_I b) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b); host_leave(x); return r; }
+#define EXPORT_S_iF_i(name, fn) \
+    EMSCRIPTEN_KEEPALIVE uint32_t nifx_##name(P_i a, P_F b) \
+    { wasm_exec_env_t x = host_enter(); uint32_t r = fn(x, a, b); host_leave(x); return r; }
+#define EXPORT_S_iiI_I(name, fn) \
+    EMSCRIPTEN_KEEPALIVE int64_t nifx_##name(P_i a, P_i b, P_I c) \
+    { wasm_exec_env_t x = host_enter(); int64_t r = fn(x, a, b, c); host_leave(x); return r; }
+#define EXPORT_S_Iii_I(name, fn) \
+    EMSCRIPTEN_KEEPALIVE int64_t nifx_##name(P_I a, P_i b, P_i c) \
+    { wasm_exec_env_t x = host_enter(); int64_t r = fn(x, a, b, c); host_leave(x); return r; }
+#define NATIVE_EXPORT(name, fn, sig) EXPORT_##sig(name, fn)
+NIF_NATIVES(NATIVE_EXPORT)
+#endif
 
-static const char *const raw_sigs[] = {
-    "()i", "(i)", "(i)i", "(i)I", "(ii)", "(ii)i", "(iii)i", "(iiii)i",
-    "(iiiii)i", "(iiiiii)i", "(iI)i", "(iF)i", "(iiI)I", "(Iii)I",
-};
-
-typedef struct {
-    void *f;
-    int sig;                    /* index into raw_sigs */
-} raw_fn_t;
-
-#define N_NATIVES (sizeof(natives) / sizeof(natives[0]))
-static raw_fn_t raw_fns[N_NATIVES];
-static NativeSymbol raw_natives[N_NATIVES];
-
-typedef wasm_exec_env_t X;
-typedef uint32_t U;
-typedef uint64_t L;
-#define A(k) ((U)a[k])
-
-static void raw_native(wasm_exec_env_t x, uint64_t *a)
-{
-    const raw_fn_t *r = wasm_runtime_get_function_attachment(x);
-    void *f = r->f;
-    double d;
-    switch (r->sig) {
-    case 0: a[0] = ((U (*)(X))f)(x); break;
-    case 1: ((void (*)(X, U))f)(x, A(0)); break;
-    case 2: a[0] = ((U (*)(X, U))f)(x, A(0)); break;
-    case 3: a[0] = ((L (*)(X, U))f)(x, A(0)); break;
-    case 4: ((void (*)(X, U, U))f)(x, A(0), A(1)); break;
-    case 5: a[0] = ((U (*)(X, U, U))f)(x, A(0), A(1)); break;
-    case 6: a[0] = ((U (*)(X, U, U, U))f)(x, A(0), A(1), A(2)); break;
-    case 7: a[0] = ((U (*)(X, U, U, U, U))f)(x, A(0), A(1), A(2), A(3)); break;
-    case 8: a[0] = ((U (*)(X, U, U, U, U, U))f)(x, A(0), A(1), A(2), A(3), A(4)); break;
-    case 9: a[0] = ((U (*)(X, U, U, U, U, U, U))f)(x, A(0), A(1), A(2), A(3), A(4), A(5)); break;
-    case 10: a[0] = ((U (*)(X, U, L))f)(x, A(0), a[1]); break;
-    case 11:
-        memcpy(&d, &a[1], sizeof(d));
-        a[0] = ((U (*)(X, U, double))f)(x, A(0), d);
-        break;
-    case 12: a[0] = ((L (*)(X, U, U, L))f)(x, A(0), A(1), a[2]); break;
-    case 13: a[0] = ((L (*)(X, L, U, U))f)(x, a[0], A(1), A(2)); break;
-    }
-}
-
-/* WASI preview 1 for the module: the standard output and error, the
- * clocks and random bytes. There are no files and no arguments. A
- * function of WASI that is not here stays unlinked: a call to it
- * traps. */
-#define WASI_EBADF 8
-#define WASI_ENOTSUP 58
-#define WASI_ESPIPE 70
-
-static void *wptr(wasm_exec_env_t x, uint32_t off, uint64_t n)
-{
-    wasm_module_inst_t m = wasm_runtime_get_module_inst(x);
-    if (n > UINT32_MAX || !wasm_runtime_validate_app_addr(m, off, n ? n : 1))
-        return NULL;
-    return wasm_runtime_addr_app_to_native(m, off);
-}
-
-static int wput(wasm_exec_env_t x, uint32_t off, const void *v, uint32_t n)
-{
-    void *p = wptr(x, off, n);
-    if (p)
-        memcpy(p, v, n);
-    return p != NULL;
-}
-
-static void wasi_ok(wasm_exec_env_t x, uint64_t *a)
-{
-    (void)x;
-    a[0] = 0;
-}
-
-static void wasi_ebadf(wasm_exec_env_t x, uint64_t *a)
-{
-    (void)x;
-    a[0] = WASI_EBADF;
-}
-
-static void wasi_enotsup(wasm_exec_env_t x, uint64_t *a)
-{
-    (void)x;
-    a[0] = WASI_ENOTSUP;
-}
-
-/* args_sizes_get and environ_sizes_get: none. */
-static void wasi_sizes(wasm_exec_env_t x, uint64_t *a)
-{
-    uint32_t z = 0;
-    if (wput(x, A(0), &z, 4) && wput(x, A(1), &z, 4))
-        a[0] = 0;
-}
-
-static void wasi_proc_exit(wasm_exec_env_t x, uint64_t *a)
-{
-    (void)a;
-    wasm_runtime_set_exception(wasm_runtime_get_module_inst(x), "proc_exit");
-}
-
-static void wasi_clock_res_get(wasm_exec_env_t x, uint64_t *a)
-{
-    uint64_t r = 1000;
-    if (wput(x, A(1), &r, 8))
-        a[0] = 0;
-}
-
-static void wasi_clock_time_get(wasm_exec_env_t x, uint64_t *a)
-{
-    struct timespec ts;
-    uint64_t t;
-    clock_gettime(A(0) == 0 ? CLOCK_REALTIME : CLOCK_MONOTONIC, &ts);
-    t = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
-    if (wput(x, A(2), &t, 8))
-        a[0] = 0;
-}
-
-static void wasi_random_get(wasm_exec_env_t x, uint64_t *a)
-{
-    uint8_t *p = wptr(x, A(0), A(1));
-    uint32_t n = A(1), k;
-    if (!p)
-        return;
-    for (; n > 0; p += k, n -= k) {
-        k = n > 256 ? 256 : n;
-        if (getentropy(p, k)) {
-            a[0] = WASI_ENOTSUP;
-            return;
-        }
-    }
-    a[0] = 0;
-}
-
-static void wasi_fd_write(wasm_exec_env_t x, uint64_t *a)
-{
-    FILE *f = A(0) == 1 ? stdout : A(0) == 2 ? stderr : NULL;
-    uint32_t i, n = A(2), total = 0, iov[2];
-    const uint8_t *v;
-    void *p;
-    if (!f) {
-        a[0] = WASI_EBADF;
-        return;
-    }
-    if (!(v = wptr(x, A(1), (uint64_t)n * 8)))
-        return;
-    for (i = 0; i < n; i++) {
-        memcpy(iov, v + 8 * i, 8);
-        if (!(p = wptr(x, iov[0], iov[1])))
-            return;
-        total += (uint32_t)fwrite(p, 1, iov[1], f);
-    }
-    fflush(f);
-    if (wput(x, A(3), &total, 4))
-        a[0] = 0;
-}
-
-/* fd_read: the standard input is empty. */
-static void wasi_fd_read(wasm_exec_env_t x, uint64_t *a)
-{
-    uint32_t z = 0;
-    if (A(0) != 0)
-        a[0] = WASI_EBADF;
-    else if (wput(x, A(3), &z, 4))
-        a[0] = 0;
-}
-
-static void wasi_fd_std(wasm_exec_env_t x, uint64_t *a)
-{
-    (void)x;
-    a[0] = A(0) <= 2 ? 0 : WASI_EBADF;
-}
-
-static void wasi_fd_seek(wasm_exec_env_t x, uint64_t *a)
-{
-    (void)x;
-    a[0] = A(0) <= 2 ? WASI_ESPIPE : WASI_EBADF;
-}
-
-/* fd_fdstat_get: 0, 1 and 2 are character devices. */
-static void wasi_fd_fdstat_get(wasm_exec_env_t x, uint64_t *a)
-{
-    uint8_t st[24];
-    if (A(0) > 2) {
-        a[0] = WASI_EBADF;
-        return;
-    }
-    memset(st, 0, sizeof(st));
-    st[0] = 2;
-    memset(st + 8, 0xff, 16);
-    if (wput(x, A(1), st, sizeof(st)))
-        a[0] = 0;
-}
-
-static void wasi_fd_filestat_get(wasm_exec_env_t x, uint64_t *a)
-{
-    uint8_t st[64];
-    if (A(0) > 2) {
-        a[0] = WASI_EBADF;
-        return;
-    }
-    memset(st, 0, sizeof(st));
-    st[16] = 2;
-    if (wput(x, A(1), st, sizeof(st)))
-        a[0] = 0;
-}
-
-static NativeSymbol wasi_natives[] = {
-    { "args_get", wasi_ok, "(ii)i", NULL },
-    { "args_sizes_get", wasi_sizes, "(ii)i", NULL },
-    { "environ_get", wasi_ok, "(ii)i", NULL },
-    { "environ_sizes_get", wasi_sizes, "(ii)i", NULL },
-    { "clock_res_get", wasi_clock_res_get, "(ii)i", NULL },
-    { "clock_time_get", wasi_clock_time_get, "(iIi)i", NULL },
-    { "random_get", wasi_random_get, "(ii)i", NULL },
-    { "fd_write", wasi_fd_write, "(iiii)i", NULL },
-    { "fd_read", wasi_fd_read, "(iiii)i", NULL },
-    { "fd_close", wasi_fd_std, "(i)i", NULL },
-    { "fd_seek", wasi_fd_seek, "(iIii)i", NULL },
-    { "fd_fdstat_get", wasi_fd_fdstat_get, "(ii)i", NULL },
-    { "fd_fdstat_set_flags", wasi_fd_std, "(ii)i", NULL },
-    { "fd_filestat_get", wasi_fd_filestat_get, "(ii)i", NULL },
-    { "fd_prestat_get", wasi_ebadf, "(ii)i", NULL },
-    { "fd_prestat_dir_name", wasi_ebadf, "(iii)i", NULL },
-    { "proc_exit", wasi_proc_exit, "(i)", NULL },
-    { "sched_yield", wasi_ok, "()i", NULL },
-    { "poll_oneoff", wasi_enotsup, "(iiii)i", NULL },
-};
-
-#undef A
-
-/* Register the table above as raw natives, and WASI. */
-static int register_natives(void)
-{
-    size_t i, k;
-    for (i = 0; i < N_NATIVES; i++) {
-        for (k = 0; k < sizeof(raw_sigs) / sizeof(raw_sigs[0]); k++)
-            if (!strcmp(natives[i].signature, raw_sigs[k]))
-                break;
-        if (k == sizeof(raw_sigs) / sizeof(raw_sigs[0]))
-            return 0;
-        raw_fns[i].f = natives[i].func_ptr;
-        raw_fns[i].sig = (int)k;
-        raw_natives[i] = natives[i];
-        raw_natives[i].func_ptr = (void *)raw_native;
-        raw_natives[i].attachment = &raw_fns[i];
-    }
-    return wasm_runtime_register_natives_raw("env", raw_natives, N_NATIVES)
-        && wasm_runtime_register_natives_raw("wasi_snapshot_preview1", wasi_natives,
-                                             sizeof(wasi_natives) / sizeof(wasi_natives[0]));
-}
-#else
 static int register_natives(void)
 {
     return wasm_runtime_register_natives("env", natives, sizeof(natives) / sizeof(natives[0]));
 }
-#endif
 
 /* --- the library --- */
 
@@ -3553,6 +3391,9 @@ static const char *aot_suffix(void)
 
 static int module_exports(wasm_module_t m, const char *name)
 {
+#ifdef NIF_WASM_EDGE
+    return host_has_export(m, name);
+#else
     int32_t i, n = wasm_runtime_get_export_count(m);
     wasm_export_t ex;
     for (i = 0; i < n; i++) {
@@ -3561,16 +3402,24 @@ static int module_exports(wasm_module_t m, const char *name)
             return 1;
     }
     return 0;
+#endif
 }
 
 /* Every import must be a function of WASI or an enif_* function. An
  * enif_* function that this file does not give stays unlinked: a call
  * to it traps with its name. (A library can import functions that it
  * never calls: rustler takes the address of each one.) In the
- * WebAssembly runtime of --target wasm32, a function of WASI can stay
- * unlinked too. */
+ * WebAssembly runtime of --target wasm32, nif_wasm_host.js checks the
+ * imports. */
 static int check_imports(wasm_module_t m, const char *file, char *error, size_t size)
 {
+#ifdef NIF_WASM_EDGE
+    (void)m;
+    (void)file;
+    (void)size;
+    error[0] = '\0';
+    return 1;
+#else
     int32_t i, n = wasm_runtime_get_import_count(m);
     wasm_import_t im;
     size_t used = 0;
@@ -3580,12 +3429,8 @@ static int check_imports(wasm_module_t m, const char *file, char *error, size_t 
         if (im.kind == WASM_IMPORT_EXPORT_KIND_FUNC && im.linked
             && (!strcmp(im.module_name, "env") || !strcmp(im.module_name, "wasi_snapshot_preview1")))
             continue;
-        if (im.kind == WASM_IMPORT_EXPORT_KIND_FUNC
-            && ((!strcmp(im.module_name, "env") && !strncmp(im.name, "enif_", 5))
-#ifdef NIF_WASM_EDGE
-                || !strcmp(im.module_name, "wasi_snapshot_preview1")
-#endif
-                )) {
+        if (im.kind == WASM_IMPORT_EXPORT_KIND_FUNC && !strcmp(im.module_name, "env")
+            && !strncmp(im.name, "enif_", 5)) {
             if (debug)
                 fprintf(stderr, "nif_wasm: %s: %s is not supported\n", file, im.name);
             continue;
@@ -3596,6 +3441,7 @@ static int check_imports(wasm_module_t m, const char *file, char *error, size_t 
             used += (size_t)snprintf(error + used, size - used, " %s.%s", im.module_name, im.name);
     }
     return error[0] == '\0';
+#endif
 }
 
 #ifndef NIF_WASM_EDGE
@@ -3635,6 +3481,9 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
         return NULL;
     }
     c->bytes = bytes;
+#ifdef NIF_WASM_EDGE
+    host_set_file(file);
+#endif
     if (!(c->module = wasm_runtime_load(bytes, n, error, (uint32_t)size)))
         goto failed;
     if (!check_imports(c->module, file, error, size))
@@ -3654,6 +3503,13 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
 #endif
     heap = module_exports(c->module, "erl_nif_wasm_malloc")
         || (module_exports(c->module, "malloc") && module_exports(c->module, "free")) ? 0 : APP_HEAP;
+#ifdef NIF_WASM_EDGE
+    /* The host has no heap of WAMR for the module. */
+    if (heap) {
+        snprintf(error, size, "the module exports no malloc and free");
+        goto failed;
+    }
+#endif
     if (!(c->inst = wasm_runtime_instantiate(c->module, WASM_STACK, heap, error, (uint32_t)size))) {
 #ifdef NIF_WASM_EDGE
         goto failed;
@@ -3682,7 +3538,7 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
         goto failed;
     }
 #ifdef NIF_WASM_EDGE
-    /* WAMR calls _initialize of a reactor only with its own WASI. */
+    /* WAMR calls _initialize of a reactor itself; the host does not. */
     {
         wasm_function_inst_t init = wasm_runtime_lookup_function(c->inst, "_initialize");
         if (init) {

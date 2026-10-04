@@ -23,7 +23,7 @@ on npm it has the dist-tag `next` (`npm install beam.com@next`).
   `load_nif/2` loads `PATH.wasm`, or its AOT file `PATH.x86_64.aot` or
   `PATH.aarch64.aot`, through WAMR, also from the zip of a program. One
   `.wasm` file works on all the systems, and in the WebAssembly runtime
-  of `--target wasm32` (with the interpreter only). `beam.com
+  of `--target wasm32`, where the engine of the host runs it. `beam.com
   --nif-include` gives the headers. See `docs/NIFS.md`.
 - The OTP application `tools`, for `mix test --cover`.
 - A sandbox with the permission flags of Deno (`--allow-read`,
