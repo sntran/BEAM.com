@@ -5,7 +5,8 @@
 %%   beam.com examples/bluegreen/bluegreen.erl -o bluegreen.com
 %%   ./bluegreen.com serve PORT            serve "count C version V upgrades U"
 %%   ./bluegreen.com upgrade PORT FILE     replace the server with FILE
-%%   ./bluegreen.com load PORT N           N requests, one after the other
+%%   ./bluegreen.com load PORT N [V]       N requests, one after the other
+%%                                         (with V: then more, until version V answers)
 %%   ./bluegreen.com wait PORT             wait until the server answers
 %%   ./bluegreen.com stop PORT             stop the server
 %%
@@ -43,13 +44,15 @@ main(["serve", Port, Handoff]) ->
 main(["upgrade", Port, File]) ->
     io:format("~s", [request(list_to_integer(Port), "POST /upgrade", filename:absname(File))]);
 main(["load", Port, N]) ->
-    load(list_to_integer(Port), list_to_integer(N));
+    load(list_to_integer(Port), list_to_integer(N), 0);
+main(["load", Port, N, Version]) ->
+    load(list_to_integer(Port), list_to_integer(N), list_to_integer(Version));
 main(["wait", Port]) ->
     wait_up(list_to_integer(Port), 3000);
 main(["stop", Port]) ->
     io:format("~s", [request(list_to_integer(Port), "POST /stop", "")]);
 main(_) ->
-    io:format("usage: bluegreen serve PORT | upgrade PORT FILE | load PORT N | stop PORT~n"),
+    io:format("usage: bluegreen serve PORT | upgrade PORT FILE | load PORT N [V] | stop PORT~n"),
     erlang:halt(2).
 
 %% The server
@@ -244,11 +247,14 @@ wait_up(Port, Tries) ->
         _:_ -> timer:sleep(10), wait_up(Port, Tries - 1)
     end.
 
-%% N requests, one after the other. Each count must be one more than the
+%% N requests, one after the other. With Until > 0, more requests follow
+%% until version Until answers (at most 60 s more): the switch of an
+%% upgrade is then inside the load, also when N requests take less time
+%% than the start of the new server. Each count must be one more than the
 %% count before it: no request failed, and no state was lost.
-load(Port, N) ->
-    Timed = [timer:tc(fun() -> try request(Port, "GET /", "") catch _:R -> {failed, R} end end)
-             || _ <- lists:seq(1, N)],
+load(Port, N, Until) ->
+    Deadline = erlang:monotonic_time(millisecond) + 60000,
+    Timed = lists:reverse(load_loop(Port, N, Until, Deadline, [])),
     Results = [R || {_, R} <- Timed],
     Slowest = lists:max([T || {T, _} <- Timed]) div 1000,
     Failed = [R || {failed, _} = R <- Results],
@@ -261,3 +267,21 @@ load(Port, N) ->
               [length(Parsed), length(Failed), InOrder, Versions, Slowest]),
     [io:format("failed: ~p~n", [R]) || {failed, R} <- lists:sublist(Failed, 3)],
     ok.
+
+load_loop(Port, N, Until, Deadline, Acc) ->
+    {_, R} = Timed = timer:tc(fun() -> try request(Port, "GET /", "") catch _:E -> {failed, E} end end),
+    Acc1 = [Timed | Acc],
+    More = N > 1 orelse (version_of(R) < Until andalso erlang:monotonic_time(millisecond) < Deadline),
+    case More of
+        true -> load_loop(Port, N - 1, Until, Deadline, Acc1);
+        false -> Acc1
+    end.
+
+%% The version in a reply "count C version V upgrades U", or 0.
+version_of(Text) when is_binary(Text) ->
+    case re:run(Text, <<" version ([0-9]+) ">>, [{capture, all_but_first, binary}]) of
+        {match, [V]} -> binary_to_integer(V);
+        nomatch -> 0
+    end;
+version_of(_) ->
+    0.

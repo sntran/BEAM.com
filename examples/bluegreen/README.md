@@ -16,7 +16,10 @@ beam.com examples/bluegreen/bluegreen.erl -o bluegreen.com
 
 [`check.sh`](check.sh) does it all from end to end. It builds versions
 1, 2 and 3, makes an upgrade from version 1 to version 2 under load, and
-then tries three upgrades that the server must refuse:
+then tries three upgrades that the server must refuse. Its load is
+`load PORT N 2`: after N requests, more requests follow until version 2
+answers (at most 60 s more), so the switch is inside the load also on a
+fast machine.
 
 ```sh
 examples/bluegreen/check.sh build/beam.com

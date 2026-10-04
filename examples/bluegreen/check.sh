@@ -35,7 +35,8 @@ chmod +x "$work"/*.com
 
 $run "$work/v1.com" serve "$port" > "$work/serve.log" 2>&1 &
 $run "$work/v1.com" wait "$port" || exit 1
-$run "$work/v1.com" load "$port" "$n" > "$work/load.log" 2>&1 &
+# The load goes on after N requests until version 2 answers.
+$run "$work/v1.com" load "$port" "$n" 2 > "$work/load.log" 2>&1 &
 load=$!
 $run "$work/v1.com" upgrade "$port" "$work/v2.com"
 wait "$load"
