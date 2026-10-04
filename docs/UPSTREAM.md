@@ -8,7 +8,10 @@ Keep it up to date when a new problem or workaround comes.
 The groups, and the prefix of their ids: Cosmopolitan (C), WAMR (W),
 Erlang/OTP (O), Emscripten (EM), workerd and Cloudflare Workers (CF),
 websock_adapter (WS), Livebook (L), Elixir (EX), Elixir packages with
-NIFs (E) and Blink (B).
+NIFs (E), Blink (B), rustler (R) and wasi-libc (WL).
+
+[`patches/README.md`](../patches/README.md) lists each patch file of
+BEAM.com, and the ids of the items that it is for.
 
 Status words of the Cosmopolitan items:
 
@@ -820,6 +823,94 @@ own flags, and a forced-include header defines `BUILD_TARGET_X86_64` or
 **Possible upstream fix.** A "universal" target for the `cosmopolitan`
 platform, as for macOS universal binaries.
 
+### W4. The AOT relocations of aarch64 need `BUILD_TARGET`
+
+**Symptom.** `core/iwasm/aot/arch/aot_reloc_aarch64.c` does not compile:
+`'BUILD_TARGET' undeclared`.
+
+**Cause.** `get_current_target()` uses the string `BUILD_TARGET`, which
+only the CMake files of WAMR define (`config_common.cmake`). A build with
+its own flags (W3) does not have it. The x86_64 file does not use it.
+
+**Workaround in BEAM.com.** `c_src/wasm/wamr_target.h` defines
+`BUILD_TARGET` as `"X86_64"` or `"AARCH64"`, from the CPU of the
+compiler. `c_src/wasm/aot_reloc.c` includes the relocation file of that
+CPU.
+
+**Possible upstream fix.** A default for `BUILD_TARGET` from the
+`BUILD_TARGET_*` macros in `config.h`.
+
+### W5. AOT code on macOS arm64 needs `MAP_JIT` in a Cosmopolitan build
+
+**Status:** not tested. BEAM.com does not load AOT files there.
+
+**Cause.** macOS on Apple silicon runs new machine code only from memory
+with `MAP_JIT`, and a thread changes its access with
+`pthread_jit_write_protect_np()`. `posix_memmap.c` and the AOT loader do
+this under `__APPLE__`. `cosmocc` does not define `__APPLE__`: the OS is
+known only at run time (`IsXnuSilicon()`), as for the JIT of ERTS (O13).
+
+**Workaround in BEAM.com.** On macOS arm64, `c_src/wasm/nif_wasm.c` does
+not load the AOT file, and uses the `.wasm` file
+([`NIFS.md`](NIFS.md)).
+
+**Possible upstream fix.** Run-time checks in the `cosmopolitan`
+platform: `MAP_JIT` in `os_mmap()`, the write protection in
+`os_thread_jit_write_protect_np()`, and the cache flush in
+`os_icache_flush()`, as `patches/otp/0002-jit.patch` does for asmjit.
+
+### W6. `os_icache_flush()` does nothing on aarch64 out of macOS
+
+**Status:** WAMR 2.4.5 (`core/shared/platform/common/posix/posix_memmap.c`).
+
+**Cause.** The function calls `sys_icache_invalidate()` on macOS, and
+does nothing on other systems. On Linux this works: the kernel makes the
+caches agree when a page becomes executable, and the AOT loader makes
+the code executable after it writes it. Other aarch64 systems are not
+known.
+
+**Workaround in BEAM.com.** None. CI runs AOT code on Linux aarch64
+only.
+
+**Possible upstream fix.** `__builtin___clear_cache()` on aarch64 when
+the system is not macOS.
+
+### W7. An AOT file does not record its bounds checks
+
+**Status:** WAMR 2.4.5 (`wamrc`, `aot_loader.c`).
+
+**Effect.** `wamrc` compiles without software bounds checks by default
+on 64-bit targets: the code then needs the guard pages of a runtime with
+hardware bounds checks. A runtime without them (as BEAM.com, built with
+`WASM_DISABLE_HW_BOUND_CHECK=1`) loads such a file with no error, and an
+access out of the linear memory can then write other memory. The file
+has no flag for it, so the loader cannot refuse it.
+
+**Workaround in BEAM.com.** [`NIFS.md`](NIFS.md) tells to compile the
+AOT files with `--bounds-checks=1` (and with `--cpu` for a generic CPU).
+
+**Possible upstream fix.** A feature flag for the bounds checks in the
+target information of the AOT file, which the loader compares with the
+runtime.
+
+### W8. `wasm_runtime_call_indirect()` does not set the thread of the call
+
+**Status:** WAMR 2.4.5, without hardware bounds checks.
+
+**Effect.** `wasm_runtime_call_wasm()` sets the thread and the native
+stack bound of the execution environment at each call
+(`wasm_exec_env_set_thread_info()`). `wasm_runtime_call_indirect()` does
+not. One execution environment that many threads use, one at a time,
+then checks the stack of another thread.
+
+**Workaround in BEAM.com.** `c_src/wasm/nif_wasm.c` calls
+`wasm_exec_env_set_thread_info()` (a function of
+`core/iwasm/common/wasm_exec_env.h`, not of `wasm_export.h`) before each
+call.
+
+**Possible upstream fix.** The same call in `call_indirect()`, or a
+public function for it.
+
 ## Erlang/OTP
 
 These are small, general changes. They help any unusual libc or
@@ -1215,6 +1306,26 @@ removes the block, clang optimizes code that breaks the aliasing rules.
 **Possible upstream fix.** Keep the three flags out of the hardening
 block, so that the option removes only the hardening flags.
 
+### O24. `load_nif/2` can only open dynamic libraries
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/erl_nif.c`, `erts_load_nif()`).
+
+**Effect.** A program with no `dlopen()` (one static file, as BEAM.com)
+can load only the static NIFs that it links. There is no way to give
+ERTS a NIF entry from another loader.
+
+**Workaround in BEAM.com.** `patches/otp/0003-wasm-nif.patch`:
+`erts_load_nif()` calls the hook `erts_wasm_nif_open` before it opens a
+dynamic library. `c_src/wasm/nif_wasm.c` sets it, and gives the entry of
+a NIF library in WebAssembly ([`NIFS.md`](NIFS.md)). The same patch
+gives `erl_nif.h` a branch for `__wasm__`: each `enif_*` function is an
+import of `env`, and `ERL_NIF_INIT` exports `nif_init`, an allocator and
+`chdir`.
+
+**Possible upstream fix.** Not likely as it is. A general form could be
+a documented hook for "a NIF entry from another loader", used by
+embedded or single-file runtimes.
+
 ## Emscripten
 
 Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/history/WASM-LOG.md,
@@ -1588,6 +1699,27 @@ live process uses the old file. The environment variable
 **Possible upstream fix.** The same change in `try_lock/4`, or a write
 of the port file to a new name and a rename.
 
+### EX2. Mix does not consolidate the protocols of Elixir in the lib directory of OTP
+
+**Symptom.** A project of `mix.com` gets `:missing_chunk` errors, or its
+protocols of Elixir (`String.Chars`, `Enumerable`, `Inspect`) are not
+consolidated.
+
+**Cause.** `consolidation_paths/0` of `Mix.Compilers.Protocol` skips
+each code path in `:code.lib_dir()`, the lib directory of OTP. In one
+file with OTP and Elixir, the applications of Elixir are in that
+directory too. Also, the consolidation reads the `Dbgi` chunk of each
+protocol, and the bundle of BEAM.com strips the debug information.
+
+**Workaround in BEAM.com.**
+`patches/elixir/0002-mix-consolidate-elixir-protocols-in-otp-lib.patch`
+keeps the code paths of the applications of Elixir. `step_bundle` keeps
+the `Dbgi` chunk of the protocols (modules with `__protocol__/1`).
+`tests/run.sh` checks a project with a protocol and an implementation.
+
+**Possible upstream fix.** The same change: skip the paths of OTP, but
+not the paths of the applications of Elixir.
+
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
 Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and
@@ -1730,3 +1862,55 @@ affected.
 
 **Not fixed.** Not needed for BEAM.com.
 
+## rustler
+
+Seen with rustler 0.38.0, for a NIF library in WebAssembly
+([`NIFS.md`](NIFS.md)).
+
+### R1. rustler cannot build for `wasm32-wasip1`
+
+**Symptom.** `cargo build --target wasm32-wasip1` of a rustler NIF stops
+with `unresolved imports libc::RTLD_GLOBAL` and `cannot find type
+ErlNifEvent`.
+
+**Cause.** On each system but Windows, rustler fills its table of
+`enif_*` functions with `dlsym()` at run time
+(`src/sys/nif_filler.rs`, with `libloading`). WebAssembly has no
+`dlsym()`. `ErlNifEvent` has a type only for `unix` and `windows`.
+
+**Workaround in BEAM.com.**
+[`patches/rustler/0001-wasm32-imports.patch`](../patches/rustler/0001-wasm32-imports.patch)
+(not used by the build of BEAM.com): on `target_family = "wasm"`,
+`build.rs` declares each function as an import (`extern "C"`, the
+module `env`) and fills the table with them, and `ErlNifEvent` is a
+`c_int`. A test NIF with integers, strings, lists, binaries, atoms and a
+resource passed with it.
+
+**Possible upstream fix.** The same change. It does not change the
+other targets.
+
+## wasi-libc
+
+Seen with the wasi-libc of Zig 0.17.0, for a NIF library in WebAssembly
+([`NIFS.md`](NIFS.md)).
+
+### WL1. The preopened directories `/` and `.` get the same prefix
+
+**Symptom.** A module with the WASI directories `/` and `.` opens an
+absolute path, such as `/tmp/x.db`, in the work directory, or it does
+not find it (`ENOENT`).
+
+**Cause.** wasi-libc removes the leading `/` and `./` of each prefix
+(`libc-bottom-half/sources/preopens.c`), so both prefixes are empty, and
+the last directory wins for every path. The work directory of wasi-libc
+starts as `/`, so a relative path and an absolute path look the same.
+
+**Workaround in BEAM.com.** WASI gets only `/`, and the headers of
+`beam.com --nif-include` export `chdir()`: `c_src/wasm/nif_wasm.c` calls
+it with the work directory of the VM. A module without that export
+(for example a rustler NIF) also gets `.`, so only its relative paths
+work.
+
+**Possible upstream fix.** Keep `/` as a prefix that matches only
+absolute paths, or start the work directory of wasi-libc from the
+environment (for example `PWD`).
