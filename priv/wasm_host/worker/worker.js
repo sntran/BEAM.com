@@ -1509,6 +1509,11 @@ export class Vm {
     const id = `b${this.nextId++}`;
     const headers = new Headers(request.headers);
     headers.set('host', url.host);
+    // The scheme of the client: the app gets a TCP connection with no TLS,
+    // and Plug.SSL (force_ssl of Phoenix) reads x-forwarded-proto, as on
+    // Deno and in a web page. The value of the Worker replaces the value
+    // that a client sends.
+    headers.set('x-forwarded-proto', url.protocol.slice(0, -1));
     const origin = this.appOrigin(headers.get('origin'), url);
     if (origin) headers.set('origin', origin);
     headers.delete('transfer-encoding');
