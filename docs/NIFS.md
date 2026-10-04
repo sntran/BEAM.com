@@ -108,10 +108,16 @@ AOT loader does not use it yet.
 
 rustler 0.38 finds the `enif_*` functions with `dlsym()` at run time,
 so it does not compile for `wasm32-wasip1`. A small change to rustler
-(the `enif_*` functions as imports of `env` on `target_family =
-"wasm"`) makes a rustler NIF work: a test with integers, strings,
-lists, binaries, atoms and a resource passed. That change is not in
-rustler yet.
+makes a rustler NIF work:
+[`patches/rustler/0001-wasm32-imports.patch`](../patches/rustler/0001-wasm32-imports.patch)
+declares the `enif_*` functions as imports of `env` on `target_family =
+"wasm"`. A test NIF with integers, strings, lists, binaries, atoms and a
+resource passed with it. That change is not in rustler yet. With it:
+
+```sh
+cargo build --release --target wasm32-wasip1
+cp target/wasm32-wasip1/release/my_nif.wasm priv/
+```
 
 ## What a NIF library in WebAssembly can do
 
