@@ -16,7 +16,7 @@
 -module(wasm_tcp).
 -behaviour(gen_server).
 
--export([getaddrs/2, getserv/1, connect/4, listen/2, accept/1, accept/2, splice/2,
+-export([getaddrs/2, getserv/1, connect/4, listen/2, accept/1, accept/2, splice/2, id/1,
          send/2, sendfile/4, recv/2, recv/3, unrecv/2,
          close/1, shutdown/2, controlling_process/2, setopts/2, getopts/2,
          peername/1, sockname/1, getstat/2]).
@@ -48,6 +48,10 @@ listen(Port0, Opts) ->
     end.
 
 accept(Socket) -> accept(Socket, infinity).
+
+%% The id of the socket in the host (wasm_host_fetch gives it with each
+%% request of the connection).
+id(?SOCKET(Pid)) -> call(Pid, id).
 
 %% The data of each socket goes to the other one in the host (as a proxy),
 %% no longer through Erlang: for example a connection that a listener
@@ -151,8 +155,11 @@ option(_, S) -> S.
                     tos => 0, priority => 0, show_econnreset => false, deliver => term}).
 
 %% --- a listener -------------------------------------------------------------
-handle_call(listen, From, #{kind := listen, id := Id, port := Port} = S) ->
-    ?HOST:send_host(#{t => tcp_listen, id => Id, port => Port}),
+%% {wasm_fetch, true}: the listener of wasm_host_fetch, which the host
+%% keeps apart from the listeners of the program.
+handle_call(listen, From, #{kind := listen, id := Id, port := Port, opts := Opts} = S) ->
+    Fetch = [{fetch, true} || proplists:get_bool(wasm_fetch, Opts)],
+    ?HOST:send_host(maps:from_list([{t, tcp_listen}, {id, Id}, {port, Port} | Fetch])),
     {noreply, S#{listen := From}};
 handle_call({accept, Pid, Timeout}, From, #{kind := listen, conns := Conns, acceptors := As} = S) ->
     case queue:out(Conns) of

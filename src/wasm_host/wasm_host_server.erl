@@ -17,7 +17,8 @@
 
 -define(TABLE, ?MODULE).
 -define(EVENTS, [<<"tcp_open">>, <<"tcp_data">>, <<"tcp_closed">>, <<"tcp_error">>,
-                 <<"tcp_listening">>, <<"sql_reply">>, <<"wasm_reply">>]).
+                 <<"tcp_listening">>, <<"sql_reply">>, <<"wasm_reply">>,
+                 <<"fetch_head">>, <<"fetch_data">>, <<"fetch_end">>, <<"fetch_error">>]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -129,8 +130,12 @@ event(Event) ->
         %% the isolates restored from it have the same state, so OpenSSL
         %% gets new random bytes from the host (the next
         %% crypto:strong_rand_bytes/1 differs in each isolate).
+        %% wasm_host_fetch makes its CA again with these bytes, before the
+        %% next event (the events of the first request come after this
+        %% one): a CA of the snapshot came from the bytes of its boot.
         #{<<"t">> := <<"restored">>} ->
-            try crypto:rand_seed(Body) catch error:undef -> ok end;
+            try crypto:rand_seed(Body) catch error:undef -> ok end,
+            wasm_host_fetch:reseed();
         #{<<"t">> := <<"go">>} ->
             ?MODULE ! {go, json:decode(Body)};
         #{<<"t">> := T, <<"id">> := Id} = Meta ->
