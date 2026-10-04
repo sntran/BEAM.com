@@ -204,6 +204,57 @@ defmodule BeamComHexTest do
     test "read_lock/1 of a file that does not exist", %{dir: dir} do
       assert %{} == :beam_com_hex.read_lock(:filename.join(dir, ~c"none.lock"))
     end
+
+    # Mix writes the keys as quoted atoms ("name": ...). Elixir 1.20 gives
+    # a warning for each such key, and Mix reads the file with no warnings.
+    test "read_lock/2 of a mix.lock that Mix wrote", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      :ok =
+        :file.write_file(file, """
+        %{
+          "jason": {:hex, :jason, "1.4.4", "AA", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "BB"},
+          "my_app": {:hex, :my_pkg, "0.1.0", "CC", [:rebar3], [], "hexpm", "DD"},
+        }
+        """)
+
+      assert "" ==
+               capture_io(:stderr, fn ->
+                 assert %{
+                          jason: %{pkg: "jason", vsn: ~c"1.4.4", inner: "AA", outer: "BB"},
+                          my_app: %{pkg: "my_pkg", vsn: ~c"0.1.0", inner: "CC", outer: "DD"}
+                        } == :beam_com_hex.read_lock(:mix, file)
+               end)
+    end
+
+    # The atoms of the build tools need not exist before: in beam.com,
+    # no module names rebar3 or make.
+    test "lock_text/2 of Mix, with each build tool", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      pkgs = [
+        %{
+          name: :a,
+          pkg: "a_pkg",
+          vsn: ~c"1.0.0",
+          inner: "AA",
+          outer: ~c"BB",
+          tools: ["rebar3", "make", "mix", "other"],
+          reqs: [{:b, "b", ~c"~> 0.2"}]
+        }
+      ]
+
+      :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, pkgs))
+
+      assert {%{
+                "a" =>
+                  {:hex, :a_pkg, "1.0.0", "aa", [:rebar3, :make, :mix],
+                   [{:b, "~> 0.2", [hex: :b, repo: "hexpm", optional: false]}], "hexpm", "bb"}
+              }, _} = Code.eval_file(List.to_string(file))
+
+      assert %{a: %{pkg: "a_pkg", vsn: ~c"1.0.0", inner: "aa", outer: "bb"}} ==
+               :beam_com_hex.read_lock(:mix, file)
+    end
   end
 
   # The files of an application, for a package.

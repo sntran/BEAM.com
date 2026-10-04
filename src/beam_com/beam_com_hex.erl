@@ -236,17 +236,21 @@ pre_allowed(_, {_, _, _, ReqPre}) -> ReqPre =/= [].
 read_lock(File) ->
     read_lock(rebar, File).
 
-%% mix.lock: %{"name" => {:hex, :package, "vsn", "inner", managers, deps,
-%% "hexpm", "outer"}}, read with the Elixir parser.
+%% mix.lock: %{"name": {:hex, :package, "vsn", "inner", managers, deps,
+%% "hexpm", "outer"}}, read with the Elixir parser as Mix reads it. Mix
+%% writes the keys as quoted atoms ("name": ...), and lock_text/2 writes
+%% them as strings ("name" => ...).
 read_lock(mix, File) ->
-    case filelib:is_regular(File) of
-        false -> #{};
-        true ->
-            {Map, _} = 'Elixir.Code':eval_file(unicode:characters_to_binary(File)),
+    case file:read_file(File) of
+        {error, _} -> #{};
+        {ok, Text} ->
+            Opts = [{file, unicode:characters_to_binary(File)}, {emit_warnings, false}],
+            {ok, Quoted} = 'Elixir.Code':string_to_quoted(Text, Opts),
+            {Map, _} = 'Elixir.Code':eval_quoted(Quoted, [], Opts),
             maps:from_list(
               [case Entry of
                    {hex, Pkg, Vsn, Inner, _Managers, _Deps, _Repo, Outer} ->
-                       {binary_to_atom(Name),
+                       {lock_name(Name),
                         #{pkg => atom_to_binary(Pkg), vsn => binary_to_list(Vsn),
                           inner => Inner, outer => Outer}};
                    _ ->
@@ -263,6 +267,9 @@ read_lock(rebar, File) ->
         {error, Reason} ->
             throw({error, "~ts: ~ts", [File, file:format_error(Reason)]})
     end.
+
+lock_name(Name) when is_atom(Name) -> Name;
+lock_name(Name) when is_binary(Name) -> binary_to_atom(Name).
 
 lock_map(Entries, Rest) ->
     Hashes = case Rest of
@@ -308,8 +315,8 @@ lock_text(mix, Packages) ->
             [{atom_to_binary(N),
               {hex, app_name(Pkg), list_to_binary(Vsn),
                string:lowercase(iolist_to_binary(I)),
-               [binary_to_existing_atom(T) || T <- Tools,
-                                              lists:member(T, [<<"mix">>, <<"rebar3">>, <<"make">>])],
+               [binary_to_atom(T) || T <- Tools,
+                                     lists:member(T, [<<"mix">>, <<"rebar3">>, <<"make">>])],
                [{DN, list_to_binary(DR), [{hex, app_name(DP)}, {repo, <<"hexpm">>},
                                           {optional, false}]}
                 || {DN, DP, DR} <- Reqs],
