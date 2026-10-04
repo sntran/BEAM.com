@@ -53,13 +53,22 @@ a report to rustler.
 |---|---|---|---|
 | `0001-wasm32-imports.patch` | `rustler/Cargo.toml`, `rustler/build.rs`, `rustler/src/sys/` | The `enif_*` functions as imports of `env` on `target_family = "wasm"`. | R1 |
 
+## WAMR (`patches/wamr/`)
+
+`step_wasm` of `scripts/steps.sh` applies them to the clone of WAMR.
+
+| Patch | File | What it does | Items |
+|---|---|---|---|
+| `0001-cosmopolitan-aarch64-jit.patch` | `core/shared/platform/common/posix/posix_memmap.c`, `posix_thread.c` | `MAP_JIT` and the write protection of macOS on Apple silicon at run time, and the cache flush on aarch64. | W5, W6 |
+
 ## Changes that are not patch files
 
 Some changes are compiler flags or small edits in `scripts/steps.sh`.
 Their items are in `docs/UPSTREAM.md` too:
 
 - WAMR: the flags of `step_wasm`, and `c_src/wasm/wamr_target.h` and
-  `c_src/wasm/aot_reloc.c` (W1 to W8).
+  `c_src/wasm/aot_reloc.c` (W1 to W4, W7, W8), and the options of
+  `wamrc` in `docs/NIFS.md` (W7, W9).
 - exqlite and elixir_make: the flags and the `sed` edit of
   `build_hex_nif` (E1 to E4).
 - The builder and the tools of beam.com (`src/beam_com/`): O17 to O19.

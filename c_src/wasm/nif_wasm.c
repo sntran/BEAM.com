@@ -42,10 +42,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifdef __COSMOPOLITAN__
-#include <cosmo.h>
-#endif
-
 #include "erl_nif.h"
 #include "wasm_export.h"
 #include "nif_wasm.h"
@@ -3271,12 +3267,8 @@ static const char *aot_suffix(void)
 #if defined(__x86_64__)
     return ".x86_64.aot";
 #elif defined(__aarch64__)
-#ifdef __COSMOPOLITAN__
-    /* macOS on Apple silicon runs new code only from MAP_JIT memory, and
-     * the AOT loader of WAMR does not use it in this build. */
-    if (IsXnuSilicon())
-        return NULL;
-#endif
+    /* On macOS on Apple silicon too: WAMR maps the AOT code with MAP_JIT
+     * (patches/wamr/0001-cosmopolitan-aarch64-jit.patch). */
     return ".aarch64.aot";
 #else
     return NULL;

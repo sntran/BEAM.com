@@ -1,0 +1,85 @@
+WAMR 2.4.5, the cosmopolitan platform, aarch64: the AOT code on macOS on
+Apple silicon, and the instruction cache (docs/UPSTREAM.md W5 and W6).
+cosmocc does not define __APPLE__, so the checks are at run time
+(IsXnuSilicon()), as patches/otp/0002-jit.patch does for asmjit:
+
+- os_mmap(): MAP_JIT for executable memory on macOS on Apple silicon.
+- os_thread_jit_write_protect_np(): __jit_begin() and __jit_end() of
+  Cosmopolitan (pthread_jit_write_protect_np() on macOS).
+- os_icache_flush(): __builtin___clear_cache() on aarch64.
+
+diff --git a/core/shared/platform/common/posix/posix_memmap.c b/core/shared/platform/common/posix/posix_memmap.c
+index d5cad88..6dd2f30 100644
+--- a/core/shared/platform/common/posix/posix_memmap.c
++++ b/core/shared/platform/common/posix/posix_memmap.c
+@@ -10,6 +10,12 @@
+ #include <TargetConditionals.h>
+ #endif
+ 
++#if defined(BH_PLATFORM_COSMOPOLITAN) && defined(__aarch64__)
++/* BEAM.com: one file for all the systems. macOS on Apple silicon is known
++ * only at run time, and __APPLE__ is not defined there. */
++#include <cosmo.h>
++#endif
++
+ #ifndef BH_ENABLE_TRACE_MMAP
+ #define BH_ENABLE_TRACE_MMAP 0
+ #endif
+@@ -48,6 +54,13 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+     int map_flags = MAP_ANONYMOUS | MAP_PRIVATE;
+ #endif
+     uint64 request_size, page_size;
++
++#if defined(BH_PLATFORM_COSMOPOLITAN) && defined(__aarch64__)
++    /* BEAM.com: macOS on Apple silicon runs new code only from MAP_JIT
++     * memory. */
++    if (IsXnuSilicon() && (prot & MMAP_PROT_EXEC))
++        map_flags |= MAP_JIT;
++#endif
+     uint8 *addr = MAP_FAILED;
+     uint32 i;
+ 
+@@ -295,6 +308,11 @@ os_icache_flush(void *start, size_t len)
+ {
+ #if defined(__APPLE__) || defined(__MACH__)
+     sys_icache_invalidate(start, len);
++#elif defined(BH_PLATFORM_COSMOPOLITAN) && defined(__aarch64__)
++    /* BEAM.com: the instruction cache of aarch64 does not follow the data
++     * cache. Cosmopolitan's __clear_cache() calls sys_icache_invalidate()
++     * on macOS. */
++    __builtin___clear_cache((char *)start, (char *)start + len);
+ #else
+     (void)start;
+     (void)len;
+diff --git a/core/shared/platform/common/posix/posix_thread.c b/core/shared/platform/common/posix/posix_thread.c
+index 80b7d65..671c36b 100644
+--- a/core/shared/platform/common/posix/posix_thread.c
++++ b/core/shared/platform/common/posix/posix_thread.c
+@@ -481,12 +481,27 @@ os_thread_get_stack_boundary()
+     return addr;
+ }
+ 
++#if defined(BH_PLATFORM_COSMOPOLITAN) && defined(__aarch64__)
++/* BEAM.com: Cosmopolitan's pthread_jit_write_protect_np() on macOS on
++ * Apple silicon (writable), and nothing on the other systems. */
++#include <cosmo.h>
++void __jit_begin(void);
++void __jit_end(void);
++#endif
++
+ void
+ os_thread_jit_write_protect_np(bool enabled)
+ {
+ #if (defined(__APPLE__) || defined(__MACH__)) && defined(__arm64__) \
+     && defined(TARGET_OS_OSX) && TARGET_OS_OSX != 0
+     pthread_jit_write_protect_np(enabled);
++#elif defined(BH_PLATFORM_COSMOPOLITAN) && defined(__aarch64__)
++    if (IsXnuSilicon()) {
++        if (enabled)
++            __jit_end();
++        else
++            __jit_begin();
++    }
+ #endif
+ }
+ 

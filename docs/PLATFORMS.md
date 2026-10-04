@@ -55,8 +55,7 @@ are removed when the node stops.
   packages `exqlite`, `bcrypt_elixir` and `argon2_elixir`). Other NIF
   libraries work as WebAssembly files ([`NIFS.md`](NIFS.md)).
 - WebAssembly: the interpreter, and AOT files of WAMR (no JIT), WASI
-  preview 1 only, no SIMD, no threads, and no component model yet. On
-  macOS with Apple silicon, the interpreter only.
+  preview 1 only, no SIMD, no threads, and no component model yet.
 - Distributed Erlang is tested on Linux, macOS and the BSDs, not on
   Windows yet.
 - Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)

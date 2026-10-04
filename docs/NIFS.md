@@ -85,6 +85,7 @@ of the WAMR version of `beam.com` (2.4.5; see `WAMR_VERSION` in
 wamrc --target=x86_64 --cpu=x86-64 --bounds-checks=1 \
     -o priv/my_nif.x86_64.aot priv/my_nif.wasm
 wamrc --target=aarch64 --cpu=generic --bounds-checks=1 \
+    --cpu-features=+reserve-x18,+reserve-x28 \
     -o priv/my_nif.aarch64.aot priv/my_nif.wasm
 ```
 
@@ -93,16 +94,18 @@ wamrc --target=aarch64 --cpu=generic --bounds-checks=1 \
 > access outside the memory of the module can write the memory of
 > `beam.com` (`beam.com` runs WebAssembly without guard pages). Without
 > `--cpu`, `wamrc` uses the CPU of your computer, and the file can stop
-> with an illegal instruction on another computer.
+> with an illegal instruction on another computer. On aarch64, without
+> `+reserve-x28`, the code can change the register that holds the thread
+> pointer of `beam.com`, and the VM crashes; macOS can change x18 at
+> any time, so the code must not use it either.
 
 The AOT files are optional: without them, the `.wasm` file runs in the
 interpreter. When an AOT file does not load (another WAMR version, or a
 system that refuses memory that is both writable and executable), the
 `.wasm` file runs.
 
-On macOS with Apple silicon, `beam.com` uses the `.wasm` file: this
-system runs new machine code only from memory with `MAP_JIT`, and the
-AOT loader does not use it yet.
+On macOS with Apple silicon, the AOT code runs from memory with
+`MAP_JIT`, as the JIT of the VM does.
 
 ## Rust (rustler)
 

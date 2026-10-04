@@ -579,6 +579,14 @@ step_wasm() {
             https://github.com/bytecodealliance/wasm-micro-runtime.git "$WAMR"
     fi
     check_commit "$WAMR" "$WAMR_COMMIT" "WAMR $WAMR_VERSION"
+    # patches/README.md lists the patches and their items.
+    if [ ! -f "$WAMR/.beam_com_patched" ]; then
+        for p in "$ROOT"/patches/wamr/*.patch; do
+            echo "  $p"
+            git -C "$WAMR" apply "$p"
+        done
+        touch "$WAMR/.beam_com_patched"
+    fi
     log "Building WAMR and the wasm NIF as a static NIF"
     t=$(target)
     obj=$WAMR/obj

@@ -21,5 +21,6 @@ if [ -n "${WAMRC:-}" ]; then
     "$WAMRC" --target=x86_64 --cpu=x86-64 --bounds-checks=1 \
         -o "$here/priv/nif_check.x86_64.aot" "$here/priv/nif_check.wasm"
     "$WAMRC" --target=aarch64 --cpu=generic --bounds-checks=1 \
+        --cpu-features=+reserve-x18,+reserve-x28 \
         -o "$here/priv/nif_check.aarch64.aot" "$here/priv/nif_check.wasm"
 fi

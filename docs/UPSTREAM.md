@@ -842,7 +842,8 @@ CPU.
 
 ### W5. AOT code on macOS arm64 needs `MAP_JIT` in a Cosmopolitan build
 
-**Status:** not tested. BEAM.com does not load AOT files there.
+**Status:** WAMR 2.4.5. CI runs the AOT file of `nif_check` on macOS
+arm64.
 
 **Cause.** macOS on Apple silicon runs new machine code only from memory
 with `MAP_JIT`, and a thread changes its access with
@@ -850,9 +851,11 @@ with `MAP_JIT`, and a thread changes its access with
 this under `__APPLE__`. `cosmocc` does not define `__APPLE__`: the OS is
 known only at run time (`IsXnuSilicon()`), as for the JIT of ERTS (O13).
 
-**Workaround in BEAM.com.** On macOS arm64, `c_src/wasm/nif_wasm.c` does
-not load the AOT file, and uses the `.wasm` file
-([`NIFS.md`](NIFS.md)).
+**Workaround in BEAM.com.**
+[`patches/wamr/0001-cosmopolitan-aarch64-jit.patch`](../patches/wamr/0001-cosmopolitan-aarch64-jit.patch):
+with `IsXnuSilicon()`, `os_mmap()` adds `MAP_JIT` to executable memory,
+and `os_thread_jit_write_protect_np()` calls `__jit_begin()` and
+`__jit_end()` of Cosmopolitan.
 
 **Possible upstream fix.** Run-time checks in the `cosmopolitan`
 platform: `MAP_JIT` in `os_mmap()`, the write protection in
@@ -869,8 +872,9 @@ caches agree when a page becomes executable, and the AOT loader makes
 the code executable after it writes it. Other aarch64 systems are not
 known.
 
-**Workaround in BEAM.com.** None. CI runs AOT code on Linux aarch64
-only.
+**Workaround in BEAM.com.** The same patch as W5: `os_icache_flush()`
+calls `__builtin___clear_cache()` on aarch64 (Cosmopolitan's
+`__clear_cache()` calls `sys_icache_invalidate()` on macOS).
 
 **Possible upstream fix.** `__builtin___clear_cache()` on aarch64 when
 the system is not macOS.
@@ -910,6 +914,26 @@ call.
 
 **Possible upstream fix.** The same call in `call_indirect()`, or a
 public function for it.
+
+### W9. AOT code for aarch64 uses x28 and x18
+
+**Status:** WAMR 2.4.5 (`wamrc`, LLVM 18), in a Cosmopolitan build.
+
+**Symptom.** The AOT code of a module uses x28 and x18 as normal
+registers: 42 and 201 times in the code of `nif_check`, 11,231 and 4,548
+times in the code of SQLite. Cosmopolitan keeps its thread pointer in
+x28 (C22), so a call from that code into the runtime (an `enif_*`
+import, for example) uses a wrong thread pointer. macOS can change x18
+at any time.
+
+**Workaround in BEAM.com.** [`NIFS.md`](NIFS.md) tells to compile the
+aarch64 AOT files with `--cpu-features=+reserve-x18,+reserve-x28`. Then
+the code does not use them.
+
+**Possible upstream fix.** In WAMR: a check of the target features of an
+AOT file against the platform, or a default of `wamrc` for a
+`cosmopolitan` target. In Cosmopolitan: document that code from another
+compiler must reserve x28.
 
 ## Erlang/OTP
 
