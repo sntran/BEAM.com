@@ -3,6 +3,20 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+Fixes from the check of the examples with 0.1.0-rc.1:
+
+- The tools of Elixir (`mix`, `iex`, `elixir`, `elixirc`) put an
+  `escript` in `PATH` when it has none, so Mix can run rebar3 for a
+  dependency that is a rebar3 project. Before, the build of
+  `examples/phoenix_demo` with `npx beam.com` (the Deploy buttons, Workers
+  Builds and Deno Deploy) stopped at `idna`.
+- `beam.com DIR` reads a `mix.lock` that Mix wrote (`"name": {...}`), with
+  no warnings. Before, it stopped with `badarg`.
+- `beam.com DIR` writes `mix.lock` for a package that rebar3 builds.
+  Before, it stopped with `badarg` (`examples/notes` with no `mix.lock`).
+
 ## 0.1.0-rc.1
 
 The first release candidate of 0.1.0. It is a pre-release on GitHub, and

@@ -47,8 +47,11 @@ The other changes to the generated app:
 [![Deploy on Deno](https://deno.com/button)](https://console.deno.com/new?clone=https://github.com/sntran/BEAM.com&path=examples/phoenix_demo)
 
 A button copies this directory into a new repository of your account, and
-the host builds and deploys it at each push. The buttons work after the
-first release of the npm package `beam.com`.
+the host builds and deploys it at each push, with the npm package
+`beam.com` of the version in [`package.json`](package.json). Caution: with
+0.1.0-rc.1, the build of the host stops at the first dependency that is a
+rebar3 project, because no `escript` is in `PATH`. A later version puts
+its own `escript` in `PATH`.
 
 The build step of the host runs `npm run build`
 ([`scripts/app-com.sh`](scripts/app-com.sh)): `npx beam.com` builds the
@@ -98,10 +101,9 @@ deno deploy env add SECRET_KEY_BASE VALUE --secret --org ORG --app APP
 deno deploy . --org ORG --app APP --prod
 ```
 
-Mix runs the tests with the native VM of beam.com, and the tests of the
-LiveView pages fail there: the NIF of `lazy_html` (a test dependency) needs
-`dlopen()`, which that VM does not have. Run the tests with a standard
-Erlang/OTP and Elixir.
+Mix runs the tests with the native VM of beam.com (`MIX_ENV=test mix.com
+test`). The tests of the LiveView pages parse HTML with `lazy_html`, and
+beam.com has its NIF library in WebAssembly (see docs/NIFS.md of beam.com).
 
 Run it on this computer, with the tools of beam.com (see docs/ELIXIR.md):
 

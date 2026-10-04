@@ -76,9 +76,11 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
   with it.
 - Packages: `mix local.hex` installs Hex, and `mix deps.get` then
   fetches from hex.pm. For Erlang packages, `mix local.rebar` installs
-  rebar3, which Mix runs as an escript: put a link named `escript` in
-  `PATH`. On NetBSD, where `sh` stops at the first NUL byte of an APE
-  file, make `escript` a small script instead:
+  rebar3, which Mix runs as an escript. When no `escript` is in `PATH`,
+  the tools put the program `escript` of the cache of beam.com
+  (`~/.cache/beam.com/bin/path`) at the start of `PATH`. On NetBSD, where
+  `sh` stops at the first NUL byte of an APE file, put a small script
+  `escript` in `PATH`:
   `exec /path/to/ape-x86_64.elf /path/to/beam.com escript "$@"`.
   `beam.com INPUT -o OUTPUT` does not need Hex or rebar3.
 - A custom build can have Hex and rebar3 in the file, so `mix deps.get`
