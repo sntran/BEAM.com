@@ -774,6 +774,47 @@ WSLInterop` exists), start an APE file with the loader first, not with
 the kernel. Or: in `winmain.greg.c`, when `IsWslChimera()`, execute the
 file again with the Linux loader in place of the exit.
 
+### C32. macOS arm64: the child of fork() can hang in the fork handlers of libSystem
+
+**Status:** cosmocc 4.0.2, APE loader 1.10 (`ape/ape-m1.c`, `sys_fork()`).
+Seen in CI on macOS 26.6 arm64, in 3 of about 10 runs (October 2026).
+Not seen on macOS x86_64, Linux or the BSDs.
+
+**Symptom.** After a run of `beam.com` (for example `beam.com --strace
+--version`, or `beam.com examples/hashsum.erl -- abc`), a process
+`.ape-1.10 bin/beam.com ...` stays, with PPID 1 and the state `R<`. It
+uses the CPU and does not stop. The program itself ended correctly.
+`tests/run.sh` fails with "processes still running after the tests".
+
+**Cause.** On XNU arm64, the APE loader gives Cosmopolitan its system
+calls, and `sys_fork()` calls `fork()` of libSystem. That `fork()` runs
+the fork handlers of libSystem in the child (`libSystem_atfork_child`).
+The emulator has threads when it forks (`forker_start()`, for
+`erl_child_setup`). The `sample` of the process that stays shows one of
+two stacks:
+
+- `sys_fork` → `fork` → `libSystem_atfork_child` →
+  `dispatch_atfork_child` → `_objc_atfork_child`, at all samples.
+- `sys_fork` → `fork` → `libSystem_atfork_child` → `xpc_atfork_child` →
+  `-[OS_xpc_object dealloc]` → `cache_t::bad_cache` → `_objc_fatal` →
+  `abort_with_reason`. The signal goes to the handler of Cosmopolitan,
+  which does not return.
+
+So the child never gets to its `execve()`. This is the known limit of
+`fork()` in a process with threads on macOS: the handlers of
+libobjc and libxpc are not safe there.
+
+**Fix in BEAM.com.** None yet. A fix needs a fork with no fork handlers
+for the child that only executes a program: a `posix_spawn()` of
+libSystem, which the APE loader does not give, or the system call
+`fork` directly, which skips the handlers. Each one needs a test on
+macOS arm64.
+
+**Possible upstream fix.** The APE loader gives Cosmopolitan
+`posix_spawn()` of libSystem (it runs no fork handlers), and
+Cosmopolitan uses it on XNU for `posix_spawn()` and for a `vfork()`
+that executes a program at once.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
