@@ -384,16 +384,17 @@ batch.
   the client in `x-forwarded-proto` (`https` on Cloudflare, `http` in
   `wrangler dev` on `http://localhost`), as Deno and the web page do. So
   `force_ssl: [rewrite_on: [:x_forwarded_proto]]` of Phoenix works.
-- Outgoing TCP and TLS work (`gen_tcp`, `ssl`, `:httpc`, Req) through
+- Outgoing TCP and TLS work (`gen_tcp`, `ssl`, Req, Finch, Mint) through
   `connect()` of Workers. A connection belongs to the request
   that opened it, and closes with it.
-- Caution: on Cloudflare, `connect()` cannot reach a host behind
-  Cloudflare. Cloudflare blocks "outbound TCP sockets to Cloudflare IP
-  ranges", and a Worker cannot connect to itself. The connection gets
-  `econnrefused`, and so does an HTTPS request to that host (for example
-  `api.cloudflare.com`, or a webhook on a site behind Cloudflare).
-  `wrangler dev` and Deno do not have this block, so a local test does
-  not show it. Test such a host on Cloudflare itself.
+- On Cloudflare, `connect()` cannot reach a host behind Cloudflare.
+  Cloudflare blocks "outbound TCP sockets to Cloudflare IP ranges", and a
+  Worker cannot connect to itself. The HTTP and HTTPS of such a host go
+  through `fetch()` (see "HTTP through fetch()"). Other protocols to such
+  a host get `econnrefused`.
+- `:httpc` does not work: it gives the family option `inet`, and then
+  `gen_tcp` uses `inet_tcp` of the VM, not the sockets of the host. Its
+  name lookup gets `nxdomain`. Use Req, Finch or Mint.
 - The text `vars` of the Worker and its secrets are the environment of
   the VM. `PHX_SERVER=true` is set for a release with Phoenix.
 - **The Origin of a WebSocket.** Phoenix compares the `Origin` of a
@@ -408,6 +409,50 @@ batch.
   wasm32`. The runtime has no certificates of its own, and the builder
   does not copy the store of the build computer. A native run of the file
   uses the store of the computer, not FILE.
+
+## HTTP through fetch()
+
+On Cloudflare, `connect()` fails for a host behind Cloudflare
+(api.cloudflare.com, a Worker on workers.dev, many webhooks). `fetch()`
+of the Worker reaches these hosts. So when `connect()` to port 443 or 80
+fails, the host resolves the name (DNS over HTTPS) and compares the
+addresses with the IP ranges of Cloudflare. For a host of Cloudflare, the
+socket of the program goes to a server in the VM (`wasm_host_fetch`), and
+each HTTP request goes through `fetch()`. The code and the configuration
+of the program do not change: `Req.get!("https://api.cloudflare.com/...")`
+works.
+
+- **TLS.** The server in the VM ends the TLS of the program with a
+  certificate for the SNI name, signed by a CA of the VM. The trust store
+  of `:public_key.cacerts_get/0` holds that CA, so Req, Finch, Mint and
+  Swoosh trust it. Caution: this needs a trust store, so build with
+  `--cacerts`. Without a store, only plain HTTP works. A program that
+  gives its own CA file (for example `castore`), or that pins a
+  certificate, gets an unknown CA for these hosts.
+- **The CA** is made at the boot, and again with the random bytes of the
+  first request after a snapshot. Only this VM trusts it.
+- **The URL** of `fetch()` is the host and the port of the connect,
+  never the `Host` header or the SNI of the request. So `BEAM_CONNECT`
+  still applies.
+- **The body.** A request body is at most 32 MiB. The response comes in
+  chunks, with chunked transfer coding. `fetch()` gives the body decoded,
+  so the response has no `content-encoding`. A large body costs CPU time:
+  the TLS of each byte runs in WebAssembly.
+- **No retry.** When the host does not answer in 5 minutes, the server
+  closes the connection: the program does not know if the request ran
+  (`specs/FetchPath.tla`).
+- HTTP/1.1 only (ALPN `http/1.1`): no HTTP/2 and no WebSocket. Other
+  protocols to a host of Cloudflare get `econnrefused`.
+- A host that is down gets `econnrefused`, as before: the fallback is
+  only for an address of Cloudflare, and only on Cloudflare. Deno and a
+  web page do not use it.
+- Caution: a Worker that fetches another Worker on the same zone (for
+  example another one on your workers.dev subdomain) gets the error
+  1042 of Cloudflare. Use a service binding for that Worker.
+- `BEAM_FETCH` (the rules of `BEAM_CONNECT`) sends the HTTP of its hosts
+  through `fetch()` with no `connect()`, on each host. `wrangler dev`
+  has no block, so use `BEAM_FETCH` to test the fetch path on your
+  computer.
 
 ## Ecto SQLite: D1, Durable Objects and Deno KV
 
@@ -544,6 +589,7 @@ snapshot holds the memory of the library too. For a Worker that runs an
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
+| `BEAM_FETCH` | all hosts | The hosts whose HTTP and HTTPS go through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). Without it, only a host of Cloudflare, after `connect()` fails. |
 | `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
 | `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 
