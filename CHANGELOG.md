@@ -21,12 +21,14 @@ Fixes from the check of the examples with 0.1.0-rc.1:
   request.
 - The help of `--cacerts` and `docs/WORKERS.md` say that `--cacerts` also
   works with `-o app.com` (the edge part of the file).
-- HTTP and HTTPS to a host behind Cloudflare go through `fetch()` of the
-  Worker. `connect()` of Cloudflare cannot reach the IP ranges of
-  Cloudflare (api.cloudflare.com, many webhooks). The program and its
-  configuration do not change; HTTPS needs `--cacerts`. `BEAM_FETCH`
-  sends other hosts through `fetch()` too. See "HTTP through fetch()" in
-  `docs/WORKERS.md`, and `specs/FetchPath.tla`.
+- Outgoing HTTP (port 80) and HTTPS (port 443, with `--cacerts`) go
+  through `fetch()` of the host, and `connect()` is only for other
+  protocols. So the VM also reaches a host behind Cloudflare
+  (api.cloudflare.com, many webhooks), which `connect()` of Cloudflare
+  cannot reach. The program and its configuration do not change. A
+  WebSocket goes through a tunnel of `connect()`. `BEAM_FETCH` gives
+  other hosts and ports. See "HTTP through fetch()" in `docs/WORKERS.md`,
+  and `specs/FetchPath.tla`.
 - `worker.capnp` gives workerd TLS for `fetch()` to `https://` URLs.
 
 ## 0.1.0-rc.1

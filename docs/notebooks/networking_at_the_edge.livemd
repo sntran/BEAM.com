@@ -23,13 +23,13 @@ host = System.get_env("BEAM_HOST", "native")
 
 In the runtime, `:gen_tcp` uses the socket module `wasm_tcp` of beam.com. A connect goes to the host:
 
-* On Cloudflare, the Worker opens the connection with `node:net` (`nodejs_compat`, on `cloudflare:sockets`).
-* On Deno and Node.js, the host opens it with `node:net`.
+* HTTP (port 80, and port 443 with a trust store) goes through `fetch()` of the host. A server in the VM reads each request, and the host sends it with `fetch()`. On Cloudflare, `fetch()` also reaches a host behind Cloudflare, which `connect()` cannot reach.
+* The other connections use `connect()`. On Cloudflare, the Worker opens the connection with `node:net` (`nodejs_compat`, on `cloudflare:sockets`). On Deno and Node.js, the host opens it with `node:net`.
 * In a web page, there is no TCP. A connect gets `{:error, :econnrefused}`.
 
 The host resolves the name. So the VM connects to a name, not to an address that it chooses.
 
-This cell sends an HTTP request on a plain TCP connection. On Cloudflare and Deno it gets the first line of the reply. In this web page, it gets `econnrefused`.
+This cell sends an HTTP request on a plain TCP connection to port 80, so it goes through `fetch()`. On Cloudflare and Deno it gets the first line of the reply. In this web page, it gets `econnrefused`.
 
 ```elixir
 case :gen_tcp.connect(~c"example.com", 80, [:binary, active: false], 5_000) do
@@ -46,7 +46,7 @@ end
 
 ## TLS
 
-The host gives only TCP. The VM does TLS itself, with the `ssl` application of OTP (and the OpenSSL of `crypto`). The runtime has no store of root certificates: `beam.com --target wasm32 --cacerts FILE` puts the certificates of FILE into the release. Livebook of beam.com gets the bundle of Mozilla.
+The VM does TLS itself, with the `ssl` application of OTP (and the OpenSSL of `crypto`). The runtime has no store of root certificates: `beam.com --cacerts FILE` puts the certificates of FILE into the release. Livebook of beam.com gets the bundle of Mozilla. With a store, HTTPS to port 443 goes through `fetch()` too: the server in the VM ends the TLS with a certificate of a CA of the VM, and the store holds that CA.
 
 On Cloudflare and Deno, `Req` (a dependency of Livebook) then works as on a computer:
 
