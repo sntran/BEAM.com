@@ -985,6 +985,31 @@ if [ -d examples ]; then
     [ -f "$dir/wasm_tests.b.com" ] && check wasm_tests.b.com 'wasm_tests: all [0-9]* passed'
 fi
 
+# NIF libraries in WebAssembly (docs/NIFS.md): the application nif_check,
+# with priv/nif_check.wasm and its AOT files in the zip of the program.
+# BEAM_COM_NIF_DEBUG names the file that load_nif/2 loads: the AOT file of
+# the CPU on Linux and macOS, and either one elsewhere (a system can refuse
+# the memory of AOT code). Then the same checks with the interpreter
+# (BEAM_COM_NIF_AOT=0).
+if [ -d examples ]; then
+    check beam.com 'wrote .*nif_check.com' tests/programs/nif_check --main nif_check -o "$dir/nif_check.com"
+    if [ -f "$dir/nif_check.com" ]; then
+        case $os-$(uname -m) in
+            linux-x86_64) nif_file='nif_check\.x86_64\.aot$' ;;
+            linux-aarch64) nif_file='nif_check\.aarch64\.aot$' ;;
+            darwin-arm64) nif_file='nif_check\.aarch64\.aot$' ;;
+            *) nif_file='nif_check\.[xw]' ;;
+        esac
+        BEAM_COM_NIF_DEBUG=1
+        export BEAM_COM_NIF_DEBUG
+        check nif_check.com "nif_wasm: .*$nif_file@@nif_check: all [0-9]* passed"
+        BEAM_COM_NIF_AOT=0
+        export BEAM_COM_NIF_AOT
+        check nif_check.com 'nif_wasm: .*nif_check\.wasm$@@nif_check: all [0-9]* passed'
+        unset BEAM_COM_NIF_DEBUG BEAM_COM_NIF_AOT
+    fi
+fi
+
 if [ -d examples ]; then
     # W^X: the JIT maps its code two times (executable, and writable),
     # so no page is writable and executable. On Linux, +JMsingle (one

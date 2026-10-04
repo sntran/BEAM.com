@@ -13,7 +13,8 @@
 #   scripts/steps.sh step...
 #   Steps: toolchain openssl otp configure sqlite nifs wasm make elixir
 #          release multicall wasm_runtime bundle test unit hex_nifs
-#   With no step, all steps run in order (not hex_nifs).
+#          nif_edge
+#   With no step, all steps run in order (not hex_nifs and nif_edge).
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
@@ -519,9 +520,13 @@ hex_nifs() {
     return 0
 }
 
-# The WAMR sources for the interpreter with WASI (from the CMake files of
-# WAMR, for the cosmopolitan platform).
+# The WAMR sources for the interpreter and the AOT loader with WASI (from
+# the CMake files of WAMR, for the cosmopolitan platform). The relocations
+# of the AOT code for each CPU are in c_src/wasm/aot_reloc.c.
 WAMR_SOURCES="
+    core/iwasm/aot/aot_intrinsic.c
+    core/iwasm/aot/aot_loader.c
+    core/iwasm/aot/aot_runtime.c
     core/shared/platform/cosmopolitan/platform_init.c
     core/shared/platform/common/posix/posix_blocking_op.c
     core/shared/platform/common/posix/posix_clock.c
@@ -567,14 +572,26 @@ WAMR_SOURCES="
     core/iwasm/interpreter/wasm_loader.c
     core/iwasm/interpreter/wasm_runtime.c"
 
-step_wasm() {
-    [ "$WASM" = 1 ] || return 0
+# The clone of WAMR, with the patches of patches/wamr.
+wamr_clone() {
     if [ ! -d "$WAMR/.git" ]; then
         log "Cloning WAMR $WAMR_VERSION"
         git clone -q --depth 1 --branch "WAMR-$WAMR_VERSION" \
             https://github.com/bytecodealliance/wasm-micro-runtime.git "$WAMR"
     fi
     check_commit "$WAMR" "$WAMR_COMMIT" "WAMR $WAMR_VERSION"
+    # patches/README.md lists the patches and their items. Each patch that
+    # is not in the clone yet, also in a clone of an earlier build.
+    for p in "$ROOT"/patches/wamr/*.patch; do
+        git -C "$WAMR" apply --reverse --check "$p" 2>/dev/null && continue
+        echo "  $p"
+        git -C "$WAMR" apply "$p"
+    done
+}
+
+step_wasm() {
+    [ "$WASM" = 1 ] || return 0
+    wamr_clone
     log "Building WAMR and the wasm NIF as a static NIF"
     t=$(target)
     obj=$WAMR/obj
@@ -589,23 +606,32 @@ step_wasm() {
     #  - WASM_DISABLE_HW_BOUND_CHECK: no guard pages and signal handlers
     #    for the linear memory (the Windows emulation of signals).
     #  - SIMD needs SIMDe, which is not in the WAMR repository.
+    #  - WASM_ENABLE_REF_TYPES: current compilers (LLVM 19 and later) use
+    #    reference types by default for wasm32.
+    #  - WASM_ENABLE_AOT: the AOT files of the NIF libraries in
+    #    WebAssembly (c_src/wasm/nif_wasm.c, docs/NIFS.md).
+    #  - BEAM_COM_RESERVE_LINEAR_MEMORY: a linear memory grows with no
+    #    copy (patches/wamr/0002-reserve-linear-memory.patch).
     flags="-O2 -include $ROOT/c_src/wasm/wamr_target.h
         -DBH_PLATFORM_COSMOPOLITAN -DBH_MALLOC=wasm_runtime_malloc
         -DBH_FREE=wasm_runtime_free -D_GNU_SOURCE
-        -DWASM_ENABLE_INTERP=1 -DWASM_ENABLE_FAST_INTERP=1
+        -DWASM_ENABLE_INTERP=1 -DWASM_ENABLE_FAST_INTERP=1 -DWASM_ENABLE_AOT=1
+        -DWASM_ENABLE_REF_TYPES=1
         -DWASM_ENABLE_LIBC_WASI=1 -DWASM_ENABLE_BULK_MEMORY=1
         -DWASM_ENABLE_BULK_MEMORY_OPT=1 -DWASM_ENABLE_SHRUNK_MEMORY=1
         -DWASM_ENABLE_MODULE_INST_CONTEXT=1 -DWASM_ENABLE_SIMD=0
         -DWASM_DISABLE_HW_BOUND_CHECK=1 -DWASM_DISABLE_STACK_HW_BOUND_CHECK=1
         -DWASM_DISABLE_WAKEUP_BLOCKING_OP=0 -DWASM_DISABLE_WRITE_GS_BASE=1
         -DWASM_HAVE_MREMAP=0 -DWASM_GLOBAL_HEAP_SIZE=10485760
+        -DBEAM_COM_RESERVE_LINEAR_MEMORY
         -Icore/iwasm/include -Icore/iwasm/common -Icore/iwasm/interpreter
+        -Icore/iwasm/aot
         -Icore/iwasm/libraries/libc-wasi/sandboxed-system-primitives/include
         -Icore/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src
         -Icore/shared/platform/cosmopolitan -Icore/shared/platform/include
         -Icore/shared/platform/common/libc-util -Icore/shared/mem-alloc
         -Icore/shared/utils -Icore/shared/utils/uncommon"
-    for src in $WAMR_SOURCES; do
+    for src in $WAMR_SOURCES "$ROOT/c_src/wasm/aot_reloc.c"; do
         # shellcheck disable=SC2086
         "$CC" $flags -c "$src" -o "$obj/$(basename "$src" .c).o"
     done
@@ -618,9 +644,36 @@ step_wasm() {
     "$CC" -O2 -DSTATIC_ERLANG_NIF_LIBNAME=wasm -Icore/iwasm/include \
         -I"$ERL_TOP/erts/emulator/beam" -I"$ERL_TOP/erts/include" \
         -I"$ERL_TOP/erts/include/$t" \
-        -c "$ROOT/c_src/wasm/wasm_nif.c" -o "$obj/wasm_nif.o"
+        -I"$ROOT/c_src/wasm" -c "$ROOT/c_src/wasm/wasm_nif.c" -o "$obj/wasm_nif.o"
+    # The loader of the NIF libraries in WebAssembly: it sets the hook
+    # erts_wasm_nif_open of ERTS (patches/otp/0003-wasm-nif.patch).
+    # wasm_nif.o calls nif_wasm_runtime_init(), so the linker takes it.
+    "$CC" -O2 -DBEAM_COM_ERTS_HOOK -Icore/iwasm/include -I"$ROOT/c_src/wasm" \
+        -I"$ERL_TOP/erts/emulator/beam" -I"$ERL_TOP/erts/include" \
+        -I"$ERL_TOP/erts/include/$t" \
+        -c "$ROOT/c_src/wasm/nif_wasm.c" -o "$obj/nif_wasm.o"
     rm -f wasm.a .aarch64/wasm.a
     (cd "$obj" && "$AR" rcs "$WAMR/wasm.a" ./*.o)
+}
+
+# The loader of NIF libraries in WebAssembly for the WebAssembly runtime
+# of --target wasm32 (wasm/erts/build.sh runs this step): one object
+# NIF_EDGE_OUT, made with the compiler NIF_EDGE_CC (emcc) and the flags
+# NIF_EDGE_CFLAGS (the include directories of its ERTS). The engine of
+# the host runs the modules there (c_src/wasm/nif_wasm_host.c), so only
+# the headers of WAMR are used. The constructor of nif_wasm.c sets the
+# hook of ERTS.
+step_nif_edge() {
+    wamr_clone
+    obj=$WAMR/obj-edge
+    rm -rf "$obj"
+    mkdir -p "$obj"
+    for src in nif_wasm nif_wasm_host; do
+        # shellcheck disable=SC2086
+        $NIF_EDGE_CC -O2 -Wall -DBEAM_COM_ERTS_HOOK -I"$WAMR/core/iwasm/include" \
+            -I"$ROOT/c_src/wasm" $NIF_EDGE_CFLAGS -c "$ROOT/c_src/wasm/$src.c" -o "$obj/$src.o"
+    done
+    $NIF_EDGE_CC -r -o "$NIF_EDGE_OUT" "$obj"/*.o
 }
 
 # The STATIC_NIFS value for the emulator Makefile. Empty: the configured
@@ -853,6 +906,15 @@ step_bundle() {
         mkdir -p "$STAGE/lib/wasm-0.1.0/ebin"
         "$ERL_TOP/bin/erlc" -o "$STAGE/lib/wasm-0.1.0/ebin" "$ROOT"/src/wasm/*.erl
         cp "$ROOT/src/wasm/wasm.app.src" "$STAGE/lib/wasm-0.1.0/ebin/wasm.app"
+        # The headers of a NIF library in WebAssembly, for
+        # "beam.com --nif-include" (docs/NIFS.md): those of ERTS, with
+        # patches/otp/0003-wasm-nif.patch, and the C types of wasm32.
+        mkdir -p "$STAGE/lib/wasm-0.1.0/priv/include"
+        cp "$ERL_TOP/erts/emulator/beam/erl_nif.h" \
+           "$ERL_TOP/erts/emulator/beam/erl_nif_api_funcs.h" \
+           "$ERL_TOP/erts/emulator/beam/erl_drv_nif.h" \
+           "$ROOT/c_src/wasm/include/erl_int_sizes_config.h" \
+           "$STAGE/lib/wasm-0.1.0/priv/include/"
     fi
 
     # The commands of beam.com (lib/beam_com has no version, so that

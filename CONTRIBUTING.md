@@ -38,6 +38,8 @@ docs only starts no run.
 - Keep the code of an Erlang/OTP change in `patches/otp/`, and record a
   problem of another project in `docs/UPSTREAM.md`, with a small
   reproducer.
+- Give each patch of another project (in `patches/PROJECT/`) an item in
+  `docs/UPSTREAM.md` and a row in `patches/README.md`.
 - Update the docs of the behavior that you change.
 
 ## The language of the docs

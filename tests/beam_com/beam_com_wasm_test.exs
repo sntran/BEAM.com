@@ -352,6 +352,7 @@ defmodule BeamComWasmTest do
     import wasm from './beam.wasm';
     const release = (await import('./release.bin')).default;
     const snapshot = await import('./snapshot.bin');
+    const nifs = await import('./nifs.js');
     """
 
     :ok = :file.write_file(:filename.join(priv, ~c"worker.js"), worker_js)
@@ -475,13 +476,14 @@ defmodule BeamComWasmTest do
   end
 
   describe "page_files_test_" do
-    # The worker.js of the Workers: the four imports that a module Web
+    # The worker.js of the Workers: the five imports that a module Web
     # Worker cannot resolve.
     @worker_js """
     import net from 'node:net';
     import wasm from './beam.wasm';
     const release = await import('./release.bin');
     const snapshot = await import('./snapshot.bin');
+    const nifs = await import('./nifs.js');
     """
 
     setup %{tmp_dir: dir} do
@@ -716,6 +718,63 @@ defmodule BeamComWasmTest do
     } do
       assert [host, {~c"lib/wasm-0.1.0/ebin/wasm.beam", shim}] ==
                :beam_com_wasm.with_wasm([host, {~c"lib/wasm-0.1.0/ebin/wasm.beam", "native"}])
+    end
+  end
+
+  test "without_aot/1 removes the AOT files of NIF libraries, and keeps the .wasm files" do
+    keep = [
+      {~c"lib/my_nif-1.0.0/priv/my_nif.wasm", "wasm"},
+      {~c"lib/my_nif-1.0.0/ebin/my_nif.beam", "beam"},
+      {~c"lib/other-1.0.0/data.x86_64.aot", "not in priv"}
+    ]
+
+    files =
+      keep ++
+        [
+          {~c"lib/my_nif-1.0.0/priv/my_nif.x86_64.aot", "x86_64"},
+          {~c"lib/my_nif-1.0.0/priv/sub/my_nif.aarch64.aot", "aarch64"}
+        ]
+
+    assert keep == :beam_com_wasm.without_aot(files)
+  end
+
+  describe "NIF libraries in WebAssembly for Workers" do
+    setup do
+      path = Path.join([__DIR__, "..", "programs", "nif_check", "priv", "nif_check.wasm"])
+      %{nif: File.read!(path)}
+    end
+
+    test "nif_module/1 adds the export of the table once", %{nif: nif} do
+      module = :beam_com_wasm.nif_module(nif)
+      assert is_binary(module)
+      assert :binary.match(nif, "__nif_table") == :nomatch
+      assert :binary.match(module, "__nif_table") != :nomatch
+      assert :beam_com_wasm.nif_module(module) == module
+    end
+
+    test "nif_module/1 refuses a module with no nif_init, and other bytes" do
+      assert :beam_com_wasm.nif_module(<<0, "asm", 1, 0, 0, 0, 7, 1, 0>>) == false
+      assert :beam_com_wasm.nif_module("not wasm") == false
+      assert :beam_com_wasm.nif_module(<<0, "asm", 1, 0, 0, 0, 7, 9, 0>>) == false
+    end
+
+    test "nif_files/1 gives nifs.js and a module for each NIF library", %{nif: nif} do
+      files = [
+        {~c"lib/a-1.0.0/priv/x.wasm", nif},
+        {~c"lib/a-1.0.0/priv/data.wasm", <<0, "asm", 1, 0, 0, 0>>},
+        {~c"lib/a-1.0.0/ebin/a.beam", "beam"},
+        {~c"lib/a-1.0.0/x.wasm", nif}
+      ]
+
+      assert [{~c"nifs.js", js}, {~c"nifs/0.wasm", module}] = :beam_com_wasm.nif_files(files)
+      assert module == :beam_com_wasm.nif_module(nif)
+      assert js =~ "import m0 from './nifs/0.wasm';"
+      assert js =~ ~s("lib/a-1.0.0/priv/x.wasm": m0)
+    end
+
+    test "nif_files/1 with no NIF library gives an empty nifs.js" do
+      assert [{~c"nifs.js", js}] = :beam_com_wasm.nif_files([])
+      assert js =~ "export default {};"
     end
   end
 

@@ -11,7 +11,7 @@
 
 -ifdef(TEST).
 -export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
-         is_project/1]).
+         is_project/1, nif_include/0]).
 -endif.
 
 main() ->
@@ -31,6 +31,10 @@ command(["--version"]) ->
     io:put_chars(version());
 command(["--version" | _]) ->
     throw({error, "usage: ~ts --version", [name()]});
+command(["--nif-include"]) ->
+    io:put_chars([nif_include(), $\n]);
+command(["--nif-include" | _]) ->
+    throw({error, "usage: ~ts --nif-include", [name()]});
 command([]) ->
     case is_project(".") of
         true -> run(#{input => ".", apps => [], args => []});
@@ -41,6 +45,27 @@ command(Args) ->
     case Opts of
         #{output := _} -> beam_com_build:run(Opts);
         _ -> run(Opts)
+    end.
+
+%% The directory with the headers of a NIF library in WebAssembly
+%% (docs/NIFS.md): a copy of priv/include of the wasm application in the
+%% cache, for each version of OTP. A file that differs is written again.
+nif_include() ->
+    Src = case code:priv_dir(wasm) of
+              {error, _} -> throw({error, "~ts has no WebAssembly runtime (a build with WASM=0)", [name()]});
+              Priv -> filename:join(Priv, "include")
+          end,
+    Dir = filename:join(cache_dir(), "nif-include-" ++ otp_version()),
+    ok = filelib:ensure_path(Dir),
+    {ok, Names} = file:list_dir(Src),
+    [ok = copy_if_new(filename:join(Src, N), filename:join(Dir, N)) || N <- Names],
+    Dir.
+
+copy_if_new(From, To) ->
+    {ok, Bin} = file:read_file(From),
+    case file:read_file(To) of
+        {ok, Bin} -> ok;
+        _ -> file:write_file(To, Bin)
     end.
 
 %% A directory with a project of rebar3 or Mix, or an application (src/).
@@ -225,7 +250,7 @@ help([]) ->
      Pad, "run INPUT (default: the project in this directory)\n"
      "       ", Name, " [FLAGS] INPUT -o OUTPUT\n",
      Pad, "make an executable of INPUT\n"
-     "       ", Name, " --help | --version\n"
+     "       ", Name, " --help | --version | --nif-include\n"
      "\n"
      "  INPUT     ", Inputs,
      "  ARGUMENTS the arguments of the program\n"
@@ -276,7 +301,11 @@ help([]) ->
      "\n"
      "The tools:\n"
      "  escript FILE [ARGUMENTS]\n"
-     "            run an escript\n",
+     "            run an escript\n"
+     "  --nif-include\n"
+     "            write the headers of a NIF library in WebAssembly (erl_nif.h\n"
+     "            for wasm32-wasip1) to the cache, and print their directory.\n"
+     "            load_nif/2 loads PATH.wasm when there is no native library\n",
      Tools,
      "  -FLAG ...  the flags of erl (\"-sname me -remsh app\"): run as erl\n"
      "  epmd [ARGUMENTS]\n"

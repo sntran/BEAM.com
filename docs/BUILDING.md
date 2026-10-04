@@ -38,7 +38,7 @@ The steps, in order. The code of each step is in
 | `configure` | `otp`, `openssl` | Configures OTP for Cosmopolitan. |
 | `sqlite` | `configure` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
 | `nifs` | `sqlite` | Builds the NIFs of exqlite, bcrypt_elixir and argon2_elixir (nothing with `ELIXIR=0`). |
-| `wasm` | `configure` | Builds WAMR and the wasm NIF (nothing with `WASM=0`). |
+| `wasm` | `configure` | Builds WAMR (the interpreter and the AOT loader), the wasm NIF and the loader of NIF libraries in WebAssembly ([`NIFS.md`](NIFS.md)) (nothing with `WASM=0`). |
 | `make` | `nifs`, `wasm` | Builds a small OTP: the emulator and the OTP applications. |
 | `elixir` | `make` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
 | `release` | `elixir` | Installs an OTP release tree, for its boot scripts. |

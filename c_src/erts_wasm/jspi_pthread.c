@@ -76,6 +76,20 @@ static int block(int timeout_ms)
     return woken;
 }
 
+/* A wait of the host outside of block() (nif_wasm_host.c): the thread
+ * saves its state before, and puts it back after. */
+void *jspi_save(uintptr_t *sp)
+{
+    *sp = jspi_get_sp();
+    return cur;
+}
+
+void jspi_restore(void *self, uintptr_t sp)
+{
+    jspi_set_sp(sp);
+    cur = self;
+}
+
 static void wake(struct __pthread *t)
 {
     t->woken = 1;

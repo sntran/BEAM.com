@@ -31,6 +31,14 @@ import net from 'node:net';
 import createBeam from './beam.mjs';
 import wasm from './beam.wasm';
 
+// The NIF libraries in WebAssembly of the release (docs/NIFS.md), compiled
+// by Wrangler: a Worker cannot compile WebAssembly at run time. nifs.js of
+// "beam.com --target wasm32" maps the path of each file in /app to its
+// module; the other hosts compile the files at run time (null).
+async function nifModules() {
+  return (await import('./nifs.js')).default;
+}
+
 async function loadRelease(env) {
   if (env.APP) return (await env.APP.fetch('http://app/release.bin')).arrayBuffer();
   if (env.RELEASE_URL) return (await fetch(env.RELEASE_URL)).arrayBuffer();
@@ -1010,6 +1018,7 @@ export class Vm {
       if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
     }
     const snap = snapBytes && parseSnapshot(snapBytes);
+    const nifs = await nifModules();
     // restored: this VM comes from a snapshot (the page shows it).
     this.restored = !!snap;
     this.bootPointSnap = !!snap?.boot_point;
@@ -1127,6 +1136,7 @@ export class Vm {
         }],
         print: (s) => console.log(s),
         printErr: (s) => console.log(s),
+        nifModule: (file) => nifs?.[file.replace(/^\/app\//, '')] ?? null,
         // Workers compile no WebAssembly at run time: use the imported module.
         instantiateWasm: (imports, done) => {
           WebAssembly.instantiate(wasm, imports).then((instance) => { this.exports = instance.exports; done(instance); });
@@ -1183,6 +1193,9 @@ export class Vm {
   // the threads go on: about 1 ms of the VM, and the time of the copy.
   // 'busy': not a quiet moment (I/O of the host); null: no snapshot.
   async snapshot(bootPoint) {
+    // A NIF library in WebAssembly runs in an instance of the host, out of
+    // the memory of the VM: a snapshot would not have it.
+    if (this.beam.nifLoaded) return null;
     const x = this.exports;
     const tick = () => new Promise((r) => setTimeout(r, 1));
     const busy = () => this.sqlPending > 0 || this.tcps.size > 0;

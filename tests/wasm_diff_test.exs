@@ -57,6 +57,52 @@ defmodule BeamCom.WasmDiffTest do
     end
   end
 
+  # A NIF library in WebAssembly (docs/NIFS.md): the engine of the host
+  # runs priv/nif_check.wasm of tests/programs/nif_check. The native erl
+  # of the test can be one with no loader, so the test only checks the
+  # output of the runtime.
+  test "the NIF library in WebAssembly of nif_check", ctx do
+    {out, status} = nif_check(ctx, "nif_check", false)
+    assert out =~ ~r/^nif_check: all \d+ passed$/m
+    assert status == 0
+  end
+
+  # As a Worker: the module compiled from nifs/0.wasm of nif_files/1, and
+  # no compilation of WebAssembly at run time.
+  test "the NIF library in WebAssembly of nif_check, compiled as for a Worker", ctx do
+    {out, status} = nif_check(ctx, "nif_check_worker", true)
+    assert out =~ ~r/^nif_check: all \d+ passed$/m
+    assert status == 0
+  end
+
+  defp nif_check(ctx, name, compiled) do
+    src = Path.join([__DIR__, "programs", "nif_check"])
+    app = Path.join([ctx.top, name, "nif_check"])
+    ebin = Path.join(app, "ebin")
+    file = Path.join([app, "priv", "nif_check.wasm"])
+    File.mkdir_p!(ebin)
+    File.mkdir_p!(Path.dirname(file))
+
+    {:ok, _} =
+      :compile.file(String.to_charlist(Path.join([src, "src", "nif_check.erl"])), [
+        :report,
+        outdir: String.to_charlist(ebin)
+      ])
+
+    bytes = File.read!(Path.join([src, "priv", "nif_check.wasm"]))
+    File.write!(file, bytes)
+
+    nifs =
+      if compiled do
+        [_js, {_, module}] = :beam_com_wasm.nif_files([{~c"lib/nif_check/priv/x.wasm", bytes}])
+        compiled_file = Path.join([ctx.top, name, "nif_check.module.wasm"])
+        File.write!(compiled_file, module)
+        %{file => compiled_file}
+      end
+
+    wasm(%{ctx | libs: [app | ctx.libs], ebin: ebin}, "nif_check", "node", nifs)
+  end
+
   # The command of the native erl, the OTP root, and the ebin directories
   # of the runtime. Under beam.com, the root is /zip, which is not on the
   # disk: the test copies the boot file and the ebin directories out of
@@ -108,7 +154,7 @@ defmodule BeamCom.WasmDiffTest do
     )
   end
 
-  defp wasm(ctx, program, schedule) do
+  defp wasm(ctx, program, schedule, nifs \\ nil) do
     work = Path.join([ctx.top, "wasm-#{schedule}", program])
     File.mkdir_p!(work)
 
@@ -122,6 +168,8 @@ defmodule BeamCom.WasmDiffTest do
       schedule: schedule,
       eval: eval(program, "/work")
     }
+
+    job = if nifs, do: Map.put(job, :nifs, nifs), else: job
 
     file = Path.join(work, "job.json")
     File.write!(file, :json.encode(job))

@@ -34,7 +34,8 @@
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1,
+         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1, without_aot/1,
+         nif_files/1, nif_module/1,
          page_files/3, page_env/1, page_worker/1, host_worker/2, static_files/2, write_page/2,
          edge_runtime/1, runtime_id/1, apps/1]).
 -endif.
@@ -66,7 +67,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     Apps = apps(Files0),
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
      || A <- lists:usort(Apps), lists:member(A, native_nifs() -- runtime_nifs(Runtime))],
-    Files1 = with_cacerts(with_wasm(with_sqlite(with_host(Files0, Root), Root)), Opts),
+    Files1 = with_cacerts(with_wasm(with_sqlite(with_host(without_aot(Files0), Root), Root)), Opts),
     Meta = meta(Rel#{apps => Apps, cacerts => lists:keymember(?CACERTS, 1, Files1)}),
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
@@ -367,6 +368,13 @@ sqlite_shim(Beam) ->
     {ok, Mod, Bin} = compile:forms(Forms, [binary, return_errors]),
     Bin.
 
+%% The AOT files of NIF libraries in WebAssembly (docs/NIFS.md): the
+%% runtime runs only the .wasm file, so release.bin does not need them.
+without_aot(Files) ->
+    [F || {P, _} = F <- Files,
+          not (lists:suffix(".x86_64.aot", P) orelse lists:suffix(".aarch64.aot", P))
+          orelse not lists:member("priv", filename:split(P))].
+
 %% WebAssembly (the API of the application wasm of beam.com, whose NIF is
 %% WAMR): the module wasm calls wasm_host_wasm, and the engine of the host
 %% runs the modules. It takes the place of the module of the application
@@ -571,8 +579,105 @@ worker_files(Rel, Runtime, Root) ->
              {"release/app.js", Worker("app.js")}] ++
             [F || {P, _} = F <- host_files(Rel, base64:encode(crypto:strong_rand_bytes(48))),
                   not lists:prefix("page/", P)] ++ hosts(Root) ++ licenses(Root) ++
-            app_hosts(Worker),
+            app_hosts(Worker) ++ nif_files(maps:get(files, Rel, [])),
     Files ++ [{"runtime-id.js", runtime_id_module(Files)}].
+
+%% The NIF libraries in WebAssembly of the release (lib/APP/priv/**.wasm
+%% with the export nif_init, docs/NIFS.md) as modules of the runtime
+%% Worker, and nifs.js, which maps the path of each one to its module
+%% (worker.js): a Worker cannot compile WebAssembly at run time, so
+%% Wrangler compiles them. Each module gets the export __nif_table of
+%% its table, as c_src/wasm/nif_wasm_host.js gives it at run time.
+nif_files(Files) ->
+    Nifs = [{P, M} || {P, D} <- Files, is_binary(D), lists:prefix("lib/", P),
+                      filename:extension(P) =:= ".wasm",
+                      lists:member("priv", filename:split(P)),
+                      M <- [nif_module(D)], M =/= false],
+    Indexed = lists:zip(lists:seq(0, length(Nifs) - 1), Nifs),
+    Js = ["// The NIF libraries in WebAssembly of the release, for worker.js. A\n"
+          "// Worker cannot compile WebAssembly at run time: Wrangler compiles\n"
+          "// these modules. \"beam.com --target wasm32\" writes this file.\n",
+          [io_lib:format("import m~b from './nifs/~b.wasm';~n", [I, I]) || {I, _} <- Indexed],
+          "export default {",
+          lists:join(",", [io_lib:format("~n  ~ts: m~b", [json:encode(list_to_binary(P)), I])
+                           || {I, {P, _}} <- Indexed]),
+          case Nifs of [] -> ""; _ -> "\n" end,
+          "};\n"],
+    [{"nifs.js", iolist_to_binary(Js)}
+     | [{"nifs/" ++ integer_to_list(I) ++ ".wasm", M} || {I, {_, M}} <- Indexed]].
+
+%% The module with an export of its table (__nif_table), when it is a
+%% NIF library (it exports nif_init), else false.
+nif_module(<<"\0asm", 1:32/little, Sections/binary>> = Bin) ->
+    try wasm_sections(Sections, []) of
+        Secs ->
+            Exports = case lists:keyfind(7, 1, Secs) of
+                          {7, E} -> wasm_exports(E);
+                          false -> []
+                      end,
+            HasTable = case lists:keyfind(4, 1, Secs) of
+                           {4, T} -> element(1, leb(T)) > 0;
+                           false -> false
+                       end,
+            case lists:member({<<"nif_init">>, 0}, [{N, K} || {N, K, _} <- Exports]) of
+                false -> false;
+                true when not HasTable -> Bin;
+                true ->
+                    case [N || {N, 1, 0} <- Exports] of
+                        [_ | _] -> Bin;
+                        [] -> with_table_export(Bin, Secs)
+                    end
+            end
+    catch
+        _:_ -> false
+    end;
+nif_module(_) ->
+    false.
+
+wasm_sections(<<>>, Acc) ->
+    lists:reverse(Acc);
+wasm_sections(<<Id, Rest0/binary>>, Acc) ->
+    {Size, Rest1} = leb(Rest0),
+    <<Body:Size/binary, Rest/binary>> = Rest1,
+    wasm_sections(Rest, [{Id, Body} | Acc]).
+
+wasm_exports(Body) ->
+    {N, Rest} = leb(Body),
+    wasm_exports(N, Rest, []).
+
+wasm_exports(0, _, Acc) ->
+    lists:reverse(Acc);
+wasm_exports(N, Bin, Acc) ->
+    {Len, R0} = leb(Bin),
+    <<Name:Len/binary, Kind, R1/binary>> = R0,
+    {Index, R2} = leb(R1),
+    wasm_exports(N - 1, R2, [{Name, Kind, Index} | Acc]).
+
+with_table_export(<<Head:8/binary, _/binary>>, Secs) ->
+    Name = <<"__nif_table">>,
+    iolist_to_binary(
+      [Head | [begin
+                   B = case Id of
+                           7 ->
+                               {N, Rest} = leb(Body),
+                               [enc_leb(N + 1), Rest, enc_leb(byte_size(Name)), Name, 1, 0];
+                           _ -> Body
+                       end,
+                   [Id, enc_leb(iolist_size(B)), B]
+               end || {Id, Body} <- Secs]]).
+
+leb(Bin) ->
+    leb(Bin, 0, 0).
+
+leb(<<1:1, B:7, Rest/binary>>, Shift, Acc) ->
+    leb(Rest, Shift + 7, Acc bor (B bsl Shift));
+leb(<<0:1, B:7, Rest/binary>>, Shift, Acc) ->
+    {Acc bor (B bsl Shift), Rest}.
+
+enc_leb(N) when N < 128 ->
+    [N];
+enc_leb(N) ->
+    [128 bor (N band 127) | enc_leb(N bsr 7)].
 
 %% The hosts that run a native app.com with the runtime of the npm package
 %% (runtime/ of scripts/npm.sh), each with its copy of worker.js
@@ -687,16 +792,21 @@ host_worker(Host, Js) ->
               page -> [{<<"from 'node:net'">>, <<"from './browser/net.js'">>},
                        {<<"from './beam.wasm'">>, <<"from './browser/beam-wasm.js'">>},
                        {<<"import('./release.bin')">>, <<"import('./browser/none.js')">>},
-                       {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>}];
+                       {<<"import('./snapshot.bin')">>, <<"import('./browser/none.js')">>},
+                       {<<"import('./nifs.js')">>, <<"import('./browser/none.js')">>}];
               deno -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
                        {<<"from './beam.wasm'">>, <<"from './beam-wasm.js'">>},
                        {<<"import('./release.bin')">>, <<"import('./release-bin.js')">>},
-                       {<<"import('./snapshot.bin')">>, <<"import('./snapshot-bin.js')">>}];
+                       {<<"import('./snapshot.bin')">>, <<"import('./snapshot-bin.js')">>},
+                       {<<"import('./nifs.js')">>, <<"import('./none.js')">>}];
+              %% A Worker that runs an app.com has no compiled NIF libraries
+              %% yet (snapshot.js: null).
               cloudflare -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
                              {<<"from './beam.wasm'">>, <<"from '../beam.wasm'">>},
                              {<<"(await import('./release.bin')).default">>,
                               <<"(await import('./release.js')).release()">>},
-                             {<<"import('./snapshot.bin')">>, <<"import('./snapshot.js')">>}]
+                             {<<"import('./snapshot.bin')">>, <<"import('./snapshot.js')">>},
+                             {<<"import('./nifs.js')">>, <<"import('./snapshot.js')">>}]
           end,
     In = iolist_to_binary(Js),
     Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end, In, Map),

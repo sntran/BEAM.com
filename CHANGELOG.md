@@ -19,6 +19,14 @@ on npm it has the dist-tag `next` (`npm install beam.com@next`).
 - Static NIFs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
   exqlite), WebAssembly and WASI (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir.
+- NIF libraries in WebAssembly: when a NIF has no native library,
+  `load_nif/2` loads `PATH.wasm`, or its AOT file `PATH.x86_64.aot` or
+  `PATH.aarch64.aot`, through WAMR, also from the zip of a program. One
+  `.wasm` file works on all the systems, and in the WebAssembly runtime
+  of `--target wasm32`, where the engine of the host runs it. `beam.com
+  --nif-include` gives the headers. lazy_html (the HTML parser of
+  Phoenix.LiveViewTest) passes its tests so. See `docs/NIFS.md`.
+- The OTP application `tools`, for `mix test --cover`.
 - A sandbox with the permission flags of Deno (`--allow-read`,
   `--allow-write`, `--allow-net`, `--allow-run`), on Linux and OpenBSD.
 - `--target wasm32`: a second runtime, ERTS on WebAssembly with green

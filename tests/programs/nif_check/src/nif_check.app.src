@@ -1,0 +1,5 @@
+{application, nif_check,
+ [{description, "The test of the NIF libraries in WebAssembly"},
+  {vsn, "1.0.0"},
+  {applications, [kernel, stdlib]},
+  {modules, []}]}.

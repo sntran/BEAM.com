@@ -78,6 +78,7 @@
     %{source: "docs/WORKERS.md", slug: "workers", group: :guides},
     %{source: "docs/NOTEBOOKS.md", slug: "notebooks", group: :guides},
     %{source: "docs/LIBRARIES.md", slug: "libraries", group: :guides},
+    %{source: "docs/NIFS.md", slug: "nifs", group: :guides},
     %{source: "docs/SANDBOX.md", slug: "sandbox", group: :guides},
     %{source: "docs/PLATFORMS.md", slug: "platforms", group: :reference},
     %{source: "docs/INTERNALS.md", slug: "internals", group: :reference},
@@ -96,7 +97,7 @@
     %{
       id: :guides,
       title: "Guides",
-      description: "Run and build programs, Elixir and Phoenix, Cloudflare Workers and Deno, these notebooks, libraries, and the sandbox.",
+      description: "Run and build programs, Elixir and Phoenix, Cloudflare Workers and Deno, these notebooks, libraries, NIF libraries in WebAssembly, and the sandbox.",
       cover: "guides.svg"
     },
     %{

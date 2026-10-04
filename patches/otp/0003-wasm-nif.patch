@@ -1,0 +1,85 @@
+diff --git a/erts/emulator/beam/erl_nif.c b/erts/emulator/beam/erl_nif.c
+index 70978c2..17079ad 100644
+--- a/erts/emulator/beam/erl_nif.c
++++ b/erts/emulator/beam/erl_nif.c
+@@ -4705,6 +4705,11 @@ static int check_is_nifable(const BeamCodeHeader* mod_code,
+ 
+ static void patch_call_nif_early(ErlNifEntry*, struct erl_module_instance*);
+ 
++/* BEAM.com: the loader of NIF libraries in WebAssembly
++ * (c_src/wasm/nif_wasm.c sets it). It gives the entry of PATH.ARCH.aot
++ * or PATH.wasm, or NULL and an empty error when neither file exists. */
++ErlNifEntry *(*erts_wasm_nif_open)(const char *path, char *error, size_t size) = NULL;
++
+ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
+ {
+     static const char bad_lib[] = "bad_lib";
+@@ -4771,6 +4776,25 @@ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
+ 	this_mi = module_p->on_load;
+     }
+ 
++    /* BEAM.com: a NIF library in WebAssembly has no dynamic library, as
++     * a static NIF. */
++    if (!is_static && this_mi->nif == NULL && erts_wasm_nif_open != NULL) {
++        char wasm_error[512];
++        ErlNifEntry *wasm_entry;
++
++        wasm_error[0] = '\0';
++        wasm_entry = erts_wasm_nif_open(lib_name, wasm_error, sizeof(wasm_error));
++        if (wasm_entry != NULL) {
++            erts_add_taint(mod_atom);
++            entry = wasm_entry;
++            is_static = 1;
++        } else if (wasm_error[0] != '\0') {
++            ret = load_nif_error(c_p, "load_failed", "Failed to load NIF library %s: '%s'",
++                                 lib_name, wasm_error);
++            goto error;
++        }
++    }
++
+     if (this_mi->nif != NULL) {
+         ret = load_nif_error(c_p,"reload","NIF library already loaded"
+                              " (reload disallowed since OTP 20).");
+diff --git a/erts/emulator/beam/erl_nif.h b/erts/emulator/beam/erl_nif.h
+index 7c01e88..8193812 100644
+--- a/erts/emulator/beam/erl_nif.h
++++ b/erts/emulator/beam/erl_nif.h
+@@ -376,6 +376,12 @@ extern void enif_ioq_destroy(ErlNifIOQueue *q);
+ 
+ #  if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
+ #    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) extern RET_TYPE NAME ARGS
++#  elif defined(__wasm__) && !defined(__EMSCRIPTEN__) && !defined(STATIC_ERLANG_NIF)
++/* BEAM.com: in WebAssembly, each function is an import of the module
++ * "env" (docs/NIFS.md of BEAM.com), so the link needs no flag. ERTS
++ * itself in WebAssembly (Emscripten) has the functions. */
++#    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) \
++       __attribute__((import_module("env"), import_name(#NAME))) extern RET_TYPE NAME ARGS
+ #  else
+ #    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) ERL_NAPI_EXPORT extern RET_TYPE NAME ARGS
+ #  endif
+@@ -409,6 +415,25 @@ extern void enif_ioq_destroy(ErlNifIOQueue *q);
+ #endif
+ 
+ 
++#if defined(__wasm__) && !defined(__EMSCRIPTEN__) && !defined(STATIC_ERLANG_NIF)
++/* BEAM.com: a NIF library in WebAssembly (docs/NIFS.md of BEAM.com)
++ * exports nif_init, an allocator for the memory that ERTS gives to the
++ * library, and chdir (the library starts in the work directory of
++ * ERTS). */
++#  undef ERL_NIF_INIT_GLOB
++#  define ERL_NIF_INIT_GLOB \
++    extern int chdir(const char*); \
++    __attribute__((export_name("erl_nif_wasm_malloc"))) \
++    void* erl_nif_wasm_malloc(size_t size) { return malloc(size); } \
++    __attribute__((export_name("erl_nif_wasm_free"))) \
++    void erl_nif_wasm_free(void* ptr) { free(ptr); } \
++    __attribute__((export_name("erl_nif_wasm_chdir"))) \
++    int erl_nif_wasm_chdir(const char* path) { return chdir(path); }
++#  undef ERL_NIF_INIT_DECL
++#  define ERL_NIF_INIT_DECL(MODNAME) \
++          __attribute__((export_name("nif_init"))) ErlNifEntry* nif_init(ERL_NIF_INIT_ARGS)
++#endif
++
+ #ifdef __cplusplus
+ }
+ #  define ERL_NIF_INIT_PROLOGUE extern "C" {

@@ -287,6 +287,19 @@ if (Test-Path "examples") {
     }
 }
 
+# NIF libraries in WebAssembly (docs/NIFS.md), as in run.sh: the AOT file
+# or the .wasm, then the interpreter (BEAM_COM_NIF_AOT=0).
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*nif_check.com' @("tests/programs/nif_check", "--main", "nif_check", "-o", "$Dir/nif_check.com")
+    if (Test-Path (Join-Path $Dir "nif_check.com")) {
+        $env:BEAM_COM_NIF_DEBUG = "1"
+        Check "nif_check.com" 'nif_wasm: .*nif_check\.(x86_64\.aot|wasm)@@nif_check: all [0-9]+ passed' @()
+        $env:BEAM_COM_NIF_AOT = "0"
+        Check "nif_check.com" 'nif_wasm: .*nif_check\.wasm@@nif_check: all [0-9]+ passed' @()
+        Remove-Item Env:BEAM_COM_NIF_DEBUG, Env:BEAM_COM_NIF_AOT
+    }
+}
+
 # The interpreter: beam-emu.com (beam.com has the JIT).
 if (Test-Path (Join-Path $Dir "beam-emu.com")) {
     Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("--version")

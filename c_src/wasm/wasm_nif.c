@@ -16,6 +16,7 @@
 
 #include "erl_nif.h"
 #include "wasm_export.h"
+#include "nif_wasm.h"
 
 #define ERROR_BUF_SIZE 256
 #define DEFAULT_STACK_SIZE (64 * 1024)
@@ -69,7 +70,6 @@ static void instance_dtor(ErlNifEnv *env, void *obj)
 
 static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
 {
-    RuntimeInitArgs args;
     (void)priv;
     (void)info;
 
@@ -82,12 +82,9 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
     if (!module_type || !instance_type)
         return 1;
 
-    memset(&args, 0, sizeof(args));
-    args.mem_alloc_type = Alloc_With_System_Allocator;
-    if (!wasm_runtime_full_init(&args))
+    /* One runtime for this NIF and the NIF libraries in WebAssembly. */
+    if (!nif_wasm_runtime_init())
         return 1;
-    /* WAMR writes warnings (for example a missing import) to stdout. */
-    wasm_runtime_set_log_level(WASM_LOG_LEVEL_ERROR);
 
     am_ok = enif_make_atom(env, "ok");
     am_error = enif_make_atom(env, "error");

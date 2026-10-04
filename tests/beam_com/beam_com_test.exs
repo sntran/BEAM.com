@@ -323,6 +323,37 @@ defmodule BeamComTest do
                {:error, ~c"usage: ~ts --version", [~c"beam.com"]}
     end
 
+    test "--nif-include: a copy of priv/include of the wasm application", %{tmp_dir: dir} do
+      # A wasm application first in the code path, and a cache of its own.
+      ebin = Path.join(dir, "lib/wasm-9.9.9/ebin")
+      include = Path.join(dir, "lib/wasm-9.9.9/priv/include")
+      File.mkdir_p!(ebin)
+      File.mkdir_p!(include)
+      File.write!(Path.join(include, "erl_nif.h"), "first")
+      cache = Path.join(dir, "cache")
+      true = :code.add_patha(String.to_charlist(ebin))
+      System.put_env("BEAM_COM_CACHE", cache)
+
+      try do
+        {:ok, out} = output([~c"--nif-include"])
+        copy = Path.join(cache, "nif-include-#{:beam_com.otp_version()}")
+        assert out == copy <> "\n"
+        assert File.read!(Path.join(copy, "erl_nif.h")) == "first"
+        # A file that differs is written again.
+        File.write!(Path.join(include, "erl_nif.h"), "second")
+        {:ok, ^out} = output([~c"--nif-include"])
+        assert File.read!(Path.join(copy, "erl_nif.h")) == "second"
+      after
+        System.delete_env("BEAM_COM_CACHE")
+        :code.del_path(String.to_charlist(ebin))
+      end
+    end
+
+    test "--nif-include with arguments" do
+      assert catch_throw(:beam_com.command([~c"--nif-include", ~c"x"])) ==
+               {:error, ~c"usage: ~ts --nif-include", [:beam_com.name()]}
+    end
+
     test "the name of the file: name()" do
       assert ~c"beam.com" == :beam_com.name()
     end

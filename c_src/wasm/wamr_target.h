@@ -5,6 +5,9 @@
  */
 #if defined(__x86_64__)
 #define BUILD_TARGET_X86_64 1
+#define BUILD_TARGET "X86_64"
 #elif defined(__aarch64__)
 #define BUILD_TARGET_AARCH64 1
+/* The AOT loader compares it with the target of an AOT file (aarch64v8). */
+#define BUILD_TARGET "AARCH64"
 #endif

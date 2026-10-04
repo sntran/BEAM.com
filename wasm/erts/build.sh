@@ -61,6 +61,11 @@ if [ ! -d "$OTP" ]; then
     fi
     git -C "$OTP" apply "$HERE/otp.patch"
 fi
+# The hook of ERTS for NIF libraries in WebAssembly (docs/NIFS.md), also
+# in a clone of an earlier build.
+NIF_PATCH=$HERE/../../patches/otp/0003-wasm-nif.patch
+git -C "$OTP" apply --reverse --check "$NIF_PATCH" 2>/dev/null ||
+    git -C "$OTP" apply "$NIF_PATCH"
 cd "$OTP"
 export ERL_TOP=$OTP
 if [ ! -f "erts/$T/config.h" ]; then
@@ -97,6 +102,17 @@ if [ -n "${HEX_NIFS:-}" ]; then
         HEX_NIF_LIST="$OUT/nifs" "$HERE/../../scripts/steps.sh" hex_nifs > "$OUT/hexnifs.log" 2>&1
     NIFS="$NIFS $(echo "$OUT"/hexnifs/*.a)"
 fi
+# The loader of NIF libraries in WebAssembly (c_src/wasm/nif_wasm.c and
+# nif_wasm_host.c, the step nif_edge of scripts/steps.sh) as one object,
+# and its host side (nif_wasm_host.js). The engine of the host runs the
+# modules. Not in wasm64: the bridge is for a 32-bit ERTS.
+NIF_WASM=
+if [ "${WASM64:-0}" != 1 ]; then
+    NIF_EDGE_OUT="$OUT/nif_wasm.o" NIF_EDGE_CC=emcc \
+        NIF_EDGE_CFLAGS="-I$OTP/erts/emulator/beam -I$OTP/erts/include -I$OTP/erts/include/$T" \
+        "$HERE/../../scripts/steps.sh" nif_edge > "$OUT/nif_edge.log" 2>&1
+    NIF_WASM="$OUT/nif_wasm.o -sALLOW_TABLE_GROWTH --js-library $CSRC/../wasm/nif_wasm_host.js"
+fi
 # The table of static NIFs comes from NIFS: make does not know that it
 # changed.
 rm -f "erts/emulator/$T/opt/emu/driver_tab.c" "erts/emulator/obj/$T/opt/emu/driver_tab.o"
@@ -107,7 +123,7 @@ rm -f "erts/emulator/$T/opt/emu/driver_tab.c" "erts/emulator/obj/$T/opt/emu/driv
 # stubs of Emscripten's libc.
 # WASM_NODE=0: no Node.js variant (only the one for Workers, WORKER=1).
 if [ "${WASM_NODE:-1}" = 1 ]; then
-LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_ES6 ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_ES6 ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o $NIF_WASM"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
 make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
 cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
@@ -143,7 +159,7 @@ if [ "${WORKER:-0}" = 1 ]; then
     fi
     # MEMORY_GROWTH_GEOMETRIC_STEP=0: the memory grows as much as malloc
     # asks, not 20% more (a Worker has 128 MB, and the memory never shrinks).
-    LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMEMORY_GROWTH_GEOMETRIC_STEP=0 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit,jspiSchedule,noInitialRun,onRuntimeInitialized --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o"
+    LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMEMORY_GROWTH_GEOMETRIC_STEP=0 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit,jspiSchedule,noInitialRun,onRuntimeInitialized,nifModule --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o $NIF_WASM"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
     make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
     mkdir -p "$WOUT"
