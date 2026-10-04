@@ -32,6 +32,7 @@ The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 | Native NIF | 255 ms |
 | AOT file (`--bounds-checks=1`, generic CPU) | 318 ms |
 | Interpreter (`.wasm`) | 2,400 ms |
+| Interpreter in the WebAssembly runtime of `--target wasm32` (Node.js 26) | 6,100 ms |
 
 `exqlite` (SQLite), 10,000 inserts in one transaction into a database
 file: 195 ms with the AOT file, 543 ms with the interpreter.
@@ -165,8 +166,27 @@ The limits:
 - **Errors.** A trap of the module (for example an access out of its
   memory) raises `error:{wasm_trap, Message}` in the calling process.
   The module stays loaded.
-- **Not at the edge yet.** The WebAssembly runtime of `--target wasm32`
-  (Workers, Deno, a web page) does not load these files yet.
+- **At the edge.** See the next section.
+
+## At the edge (`--target wasm32`)
+
+The WebAssembly runtime of `--target wasm32` (Cloudflare Workers, Deno,
+Node.js, a web page) loads the same `.wasm` file. ERTS itself runs in
+WebAssembly there, and WAMR runs in it, with these differences:
+
+- **Only the interpreter.** The runtime does not read the AOT files, and
+  `beam.com --target wasm32` leaves them out of `release.bin`. The code
+  runs about 2.5 times slower than in the interpreter of the native
+  `beam.com` (see "Speed"). A Worker has a limit of CPU time for each
+  request, so use a NIF for short calls there.
+- **No files.** WASI has no directories there: the standard output and
+  error, the clocks and random bytes work. Other functions of WASI fail
+  or stop the call with an exception.
+- The engine of the host does not compile the module, so a Worker, which
+  cannot compile WebAssembly at run time, loads it too.
+- WAMR and the loader add about 230 KB to `beam.wasm` (70 KB with gzip).
+
+`tests/wasm_diff_test.exs` runs `nif_check` in the runtime.
 
 ## Debug
 
@@ -193,3 +213,8 @@ file and with the interpreter.
   function for each NIF. Each `enif_*` import changes the 32-bit
   handles of the module into terms, and back. The comment at the start
   of the file gives the rules.
+- The WebAssembly runtime: `wasm/erts/build.sh` applies the same patch,
+  and links the same file with the interpreter of WAMR, built with
+  Emscripten (the step `wamr_edge` of `scripts/steps.sh`). WAMR calls
+  each `enif_*` function as a raw native there (W11 in
+  [`UPSTREAM.md`](UPSTREAM.md)).

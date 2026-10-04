@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "erl_nif.h"
@@ -50,6 +51,13 @@
  * stack bound for the next call. One execution environment serves all
  * the threads that call a library, one at a time. */
 void wasm_exec_env_set_thread_info(wasm_exec_env_t exec_env);
+
+/* The WebAssembly runtime of --target wasm32: ERTS built with
+ * Emscripten. WAMR has no AOT code and no WASI there (see "the
+ * WebAssembly runtime of --target wasm32" below). */
+#ifdef __EMSCRIPTEN__
+#define NIF_WASM_EDGE 1
+#endif
 
 #define MAX_FUNCS 256
 #define MAX_SLOTS 256
@@ -3116,6 +3124,274 @@ static NativeSymbol natives[] = {
     { "enif_term_size", w_term_size, "(i)i", NULL },
 };
 
+#ifdef NIF_WASM_EDGE
+/* --- the WebAssembly runtime of --target wasm32 ---
+ *
+ * There, ERTS itself runs in WebAssembly (Emscripten), and WAMR runs in
+ * it with its interpreter only. A call through a function pointer in
+ * WebAssembly must have the exact type of the function, so the generic
+ * call of WAMR (invokeNative) cannot call the functions of the table
+ * above. WAMR calls each one as a raw native: raw_native() gets the
+ * arguments as an array, and calls the function with its type. */
+
+static const char *const raw_sigs[] = {
+    "()i", "(i)", "(i)i", "(i)I", "(ii)", "(ii)i", "(iii)i", "(iiii)i",
+    "(iiiii)i", "(iiiiii)i", "(iI)i", "(iF)i", "(iiI)I", "(Iii)I",
+};
+
+typedef struct {
+    void *f;
+    int sig;                    /* index into raw_sigs */
+} raw_fn_t;
+
+#define N_NATIVES (sizeof(natives) / sizeof(natives[0]))
+static raw_fn_t raw_fns[N_NATIVES];
+static NativeSymbol raw_natives[N_NATIVES];
+
+typedef wasm_exec_env_t X;
+typedef uint32_t U;
+typedef uint64_t L;
+#define A(k) ((U)a[k])
+
+static void raw_native(wasm_exec_env_t x, uint64_t *a)
+{
+    const raw_fn_t *r = wasm_runtime_get_function_attachment(x);
+    void *f = r->f;
+    double d;
+    switch (r->sig) {
+    case 0: a[0] = ((U (*)(X))f)(x); break;
+    case 1: ((void (*)(X, U))f)(x, A(0)); break;
+    case 2: a[0] = ((U (*)(X, U))f)(x, A(0)); break;
+    case 3: a[0] = ((L (*)(X, U))f)(x, A(0)); break;
+    case 4: ((void (*)(X, U, U))f)(x, A(0), A(1)); break;
+    case 5: a[0] = ((U (*)(X, U, U))f)(x, A(0), A(1)); break;
+    case 6: a[0] = ((U (*)(X, U, U, U))f)(x, A(0), A(1), A(2)); break;
+    case 7: a[0] = ((U (*)(X, U, U, U, U))f)(x, A(0), A(1), A(2), A(3)); break;
+    case 8: a[0] = ((U (*)(X, U, U, U, U, U))f)(x, A(0), A(1), A(2), A(3), A(4)); break;
+    case 9: a[0] = ((U (*)(X, U, U, U, U, U, U))f)(x, A(0), A(1), A(2), A(3), A(4), A(5)); break;
+    case 10: a[0] = ((U (*)(X, U, L))f)(x, A(0), a[1]); break;
+    case 11:
+        memcpy(&d, &a[1], sizeof(d));
+        a[0] = ((U (*)(X, U, double))f)(x, A(0), d);
+        break;
+    case 12: a[0] = ((L (*)(X, U, U, L))f)(x, A(0), A(1), a[2]); break;
+    case 13: a[0] = ((L (*)(X, L, U, U))f)(x, a[0], A(1), A(2)); break;
+    }
+}
+
+/* WASI preview 1 for the module: the standard output and error, the
+ * clocks and random bytes. There are no files and no arguments. A
+ * function of WASI that is not here stays unlinked: a call to it
+ * traps. */
+#define WASI_EBADF 8
+#define WASI_ENOTSUP 58
+#define WASI_ESPIPE 70
+
+static void *wptr(wasm_exec_env_t x, uint32_t off, uint64_t n)
+{
+    wasm_module_inst_t m = wasm_runtime_get_module_inst(x);
+    if (n > UINT32_MAX || !wasm_runtime_validate_app_addr(m, off, n ? n : 1))
+        return NULL;
+    return wasm_runtime_addr_app_to_native(m, off);
+}
+
+static int wput(wasm_exec_env_t x, uint32_t off, const void *v, uint32_t n)
+{
+    void *p = wptr(x, off, n);
+    if (p)
+        memcpy(p, v, n);
+    return p != NULL;
+}
+
+static void wasi_ok(wasm_exec_env_t x, uint64_t *a)
+{
+    (void)x;
+    a[0] = 0;
+}
+
+static void wasi_ebadf(wasm_exec_env_t x, uint64_t *a)
+{
+    (void)x;
+    a[0] = WASI_EBADF;
+}
+
+static void wasi_enotsup(wasm_exec_env_t x, uint64_t *a)
+{
+    (void)x;
+    a[0] = WASI_ENOTSUP;
+}
+
+/* args_sizes_get and environ_sizes_get: none. */
+static void wasi_sizes(wasm_exec_env_t x, uint64_t *a)
+{
+    uint32_t z = 0;
+    if (wput(x, A(0), &z, 4) && wput(x, A(1), &z, 4))
+        a[0] = 0;
+}
+
+static void wasi_proc_exit(wasm_exec_env_t x, uint64_t *a)
+{
+    (void)a;
+    wasm_runtime_set_exception(wasm_runtime_get_module_inst(x), "proc_exit");
+}
+
+static void wasi_clock_res_get(wasm_exec_env_t x, uint64_t *a)
+{
+    uint64_t r = 1000;
+    if (wput(x, A(1), &r, 8))
+        a[0] = 0;
+}
+
+static void wasi_clock_time_get(wasm_exec_env_t x, uint64_t *a)
+{
+    struct timespec ts;
+    uint64_t t;
+    clock_gettime(A(0) == 0 ? CLOCK_REALTIME : CLOCK_MONOTONIC, &ts);
+    t = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+    if (wput(x, A(2), &t, 8))
+        a[0] = 0;
+}
+
+static void wasi_random_get(wasm_exec_env_t x, uint64_t *a)
+{
+    uint8_t *p = wptr(x, A(0), A(1));
+    uint32_t n = A(1), k;
+    if (!p)
+        return;
+    for (; n > 0; p += k, n -= k) {
+        k = n > 256 ? 256 : n;
+        if (getentropy(p, k)) {
+            a[0] = WASI_ENOTSUP;
+            return;
+        }
+    }
+    a[0] = 0;
+}
+
+static void wasi_fd_write(wasm_exec_env_t x, uint64_t *a)
+{
+    FILE *f = A(0) == 1 ? stdout : A(0) == 2 ? stderr : NULL;
+    uint32_t i, n = A(2), total = 0, iov[2];
+    const uint8_t *v;
+    void *p;
+    if (!f) {
+        a[0] = WASI_EBADF;
+        return;
+    }
+    if (!(v = wptr(x, A(1), (uint64_t)n * 8)))
+        return;
+    for (i = 0; i < n; i++) {
+        memcpy(iov, v + 8 * i, 8);
+        if (!(p = wptr(x, iov[0], iov[1])))
+            return;
+        total += (uint32_t)fwrite(p, 1, iov[1], f);
+    }
+    fflush(f);
+    if (wput(x, A(3), &total, 4))
+        a[0] = 0;
+}
+
+/* fd_read: the standard input is empty. */
+static void wasi_fd_read(wasm_exec_env_t x, uint64_t *a)
+{
+    uint32_t z = 0;
+    if (A(0) != 0)
+        a[0] = WASI_EBADF;
+    else if (wput(x, A(3), &z, 4))
+        a[0] = 0;
+}
+
+static void wasi_fd_std(wasm_exec_env_t x, uint64_t *a)
+{
+    (void)x;
+    a[0] = A(0) <= 2 ? 0 : WASI_EBADF;
+}
+
+static void wasi_fd_seek(wasm_exec_env_t x, uint64_t *a)
+{
+    (void)x;
+    a[0] = A(0) <= 2 ? WASI_ESPIPE : WASI_EBADF;
+}
+
+/* fd_fdstat_get: 0, 1 and 2 are character devices. */
+static void wasi_fd_fdstat_get(wasm_exec_env_t x, uint64_t *a)
+{
+    uint8_t st[24];
+    if (A(0) > 2) {
+        a[0] = WASI_EBADF;
+        return;
+    }
+    memset(st, 0, sizeof(st));
+    st[0] = 2;
+    memset(st + 8, 0xff, 16);
+    if (wput(x, A(1), st, sizeof(st)))
+        a[0] = 0;
+}
+
+static void wasi_fd_filestat_get(wasm_exec_env_t x, uint64_t *a)
+{
+    uint8_t st[64];
+    if (A(0) > 2) {
+        a[0] = WASI_EBADF;
+        return;
+    }
+    memset(st, 0, sizeof(st));
+    st[16] = 2;
+    if (wput(x, A(1), st, sizeof(st)))
+        a[0] = 0;
+}
+
+static NativeSymbol wasi_natives[] = {
+    { "args_get", wasi_ok, "(ii)i", NULL },
+    { "args_sizes_get", wasi_sizes, "(ii)i", NULL },
+    { "environ_get", wasi_ok, "(ii)i", NULL },
+    { "environ_sizes_get", wasi_sizes, "(ii)i", NULL },
+    { "clock_res_get", wasi_clock_res_get, "(ii)i", NULL },
+    { "clock_time_get", wasi_clock_time_get, "(iIi)i", NULL },
+    { "random_get", wasi_random_get, "(ii)i", NULL },
+    { "fd_write", wasi_fd_write, "(iiii)i", NULL },
+    { "fd_read", wasi_fd_read, "(iiii)i", NULL },
+    { "fd_close", wasi_fd_std, "(i)i", NULL },
+    { "fd_seek", wasi_fd_seek, "(iIii)i", NULL },
+    { "fd_fdstat_get", wasi_fd_fdstat_get, "(ii)i", NULL },
+    { "fd_fdstat_set_flags", wasi_fd_std, "(ii)i", NULL },
+    { "fd_filestat_get", wasi_fd_filestat_get, "(ii)i", NULL },
+    { "fd_prestat_get", wasi_ebadf, "(ii)i", NULL },
+    { "fd_prestat_dir_name", wasi_ebadf, "(iii)i", NULL },
+    { "proc_exit", wasi_proc_exit, "(i)", NULL },
+    { "sched_yield", wasi_ok, "()i", NULL },
+    { "poll_oneoff", wasi_enotsup, "(iiii)i", NULL },
+};
+
+#undef A
+
+/* Register the table above as raw natives, and WASI. */
+static int register_natives(void)
+{
+    size_t i, k;
+    for (i = 0; i < N_NATIVES; i++) {
+        for (k = 0; k < sizeof(raw_sigs) / sizeof(raw_sigs[0]); k++)
+            if (!strcmp(natives[i].signature, raw_sigs[k]))
+                break;
+        if (k == sizeof(raw_sigs) / sizeof(raw_sigs[0]))
+            return 0;
+        raw_fns[i].f = natives[i].func_ptr;
+        raw_fns[i].sig = (int)k;
+        raw_natives[i] = natives[i];
+        raw_natives[i].func_ptr = (void *)raw_native;
+        raw_natives[i].attachment = &raw_fns[i];
+    }
+    return wasm_runtime_register_natives_raw("env", raw_natives, N_NATIVES)
+        && wasm_runtime_register_natives_raw("wasi_snapshot_preview1", wasi_natives,
+                                             sizeof(wasi_natives) / sizeof(wasi_natives[0]));
+}
+#else
+static int register_natives(void)
+{
+    return wasm_runtime_register_natives("env", natives, sizeof(natives) / sizeof(natives[0]));
+}
+#endif
+
 /* --- the library --- */
 
 static void ctx_free(ctx *c)
@@ -3228,7 +3504,7 @@ int nif_wasm_runtime_init(void)
         return 0;
     /* WAMR writes warnings (for example a missing import) to stdout. */
     wasm_runtime_set_log_level(WASM_LOG_LEVEL_ERROR);
-    if (!wasm_runtime_register_natives("env", natives, sizeof(natives) / sizeof(natives[0])))
+    if (!register_natives())
         return 0;
     debug = getenv("BEAM_COM_NIF_DEBUG") != NULL;
     ready = 1;
@@ -3290,7 +3566,9 @@ static int module_exports(wasm_module_t m, const char *name)
 /* Every import must be a function of WASI or an enif_* function. An
  * enif_* function that this file does not give stays unlinked: a call
  * to it traps with its name. (A library can import functions that it
- * never calls: rustler takes the address of each one.) */
+ * never calls: rustler takes the address of each one.) In the
+ * WebAssembly runtime of --target wasm32, a function of WASI can stay
+ * unlinked too. */
 static int check_imports(wasm_module_t m, const char *file, char *error, size_t size)
 {
     int32_t i, n = wasm_runtime_get_import_count(m);
@@ -3302,8 +3580,12 @@ static int check_imports(wasm_module_t m, const char *file, char *error, size_t 
         if (im.kind == WASM_IMPORT_EXPORT_KIND_FUNC && im.linked
             && (!strcmp(im.module_name, "env") || !strcmp(im.module_name, "wasi_snapshot_preview1")))
             continue;
-        if (im.kind == WASM_IMPORT_EXPORT_KIND_FUNC && !strcmp(im.module_name, "env")
-            && !strncmp(im.name, "enif_", 5)) {
+        if (im.kind == WASM_IMPORT_EXPORT_KIND_FUNC
+            && ((!strcmp(im.module_name, "env") && !strncmp(im.name, "enif_", 5))
+#ifdef NIF_WASM_EDGE
+                || !strcmp(im.module_name, "wasi_snapshot_preview1")
+#endif
+                )) {
             if (debug)
                 fprintf(stderr, "nif_wasm: %s: %s is not supported\n", file, im.name);
             continue;
@@ -3316,7 +3598,9 @@ static int check_imports(wasm_module_t m, const char *file, char *error, size_t 
     return error[0] == '\0';
 }
 
+#ifndef NIF_WASM_EDGE
 static const char *wasi_dirs[] = { "/", "." };
+#endif
 
 /* The module starts in the work directory of ERTS (at the load). */
 static void set_cwd(ctx *c)
@@ -3362,11 +3646,18 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
      * of beam.com. A module without it also gets ".", which then takes
      * all the paths (wasi-libc strips the "/" and the "."), so only its
      * relative paths work. */
+#ifdef NIF_WASM_EDGE
+    has_chdir = 0;
+#else
     has_chdir = module_exports(c->module, "erl_nif_wasm_chdir");
     wasm_runtime_set_wasi_args(c->module, wasi_dirs, has_chdir ? 1 : 2, NULL, 0, NULL, 0, NULL, 0);
+#endif
     heap = module_exports(c->module, "erl_nif_wasm_malloc")
         || (module_exports(c->module, "malloc") && module_exports(c->module, "free")) ? 0 : APP_HEAP;
     if (!(c->inst = wasm_runtime_instantiate(c->module, WASM_STACK, heap, error, (uint32_t)size))) {
+#ifdef NIF_WASM_EDGE
+        goto failed;
+#else
         /* A system can refuse to open a directory of WASI: then the
          * module runs with no files. */
         wasm_runtime_set_wasi_args(c->module, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
@@ -3375,6 +3666,7 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
         if (debug)
             fprintf(stderr, "nif_wasm: %s: no files (the directories of WASI did not open)\n", file);
         has_chdir = 0;
+#endif
     }
     if (!(c->exec = wasm_runtime_create_exec_env(c->inst, WASM_STACK))) {
         snprintf(error, size, "no execution environment");
@@ -3389,6 +3681,19 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
         snprintf(error, size, "no mutex");
         goto failed;
     }
+#ifdef NIF_WASM_EDGE
+    /* WAMR calls _initialize of a reactor only with its own WASI. */
+    {
+        wasm_function_inst_t init = wasm_runtime_lookup_function(c->inst, "_initialize");
+        if (init) {
+            call_ready(c);
+            if (!wasm_runtime_call_wasm(c->exec, init, 0, NULL)) {
+                snprintf(error, size, "_initialize: %s", wasm_runtime_get_exception(c->inst));
+                goto failed;
+            }
+        }
+    }
+#endif
     if (has_chdir)
         set_cwd(c);
     return c;

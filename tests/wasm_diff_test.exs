@@ -57,6 +57,33 @@ defmodule BeamCom.WasmDiffTest do
     end
   end
 
+  # A NIF library in WebAssembly (docs/NIFS.md): the runtime loads
+  # priv/nif_check.wasm of tests/programs/nif_check with its WAMR. The
+  # native erl of the test can be one with no loader, so the test only
+  # checks the output of the runtime.
+  test "the NIF library in WebAssembly of nif_check", ctx do
+    src = Path.join([__DIR__, "programs", "nif_check"])
+    app = Path.join(ctx.top, "nif_check")
+    ebin = Path.join(app, "ebin")
+    File.mkdir_p!(ebin)
+    File.mkdir_p!(Path.join(app, "priv"))
+
+    {:ok, _} =
+      :compile.file(String.to_charlist(Path.join([src, "src", "nif_check.erl"])), [
+        :report,
+        outdir: String.to_charlist(ebin)
+      ])
+
+    File.cp!(
+      Path.join([src, "priv", "nif_check.wasm"]),
+      Path.join([app, "priv", "nif_check.wasm"])
+    )
+
+    {out, status} = wasm(%{ctx | libs: [app | ctx.libs], ebin: ebin}, "nif_check", "node")
+    assert out =~ ~r/^nif_check: all \d+ passed$/m
+    assert status == 0
+  end
+
   # The command of the native erl, the OTP root, and the ebin directories
   # of the runtime. Under beam.com, the root is /zip, which is not on the
   # disk: the test copies the boot file and the ebin directories out of

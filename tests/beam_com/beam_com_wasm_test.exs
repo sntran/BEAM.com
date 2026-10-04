@@ -719,6 +719,23 @@ defmodule BeamComWasmTest do
     end
   end
 
+  test "without_aot/1 removes the AOT files of NIF libraries, and keeps the .wasm files" do
+    keep = [
+      {~c"lib/my_nif-1.0.0/priv/my_nif.wasm", "wasm"},
+      {~c"lib/my_nif-1.0.0/ebin/my_nif.beam", "beam"},
+      {~c"lib/other-1.0.0/data.x86_64.aot", "not in priv"}
+    ]
+
+    files =
+      keep ++
+        [
+          {~c"lib/my_nif-1.0.0/priv/my_nif.x86_64.aot", "x86_64"},
+          {~c"lib/my_nif-1.0.0/priv/sub/my_nif.aarch64.aot", "aarch64"}
+        ]
+
+    assert keep == :beam_com_wasm.without_aot(files)
+  end
+
   # The edge part of a native app.com (beam_com_build): the files of View
   # that the runtime changes or adds, under .wasm/.
   # The identity of a runtime is the SHA-256 of the output of

@@ -493,6 +493,11 @@ The runtime has the NIFs of `crypto` and `asn1`, those of
 `nifs` next to `beam.wasm` lists them. A release with another NIF (for
 example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 
+A NIF library in WebAssembly (`priv/NAME.wasm`, see
+[`NIFS.md`](NIFS.md)) loads in the runtime too, with the interpreter of
+WAMR: about 2.5 times slower than in the native `beam.com`, and with no
+files.
+
 ## Variables and bindings
 
 | Name | Where | What |
@@ -859,7 +864,7 @@ The limits:
 - The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
   (3.5 to 14 MB for a Phoenix app).
 - The app needs an HTTP listener on `PORT`, and only the NIFs of the
-  runtime (see "NIFs").
+  runtime or NIF libraries in WebAssembly (see "NIFs").
 - An app with `force_ssl` must have `rewrite_on: [:x_forwarded_proto]`
   (as `mix phx.new` writes it), or exclude the host `localhost`. Else it
   redirects each request to `https://localhost/`.
@@ -922,7 +927,7 @@ not in the key of the snapshot.
   threads. Erlang processes are still preempted by reductions.
 - The CPU time of a request counts all the threads of the VM.
 - No port programs (no `fork()` or `exec()`), and only the NIFs of the
-  runtime.
+  runtime or NIF libraries in WebAssembly.
 - No UDP. Incoming TCP only through a WebSocket (see above).
 - An isolate can close at any time, and a deploy resets the Durable
   Objects. The next request boots or restores a new VM.

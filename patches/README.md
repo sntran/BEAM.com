@@ -32,7 +32,7 @@ order, with `git apply`.
 | | `erts/emulator/zstd/zstd.mk` | No x86_64 assembly file in the aarch64 half. | O2 |
 | | `lib/erl_interface/src/connect/ei_resolve.c` | The `gethostbyname_r` of Cosmopolitan. | O7 |
 | `0002-jit.patch` | `erts/configure*`, `make/autoconf/otp.m4`, `erts/emulator/Makefile.in`, `asmjit`, `beam/jit/` | A fat JIT: both backends, selected at compile time for each CPU half and at run time for macOS. | O13, O14, C22 |
-| `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hook for NIF libraries in WebAssembly, and `erl_nif.h` for `__wasm__`. | O24 |
+| `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hook for NIF libraries in WebAssembly, and `erl_nif.h` for `__wasm__` (not Emscripten). `wasm/erts/build.sh` applies it too. | O24 |
 
 ## Elixir (`patches/elixir/`)
 
@@ -69,6 +69,10 @@ Their items are in `docs/UPSTREAM.md` too:
 - WAMR: the flags of `step_wasm`, and `c_src/wasm/wamr_target.h` and
   `c_src/wasm/aot_reloc.c` (W1 to W4, W7, W8), and the options of
   `wamrc` in `docs/NIFS.md` (W7, W9).
+- WAMR in the WebAssembly runtime of `--target wasm32`: the flags of
+  `step_wamr_edge`, `c_src/wasm/wamr_emscripten.h` and
+  `c_src/wasm/wamr_emscripten.c`, and the raw natives of
+  `c_src/wasm/nif_wasm.c` (W10 to W13).
 - exqlite and elixir_make: the flags and the `sed` edit of
   `build_hex_nif` (E1 to E4).
 - The builder and the tools of beam.com (`src/beam_com/`): O17 to O19.

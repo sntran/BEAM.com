@@ -34,7 +34,7 @@
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
          runtime_dir/1, meta/1, worker_files/3, snapshot_key/2, runtime_nifs/1,
-         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1,
+         strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1, without_aot/1,
          page_files/3, page_env/1, page_worker/1, host_worker/2, static_files/2, write_page/2,
          edge_runtime/1, runtime_id/1, apps/1]).
 -endif.
@@ -66,7 +66,7 @@ write(Output, #{name := Name, vsn := Vsn, files := Files0} = Rel, Opts) ->
     Apps = apps(Files0),
     [warn(Quiet, "warning: ~p has a NIF that the WebAssembly runtime does not have", [A])
      || A <- lists:usort(Apps), lists:member(A, native_nifs() -- runtime_nifs(Runtime))],
-    Files1 = with_cacerts(with_wasm(with_sqlite(with_host(Files0, Root), Root)), Opts),
+    Files1 = with_cacerts(with_wasm(with_sqlite(with_host(without_aot(Files0), Root), Root)), Opts),
     Meta = meta(Rel#{apps => Apps, cacerts => lists:keymember(?CACERTS, 1, Files1)}),
     Mods = boot_modules(Files1, Meta, Opts),
     Files = with_boot_modules(Files1, Mods),
@@ -366,6 +366,13 @@ sqlite_shim(Beam) ->
              | [Fun(FA) || FA <- Exports]],
     {ok, Mod, Bin} = compile:forms(Forms, [binary, return_errors]),
     Bin.
+
+%% The AOT files of NIF libraries in WebAssembly (docs/NIFS.md): the
+%% runtime runs only the .wasm file, so release.bin does not need them.
+without_aot(Files) ->
+    [F || {P, _} = F <- Files,
+          not (lists:suffix(".x86_64.aot", P) orelse lists:suffix(".aarch64.aot", P))
+          orelse not lists:member("priv", filename:split(P))].
 
 %% WebAssembly (the API of the application wasm of beam.com, whose NIF is
 %% WAMR): the module wasm calls wasm_host_wasm, and the engine of the host

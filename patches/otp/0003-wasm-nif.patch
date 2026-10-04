@@ -44,23 +44,24 @@ diff --git a/erts/emulator/beam/erl_nif.h b/erts/emulator/beam/erl_nif.h
 index 7c01e88..8193812 100644
 --- a/erts/emulator/beam/erl_nif.h
 +++ b/erts/emulator/beam/erl_nif.h
-@@ -376,6 +376,11 @@ extern void enif_ioq_destroy(ErlNifIOQueue *q);
+@@ -376,6 +376,12 @@ extern void enif_ioq_destroy(ErlNifIOQueue *q);
  
  #  if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
  #    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) extern RET_TYPE NAME ARGS
-+#  elif defined(__wasm__) && !defined(STATIC_ERLANG_NIF)
++#  elif defined(__wasm__) && !defined(__EMSCRIPTEN__) && !defined(STATIC_ERLANG_NIF)
 +/* BEAM.com: in WebAssembly, each function is an import of the module
-+ * "env" (docs/NIFS.md of BEAM.com), so the link needs no flag. */
++ * "env" (docs/NIFS.md of BEAM.com), so the link needs no flag. ERTS
++ * itself in WebAssembly (Emscripten) has the functions. */
 +#    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) \
 +       __attribute__((import_module("env"), import_name(#NAME))) extern RET_TYPE NAME ARGS
  #  else
  #    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) ERL_NAPI_EXPORT extern RET_TYPE NAME ARGS
  #  endif
-@@ -409,6 +414,25 @@ extern void enif_ioq_destroy(ErlNifIOQueue *q);
+@@ -409,6 +415,25 @@ extern void enif_ioq_destroy(ErlNifIOQueue *q);
  #endif
  
  
-+#if defined(__wasm__) && !defined(STATIC_ERLANG_NIF)
++#if defined(__wasm__) && !defined(__EMSCRIPTEN__) && !defined(STATIC_ERLANG_NIF)
 +/* BEAM.com: a NIF library in WebAssembly (docs/NIFS.md of BEAM.com)
 + * exports nif_init, an allocator for the memory that ERTS gives to the
 + * library, and chdir (the library starts in the work directory of
