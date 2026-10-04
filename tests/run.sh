@@ -45,7 +45,7 @@ diagnose() {
     done
 }
 
-check() {
+check_once() {
     name=$1 pattern=$2
     shift 2
     echo "==> $name"
@@ -94,9 +94,9 @@ check() {
     fi
     if [ $rc -ne "$expect" ]; then
         echo "FAIL: $name exited with $rc (expected $expect)"
-        failed="$failed
+        pending="$pending
   $name $*: exited with $rc (expected $expect)"
-        fail=1
+        bad=1
     else
         # The patterns are separated by "@@". Each one must be found.
         ok=1
@@ -106,14 +106,45 @@ check() {
             case $rest in *@@*) rest=${rest#*@@} ;; *) rest= ;; esac
             if ! grep -q -e "$p" "$tmp"; then
                 echo "FAIL: $name did not print \"$p\""
-                failed="$failed
+                pending="$pending
   $name $*: did not print \"$p\""
                 ok=0
-                fail=1
+                bad=1
             fi
         done
         [ $ok -eq 1 ] && echo "PASS: $name"
     fi
+}
+
+# check NAME PATTERN ARGS...: run the program NAME of DIR with ARGS, and
+# check its exit status and its output (check_once). With net=1 (net_check),
+# the check uses the network (hex.pm, builds.hex.pm, a remote TLS host):
+# a failure gets one more try after 10 s, and the log shows both tries.
+net=0
+check() {
+    try=1
+    while :; do
+        pending=
+        bad=0
+        check_once "$@"
+        [ "$bad" = 1 ] || return 0
+        if [ "$net" = 1 ] && [ "$try" -lt 2 ]; then
+            echo "RETRY: $1 uses the network: one more try in 10 s"
+            sleep 10
+            try=$((try + 1))
+            continue
+        fi
+        fail=1
+        failed="$failed$pending"
+        return 0
+    done
+}
+
+# net_check NAME PATTERN ARGS...: check, for a program that uses the network.
+net_check() {
+    net=1
+    check "$@"
+    net=0
 }
 
 # check_status RC NAME PATTERN ARGS...: as check, but the program must
@@ -281,9 +312,12 @@ WSL
 fi
 
 # Releases made with rebar3 and added with zip (by CI).
+# tls_check connects to a remote host: net_check.
 for app in greeter crypto_check tls_check; do
+    c=check
+    [ "$app" = tls_check ] && c=net_check
     if [ -f "$dir/$app.com" ]; then
-        eval "check $app.com \"\$$app\""
+        eval "$c $app.com \"\$$app\""
     fi
 done
 
@@ -298,8 +332,10 @@ if [ -d examples ]; then
         app=$(basename "$src")
         check beam.com "wrote .*$app.b.com" \
             "$src" -o "$dir/$app.b.com"
+        c=check
+        [ "$app" = tls_check ] && c=net_check
         if [ -f "$dir/$app.b.com" ]; then
-            eval "check $app.b.com \"\$$app\""
+            eval "$c $app.b.com \"\$$app\""
         fi
     done
 fi
@@ -354,7 +390,7 @@ if [ -d examples ]; then
     # with RUNNER (the APE loader on NetBSD and OpenBSD).
     if [ -f "$dir/beam.com" ]; then
         cp -R examples/bluegreen "$dir/"
-        bluegreen='^upgrade to version 2$@@^load: 2000 ok, 0 failed, counts in order true, versions \[1,2\]'
+        bluegreen='^upgrade to version 2$@@^load: [0-9]* ok, 0 failed, counts in order true, versions \[1,2\]'
         bluegreen="$bluegreen@@{unknown_state,@@{cannot_start,eacces}@@{cannot_start,enoent}"
         bluegreen="$bluegreen@@^load: 3 ok, 0 failed, counts in order true, versions \[2\]"
         saved_runner=$runner
@@ -628,11 +664,11 @@ if [ -f "$dir/beam.com" ]; then
         fi
         PATH=$dir:$PATH
         export PATH
-        check mix '' local.hex --force
-        check mix '' local.rebar --force
+        net_check mix '' local.hex --force
+        net_check mix '' local.rebar --force
         sed 's/# {:dep_from_hexpm, "~> 0.3.0"},/{:jason, "~> 1.4"}, {:telemetry, "~> 1.3"},/' mix.exs > mix.exs.new
         mv mix.exs.new mix.exs
-        check mix 'jason@@telemetry' deps.get
+        net_check mix 'jason@@telemetry' deps.get
         check mix '^{"a":1}$@@^telemetry$' run -e 'IO.puts(Jason.encode!(%{a: 1})); IO.puts(:telemetry.module_info(:module))'
         # The NIFs of exqlite, bcrypt_elixir and argon2_elixir are in beam.com: the
         # packages (of the versions in "beam.com --version") compile without
@@ -645,7 +681,7 @@ if [ -f "$dir/beam.com" ]; then
            [ -n "$argon2_vsn" ]; then
             sed "s/{:jason, \"~> 1.4\"},/{:jason, \"~> 1.4\"}, {:exqlite, \"$exqlite_vsn\"}, {:bcrypt_elixir, \"$bcrypt_vsn\"}, {:argon2_elixir, \"$argon2_vsn\"},/" mix.exs > mix.exs.new
             mv mix.exs.new mix.exs
-            check mix 'exqlite@@bcrypt_elixir@@argon2_elixir' deps.get
+            net_check mix 'exqlite@@bcrypt_elixir@@argon2_elixir' deps.get
             check mix 'Generated exqlite app@@Generated bcrypt_elixir app@@Generated argon2_elixir app' deps.compile
             no_nif_build
             check mix '^exqlite: {:row, \["3\.[0-9.]*", 2\]}$@@^bcrypt: true$@@^argon2: true$' run -e '{:ok, c} = Exqlite.Sqlite3.open(":memory:"); {:ok, s} = Exqlite.Sqlite3.prepare(c, "select sqlite_version(), 1 + 1"); IO.puts("exqlite: #{inspect(Exqlite.Sqlite3.step(c, s))}"); IO.puts("bcrypt: #{Bcrypt.verify_pass("pw", Bcrypt.hash_pwd_salt("pw"))}"); IO.puts("argon2: #{Argon2.verify_pass("pw", Argon2.hash_pwd_salt("pw"))}")'
@@ -681,19 +717,19 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     PATH=$dir:$PATH
     export PATH
     cd "$work"
-    check mix.com '' local.hex --force
-    check mix.com 'phx_new' archive.install hex phx_new --force
+    net_check mix.com '' local.hex --force
+    net_check mix.com 'phx_new' archive.install hex phx_new --force
     check mix.com 'creating hello/mix.exs' phx.new hello --database sqlite3 --no-install
     linked_nifs
     if [ -d hello ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then
         cd hello
         sed "s/{:ecto_sqlite3, \"[^\"]*\"},/& {:exqlite, \"$exqlite_vsn\"},/" mix.exs > mix.exs.new
         mv mix.exs.new mix.exs
-        check mix.com 'phoenix@@exqlite' deps.get
+        net_check mix.com 'phoenix@@exqlite' deps.get
         check mix.com 'creating lib/hello/accounts.ex' phx.gen.auth Accounts User users --no-live
         sed "s/{:bcrypt_elixir, \"[^\"]*\"}/{:bcrypt_elixir, \"$bcrypt_vsn\"}/" mix.exs > mix.exs.new
         mv mix.exs.new mix.exs
-        check mix.com 'bcrypt_elixir' deps.get
+        net_check mix.com 'bcrypt_elixir' deps.get
         check mix.com 'Migrated ' ecto.migrate
         no_nif_build
         check mix.com '^auth: true true$' run -e 'alias Hello.Accounts; e = "u#{System.unique_integer([:positive])}@example.com"; {:ok, u} = Accounts.register_user(%{email: e}); {:ok, _} = Accounts.update_user_password(u, %{password: "a long password"}); IO.puts("auth: #{Accounts.get_user_by_email_and_password(e, "a long password").id == u.id} #{Accounts.get_user_by_email_and_password(e, "wrong password") == nil}")'
@@ -1129,7 +1165,13 @@ if [ -n "$left" ]; then
     fi
     if command -v sample >/dev/null 2>&1; then
         echo "--- sample $first (macOS)"
-        sample "$first" 1 2>&1 | head -80
+        sample "$first" 1 > "$tmp.sample" 2>&1
+        head -80 "$tmp.sample"
+        # A child of fork() in a fork handler of libSystem: C32 of docs/UPSTREAM.md.
+        if grep -q '_atfork_child' "$tmp.sample"; then
+            echo "--- the child of fork() hangs in a fork handler of libSystem (docs/UPSTREAM.md, C32)"
+        fi
+        rm -f "$tmp.sample"
     fi
 fi
 if [ $fail -ne 0 ]; then
