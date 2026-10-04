@@ -98,6 +98,7 @@ typedef struct {
 typedef struct {
     ErlNifResourceType *type;
     uint32_t dtor;              /* table index in the module, or 0 */
+    uint32_t down;              /* the down callback, or 0 */
 } rtype_t;
 
 struct ctx;
@@ -112,6 +113,25 @@ typedef struct {
     uint32_t g;                 /* 0: empty, 1: removed */
     hres_t *h;
 } res_slot_t;
+
+/* A monitor of a resource. The module holds its index + 1. */
+typedef struct {
+    ErlNifMonitor m;
+    hres_t *h;
+    int used;
+} mon_t;
+
+/* An I/O queue of the module: its bytes are in memory of the module,
+ * which the queue owns. */
+typedef struct {
+    uint32_t g, size, off;
+} ioq_ent_t;
+
+typedef struct {
+    ioq_ent_t *e;
+    uint32_t n, cap, total;
+    uint32_t peek, peekcap;     /* the SysIOVec array of enif_ioq_peek */
+} ioq_t;
 
 typedef struct ctx {
     uint8_t *bytes;             /* WAMR keeps pointers into the bytes. */
@@ -144,6 +164,10 @@ typedef struct ctx {
     uint32_t tsd[MAX_TSD];
     uint32_t ntsd;
     uint32_t erts_version, otp_release;     /* strings of enif_system_info */
+    mon_t *mons;
+    uint32_t nmon, capmon;
+    ioq_t **ioqs;
+    uint32_t nioq, capioq;
 } ctx;
 
 /* The library that the last nif_wasm_open made, for its load callback:
@@ -657,6 +681,9 @@ static void host_dtor(ErlNifEnv *env, void *obj)
             slot_close(c, s);
         }
     }
+    for (s = 0; s < (int)c->nmon; s++)
+        if (c->mons[s].used && c->mons[s].h == h)
+            c->mons[s].used = 0;
     res_del(c, h->gptr);
     gfree(c, h->gptr);
     leave(c);
@@ -1721,13 +1748,72 @@ static uint32_t w_is_pid_undefined(wasm_exec_env_t x, uint32_t pidp)
 
 /* --- resources (the module sees the address of its memory) --- */
 
-static uint32_t open_rtype(ctx *c, ErlNifEnv *env, const char *name, uint32_t dtor, uint32_t flags, uint32_t triedp)
+/* ErlNifMonitor of wasm32: 16 bytes. The first word is the index + 1 of
+ * the monitor in ctx.mons (0: no monitor). */
+static int put_mon(ctx *c, uint32_t off, uint32_t id)
+{
+    uint32_t v[4] = { id, 0, 0, 0 };
+    void *p = off ? gaddr(c, off, 16) : NULL;
+    if (!p)
+        return 0;
+    memcpy(p, v, 16);
+    return 1;
+}
+
+static mon_t *mon_of(ctx *c, uint32_t off)
+{
+    uint32_t id;
+    if (!get32(c, off, &id) || id == 0 || id > c->nmon || !c->mons[id - 1].used)
+        return NULL;
+    return &c->mons[id - 1];
+}
+
+static void host_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon)
+{
+    hres_t *h = obj;
+    ctx *c = h->c;
+    rtype_t *rt;
+    uint32_t id = 0, i, a[4], gp, gm, hp;
+    int s;
+    if (!c)
+        return;
+    enter(c);
+    for (i = 0; i < c->nmon; i++)
+        if (c->mons[i].used && c->mons[i].h == h && !enif_compare_monitors(&c->mons[i].m, mon)) {
+            id = i + 1;
+            break;
+        }
+    rt = &c->rtypes[h->rtype];
+    if (rt->down && (s = slot_open(c, env, 0)) >= 0) {
+        gp = scratch(c, s + 1, 4);
+        gm = scratch(c, s + 1, 16);
+        hp = handle(c, s + 1, pid->pid);
+        if (gp && gm && hp && put32(c, gp, hp) && put_mon(c, gm, id)) {
+            a[0] = s + 1;
+            a[1] = h->gptr;
+            a[2] = gp;
+            a[3] = gm;
+            if (!guest_call(c, rt->down, 4, a))
+                wasm_runtime_clear_exception(c->inst);
+        }
+        flush_all(c);
+        slot_close(c, s);
+    }
+    /* The monitor fired: it is gone. */
+    if (id)
+        c->mons[id - 1].used = 0;
+    leave(c);
+}
+
+static uint32_t open_rtype(ctx *c, ErlNifEnv *env, const char *name, uint32_t dtor, uint32_t down,
+                           uint32_t flags, uint32_t triedp)
 {
     ErlNifResourceTypeInit init;
     ErlNifResourceFlags tried = 0;
     ErlNifResourceType *type;
     memset(&init, 0, sizeof(init));
     init.dtor = host_dtor;
+    init.down = down ? host_down : NULL;
     if (!grow((void **)&c->rtypes, &c->caprt, c->nrt + 1, sizeof(rtype_t)))
         return 0;
     type = enif_open_resource_type_x(env, name, &init, (ErlNifResourceFlags)flags, &tried);
@@ -1737,6 +1823,7 @@ static uint32_t open_rtype(ctx *c, ErlNifEnv *env, const char *name, uint32_t dt
         return 0;
     c->rtypes[c->nrt].type = type;
     c->rtypes[c->nrt].dtor = dtor;
+    c->rtypes[c->nrt].down = down;
     return ++c->nrt;
 }
 
@@ -1749,22 +1836,39 @@ static uint32_t w_open_resource_type(wasm_exec_env_t x, uint32_t e, uint32_t mod
     (void)mod;
     if (!(s = gstr(c, name)))
         return fail(c, "enif_open_resource_type: bad name");
-    return open_rtype(c, env, s, dtor, flags, triedp);
+    return open_rtype(c, env, s, dtor, 0, flags, triedp);
 }
 
 /* ErlNifResourceTypeInit of wasm32: dtor, stop, down, members, dyncall.
- * Only the destructor is used: enif_select and the monitors are not
- * imports of this file. */
+ * The destructor and the down callback are used (enif_select does not
+ * run, so stop does not). enif_init_resource_type uses down only when
+ * members says that it is there (3 or more). */
+static uint32_t init_rtype(wasm_exec_env_t x, uint32_t e, uint32_t name, uint32_t initp,
+                           uint32_t flags, uint32_t triedp, int with_members)
+{
+    const char *s;
+    const uint8_t *p;
+    uint32_t w[4];
+    CTX;
+    ENV(env, e);
+    if (!(s = gstr(c, name)) || !(p = gaddr(c, initp, with_members ? 16 : 12)))
+        return fail(c, "enif_open_resource_type_x: bad argument");
+    memcpy(w, p, with_members ? 16 : 12);
+    if (with_members && w[3] < 3)
+        w[2] = 0;
+    return open_rtype(c, env, s, w[0], w[2], flags, triedp);
+}
+
 static uint32_t w_open_resource_type_x(wasm_exec_env_t x, uint32_t e, uint32_t name, uint32_t initp,
                                        uint32_t flags, uint32_t triedp)
 {
-    const char *s;
-    uint32_t dtor;
-    CTX;
-    ENV(env, e);
-    if (!(s = gstr(c, name)) || !get32(c, initp, &dtor))
-        return fail(c, "enif_open_resource_type_x: bad argument");
-    return open_rtype(c, env, s, dtor, flags, triedp);
+    return init_rtype(x, e, name, initp, flags, triedp, 0);
+}
+
+static uint32_t w_init_resource_type(wasm_exec_env_t x, uint32_t e, uint32_t name, uint32_t initp,
+                                     uint32_t flags, uint32_t triedp)
+{
+    return init_rtype(x, e, name, initp, flags, triedp, 1);
 }
 
 static rtype_t *rtype_of(ctx *c, uint32_t type)
@@ -2198,6 +2302,651 @@ static void w_system_info(wasm_exec_env_t x, uint32_t sip, uint32_t n)
         memcpy(p, v, n);
 }
 
+/* --- monitors (ErlNifMonitor of wasm32: an index into ctx.mons) --- */
+
+static uint32_t w_monitor_process(wasm_exec_env_t x, uint32_t e, uint32_t obj, uint32_t pidp, uint32_t monp)
+{
+    ErlNifEnv *env = NULL;
+    ErlNifMonitor m;
+    ErlNifPid pid;
+    hres_t *h;
+    uint32_t i;
+    int r;
+    CTX;
+    if (e) {
+        slot_t *sl = slot_of(c, e);
+        if (!sl)
+            return fail(c, "enif_monitor_process: bad environment");
+        env = sl->env;
+    }
+    if (!(h = res_get(c, obj)) || !get_pid(c, pidp, &pid))
+        return fail(c, "enif_monitor_process: bad argument");
+    if (monp) {
+        for (i = 0; i < c->nmon && c->mons[i].used; i++)
+            ;
+        if (i == c->nmon && !grow((void **)&c->mons, &c->capmon, c->nmon + 1, sizeof(mon_t)))
+            return fail(c, "enif_monitor_process: no memory");
+        if ((r = enif_monitor_process(env, h, &pid, &m)) != 0)
+            return (uint32_t)r;
+        if (i == c->nmon)
+            c->nmon++;
+        c->mons[i].m = m;
+        c->mons[i].h = h;
+        c->mons[i].used = 1;
+        if (!put_mon(c, monp, i + 1))
+            return fail(c, "enif_monitor_process: bad pointer");
+        return 0;
+    }
+    return (uint32_t)enif_monitor_process(env, h, &pid, NULL);
+}
+
+static uint32_t w_demonitor_process(wasm_exec_env_t x, uint32_t e, uint32_t obj, uint32_t monp)
+{
+    ErlNifEnv *env = NULL;
+    hres_t *h;
+    mon_t *m;
+    int r;
+    CTX;
+    if (e) {
+        slot_t *sl = slot_of(c, e);
+        if (!sl)
+            return fail(c, "enif_demonitor_process: bad environment");
+        env = sl->env;
+    }
+    if (!(h = res_get(c, obj)))
+        return fail(c, "enif_demonitor_process: bad resource");
+    if (!(m = mon_of(c, monp)) || m->h != h)
+        return 1;
+    if ((r = enif_demonitor_process(env, h, &m->m)) == 0)
+        m->used = 0;
+    return (uint32_t)r;
+}
+
+static uint32_t w_compare_monitors(wasm_exec_env_t x, uint32_t ap, uint32_t bp)
+{
+    uint32_t ia = 0, ib = 0;
+    mon_t *a, *b;
+    CTX;
+    a = mon_of(c, ap);
+    b = mon_of(c, bp);
+    if (a && b)
+        return (uint32_t)enif_compare_monitors(&a->m, &b->m);
+    get32(c, ap, &ia);
+    get32(c, bp, &ib);
+    return ia < ib ? (uint32_t)-1 : ia > ib;
+}
+
+static uint32_t w_make_monitor_term(wasm_exec_env_t x, uint32_t e, uint32_t monp)
+{
+    mon_t *m;
+    CTX;
+    ENV(env, e);
+    if (!(m = mon_of(c, monp)))
+        return fail(c, "enif_make_monitor_term: bad monitor");
+    RET(e, enif_make_monitor_term(env, &m->m));
+}
+
+/* --- formatted output: the ... and the va_list of wasm32 are a pointer
+ * to the values, each one at the alignment of its size --- */
+
+typedef struct {
+    char *p;
+    size_t n, cap;
+} out_t;
+
+static int out_add(out_t *o, const char *s, size_t n)
+{
+    if (o->n + n + 1 > o->cap) {
+        size_t cap = o->cap ? o->cap : 128;
+        char *q;
+        while (cap < o->n + n + 1)
+            cap *= 2;
+        if (!(q = realloc(o->p, cap)))
+            return 0;
+        o->p = q;
+        o->cap = cap;
+    }
+    memcpy(o->p + o->n, s, n);
+    o->n += n;
+    o->p[o->n] = '\0';
+    return 1;
+}
+
+static int va_get(ctx *c, uint32_t *va, uint32_t size, void *v)
+{
+    const void *p;
+    *va = (*va + size - 1) & ~(size - 1);
+    if (!(p = gaddr(c, *va, size)))
+        return 0;
+    memcpy(v, p, size);
+    *va += size;
+    return 1;
+}
+
+/* Format one value with SPEC (a format of C with one conversion). */
+#define OUT_ONE(o, spec, value) do { \
+        int n_ = snprintf(NULL, 0, spec, value); \
+        char *t_ = n_ >= 0 ? malloc((size_t)n_ + 1) : NULL; \
+        if (!t_) return -1; \
+        snprintf(t_, (size_t)n_ + 1, spec, value); \
+        if (!out_add(o, t_, (size_t)n_)) { free(t_); return -1; } \
+        free(t_); \
+    } while (0)
+
+/* The format of enif_snprintf: the conversions of C, and %T for a term. */
+static int format(ctx *c, const char *fmt, uint32_t va, out_t *o)
+{
+    const char *f = fmt;
+    while (*f) {
+        char spec[64], conv;
+        const char *start;
+        int len = 0, k = 0;
+        if (*f != '%') {
+            const char *q = strchr(f, '%');
+            size_t n = q ? (size_t)(q - f) : strlen(f);
+            if (!out_add(o, f, n))
+                return -1;
+            f += n;
+            continue;
+        }
+        start = f++;
+        spec[k++] = '%';
+        while (*f && strchr("-+ #0", *f) && k < 40)
+            spec[k++] = *f++;
+        if (*f == '*') {
+            int32_t w;
+            if (!va_get(c, &va, 4, &w))
+                return -1;
+            k += snprintf(spec + k, sizeof(spec) - (size_t)k, "%d", (int)w);
+            f++;
+        }
+        while (*f >= '0' && *f <= '9' && k < 50)
+            spec[k++] = *f++;
+        if (*f == '.') {
+            spec[k++] = *f++;
+            if (*f == '*') {
+                int32_t pr;
+                if (!va_get(c, &va, 4, &pr))
+                    return -1;
+                k += snprintf(spec + k, sizeof(spec) - (size_t)k, "%d", (int)pr);
+                f++;
+            }
+            while (*f >= '0' && *f <= '9' && k < 58)
+                spec[k++] = *f++;
+        }
+        /* The length: 8 bytes for ll and j, 16 for L, else 4 (long,
+         * size_t and ptrdiff_t are 32 bits in wasm32). */
+        while (*f && strchr("hlzjtL", *f)) {
+            if (*f == 'L')
+                len = 16;
+            else if (*f == 'j' || (*f == 'l' && len == 4))
+                len = 8;
+            else if (*f == 'l')
+                len = 4;
+            f++;
+        }
+        if (!(conv = *f++))
+            break;
+        if (k > 60)
+            return -1;
+        switch (conv) {
+        case '%':
+            if (!out_add(o, "%", 1))
+                return -1;
+            break;
+        case 'd':
+        case 'i':
+        case 'u':
+        case 'o':
+        case 'x':
+        case 'X':
+        case 'c':
+            if (len == 8) {
+                int64_t v;
+                if (!va_get(c, &va, 8, &v))
+                    return -1;
+                spec[k] = 'l';
+                spec[k + 1] = 'l';
+                spec[k + 2] = conv;
+                spec[k + 3] = '\0';
+                OUT_ONE(o, spec, (long long)v);
+            } else {
+                int32_t v;
+                if (!va_get(c, &va, 4, &v))
+                    return -1;
+                spec[k] = conv;
+                spec[k + 1] = '\0';
+                if (conv == 'd' || conv == 'i' || conv == 'c')
+                    OUT_ONE(o, spec, (int)v);
+                else
+                    OUT_ONE(o, spec, (unsigned)v);
+            }
+            break;
+        case 'f':
+        case 'F':
+        case 'e':
+        case 'E':
+        case 'g':
+        case 'G':
+        case 'a':
+        case 'A':
+            if (len == 16) {
+                /* long double is 128 bits in wasm32: not supported. */
+                uint8_t skip[16];
+                if (!va_get(c, &va, 16, skip) || !out_add(o, "?", 1))
+                    return -1;
+            } else {
+                double v;
+                if (!va_get(c, &va, 8, &v))
+                    return -1;
+                spec[k] = conv;
+                spec[k + 1] = '\0';
+                OUT_ONE(o, spec, v);
+            }
+            break;
+        case 's': {
+            uint32_t g;
+            const char *str;
+            if (!va_get(c, &va, 4, &g))
+                return -1;
+            str = g ? gstr(c, g) : "(null)";
+            spec[k] = 's';
+            spec[k + 1] = '\0';
+            OUT_ONE(o, spec, str ? str : "(bad string)");
+            break;
+        }
+        case 'p': {
+            uint32_t g;
+            if (!va_get(c, &va, 4, &g))
+                return -1;
+            OUT_ONE(o, "0x%x", (unsigned)g);
+            break;
+        }
+        case 'n': {
+            /* No write through a pointer of the format. */
+            uint32_t g;
+            if (!va_get(c, &va, 4, &g))
+                return -1;
+            break;
+        }
+        case 'T': {
+            uint32_t h;
+            ERL_NIF_TERM t;
+            int n;
+            char *tmp;
+            if (!va_get(c, &va, 4, &h) || !get_term(c, h, &t))
+                return -1;
+            flush_all(c);
+            /* enif_snprintf of ERTS needs a buffer: try larger ones. */
+            for (n = 256;; n *= 4) {
+                int r;
+                if (!(tmp = malloc((size_t)n)))
+                    return -1;
+                r = enif_snprintf(tmp, (size_t)n, "%T", t);
+                if (r >= 0 && r < n - 1) {
+                    n = r;
+                    break;
+                }
+                free(tmp);
+                if (n > (1 << 24))
+                    return -1;
+            }
+            if (!out_add(o, tmp, (size_t)n)) {
+                free(tmp);
+                return -1;
+            }
+            free(tmp);
+            break;
+        }
+        default:
+            /* An unknown conversion: as written. */
+            if (!out_add(o, start, (size_t)(f - start)))
+                return -1;
+        }
+    }
+    if (!o->p && !out_add(o, "", 0))
+        return -1;
+    return (int)o->n;
+}
+
+static uint32_t w_snprintf(wasm_exec_env_t x, uint32_t buf, uint32_t size, uint32_t fmt, uint32_t va)
+{
+    out_t o = { NULL, 0, 0 };
+    const char *f;
+    char *p;
+    int n;
+    CTX;
+    if (!(f = gstr(c, fmt)))
+        return fail(c, "enif_snprintf: bad format");
+    if ((n = format(c, f, va, &o)) < 0) {
+        free(o.p);
+        return fail(c, "enif_snprintf: bad argument");
+    }
+    if (size) {
+        uint32_t m = (uint32_t)n < size - 1 ? (uint32_t)n : size - 1;
+        if (!(p = gaddr(c, buf, m + 1))) {
+            free(o.p);
+            return fail(c, "enif_snprintf: bad buffer");
+        }
+        memcpy(p, o.p, m);
+        p[m] = '\0';
+    }
+    free(o.p);
+    return (uint32_t)n;
+}
+
+/* The FILE of the module is not a FILE of the VM: the text goes to the
+ * standard error of the VM. */
+static uint32_t w_fprintf(wasm_exec_env_t x, uint32_t file, uint32_t fmt, uint32_t va)
+{
+    out_t o = { NULL, 0, 0 };
+    const char *f;
+    int n;
+    CTX;
+    (void)file;
+    if (!(f = gstr(c, fmt)))
+        return fail(c, "enif_fprintf: bad format");
+    if ((n = format(c, f, va, &o)) < 0) {
+        free(o.p);
+        return fail(c, "enif_fprintf: bad argument");
+    }
+    fwrite(o.p, 1, (size_t)n, stderr);
+    free(o.p);
+    return (uint32_t)n;
+}
+
+/* --- I/O queues and I/O vectors. SysIOVec of wasm32: base, length.
+ * ErlNifIOVec of wasm32 (212 bytes): iovcnt, size, iov, ref_bins,
+ * flags, small_iov[16], small_ref_bin[16]. --- */
+
+#define IOVEC_SIZE 212
+
+static ioq_t *ioq_of(ctx *c, uint32_t q)
+{
+    return q == 0 || q > c->nioq ? NULL : c->ioqs[q - 1];
+}
+
+static int ioq_add(ctx *c, ioq_t *q, uint32_t g, uint32_t size, uint32_t off)
+{
+    if (size <= off) {
+        gfree(c, g);
+        return 1;
+    }
+    if (!grow((void **)&q->e, &q->cap, q->n + 1, sizeof(ioq_ent_t)))
+        return 0;
+    q->e[q->n++] = (ioq_ent_t){ g, size, off };
+    q->total += size - off;
+    return 1;
+}
+
+static uint32_t w_ioq_create(wasm_exec_env_t x, uint32_t opts)
+{
+    ioq_t *q;
+    uint32_t i;
+    CTX;
+    if (opts != ERL_NIF_IOQ_NORMAL || !(q = calloc(1, sizeof(ioq_t))))
+        return 0;
+    for (i = 0; i < c->nioq && c->ioqs[i]; i++)
+        ;
+    if (i == c->nioq && !grow((void **)&c->ioqs, &c->capioq, c->nioq + 1, sizeof(ioq_t *))) {
+        free(q);
+        return 0;
+    }
+    if (i == c->nioq)
+        c->nioq++;
+    c->ioqs[i] = q;
+    return i + 1;
+}
+
+static void ioq_free(ctx *c, ioq_t *q)
+{
+    uint32_t i;
+    for (i = 0; i < q->n; i++)
+        gfree(c, q->e[i].g);
+    gfree(c, q->peek);
+    free(q->e);
+    free(q);
+}
+
+static void w_ioq_destroy(wasm_exec_env_t x, uint32_t qh)
+{
+    ioq_t *q;
+    CTXV;
+    if (!(q = ioq_of(c, qh))) {
+        fail(c, "enif_ioq_destroy: bad queue");
+        return;
+    }
+    ioq_free(c, q);
+    c->ioqs[qh - 1] = NULL;
+}
+
+/* The queue takes the binary: its own memory, or a copy of an inspected
+ * binary. */
+static uint32_t w_ioq_enq_binary(wasm_exec_env_t x, uint32_t qh, uint32_t binp, uint32_t skip)
+{
+    uint32_t v[5], g;
+    void *p, *src, *dst;
+    ioq_t *q;
+    CTX;
+    if (!(q = ioq_of(c, qh)) || !binp || !(p = gaddr(c, binp, 20)))
+        return fail(c, "enif_ioq_enq_binary: bad argument");
+    memcpy(v, p, 20);
+    if (skip > v[0])
+        return 0;
+    if (v[2] == OWNED_BINARY) {
+        g = v[1];
+        v[2] = 0;
+        memcpy(p, v, 20);
+    } else {
+        if (!(g = gmalloc(c, v[0])))
+            return 0;
+        if (v[0] && (src = gaddr(c, v[1], v[0])) && (dst = gaddr(c, g, v[0])))
+            memcpy(dst, src, v[0]);
+    }
+    return ioq_add(c, q, g, v[0], skip);
+}
+
+static uint32_t w_ioq_enqv(wasm_exec_env_t x, uint32_t qh, uint32_t iovp, uint32_t skip)
+{
+    uint32_t hdr[3], i, g, at = 0;
+    const uint8_t *iov;
+    ioq_t *q;
+    CTX;
+    if (!(q = ioq_of(c, qh)) || !iovp || !get32(c, iovp, &hdr[0]) || !get32(c, iovp + 4, &hdr[1])
+        || !get32(c, iovp + 8, &hdr[2]) || hdr[0] > (1u << 20))
+        return fail(c, "enif_ioq_enqv: bad argument");
+    if (skip > hdr[1])
+        return 0;
+    if (!(g = gmalloc(c, hdr[1])))
+        return 0;
+    for (i = 0; i < hdr[0]; i++) {
+        uint32_t e[2];
+        void *src, *dst;
+        if (!(iov = gaddr(c, hdr[2] + 8 * i, 8)))
+            break;
+        memcpy(e, iov, 8);
+        if (e[1] > hdr[1] - at)
+            break;
+        if (e[1] && (src = gaddr(c, e[0], e[1])) && (dst = gaddr(c, g + at, e[1])))
+            memcpy(dst, src, e[1]);
+        at += e[1];
+    }
+    if (at != hdr[1]) {
+        gfree(c, g);
+        return fail(c, "enif_ioq_enqv: bad vector");
+    }
+    return ioq_add(c, q, g, hdr[1], skip);
+}
+
+static uint32_t w_ioq_size(wasm_exec_env_t x, uint32_t qh)
+{
+    ioq_t *q;
+    CTX;
+    if (!(q = ioq_of(c, qh)))
+        return fail(c, "enif_ioq_size: bad queue");
+    return q->total;
+}
+
+static uint32_t w_ioq_deq(wasm_exec_env_t x, uint32_t qh, uint32_t count, uint32_t sizep)
+{
+    ioq_t *q;
+    uint32_t i = 0;
+    CTX;
+    if (!(q = ioq_of(c, qh)))
+        return fail(c, "enif_ioq_deq: bad queue");
+    if (count > q->total)
+        return 0;
+    q->total -= count;
+    while (count) {
+        ioq_ent_t *e = &q->e[i];
+        uint32_t left = e->size - e->off;
+        if (count < left) {
+            e->off += count;
+            break;
+        }
+        count -= left;
+        gfree(c, e->g);
+        i++;
+    }
+    memmove(q->e, q->e + i, (q->n - i) * sizeof(ioq_ent_t));
+    q->n -= i;
+    if (sizep && !put32(c, sizep, q->total))
+        return fail(c, "enif_ioq_deq: bad pointer");
+    return 1;
+}
+
+/* The SysIOVec array stays valid until the next change of the queue. */
+static uint32_t w_ioq_peek(wasm_exec_env_t x, uint32_t qh, uint32_t lenp)
+{
+    ioq_t *q;
+    uint32_t i;
+    uint8_t *p;
+    CTX;
+    if (!(q = ioq_of(c, qh)))
+        return fail(c, "enif_ioq_peek: bad queue");
+    if (q->n > q->peekcap) {
+        gfree(c, q->peek);
+        q->peekcap = 0;
+        if (!(q->peek = gmalloc(c, 8 * q->n)))
+            return 0;
+        q->peekcap = q->n;
+    }
+    if (q->n && !(p = gaddr(c, q->peek, 8 * q->n)))
+        return 0;
+    for (i = 0; i < q->n; i++) {
+        uint32_t e[2] = { q->e[i].g + q->e[i].off, q->e[i].size - q->e[i].off };
+        memcpy(p + 8 * i, e, 8);
+    }
+    if (lenp && !put32(c, lenp, q->n))
+        return fail(c, "enif_ioq_peek: bad pointer");
+    return q->peek;
+}
+
+static uint32_t w_ioq_peek_head(wasm_exec_env_t x, uint32_t e, uint32_t qh, uint32_t sizep, uint32_t headp)
+{
+    unsigned char *dst;
+    const void *src;
+    ERL_NIF_TERM t;
+    ioq_t *q;
+    uint32_t n;
+    CTX;
+    ENV(env, e);
+    if (!(q = ioq_of(c, qh)))
+        return fail(c, "enif_ioq_peek_head: bad queue");
+    if (!q->n)
+        return 0;
+    n = q->e[0].size - q->e[0].off;
+    if (!(src = gaddr(c, q->e[0].g + q->e[0].off, n)) || !(dst = enif_make_new_binary(env, n, &t)))
+        return 0;
+    memcpy(dst, src, n);
+    if (sizep && !put32(c, sizep, n))
+        return fail(c, "enif_ioq_peek_head: bad pointer");
+    OUT(headp, e, t);
+    return 1;
+}
+
+/* The ErlNifIOVec, its SysIOVec array and a copy of the bytes, in one
+ * block of memory of the module: memory of the slot with an
+ * environment, else enif_free_iovec frees it. */
+static uint32_t w_inspect_iovec(wasm_exec_env_t x, uint32_t e, uint32_t max, uint32_t h,
+                                uint32_t tailp, uint32_t iovecp)
+{
+    ErlNifEnv *env = NULL;
+    ErlNifIOVec *hv;
+    ERL_NIF_TERM tail;
+    uint32_t g, n, data, i, w[5];
+    uint8_t *p;
+    CTX;
+    TERM(t, h);
+    if (e) {
+        slot_t *sl = slot_of(c, e);
+        if (!sl)
+            return fail(c, "enif_inspect_iovec: bad environment");
+        env = sl->env;
+    }
+    flush_all(c);
+    /* ERTS fills *iov when it points to a vector of the caller: none. */
+    hv = NULL;
+    if (!enif_inspect_iovec(env, max, t, &tail, &hv))
+        return 0;
+    /* With an environment, the vector of ERTS belongs to it. */
+#define FREE_HV() do { if (!env) enif_free_iovec(hv); } while (0)
+    if (hv->size > (1u << 30) || hv->iovcnt > (1 << 20)) {
+        FREE_HV();
+        return 0;
+    }
+    data = IOVEC_SIZE + 8 * (uint32_t)hv->iovcnt;
+    n = data + (uint32_t)hv->size;
+    g = e ? scratch(c, e, n) : gmalloc(c, n);
+    if (!g || !(p = gaddr(c, g, n))) {
+        FREE_HV();
+        return 0;
+    }
+    memset(p, 0, IOVEC_SIZE);
+    w[0] = (uint32_t)hv->iovcnt;
+    w[1] = (uint32_t)hv->size;
+    w[2] = g + IOVEC_SIZE;
+    w[3] = 0;
+    /* flags: the block belongs to enif_free_iovec (no environment). */
+    w[4] = e ? 0 : OWNED_BINARY;
+    memcpy(p, w, 20);
+    for (i = 0; i < (uint32_t)hv->iovcnt; i++) {
+        uint32_t v[2] = { g + data, (uint32_t)hv->iov[i].iov_len };
+        memcpy(p + IOVEC_SIZE + 8 * i, v, 8);
+        memcpy(p + data, hv->iov[i].iov_base, hv->iov[i].iov_len);
+        data += v[1];
+    }
+    FREE_HV();
+#undef FREE_HV
+    if (e) {
+        OUT(tailp, e, tail);
+    } else {
+        /* The tail is a part of the input term: it goes into the slot of
+         * that term (a list has a handle of a slot). */
+        uint32_t th = (h & 3) == 0 ? handle(c, ((h >> 2) >> IDX_BITS) + 1, tail) : h;
+        if (!th || !put32(c, tailp, th))
+            return fail(c, "enif_inspect_iovec: bad pointer");
+    }
+    if (!put32(c, iovecp, g))
+        return fail(c, "enif_inspect_iovec: bad pointer");
+    return 1;
+}
+
+static void w_free_iovec(wasm_exec_env_t x, uint32_t iovp)
+{
+    uint32_t flags;
+    CTXV;
+    if (iovp && get32(c, iovp + 16, &flags) && flags == OWNED_BINARY)
+        gfree(c, iovp);
+}
+
+static uint32_t w_term_size(wasm_exec_env_t x, uint32_t h)
+{
+    CTX;
+    TERM(t, h);
+    return (uint32_t)enif_term_size(t);
+}
+
 static NativeSymbol natives[] = {
     { "enif_priv_data", w_priv_data, "(i)i", NULL },
     { "enif_alloc", w_alloc, "(i)i", NULL },
@@ -2296,7 +3045,7 @@ static NativeSymbol natives[] = {
     { "enif_is_pid_undefined", w_is_pid_undefined, "(i)i", NULL },
     { "enif_open_resource_type", w_open_resource_type, "(iiiiii)i", NULL },
     { "enif_open_resource_type_x", w_open_resource_type_x, "(iiiii)i", NULL },
-    { "enif_init_resource_type", w_open_resource_type_x, "(iiiii)i", NULL },
+    { "enif_init_resource_type", w_init_resource_type, "(iiiii)i", NULL },
     { "enif_alloc_resource", w_alloc_resource, "(ii)i", NULL },
     { "enif_release_resource", w_release_resource, "(i)", NULL },
     { "enif_keep_resource", w_keep_resource, "(i)", NULL },
@@ -2350,6 +3099,25 @@ static NativeSymbol natives[] = {
     { "enif_set_option", w_set_option, "(iii)i", NULL },
     { "enif_make_resource_binary", w_make_resource_binary, "(iiii)i", NULL },
     { "enif_system_info", w_system_info, "(ii)", NULL },
+    { "enif_monitor_process", w_monitor_process, "(iiii)i", NULL },
+    { "enif_demonitor_process", w_demonitor_process, "(iii)i", NULL },
+    { "enif_compare_monitors", w_compare_monitors, "(ii)i", NULL },
+    { "enif_make_monitor_term", w_make_monitor_term, "(ii)i", NULL },
+    { "enif_snprintf", w_snprintf, "(iiii)i", NULL },
+    { "enif_vsnprintf", w_snprintf, "(iiii)i", NULL },
+    { "enif_fprintf", w_fprintf, "(iii)i", NULL },
+    { "enif_vfprintf", w_fprintf, "(iii)i", NULL },
+    { "enif_ioq_create", w_ioq_create, "(i)i", NULL },
+    { "enif_ioq_destroy", w_ioq_destroy, "(i)", NULL },
+    { "enif_ioq_enq_binary", w_ioq_enq_binary, "(iii)i", NULL },
+    { "enif_ioq_enqv", w_ioq_enqv, "(iii)i", NULL },
+    { "enif_ioq_size", w_ioq_size, "(i)i", NULL },
+    { "enif_ioq_deq", w_ioq_deq, "(iii)i", NULL },
+    { "enif_ioq_peek", w_ioq_peek, "(ii)i", NULL },
+    { "enif_ioq_peek_head", w_ioq_peek_head, "(iiii)i", NULL },
+    { "enif_inspect_iovec", w_inspect_iovec, "(iiiii)i", NULL },
+    { "enif_free_iovec", w_free_iovec, "(i)", NULL },
+    { "enif_term_size", w_term_size, "(i)i", NULL },
 };
 
 /* --- the library --- */
@@ -2380,6 +3148,13 @@ static void ctx_free(ctx *c)
     for (i = 0; i < c->niter; i++)
         free(c->iters[i]);
     free(c->iters);
+    free(c->mons);
+    for (i = 0; i < c->nioq; i++)
+        if (c->ioqs[i]) {
+            free(c->ioqs[i]->e);
+            free(c->ioqs[i]);
+        }
+    free(c->ioqs);
     if (c->lock)
         enif_mutex_destroy(c->lock);
     free(c);

@@ -7,12 +7,12 @@
          iolist/1, map_put/3, map_value/2, map_keys/1, charlist/1, mul/2,
          counter_new/0, counter_add/2, dtor_count/0, send_self/1,
          self_pid/0, raise/1, t2b/1, sum/1, dirty_sum/1, crash/0, loads/0,
-         compare/2, types/1, big/0, unsupported/0]).
+         compare/2, types/1, big/0, unsupported/0, watch/1, unwatch/1, fmt/1, ioq/1]).
 -nifs([add/2, echo/1, is_ok/1, swap/1, reverse/1, upcase/1, concat/2,
        iolist/1, map_put/3, map_value/2, map_keys/1, charlist/1, mul/2,
        counter_new/0, counter_add/2, dtor_count/0, send_self/1,
        self_pid/0, raise/1, t2b/1, sum/1, dirty_sum/1, crash/0, loads/0,
-       compare/2, types/1, big/0, unsupported/0]).
+       compare/2, types/1, big/0, unsupported/0, watch/1, unwatch/1, fmt/1, ioq/1]).
 -on_load(init/0).
 
 init() ->
@@ -50,6 +50,10 @@ compare(_, _) -> erlang:nif_error(not_loaded).
 types(_) -> erlang:nif_error(not_loaded).
 big() -> erlang:nif_error(not_loaded).
 unsupported() -> erlang:nif_error(not_loaded).
+watch(_) -> erlang:nif_error(not_loaded).
+unwatch(_) -> erlang:nif_error(not_loaded).
+fmt(_) -> erlang:nif_error(not_loaded).
+ioq(_) -> erlang:nif_error(not_loaded).
 
 main(_) ->
     case run() of
@@ -104,6 +108,12 @@ run() ->
           {18446744073709551615, -9223372036854775808, -2147483648, true}},
          {unsupported, fun() -> try unsupported() catch error:{wasm_trap, M} when is_binary(M) -> trap end end, trap},
          {after_unsupported, fun() -> add(2, 3) end, 5},
+         {monitor_down, fun monitor_down/0, ok},
+         {monitor_dead, fun() -> P = spawn(fun() -> ok end), wait_dead(P), element(1, watch(P)) end, 1},
+         {demonitor, fun demonitor/0, ok},
+         {fmt, fun() -> {F, D, S} = fmt({a, 1}), {F, D =:= length(F) - 10, S} end,
+          {"42| 3.14|str|ff|1099511627776|{a,1}|z%|7   |abc", true, "0123456"}},
+         {ioq, fun() -> ioq([<<"abc">>, <<"defg">>, <<"h">>]) end, {13, 13, <<"defghabcdefgh">>, <<"defg">>}},
          {parallel, fun parallel/0, ok}],
     Failed = [{Name, Got} || {Name, F, Want} <- Checks, Got <- [run(F)], Got =/= Want],
     case Failed of
@@ -126,6 +136,28 @@ wait(F, N) ->
     case F() of
         true -> true;
         false -> receive after 50 -> wait(F, N - 1) end
+    end.
+
+%% The down callback of a watcher sends {down, Pid}.
+monitor_down() ->
+    P = spawn(fun() -> receive stop -> ok end end),
+    {0, _W} = watch(P),
+    P ! stop,
+    receive {down, P} -> ok after 5000 -> timeout end.
+
+%% After the demonitor, the down callback does not run.
+demonitor() ->
+    P = spawn(fun() -> receive stop -> ok end end),
+    {0, W} = watch(P),
+    {0, Term, 0} = unwatch(W),
+    true = is_reference(Term),
+    P ! stop,
+    receive {down, P} -> down after 300 -> ok end.
+
+wait_dead(P) ->
+    case is_process_alive(P) of
+        true -> receive after 10 -> wait_dead(P) end;
+        false -> ok
     end.
 
 %% Many processes call the library at the same time.

@@ -8,7 +8,8 @@
 #include "erl_nif.h"
 
 static ERL_NIF_TERM atom_ok, atom_error, atom_true, atom_false;
-static ErlNifResourceType *counter_type;
+static ErlNifResourceType *counter_type, *watcher_type;
+static void watcher_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon);
 static int dtors;
 
 typedef struct {
@@ -33,6 +34,12 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
     atom_false = enif_make_atom(env, "false");
     counter_type = enif_open_resource_type(env, NULL, "counter", counter_dtor,
                                            ERL_NIF_RT_CREATE, NULL);
+    {
+        ErlNifResourceTypeInit init = { NULL, NULL, watcher_down, 3, NULL };
+        watcher_type = enif_init_resource_type(env, "watcher", &init, ERL_NIF_RT_CREATE, NULL);
+    }
+    if (!watcher_type)
+        return 1;
     if (!counter_type || !enif_get_int(env, info, &n))
         return 1;
     loads += n;
@@ -315,12 +322,107 @@ static ERL_NIF_TERM big(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
     return enif_make_list_from_array(env, l, 4);
 }
 
-/* beam.com does not give enif_snprintf: the call raises an exception. */
+/* beam.com does not give enif_dynamic_resource_call: the call raises an
+ * exception. */
 static ERL_NIF_TERM unsupported(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
 {
-    char buf[16];
-    enif_snprintf(buf, sizeof(buf), "%d", 1);
-    return enif_make_atom(env, buf);
+    enif_dynamic_resource_call(env, atom_ok, atom_ok, atom_ok, NULL);
+    return atom_ok;
+}
+
+/* A watcher: a resource that monitors a process. Its down callback sends
+ * {down, Pid} to the owner. */
+typedef struct {
+    ErlNifPid owner;
+    ErlNifMonitor mon;
+} watcher;
+
+static void watcher_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon)
+{
+    watcher *w = obj;
+    ErlNifEnv *msg_env = enif_alloc_env();
+    ERL_NIF_TERM msg = enif_make_tuple2(msg_env, enif_make_atom(msg_env, "down"), enif_make_pid(msg_env, pid));
+    enif_send(env, &w->owner, msg_env, msg);
+    enif_free_env(msg_env);
+    (void)mon;
+}
+
+static ERL_NIF_TERM watch(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    watcher *w;
+    ErlNifPid pid;
+    ERL_NIF_TERM t;
+    int r;
+    if (!enif_get_local_pid(env, argv[0], &pid))
+        return enif_make_badarg(env);
+    w = enif_alloc_resource(watcher_type, sizeof(watcher));
+    enif_self(env, &w->owner);
+    r = enif_monitor_process(env, w, &pid, &w->mon);
+    t = enif_make_tuple2(env, enif_make_int(env, r), enif_make_resource(env, w));
+    enif_release_resource(w);
+    return t;
+}
+
+/* {demonitor result, monitor term, compare of the monitor with itself} */
+static ERL_NIF_TERM unwatch(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    watcher *w;
+    ErlNifMonitor copy;
+    ERL_NIF_TERM term;
+    if (!enif_get_resource(env, argv[0], watcher_type, (void **)&w))
+        return enif_make_badarg(env);
+    copy = w->mon;
+    term = enif_make_monitor_term(env, &w->mon);
+    return enif_make_tuple3(env, enif_make_int(env, enif_demonitor_process(env, w, &w->mon)), term,
+                            enif_make_int(env, enif_compare_monitors(&copy, &w->mon)));
+}
+
+static ERL_NIF_TERM fmt(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    char buf[256];
+    int n = enif_snprintf(buf, sizeof(buf), "%d|%5.2f|%s|%x|%lld|%T|%c%%|%-4u|%.3s", 42, 3.14159, "str",
+                          255, (long long)1 << 40, argv[0], 'z', 7u, "abcdef");
+    char small[8];
+    int m = enif_snprintf(small, sizeof(small), "%s", "0123456789");
+    return enif_make_tuple3(env, enif_make_string(env, buf, ERL_NIF_LATIN1), enif_make_int(env, n - m),
+                            enif_make_string(env, small, ERL_NIF_LATIN1));
+}
+
+/* An I/O queue: the binaries of the list (enq_binary), then the list as an
+ * I/O vector (enqv), and 3 bytes off. Gives {size, the size of the peek,
+ * the bytes of the peek, the head}. */
+static ERL_NIF_TERM ioq(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ErlNifIOQueue *q = enif_ioq_create(ERL_NIF_IOQ_NORMAL);
+    ERL_NIF_TERM list = argv[0], head, tail, all, first;
+    ErlNifIOVec *iov;
+    ErlNifBinary b;
+    SysIOVec *v;
+    size_t size, total = 0;
+    int i, n;
+    unsigned char *out;
+    while (enif_get_list_cell(env, list, &head, &list)) {
+        if (!enif_inspect_binary(env, head, &b) || !enif_ioq_enq_binary(q, &b, 0))
+            return enif_make_badarg(env);
+    }
+    if (!enif_inspect_iovec(env, 1024, argv[0], &tail, &iov) || !enif_ioq_enqv(q, iov, 0))
+        return enif_make_badarg(env);
+    size = enif_ioq_size(q);
+    if (!enif_ioq_deq(q, 3, &size))
+        return enif_make_badarg(env);
+    v = enif_ioq_peek(q, &n);
+    for (i = 0; i < n; i++)
+        total += v[i].iov_len;
+    out = enif_make_new_binary(env, total, &all);
+    for (i = 0, total = 0; i < n; i++) {
+        memcpy(out + total, v[i].iov_base, v[i].iov_len);
+        total += v[i].iov_len;
+    }
+    if (!enif_ioq_peek_head(env, q, &size, &first))
+        return enif_make_badarg(env);
+    size = enif_ioq_size(q);
+    enif_ioq_destroy(q);
+    return enif_make_tuple4(env, enif_make_uint64(env, size), enif_make_uint64(env, total), all, first);
 }
 
 static ErlNifFunc funcs[] = {
@@ -352,6 +454,10 @@ static ErlNifFunc funcs[] = {
     { "types", 1, types, 0 },
     { "big", 0, big, 0 },
     { "unsupported", 0, unsupported, 0 },
+    { "watch", 1, watch, 0 },
+    { "unwatch", 1, unwatch, 0 },
+    { "fmt", 1, fmt, 0 },
+    { "ioq", 1, ioq, 0 },
 };
 
 ERL_NIF_INIT(nif_check, funcs, load, NULL, NULL, NULL)

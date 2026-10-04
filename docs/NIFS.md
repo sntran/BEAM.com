@@ -121,12 +121,14 @@ cp target/wasm32-wasip1/release/my_nif.wasm priv/
 
 ## What a NIF library in WebAssembly can do
 
-`beam.com` gives the module 151 `enif_*` functions: the terms (numbers,
+`beam.com` gives the module 170 `enif_*` functions: the terms (numbers,
 atoms, strings, binaries, tuples, lists, maps and their iterators),
 `enif_inspect_binary` and `enif_make_new_binary`, resources with
-destructors, `enif_alloc_env` and `enif_send`, the pids and ports,
-exceptions, `enif_schedule_nif`, the dirty NIF flags, the time
-functions, `enif_term_to_binary` and `enif_binary_to_term`.
+destructors and down callbacks, the monitors, `enif_alloc_env` and
+`enif_send`, the pids and ports, exceptions, `enif_schedule_nif`, the
+dirty NIF flags, the time functions, `enif_term_to_binary` and
+`enif_binary_to_term`, `enif_snprintf` (with `%T`), the I/O queues
+(`enif_ioq_*`) and `enif_inspect_iovec`.
 
 The limits:
 
@@ -137,10 +139,16 @@ The limits:
 - **No threads.** `enif_thread_create` fails. The mutexes, the
   condition variables and the read-write locks do nothing, because the
   calls run one at a time.
-- **Not supported:** monitors (`enif_monitor_process`), `enif_select`
-  (it fails), `enif_snprintf`, `enif_fprintf`, the I/O queues
-  (`enif_ioq_*`) and `enif_dynamic_resource_call`. The module can
-  import them; a call to one of them stops the call with an exception.
+- **Not supported:** `enif_select` (it fails: the module has no file
+  descriptors of the host), `enif_dynamic_resource_call`, and the
+  options of `enif_set_option` (it fails). The module can import an
+  unsupported function; a call to one of them stops the call with an
+  exception.
+- **Output.** `enif_fprintf` writes to the standard error of the VM,
+  whatever its `FILE`. `%Lf` (a `long double`, 128 bits in wasm32)
+  gives `?`.
+- **Copies in I/O queues.** `enif_ioq_enq_binary`, `enif_ioq_enqv` and
+  `enif_inspect_iovec` copy the bytes into the memory of the module.
 - **No upgrade.** `load_nif/2` of new code, while the old code of the
   module has the library, fails with `upgrade`.
 - **Files.** The module can open files, as a native NIF can: WASI gets
