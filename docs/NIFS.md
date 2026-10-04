@@ -120,6 +120,18 @@ NIF library in WebAssembly: its 93 tests pass with the `.wasm` file and
 with the AOT file, also `render_component/3` and `live_isolated/2` of
 LiveViewTest.
 
+`beam.com` has this library: a Mix project with `{:lazy_html,
+"0.1.13"}` gets it, with no C++ compiler and no download. The tools of
+Elixir (`mix.com`, `iex.com`) make elixir_make build lazy_html with
+make (the env `force_build` of elixir_make), and the make of `beam.com`
+copies `liblazy_html.wasm` and its AOT files into the priv directory of
+the package. `beam.com PROJECT -o app.com` puts the same files into the
+program. A program with another version of lazy_html gets an error that
+names the version of `beam.com`. The files add about 3.4 MB (0.95 MB
+compressed) to `beam.com`, and nothing to a program without lazy_html.
+[`scripts/lazy_html.sh`](../scripts/lazy_html.sh) builds them again
+(`priv/nifs/lazy_html-0.1.13/`).
+
 wasm32-wasi links no C++ exceptions, so fine and lazy_html need a small
 change, which a flag turns on:
 [`patches/fine/0001-no-exceptions.patch`](../patches/fine/0001-no-exceptions.patch)

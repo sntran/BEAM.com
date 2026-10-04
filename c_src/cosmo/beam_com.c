@@ -1597,6 +1597,12 @@ void beam_com_main(int *argcp, char ***argvp)
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
         elixir_paths(&file);
+        /* elixir_make runs make for a package with a NIF library in
+         * WebAssembly in beam.com (beam_com_make.erl), not a download of
+         * a native library that beam.com cannot load. */
+        push(&file, "-s");
+        push(&file, "beam_com_make");
+        push(&file, "force_build");
         if (strcmp(tool, "iex") == 0) {
             push(&file, "-user");
             push(&file, "elixir");

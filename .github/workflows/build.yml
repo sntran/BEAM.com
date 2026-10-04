@@ -410,6 +410,20 @@ jobs:
           sh ../../bin/beam.com _build/prod/rel/phoenix_demo -o "$RUNNER_TEMP/phoenix_demo.com"
           ls -l "$RUNNER_TEMP/phoenix_demo.com"
 
+      # LiveViewTest parses HTML with lazy_html: the NIF library in
+      # WebAssembly of beam.com (docs/NIFS.md, "C++"), with no C++ compiler
+      # and no download of a native library.
+      - name: The tests of examples/phoenix_demo
+        working-directory: examples/phoenix_demo
+        env:
+          MIX_ENV: test
+        run: |
+          mix.com deps.get
+          mix.com test
+          ls -l _build/test/lib/lazy_html/priv
+          test -f _build/test/lib/lazy_html/priv/liblazy_html.wasm
+          test ! -e _build/test/lib/lazy_html/priv/liblazy_html.so
+
       - name: Run phoenix_demo.com natively
         run: |
           SECRET_KEY_BASE=$(head -c 48 /dev/urandom | base64 -w0) DATABASE_PATH="$RUNNER_TEMP/native.db" \

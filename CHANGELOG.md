@@ -28,7 +28,8 @@ on npm it has the dist-tag `next` (`npm install beam.com@next`).
   libraries too, and `beam.com --nif-modules` gives them to a Worker
   that runs an `app.com` (`serve(app, { nifs })`). lazy_html (the HTML
   parser of Phoenix.LiveViewTest) passes its tests so. See
-  `docs/NIFS.md`.
+  `docs/NIFS.md`. `beam.com` has lazy_html 0.1.13 in WebAssembly: a Mix
+  project with it needs no C++ compiler.
 - The OTP application `tools`, for `mix test --cover`.
 - A sandbox with the permission flags of Deno (`--allow-read`,
   `--allow-write`, `--allow-net`, `--allow-run`), on Linux and OpenBSD.

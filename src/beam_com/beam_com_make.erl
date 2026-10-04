@@ -15,20 +15,36 @@
 %%   - A package with a linked NIF, of the same version: nothing to do.
 %%   - A package with a linked NIF, of another version: an error (the NIF
 %%     functions of the two versions can be different).
+%%   - A package with a NIF library in WebAssembly in beam.com
+%%     (?WASM_NIFS, with the files of priv/nifs/APP-VSN of beam_com, from
+%%     scripts/lazy_html.sh): make copies
+%%     the files into the priv directory of the package. load_nif/2 then
+%%     loads PATH.wasm or its AOT file (docs/NIFS.md). Of another version:
+%%     an error.
 %%   - Another package: the make of PATH (gmake or make) runs, with the
 %%     same arguments. Without make, an error.
+%%
+%% elixir_make runs make for a package with a precompiled NIF only when
+%% the package is in the env force_build of elixir_make. Else it gets a
+%% native library for the system, which beam.com cannot load. So the
+%% tools of Elixir run force_build/0 at their start (beam_com.c).
 -module(beam_com_make).
 
--export([main/0]).
+-export([main/0, force_build/0, wasm_nif_files/2]).
 
 -ifdef(TEST).
--export([run/2, dep_version/1]).
+-export([run/2, dep_version/1, force_build/1, wasm_nif_files/3]).
 -endif.
+
+%% The packages whose NIF library in WebAssembly is in priv/nifs.
+-define(WASM_NIFS, [{lazy_html, "0.1.13"}]).
 
 main() ->
     Env = #{app_path => os:getenv("MIX_APP_PATH", ""),
             cwd => element(2, file:get_cwd()),
             nifs => nifs(),
+            wasm_nifs => ?WASM_NIFS,
+            priv => filename:join(code:lib_dir(beam_com), "priv"),
             make => os:getenv("MAKE", "")},
     Status = try run(init:get_plain_arguments(), Env) of
                  ok -> 0;
@@ -49,6 +65,12 @@ run(Args, #{app_path := AppPath, cwd := Cwd, nifs := Nifs} = Env) ->
               "" -> filename:basename(Cwd);
               _ -> filename:basename(AppPath)
           end,
+    case lists:keyfind(list_to_atom(App), 1, maps:get(wasm_nifs, Env, [])) of
+        {_, Vsn} -> wasm_nif(Args, App, Vsn, Env);
+        false -> run(Args, App, Nifs, Env)
+    end.
+
+run(Args, App, Nifs, #{cwd := Cwd} = Env) ->
     case lists:keyfind(list_to_atom(App), 1, Nifs) of
         {_, Vsn} ->
             case dep_version(Cwd) of
@@ -76,6 +98,65 @@ run(Args, #{app_path := AppPath, cwd := Cwd, nifs := Nifs} = Env) ->
                     {make, Make, Args}
             end
     end.
+
+%% A package with a NIF library in WebAssembly in beam.com: "all" (or no
+%% target) copies its files into MIX_APP_PATH/priv, "clean" does nothing.
+wasm_nif(Args, App, Vsn, #{app_path := AppPath, cwd := Cwd, priv := Priv}) ->
+    case dep_version(Cwd) of
+        Other when is_list(Other), Other =/= Vsn ->
+            throw({error, "~ts ~ts has a NIF, and ~ts has the NIF library in WebAssembly "
+                   "of ~ts ~ts. Use ~ts ~ts (in the deps of mix.exs: {:~ts, \"~ts\"})",
+                   [App, Other, name(), App, Vsn, App, Vsn, App, Vsn]});
+        _ ->
+            ok
+    end,
+    case lists:member("clean", Args) of
+        true ->
+            ok;
+        false ->
+            Dst = filename:join(case AppPath of "" -> Cwd; _ -> AppPath end, "priv"),
+            Files = case wasm_nif_files(list_to_atom(App), Vsn, Priv) of
+                        [_ | _] = Fs -> Fs;
+                        [] -> throw({error, "~ts: no NIF library of ~ts ~ts",
+                                     [filename:join([Priv, "nifs", App ++ "-" ++ Vsn]), App, Vsn]})
+                    end,
+            ok = filelib:ensure_path(Dst),
+            [ok = file:write_file(filename:join(Dst, F), Data) || {F, Data} <- Files],
+            ok
+    end.
+
+%% The files of the NIF library in WebAssembly of App in beam.com, for
+%% the version Vsn: [{Name, Data}], or [] for another package or version.
+%% beam_com_build adds them to the priv directory of App in a program.
+wasm_nif_files(App, Vsn) ->
+    case lists:keyfind(App, 1, ?WASM_NIFS) of
+        {_, Vsn} -> wasm_nif_files(App, Vsn, filename:join(code:lib_dir(beam_com), "priv"));
+        _ -> []
+    end.
+
+wasm_nif_files(App, Vsn, Priv) ->
+    Dir = filename:join([Priv, "nifs", atom_to_list(App) ++ "-" ++ Vsn]),
+    case file:list_dir(Dir) of
+        {ok, Names} ->
+            [{N, element(2, {ok, _} = file:read_file(filename:join(Dir, N)))}
+             || N <- lists:sort(Names)];
+        {error, _} ->
+            []
+    end.
+
+%% The env force_build of elixir_make, with each package of ?WASM_NIFS,
+%% before Mix loads the configuration of the project. persistent: a later
+%% load of elixir_make keeps it.
+force_build() ->
+    force_build(?WASM_NIFS).
+
+force_build(WasmNifs) ->
+    Old = case application:get_env(elixir_make, force_build) of
+              {ok, L} when is_list(L) -> L;
+              _ -> []
+          end,
+    New = Old ++ [{A, true} || {A, _} <- WasmNifs, not lists:keymember(A, 1, Old)],
+    application:set_env(elixir_make, force_build, New, [{persistent, true}]).
 
 %% The version of the package in the directory Dir: from
 %% hex_metadata.config (a package of hex.pm), else from "@version" or

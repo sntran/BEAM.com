@@ -1,7 +1,8 @@
 defmodule BeamComMakeTest do
   @moduledoc """
   The tests of `:beam_com_make`: the make of elixir_make for the packages
-  whose NIFs are linked into beam.com.
+  whose NIFs are linked into beam.com, or are NIF libraries in WebAssembly
+  in it.
 
   A test changes the PATH of the OS, so the module is not async.
   """
@@ -95,6 +96,102 @@ defmodule BeamComMakeTest do
         System.put_env("PATH", path)
       end
     end
+  end
+
+  # lazy_html: a NIF library in WebAssembly in beam.com (the env
+  # wasm_nifs), with its files in priv/nifs/lazy_html-0.1.13.
+  describe "wasm_nif_test_" do
+    setup %{tmp_dir: tmp_dir} do
+      dir = String.to_charlist(tmp_dir)
+      priv = :filename.join(dir, ~c"priv")
+      nifs = :filename.join([priv, ~c"nifs", ~c"lazy_html-0.1.13"])
+      write(nifs, ~c"liblazy_html.wasm", "wasm")
+      write(nifs, ~c"liblazy_html.x86_64.aot", "aot")
+      pkg = :filename.join(dir, ~c"lazy_html")
+
+      write(
+        pkg,
+        ~c"hex_metadata.config",
+        "{<<\"name\">>,<<\"lazy_html\">>}.\n{<<\"version\">>,<<\"0.1.13\">>}.\n"
+      )
+
+      old = :filename.join(dir, ~c"lazy_html_old")
+      write(old, ~c"mix.exs", "@version \"0.1.12\"\n")
+      app_path = :filename.join([dir, ~c"_build", ~c"dev", ~c"lib", ~c"lazy_html"])
+      %{dir: dir, priv: priv, pkg: pkg, old: old, app_path: app_path}
+    end
+
+    test "make copies the files into the priv directory of the package", ctx do
+      assert :ok == wasm_run([~c"all"], ctx.pkg, ctx.app_path, ctx.priv)
+      priv = :filename.join(ctx.app_path, ~c"priv")
+      assert {:ok, "wasm"} == :file.read_file(:filename.join(priv, ~c"liblazy_html.wasm"))
+      assert {:ok, "aot"} == :file.read_file(:filename.join(priv, ~c"liblazy_html.x86_64.aot"))
+    end
+
+    test "make clean does nothing", ctx do
+      assert :ok == wasm_run([~c"clean"], ctx.pkg, ctx.app_path, ctx.priv)
+      refute :filelib.is_dir(:filename.join(ctx.app_path, ~c"priv"))
+    end
+
+    test "another version of the package", ctx do
+      assert ~c"lazy_html 0.1.12 has a NIF, and beam.com has the NIF library in " ++
+               ~c"WebAssembly of lazy_html 0.1.13. Use lazy_html 0.1.13 " ++
+               ~c"(in the deps of mix.exs: {:lazy_html, \"0.1.13\"})" ==
+               error_text(fn ->
+                 wasm_run([~c"all"], ctx.old, :filename.join(ctx.dir, ~c"lazy_html"), ctx.priv)
+               end)
+    end
+
+    test "no files of the library", ctx do
+      none = :filename.join(ctx.dir, ~c"none")
+
+      text = error_text(fn -> wasm_run([~c"all"], ctx.pkg, ctx.app_path, none) end)
+      assert List.to_string(text) =~ "no NIF library of lazy_html 0.1.13"
+    end
+
+    test "wasm_nif_files/3 reads the files, in order", ctx do
+      assert [{~c"liblazy_html.wasm", "wasm"}, {~c"liblazy_html.x86_64.aot", "aot"}] ==
+               :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.13", ctx.priv)
+
+      assert [] == :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.12", ctx.priv)
+    end
+
+    # The files of priv/nifs of this repository, for the version of the env
+    # wasm_nifs only.
+    test "wasm_nif_files/2: the files of beam.com" do
+      names = for {name, _} <- :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.13"), do: name
+      assert ~w(liblazy_html.aarch64.aot liblazy_html.wasm liblazy_html.x86_64.aot)c == names
+      assert [] == :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.12")
+      assert [] == :beam_com_make.wasm_nif_files(:other, ~c"0.1.13")
+    end
+
+    # The env of elixir_make that the tools of Elixir set at their start.
+    test "force_build/1 adds the packages, and keeps the others" do
+      :application.unset_env(:elixir_make, :force_build)
+
+      try do
+        :ok = :beam_com_make.force_build([{:lazy_html, ~c"0.1.13"}])
+        assert {:ok, [lazy_html: true]} == :application.get_env(:elixir_make, :force_build)
+        :application.set_env(:elixir_make, :force_build, other: true, lazy_html: false)
+        :ok = :beam_com_make.force_build([{:lazy_html, ~c"0.1.13"}])
+
+        assert {:ok, [other: true, lazy_html: false]} ==
+                 :application.get_env(:elixir_make, :force_build)
+      after
+        :application.unset_env(:elixir_make, :force_build)
+      end
+    end
+  end
+
+  defp wasm_run(args, cwd, app_path, priv) do
+    :beam_com_make.run(args, %{
+      cwd: cwd,
+      app_path: app_path,
+      nifs: @linked_nifs,
+      wasm_nifs: [{:lazy_html, ~c"0.1.13"}],
+      priv: priv,
+      make: ~c"/nowhere/make"
+    })
   end
 
   defp run(args, cwd, app_path) do
