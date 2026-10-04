@@ -139,7 +139,8 @@ iex.com -S mix phx.server        # http://localhost:4000
 ```
 
 - `beam.com` has the OTP applications that a new Phoenix app needs
-  beyond Elixir: `xmerl` (for `swoosh`) and `runtime_tools`.
+  beyond Elixir: `xmerl` (for `swoosh`) and `runtime_tools`. It also
+  has `tools`, for `mix test --cover`.
 - The NIFs of `exqlite` 0.41.0 (for `ecto_sqlite3`), `bcrypt_elixir`
   3.3.2 (for `phx.gen.auth`) and `argon2_elixir` 4.1.3 (for
   `phx.gen.auth --hashing-lib argon2`) are linked into `beam.com`, as

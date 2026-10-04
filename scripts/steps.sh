@@ -131,14 +131,14 @@ JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
 # a program needs into the new executable.
 BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets
-             xmerl runtime_tools"
+             xmerl runtime_tools tools"
 # The small build (OTP_SMALL_BUILD) does not make these.
 EXTRA_APPS="crypto asn1 public_key ssl"
 # Nor these, of which only the Erlang code is needed (src/): xmerl
-# (Phoenix apps have swoosh, which includes xmerl.hrl), and runtime_tools
+# (Phoenix apps have swoosh, which includes xmerl.hrl), runtime_tools
 # (in the extra_applications of a new Phoenix app; its C code is for
-# dtrace and trace drivers).
-SRC_APPS="xmerl runtime_tools"
+# dtrace and trace drivers), and tools (cover, for "mix test --cover").
+SRC_APPS="xmerl runtime_tools tools"
 # The applications of OTP_APPS (a custom build) that are not in the zip
 # yet: their Erlang code too.
 for app in $OTP_APPS; do
@@ -782,6 +782,11 @@ step_bundle() {
         if ls "$src"/include/*.hrl >/dev/null 2>&1; then
             mkdir -p "$STAGE/lib/$app-$vsn/include"
             cp "$src"/include/*.hrl "$STAGE/lib/$app-$vsn/include/"
+        fi
+        # The style sheet of the HTML pages of cover (tools).
+        if [ -f "$src/priv/styles.css" ]; then
+            mkdir -p "$STAGE/lib/$app-$vsn/priv"
+            cp "$src/priv/styles.css" "$STAGE/lib/$app-$vsn/priv/"
         fi
     done
 
