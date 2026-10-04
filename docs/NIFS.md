@@ -108,6 +108,46 @@ system that refuses memory that is both writable and executable), the
 On macOS with Apple silicon, the AOT code runs from memory with
 `MAP_JIT`, as the JIT of the VM does.
 
+## C++ (lazy_html)
+
+[lazy_html](https://hex.pm/packages/lazy_html) 0.1.13 (the HTML parser
+of `Phoenix.LiveViewTest`, a C++ NIF with fine and lexbor) works as a
+NIF library in WebAssembly: its 93 tests pass with the `.wasm` file and
+with the AOT file, also `render_component/3` and `live_isolated/2` of
+LiveViewTest.
+
+wasm32-wasi links no C++ exceptions, so fine and lazy_html need a small
+change, which a flag turns on:
+[`patches/fine/0001-no-exceptions.patch`](../patches/fine/0001-no-exceptions.patch)
+(in `deps/fine`) and
+[`patches/lazy_html/0001-no-exceptions.patch`](../patches/lazy_html/0001-no-exceptions.patch)
+(in the package). Then, with lexbor at the commit of the `Makefile` of
+lazy_html:
+
+```sh
+# lexbor: each .c file of source/lexbor, but ports/windows_nt
+zig cc -target wasm32-wasi -O2 -std=c99 -DLEXBOR_STATIC \
+    -D_POSIX_C_SOURCE=199309L -I"$LEXBOR/source" -c FILE.c -o FILE.o
+zig ar rcs liblexbor.a *.o
+zig c++ -target wasm32-wasi -mexec-model=reactor -O3 -std=c++17 \
+    -fno-exceptions -DFINE_NO_EXCEPTIONS -DLEXBOR_STATIC -fvisibility=hidden \
+    -I"$(beam.com --nif-include)" -Ideps/fine/c_include -I"$LEXBOR/source" \
+    c_src/lazy_html.cpp liblexbor.a -s -o priv/liblazy_html.wasm
+```
+
+A document of 553 KB, the median of 15 calls:
+
+| Step | Native NIF | AOT file | Interpreter |
+|---|---|---|---|
+| `from_document` | 16.7 ms | 29.9 ms | 233 ms |
+| `query` | 1.1 ms | 1.5 ms | 12.8 ms |
+| `to_html` | 3.7 ms | 6.0 ms | 46.5 ms |
+| `to_tree` | 11.9 ms | 40.3 ms | 122.6 ms |
+
+16 processes that use the library at the same time (the concurrent test
+of lazy_html, 21,000 calls): 0.5 s with the AOT file, 110 ms with the
+native NIF. The calls into one library run one at a time.
+
 ## Rust (rustler)
 
 rustler 0.38 finds the `enif_*` functions with `dlsym()` at run time,
@@ -140,6 +180,10 @@ The limits:
   other: a WebAssembly module has one stack. Two libraries run at the
   same time. A long call (for example a dirty NIF) makes the other
   calls into the same library wait, also on a normal scheduler.
+- **Memory.** The memory of a module grows with no copy on Linux,
+  macOS, FreeBSD and NetBSD (it has its maximum size in virtual memory,
+  4 GB). On Windows and OpenBSD, each growth copies the memory: a
+  library that grows its memory in many small steps is slow there.
 - **No threads.** `enif_thread_create` fails. The mutexes, the
   condition variables and the read-write locks do nothing, because the
   calls run one at a time.

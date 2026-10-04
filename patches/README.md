@@ -53,13 +53,26 @@ a report to rustler.
 |---|---|---|---|
 | `0001-wasm32-imports.patch` | `rustler/Cargo.toml`, `rustler/build.rs`, `rustler/src/sys/` | The `enif_*` functions as imports of `env` on `target_family = "wasm"`. | R1 |
 
+## fine and lazy_html (`patches/fine/`, `patches/lazy_html/`)
+
+The build of BEAM.com does not use them. They are for users who build
+lazy_html as a NIF library in WebAssembly ([`docs/NIFS.md`](../docs/NIFS.md),
+"C++"), and for a report to fine.
+
+| Patch | File | What it does | Items |
+|---|---|---|---|
+| `fine/0001-no-exceptions.patch` | `c_include/fine.hpp` | With `FINE_NO_EXCEPTIONS`, fine raises a pending error when the NIF function returns, with no C++ exception. | F1 |
+| `lazy_html/0001-no-exceptions.patch` | `c_src/lazy_html.cpp` | Each `throw` returns the pending error of fine. | F1 |
+
 ## WAMR (`patches/wamr/`)
 
-`step_wasm` of `scripts/steps.sh` applies them to the clone of WAMR.
+`step_wasm` of `scripts/steps.sh` applies them to the clone of WAMR, in
+order, with `git apply`.
 
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `0001-cosmopolitan-aarch64-jit.patch` | `core/shared/platform/common/posix/posix_memmap.c`, `posix_thread.c` | `MAP_JIT` and the write protection of macOS on Apple silicon at run time, and the cache flush on aarch64. | W5, W6 |
+| `0002-reserve-linear-memory.patch` | `core/iwasm/common/wasm_memory.c` | A linear memory of wasm32 has its maximum size in virtual memory from the start, so a growth copies nothing (not on Windows and OpenBSD). | W10 |
 
 ## Changes that are not patch files
 

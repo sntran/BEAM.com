@@ -1,0 +1,83 @@
+BEAM.com: copy-free growth of a linear memory without hardware bounds
+checks (docs/UPSTREAM.md, W10). With BEAM_COM_RESERVE_LINEAR_MEMORY,
+WAMR maps the maximum size of a linear memory of wasm32 at the start,
+with no access after its pages, and a growth makes the next pages
+accessible. Without it, each growth maps new memory and copies all the
+memory. In a Cosmopolitan build, only on Linux, macOS, FreeBSD and
+NetBSD: on Windows a mapping takes its whole size from the commit limit,
+and on OpenBSD from the data size limit.
+
+diff --git a/core/iwasm/common/wasm_memory.c b/core/iwasm/common/wasm_memory.c
+index 59d478c..e1cae62 100644
+--- a/core/iwasm/common/wasm_memory.c
++++ b/core/iwasm/common/wasm_memory.c
+@@ -1532,6 +1532,31 @@ wasm_mmap_linear_memory(uint64 map_size, uint64 commit_size)
+     return wasm_mremap_linear_memory(NULL, 0, map_size, commit_size);
+ }
+ 
++#if defined(BEAM_COM_RESERVE_LINEAR_MEMORY) && defined(BH_PLATFORM_COSMOPOLITAN)
++#include <cosmo.h>
++#endif
++
++/* BEAM.com: without hardware bounds checks, a linear memory of wasm32 has
++ * its maximum size in virtual memory from the start (PROT_NONE after its
++ * pages). A growth then makes the next pages accessible, and copies
++ * nothing; else each growth copies all the memory. Only where a mapping
++ * with no access takes no memory: not on Windows (the commit limit) and
++ * not on OpenBSD (the data size limit). */
++static bool
++reserve_max_size(bool is_memory64)
++{
++#if defined(BEAM_COM_RESERVE_LINEAR_MEMORY) && !defined(OS_ENABLE_HW_BOUND_CHECK)
++#if defined(BH_PLATFORM_COSMOPOLITAN)
++    if (!IsLinux() && !IsXnu() && !IsFreebsd() && !IsNetbsd())
++        return false;
++#endif
++    return !is_memory64;
++#else
++    (void)is_memory64;
++    return false;
++#endif
++}
++
+ static bool
+ wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
+                              WASMMemoryInstance *memory, uint32 inc_page_count)
+@@ -1554,9 +1579,10 @@ wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
+ #ifdef OS_ENABLE_HW_BOUND_CHECK
+     full_size_mmaped = true;
+ #elif WASM_ENABLE_SHARED_MEMORY != 0
+-    full_size_mmaped = shared_memory_is_shared(memory);
++    full_size_mmaped = shared_memory_is_shared(memory)
++                       || reserve_max_size(memory->is_memory64);
+ #else
+-    full_size_mmaped = false;
++    full_size_mmaped = reserve_max_size(memory->is_memory64);
+ #endif
+ 
+     memory_data_old = memory->memory_data;
+@@ -1912,7 +1938,11 @@ wasm_deallocate_linear_memory(WASMMemoryInstance *memory_inst)
+     }
+     else
+ #endif
+-    {
++    if (reserve_max_size(memory_inst->is_memory64)) {
++        map_size = (uint64)memory_inst->num_bytes_per_page
++                   * memory_inst->max_page_count;
++    }
++    else {
+         map_size = (uint64)memory_inst->num_bytes_per_page
+                    * memory_inst->cur_page_count;
+     }
+@@ -1954,7 +1984,10 @@ wasm_allocate_linear_memory(uint8 **data, bool is_shared_memory,
+     }
+     else
+ #endif
+-    {
++    if (reserve_max_size(is_memory64)) {
++        map_size = max_page_count * num_bytes_per_page;
++    }
++    else {
+         map_size = init_page_count * num_bytes_per_page;
+     }
+ #else  /* else of OS_ENABLE_HW_BOUND_CHECK */

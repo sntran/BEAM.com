@@ -1,0 +1,266 @@
+BEAM.com: lazy_html 0.1.13 with no C++ exceptions, with
+patches/fine/0001-no-exceptions.patch: each throw becomes a return with
+the pending error of fine (FINE_THROW), so the ScopeGuard cleanup still
+runs (docs/NIFS.md, "C++"). Apply in the directory of the package.
+
+diff --git a/c_src/lazy_html.cpp b/c_src/lazy_html.cpp
+index 16b5fe6..d799f14 100644
+--- a/c_src/lazy_html.cpp
++++ b/c_src/lazy_html.cpp
+@@ -92,14 +92,14 @@ ERL_NIF_TERM make_new_binary(ErlNifEnv *env, size_t size,
+ ExLazyHTML from_document(ErlNifEnv *env, ErlNifBinary html) {
+   auto document = lxb_html_document_create();
+   if (document == NULL) {
+-    throw std::runtime_error("failed to create document");
++    FINE_THROW(runtime_error, "failed to create document");
+   }
+   auto document_guard =
+       ScopeGuard([&]() { lxb_html_document_destroy(document); });
+ 
+   auto status = lxb_html_document_parse(document, html.data, html.size);
+   if (status != LXB_STATUS_OK) {
+-    throw std::runtime_error("failed to parse html document");
++    FINE_THROW(runtime_error, "failed to parse html document");
+   }
+ 
+   auto document_ref = std::make_shared<DocumentRef>(document, false);
+@@ -119,7 +119,7 @@ FINE_NIF(from_document, ERL_NIF_DIRTY_JOB_CPU_BOUND);
+ ExLazyHTML from_fragment(ErlNifEnv *env, ErlNifBinary html) {
+   auto document = lxb_html_document_create();
+   if (document == NULL) {
+-    throw std::runtime_error("failed to create document");
++    FINE_THROW(runtime_error, "failed to create document");
+   }
+   auto document_guard =
+       ScopeGuard([&]() { lxb_html_document_destroy(document); });
+@@ -131,7 +131,7 @@ ExLazyHTML from_fragment(ErlNifEnv *env, ErlNifBinary html) {
+   auto parse_root =
+       lxb_html_document_parse_fragment(document, context, html.data, html.size);
+   if (parse_root == NULL) {
+-    throw std::runtime_error("failed to parse html fragment");
++    FINE_THROW(runtime_error, "failed to parse html fragment");
+   }
+ 
+   auto document_ref = std::make_shared<DocumentRef>(document, true);
+@@ -287,7 +287,7 @@ void append_node_html(lxb_dom_node_t *node, bool skip_whitespace_nodes,
+       size_t name_length;
+       auto name = lxb_dom_element_qualified_name(element, &name_length);
+       if (name == NULL) {
+-        throw std::runtime_error("failed to read tag name");
++        FINE_THROW_VOID(runtime_error, "failed to read tag name");
+       }
+       html.append("<");
+       html.append(reinterpret_cast<const char *>(name), name_length);
+@@ -441,7 +441,7 @@ void node_to_tree(ErlNifEnv *env, fine::ResourcePtr<LazyHTML> &resource,
+       size_t name_length;
+       auto name = lxb_dom_element_qualified_name(element, &name_length);
+       if (name == NULL) {
+-        throw std::runtime_error("failed to read tag name");
++        FINE_THROW_VOID(runtime_error, "failed to read tag name");
+       }
+       auto name_term = make_new_binary(env, name_length, name);
+       auto attrs_term = attributes_to_term(env, element, sort_attributes);
+@@ -556,6 +556,9 @@ void insert_children_from_tree(ErlNifEnv *env, lxb_html_document_t *document,
+ 
+     auto decoded = fine::decode<std::variant<ExText, ExElement, ExComment>>(
+         env, current_item);
++    if (FINE_FAILED()) {
++      return;
++    }
+ 
+     lxb_dom_node_t *node = nullptr;
+ 
+@@ -563,7 +566,7 @@ void insert_children_from_tree(ErlNifEnv *env, lxb_html_document_t *document,
+       auto text = lxb_dom_document_create_text_node(
+           &document->dom_document, text_ptr->data, text_ptr->size);
+       if (text == NULL) {
+-        throw std::runtime_error("failed to create text node");
++        FINE_THROW_VOID(runtime_error, "failed to create text node");
+       }
+       node = lxb_dom_interface_node(text);
+     } else if (auto element_ptr = std::get_if<ExElement>(&decoded)) {
+@@ -586,7 +589,7 @@ void insert_children_from_tree(ErlNifEnv *env, lxb_html_document_t *document,
+         auto attr = lxb_dom_element_set_attribute(element, key.data, key.size,
+                                                   value.data, value.size);
+         if (attr == NULL) {
+-          throw std::runtime_error("failed to set element attribute");
++          FINE_THROW_VOID(runtime_error, "failed to set element attribute");
+         }
+       }
+ 
+@@ -608,14 +611,14 @@ void insert_children_from_tree(ErlNifEnv *env, lxb_html_document_t *document,
+       auto &[atom, content] = std::get<ExComment>(decoded);
+ 
+       if (!(atom == atoms::comment)) {
+-        throw std::invalid_argument("tuple contains unexpected atom: :" +
++        FINE_THROW_VOID(invalid_argument, "tuple contains unexpected atom: :" +
+                                     atom.to_string());
+       }
+ 
+       auto comment = lxb_dom_document_create_comment(
+           &document->dom_document, content.data, content.size);
+       if (comment == NULL) {
+-        throw std::runtime_error("failed to create comment node");
++        FINE_THROW_VOID(runtime_error, "failed to create comment node");
+       }
+       node = lxb_dom_interface_node(comment);
+     }
+@@ -627,7 +630,7 @@ void insert_children_from_tree(ErlNifEnv *env, lxb_html_document_t *document,
+ ExLazyHTML from_tree(ErlNifEnv *env, std::vector<fine::Term> tree) {
+   auto document = lxb_html_document_create();
+   if (document == NULL) {
+-    throw std::runtime_error("failed to create document");
++    FINE_THROW(runtime_error, "failed to create document");
+   }
+   auto document_guard =
+       ScopeGuard([&]() { lxb_html_document_destroy(document); });
+@@ -636,6 +639,9 @@ ExLazyHTML from_tree(ErlNifEnv *env, std::vector<fine::Term> tree) {
+   auto nodes = std::vector<lxb_dom_node_t *>();
+ 
+   insert_children_from_tree(env, document, root, tree, std::nullopt);
++  if (FINE_FAILED()) {
++    return ExLazyHTML();
++  }
+ 
+   for (auto child = lxb_dom_node_first_child(root); child != NULL;
+        child = lxb_dom_node_next(child)) {
+@@ -658,13 +664,13 @@ lxb_css_selector_list_t *parse_css_selector(lxb_css_parser_t *parser,
+   auto css_selector_list =
+       lxb_css_selectors_parse(parser, css_selector.data, css_selector.size);
+   if (parser->status == LXB_STATUS_ERROR_UNEXPECTED_DATA) {
+-    throw std::invalid_argument(
++    FINE_THROW(invalid_argument, 
+         "got invalid css selector: " +
+         std::string(reinterpret_cast<char *>(css_selector.data),
+                     css_selector.size));
+   }
+   if (parser->status != LXB_STATUS_OK) {
+-    throw std::runtime_error("failed to parse css selector");
++    FINE_THROW(runtime_error, "failed to parse css selector");
+   }
+ 
+   return css_selector_list;
+@@ -675,19 +681,22 @@ ExLazyHTML query(ErlNifEnv *env, ExLazyHTML ex_lazy_html,
+   auto parser = lxb_css_parser_create();
+   auto status = lxb_css_parser_init(parser, NULL);
+   if (status != LXB_STATUS_OK) {
+-    throw std::runtime_error("failed to create css parser");
++    FINE_THROW(runtime_error, "failed to create css parser");
+   }
+   auto parser_guard =
+       ScopeGuard([&]() { lxb_css_parser_destroy(parser, true); });
+ 
+   auto css_selector_list = parse_css_selector(parser, css_selector);
++  if (FINE_FAILED()) {
++    return ExLazyHTML();
++  }
+   auto css_selector_list_guard = ScopeGuard(
+       [&]() { lxb_css_selector_list_destroy_memory(css_selector_list); });
+ 
+   auto selectors = lxb_selectors_create();
+   status = lxb_selectors_init(selectors);
+   if (status != LXB_STATUS_OK) {
+-    throw std::runtime_error("failed to create selectors");
++    FINE_THROW(runtime_error, "failed to create selectors");
+   }
+   auto selectors_guard =
+       ScopeGuard([&]() { lxb_selectors_destroy(selectors, true); });
+@@ -722,7 +731,7 @@ ExLazyHTML query(ErlNifEnv *env, ExLazyHTML ex_lazy_html,
+         },
+         &ctx);
+     if (status != LXB_STATUS_OK) {
+-      throw std::runtime_error("failed to run find");
++      FINE_THROW(runtime_error, "failed to run find");
+     }
+   }
+ 
+@@ -737,19 +746,22 @@ ExLazyHTML filter(ErlNifEnv *env, ExLazyHTML ex_lazy_html,
+   auto parser = lxb_css_parser_create();
+   auto status = lxb_css_parser_init(parser, NULL);
+   if (status != LXB_STATUS_OK) {
+-    throw std::runtime_error("failed to create css parser");
++    FINE_THROW(runtime_error, "failed to create css parser");
+   }
+   auto parser_guard =
+       ScopeGuard([&]() { lxb_css_parser_destroy(parser, true); });
+ 
+   auto css_selector_list = parse_css_selector(parser, css_selector);
++  if (FINE_FAILED()) {
++    return ExLazyHTML();
++  }
+   auto css_selector_list_guard = ScopeGuard(
+       [&]() { lxb_css_selector_list_destroy_memory(css_selector_list); });
+ 
+   auto selectors = lxb_selectors_create();
+   status = lxb_selectors_init(selectors);
+   if (status != LXB_STATUS_OK) {
+-    throw std::runtime_error("failed to create selectors");
++    FINE_THROW(runtime_error, "failed to create selectors");
+   }
+   auto selectors_guard =
+       ScopeGuard([&]() { lxb_selectors_destroy(selectors, true); });
+@@ -772,7 +784,7 @@ ExLazyHTML filter(ErlNifEnv *env, ExLazyHTML ex_lazy_html,
+         },
+         &nodes);
+     if (status != LXB_STATUS_OK) {
+-      throw std::runtime_error("failed to run match");
++      FINE_THROW(runtime_error, "failed to run match");
+     }
+   }
+ 
+@@ -919,7 +931,7 @@ void append_css_codepoint_escape(std::string &identifier,
+   char buffer[6];
+   auto result = std::to_chars(buffer, buffer + sizeof(buffer), codepoint, 16);
+   if (result.ec != std::errc()) {
+-    throw std::runtime_error("failed to escape tag name");
++    FINE_THROW_VOID(runtime_error, "failed to escape tag name");
+   }
+ 
+   identifier.push_back('\\');
+@@ -936,7 +948,7 @@ void append_css_identifier(std::string &identifier, const lxb_char_t *data,
+   while (current < end) {
+     auto codepoint = lxb_encoding_decode_valid_utf_8_single(&current, end);
+     if (codepoint == LXB_ENCODING_DECODE_ERROR) {
+-      throw std::runtime_error("tag name is not valid UTF-8");
++      FINE_THROW_VOID(runtime_error, "tag name is not valid UTF-8");
+     }
+ 
+     bool leading_digit = index == 0 && is_ascii_digit(codepoint);
+@@ -951,6 +963,9 @@ void append_css_identifier(std::string &identifier, const lxb_char_t *data,
+     if (leading_digit || digit_after_leading_hyphen || control ||
+         codepoint >= 0x80) {
+       append_css_codepoint_escape(identifier, codepoint);
++      if (FINE_FAILED()) {
++        return;
++      }
+     } else if (is_ascii_letter(codepoint) || is_ascii_digit(codepoint) ||
+                codepoint == '-' || codepoint == '_') {
+       if (index == 0 && codepoint == '-' && length == 1) {
+@@ -986,7 +1001,7 @@ std::vector<std::string> css_path(ErlNifEnv *env, ExLazyHTML ex_lazy_html) {
+       size_t name_length;
+       auto name = lxb_dom_element_qualified_name(element, &name_length);
+       if (name == NULL) {
+-        throw std::runtime_error("failed to read tag name");
++        FINE_THROW(runtime_error, "failed to read tag name");
+       }
+ 
+       int64_t position = 1;
+@@ -1001,6 +1016,9 @@ std::vector<std::string> css_path(ErlNifEnv *env, ExLazyHTML ex_lazy_html) {
+ 
+       auto segment = std::string();
+       append_css_identifier(segment, name, name_length);
++      if (FINE_FAILED()) {
++        return {};
++      }
+       segment.append(":nth-child(");
+       segment.append(std::to_string(position));
+       segment.push_back(')');
+@@ -1158,7 +1176,7 @@ std::vector<fine::Term> tag(ErlNifEnv *env, ExLazyHTML ex_lazy_html) {
+       size_t name_length;
+       auto name = lxb_dom_element_qualified_name(element, &name_length);
+       if (name == NULL) {
+-        throw std::runtime_error("failed to read tag name");
++        FINE_THROW(runtime_error, "failed to read tag name");
+       }
+       auto name_term = make_new_binary(env, name_length, name);
+       values.push_back(name_term);

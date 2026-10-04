@@ -580,14 +580,13 @@ wamr_clone() {
             https://github.com/bytecodealliance/wasm-micro-runtime.git "$WAMR"
     fi
     check_commit "$WAMR" "$WAMR_COMMIT" "WAMR $WAMR_VERSION"
-    # patches/README.md lists the patches and their items.
-    if [ ! -f "$WAMR/.beam_com_patched" ]; then
-        for p in "$ROOT"/patches/wamr/*.patch; do
-            echo "  $p"
-            git -C "$WAMR" apply "$p"
-        done
-        touch "$WAMR/.beam_com_patched"
-    fi
+    # patches/README.md lists the patches and their items. Each patch that
+    # is not in the clone yet, also in a clone of an earlier build.
+    for p in "$ROOT"/patches/wamr/*.patch; do
+        git -C "$WAMR" apply --reverse --check "$p" 2>/dev/null && continue
+        echo "  $p"
+        git -C "$WAMR" apply "$p"
+    done
 }
 
 step_wasm() {
@@ -611,6 +610,8 @@ step_wasm() {
     #    reference types by default for wasm32.
     #  - WASM_ENABLE_AOT: the AOT files of the NIF libraries in
     #    WebAssembly (c_src/wasm/nif_wasm.c, docs/NIFS.md).
+    #  - BEAM_COM_RESERVE_LINEAR_MEMORY: a linear memory grows with no
+    #    copy (patches/wamr/0002-reserve-linear-memory.patch).
     flags="-O2 -include $ROOT/c_src/wasm/wamr_target.h
         -DBH_PLATFORM_COSMOPOLITAN -DBH_MALLOC=wasm_runtime_malloc
         -DBH_FREE=wasm_runtime_free -D_GNU_SOURCE
@@ -622,6 +623,7 @@ step_wasm() {
         -DWASM_DISABLE_HW_BOUND_CHECK=1 -DWASM_DISABLE_STACK_HW_BOUND_CHECK=1
         -DWASM_DISABLE_WAKEUP_BLOCKING_OP=0 -DWASM_DISABLE_WRITE_GS_BASE=1
         -DWASM_HAVE_MREMAP=0 -DWASM_GLOBAL_HEAP_SIZE=10485760
+        -DBEAM_COM_RESERVE_LINEAR_MEMORY
         -Icore/iwasm/include -Icore/iwasm/common -Icore/iwasm/interpreter
         -Icore/iwasm/aot
         -Icore/iwasm/libraries/libc-wasi/sandboxed-system-primitives/include

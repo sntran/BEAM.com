@@ -8,7 +8,7 @@ Keep it up to date when a new problem or workaround comes.
 The groups, and the prefix of their ids: Cosmopolitan (C), WAMR (W),
 Erlang/OTP (O), Emscripten (EM), workerd and Cloudflare Workers (CF),
 websock_adapter (WS), Livebook (L), Elixir (EX), Elixir packages with
-NIFs (E), Blink (B), rustler (R) and wasi-libc (WL).
+NIFs (E), Blink (B), rustler (R), fine (F) and wasi-libc (WL).
 
 [`patches/README.md`](../patches/README.md) lists each patch file of
 BEAM.com, and the ids of the items that it is for.
@@ -934,6 +934,36 @@ the code does not use them.
 AOT file against the platform, or a default of `wamrc` for a
 `cosmopolitan` target. In Cosmopolitan: document that code from another
 compiler must reserve x28.
+
+### W10. Each growth of a linear memory copies all the memory
+
+**Status:** WAMR 2.4.5 (`wasm_enlarge_memory_internal()`), without
+hardware bounds checks.
+
+**Symptom.** The concurrent test of lazy_html as a NIF library in
+WebAssembly (16 processes, 50 rounds each) took 15.9 s with the AOT
+file; the native NIF takes 110 ms. All the samples of gdb were in
+`memory.grow`, in `os_mremap()`, in `memcpy()`.
+
+**Cause.** Without hardware bounds checks, WAMR maps only the current
+size of a linear memory. A growth maps new memory and copies all the
+memory (`os_mremap()`; with `WASM_HAVE_MREMAP=0`, as in a Cosmopolitan
+build, always). The `malloc` of Zig grows the memory by 64 KiB at a
+time, so the copies grow with the square of the size. In a NIF library,
+they run in the lock of the library, and the other processes wait.
+
+**Workaround in BEAM.com.**
+[`patches/wamr/0002-reserve-linear-memory.patch`](../patches/wamr/0002-reserve-linear-memory.patch):
+with `BEAM_COM_RESERVE_LINEAR_MEMORY`, a linear memory of wasm32 has its
+maximum size in virtual memory from the start (with no access after its
+pages), and a growth makes the next pages accessible, as with hardware
+bounds checks. The test then takes 0.5 s. Only on Linux, macOS, FreeBSD
+and NetBSD: on Windows a mapping takes its whole size from the commit
+limit, and on OpenBSD from the data size limit.
+
+**Possible upstream fix.** An option of WAMR to reserve the maximum size
+without hardware bounds checks, or a capacity that doubles at each
+copy.
 
 ## Erlang/OTP
 
@@ -1915,6 +1945,27 @@ resource passed with it.
 
 **Possible upstream fix.** The same change. It does not change the
 other targets.
+
+## fine (C++ NIFs)
+
+### F1. A C++ NIF with exceptions does not build for wasm32-wasi
+
+**Status:** fine 0.1.6 and lazy_html 0.1.13, Zig 0.17 and wasi-sdk 27.
+
+**Symptom.** The link of a NIF library that throws (fine throws for
+each argument error, and for `fine::raise`) fails for `wasm32-wasi`:
+`__cxa_throw` is undefined. WAMR 2.4.5 has the opcodes of exceptions
+only in its classic interpreter, not in the fast interpreter or the AOT
+code that BEAM.com uses.
+
+**Workaround in BEAM.com.** [`patches/fine/0001-no-exceptions.patch`](../patches/fine/0001-no-exceptions.patch)
+and [`patches/lazy_html/0001-no-exceptions.patch`](../patches/lazy_html/0001-no-exceptions.patch):
+with `-fno-exceptions -DFINE_NO_EXCEPTIONS`, an error is pending, the
+NIF function returns, and the wrapper of fine raises it
+([`NIFS.md`](NIFS.md), "C++").
+
+**Possible upstream fix.** A mode of fine with no exceptions, as in the
+patch.
 
 ## wasi-libc
 
