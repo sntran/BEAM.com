@@ -349,6 +349,11 @@ defmodule BeamComTest do
       end
     end
 
+    test "--nif-modules with other arguments" do
+      assert catch_throw(:beam_com.command([~c"--nif-modules", ~c"app.com"])) ==
+               {:error, ~c"usage: ~ts --nif-modules APP.com DIR", [:beam_com.name()]}
+    end
+
     test "--nif-include with arguments" do
       assert catch_throw(:beam_com.command([~c"--nif-include", ~c"x"])) ==
                {:error, ~c"usage: ~ts --nif-include", [:beam_com.name()]}

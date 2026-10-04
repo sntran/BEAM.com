@@ -39,6 +39,17 @@ async function nifModules() {
   return (await import('./nifs.js')).default;
 }
 
+// The module of the NIF library FILE: the key of nifs.js is its path in
+// the release (lib/APP-VSN/priv/...). FILE can also be in a copy of priv
+// (the priv files of a NIF app that beam.com copies to a directory), so
+// the end of FILE must be APP-VSN/priv/...
+function nifModule(nifs, file) {
+  for (const [path, module] of Object.entries(nifs ?? {})) {
+    if (file.endsWith('/' + path.slice(path.indexOf('/') + 1))) return module;
+  }
+  return null;
+}
+
 async function loadRelease(env) {
   if (env.APP) return (await env.APP.fetch('http://app/release.bin')).arrayBuffer();
   if (env.RELEASE_URL) return (await fetch(env.RELEASE_URL)).arrayBuffer();
@@ -166,22 +177,31 @@ function capture(m, release, listeners, bootPoint = false, skip = () => false) {
     }
     return { fd, path: st.path, flags: st.flags, position: st.position };
   }).filter(Boolean);
+  // The NIF libraries in WebAssembly (nif_wasm_host.js): their pages come
+  // after the pages of the VM.
+  const libs = m.nifHost?.loaded() ? m.nifHost.save() : null;
+  const libPages = libs ? libs.libs.reduce((n, l) => n + l.pages.length, 0) : 0;
   const head = new TextEncoder().encode(JSON.stringify({
     size: heap.length, pages, fs: { files, streams }, listeners: Object.fromEntries(listeners),
     boot_point: bootPoint,
+    nifs: libs && { count: libs.count, libs: libs.libs.map(({ data, ...l }) => l) },
   }));
-  const out = new Uint8Array(12 + head.length + pages.length * PAGE);
+  const out = new Uint8Array(12 + head.length + (pages.length + libPages) * PAGE);
   out.set(new TextEncoder().encode('BEAMSNP1'));
   new DataView(out.buffer).setUint32(8, head.length);
   out.set(head, 12);
   pages.forEach((p, i) => out.set(heap.subarray(p * PAGE, (p + 1) * PAGE), 12 + head.length + i * PAGE));
+  let at = 12 + head.length + pages.length * PAGE;
+  for (const l of libs?.libs ?? []) for (const d of l.data) { out.set(d, at); at += PAGE; }
   return out;
 }
 
 // snapshot.bin (optional, beside release.bin): the memory of a booted VM
 // whose threads all returned to the host (erts_wasm_hibernate), and the
 // files and pipes of that moment. "BEAMSNP1", a 32-bit length and a JSON
-// header, then the 64 KiB pages of the header (the others are zero).
+// header, then the 64 KiB pages of the header (the others are zero): the
+// pages of the VM, then the pages of each NIF library in WebAssembly
+// (nifs of the header).
 async function loadSnapshot(env) {
   try {
     if (env.APP) {
@@ -228,6 +248,14 @@ function restore(m, exports, snap) {
   if (!exports.jspi_snapshot_grow(snap.size)) throw new Error('snapshot: no memory');
   const heap = m.HEAPU8;
   snap.pages.forEach((p, i) => heap.set(snap.pagesData.subarray(i * PAGE, (i + 1) * PAGE), p * PAGE));
+  // The NIF libraries in WebAssembly, from their files (capture).
+  if (snap.nifs) {
+    let at = snap.pages.length * PAGE;
+    const libs = snap.nifs.libs.map((l) => ({
+      ...l, data: l.pages.map(() => { const d = snap.pagesData.subarray(at, at + PAGE); at += PAGE; return d; }),
+    }));
+    m.nifHost.restore({ count: snap.nifs.count, libs }, (f) => m.FS.readFile(f));
+  }
   const made = new Set();
   for (const s of snap.fs.streams) {
     if (s.fd <= 2) continue;
@@ -1136,7 +1164,7 @@ export class Vm {
         }],
         print: (s) => console.log(s),
         printErr: (s) => console.log(s),
-        nifModule: (file) => nifs?.[file.replace(/^\/app\//, '')] ?? null,
+        nifModule: (file) => nifModule(nifs, file),
         // Workers compile no WebAssembly at run time: use the imported module.
         instantiateWasm: (imports, done) => {
           WebAssembly.instantiate(wasm, imports).then((instance) => { this.exports = instance.exports; done(instance); });
@@ -1193,9 +1221,6 @@ export class Vm {
   // the threads go on: about 1 ms of the VM, and the time of the copy.
   // 'busy': not a quiet moment (I/O of the host); null: no snapshot.
   async snapshot(bootPoint) {
-    // A NIF library in WebAssembly runs in an instance of the host, out of
-    // the memory of the VM: a snapshot would not have it.
-    if (this.beam.nifLoaded) return null;
     const x = this.exports;
     const tick = () => new Promise((r) => setTimeout(r, 1));
     const busy = () => this.sqlPending > 0 || this.tcps.size > 0;

@@ -352,7 +352,7 @@ defmodule BeamComWasmTest do
     import wasm from './beam.wasm';
     const release = (await import('./release.bin')).default;
     const snapshot = await import('./snapshot.bin');
-    const nifs = await import('./nifs.js');
+    const nifs = (await import('./nifs.js')).default;
     """
 
     :ok = :file.write_file(:filename.join(priv, ~c"worker.js"), worker_js)
@@ -424,6 +424,8 @@ defmodule BeamComWasmTest do
     assert cloudflare =~ "from '../beam.wasm'"
     assert cloudflare =~ "(await import('./release.js')).release()"
     assert cloudflare =~ "import('./snapshot.js')"
+    # The NIF libraries of serve(app, {nifs}).
+    assert cloudflare =~ "(await import('./release.js')).nifs()"
     assert "durable.js" == get.(~c"cloudflare/durable.js", plain)
     assert "cloudflare/index.js" == get.(~c"cloudflare/index.js", plain)
     assert "cloudflare/release.js" == get.(~c"cloudflare/release.js", plain)
@@ -442,6 +444,37 @@ defmodule BeamComWasmTest do
     assert has.(plain, ~c"wrangler.durable.jsonc", "\"version_metadata\"")
     assert has.(plain, ~c"wrangler.durable-global.jsonc", "\"main\": \"durable-global.js\"")
     assert has.(plain, ~c"wrangler.durable-global.jsonc", "\"BEAM_WARM\": \"/\"")
+
+    # The NIF libraries in WebAssembly (nifs.js and nifs/): in the rules of
+    # Wrangler, and in the modules of workerd.
+    for c <- ~w(wrangler.jsonc wrangler.durable.jsonc wrangler.global.jsonc
+                wrangler.durable-global.jsonc)c do
+      assert has.(plain, c, "\"nifs.js\"] }")
+      assert has.(plain, c, "\"nifs/*.wasm\"] }")
+    end
+
+    assert has.(plain, ~c"worker.capnp", "(name = \"nifs.js\", esModule = embed \"nifs.js\")")
+    refute has.(plain, ~c"worker.capnp", "nifs/0.wasm")
+
+    nif =
+      File.read!(Path.join([__DIR__, "..", "programs", "nif_check", "priv", "nif_check.wasm"]))
+
+    with_nif =
+      for {f, d} <-
+            :beam_com_wasm.worker_files(
+              %{name: ~c"app", apps: [], files: [{~c"lib/a-1/priv/x.wasm", nif}]},
+              runtime,
+              root
+            ),
+          do: {f, IO.iodata_to_binary(d)}
+
+    assert has.(
+             with_nif,
+             ~c"worker.capnp",
+             "(name = \"nifs/0.wasm\", wasm = embed \"nifs/0.wasm\")"
+           )
+
+    refute has.(with_nif, ~c"worker.capnp", "nifs/1.wasm")
 
     # A Worker name has no "_": the app my_phoenix_app.
     named = files.(~c"my_phoenix_app", [:phoenix])
@@ -483,7 +516,7 @@ defmodule BeamComWasmTest do
     import wasm from './beam.wasm';
     const release = await import('./release.bin');
     const snapshot = await import('./snapshot.bin');
-    const nifs = await import('./nifs.js');
+    const nifs = (await import('./nifs.js')).default;
     """
 
     setup %{tmp_dir: dir} do
@@ -775,6 +808,54 @@ defmodule BeamComWasmTest do
     test "nif_files/1 with no NIF library gives an empty nifs.js" do
       assert [{~c"nifs.js", js}] = :beam_com_wasm.nif_files([])
       assert js =~ "export default {};"
+    end
+
+    # beam.com --nif-modules APP DIR: the NIF libraries of an app.com. A file
+    # of the edge part (.wasm/lib/) takes the place of the file of lib/.
+    test "nif_modules/2 writes nifs.js and nifs/ of an app.com", %{nif: nif, tmp_dir: dir} do
+      {:ok, {_, zip}} =
+        :zip.create(
+          ~c"app.com",
+          [
+            {~c"lib/a-1.0.0/priv/x.wasm", nif},
+            {~c"lib/a-1.0.0/priv/y.wasm", "not a NIF library"},
+            {~c".wasm/lib/a-1.0.0/priv/y.wasm", nif},
+            {~c"lib/a-1.0.0/ebin/a.beam", "beam"}
+          ],
+          [:memory]
+        )
+
+      app = Path.join(dir, "app.com")
+      File.write!(app, zip)
+      out = Path.join(dir, "out")
+      File.mkdir_p!(Path.join(out, "nifs"))
+      File.write!(Path.join([out, "nifs", "7.wasm"]), "an earlier run")
+
+      text =
+        ExUnit.CaptureIO.capture_io(fn ->
+          :ok = :beam_com_wasm.nif_modules(String.to_charlist(app), String.to_charlist(out))
+        end)
+
+      assert text =~ "(2 NIF libraries in WebAssembly of #{app})"
+      js = File.read!(Path.join(out, "nifs.js"))
+      assert js =~ ~s("lib/a-1.0.0/priv/x.wasm": m0)
+      assert js =~ ~s("lib/a-1.0.0/priv/y.wasm": m1)
+      assert File.ls!(Path.join(out, "nifs")) |> Enum.sort() == ["0.wasm", "1.wasm"]
+      module = :beam_com_wasm.nif_module(nif)
+      assert File.read!(Path.join([out, "nifs", "1.wasm"])) == module
+    end
+
+    test "nif_modules/2 refuses a file with no zip, and no file", %{tmp_dir: dir} do
+      app = Path.join(dir, "app.com")
+      File.write!(app, "no zip")
+
+      assert {:error, ~c"~ts: not an app.com (no zip)", [String.to_charlist(app)]} ==
+               catch_throw(:beam_com_wasm.nif_modules(String.to_charlist(app), ~c"x"))
+
+      none = String.to_charlist(Path.join(dir, "none.com"))
+
+      assert {:error, ~c"~ts: ~ts", [^none, _]} =
+               catch_throw(:beam_com_wasm.nif_modules(none, ~c"x"))
     end
   end
 

@@ -37,6 +37,10 @@ The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 `exqlite` (SQLite), 10,000 inserts in one transaction into a database
 file: 195 ms with the AOT file, 543 ms with the interpreter.
 
+A call into the library costs about 0.2 µs with the AOT file, and each
+`enif_*` function that the module calls about 70 ns (x86_64, 2.8 GHz).
+A call of a native NIF costs about 20 ns.
+
 ## Make the `.wasm` file
 
 1. Get the headers. `beam.com --nif-include` writes `erl_nif.h` and the
@@ -116,13 +120,28 @@ NIF library in WebAssembly: its 93 tests pass with the `.wasm` file and
 with the AOT file, also `render_component/3` and `live_isolated/2` of
 LiveViewTest.
 
+`beam.com` has this library: a Mix project with `{:lazy_html,
+"0.1.13"}` gets it, with no C++ compiler and no download. The tools of
+Elixir (`mix.com`, `iex.com`) make elixir_make build lazy_html with
+make (the env `force_build` of elixir_make), and the make of `beam.com`
+copies `liblazy_html.wasm` and its AOT files into the priv directory of
+the package. `beam.com PROJECT -o app.com` puts the same files into the
+program. A program with another version of lazy_html gets an error that
+names the version of `beam.com`. The files add about 3.4 MB (0.95 MB
+compressed) to `beam.com`, and nothing to a program without lazy_html.
+[`scripts/lazy_html.sh`](../scripts/lazy_html.sh) builds them again
+(`priv/nifs/lazy_html-0.1.13/`).
+
 wasm32-wasi links no C++ exceptions, so fine and lazy_html need a small
 change, which a flag turns on:
 [`patches/fine/0001-no-exceptions.patch`](../patches/fine/0001-no-exceptions.patch)
 (in `deps/fine`) and
 [`patches/lazy_html/0001-no-exceptions.patch`](../patches/lazy_html/0001-no-exceptions.patch)
-(in the package). Then, with lexbor at the commit of the `Makefile` of
-lazy_html:
+(in the package). Also apply
+[`patches/fine/0002-quiet-variant.patch`](../patches/fine/0002-quiet-variant.patch):
+without it, `from_tree` of a deep tree takes a time that grows with the
+square of the depth, also natively (`docs/UPSTREAM.md`, F2). Then, with
+lexbor at the commit of the `Makefile` of lazy_html:
 
 ```sh
 # lexbor: each .c file of source/lexbor, but ports/windows_nt
@@ -147,6 +166,11 @@ A document of 553 KB, the median of 15 calls:
 16 processes that use the library at the same time (the concurrent test
 of lazy_html, 21,000 calls): 0.5 s with the AOT file, 110 ms with the
 native NIF. The calls into one library run one at a time.
+
+`from_tree` of a tree with a depth of 20,000: 51 ms with the AOT file and
+the two patches of fine, 14.7 s with the native NIF of the hex package.
+All the tests of lazy_html (and of the bridge) take 3.5 s with the AOT
+file.
 
 ## Rust (rustler)
 
@@ -182,8 +206,10 @@ The limits:
   calls into the same library wait, also on a normal scheduler.
 - **Memory.** The memory of a module grows with no copy on Linux,
   macOS, FreeBSD and NetBSD (it has its maximum size in virtual memory,
-  4 GB). On Windows and OpenBSD, each growth copies the memory: a
-  library that grows its memory in many small steps is slow there.
+  4 GB). On Windows and OpenBSD, the memory has room for twice its pages:
+  a growth past that room copies the memory once, and the next growths
+  copy nothing until the room is full again. There, the memory of a
+  module takes up to twice its size.
 - **No threads.** `enif_thread_create` fails. The mutexes, the
   condition variables and the read-write locks do nothing, because the
   calls run one at a time.
@@ -224,21 +250,35 @@ are not used, and `beam.com --target wasm32` leaves them out of
 - **Workers.** A Worker cannot compile WebAssembly at run time. So
   `beam.com --target wasm32` writes each NIF library of the release
   into the runtime Worker (`nifs/`, and `nifs.js`), and Wrangler
-  compiles them. A Worker that runs an `app.com` (the `beam.com/cloudflare`
-  module of the npm package) has no NIF libraries in WebAssembly yet.
-- **Calls.** A call into the library costs about 5 µs more than in the
-  native `beam.com`. A trap stops only that call, with
+  compiles them. For a Worker that runs an `app.com` (`serve(app)` of
+  the npm package), `beam.com --nif-modules app.com .` writes the same
+  files next to the entry, and the entry gives them to `serve`:
+
+  ```js
+  import app from './app.com' with { type: 'bytes' };
+  import nifs from './nifs.js';
+  import { serve } from 'beam.com';
+
+  const beam = serve(app, { nifs });
+  ```
+
+  Deno, Node.js and a web page compile the files at run time, and need
+  no `nifs.js`.
+- **Calls.** A call into the library costs about 3.5 µs, and each
+  `enif_*` function that the module calls about 0.3 µs: each call runs
+  on its own JSPI stack. A trap stops only that call, with
   `error:{wasm_trap, Message}`.
 - **No files.** WASI has no directories there: the standard output and
   error, the clocks and random bytes work. Other functions of WASI fail
   or stop the call with an exception.
-- **No snapshot.** A VM with a NIF library in WebAssembly makes no
-  snapshot of its memory (`docs/WORKERS.md`): the module runs out of
-  that memory.
+- **Snapshots.** A snapshot of a VM (`docs/WORKERS.md`) also holds the
+  memory of each NIF library in WebAssembly, and the table slots of its
+  functions. The restore makes each library again from its file, with
+  the same memory, before the threads of ERTS start.
 - The loader adds about 95 KB to `beam.wasm` (26 KB with gzip).
 
 `tests/wasm_diff_test.exs` runs `nif_check` in the runtime, also with
-the compiled module of a Worker.
+the compiled module of a Worker, and after a snapshot and its restore.
 
 ## Debug
 

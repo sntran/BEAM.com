@@ -4,7 +4,7 @@
 //
 // JOB.json: {"runtime": DIR, "root": OTP_ROOT, "libs": [EBIN...],
 //   "boot": BOOT_FILE, "pa": DIR, "eval": EXPR, "schedule": "node" | "plain",
-//   "nifs": {FILE: MODULE_FILE} (optional)}
+//   "nifs": {FILE: MODULE_FILE} (optional), "snapshot": true (optional)}
 //
 // The driver copies the boot file, each EBIN directory, and the files of
 // "pa" into the memory file system, below the same names as on the disk.
@@ -13,6 +13,12 @@
 //
 // The schedule "plain" runs the timers of the threads as a plain Worker
 // does: all the timers that are due run in one task, one after the other.
+//
+// "snapshot": after the first line of the program, the driver asks all
+// the threads of ERTS to return (erts_wasm_hibernate), keeps the memory,
+// the open files and the NIF libraries in WebAssembly (Module.nifHost),
+// and restores them in a new instance, where the program goes on. This is
+// what worker.js does with a snapshot (capture() and restore()).
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -71,12 +77,20 @@ function plainSchedule() {
   };
 }
 
-const exit = new Promise((resolve) => {
-  createBeam({
-    arguments: ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0', '--',
-      '-root', job.root, '-bindir', path.join(job.root, 'bin'), '-progname', 'erl', '--',
-      '-home', '/', '-boot', job.boot.replace(/\.boot$/, ''), '-noshell',
-      '-pa', job.pa, '-eval', job.eval],
+const PAGE = 65536;
+const args = ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0',
+  // No time correction for a snapshot: the monotonic time of a new
+  // instance starts again at 0.
+  ...(job.snapshot ? ['-c', 'false'] : []), '--',
+  '-root', job.root, '-bindir', path.join(job.root, 'bin'), '-progname', 'erl', '--',
+  '-home', '/', '-boot', job.boot.replace(/\.boot$/, ''), '-noshell',
+  '-pa', job.pa, '-eval', job.eval];
+
+// The options of one instance of the runtime. on.exports: the exports of
+// beam.wasm; on.line: each line of the standard output.
+function options(on, resolve) {
+  return {
+    arguments: args,
     preRun: [(m) => {
       Object.assign(m.ENV, { BINDIR: path.join(job.root, 'bin'), ROOTDIR: job.root, EMU: 'beam', PROGNAME: 'erl', HOME: '/' });
       m.FS.mkdirTree(path.dirname(job.boot));
@@ -84,17 +98,93 @@ const exit = new Promise((resolve) => {
       for (const dir of job.libs) copyTree(m.FS, dir);
       copyTree(m.FS, job.pa);
       if (job.work) m.FS.mkdirTree(job.work);
+      on.module = m;
     }],
-    print: (s) => process.stdout.write(s + '\n'),
+    print: (s) => { process.stdout.write(s + '\n'); on.line?.(); },
     printErr: (s) => process.stderr.write(s + '\n'),
     instantiateWasm: (imports, done) => {
-      WebAssembly.instantiate(wasm, imports).then((instance) => done(instance));
+      WebAssembly.instantiate(wasm, imports).then((instance) => { on.exports = instance.exports; done(instance); });
       return {};
     },
     jspiSchedule: job.schedule === 'plain' ? plainSchedule() : undefined,
     nifModule: (file) => nifs[file] ?? null,
     onExit: (code) => resolve(code),
-  }).catch((e) => { process.stderr.write(`run.mjs: ${e}\n`); resolve(2); });
+  };
+}
+
+// The memory, the open files and the NIF libraries of a VM whose threads
+// all returned.
+async function capture(m, x) {
+  x.erts_wasm_hibernate();
+  const start = performance.now();
+  while (x.jspi_live_threads() > 0) {
+    if (performance.now() - start > 5000) throw new Error('the threads of ERTS did not return');
+    await new Promise((r) => setImmediate(r));
+  }
+  const heap = m.HEAPU8;
+  const pages = new Map();
+  for (let p = 0; p < heap.length / PAGE; p++) {
+    const page = heap.subarray(p * PAGE, (p + 1) * PAGE);
+    if (page.some((b) => b !== 0)) pages.set(p, page.slice());
+  }
+  const pipes = new Map();
+  const streams = m.FS.streams.map((st, fd) => {
+    if (!st || fd <= 2) return null;
+    if (st.node?.pipe) {
+      if (!pipes.has(st.node.pipe)) pipes.set(st.node.pipe, pipes.size);
+      return { fd, pipe: pipes.get(st.node.pipe), flags: st.flags };
+    }
+    return { fd, path: st.path, flags: st.flags, position: st.position };
+  }).filter(Boolean);
+  return { size: heap.length, pages, streams, nifs: m.nifHost?.loaded() ? m.nifHost.save() : null };
+}
+
+function restore(m, x, snap) {
+  for (let p = 0; p < m.HEAPU8.length / PAGE; p++) if (!snap.pages.has(p)) m.HEAPU8.fill(0, p * PAGE, (p + 1) * PAGE);
+  if (!x.jspi_snapshot_grow(snap.size)) throw new Error('no memory');
+  for (const [p, page] of snap.pages) m.HEAPU8.set(page, p * PAGE);
+  if (snap.nifs) m.nifHost.restore(snap.nifs, (f) => m.FS.readFile(f));
+  const made = new Set();
+  for (const st of snap.streams) {
+    if (st.pipe !== undefined) {
+      if (!made.has(st.pipe)) { made.add(st.pipe); x.jspi_snapshot_pipe(); }
+      const got = m.FS.getStream(st.fd);
+      if (!got?.node?.pipe) throw new Error(`fd ${st.fd} is not a pipe`);
+      got.flags = st.flags;
+    } else {
+      const got = m.FS.open(st.path, st.flags);
+      if (got.fd !== st.fd) throw new Error(`fd ${st.fd} is ${got.fd}`);
+      got.position = st.position;
+    }
+  }
+  x.wasm_host_restore();
+  x.erts_wasm_resume();
+}
+
+const exit = new Promise((resolve) => {
+  const fail = (e) => { process.stderr.write(`run.mjs: ${e}\n`); resolve(2); };
+  const on = {};
+  if (job.snapshot) {
+    on.line = () => {
+      on.line = null;
+      setTimeout(async () => {
+        try {
+          const snap = await capture(on.module, on.exports);
+          const again = {};
+          createBeam({
+            ...options(again, resolve),
+            noInitialRun: true,
+            onRuntimeInitialized() {
+              try { restore(again.module, again.exports, snap); } catch (e) { fail(e); }
+            },
+          }).catch(fail);
+        } catch (e) {
+          fail(e);
+        }
+      }, 300);
+    };
+  }
+  createBeam(options(on, resolve)).catch(fail);
 });
 process.exitCode = await exit;
 process.exit();

@@ -356,6 +356,10 @@ jobs:
           sh ./hashsum.com abc | grep '^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
           sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/wasm32" --target wasm32 > /dev/null
           node tests/host/boot_app_com.mjs "$RUNNER_TEMP/wasm32" hashsum.com --expect 'usage: hashsum TEXT'
+          # The tools of NIF libraries in WebAssembly: not flags of erl.
+          sh bin/beam.com --nif-include < /dev/null | grep -q 'nif-include-'
+          sh bin/beam.com --nif-modules hashsum.com "$RUNNER_TEMP/nifs" < /dev/null | grep -q '(0 NIF libraries'
+          grep -q 'export default {};' "$RUNNER_TEMP/nifs/nifs.js"
 
       # The npm package of this beam.com (package.json, and runtime/ of
       # scripts/npm.sh), as a user installs it: npx beam.com with a download
@@ -405,6 +409,20 @@ jobs:
           RELEASE_ERTS=false mix.com release --overwrite
           sh ../../bin/beam.com _build/prod/rel/phoenix_demo -o "$RUNNER_TEMP/phoenix_demo.com"
           ls -l "$RUNNER_TEMP/phoenix_demo.com"
+
+      # LiveViewTest parses HTML with lazy_html: the NIF library in
+      # WebAssembly of beam.com (docs/NIFS.md, "C++"), with no C++ compiler
+      # and no download of a native library.
+      - name: The tests of examples/phoenix_demo
+        working-directory: examples/phoenix_demo
+        env:
+          MIX_ENV: test
+        run: |
+          mix.com deps.get
+          mix.com test
+          ls -l _build/test/lib/lazy_html/priv
+          test -f _build/test/lib/lazy_html/priv/liblazy_html.wasm
+          test ! -e _build/test/lib/lazy_html/priv/liblazy_html.so
 
       - name: Run phoenix_demo.com natively
         run: |

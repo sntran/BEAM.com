@@ -12,9 +12,18 @@ import { appFiles, bytesReader } from '../app-com.js';
 import runtime from '../runtime-id.js';
 
 let app = null;
+let modules = null;
 
-export function use(bytes) {
+// nifModules: the NIF libraries in WebAssembly of app.com, compiled by
+// Wrangler (nifs.js of "beam.com --nif-modules"), or null.
+export function use(bytes, nifModules = null) {
   app = bytes;
+  modules = nifModules;
+}
+
+// For worker.js: the path of each NIF library in /app, and its module.
+export function nifs() {
+  return modules;
 }
 
 // One read of the file for each isolate: the front Worker and its VMs

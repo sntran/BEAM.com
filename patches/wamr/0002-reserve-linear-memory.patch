@@ -2,16 +2,18 @@ BEAM.com: copy-free growth of a linear memory without hardware bounds
 checks (docs/UPSTREAM.md, W10). With BEAM_COM_RESERVE_LINEAR_MEMORY,
 WAMR maps the maximum size of a linear memory of wasm32 at the start,
 with no access after its pages, and a growth makes the next pages
-accessible. Without it, each growth maps new memory and copies all the
-memory. In a Cosmopolitan build, only on Linux, macOS, FreeBSD and
+accessible. In a Cosmopolitan build, only on Linux, macOS, FreeBSD and
 NetBSD: on Windows a mapping takes its whole size from the commit limit,
-and on OpenBSD from the data size limit.
+and on OpenBSD from the data size limit. There, the mapping has the page
+count rounded up to a power of two: a growth inside it copies nothing,
+and a growth past it maps twice the pages and copies once. Without the
+flag, each growth maps new memory and copies all the memory.
 
 diff --git a/core/iwasm/common/wasm_memory.c b/core/iwasm/common/wasm_memory.c
-index 59d478c..e1cae62 100644
+index 59d478c..b21dd4d 100644
 --- a/core/iwasm/common/wasm_memory.c
 +++ b/core/iwasm/common/wasm_memory.c
-@@ -1532,6 +1532,31 @@ wasm_mmap_linear_memory(uint64 map_size, uint64 commit_size)
+@@ -1532,6 +1532,54 @@ wasm_mmap_linear_memory(uint64 map_size, uint64 commit_size)
      return wasm_mremap_linear_memory(NULL, 0, map_size, commit_size);
  }
  
@@ -40,10 +42,33 @@ index 59d478c..e1cae62 100644
 +#endif
 +}
 +
++/* BEAM.com: where reserve_max_size() is false for a linear memory of
++ * wasm32 (Windows and OpenBSD in a Cosmopolitan build), its mapping has
++ * room for more pages: the page count rounded up to a power of two, at
++ * most the maximum, all readable and writable. A growth inside the
++ * mapping copies nothing, and a growth past it maps twice the pages and
++ * copies once. So the copies of all the growths take linear time. */
++static uint64
++mapped_page_count(bool is_memory64, uint64 page_count, uint64 max_page_count)
++{
++#if defined(BEAM_COM_RESERVE_LINEAR_MEMORY) && !defined(OS_ENABLE_HW_BOUND_CHECK)
++    uint64 n = 1;
++    if (is_memory64 || page_count == 0 || reserve_max_size(is_memory64))
++        return page_count;
++    while (n < page_count)
++        n <<= 1;
++    return n < max_page_count ? n : max_page_count;
++#else
++    (void)is_memory64;
++    (void)max_page_count;
++    return page_count;
++#endif
++}
++
  static bool
  wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
                               WASMMemoryInstance *memory, uint32 inc_page_count)
-@@ -1554,9 +1579,10 @@ wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
+@@ -1554,10 +1602,18 @@ wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
  #ifdef OS_ENABLE_HW_BOUND_CHECK
      full_size_mmaped = true;
  #elif WASM_ENABLE_SHARED_MEMORY != 0
@@ -54,9 +79,41 @@ index 59d478c..e1cae62 100644
 -    full_size_mmaped = false;
 +    full_size_mmaped = reserve_max_size(memory->is_memory64);
  #endif
++    /* BEAM.com: the new pages are in the mapping (mapped_page_count). */
++    if (!full_size_mmaped
++        && (uint64)inc_page_count + memory->cur_page_count
++               <= mapped_page_count(memory->is_memory64,
++                                    memory->cur_page_count,
++                                    memory->max_page_count))
++        full_size_mmaped = true;
  
      memory_data_old = memory->memory_data;
-@@ -1912,7 +1938,11 @@ wasm_deallocate_linear_memory(WASMMemoryInstance *memory_inst)
+     total_size_old = memory->memory_data_size;
+@@ -1661,9 +1717,21 @@ wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
+             }
+         }
+ 
++        /* BEAM.com: the old and the new mapping (mapped_page_count). */
++        uint64 mapped_old = num_bytes_per_page
++                            * mapped_page_count(memory->is_memory64,
++                                                cur_page_count, max_page_count);
++        uint64 mapped_new = num_bytes_per_page
++                            * mapped_page_count(memory->is_memory64,
++                                                total_page_count,
++                                                max_page_count);
++        if (mapped_old < total_size_old)
++            mapped_old = total_size_old;
++        if (mapped_new < total_size_new)
++            mapped_new = total_size_new;
+         if (!(memory_data_new =
+-                  wasm_mremap_linear_memory(memory_data_old, total_size_old,
+-                                            total_size_new, total_size_new))) {
++                  wasm_mremap_linear_memory(memory_data_old, mapped_old,
++                                            mapped_new, mapped_new))) {
+             ret = false;
+             goto return_func;
+         }
+@@ -1912,9 +1980,17 @@ wasm_deallocate_linear_memory(WASMMemoryInstance *memory_inst)
      }
      else
  #endif
@@ -67,17 +124,45 @@ index 59d478c..e1cae62 100644
 +    }
 +    else {
          map_size = (uint64)memory_inst->num_bytes_per_page
-                    * memory_inst->cur_page_count;
+-                   * memory_inst->cur_page_count;
++                   * mapped_page_count(memory_inst->is_memory64,
++                                       memory_inst->cur_page_count,
++                                       memory_inst->max_page_count);
++        if (map_size < memory_inst->memory_data_size)
++            map_size = memory_inst->memory_data_size;
      }
-@@ -1954,7 +1984,10 @@ wasm_allocate_linear_memory(uint8 **data, bool is_shared_memory,
+ #else
+     map_size = 8 * (uint64)BH_GB;
+@@ -1954,8 +2030,13 @@ wasm_allocate_linear_memory(uint8 **data, bool is_shared_memory,
      }
      else
  #endif
 -    {
+-        map_size = init_page_count * num_bytes_per_page;
 +    if (reserve_max_size(is_memory64)) {
 +        map_size = max_page_count * num_bytes_per_page;
 +    }
 +    else {
-         map_size = init_page_count * num_bytes_per_page;
++        map_size = mapped_page_count(is_memory64, init_page_count,
++                                     max_page_count)
++                   * num_bytes_per_page;
      }
  #else  /* else of OS_ENABLE_HW_BOUND_CHECK */
+     /* Totally 8G is mapped, the opcode load/store address range is 0 to 8G:
+@@ -1983,7 +2064,15 @@ wasm_allocate_linear_memory(uint8 **data, bool is_shared_memory,
+             return BHT_ERROR;
+         }
+ #else
+-        if (!(*data = wasm_mmap_linear_memory(map_size, *memory_data_size))) {
++        /* BEAM.com: all the pages of a mapping of mapped_page_count() are
++         * readable and writable, so a later growth can copy them. */
++        uint64 commit_size = *memory_data_size;
++#ifndef OS_ENABLE_HW_BOUND_CHECK
++        if (!is_shared_memory && !reserve_max_size(is_memory64)
++            && map_size > commit_size)
++            commit_size = map_size;
++#endif
++        if (!(*data = wasm_mmap_linear_memory(map_size, commit_size))) {
+             return BHT_ERROR;
+         }
+ #endif

@@ -860,7 +860,11 @@ mix_dir(Dir, Options) ->
              {env, Get(env, [])}]
         ++ [{mod, M} || M <- [Get(mod, undefined)], M =/= undefined],
     PrivDir = filename:join(Dir, "priv"),
-    {Priv, PrivExec} = priv_files(PrivDir),
+    {Priv0, PrivExec} = priv_files(PrivDir),
+    %% A package with a NIF library in WebAssembly in beam.com
+    %% (lazy_html): its files, as the make of beam.com copies them.
+    Priv = Priv0 ++ [F || {N, _} = F <- beam_com_make:wasm_nif_files(Name, Vsn),
+                          not lists:keymember(N, 1, Priv0)],
     Config = case maps:get(dep, Options, false) of
                  true -> [];
                  false -> [{"sys.config", C} || C <- [beam_com_elixir:sys_config(Dir)], C =/= none]

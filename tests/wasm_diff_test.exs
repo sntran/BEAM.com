@@ -75,7 +75,17 @@ defmodule BeamCom.WasmDiffTest do
     assert status == 0
   end
 
-  defp nif_check(ctx, name, compiled) do
+  # A snapshot while the program waits, with the library loaded: the new
+  # instance gets the memory of the library again (Module.nifHost), and the
+  # second run of the checks passes there.
+  test "the NIF library in WebAssembly of nif_check, after a snapshot", ctx do
+    eval = "nif_check:main([]), receive after 1500 -> ok end, nif_check:main([]), halt()."
+    {out, status} = nif_check(ctx, "nif_check_snapshot", false, %{snapshot: true, eval: eval})
+    assert [_, _] = Regex.scan(~r/^nif_check: all \d+ passed$/m, out)
+    assert status == 0
+  end
+
+  defp nif_check(ctx, name, compiled, job \\ %{}) do
     src = Path.join([__DIR__, "programs", "nif_check"])
     app = Path.join([ctx.top, name, "nif_check"])
     ebin = Path.join(app, "ebin")
@@ -100,7 +110,10 @@ defmodule BeamCom.WasmDiffTest do
         %{file => compiled_file}
       end
 
-    wasm(%{ctx | libs: [app | ctx.libs], ebin: ebin}, "nif_check", "node", nifs)
+    job = if nifs, do: Map.put(job, :nifs, nifs), else: job
+    # The work directory has the name of the test, and the program is nif_check.
+    job = Map.put_new(job, :eval, eval("nif_check", "/work"))
+    wasm(%{ctx | libs: [app | ctx.libs], ebin: ebin}, name, "node", job)
   end
 
   # The command of the native erl, the OTP root, and the ebin directories
@@ -154,7 +167,7 @@ defmodule BeamCom.WasmDiffTest do
     )
   end
 
-  defp wasm(ctx, program, schedule, nifs \\ nil) do
+  defp wasm(ctx, program, schedule, extra \\ %{}) do
     work = Path.join([ctx.top, "wasm-#{schedule}", program])
     File.mkdir_p!(work)
 
@@ -169,7 +182,7 @@ defmodule BeamCom.WasmDiffTest do
       eval: eval(program, "/work")
     }
 
-    job = if nifs, do: Map.put(job, :nifs, nifs), else: job
+    job = Map.merge(job, extra)
 
     file = Path.join(work, "job.json")
     File.write!(file, :json.encode(job))

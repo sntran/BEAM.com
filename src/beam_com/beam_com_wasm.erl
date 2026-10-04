@@ -29,7 +29,7 @@
 -module(beam_com_wasm).
 
 -export([release_dir/2, write/3, overlay/4]).
--export([sqlite_shim/1, wasm_shim/0]).
+-export([sqlite_shim/1, wasm_shim/0, nif_modules/2]).
 
 -ifdef(TEST).
 -export([release_files/2, with_host/2, with_boot_modules/2, vm_args/1, pack/1,
@@ -606,6 +606,35 @@ nif_files(Files) ->
     [{"nifs.js", iolist_to_binary(Js)}
      | [{"nifs/" ++ integer_to_list(I) ++ ".wasm", M} || {I, {_, M}} <- Indexed]].
 
+%% beam.com --nif-modules APP DIR: nifs.js and nifs/N.wasm (nif_files/1)
+%% of the NIF libraries in WebAssembly of APP, an app.com, for a Worker
+%% that runs APP (serve(app, {nifs}) of the npm package). A file of the
+%% edge part of APP (.wasm/lib/) takes the place of the file of lib/.
+nif_modules(App, Dir) ->
+    Bin = case file:read_file(App) of
+              {ok, B} -> B;
+              {error, R} -> throw({error, "~ts: ~ts", [App, file:format_error(R)]})
+          end,
+    Wasm = fun(F) ->
+                   P = element(2, F),
+                   filename:extension(P) =:= ".wasm" andalso
+                       (lists:prefix("lib/", P) orelse lists:prefix(".wasm/lib/", P))
+           end,
+    Entries = case zip:unzip(Bin, [memory, {file_filter, Wasm}]) of
+                  {ok, Es} -> Es;
+                  {error, _} -> throw({error, "~ts: not an app.com (no zip)", [App]})
+              end,
+    Edge = [{P, D} || {".wasm/" ++ P, D} <- Entries],
+    Files = lists:sort(Edge ++ [E || {P, _} = E <- Entries, lists:prefix("lib/", P),
+                                     not lists:keymember(P, 1, Edge)]),
+    Out = nif_files(Files),
+    ok = filelib:ensure_path(filename:join(Dir, "nifs")),
+    %% The modules of an earlier run: not in nifs.js now.
+    [ok = file:delete(F) || F <- filelib:wildcard(filename:join([Dir, "nifs", "*.wasm"]))],
+    [ok = file:write_file(filename:join(Dir, F), D) || {F, D} <- Out],
+    io:format("~ts: wrote ~ts (~b NIF libraries in WebAssembly of ~ts)~n",
+              [beam_com:name(), filename:join(Dir, "nifs.js"), length(Out) - 1, App]).
+
 %% The module with an export of its table (__nif_table), when it is a
 %% NIF library (it exports nif_init), else false.
 nif_module(<<"\0asm", 1:32/little, Sections/binary>> = Bin) ->
@@ -712,7 +741,7 @@ host_files(#{name := App} = Rel, Key) ->
      {"wrangler.global.jsonc", wrangler_global(Name, Phoenix, Sqlite)},
      {"wrangler.durable-global.jsonc", wrangler_durable_global(Name, Phoenix, Sqlite)},
      {"release/wrangler.jsonc", wrangler_release(Name)},
-     {"worker.capnp", capnp(Phoenix, Key)},
+     {"worker.capnp", capnp(Phoenix, Key, length(nif_files(maps:get(files, Rel, []))) - 1)},
      {"page/env.json", page_env(Rel)}].
 
 %% The other hosts of worker.js: Deno (deno.js, deno.json, deno/) and a web
@@ -799,14 +828,15 @@ host_worker(Host, Js) ->
                        {<<"import('./release.bin')">>, <<"import('./release-bin.js')">>},
                        {<<"import('./snapshot.bin')">>, <<"import('./snapshot-bin.js')">>},
                        {<<"import('./nifs.js')">>, <<"import('./none.js')">>}];
-              %% A Worker that runs an app.com has no compiled NIF libraries
-              %% yet (snapshot.js: null).
+              %% A Worker that runs an app.com: the NIF libraries that the
+              %% entry gives to serve(app, {nifs}) (beam.com --nif-modules).
               cloudflare -> [{<<"from './beam.mjs'">>, <<"from '../beam.mjs'">>},
                              {<<"from './beam.wasm'">>, <<"from '../beam.wasm'">>},
                              {<<"(await import('./release.bin')).default">>,
                               <<"(await import('./release.js')).release()">>},
                              {<<"import('./snapshot.bin')">>, <<"import('./snapshot.js')">>},
-                             {<<"import('./nifs.js')">>, <<"import('./snapshot.js')">>}]
+                             {<<"(await import('./nifs.js')).default">>,
+                              <<"(await import('./release.js')).nifs()">>}]
           end,
     In = iolist_to_binary(Js),
     Out = lists:foldl(fun({A, B}, J) -> binary:replace(J, A, B, [global]) end, In, Map),
@@ -882,8 +912,8 @@ wrangler(Name, Phoenix, Sqlite) ->
      "  \"no_bundle\": true,\n"
      "  \"find_additional_modules\": true,\n"
      "  \"rules\": [\n"
-     "    { \"type\": \"ESModule\", \"globs\": [\"worker.js\", \"beam.mjs\"] },\n"
-     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"worker.js\", \"beam.mjs\", \"nifs.js\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\", \"nifs/*.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
      "  ],\n"
      "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }],\n",
@@ -921,8 +951,8 @@ wrangler_durable(Name, Phoenix) ->
      "  \"no_bundle\": true,\n"
      "  \"find_additional_modules\": true,\n"
      "  \"rules\": [\n"
-     "    { \"type\": \"ESModule\", \"globs\": [\"durable.js\", \"worker.js\", \"beam.mjs\"] },\n"
-     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"durable.js\", \"worker.js\", \"beam.mjs\", \"nifs.js\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\", \"nifs/*.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"*.bin\"] }\n"
      "  ],\n"
      "  \"services\": [{ \"binding\": \"APP\", \"service\": \"", Name, "-release\" }],\n",
@@ -947,8 +977,8 @@ wrangler_global(Name, Phoenix, Sqlite) ->
      "  \"no_bundle\": true,\n"
      "  \"find_additional_modules\": true,\n"
      "  \"rules\": [\n"
-     "    { \"type\": \"ESModule\", \"globs\": [\"global.js\", \"worker.js\", \"beam.mjs\"] },\n"
-     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"global.js\", \"worker.js\", \"beam.mjs\", \"nifs.js\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\", \"nifs/*.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"release/*.bin\"] }\n"
      "  ]",
      d1(Name, Sqlite), global_vars(Name, Phoenix, Sqlite), "\n}\n"].
@@ -971,8 +1001,8 @@ wrangler_durable_global(Name, Phoenix, Sqlite) ->
      "  \"no_bundle\": true,\n"
      "  \"find_additional_modules\": true,\n"
      "  \"rules\": [\n"
-     "    { \"type\": \"ESModule\", \"globs\": [\"durable-global.js\", \"durable.js\", \"worker.js\", \"beam.mjs\"] },\n"
-     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\"] },\n"
+     "    { \"type\": \"ESModule\", \"globs\": [\"durable-global.js\", \"durable.js\", \"worker.js\", \"beam.mjs\", \"nifs.js\"] },\n"
+     "    { \"type\": \"CompiledWasm\", \"globs\": [\"beam.wasm\", \"nifs/*.wasm\"] },\n"
      "    { \"type\": \"Data\", \"globs\": [\"release/*.bin\"] }\n"
      "  ],\n",
      ?VERSION,
@@ -1027,7 +1057,7 @@ wrangler_release(Name) ->
      "  ]\n"
      "}\n"].
 
-capnp(Phoenix, Key) ->
+capnp(Phoenix, Key, Nifs) ->
     Bindings = case Phoenix of
                    true -> ["    (name = \"PHX_HOST\", text = \"localhost\"),\n"
                             "    (name = \"SECRET_KEY_BASE\", text = \"", Key, "\"),\n"];
@@ -1049,6 +1079,9 @@ capnp(Phoenix, Key) ->
      "    (name = \"worker.js\", esModule = embed \"worker.js\"),\n"
      "    (name = \"beam.mjs\", esModule = embed \"beam.mjs\"),\n"
      "    (name = \"beam.wasm\", wasm = embed \"beam.wasm\"),\n"
+     "    (name = \"nifs.js\", esModule = embed \"nifs.js\"),\n",
+     [io_lib:format("    (name = \"nifs/~b.wasm\", wasm = embed \"nifs/~b.wasm\"),~n", [I, I])
+      || I <- lists:seq(0, Nifs - 1)],
      "  ],\n"
      "  compatibilityDate = \"", ?DATE, "\",\n"
      "  compatibilityFlags = [\"no_handle_cross_request_promise_resolution\"],\n"

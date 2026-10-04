@@ -193,13 +193,19 @@ if (!opts.check) {
   for (let p = 0; p < heap.length / PAGE; p++) {
     if (heap.subarray(p * PAGE, (p + 1) * PAGE).some((b) => b !== 0)) pages.push(p);
   }
-  const data = Buffer.alloc(pages.length * PAGE);
+  // The NIF libraries in WebAssembly: their pages come after the pages of
+  // the VM, as in capture() of worker.js.
+  const libs = m.nifHost?.loaded() ? m.nifHost.save() : null;
+  const libData = libs ? libs.libs.flatMap((l) => l.data) : [];
+  const data = Buffer.alloc((pages.length + libData.length) * PAGE);
   pages.forEach((p, i) => data.set(heap.subarray(p * PAGE, (p + 1) * PAGE), i * PAGE));
-  const head = Buffer.from(JSON.stringify({ size: heap.length, pages, fs: fsState(m.FS, since), listeners, boot_point: opts.bootPoint }));
+  libData.forEach((d, i) => data.set(d, (pages.length + i) * PAGE));
+  const nifs = libs && { count: libs.count, libs: libs.libs.map(({ data, ...l }) => l) };
+  const head = Buffer.from(JSON.stringify({ size: heap.length, pages, fs: fsState(m.FS, since), listeners, boot_point: opts.bootPoint, nifs }));
   const len = Buffer.alloc(4);
   len.writeUInt32BE(head.length);
   fs.writeFileSync(out, Buffer.concat([Buffer.from('BEAMSNP1'), len, head, data]));
-  log(`${out}: ${pages.length} of ${heap.length / PAGE} pages of 64 KiB (${(data.length / 1048576).toFixed(1)} MB)`);
+  log(`${out}: ${pages.length} of ${heap.length / PAGE} pages of 64 KiB${libs ? ` and ${libData.length} pages of ${libs.libs.length} NIF libraries` : ''} (${(data.length / 1048576).toFixed(1)} MB)`);
   // workerd: the Worker with the release gets the module too.
   const capnp = path.join(dir, 'worker.capnp');
   const c = fs.readFileSync(capnp, 'utf8');
@@ -232,6 +238,13 @@ if (!opts.check) {
       for (let p = 0; p < first; p++) if (!have.has(p)) m.HEAPU8.fill(0, p * PAGE, (p + 1) * PAGE);
       if (!exports.jspi_snapshot_grow(snap.size)) throw new Error('no memory');
       snap.pages.forEach((p, i) => m.HEAPU8.set(pagesData.subarray(i * PAGE, (i + 1) * PAGE), p * PAGE));
+      if (snap.nifs) {
+        let at = snap.pages.length * PAGE;
+        const libs = snap.nifs.libs.map((l) => ({
+          ...l, data: l.pages.map(() => { const d = pagesData.subarray(at, at + PAGE); at += PAGE; return d; }),
+        }));
+        m.nifHost.restore({ count: snap.nifs.count, libs }, (f) => m.FS.readFile(f));
+      }
       const made = new Set();
       for (const s of snap.fs.streams) {
         if (s.fd <= 2) continue;
