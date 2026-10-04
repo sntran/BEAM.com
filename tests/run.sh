@@ -584,6 +584,11 @@ if [ -f "$dir/beam.com" ]; then
     if [ "$os" != netbsd ]; then
         case $os in darwin) watcher=mac_listener var=FSMAC ;; *) watcher=inotifywait var=FSINOTIFY ;; esac
         check elixir.com "^usage: $watcher " -e "{out, 1} = System.cmd(System.fetch_env!(\"FILESYSTEM_${var}_EXECUTABLE_FILE\"), [], stderr_to_stdout: true); IO.write(out)"
+        # Mix runs rebar3 as "#!/usr/bin/env escript". With no escript in
+        # PATH (as here), the tools put the program escript of the cache
+        # at the start of PATH.
+        chmod +x "$tmp.escript"
+        check elixir.com '^escript: \["x"\] 1$' -e "{out, 0} = System.cmd(\"$tmp.escript\", [\"x\"]); IO.write(out)"
     fi
     printf 'defmodule ToolsC do\n  def f, do: :ok\nend\n' > tools_c.ex
     check elixirc.com '' tools_c.ex -o out

@@ -334,10 +334,12 @@ jobs:
         with:
           node-version: "26"
 
-      # Mix runs mix.com as a program, and rebar3 as an escript: an ELF
-      # copy of beam.com (--assimilate) for them. The builds of app.com use
-      # the APE file: a copy of an ELF file is not an APE file. The APE
-      # file starts itself again (inet_gethost), so it must be executable.
+      # Mix runs mix.com as a program: an ELF copy of beam.com
+      # (--assimilate) for it. No escript is in PATH: mix.com puts its own
+      # (the cache of BEAM.com) there for rebar3, as for npx beam.com in
+      # the build of Workers Builds. The builds of app.com use the APE
+      # file: a copy of an ELF file is not an APE file. The APE file starts
+      # itself again (inet_gethost), so it must be executable.
       - name: Make the tools of Mix programs of the runner
         run: |
           chmod +x bin/beam.com
@@ -346,7 +348,6 @@ jobs:
           sh tools/beam.com --assimilate
           chmod +x tools/beam.com
           ln -sf "$PWD/tools/beam.com" tools/mix.com
-          ln -sf "$PWD/tools/beam.com" tools/escript
           echo "$PWD/tools" >> "$GITHUB_PATH"
 
       - name: A program of one file

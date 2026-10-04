@@ -712,9 +712,11 @@ static void make_dirs(char *path)
  *     (the name of a link can be lost when the APE loader starts the
  *     file).
  *
- * Returns the path of the program, or NULL (also on Windows).
+ * Sub is "" or a subdirectory of bin ("/path"), for a directory that
+ * holds only this program. Returns the path of the program, or NULL
+ * (also on Windows).
  */
-static char *cache_program(const char *name)
+static char *cache_program_in(const char *sub, const char *name)
 {
     const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
                *home = getenv("HOME"), *exe = GetProgramExecutableName();
@@ -725,11 +727,11 @@ static char *cache_program(const char *name)
     if (beam_com_is_windows() || !exe || *exe != '/' || strchr(exe, '\''))
         return NULL;
     if (cache && *cache)
-        dir = join(cache, "/bin", "");
+        dir = join(cache, "/bin", sub);
     else if (xdg && *xdg)
-        dir = join(xdg, "/beam.com/bin", "");
+        dir = join(xdg, "/beam.com/bin", sub);
     else if (home)
-        dir = join(home, "/.cache/beam.com/bin", "");
+        dir = join(home, "/.cache/beam.com/bin", sub);
     else
         return NULL;
     make_dirs(dir);
@@ -776,6 +778,11 @@ static char *cache_program(const char *name)
         }
     }
     return link;
+}
+
+static char *cache_program(const char *name)
+{
+    return cache_program_in("", name);
 }
 
 /*
@@ -839,6 +846,29 @@ static void rebar3_link(void)
         !(link = cache_program("rebar3")))
         return;
     setenv("MIX_REBAR3", link, 1);
+}
+
+/*
+ * Mix runs rebar3 as an escript: its first line is "#!/usr/bin/env
+ * escript". With no escript in PATH (for example in the build of Workers
+ * Builds or Deno Deploy, with npx beam.com), a dependency that is a
+ * rebar3 project does not compile. So the tools of Elixir put the
+ * directory of the program escript in the cache of BEAM.com
+ * (cache_program_in()) at the start of PATH. An escript of PATH stays.
+ *
+ * The directory bin/path holds only escript: the programs make and
+ * inotifywait of bin must not hide the make and the inotifywait of PATH
+ * (beam_com_make.erl runs the make of PATH).
+ */
+static void escript_link(void)
+{
+    const char *path = getenv("PATH");
+    char *link;
+
+    if (find_program("escript") || !(link = cache_program_in("/path", "escript")))
+        return;
+    *strrchr(link, '/') = '\0';
+    setenv("PATH", path && *path ? join(link, ":", path) : link, 1);
 }
 
 /*
@@ -1593,6 +1623,7 @@ void beam_com_main(int *argcp, char ***argvp)
         watch_link();
         make_link();
         rebar3_link();
+        escript_link();
         push(&file, "-boot");
         push(&file, BEAM_COM_BINDIR "/start_clean");
         push(&file, "-noshell");
