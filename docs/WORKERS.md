@@ -1,12 +1,14 @@
-# Cloudflare Workers (`--target wasm32`)
+# Cloudflare Workers, Deno Deploy and web pages
 
-`beam.com INPUT -o DIR --target wasm32` makes Cloudflare Workers of a
-program. The program is not changed: its HTTP server (Bandit or Cowboy)
-listens with `gen_tcp`, as on a computer, and all of OTP is there.
+The `app.com` of `beam.com INPUT -o app.com` runs natively, and also on
+Cloudflare Workers, on Deno Deploy, in a web page and in Node.js. The
+program is not changed: its HTTP server (Bandit or Cowboy) listens with
+`gen_tcp`, as on a computer, and all of OTP is there.
 
-The Workers run a second runtime: ERTS of the same Erlang/OTP, compiled
-to WebAssembly with Emscripten (`beam.wasm`). It is in the zip of
-`beam.com`, so the build needs no Emscripten, no Node.js and no other
+At the edge, a second runtime runs the file: ERTS of the same
+Erlang/OTP, compiled to WebAssembly with Emscripten (`beam.wasm`). The
+npm package `beam.com` holds that runtime, and `serve(app)` of the
+package serves the file. The build needs no Emscripten and no other
 toolchain.
 
 Live demos, on the Free plan of Workers:
@@ -24,26 +26,43 @@ AtomVM, or BEAM code compiled to WebAssembly. See "Related work" in
 
 ## Quick start
 
-```sh
-beam.com examples/worker -o worker --target wasm32    # an application, a rebar3 or Mix project
-beam.com _build/prod/rel/hello -o worker --target wasm32   # or a release directory (mix release)
+Copy [`examples/worker`](../examples/worker) (stateless) or
+[`examples/phoenix_demo`](../examples/phoenix_demo) (stateful, with a
+Durable Object): their `package.json`, `worker.js`, `wrangler.jsonc` and
+`deno.json` do not change from one app to another. Then:
 
+```sh
+npm install && npm run build    # npx beam.com makes app.com
+npx wrangler dev                # test on this computer: Cloudflare Workers, in workerd
+npx deno serve -A worker.js     # or Deno
+npx wrangler deploy             # deploy to Cloudflare
+```
+
+The input of the build is what `beam.com -o` takes (a `.erl` or `.ex`
+file, an application directory, a rebar3 or Mix project), or a release
+directory without ERTS. For a Phoenix app, build a release with `mix
+release` and `include_erts: false`, and give its directory: then
+`runtime.exs` and the config providers run in the Worker. See
+[`examples/phoenix_demo/scripts/app-com.sh`](../examples/phoenix_demo/scripts/app-com.sh).
+See "Deploy at each git push" below.
+
+## The directory of --target wasm32
+
+`beam.com INPUT -o DIR --target wasm32` writes a full directory in place
+of one file. Use it only for what `app.com` does not do yet: a snapshot
+of the build in the global scope (the shortest cold start), the static
+site `DIR/page/` (the workflow of GitHub Pages), and Livebook. The same
+directory runs on Workers, on Deno and Deno Deploy, and in a web page:
+see "Deno and Deno Deploy" and "In a web page" below.
+
+```sh
+beam.com examples/worker -o worker --target wasm32
 cd worker
 npx workerd serve worker.capnp                        # test on this computer: http://127.0.0.1:8789
 (cd release && npx wrangler deploy) && npx wrangler deploy
 ```
 
-The input is what `beam.com -o` takes (a `.erl` or `.ex` file, an
-application directory, a rebar3 or Mix project), or a release directory
-without ERTS. For a Phoenix app, build a release with `mix release` and
-`include_erts: false`, and give its directory: then `runtime.exs` and the
-config providers run in the Worker. See
-[`examples/phoenix_demo/scripts/wasm.sh`](../examples/phoenix_demo/scripts/wasm.sh).
-
-The same directory also runs on Deno and Deno Deploy, and in a web page:
-see "Deno and Deno Deploy" and "In a web page" below.
-
-## What the build writes
+### What the build writes
 
 | File | What |
 |---|---|
@@ -64,7 +83,7 @@ modules of its boot. The Worker then loads them in one batch, and the
 first request is shorter. `BEAM_COM_WASM_NATIVE_RUN=0` turns this off,
 for a program that must not start on the build computer.
 
-## Three ways to run the VM
+### Three ways to run the VM
 
 **The runtime Worker** (`wrangler.jsonc`). Each isolate has its own VM.
 The first request of an isolate boots the VM (or restores a snapshot),

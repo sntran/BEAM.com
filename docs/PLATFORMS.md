@@ -77,6 +77,6 @@ are removed when the node stops.
 - `beam.com INPUT -o OUTPUT` takes only Hex packages (no git
   dependencies). For Elixir: no umbrella projects, no
   `config/runtime.exs`, no protocol consolidation. A release directory
-  of `mix release` has none of these limits, with `--target wasm32`.
-- For the limits of Cloudflare Workers (`--target wasm32`), see
+  of `mix release` has none of these limits.
+- For the limits of Cloudflare Workers, Deno Deploy and web pages, see
   [`WORKERS.md`](WORKERS.md).
