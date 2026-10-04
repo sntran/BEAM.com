@@ -380,9 +380,20 @@ batch.
 - The Worker gives each request to the listener of the program on
   `PORT` (default 4000) as an HTTP/1.1 connection, and gives the answer
   back. WebSockets work (LiveView). HTTP stays in Bandit or Cowboy.
+- The connection to the app has no TLS. The Worker gives the scheme of
+  the client in `x-forwarded-proto` (`https` on Cloudflare, `http` in
+  `wrangler dev` on `http://localhost`), as Deno and the web page do. So
+  `force_ssl: [rewrite_on: [:x_forwarded_proto]]` of Phoenix works.
 - Outgoing TCP and TLS work (`gen_tcp`, `ssl`, `:httpc`, Req) through
   `connect()` of Workers. A connection belongs to the request
   that opened it, and closes with it.
+- Caution: on Cloudflare, `connect()` cannot reach a host behind
+  Cloudflare. Cloudflare blocks "outbound TCP sockets to Cloudflare IP
+  ranges", and a Worker cannot connect to itself. The connection gets
+  `econnrefused`, and so does an HTTPS request to that host (for example
+  `api.cloudflare.com`, or a webhook on a site behind Cloudflare).
+  `wrangler dev` and Deno do not have this block, so a local test does
+  not show it. Test such a host on Cloudflare itself.
 - The text `vars` of the Worker and its secrets are the environment of
   the VM. `PHX_SERVER=true` is set for a release with Phoenix.
 - **The Origin of a WebSocket.** Phoenix compares the `Origin` of a
@@ -391,10 +402,12 @@ batch.
   app the origin of `PHX_HOST`. So LiveView also connects on
   `localhost` (`wrangler dev`), a custom domain or a preview URL. The
   `Origin` of another site goes as it is, and the app refuses it.
-- `beam.com --target wasm32 --cacerts FILE` puts the root certificates
-  of FILE (PEM) into the release, for TLS. The runtime has no
-  certificates of its own, and the builder does not copy the store of
-  the build computer.
+- `beam.com --cacerts FILE` puts the root certificates of FILE (PEM)
+  into the release of the WebAssembly runtime, for TLS: in the edge part
+  of a native file (`-o app.com`), and in the directory of `--target
+  wasm32`. The runtime has no certificates of its own, and the builder
+  does not copy the store of the build computer. A native run of the file
+  uses the store of the computer, not FILE.
 
 ## Ecto SQLite: D1, Durable Objects and Deno KV
 

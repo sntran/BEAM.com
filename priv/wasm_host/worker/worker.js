@@ -969,8 +969,11 @@ export class Vm {
   // secrets: a store of the secrets that the VM makes itself ({get(name),
   // put(name, value)}: the storage of a Durable Object, the Deno KV of
   // deno.js), and host: the host of the first request (autoVars).
+  // scheme: false when the host gives x-forwarded-proto itself (the web
+  // page gives https for http://localhost).
   constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {}, files = null,
-                     secrets = null, host = null } = {}) {
+                     secrets = null, host = null, scheme = true } = {}) {
+    this.scheme = scheme;
     this.vars = vars;
     this.secrets = secrets;
     this.host = host;
@@ -1509,6 +1512,11 @@ export class Vm {
     const id = `b${this.nextId++}`;
     const headers = new Headers(request.headers);
     headers.set('host', url.host);
+    // The scheme of the client: the app gets a TCP connection with no TLS,
+    // and Plug.SSL (force_ssl of Phoenix) reads x-forwarded-proto, as on
+    // Deno and in a web page. The value of the Worker replaces the value
+    // that a client sends. The web page gives its own value (scheme: false).
+    if (this.scheme) headers.set('x-forwarded-proto', url.protocol.slice(0, -1));
     const origin = this.appOrigin(headers.get('origin'), url);
     if (origin) headers.set('origin', origin);
     headers.delete('transfer-encoding');

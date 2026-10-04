@@ -138,9 +138,9 @@ export async function start({ release = './release.bin', app = null, env = {} } 
     const [{ appFiles }, { default: runtime }] = await Promise.all([import('./app-com.js'), import('./runtime-id.js')]);
     const { read, size } = await urlReader(new URL(app, where).href);
     const bytes = await appFiles(read, size, { runtime });
-    vm = new Vm({ BEAM_HOST: 'browser', ...env }, { plain: false, release: bytes });
+    vm = new Vm({ BEAM_HOST: 'browser', ...env }, { plain: false, release: bytes, scheme: false });
   } else {
-    vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, where).href }, { plain: false });
+    vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, where).href }, { plain: false, scheme: false });
   }
   await vm.ready;
   const origin = new URL('http://localhost');
