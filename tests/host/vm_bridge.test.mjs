@@ -14,11 +14,11 @@ register(`data:text/javascript,${encodeURIComponent(`
 const { Vm } = await import('../../priv/wasm_host/worker/worker.js');
 
 // The head of the request that bridge() gives to the app, as lines.
-async function head(request) {
+async function head(request, { scheme = true } = {}) {
   const vm = Object.create(Vm.prototype);
   const sent = [];
   Object.assign(vm, {
-    env: {}, vars: {}, nextId: 0, tcps: new Map(), listeners: new Map([[4000, 'l0']]),
+    env: {}, vars: {}, scheme, nextId: 0, tcps: new Map(), listeners: new Map([[4000, 'l0']]),
     listening: async () => {},
     event: (header, body) => sent.push({ header, body }),
   });
@@ -38,6 +38,14 @@ test('x-forwarded-proto is the scheme of the client', async () => {
 test('the value of the Worker replaces the x-forwarded-proto of a client', async () => {
   const lines = await head(new Request('http://localhost:8787/', { headers: { 'x-forwarded-proto': 'https' } }));
   assert.deepEqual(lines.filter((l) => l.startsWith('x-forwarded-proto:')), ['x-forwarded-proto: http']);
+});
+
+// The web page (browser.js) asks for http://localhost and gives https, so
+// that an app with force_ssl does not redirect to https://localhost/.
+test('with scheme: false, the x-forwarded-proto of the host stays', async () => {
+  const request = new Request('http://localhost/', { headers: { 'x-forwarded-proto': 'https' } });
+  const lines = await head(request, { scheme: false });
+  assert.deepEqual(lines.filter((l) => l.startsWith('x-forwarded-proto:')), ['x-forwarded-proto: https']);
 });
 
 test('the request line and the host', async () => {
