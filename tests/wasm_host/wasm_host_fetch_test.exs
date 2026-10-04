@@ -43,6 +43,25 @@ defmodule WasmHostFetchTest do
       :ssl.close(tls)
     end
 
+    @tag :capture_log
+    test "client_opts/2 of a tunnel: the CA of the store and the name of the host", %{ca: ca} do
+      for {store, result} <- [{[ca.cert], :ok}, {[:wasm_host_fetch.new_ca().cert], :error}] do
+        {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+        {:ok, port} = :inet.port(listen)
+
+        spawn_link(fn ->
+          {:ok, socket} = :gen_tcp.accept(listen)
+          _ = :ssl.handshake(socket, :wasm_host_fetch.handshake_opts(ca), 10_000)
+          Process.sleep(1000)
+        end)
+
+        {:ok, tcp} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
+
+        assert {^result, _} =
+                 :ssl.connect(tcp, :wasm_host_fetch.client_opts(store, ~c"chat.example"), 10_000)
+      end
+    end
+
     test "store_with/2 adds the CA to a store, and leaves no store as none", %{ca: ca} do
       assert :none == :wasm_host_fetch.store_with([], ca)
       other = :wasm_host_fetch.new_ca()
@@ -123,9 +142,8 @@ defmodule WasmHostFetchTest do
       refute bytes =~ "0\r\n\r\n"
     end
 
-    test "no upgrade, no bad framing, no body over 32 MiB, and no call for them" do
+    test "no bad framing, no body over 32 MiB, and no call for them" do
       for {request, status} <- [
-            {"GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n", 501},
             {"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n", 400},
             {"POST / HTTP/1.1\r\nContent-Length: 40000000\r\n\r\n", 413},
             {"OPTIONS * HTTP/1.1\r\n\r\n", 400},
@@ -136,6 +154,64 @@ defmodule WasmHostFetchTest do
         assert {^status, _, _} = response(socket)
         assert 0 == calls.()
       end
+    end
+
+    test "an upgrade goes through a tunnel: the head, the bytes after it, and both ways" do
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+      {:ok, port} = :inet.port(listen)
+      test = self()
+
+      # The host behind the tunnel: it gets the head and the bytes after it,
+      # answers 101, and then sends back each message.
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen)
+        {:ok, got} = recv_until(socket, "EXTRA")
+        send(test, {:upstream, got})
+
+        :ok =
+          :gen_tcp.send(socket, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
+
+        {:ok, "ping"} = :gen_tcp.recv(socket, 4, 5000)
+        :ok = :gen_tcp.send(socket, "pong")
+        :gen_tcp.close(socket)
+      end)
+
+      head =
+        "GET /ws HTTP/1.1\r\nHost: chat.example\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+
+      {socket, calls} =
+        serve_plain(fn
+          %{upgrade: raw} ->
+            {:ok, up} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
+            :ok = :gen_tcp.send(up, raw)
+            {:tunnel, {:gen_tcp, up}}
+        end)
+
+      :ok = :gen_tcp.send(socket, head <> "EXTRA")
+      assert_receive {:call, %{upgrade: ^head}}, 5000
+      assert_receive {:upstream, got}, 5000
+      assert got == head <> "EXTRA"
+
+      assert {:ok, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"} =
+               :gen_tcp.recv(socket, 0, 5000)
+
+      :ok = :gen_tcp.send(socket, "ping")
+      assert {:ok, "pong"} = :gen_tcp.recv(socket, 4, 5000)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5000)
+      assert 1 == calls.()
+    end
+
+    test "an upgrade with no tunnel gives 502" do
+      {socket, _} = serve_plain(fn %{upgrade: _} -> {:error, :econnrefused} end)
+
+      :ok =
+        :gen_tcp.send(
+          socket,
+          "GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+        )
+
+      assert {502, _, "beam.com: no tunnel: econnrefused"} = response(socket)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5000)
     end
 
     test "httpc through TLS: the response of the call", %{ca: ca} do
@@ -242,6 +318,15 @@ defmodule WasmHostFetchTest do
       end
     else
       buffer
+    end
+  end
+
+  defp recv_until(socket, suffix, acc \\ "") do
+    if String.ends_with?(acc, suffix) do
+      {:ok, acc}
+    else
+      with {:ok, data} <- :gen_tcp.recv(socket, 0, 5000),
+           do: recv_until(socket, suffix, acc <> data)
     end
   end
 

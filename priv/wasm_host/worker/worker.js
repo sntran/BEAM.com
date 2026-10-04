@@ -223,24 +223,27 @@ function parseSnapshot(bytes) {
 }
 
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
-// "host", "host:port", or "*.domain" (the subdomains of domain). The host
-// resolves a name, so the VM cannot reach another address through it.
-// With no BEAM_CONNECT, the VM can connect to all hosts.
-function connectAllowed(list, host, port) {
+// "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
+// hosts, as "*:443"). The host resolves a name, so the VM cannot reach
+// another address through it. With no BEAM_CONNECT, the VM can connect to
+// all hosts. BEAM_FETCH has the same rules.
+export function connectAllowed(list, host, port) {
   if (list === undefined) return true;
   const name = String(host).toLowerCase().replace(/\.$/, '');
   return list.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean).some((rule) => {
     const i = rule.lastIndexOf(':');
     const [pattern, p] = i > 0 && !rule.includes(']') ? [rule.slice(0, i), rule.slice(i + 1)] : [rule, undefined];
     if (p !== undefined && Number(p) !== port) return false;
+    if (pattern === '*') return true;
     return pattern.startsWith('*.') ? name.endsWith(pattern.slice(1)) : name === pattern;
   });
 }
 
 // The IP ranges of Cloudflare (https://www.cloudflare.com/ips-v4 and
 // ips-v6, October 2026), and the ranges of its resolver 1.1.1.1. On
-// Cloudflare, connect() of a Worker cannot reach them: the fetch path
-// (wasm_host_fetch.erl) sends the HTTP of such a host through fetch().
+// Cloudflare, connect() of a Worker cannot reach them: the fallback of the
+// fetch path (wasm_host_fetch.erl) sends the HTTP of such a host through
+// fetch().
 export const CLOUDFLARE_RANGES = [
   '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18',
   '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17',
@@ -1053,7 +1056,8 @@ export class Vm {
     this.id = id;
     this.sql = sql;            // ctx.storage.sql of a Durable Object (Ecto SQLite)
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
-    this.listeners = new Map(); // port -> the id of its listener (wasm_tcp); 'fetch': wasm_host_fetch
+    this.listeners = new Map(); // port -> the id of its listener (wasm_tcp); 'fetch' (and
+                                // 'fetch-tls' when the VM trusts its CA): wasm_host_fetch
     this.fetchConns = new Map(); // id -> {host, port, h}: a connection of the fetch path
     this.fetches = new Map();  // id -> the AbortController of a fetch() of the fetch path
     this.dns = new Map();      // host -> {at, addresses}: the names of the fetch path
@@ -1787,16 +1791,15 @@ export class Vm {
 
   // A TCP socket of wasm_tcp: net.connect() of node:net. In a plain
   // Worker it belongs to the handler h, and closes with that request.
-  async tcpConnect({ id, host, port }, h) {
+  // A connect of the VM (specs/FetchPath.tla). HTTP goes through fetch()
+  // first (fetchFirst); the other protocols use connect(). direct: the
+  // tunnel of wasm_host_fetch, which never goes back to the fetch path.
+  async tcpConnect({ id, host, port, direct }, h) {
     let socket;
     if (h) h.sockets++;
     const allowed = connectAllowed(this.env.BEAM_CONNECT, host, port);
-    const fetchPath = this.listeners.has('fetch');
-    // BEAM_FETCH: the hosts whose HTTP always goes through fetch(), with
-    // the rules of BEAM_CONNECT.
-    if (allowed && fetchPath && this.env.BEAM_FETCH !== undefined && connectAllowed(this.env.BEAM_FETCH, host, port)) {
-      return this.fetchPair(id, host, port, h);
-    }
+    const fetchPath = this.listeners.has('fetch') && !direct;
+    if (allowed && fetchPath && this.fetchFirst(host, port)) return this.fetchPair(id, host, port, h);
     try {
       if (!allowed) throw new Error('not in BEAM_CONNECT');
       socket = net.connect({ host, port });
@@ -1821,6 +1824,7 @@ export class Vm {
       // Only on Cloudflare: Deno and a web page have no such block.
       const cloudflare = (this.env.BEAM_HOST ?? 'cloudflare') === 'cloudflare';
       if (allowed && fetchPath && cloudflare && (port === 443 || port === 80) && await this.isCloudflare(host)) {
+        console.log(`beam: connect ${host}:${port}: through fetch()`);
         return this.fetchPair(id, host, port, h);
       }
       this.event({ t: 'tcp_error', id, reason: 'econnrefused' });
@@ -1835,6 +1839,16 @@ export class Vm {
     });
     this.tcpClosed(id);
     if (h) { h.sockets--; h.wake?.(); }
+  }
+
+  // BEAM_FETCH: the hosts and ports whose connect goes to fetch() with no
+  // connect(), with the rules of BEAM_CONNECT. An empty BEAM_FETCH: none.
+  // With no BEAM_FETCH: port 80, and port 443 when the trust store of the
+  // VM holds the CA of wasm_host_fetch (a build with --cacerts).
+  fetchFirst(host, port) {
+    const list = this.env.BEAM_FETCH;
+    if (list !== undefined) return connectAllowed(list, host, port);
+    return port === 80 || (port === 443 && this.listeners.has('fetch-tls'));
   }
 
   // The name is a host of Cloudflare: one of its addresses is in the ranges
@@ -1878,7 +1892,6 @@ export class Vm {
     this.fetchConns.set(conn, { host, port, h });
     this.tcps.set(id, { send: (b) => this.event({ t: 'tcp_data', id: conn }, b), close: () => end(conn), h });
     this.tcps.set(conn, { send: (b) => this.event({ t: 'tcp_data', id }, b), close: () => end(id), h });
-    console.log(`beam: connect ${host}:${port}: through fetch()`);
     this.event({ t: 'tcp_open', id });
     this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port });
     await ended;
@@ -2001,6 +2014,7 @@ export class Vm {
       case 'tcp_listen':
         if (msg.fetch) {
           this.listeners.set('fetch', msg.id);
+          if (msg.tls) this.listeners.set('fetch-tls', msg.id);
           this.event({ t: 'tcp_listening', id: msg.id });
         } else if (this.listeners.has(msg.port)) {
           this.event({ t: 'tcp_error', id: msg.id, reason: 'eaddrinuse' });

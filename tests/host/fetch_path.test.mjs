@@ -29,7 +29,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { Vm, inRanges, ipBits, fetchUrl } = await import('../../priv/wasm_host/worker/worker.js');
+const { Vm, inRanges, ipBits, fetchUrl, connectAllowed } = await import('../../priv/wasm_host/worker/worker.js');
 
 test('the ranges of Cloudflare', () => {
   for (const a of ['104.16.0.1', '172.67.1.2', '1.1.1.1', '2606:4700::6810:84e5', '[2606:4700::1]', '::ffff:104.16.0.1']) {
@@ -68,15 +68,58 @@ function vm(env = {}) {
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-test('the listener of wasm_host_fetch is apart from the ports', () => {
+test('the listener of wasm_host_fetch is apart from the ports, and says if the VM trusts its CA', () => {
   const { v, events } = vm();
   const msg = (m) => new TextEncoder().encode(JSON.stringify(m) + '\n');
   v.onsend(msg({ t: 'tcp_listen', id: 'l1', port: 0, fetch: true }));
   assert.equal(v.listeners.get('fetch'), 'l1');
+  assert.equal(v.listeners.has('fetch-tls'), false);
   assert.equal(v.listeners.has(0), false);
   assert.deepEqual(events.map((e) => e.t), ['tcp_listening']);
   v.onsend(msg({ t: 'tcp_unlisten', id: 'l1' }));
   assert.equal(v.listeners.has('fetch'), false);
+  v.onsend(msg({ t: 'tcp_listen', id: 'l2', port: 0, fetch: true, tls: true }));
+  assert.equal(v.listeners.get('fetch-tls'), 'l2');
+  v.onsend(msg({ t: 'tcp_unlisten', id: 'l2' }));
+  assert.equal(v.listeners.size, 0);
+});
+
+test('the rules of BEAM_CONNECT and BEAM_FETCH', () => {
+  assert.ok(connectAllowed(undefined, 'a.example', 1));
+  assert.ok(!connectAllowed('', 'a.example', 80));
+  assert.ok(connectAllowed('*', 'a.example', 5432));
+  assert.ok(connectAllowed('*:443', 'A.Example.', 443));
+  assert.ok(!connectAllowed('*:443', 'a.example', 80));
+  assert.ok(connectAllowed('db.local, *.example.com', 'api.example.com', 1));
+  assert.ok(!connectAllowed('*.example.com', 'example.org', 1));
+});
+
+// The route of a connect: fetch() first, or connect(). open.example is up,
+// so connect() gives tcp_open only, and fetch() gives tcp_open and
+// tcp_accept.
+test('fetch first: port 80, port 443 when the VM trusts its CA, BEAM_FETCH, and direct', async () => {
+  for (const [env, port, tls, direct, route] of [
+    [{}, 80, false, false, 'fetch'],
+    [{}, 443, false, false, 'connect'],
+    [{}, 443, true, false, 'fetch'],
+    [{}, 5432, true, false, 'connect'],
+    [{}, 80, true, true, 'connect'],
+    [{ BEAM_HOST: 'deno' }, 80, false, false, 'fetch'],
+    [{ BEAM_FETCH: '' }, 80, true, false, 'connect'],
+    [{ BEAM_FETCH: 'open.example:8080' }, 8080, false, false, 'fetch'],
+    [{ BEAM_FETCH: 'open.example:8080' }, 80, false, false, 'connect'],
+    [{ BEAM_CONNECT: 'other.example' }, 80, true, false, 'none'],
+  ]) {
+    const { v, events } = vm(env);
+    v.listeners.set('fetch', 'lf');
+    if (tls) v.listeners.set('fetch-tls', 'lf');
+    v.tcpConnect({ id: 't1', host: 'open.example', port, direct });
+    for (let i = 0; i < 200 && events.length === 0; i++) await tick();
+    await tick();
+    const got = events.map((e) => e.t).join(',');
+    const want = { fetch: 'tcp_open,tcp_accept', connect: 'tcp_open', none: 'tcp_error' }[route];
+    assert.equal(got, want, JSON.stringify([env, port, tls, direct]));
+  }
 });
 
 test('a refused connect to a host of Cloudflare joins the fetch listener', async () => {

@@ -95,6 +95,7 @@ function onsend(bytes) {
   else if (msg.t === 'boot_point') { log('boot point'); atBootPoint(); }
   else if (msg.t === 'tcp_listen') {
     listeners[msg.fetch ? 'fetch' : msg.port] = msg.id;
+    if (msg.fetch && msg.tls) listeners['fetch-tls'] = msg.id;
     push({ t: 'tcp_listening', id: msg.id });
   } else if (msg.t === 'tcp_send' && answer) answer(body);
 }
