@@ -62,15 +62,19 @@ Such a module is not async.
 mix deps.get
 mix test                   # all the tests
 mix test --cover           # with the coverage of each module, in cover/
-make unit                  # after the make and elixir steps; needs no beam.com
+make unit                  # with the beam.com of the build
+beam.com mix test --cover  # the same, with a beam.com of your own
 ```
 
 The test environment compiles the Erlang code with `-DTEST`, which
 exports the internal functions. The tests need an OTP with `tools` (for
-`--cover`), `parsetools` and `asn1`: the zip of beam.com does not have
-`tools`. `make unit` uses the OTP build tree and the Elixir of the
-build, and builds `tools` when it is not there. It also checks the
-warnings and the format.
+`--cover`), `parsetools` and `asn1`: beam.com has them. `make unit` runs
+the tests with the `beam.com` of the build (`beam.com mix`), after the
+`bundle` step. It also checks the warnings and the format. The tests also
+pass with a usual installation of Erlang and Elixir.
+
+Run them as `beam.com mix`, not with a link named `mix`: some tests
+expect the messages of a file named `beam.com`.
 
 `mix test --cover` fails when the coverage of the code (without the test
 modules) is less than the threshold in `mix.exs`.

@@ -128,8 +128,12 @@ defmodule BeamComBuildTest do
       for n <- no, do: refute(keep.(n), "#{n}")
     end
 
+    # The path of the running beam.com, else an error (a plain OTP).
     test "executable_test" do
-      assert {:error, _, _} = catch_throw(:beam_com_build.executable())
+      case :init.get_argument(:beam_com_exe) do
+        {:ok, [[exe]]} -> assert exe == :beam_com_build.executable()
+        :error -> assert {:error, _, _} = catch_throw(:beam_com_build.executable())
+      end
     end
   end
 
@@ -909,16 +913,19 @@ defmodule BeamComBuildTest do
     test "run/1 errors and warnings", %{dir: dir} do
       {root, exe} = prepare(dir)
       ok_erl = write(dir, ~c"edge.erl", ~c"-module(edge).\n-export([main/1]).\nmain(_) -> ok.\n")
-      # Without the path of the executable (it comes from beam_com.c).
-      assert {:error, ~c"the path of beam.com is not known", []} ==
-               catch_throw(
-                 :beam_com_build.run(%{
-                   input: ok_erl,
-                   apps: [],
-                   root: root,
-                   output: :filename.join(dir, ~c"edge.com")
-                 })
-               )
+      # Without the path of the executable (it comes from beam_com.c), in
+      # a plain OTP. In a beam.com, the build takes the path of that file.
+      if :init.get_argument(:beam_com_exe) == :error do
+        assert {:error, ~c"the path of beam.com is not known", []} ==
+                 catch_throw(
+                   :beam_com_build.run(%{
+                     input: ok_erl,
+                     apps: [],
+                     root: root,
+                     output: :filename.join(dir, ~c"edge.com")
+                   })
+                 )
+      end
 
       # The output is a directory.
       out_dir = :filename.join(dir, ~c"outdir")
@@ -1755,9 +1762,13 @@ defmodule BeamComBuildTest do
     lib = :filename.join(root, ~c"lib")
     :ok = :filelib.ensure_path(lib)
 
+    # A copy of ebin, not a link: in a beam.com, the applications are in
+    # its zip (/zip/lib), not on the disk.
     for a <- [:kernel, :stdlib, :sasl, :crypto] do
-      link = :filename.join(lib, ~c"#{a}-" ++ app_vsn(a))
-      _ = :file.make_symlink(:code.lib_dir(a), link)
+      copy_dir(
+        :filename.join(:code.lib_dir(a), ~c"ebin"),
+        :filename.join([lib, ~c"#{a}-" ++ app_vsn(a), ~c"ebin"])
+      )
     end
 
     # The tool itself, which the build does not copy.
@@ -1768,6 +1779,22 @@ defmodule BeamComBuildTest do
     )
 
     root
+  end
+
+  defp copy_dir(from, to) do
+    :ok = :filelib.ensure_path(to)
+    {:ok, names} = :file.list_dir(from)
+
+    for n <- names do
+      src = :filename.join(from, n)
+      dst = :filename.join(to, n)
+
+      if :filelib.is_dir(src),
+        do: copy_dir(src, dst),
+        else: {:ok, _} = :file.copy(src, dst)
+    end
+
+    :ok
   end
 
   # The fake root with beam_com_script, and a fake executable of it. The

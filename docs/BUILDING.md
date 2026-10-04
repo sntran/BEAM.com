@@ -46,7 +46,7 @@ The steps, in order. The code of each step is in
 | `wasm_runtime` | `multicall` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
 | `bundle` | `wasm_runtime` | Writes `build/beam.com`: the emulator and its zip. |
 | `test` | `bundle` | Runs `beam.com`, and builds and runs a program with it. |
-| `unit` | `elixir` | Runs the tests of the Mix project (`mix test --cover`). |
+| `unit` | `bundle` | Runs the tests of the Mix project with the `beam.com` of the build (`beam.com mix test --cover`). |
 
 `make STEP` runs the step and each step that it needs first. Each step
 writes a stamp in `build/stamps/`. A step runs again only when:

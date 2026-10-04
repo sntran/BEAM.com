@@ -293,7 +293,8 @@ defmodule BeamComTest do
         {:ok, text} = output([~c"--version"])
         assert text =~ "  Erlang/OTP  : 29.1.1\n"
         {:ok, help} = output([])
-        assert help =~ "Erlang/OTP 29.1.1 in one"
+        # "and Elixir VSN" when the root has Elixir (a beam.com).
+        assert help =~ ~r"Erlang/OTP 29\.1\.1( and Elixir [0-9.]+)? in one"
       after
         :application.unset_env(:beam_com, :otp_version)
       end

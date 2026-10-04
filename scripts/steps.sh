@@ -934,16 +934,21 @@ step_bundle() {
 
 # The tests of the Mix project (mix.exs, tests/): the ExUnit tests of the
 # Erlang code, and the tests of the JavaScript of the WebAssembly host
-# (Node.js 20.6 or later). They run with coverage (the application tools),
-# on the Erlang of the OTP build tree and the Elixir of the build.
+# (Node.js 20.6 or later). They run with coverage (cover, of the
+# application tools) on the beam.com of the build: "beam.com mix", so
+# that the name of the file is beam.com, as the tests expect. The links
+# in unit-bin are the programs that the tests and the dependencies start
+# (elixir, escript).
 step_unit() {
-    log "Running the tests of the Mix project"
-    if ! ls "$ERL_TOP/lib/tools/ebin/"*.beam >/dev/null 2>&1; then
-        PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "$ERL_TOP/lib/tools" opt
-    fi
+    log "Running the tests of the Mix project with $OUT"
+    [ -f "$OUT" ] || { echo "No $OUT: run make first" >&2; exit 1; }
+    bin=$BUILD/unit-bin
+    rm -rf "$bin"
+    mkdir -p "$bin"
+    for t in elixir escript; do ln -s "$OUT" "$bin/$t"; done
     (
         cd "$ROOT"
-        export PATH="$ERL_TOP/bin:$BUILD/elixir-$ELIXIR_VERSION/bin:$PATH"
+        export PATH="$bin:$PATH"
         export MIX_HOME="$BUILD/mix-home-test" HEX_HOME="$BUILD/hex-home-test"
         export MIX_BUILD_ROOT="$BUILD/mix" MIX_DEPS_PATH="$BUILD/deps"
         export LC_ALL=C.UTF-8 MIX_ENV=test
@@ -953,18 +958,19 @@ step_unit() {
             export BEAM_COM_WASM_RUNTIME="$BUILD/wasm-runtime"
         fi
         # The tests of tests/check_format.sh use the beam.com of the build.
-        if [ -f "$OUT" ] && [ -x "$COSMOCC/bin/assimilate" ]; then
+        if [ -x "$COSMOCC/bin/assimilate" ]; then
             export BEAM_COM_FORMAT_FILE="$OUT" COSMOCC
         fi
-        mix local.hex --force --if-missing
-        mix deps.get
-        mix compile --warnings-as-errors
-        mix format --check-formatted
-        mix test --cover
+        "$OUT" mix local.hex --force --if-missing
+        "$OUT" mix local.rebar --force --if-missing
+        "$OUT" mix deps.get
+        "$OUT" mix compile --warnings-as-errors
+        "$OUT" mix format --check-formatted
+        "$OUT" mix test --cover
         # The tests of the studio (examples/studio): the import rewrite.
         cd examples/studio
-        MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" mix deps.get
-        MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" mix test
+        MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" "$OUT" mix deps.get
+        MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" "$OUT" mix test
     )
 }
 

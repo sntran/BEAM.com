@@ -90,7 +90,7 @@ $(eval $(call step,bundle,$(STAMPS)/wasm_runtime $(BUNDLE_FILES)))
 test: $(STAMPS)/bundle
 	$(STEP) test
 
-unit: $(STAMPS)/elixir
+unit: $(STAMPS)/bundle
 	$(STEP) unit
 
 # For wasm/erts/build.sh: the NIFs of Elixir packages for its runtime.
