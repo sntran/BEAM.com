@@ -273,6 +273,11 @@ export default {
   (the var `BEAM_OBJECT`, else `main`, by default). With no function,
   the vars of the tenants and the instances (`BEAM_TENANTS`,
   `BEAM_INSTANCES`, see below) route the requests.
+- `serve(app, { nifs })`: the NIF libraries in WebAssembly of `app.com`
+  (see [`NIFS.md`](NIFS.md)), for an app that has them. `beam.com
+  --nif-modules app.com .` writes `nifs.js` and `nifs/`, and the entry
+  imports them: `import nifs from './nifs.js';`. Run it again after each
+  build of `app.com`.
 - `beam.scheduled(controller, env, ctx)`: the sweep of the instances, for
   the cron trigger of a Worker with `BEAM_INSTANCES`.
 - On Deno, an isolate keeps its VM between requests, as a Durable
@@ -497,7 +502,9 @@ A NIF library in WebAssembly (`priv/NAME.wasm`, see
 [`NIFS.md`](NIFS.md)) loads in the runtime too: the engine of the host
 runs it. `beam.com --target wasm32` gives it to Wrangler as a module
 (`nifs.js`), because a Worker cannot compile WebAssembly at run time. A
-VM with such a library makes no snapshot.
+snapshot holds the memory of the library too. For a Worker that runs an
+`app.com`, `beam.com --nif-modules app.com .` writes `nifs.js` (see
+`serve(app, { nifs })` below).
 
 ## Variables and bindings
 

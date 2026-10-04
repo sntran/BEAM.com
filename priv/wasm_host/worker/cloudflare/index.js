@@ -33,6 +33,13 @@ export { Beam } from './durable.js';
 // options.binding: the binding of the Durable Object (BEAM). options.name:
 // the name of the object, or a function of the request that gives it (a
 // tenant, for example); the var BEAM_OBJECT, else "main", by default.
+// options.nifs: the NIF libraries in WebAssembly of app.com, for an app
+// that has them. A Worker cannot compile WebAssembly at run time, so
+// "beam.com --nif-modules app.com ." writes nifs.js and nifs/, and the
+// entry gives them:
+//
+//   import nifs from './nifs.js';
+//   const beam = serve(app, { nifs });
 //
 // With the binding, the front of durable.js routes the requests: the
 // tenants and the instances of its vars (BEAM_TENANTS, BEAM_INSTANCES),
@@ -42,8 +49,8 @@ export { Beam } from './durable.js';
 //   scheduled(controller, env, ctx) {
 //     return beam.scheduled(controller, env, ctx);
 //   },
-export function serve(app, { binding = 'BEAM', name } = {}) {
-  use(app);
+export function serve(app, { binding = 'BEAM', name, nifs = null } = {}) {
+  use(app, nifs);
   // The env of the front: the binding as BEAM, the name of the object, and
   // the static files of app.com (the front serves them, with no request
   // to the object).

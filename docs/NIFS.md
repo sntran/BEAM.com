@@ -224,21 +224,34 @@ are not used, and `beam.com --target wasm32` leaves them out of
 - **Workers.** A Worker cannot compile WebAssembly at run time. So
   `beam.com --target wasm32` writes each NIF library of the release
   into the runtime Worker (`nifs/`, and `nifs.js`), and Wrangler
-  compiles them. A Worker that runs an `app.com` (the `beam.com/cloudflare`
-  module of the npm package) has no NIF libraries in WebAssembly yet.
+  compiles them. For a Worker that runs an `app.com` (`serve(app)` of
+  the npm package), `beam.com --nif-modules app.com .` writes the same
+  files next to the entry, and the entry gives them to `serve`:
+
+  ```js
+  import app from './app.com' with { type: 'bytes' };
+  import nifs from './nifs.js';
+  import { serve } from 'beam.com';
+
+  const beam = serve(app, { nifs });
+  ```
+
+  Deno, Node.js and a web page compile the files at run time, and need
+  no `nifs.js`.
 - **Calls.** A call into the library costs about 5 µs more than in the
   native `beam.com`. A trap stops only that call, with
   `error:{wasm_trap, Message}`.
 - **No files.** WASI has no directories there: the standard output and
   error, the clocks and random bytes work. Other functions of WASI fail
   or stop the call with an exception.
-- **No snapshot.** A VM with a NIF library in WebAssembly makes no
-  snapshot of its memory (`docs/WORKERS.md`): the module runs out of
-  that memory.
+- **Snapshots.** A snapshot of a VM (`docs/WORKERS.md`) also holds the
+  memory of each NIF library in WebAssembly, and the table slots of its
+  functions. The restore makes each library again from its file, with
+  the same memory, before the threads of ERTS start.
 - The loader adds about 95 KB to `beam.wasm` (26 KB with gzip).
 
 `tests/wasm_diff_test.exs` runs `nif_check` in the runtime, also with
-the compiled module of a Worker.
+the compiled module of a Worker, and after a snapshot and its restore.
 
 ## Debug
 

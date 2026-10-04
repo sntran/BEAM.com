@@ -35,10 +35,12 @@ out=$root/runtime
 rm -rf "$out"
 mkdir -p "$out"
 # Not the files that depend on the app (beam_com_wasm:host_files/2, in the
-# edge part of app.com), the release, and the copy of beam.wasm in page/.
+# edge part of app.com), the release, its NIF libraries (nifs.js), and the
+# copy of beam.wasm in page/.
 (cd "$dir" && find . -type f | sed 's|^\./||') | while IFS= read -r f; do
     case $f in
         wrangler*.jsonc|release/wrangler.jsonc|worker.capnp|release/release.bin) continue ;;
+        nifs.js|nifs/*) continue ;;
         page/env.json|page/app/*|page/release.bin|page/beam.wasm) continue ;;
     esac
     mkdir -p "$out/$(dirname "$f")"
@@ -52,5 +54,7 @@ grep -q "'../../beam.wasm'" "$out/page/browser/beam-wasm.js"
 # type, because a Mix project below it can have CommonJS files
 # (examples/phoenix_demo/assets/vendor).
 echo '{ "type": "module" }' > "$out/package.json"
+# No NIF libraries of an app: the Node.js host compiles them at run time.
+printf '%s\n' '// No NIF libraries of an app: the host compiles them at run time.' 'export default null;' > "$out/nifs.js"
 printf '{"version": "%s", "sha256": "%s"}\n' "$vsn" "$sha" > "$out/release.json"
 echo "$0: wrote $out (beam.com $vsn, runtime $(sed -n "s/^export default '\(.*\)';$/\1/p" "$out/runtime-id.js"))"

@@ -15,6 +15,8 @@
 //   __nif_table goes into a copy of its bytes before the compilation.
 //   Module.nifModule(file, bytes), when the host gives it, can give a
 //   compiled module (a host that cannot compile WebAssembly at run time).
+// - Module.nifHost (nifSnapshot) saves the libraries for a snapshot of
+//   the VM, and makes them again at its restore.
 addToLibrary({
   $nifHost: {
     libs: [null],
@@ -188,44 +190,46 @@ addToLibrary({
     };
   },
 
+  // The slot in the table of ERTS of the function f of the library, with
+  // its key for a restore: ['e', name] (an export) or ['t', index] (an
+  // element of the table of the module).
   $nifSlot__deps: ['$wasmTable'],
-  $nifSlot: (lib, f) => {
+  $nifSlot: (lib, f, key) => {
     let s = lib.slots.get(f);
     if (!s) {
       s = wasmTable.grow(1);
       wasmTable.set(s, f);
       lib.slots.set(f, s);
+      lib.keys.push([s, ...key]);
     }
     return s;
   },
 
-  nif_host_compile__deps: ['$nifCompile', '$UTF8ToString', '$stringToUTF8'],
+  nif_host_compile__deps: ['$nifHost', '$nifMake', '$UTF8ToString', '$stringToUTF8'],
   nif_host_compile__sig: 'ipipipi',
   nif_host_compile: (bytes, n, file, debug, error, size) => {
     const name = UTF8ToString(file);
-    const fail = (msg) => { stringToUTF8(String(msg), error, size); return 0; };
     // An exception must not leave this function: it would stop the thread.
     try {
-      return nifCompile(name, HEAPU8.slice(bytes, bytes + n), debug, fail);
+      nifHost.libs.push(nifMake(name, HEAPU8.slice(bytes, bytes + n), debug));
+      return nifHost.libs.length - 1;
     } catch (e) {
-      return fail(`${name}: ${e?.message ?? e}`);
+      stringToUTF8(String(e?.message ?? e), error, size);
+      return 0;
     }
   },
 
-  $nifCompile__deps: ['$nifHost', '$nifParse', '$nifWasi'],
-  $nifCompile: (name, bytes, debug, fail) => {
-    let info, module;
+  // A library of the file name with the bytes, compiled, with its imports.
+  $nifMake__deps: ['$nifSnapshot', '$nifParse', '$nifWasi'],
+  $nifMake: (name, bytes, debug) => {
+    let info;
     try {
       info = nifParse(bytes);
     } catch (e) {
-      return fail(`${name}: ${e.message}`);
+      throw new Error(`${name}: ${e.message}`);
     }
-    try {
-      module = Module['nifModule']?.(name, info.bytes) ?? new WebAssembly.Module(info.bytes);
-    } catch (e) {
-      return fail(e.message);
-    }
-    const lib = { file: name, module, info, instance: null, mem: null, table: null, slots: new Map() };
+    const module = Module['nifModule']?.(name, info.bytes) ?? new WebAssembly.Module(info.bytes);
+    const lib = { file: name, module, info, instance: null, mem: null, table: null, slots: new Map(), keys: [] };
     const wasi = nifWasi(lib);
     const imports = { env: {}, wasi_snapshot_preview1: {} };
     const bad = [];
@@ -242,31 +246,84 @@ addToLibrary({
         imports.wasi_snapshot_preview1[im.name] = wasi[im.name] ?? stop(im.name);
       } else bad.push(`${im.module}.${im.name}`);
     }
-    if (bad.length) return fail(`unsupported imports: ${bad.join(' ')}`);
+    if (bad.length) throw new Error(`unsupported imports: ${bad.join(' ')}`);
     lib.imports = imports;
-    nifHost.libs.push(lib);
-    // The host makes no snapshot of the VM (worker.js).
-    Module['nifLoaded'] = true;
-    return nifHost.libs.length - 1;
+    return lib;
   },
 
-  nif_host_instantiate__deps: ['$nifHost', '$stringToUTF8'],
-  nif_host_instantiate__sig: 'iipi',
-  nif_host_instantiate: (id, error, size) => {
-    const lib = nifHost.libs[id];
-    try {
-      lib.instance = new WebAssembly.Instance(lib.module, lib.imports);
-    } catch (e) {
-      stringToUTF8(String(e.message), error, size);
-      return 0;
-    }
+  $nifInstance: (lib) => {
+    lib.instance = new WebAssembly.Instance(lib.module, lib.imports);
     lib.mem = lib.instance.exports.memory;
     lib.table = lib.info.tableExport ? lib.instance.exports[lib.info.tableExport] : null;
-    if (!(lib.mem instanceof WebAssembly.Memory)) {
-      stringToUTF8('the module exports no memory', error, size);
+    if (!(lib.mem instanceof WebAssembly.Memory)) throw new Error('the module exports no memory');
+  },
+
+  nif_host_instantiate__deps: ['$nifHost', '$nifInstance', '$stringToUTF8'],
+  nif_host_instantiate__sig: 'iipi',
+  nif_host_instantiate: (id, error, size) => {
+    try {
+      nifInstance(nifHost.libs[id]);
+      return 1;
+    } catch (e) {
+      stringToUTF8(String(e?.message ?? e), error, size);
       return 0;
     }
-    return 1;
+  },
+
+  // The libraries in a snapshot of the VM (worker.js), as
+  // Module.nifHost. save() gives, for each library, its file, the size of
+  // its memory, its pages that are not zero, and the slots of its
+  // functions in the table of ERTS; the VM must be quiet (no call into a
+  // library). restore() makes each library again from its file, before
+  // the threads of the restored VM start: the same id, the same memory,
+  // the same slots. The library does not run _initialize again: its
+  // memory has the state after it. The mutable globals of the module (its
+  // stack pointer) get their first values, which is correct because no
+  // call into the library is in flight.
+  $nifSnapshot__deps: ['$nifHost', '$nifMake', '$nifInstance', '$wasmTable'],
+  $nifSnapshot__postset: "Module['nifHost'] = nifSnapshot;",
+  $nifSnapshot: {
+    loaded: () => nifHost.libs.some(Boolean),
+    save() {
+      const PAGE = 65536;
+      const libs = [];
+      nifHost.libs.forEach((lib, id) => {
+        if (!lib?.instance) return;
+        const u = new Uint8Array(lib.mem.buffer);
+        const words = new BigUint64Array(lib.mem.buffer);
+        const pages = [];
+        for (let p = 0, w = PAGE / 8; p < u.length / PAGE; p++) {
+          for (let i = p * w; i < (p + 1) * w; i++) if (words[i]) { pages.push(p); break; }
+        }
+        libs.push({ id, file: lib.file, size: u.length, pages, keys: lib.keys,
+                    data: pages.map((p) => u.slice(p * PAGE, (p + 1) * PAGE)) });
+      });
+      return { count: nifHost.libs.length, libs };
+    },
+    // state: {count, libs} of save(), with data (the pages of each
+    // library); file(name): the bytes of a file of the VM.
+    restore(state, file) {
+      const PAGE = 65536;
+      nifHost.libs = new Array(state.count).fill(null);
+      for (const s of state.libs) {
+        const lib = nifMake(s.file, file(s.file), false);
+        nifInstance(lib);
+        const now = lib.mem.buffer.byteLength;
+        if (s.size > now) lib.mem.grow((s.size - now) / PAGE);
+        const u = new Uint8Array(lib.mem.buffer);
+        const have = new Set(s.pages);
+        for (let p = 0; p < now / PAGE; p++) if (!have.has(p)) u.fill(0, p * PAGE, (p + 1) * PAGE);
+        s.pages.forEach((p, i) => u.set(s.data[i], p * PAGE));
+        for (const [slot, kind, key] of s.keys) {
+          const f = kind === 'e' ? lib.instance.exports[key] : lib.table.get(key);
+          while (wasmTable.length <= slot) wasmTable.grow(1);
+          wasmTable.set(slot, f);
+          lib.slots.set(f, slot);
+          lib.keys.push([slot, kind, key]);
+        }
+        nifHost.libs[s.id] = lib;
+      }
+    },
   },
 
   nif_host_free__deps: ['$nifHost', '$wasmTable'],
@@ -291,7 +348,7 @@ addToLibrary({
     const t = lib.info.exportTypes.get(nm) ?? [-1, -1];
     HEAP32[types >> 2] = t[0];
     HEAP32[(types >> 2) + 1] = t[1];
-    return nifSlot(lib, f);
+    return nifSlot(lib, f, ['e', nm]);
   },
 
   nif_host_element__deps: ['$nifHost', '$nifSlot'],
@@ -305,7 +362,7 @@ addToLibrary({
     const t = (fi !== undefined && lib.info.funcs[fi]) || [-1, -1];
     HEAP32[types >> 2] = t[0];
     HEAP32[(types >> 2) + 1] = t[1];
-    return nifSlot(lib, f);
+    return nifSlot(lib, f, ['t', index >>> 0]);
   },
 
   nif_host_read__deps: ['$nifHost'],

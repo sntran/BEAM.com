@@ -356,6 +356,10 @@ jobs:
           sh ./hashsum.com abc | grep '^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
           sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/wasm32" --target wasm32 > /dev/null
           node tests/host/boot_app_com.mjs "$RUNNER_TEMP/wasm32" hashsum.com --expect 'usage: hashsum TEXT'
+          # The tools of NIF libraries in WebAssembly: not flags of erl.
+          sh bin/beam.com --nif-include < /dev/null | grep -q 'nif-include-'
+          sh bin/beam.com --nif-modules hashsum.com "$RUNNER_TEMP/nifs" < /dev/null | grep -q '(0 NIF libraries'
+          grep -q 'export default {};' "$RUNNER_TEMP/nifs/nifs.js"
 
       # The npm package of this beam.com (package.json, and runtime/ of
       # scripts/npm.sh), as a user installs it: npx beam.com with a download

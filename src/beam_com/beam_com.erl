@@ -35,6 +35,10 @@ command(["--nif-include"]) ->
     io:put_chars([nif_include(), $\n]);
 command(["--nif-include" | _]) ->
     throw({error, "usage: ~ts --nif-include", [name()]});
+command(["--nif-modules", App, Dir]) ->
+    beam_com_wasm:nif_modules(App, Dir);
+command(["--nif-modules" | _]) ->
+    throw({error, "usage: ~ts --nif-modules APP.com DIR", [name()]});
 command([]) ->
     case is_project(".") of
         true -> run(#{input => ".", apps => [], args => []});
@@ -250,7 +254,7 @@ help([]) ->
      Pad, "run INPUT (default: the project in this directory)\n"
      "       ", Name, " [FLAGS] INPUT -o OUTPUT\n",
      Pad, "make an executable of INPUT\n"
-     "       ", Name, " --help | --version | --nif-include\n"
+     "       ", Name, " --help | --version | --nif-include | --nif-modules APP.com DIR\n"
      "\n"
      "  INPUT     ", Inputs,
      "  ARGUMENTS the arguments of the program\n"
@@ -305,7 +309,11 @@ help([]) ->
      "  --nif-include\n"
      "            write the headers of a NIF library in WebAssembly (erl_nif.h\n"
      "            for wasm32-wasip1) to the cache, and print their directory.\n"
-     "            load_nif/2 loads PATH.wasm when there is no native library\n",
+     "            load_nif/2 loads PATH.wasm when there is no native library\n"
+     "  --nif-modules APP.com DIR\n"
+     "            write DIR/nifs.js and DIR/nifs/ with the NIF libraries in\n"
+     "            WebAssembly of APP.com, for a Worker that runs it:\n"
+     "            serve(app, { nifs }) of the npm package beam.com\n",
      Tools,
      "  -FLAG ...  the flags of erl (\"-sname me -remsh app\"): run as erl\n"
      "  epmd [ARGUMENTS]\n"
