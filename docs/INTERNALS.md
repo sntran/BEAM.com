@@ -21,7 +21,7 @@ files from there.
 | First start | the same as the next ones | unpacks to disk first |
 | Files left on disk | none (see below) | the unpacked release, until you remove it |
 | One file for | all the platforms and CPUs | one platform and CPU |
-| NIFs | only the static NIFs in `beam.com` | any NIF of the release |
+| NIFs | the static NIFs in `beam.com`, and NIF libraries in WebAssembly ([`NIFS.md`](NIFS.md)) | any NIF of the release |
 | Files in `priv/` | read from the zip; copied to a cache directory only when they must be real files (see "Command line programs" in [`PROGRAMS.md`](PROGRAMS.md)) | normal files |
 | The zip | read-only at run time | normal files |
 

@@ -50,11 +50,13 @@ are removed when the node stops.
 ## Known limits
 
 - No `socket` NIF, no NIFs or drivers in shared objects
-  (Cosmopolitan cannot make them). Only the static NIFs in `beam.com`
-  work (`crypto`, `asn1`, `wasm`, `esqlite`, and the Elixir packages
-  `exqlite`, `bcrypt_elixir` and `argon2_elixir`).
-- WebAssembly: interpreter only (no AOT or JIT), WASI preview 1 only, no
-  SIMD, no threads, and no component model yet.
+  (Cosmopolitan cannot make them). The native NIFs are the static NIFs
+  in `beam.com` (`crypto`, `asn1`, `wasm`, `esqlite`, and the Elixir
+  packages `exqlite`, `bcrypt_elixir` and `argon2_elixir`). Other NIF
+  libraries work as WebAssembly files ([`NIFS.md`](NIFS.md)).
+- WebAssembly: the interpreter, and AOT files of WAMR (no JIT), WASI
+  preview 1 only, no SIMD, no threads, and no component model yet. On
+  macOS with Apple silicon, the interpreter only.
 - Distributed Erlang is tested on Linux, macOS and the BSDs, not on
   Windows yet.
 - Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)

@@ -172,8 +172,9 @@ iex.com -S mix phx.server        # http://localhost:4000
   command line tools of Xcode).
 - PostgreSQL (`--database postgres`, the default) uses Postgrex, which
   is Elixir only. Other databases with a NIF, and other packages with C
-  code, need `make` and a C compiler, and a NIF that `beam.com` can load
-  (static NIFs only).
+  code, need `make` and a C compiler, and a NIF that `beam.com` can load:
+  a static NIF of a custom build, or a NIF library in WebAssembly
+  (`priv/NAME.wasm`, see [`NIFS.md`](NIFS.md)).
 - Not on Windows (no port programs, so `elixir_make` cannot run) and
   not on NetBSD (its kernel does not start an APE file by a link; set
   `MAKE` to a script that starts `beam.com` with the APE loader and

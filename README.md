@@ -350,9 +350,10 @@ the Erlang shell in your browser is at
 
 CI runs the tests on each system. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the details and the known
-limits. The main limits: only the NIFs that are linked into `beam.com`
-work, and Hex packages are the only dependencies of a build (no git
-dependencies).
+limits. The main limits: a native NIF works only when it is linked into
+`beam.com` (another NIF can be a `.wasm` file: see
+[`docs/NIFS.md`](docs/NIFS.md)), and Hex packages are the only
+dependencies of a build (no git dependencies).
 
 ## Contributing
 
