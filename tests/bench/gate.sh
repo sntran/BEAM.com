@@ -8,7 +8,9 @@
 # The script builds tests/bench/bench.erl with each file. Then it runs the
 # two programs in turns, ROUNDS times (default 5), and keeps the best time
 # of each case for each file. The start time of a program is also a case.
-# Without CASE, all the cases run.
+# Without CASE, all the cases run. A case that is over the limits gets
+# ROUNDS more rounds, and the gate uses the best time of all the rounds:
+# a slow period of the machine during one case does not stop the gate.
 #
 # The gate fails when:
 #
@@ -52,13 +54,17 @@ measure() {
     $runner "$out/$v.com" start "$runner_path" "$out/$v.com" none |
         sed -n 's/^start /start_program /p' >> "$out/$v.times"
 }
-r=1
-while [ "$r" -le "$rounds" ]; do
-    if [ $((r % 2)) = 1 ]; then measure new "$@"; measure base "$@"; else measure base "$@"; measure new "$@"; fi
-    r=$((r + 1))
-done
+rounds_of() {
+    r=1
+    while [ "$r" -le "$rounds" ]; do
+        if [ $((r % 2)) = 1 ]; then measure new "$@"; measure base "$@"; else measure base "$@"; measure new "$@"; fi
+        r=$((r + 1))
+    done
+}
+rounds_of "$@"
 
-awk -v limit="$limit" -v slack="$slack" -v mean="$mean" -v size="$size" \
+verdict() {
+awk -v slow="$out/slow" -v limit="$limit" -v slack="$slack" -v mean="$mean" -v size="$size" \
     -v new_size="$(cat "$out/new.size")" -v base_size="$(cat "$out/base.size")" '
     FILENAME ~ /new.times$/ { if (!($1 in n) || $2 < n[$1]) n[$1] = $2; if (!($1 in seen)) { seen[$1] = 1; order[++count] = $1 } }
     FILENAME ~ /base.times$/ { if (!($1 in b) || $2 < b[$1]) b[$1] = $2 }
@@ -72,7 +78,7 @@ awk -v limit="$limit" -v slack="$slack" -v mean="$mean" -v size="$size" \
             ratio = (n[k] < 1 ? 1 : n[k]) / (b[k] < 1 ? 1 : b[k])
             logsum += log(ratio); cases++
             mark = ""
-            if (ratio > 1 + limit / 100 && n[k] - b[k] > slack) { mark = "SLOWER"; fails++ }
+            if (ratio > 1 + limit / 100 && n[k] - b[k] > slack) { mark = "SLOWER"; fails++; print k > slow }
             printf "| %s | %d | %d | %.2f | %s |\n", k, b[k], n[k], ratio, mark
         }
         g = cases ? exp(logsum / cases) : 1
@@ -90,3 +96,22 @@ awk -v limit="$limit" -v slack="$slack" -v mean="$mean" -v size="$size" \
         }
         printf "The gate passes (limits: a case %d%% and %d ms, the mean %d%%, the size %d%%).\n", limit, slack, mean, size
     }' "$out/new.times" "$out/base.times"
+}
+
+# The cases over the limits get more rounds, then the final result.
+rm -f "$out/slow"
+verdict > "$out/result.md"
+status=$?
+if [ "$status" -ne 0 ] && [ -s "$out/slow" ]; then
+    again=$(grep -v '^start_program$' "$out/slow" | tr '\n' ' ')
+    # Each round also measures start_program: for it alone, the short case fib.
+    [ -n "$again" ] || again=fib
+    echo "Over the limits in the first rounds: $(tr '\n' ' ' < "$out/slow")" >&2
+    # shellcheck disable=SC2086
+    rounds_of $again
+    rm -f "$out/slow"
+    verdict > "$out/result.md"
+    status=$?
+fi
+cat "$out/result.md"
+exit "$status"
