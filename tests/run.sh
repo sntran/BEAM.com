@@ -592,6 +592,8 @@ if [ -f "$dir/beam.com" ]; then
     check mix.com 'creating mix.exs' new hello
     cd hello
     check mix.com '2 passed' test
+    # Coverage: cover, of the application tools.
+    check mix.com 'Generating cover results@@100\.00% | Total' test --cover
     check mix '' format --check-formatted
     check elixir '^world$' -S mix run -e 'IO.puts(Hello.hello())'
     # An implementation of a protocol of Elixir: Mix consolidates the

@@ -36,15 +36,11 @@ defmodule BeamCom.WasmDiffTest do
         ])
     end
 
-    root = List.to_string(:code.root_dir())
-
-    libs =
-      for app <- [:kernel, :stdlib, :crypto],
-          do: Path.join(List.to_string(:code.lib_dir(app)), "ebin")
+    {erl, root, libs} = otp(top)
 
     native =
       @programs
-      |> Task.async_stream(&native(root, ebin, top, &1), timeout: 120_000, ordered: true)
+      |> Task.async_stream(&native(erl, ebin, top, &1), timeout: 120_000, ordered: true)
       |> Enum.zip_with(@programs, fn {:ok, out}, name -> {name, out} end)
       |> Map.new()
 
@@ -61,14 +57,53 @@ defmodule BeamCom.WasmDiffTest do
     end
   end
 
-  defp native(root, ebin, top, program) do
+  # The command of the native erl, the OTP root, and the ebin directories
+  # of the runtime. Under beam.com, the root is /zip, which is not on the
+  # disk: the test copies the boot file and the ebin directories out of
+  # it, and runs beam.com in erl mode.
+  defp otp(top) do
+    apps = [:kernel, :stdlib, :crypto]
+
+    case :init.get_argument(:beam_com_exe) do
+      {:ok, [[exe]]} ->
+        root = Path.join(top, "otp")
+        File.mkdir_p!(Path.join(root, "bin"))
+        boot = Path.join([List.to_string(:code.root_dir()), "bin", "start_clean.boot"])
+        File.write!(Path.join([root, "bin", "start_clean.boot"]), File.read!(boot))
+
+        libs =
+          for app <- apps do
+            dir = Path.join([root, "lib", "#{app}-#{Application.spec(app, :vsn)}", "ebin"])
+            copy_dir(Path.join(List.to_string(:code.lib_dir(app)), "ebin"), dir)
+            dir
+          end
+
+        {{List.to_string(exe), [{"BEAM_COM_ERL", "1"}]}, root, libs}
+
+      _ ->
+        root = List.to_string(:code.root_dir())
+        libs = for app <- apps, do: Path.join(List.to_string(:code.lib_dir(app)), "ebin")
+        {{Path.join([root, "bin", "erl"]), []}, root, libs}
+    end
+  end
+
+  # Copies the files of the directory with the file calls of the VM, which
+  # also read /zip.
+  defp copy_dir(from, to) do
+    File.mkdir_p!(to)
+
+    for name <- File.ls!(from) do
+      File.write!(Path.join(to, name), File.read!(Path.join(from, name)))
+    end
+  end
+
+  defp native({erl, env}, ebin, top, program) do
     work = Path.join([top, "native", program])
     File.mkdir_p!(work)
-    erl = Path.join([root, "bin", "erl"])
     # A UTF-8 locale, as the runtime has: the encoding of standard_io
     # comes from it.
     run([erl, "-noshell", "-pa", ebin, "-eval", eval(program, work)], Path.join(work, "stderr"),
-      env: [{"LC_ALL", "C.UTF-8"}],
+      env: [{"LC_ALL", "C.UTF-8"} | env],
       cd: work
     )
   end
