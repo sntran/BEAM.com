@@ -14,8 +14,8 @@ network of the host. Give the VM no secret.
 [![Deploy on Deno](https://deno.com/button)](https://console.deno.com/new?clone=https://github.com/sntran/BEAM.com&path=examples/worker)
 
 A button copies this directory into a new repository of your account, and
-the host builds and deploys it at each push. The buttons work after the
-first release of the npm package `beam.com`.
+the host builds and deploys it at each push, with the npm package
+`beam.com` of the version in [`package.json`](package.json).
 
 The build step of the host runs `npm run build`, which makes `app.com`, one
 native file. Then the engine of the npm package serves that file: the same
