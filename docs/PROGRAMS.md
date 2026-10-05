@@ -216,6 +216,13 @@ files:
   writes a native file for that target.
 - With another `--target`, the build stops with an error.
 
+`BEAM_COM_BASE` names the file that a build copies, in place of the file
+that runs. So a native file can still make APE files: give it the APE
+file that it came from. The two files must have the same zip, else the
+build stops. For example, `pages-app.yml` runs an assimilated `beam.com`
+(Mix needs a program of the runner), and gives the APE file as
+`BEAM_COM_BASE`.
+
 ## Distributed Erlang and remote shells
 
 Distributed Erlang works as with `erl`: the flags `-sname`, `-name` and

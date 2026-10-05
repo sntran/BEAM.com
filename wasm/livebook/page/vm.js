@@ -86,7 +86,7 @@ self.addEventListener('message', async (e) => {
     const { start } = await import('./browser.js');
     const config = await fetch(new URL('./config.json', import.meta.url)).then((r) => r.json());
     beam = await start({
-      release: './release.bin',
+      app: './app.com',
       env: {
         LIVEBOOK_PORT: '4000', LIVEBOOK_DEFAULT_RUNTIME: 'embedded', LIVEBOOK_TOKEN_ENABLED: 'false',
         LIVEBOOK_DATA_PATH: '/tmp', LIVEBOOK_HOME: '/tmp', LIVEBOOK_BASE_URL_PATH: base,

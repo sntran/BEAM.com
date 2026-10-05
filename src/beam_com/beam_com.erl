@@ -187,6 +187,8 @@ build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
 build_options(["--no-edge" | Rest], Opts) ->
     build_options(Rest, Opts#{edge => false});
+build_options(["--page" | Rest], Opts) ->
+    build_options(Rest, Opts#{page => true});
 build_options(["--cacerts", File | Rest], Opts) ->
     build_options(Rest, Opts#{cacerts => File});
 build_options(["--target", Target | Rest], Opts) ->
@@ -282,6 +284,9 @@ help([]) ->
      "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos);\n"
      "            or wasm32 (wasm32-unknown-emscripten): OUTPUT is a directory\n"
      "            with Cloudflare Workers\n"
+     "  --page    (with -o) OUTPUT is a directory: a static site that runs\n"
+     "            the app in the browser of each visitor (GitHub Pages), with\n"
+     "            OUTPUT/app.com and the page of the WebAssembly runtime\n"
      "  --no-edge (with -o) no WebAssembly part in OUTPUT. By default, the\n"
      "            same file also runs in the WebAssembly runtime (Workers,\n"
      "            Deno, a web page), with about 40 to 80 KB more\n"

@@ -85,7 +85,8 @@ self.addEventListener('message', async (e) => {
     base = e.data.base;
     const { start } = await import('./browser.js');
     beam = await start({
-      release: './release.bin',
+      // The studio serves its files at /__studio/static: they stay in the VM.
+      app: './app.com', statics: false,
       env: {
         PORT: '4000', HOME: '/tmp', STUDIO_ROOT: '/tmp/studio', STUDIO_BASE_PATH: base,
       },

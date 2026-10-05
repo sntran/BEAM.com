@@ -169,6 +169,11 @@ defmodule BeamComTest do
       refute Map.has_key?(opts([~c"d", ~c"-o", ~c"d.com"]), :edge)
     end
 
+    test "--page: a site" do
+      assert %{page: true} = opts([~c"d", ~c"-o", ~c"site", ~c"--page"])
+      refute Map.has_key?(opts([~c"d", ~c"-o", ~c"d.com"]), :page)
+    end
+
     test "the commands before 0.2: a hint (build)" do
       assert catch_throw(opts([~c"build", ~c"a.erl"])) ==
                {:error, ~c"there is no command ~ts: use \"~ts INPUT -o OUTPUT\"",

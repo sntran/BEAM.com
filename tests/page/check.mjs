@@ -74,12 +74,12 @@ const types = {
 // GitHub Pages: a directory gives its index.html, a directory without "/"
 // is a redirect, a path of the site with no file gives 404.html of the site,
 // and another path outside the site is a 404.
-// failRelease: the next request of release.bin fails (the check of a failed
-// boot).
+// failRelease: the next request of release.bin, or of app.com (a site of
+// --page), fails (the check of a failed boot).
 let failRelease = false;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  if (failRelease && url.pathname.endsWith('/release.bin')) {
+  if (failRelease && (url.pathname.endsWith('/release.bin') || url.pathname.endsWith('/app.com'))) {
     failRelease = false;
     res.writeHead(503);
     return res.end();
@@ -349,12 +349,13 @@ async function tabs(browser, origin) {
   step('all the tabs closed; 35 s later, the next visit restored the VM from the snapshot (the counter is 0)');
   await context.close();
 
-  // A boot in the SharedWorker that fails one time (here: release.bin fails
+  // A boot in the SharedWorker that fails one time (here: release.bin or app.com fails
   // one time). The page starts it one more time on the same port, so the
   // first tab runs in the SharedWorker, and the site has one VM.
   const once = await browser.newContext();
   failRelease = true;
   const f = await open(await once.newPage(), origin);
+  if (failRelease) throw new Error('the boot did not request release.bin or app.com: no failed boot to check');
   if (f.error || f.where !== 'shared') throw new Error(`after one failed boot, the first tab: ${f.error ?? f.where}`);
   await live(f.frame);
   const g = await open(await once.newPage(), origin);

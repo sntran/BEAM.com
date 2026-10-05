@@ -616,6 +616,7 @@ defmodule BeamComWasmTest do
         files.([], [
           {~c"lib/app-0.2.0/priv/static/assets/app.css", "css"},
           {~c"lib/app-0.2.0/priv/static/assets/app.css.gz", "gz"},
+          {~c"lib/app-0.2.0/priv/static/iframe/v1.html.gz", :zlib.gzip("iframe")},
           {~c"lib/app-0.2.0/priv/static/favicon.ico", "ico"},
           {~c"lib/app-0.2.0/priv/static/.well-known/security.txt", "dot"},
           {~c"lib/app-0.2.0/priv/static/assets/.hidden.css", "dot"},
@@ -624,8 +625,12 @@ defmodule BeamComWasmTest do
           {~c"lib/app-0.2.0/ebin/app.app", "app"}
         ])
 
-      assert ["/assets/app.css", "/favicon.ico"] ==
+      assert ["/assets/app.css", "/favicon.ico", "/iframe/v1.html"] ==
                :json.decode(:proplists.get_value(~c"app/static.json", page))
+
+      # Only the .gz file: the site gets the file.
+      assert "iframe" == IO.iodata_to_binary(:proplists.get_value(~c"app/iframe/v1.html", page))
+      refute :proplists.is_defined(~c"app/iframe/v1.html.gz", page)
 
       assert "css" == :proplists.get_value(~c"app/assets/app.css", page)
       assert "ico" == :proplists.get_value(~c"app/favicon.ico", page)
@@ -652,6 +657,73 @@ defmodule BeamComWasmTest do
       end
 
       assert "[]" == File.read!(Path.join([out, "page", "app", "static.json"]))
+    end
+  end
+
+  # beam.com INPUT -o DIR --page: the site of a native app.com, with its
+  # own runtime.
+  describe "site_test_" do
+    setup %{tmp_dir: dir} do
+      %{root: site_root(dir), out: String.to_charlist(Path.join(dir, "site"))}
+    end
+
+    test "the files of the site", %{root: root, out: out} do
+      files = [
+        {~c"lib/app-0.2.0/priv/static/assets/app.css", "css"},
+        {~c"lib/app-0.2.0/ebin/app.app", "app"}
+      ]
+
+      :ok = :beam_com_wasm.write_site(out, ~c"app", files, root, true)
+      site = to_string(out)
+
+      assert Enum.sort(Path.wildcard(Path.join(site, "**"), match_dot: true))
+             |> Enum.filter(&File.regular?/1)
+             |> Enum.map(&Path.relative_to(&1, site)) ==
+               Enum.sort([
+                 ".nojekyll",
+                 "404.html",
+                 "app-com.js",
+                 "app/assets/app.css",
+                 "app/static.json",
+                 "beam.mjs",
+                 "beam.wasm",
+                 "browser.js",
+                 "browser/none.js",
+                 "index.html",
+                 "licenses/NOTICE",
+                 "licenses/otp/MIT.txt",
+                 "main.js",
+                 "runtime-id.js",
+                 "sw.js",
+                 "worker.js"
+               ])
+
+      assert File.read!(Path.join(site, "index.html")) =~
+               "import { start } from './main.js';\n  start({ app: './app.com' });"
+
+      assert ["/assets/app.css"] == :json.decode(File.read!(Path.join(site, "app/static.json")))
+      assert "css" == File.read!(Path.join(site, "app/assets/app.css"))
+      assert "" == File.read!(Path.join(site, ".nojekyll"))
+      assert File.read!(Path.join(site, "worker.js")) =~ "from './browser/net.js'"
+      assert File.read!(Path.join(site, "runtime-id.js")) =~ ~r/export default '[0-9a-f]{64}';/
+    end
+
+    test "the summary of the site", %{root: root, out: out} do
+      text =
+        ExUnit.CaptureIO.capture_io(fn ->
+          :beam_com_wasm.write_site(out, ~c"app", [], root, false)
+        end)
+
+      assert text =~ "wrote the site #{out} ("
+      assert text =~ "files with app.com)"
+    end
+
+    test "an index.html with no start of main.js", %{root: root, out: out} do
+      page = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"page"])
+      :ok = :file.write_file(:filename.join(page, ~c"index.html"), "<html></html>")
+
+      assert {:error, ~c"index.html of the page: no start of main.js", []} ==
+               catch_throw(:beam_com_wasm.write_site(out, ~c"app", [], root, true))
     end
   end
 
@@ -1080,6 +1152,61 @@ defmodule BeamComWasmTest do
   end
 
   # A zip of beam.com with the application wasm_host, in a new directory.
+  # A zip with the runtime, the Worker files, the other hosts, the page
+  # and the licenses (write_site/5).
+  defp site_root(dir) do
+    root = root(dir)
+    priv = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv"])
+
+    worker_js = """
+    import net from 'node:net';
+    import createBeam from './beam.mjs';
+    import wasm from './beam.wasm';
+    const release = (await import('./release.bin')).default;
+    const snapshot = await import('./snapshot.bin');
+    const nifs = (await import('./nifs.js')).default;
+    """
+
+    index = """
+    <script type="module">
+      import { start } from './main.js';
+      start();
+    </script>
+    """
+
+    for {f, d} <- [
+          {~c"worker/worker.js", worker_js},
+          {~c"worker/app-com.js", "app-com.js"},
+          {~c"worker/durable.js", "durable.js"},
+          {~c"worker/global.js", "global.js"},
+          {~c"worker/durable-global.js", "durable-global.js"},
+          {~c"worker/tcp-proxy.mjs", "tcp-proxy.mjs"},
+          {~c"worker/app.js", "app.js"},
+          {~c"worker/cloudflare/index.js", "index.js"},
+          {~c"worker/cloudflare/release.js", "release.js"},
+          {~c"worker/cloudflare/snapshot.js", "snapshot.js"},
+          {~c"runtime/beam.mjs", "beam.mjs"},
+          {~c"runtime/beam.wasm", "beam.wasm"},
+          {~c"deno/deno.js", "deno.js"},
+          {~c"browser/browser.js", "browser.js"},
+          {~c"browser/browser/none.js", "none.js"},
+          {~c"page/index.html", index},
+          {~c"page/main.js", "main.js"},
+          {~c"page/sw.js", "sw.js"},
+          {~c"page/404.html", "404.html"}
+        ] do
+      :ok = :filelib.ensure_dir(:filename.join(priv, f))
+      :ok = :file.write_file(:filename.join(priv, f), d)
+    end
+
+    :ok = :filelib.ensure_path(:filename.join([root, ~c"licenses", ~c"otp"]))
+
+    for f <- [[~c"NOTICE"], [~c"otp", ~c"MIT.txt"]],
+        do: :ok = :file.write_file(:filename.join([root, ~c"licenses" | f]), "text")
+
+    root
+  end
+
   defp root(dir) do
     root = String.to_charlist(Path.join(dir, "beam_com_wasm_root"))
     ebin = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"ebin"])

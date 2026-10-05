@@ -365,9 +365,9 @@ CDN (for example jsDelivr, at the version of the package):
 
 [`tests/page/app-site.mjs`](../tests/page/app-site.mjs) writes these
 files, and CI checks the site of `phoenix_demo.com` in Chrome, with the
-package on a second origin (`check.mjs --cdn`). Not yet: `beam.com INPUT
--o DIR --target wasm32` writes this small site in place of the full
-directory.
+package on a second origin (`check.mjs --cdn`). `beam.com INPUT -o DIR
+--page` writes a site with its own copy of the runtime, so it needs no CDN
+(see "A static site for any app").
 
 The npm package `beam.com` has the runtime (`beam.wasm`, `worker.js`,
 `app-com.js` and `runtime-id.js`), the Node.js host, and `npx beam.com`.
@@ -818,6 +818,14 @@ The page needs an import map before its first module, and then calls
 </script>
 ```
 
+`start()` also takes `app`, the URL of a native `app.com`, in place of
+`release`: the page then reads the release of the file with range
+requests. The page serves the files of `priv/static` of a Phoenix app at
+the root of the site, and the VM does not get them. For an app that
+serves them at another path (`Plug.Static` with `at:`), give
+`statics: false`: then the VM keeps them. The studio at `phx/` of the
+site of BEAM.com does so.
+
 The app runs in the page as in a Durable Object. The shell of
 [`examples/worker`](../examples/worker) runs so at `repl/` of the site of
 BEAM.com on GitHub Pages ([`pages.sh`](../examples/worker/pages.sh)). In Chromium, its VM is
@@ -826,28 +834,34 @@ visits (a restore of the snapshot).
 
 ### A static site for any app
 
-`DIR/page/` is a static site that runs the app in the browser of each
-visitor. Publish only this directory: it is the root of the site. Then
-the app runs at `https://USER.github.io/REPO/`, and its code does not
-change.
+`beam.com INPUT -o DIR --page` writes a static site that runs the app in
+the browser of each visitor. `DIR` is the root of the site. Then the app
+runs at `https://USER.github.io/REPO/`, and its code does not change:
+
+```sh
+beam.com _build/prod/rel/my_app -o site --page
+```
+
+The build does not run the release, so it needs no database and no
+secret. The site has its own copy of the runtime, so it needs no CDN.
 
 | File | What |
 |---|---|
-| `index.html` | The page. It starts the VM, then shows the app in the frame `app/`. |
+| `app.com` | The app: the same native file as `-o app.com`. The page reads its release with range requests. A visitor can also download it and run it. |
+| `index.html` | The page. It starts the VM with `{ app: './app.com' }`, then shows the app in the frame `app/`. |
+| `main.js` | The start of the page. |
 | `vm.js` | The VM, in a module SharedWorker for all the tabs of the site. It keeps the cookies of the app. |
 | `sw.js` | The service worker of `app/`: it gives each request of the frame to the VM. |
 | `ws-shim.js` | The `WebSocket` of the pages of the app: a socket to the site goes to the VM. It also tells the page the path of the frame. |
 | `404.html` | The page of GitHub Pages for a path with no file. It sends a link to a page of the app to `index.html`. |
-| `env.json` | The name of the app and the variables of its VM. |
 | `worker.js` | `worker.js` with the imports of `browser/`, because a module Web Worker has no import map. |
-| `browser.js`, `browser/`, `beam.mjs`, `beam.wasm` | The runtime. |
-| `release.bin` | The release. |
-| `app/static.json`, `app/...` | The files of `priv/static` of the app. The site serves them, not the VM. |
+| `browser.js`, `browser/`, `beam.mjs`, `beam.wasm`, `app-com.js`, `runtime-id.js` | The runtime, and the reader of `app.com`. |
+| `app/static.json`, `app/...` | The files of `priv/static` of the app. The site serves them, not the VM. A file that the release has only as `PATH.gz` becomes `PATH`. |
 | `licenses/` | The license texts of the software in `beam.wasm`. |
+| `.nojekyll` | GitHub Pages runs no Jekyll ("Deploy from a branch"). |
 
-`page/beam.wasm` and `page/release.bin` are hard links to `beam.wasm` and
-`release/release.bin` of `DIR`, or copies when the file system has no hard
-links.
+The build refuses `--page` with `--no-edge`: the page runs the edge part
+of `app.com`.
 
 The base path:
 
@@ -886,8 +900,8 @@ The path of the frame:
   `BASE/#/PATH`. When the service worker is on, it sends the browser to
   the page (`sw.js`). At the first visit, GitHub Pages has no file at that
   path and gives `404.html`. That page finds the base path of the site
-  with `env.json`, and goes to `BASE/#/PATH`. Another missing path shows
-  a 404 text.
+  (the directory with `sw.js`), and goes to `BASE/#/PATH`. Another missing
+  path shows a 404 text.
 
 One VM for all the tabs of the site:
 
@@ -913,21 +927,21 @@ One VM for all the tabs of the site:
   long as the browser keeps the SharedWorker.
 - When the boot of the VM fails in the SharedWorker, the page starts it
   one more time on the same port: an error that occurs one time (for
-  example a network error on `release.bin`) does not make two VMs for one
+  example a network error on `app.com`) does not make two VMs for one
   site.
 - When the browser has no `SharedWorker`, or the VM does not start in it
   after the second start, the VM runs in a module Web Worker of one tab.
   Then another tab of the site shows a message.
 
-The variables of `env.json`:
+The variables of the VM:
 
-| Variable | Value | When |
+| Variable | Value | From |
 |---|---|---|
-| `PORT`, `HOME` | `4000`, `/tmp` | always |
-| `PHX_SERVER` | `true` | the release has Phoenix |
-| `PHX_HOST` | `localhost`: the host that `vm.js` sends, so that `check_origin` takes the WebSocket | the release has Phoenix |
-| `SECRET_KEY_BASE` | a random value for each browser, in `localStorage` | the release has Phoenix |
-| `DATABASE_PATH` | `/tmp/NAME.db`, in the memory of the VM | the release has `exqlite` |
+| `PORT`, `HOME` | `4000`, `/tmp` | the page |
+| `PHX_HOST` | `localhost`: the host that `vm.js` sends, so that `check_origin` takes the WebSocket | the page |
+| `SECRET_KEY_BASE` | a random value for each browser, in `localStorage` | the page |
+| `PHX_SERVER` | `true`, when the release has Phoenix | `app.com` |
+| `DATABASE_PATH` | `/tmp/NAME.db` in the memory of the VM, when the release has `exqlite` | `app.com` |
 
 A GitHub workflow builds the site of an app and publishes it on GitHub
 Pages: see "Publish on GitHub Pages" in the [README](../README.md#publish-on-github-pages).
@@ -950,7 +964,8 @@ more start, a SharedWorker that always fails gives the VM in the tab, and
 the fallback with no `SharedWorker`. On this computer,
 [`tests/page/phoenix_demo.sh`](../tests/page/phoenix_demo.sh) builds the
 site of `examples/phoenix_demo`. In headless Chromium on a local server
-(October 2026), the app showed in 1.6 to 3.4 s at the first visit. The
+(October 2026, with `--page`), the app showed in 2.4 to 4.2 s at the first
+visit. The
 same page works in Firefox 157, with one VM for two tabs: the second tab
 was ready in 10 ms.
 
@@ -966,8 +981,9 @@ The limits:
   site closes, the data goes. The next visit starts from the snapshot of
   the boot.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
-- The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
-  (3.5 to 14 MB for a Phoenix app).
+- The first visit downloads `beam.wasm` (about 6.5 MB) and the parts of
+  `app.com` that the release needs (about 13 MB for
+  `examples/phoenix_demo`).
 - The app needs an HTTP listener on `PORT`, and only the NIFs of the
   runtime or NIF libraries in WebAssembly (see "NIFs").
 - An app with `force_ssl` must have `rewrite_on: [:x_forwarded_proto]`
