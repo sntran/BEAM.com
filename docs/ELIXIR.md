@@ -91,8 +91,8 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - `ELIXIR_ERL_OPTIONS` and `ERL_FLAGS` give flags to the VM.
 - To build an Elixir project into one file, use `beam.com INPUT -o OUTPUT` (see
   "Elixir programs" above), not a Mix task.
-- `mix release` works with `include_erts: false`. Use its directory with
-  `--target wasm32`, or add it to a copy of `beam.com` (see "Add your
+- `mix release` works with `include_erts: false`. Give its directory to
+  `beam.com DIR -o app.com`, or add it to a copy of `beam.com` (see "Add your
   release" in [`PROGRAMS.md`](PROGRAMS.md)). With `include_erts: true`
   (the default), it stops: it copies ERTS from the disk, and there is
   none.

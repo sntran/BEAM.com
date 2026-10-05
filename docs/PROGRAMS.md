@@ -45,8 +45,8 @@ exit status of `beam.com`. In a directory with `mix.exs`,
 - **One Elixir file** (`.ex` or `.exs`) in which one module exports
   `main/1`, or **a Mix project** (`mix.exs`): see
   [`ELIXIR.md`](ELIXIR.md).
-- **A release directory** without ERTS (from `mix release` or rebar3),
-  only with `--target wasm32`: see [`WORKERS.md`](WORKERS.md).
+- **A release directory** without ERTS (from `mix release` or rebar3):
+  see "One file, natively and at the edge" in [`WORKERS.md`](WORKERS.md).
 
 The builder compiles the code, selects the OTP applications that the
 program needs, makes an OTP release with `systools`, and writes a copy of
@@ -64,7 +64,7 @@ The zip of `beam.com` has these applications:
   `asn1`, `public_key`, `ssl`, `inets`, `xmerl` and `runtime_tools`.
 - Elixir: `elixir`, `eex`, `ex_unit`, `iex`, `logger` and `mix`.
 - BEAM.com: `wasm` (WebAssembly), `esqlite` (SQLite), `wasm_host` (for
-  `--target wasm32`) and `beam_com_script` (for one-file programs).
+  the WebAssembly runtime) and `beam_com_script` (for one-file programs).
 
 A custom build can add more OTP applications: open an issue with the form
 [A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml),

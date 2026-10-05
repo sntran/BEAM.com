@@ -29,7 +29,7 @@ The input can be:
 * one `.ex` or `.exs` file in which one module has `main/1`;
 * an application directory, or a rebar3 project, with Hex packages;
 * a Mix project;
-* a release directory (from `mix release` or rebar3), for `--target wasm32`.
+* a release directory (from `mix release` or rebar3).
 
 The builder compiles the code, selects the OTP applications that the program needs, makes an OTP release, and writes a copy of beam.com with the release in its zip. The new file has no compiler: it has only what the program needs.
 
@@ -69,18 +69,19 @@ cd hello && ../mix.com deps.get && ../mix.com ecto.migrate
 
 `beam.com` has the NIFs of `exqlite`, `bcrypt_elixir` and `argon2_elixir` in it. So a Phoenix app with SQLite and `phx.gen.auth` runs with no C compiler.
 
-## For the edge: --target wasm32
+## For the edge
+
+Each file of `beam.com -o` also has an edge part: the same file runs in the WebAssembly runtime of the npm package `beam.com`. A project gets a small `worker.js` with `serve(app)`, and deploys to Cloudflare Workers and Deno Deploy at each git push (see `examples/worker` and `examples/phoenix_demo` of beam.com):
 
 ```sh
-beam.com examples/worker -o worker --target wasm32
-cd worker
-npx wrangler deploy          # Cloudflare Workers
-deno serve -A deno.js        # or Deno
+npm install && npm run build   # npx beam.com makes app.com
+npx wrangler dev               # Cloudflare Workers, on this computer
+npx wrangler deploy            # or deploy
 ```
 
-The output directory has the WebAssembly runtime (`beam.wasm`), the release (`release.bin`), and the host of each platform: `worker.js` for Workers, `deno.js` for Deno, and `browser.js` for a web page.
+`beam.com INPUT -o DIR --target wasm32` writes a full directory in place of one file: the WebAssembly runtime (`beam.wasm`), the release (`release.bin`), and the host of each platform: `worker.js` for Workers, `deno.js` for Deno, and `browser.js` for a web page.
 
-This Livebook is such an output. Its release is at `/app` of the VM:
+This Livebook is such a directory. Its release is at `/app` of the VM:
 
 ```elixir
 releases = File.ls!("/app/releases") |> Enum.reject(&String.ends_with?(&1, ".data"))
@@ -104,7 +105,7 @@ For a Phoenix app, make the release with Mix, then give it to beam.com:
 
 ```sh
 MIX_ENV=prod mix.com release
-beam.com _build/prod/rel/my_app -o my_app_edge --target wasm32
+beam.com _build/prod/rel/my_app -o my_app.com
 ```
 
 The Livebook of this page comes from the same steps: `wasm/livebook/setup.sh` of beam.com gets Livebook from Hex, makes its release with `mix.com`, and runs `beam.com --target wasm32`. Then `wasm/livebook/page.sh` makes the files of this page.

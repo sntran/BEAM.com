@@ -20,10 +20,10 @@ With `beam.com` you can:
 - **Use Elixir and its tools** from one file: `mix.com`, `iex.com`,
   `elixir.com`. A Phoenix app with SQLite and `phx.gen.auth` runs from
   its source, with no C compiler.
-- **Deploy to Cloudflare Workers, Deno Deploy or a web page**:
-  `beam.com INPUT -o DIR --target wasm32` makes one directory that runs
-  the same program on all three, with a second runtime: ERTS compiled to
-  WebAssembly.
+- **Run the same file on Cloudflare Workers, Deno Deploy or a web page**:
+  the `app.com` of `beam.com INPUT -o app.com` also runs there, with a
+  second runtime: ERTS compiled to WebAssembly, in the npm package
+  `beam.com`.
 
 The file has the compiler, `crypto` and `ssl` (with OpenSSL), SQLite, and
 a WebAssembly runtime (WAMR). It is about 50 MB.
@@ -118,15 +118,6 @@ cd hello && ../mix.com deps.get && ../mix.com ecto.migrate
 ../iex.com -S mix phx.server                     # http://localhost:4000
 ```
 
-Make Cloudflare Workers of a program. The same directory runs on Deno:
-
-```sh
-beam.com examples/worker -o worker --target wasm32
-cd worker
-npx workerd serve worker.capnp                   # test on this computer (Workers)
-deno serve -A deno.js                            # or on Deno
-```
-
 One file runs natively and in the WebAssembly runtime. Each executable of
 `-o` also has its edge part, of 40 to 180 KB (`--no-edge` leaves it out).
 A release directory of `mix release` is an input too:
@@ -134,13 +125,77 @@ A release directory of `mix release` is an input too:
 ```sh
 beam.com _build/prod/rel/my_app -o my_app.com     # a Phoenix app
 PHX_SERVER=true ./my_app.com                     # natively
-cd worker && BEAM_APP=../my_app.com deno serve -A deno.js   # the same file on Deno
 ```
 
-The npm package `beam.com` has the runtime for Node.js, and `npx
-beam.com` (see [npm](#npm)).
+The npm package `beam.com` runs the same file on Cloudflare Workers, on
+Deno Deploy, in a web page and in Node.js. See [Deploy to the
+edge](#deploy-to-the-edge).
 
-See "One file, natively and at the edge" in [`docs/WORKERS.md`](docs/WORKERS.md).
+## Deploy to the edge
+
+A project deploys its `app.com` to Cloudflare Workers and to Deno Deploy
+at each git push, with four small files and the npm package `beam.com`.
+The files do not change from one app to another:
+
+| File | What |
+|---|---|
+| `package.json` | The dev dependencies `beam.com` and `wrangler`, the script `build` (it makes `app.com` with `npx beam.com`), and the script `deploy` (`wrangler deploy`). |
+| `worker.js` | The entry, the same on both hosts. |
+| `wrangler.jsonc` | The name of the Worker, the Data rule for `*.com`, and for a stateful app the Durable Object. |
+| `deno.json` | The `deploy` key of Deno Deploy: `npm install`, `npm run build`, and the entrypoint `worker.js`. |
+
+The entry:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+export { Beam } from 'beam.com';   // stateful only
+
+const beam = serve(app);
+
+export default {
+  fetch(request, env, ctx) {
+    return beam.fetch(request, env, ctx);
+  },
+};
+```
+
+With the Durable Object `Beam` and its binding, the app is stateful: one
+VM serves all the requests, its timers run between requests, and its
+SQLite storage keeps the database. With no binding, it is stateless:
+each isolate runs its own VM. A Phoenix app needs no secret and no
+variable: the VM makes `SECRET_KEY_BASE` one time and keeps it, and
+`PHX_HOST` is the host of the first request.
+
+Test on this computer:
+
+```sh
+npm install && npm run build
+npx wrangler dev                 # Cloudflare Workers, in workerd
+npx deno serve -A worker.js      # Deno
+```
+
+[`examples/phoenix_demo`](examples/phoenix_demo) (stateful) and
+[`examples/worker`](examples/worker) (stateless) are such projects, with
+one-click buttons for both hosts. Copy one to start. See "Deploy at each
+git push" in [`docs/WORKERS.md`](docs/WORKERS.md).
+
+The program does not change. Its HTTP server (Bandit or Cowboy) listens
+with `gen_tcp`, and all of OTP is there. Outgoing HTTP goes through
+`fetch()` of the host, and other TCP through `connect()`. Give the build
+`--cacerts FILE` for HTTPS: the runtime has no root certificates of its
+own.
+
+`beam.com INPUT -o DIR --target wasm32` writes a full directory in
+place of one file: the runtime, the release, and a Worker, a Durable
+Object and a Deno entry for it. Use it only for what `app.com` does not
+do yet:
+
+- A snapshot of the build in the global scope of a Worker, for the
+  shortest cold start. A Worker of `app.com` makes its own snapshot at
+  its first boot.
+- The static site `DIR/page/` of the workflow of GitHub Pages (below).
+- Livebook ([`wasm/livebook`](wasm/livebook)).
 
 ## Publish on GitHub Pages
 
@@ -268,34 +323,9 @@ The other modules of the package:
 | `beam.com/worker` | The runtime (`worker.js` of Cloudflare Workers). |
 | `beam.com/beam.wasm` | The VM: ERTS built for WebAssembly. |
 
-The same `app.com` runs on Cloudflare Workers, on Deno Deploy and in a
-web page, with the runtime of the package. One entry runs on both hosts:
-
-```js
-import app from './app.com' with { type: 'bytes' };
-import { serve } from 'beam.com';
-export { Beam } from 'beam.com';   // stateful only
-
-const beam = serve(app);
-
-export default {
-  fetch(request, env, ctx) {
-    return beam.fetch(request, env, ctx);
-  },
-};
-```
-
-With the Durable Object `Beam` and its binding, the app is stateful: one
-VM serves all the requests, its timers run between requests, and its
-SQLite storage keeps the database. With no binding, it is stateless:
-each isolate runs its own VM. A project deploys at each git push: the
-build step of the host makes `app.com` (`npx beam.com`), and the host
-runs it. A Phoenix app needs no secret and no variable: the VM
-makes `SECRET_KEY_BASE` one time and keeps it, and `PHX_HOST` is the
-host of the first request. [`examples/phoenix_demo`](examples/phoenix_demo)
-(stateful) and [`examples/worker`](examples/worker) (stateless) are such
-projects, with one-click buttons for both hosts. See "Deploy at
-each git push" in [`docs/WORKERS.md`](docs/WORKERS.md).
+The same `app.com` runs on Cloudflare Workers and Deno Deploy with
+`serve(app)` (see [Deploy to the edge](#deploy-to-the-edge)), and in a
+web page with `main.js` of the package.
 
 The release job of CI makes the generated part of the package
 (`runtime/`, with `scripts/npm.sh`) and publishes it with each tag `v*`.
@@ -313,7 +343,7 @@ the Erlang shell in your browser is at
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |
 | [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, the file watcher. |
-| [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages (`--target wasm32`): Durable Objects, Ecto SQLite, snapshots, tenants, limits. |
+| [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages: `app.com` with the npm package, Durable Objects, Ecto SQLite, HTTP through `fetch()`, snapshots, tenants, limits, and `--target wasm32`. |
 | [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md) | The documentation as notebooks that run in your browser: a tour of beam.com, the WebAssembly VM, the anatomy of the file, WebAssembly programs, hosts and storage, networking, and building programs. |
 | [`docs/LIBRARIES.md`](docs/LIBRARIES.md) | Crypto and TLS, SQLite, and WebAssembly in Erlang code. |
 | [`docs/SANDBOX.md`](docs/SANDBOX.md) | `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`: a program that gives up what it does not need. |

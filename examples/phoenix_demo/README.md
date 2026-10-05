@@ -4,9 +4,9 @@ Live: <https://phoenix.fifo.workers.dev> (Cloudflare Workers) and
 <https://phoenix.one.deno.net> (Deno Deploy).
 
 This is a standard Phoenix LiveView app from `mix phx.new --database sqlite3`
-and `mix phx.gen.auth Accounts User users --live`. beam.com makes one
-directory from it that runs on both hosts. It holds the release and BEAM in
-WebAssembly. On Cloudflare Workers, one Durable Object runs the release, and
+and `mix phx.gen.auth Accounts User users --live`. beam.com makes one file
+from it, `app.com`, and the npm package `beam.com` runs that file on both
+hosts, with BEAM in WebAssembly. On Cloudflare Workers, one Durable Object runs the release, and
 its SQLite storage keeps the database. On Deno Deploy, each isolate runs the
 release, and SQLite in the VM keeps the pages of the database in Deno KV: all
 the isolates see the same data, and a new deploy keeps it.

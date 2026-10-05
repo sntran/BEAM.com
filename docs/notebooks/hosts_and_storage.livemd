@@ -2,13 +2,13 @@
 
 ## One build, three hosts
 
-`beam.com INPUT -o DIR --target wasm32` writes one directory. The same files run on three hosts:
+The `app.com` of `beam.com INPUT -o app.com` runs on three hosts, with the runtime of the npm package `beam.com`:
 
 | Host | Start | How it runs the VM |
 |---|---|---|
-| Cloudflare Workers | `wrangler deploy` | In an isolate, or in a Durable Object (one VM for all the requests). |
-| Deno and Deno Deploy | `deno serve deno.js` | One VM in each isolate. |
-| A web page | `browser.js` | One VM in the tab, as this Livebook. |
+| Cloudflare Workers | `serve(app)` in `worker.js`, `wrangler deploy` | In an isolate, or in a Durable Object (one VM for all the requests). |
+| Deno and Deno Deploy | the same `worker.js`, `deno serve` | One VM in each isolate. |
+| A web page | `main.js` of the package | One VM in the tab, as this Livebook. |
 
 The host gives the VM what WebAssembly does not have: TCP sockets, the clock, a place for snapshots, and storage. The runtime tells the program its host:
 

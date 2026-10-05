@@ -90,7 +90,7 @@ WAMR adds about 0.6 MB (two CPUs). Build with `WASM=0` to leave it out.
 Go resolves relative paths from `/`, so give the directory of a Go
 program as `"/"` in `preopens`.
 
-With `--target wasm32`, the program runs in the WebAssembly runtime,
+At the edge, the program runs in the WebAssembly runtime,
 which has no WAMR. There, the builder puts a module `wasm` with the same
 API in the release, and the engine of the host runs the modules: V8 on
 Deno, and the engine of the browser in a web page. The differences:
