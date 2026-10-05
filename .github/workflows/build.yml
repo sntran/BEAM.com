@@ -580,9 +580,10 @@ jobs:
         shell: pwsh
         run: tests/run.ps1 bin
 
-      # The table goes to the summary of the run (docs/BENCHMARKS.md).
+      # The table goes to the summary of the run (docs/BENCHMARKS.md), after
+      # a merge to main: a pull request has the performance gate.
       - name: Benchmarks (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && github.event_name != 'pull_request'
         run: |
           tests/bench/run.sh bin | tee bench.md
           { echo "### Benchmarks: ${{ matrix.name }}"; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"
@@ -621,7 +622,7 @@ jobs:
           fi
 
       - name: Benchmarks (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: pwsh
         run: |
           tests/bench/run.ps1 -Dir bin | Tee-Object -FilePath bench.md
@@ -639,8 +640,11 @@ jobs:
         include:
           - { name: FreeBSD, vm: freebsd }
           - { name: NetBSD, vm: netbsd }
-          # Cosmopolitan supports OpenBSD 7.3 or earlier.
-          - { name: OpenBSD 7.3, vm: openbsd }
+          # Cosmopolitan supports OpenBSD 7.3 or earlier. Its ksh runs an
+          # APE file (sh ./beam.com), and the APE loader runs it too: one
+          # job for each, at the same time.
+          - { name: OpenBSD 7.3, vm: openbsd, runner: loader }
+          - { name: OpenBSD 7.3 through sh, vm: openbsd, runner: sh }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -648,43 +652,66 @@ jobs:
           path: bin
           merge-multiple: true
 
+      # The benchmarks run after a merge to main, not for a pull request
+      # (the performance gate of the job test compares a pull request).
       - name: Run on FreeBSD
         if: matrix.vm == 'freebsd'
         uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1
         with:
           run: |
-            sh tests/run.sh bin && sh tests/bench/run.sh bin > bench.md
+            sh tests/run.sh bin || exit 1
+            if [ "${{ github.event_name }}" = pull_request ]; then
+              echo "No benchmarks for a pull request." > bench.md
+            else
+              sh tests/bench/run.sh bin > bench.md
+            fi
 
+      # NetBSD's sh stops at the NUL bytes of the APE header (C13 of
+      # docs/UPSTREAM.md): one start through sh shows it in the log, not
+      # checked. The tests use the APE loader.
       - name: Run on NetBSD
         if: matrix.vm == 'netbsd'
         uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1
         with:
           run: |
-            echo "== Through sh (known to fail: NUL bytes in the APE header)"
-            LIMIT=30 sh tests/run.sh bin || true
+            echo "== Through sh (not checked: NUL bytes in the APE header)"
+            sh bin/beam.com --version 2>&1 | head -n 5 || true
             echo "== Through the APE loader"
             # Where Cosmopolitan's execve() looks for the loader, for the
             # helper programs that beam.com starts (it executes itself).
             cp bin/ape-x86_64.elf "$HOME/.ape-1.10"
             chmod +x "$HOME/.ape-1.10"
-            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin &&
+            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin || exit 1
+            if [ "${{ github.event_name }}" = pull_request ]; then
+              echo "No benchmarks for a pull request." > bench.md
+            else
               RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
+            fi
 
-      - name: Run on OpenBSD
-        if: matrix.vm == 'openbsd'
+      - name: Run on OpenBSD through the APE loader
+        if: matrix.vm == 'openbsd' && matrix.runner == 'loader'
         uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945 # v1
         with:
           release: "7.3"
           run: |
-            echo "== Through sh (known to fail: NUL bytes in the APE header)"
-            LIMIT=30 sh tests/run.sh bin || true
-            echo "== Through the APE loader"
             # Where Cosmopolitan's execve() looks for the loader, for the
             # helper programs that beam.com starts (it executes itself).
             cp bin/ape-x86_64.elf "$HOME/.ape-1.10"
             chmod +x "$HOME/.ape-1.10"
-            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin &&
+            RUNNER=bin/ape-x86_64.elf sh tests/run.sh bin || exit 1
+            if [ "${{ github.event_name }}" = pull_request ]; then
+              echo "No benchmarks for a pull request." > bench.md
+            else
               RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
+            fi
+
+      - name: Run on OpenBSD through sh
+        if: matrix.vm == 'openbsd' && matrix.runner == 'sh'
+        uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945 # v1
+        with:
+          release: "7.3"
+          run: |
+            sh tests/run.sh bin && echo "The benchmarks run in the job through the APE loader." > bench.md
 
       - name: Benchmarks
         run: |

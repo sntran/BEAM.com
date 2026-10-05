@@ -310,12 +310,15 @@ language runtimes (garbage collectors, JITs).
 **Status:** 4.0.2 in CI (vmactions NetBSD and OpenBSD 7.9 VMs).
 
 **Effect.** `sh ./beam.com` prints `nul ('\0') in shell input`
-(NetBSD) or `syntax error: NUL byte unexpected` (OpenBSD ksh). FreeBSD's
-`sh` runs the same file correctly. So the "run it with sh" instruction
-does not work on these two systems.
+(NetBSD) or `syntax error: NUL byte unexpected` (OpenBSD 7.9 ksh).
+FreeBSD's `sh` and the ksh of OpenBSD 7.3 run the same file correctly (all
+the tests of `tests/run.sh` passed through `sh` on OpenBSD 7.3 in CI). So
+the "run it with sh" instruction does not work on NetBSD and on newer
+OpenBSD versions.
 
 **Workaround in BEAM.com.** Run the file through the APE loader
-(`ape-x86_64.elf ./beam.com`). CI tests this.
+(`ape-x86_64.elf ./beam.com`). CI tests this. CI also runs the tests
+through `sh` on OpenBSD 7.3, in a second job.
 
 **Possible upstream fix.** Document this in the APE instructions. If
 possible, move the first NUL byte after the part of the shell script

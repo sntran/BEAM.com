@@ -229,7 +229,10 @@ of a tool cannot make a check pass with no notice. The test needs
 
 CI runs the behavior tests on Linux (x86_64, aarch64), macOS (arm64,
 x86_64), Windows, FreeBSD, NetBSD and OpenBSD 7.3, and the unit tests in
-the build job.
+the build job. On NetBSD the tests run through the APE loader, because
+its `sh` stops at the NUL bytes of the APE header (C13 of
+[`UPSTREAM.md`](UPSTREAM.md)). OpenBSD 7.3 has two jobs at the same time:
+one through the APE loader, and one through `sh`.
 
 Without CI, two systems can be tested on a Linux x86_64 machine:
 
@@ -254,4 +257,5 @@ Windows machine. macOS and the BSDs also need CI or a real machine.
 
 `tests/bench/run.sh` (and `run.ps1`) measure the size, the start time and
 the speed of typical work for each variant. CI runs them after the tests
-on each system. See [`BENCHMARKS.md`](BENCHMARKS.md).
+on each system, for a push to `main`. A pull request has the performance
+gate in place of the tables. See [`BENCHMARKS.md`](BENCHMARKS.md).
