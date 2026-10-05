@@ -709,8 +709,33 @@ check_static_nifs() {
 # built with Emscripten (wasm/erts/build.sh, the variant for Workers), from
 # a clone of the same OTP, with this build of OTP as its bootstrap. The
 # step bundle puts it in the zip (WASM_RUNTIME).
+# The inputs of the WebAssembly runtime, as one SHA-256: the pinned
+# versions, the settings that change it, and the files of this repository
+# that the build reads (git ls-files: the versions in the work tree).
+wasm_runtime_inputs() {
+    {
+        echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
+        echo "EMSDK $EMSDK_VERSION $EMSDK_COMMIT WAMR $WAMR_VERSION $WAMR_COMMIT"
+        echo "HEX_NIFS $(hex_nif_packages)$(use_exqlite && echo " exqlite")"
+        echo "WASM_CFLAGS ${WASM_CFLAGS:-} EXTRA_LDFLAGS ${EXTRA_LDFLAGS:-} WASM64 ${WASM64:-0}"
+        git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr \
+                scripts/steps.sh |
+            while read -r f; do echo "$f $(sha256sum "$ROOT/$f" | cut -d' ' -f1)"; done
+    } | sha256sum | cut -d' ' -f1
+}
+
 step_wasm_runtime() {
     [ "${WASM_RUNTIME:-}" = none ] && return 0
+    # A runtime of the same inputs (for example from the cache of CI)
+    # stays. Its file "inputs" has the SHA-256 of wasm_runtime_inputs.
+    inputs=$(wasm_runtime_inputs)
+    out=$BUILD/wasm-runtime
+    if [ -f "$out/beam.wasm" ] && [ -f "$out/beam.mjs" ] && [ -f "$out/nifs" ] &&
+        [ "$(cat "$out/inputs" 2>/dev/null)" = "$inputs" ]; then
+        log "Using the WebAssembly runtime in $out (the same inputs)"
+        return 0
+    fi
+    rm -f "$out/inputs"
     emsdk=${EMSDK:-$BUILD/emsdk}
     if [ ! -x "$emsdk/upstream/emscripten/emcc" ]; then
         log "Installing emsdk $EMSDK_VERSION"
@@ -727,6 +752,7 @@ step_wasm_runtime() {
         WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD \
         HEX_NIFS="$(hex_nif_packages)$(use_exqlite && echo " exqlite")" \
         "$ROOT/wasm/erts/build.sh"
+    echo "$inputs" > "$out/inputs"
 }
 
 # The NIFs of the packages HEX_NIFS for the WebAssembly runtime

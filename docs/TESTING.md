@@ -229,7 +229,7 @@ of a tool cannot make a check pass with no notice. The test needs
 
 CI runs the behavior tests on Linux (x86_64, aarch64), macOS (arm64,
 x86_64), Windows, FreeBSD, NetBSD and OpenBSD 7.3, and the unit tests in
-the build job. On NetBSD the tests run through the APE loader, because
+their own job, after the build. On NetBSD the tests run through the APE loader, because
 its `sh` stops at the NUL bytes of the APE header (C13 of
 [`UPSTREAM.md`](UPSTREAM.md)). OpenBSD 7.3 has two jobs at the same time:
 one through the APE loader, and one through `sh`.
