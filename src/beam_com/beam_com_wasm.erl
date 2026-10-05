@@ -28,7 +28,7 @@
 %% arguments and the environment.
 -module(beam_com_wasm).
 
--export([release_dir/2, write/3, overlay/4]).
+-export([release_dir/2, write/3, overlay/4, write_site/5]).
 -export([sqlite_shim/1, wasm_shim/0, nif_modules/2]).
 
 -ifdef(TEST).
@@ -37,6 +37,7 @@
          strip_beams/1, strip/2, compress_beams/2, with_cacerts/2, worker_name/1, with_wasm/1, without_aot/1,
          nif_files/1, nif_module/1,
          page_files/3, page_env/1, page_worker/1, host_worker/2, static_files/2, write_page/2,
+         site_files/4,
          edge_runtime/1, runtime_id/1, apps/1]).
 -endif.
 
@@ -850,16 +851,71 @@ host_worker(Host, Js) ->
 
 %% The files of priv/static of the application of the release, as
 %% {"/PATH", Data}, without the copies that Plug.Static compresses (the
-%% site compresses its files). Not a path with a name that starts with "."
-%% (.well-known/): actions/upload-pages-artifact leaves them out of the
-%% site, so the VM serves them.
+%% site compresses its files). Only PATH.gz, with no PATH (the iframe
+%% pages of Livebook, for example), gives PATH, as the hosts serve it
+%% (worker.js). Not a path with a name that starts with "." (.well-known/):
+%% actions/upload-pages-artifact leaves them out of the site, so the VM
+%% serves them.
 static_files(Name, Files) ->
     Prefix = "lib/" ++ Name ++ "-",
-    lists:sort([{"/" ++ string:join(Parts, "/"), D}
-                || {P, D} <- Files, lists:prefix(Prefix, P),
-                   [_Vsn, "priv", "static" | Parts] <- [string:split(lists:nthtail(length(Prefix), P), "/", all)],
-                   Parts =/= [], not lists:member(filename:extension(P), [".gz", ".br"]),
-                   not lists:any(fun(F) -> lists:prefix(".", F) end, Parts)]).
+    All = [{"/" ++ string:join(Parts, "/"), D}
+           || {P, D} <- Files, lists:prefix(Prefix, P),
+              [_Vsn, "priv", "static" | Parts] <- [string:split(lists:nthtail(length(Prefix), P), "/", all)],
+              Parts =/= [], not lists:any(fun(F) -> lists:prefix(".", F) end, Parts)],
+    Plain = [F || {P, _} = F <- All, not lists:member(filename:extension(P), [".gz", ".br"])],
+    Have = maps:from_list(Plain),
+    Unzipped = [{Path, zlib:gunzip(D)} || {P, D} <- All, filename:extension(P) =:= ".gz",
+                                          Path <- [filename:rootname(P)], not is_map_key(Path, Have)],
+    lists:sort(Plain ++ Unzipped).
+
+%% beam.com INPUT -o DIR --page: a static site that runs the native file
+%% DIR/app.com in the browser of each visitor (for example on GitHub
+%% Pages). The page reads the release of app.com with range requests. The
+%% site has its own runtime, so it needs no CDN:
+%%
+%%   app.com       the app (the build wrote it)
+%%   index.html    the page, which starts main.js with { app: './app.com' }
+%%   main.js, sw.js, vm.js, ws-shim.js, scope.js, 404.html
+%%                 the page (priv/wasm_host/page)
+%%   worker.js, browser.js, browser/, beam.mjs, beam.wasm, app-com.js,
+%%   runtime-id.js, licenses/   the runtime, as in DIR/page/ of --target wasm32
+%%   app/static.json, app/...   the files of priv/static of the app, which
+%%                 the site serves (not the VM)
+%%   .nojekyll     GitHub Pages runs no Jekyll
+write_site(Dir, Name, Files, Root, Quiet) ->
+    Runtime = runtime_dir(Root),
+    Worker = worker_files(#{name => Name}, Runtime, Root),
+    Site = site_files(Name, Files, Worker, Root),
+    [begin ok = filelib:ensure_dir(P), write_file(P, D) end
+     || {F, D} <- Site, P <- [filename:join(Dir, F)]],
+    Quiet orelse io:format("~ts: wrote the site ~ts (~b files with app.com)~n"
+                           "  test: serve ~ts over HTTP, and open it in Chrome or Edge 137 or later~n"
+                           "  publish: the files of ~ts are the root of the site (GitHub Pages: "
+                           "the workflow pages-app.yml)~n",
+                           [beam_com:name(), Dir, length(Site) + 1, Dir, Dir]),
+    ok.
+
+%% The files of the site of write_site/5, without app.com.
+site_files(Name, Files, Worker, Root) ->
+    [Priv] = filelib:wildcard(filename:join([Root, "lib", "wasm_host-*", "priv", "page"])),
+    Statics = static_files(Name, Files),
+    [{F, site_page(F, read(filename:join(Priv, F)))} || F <- files(Priv)]
+        ++ [{"worker.js", page_worker(proplists:get_value("worker.js", Worker))},
+            {".nojekyll", <<>>}]
+        ++ [{F, D} || {F, D} <- Worker,
+                      lists:member(F, ["browser.js", "beam.mjs", "beam.wasm", "app-com.js", "runtime-id.js"])
+                          orelse lists:prefix("browser/", F) orelse lists:prefix("licenses/", F)]
+        ++ [{"app/static.json", json:encode([unicode:characters_to_binary(P) || {P, _} <- Statics])}
+            | [{"app" ++ P, D} || {P, D} <- Statics]].
+
+%% index.html of the site starts main.js with the option app.
+site_page("index.html", Html) ->
+    Start = <<"import { start } from './main.js';\n  start();">>,
+    binary:match(Html, Start) =:= nomatch andalso
+        throw({error, "index.html of the page: no start of main.js", []}),
+    binary:replace(Html, Start, <<"import { start } from './main.js';\n  start({ app: './app.com' });">>);
+site_page(_F, Data) ->
+    Data.
 
 write_page(Output, Files) ->
     Page = filename:join(Output, "page"),

@@ -19,7 +19,7 @@
 -export([run/1, allow/2, check_target/1, split_dir/1, temp_dir/1, executable/0]).
 
 -ifdef(TEST).
--export([default_output/1, base_apps/1, script/1, app_dir/1,
+-export([default_output/1, base_apps/1, base/1, script/1, app_dir/1,
          select_apps/3, app_files/1, release/5, relocate/2, with_dirs/1,
          parents/1, keep/2, slashes/2, generate/2, native/2,
          base_kind/1, check_base/2,
@@ -36,6 +36,22 @@
 
 %% Opts: input, apps, and optionally output. root (the zip, "/zip") and
 %% exe (the path of this executable) are for the tests.
+%% --page: OUTPUT is a directory, a static site that runs the app in the
+%% browser: OUTPUT/app.com (the native file) and the page of the
+%% WebAssembly runtime (beam_com_wasm:write_site/5).
+run(#{page := true} = Opts) ->
+    maps:get(target, Opts, none) =:= ?WASM andalso
+        throw({error, "--page writes a site with a native app.com, not with --target wasm32", []}),
+    maps:get(edge, Opts, true) =:= false andalso
+        throw({error, "--page needs the edge part of app.com: not with --no-edge", []}),
+    Dir = case Opts of
+              #{output := O} -> string:trim(slashes(O, os:type()), trailing, "/\\");
+              _ -> throw({error, "--page needs -o DIR, the directory of the site", []})
+          end,
+    filelib:is_regular(Dir) andalso
+        throw({error, "~ts: a file; --page writes a directory", [Dir]}),
+    ok = filelib:ensure_path(Dir),
+    run((maps:remove(page, Opts))#{output => filename:join(Dir, "app.com"), site => Dir});
 run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Wasm = maps:get(target, Opts, none) =:= ?WASM,
     Wasm andalso maps:get(edge, Opts, true) =:= false andalso
@@ -119,18 +135,15 @@ zip_app_files(Dir) ->
         {ok, Data} <- [read_file(F)]].
 
 write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
-    Exe = case Opts of
-              #{exe := E} -> E;
-              _ -> executable()
-          end,
-    {ok, Bin} = read_file(Exe),
+    {ok, Bin} = base(Opts),
     Files = app_files(App) ++ DepFiles ++ Release ++ without_docs(Kept, Base0, Root),
     Keep = keep(Kept, Base0),
     Rel = #{name => atom_to_list(maps:get(name, App)), vsn => maps:get(vsn, App), kind => beam_com},
     Edge = edge(Files, [], Bin, Keep, Rel, Opts, Root),
     Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
     write_output(Output, Data),
-    summary(Output, Data, Rel, Apps, Edge, Opts).
+    summary(Output, Data, Rel, Apps, Edge, Opts),
+    site(Opts, Rel, Files, Edge, Root).
 
 %% A release directory: the new file has the applications of the release,
 %% and the applications of the zip of beam.com that the release names but
@@ -154,17 +167,23 @@ release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files :
     %% tmp/run.runtime.config of a Mix release (beam_com_wasm:meta/1).
     Originals = [F || {P, _} = F <- Own, lists:member(P, Changed)]
         ++ [F || {"tmp/" ++ _, _} = F <- Files0],
-    Exe = case Opts of
-              #{exe := E} -> E;
-              _ -> executable()
-          end,
-    {ok, Bin} = read_file(Exe),
+    {ok, Bin} = base(Opts),
     Files = Native ++ without_docs(Kept, Base0, Root),
     Keep = keep(Kept, Base0),
     Edge = edge(Files, Originals, Bin, Keep, maps:with([name, vsn, kind], Rel), Opts, Root),
     Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
     write_output(Output, Data),
-    summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts).
+    summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts),
+    site(Opts, Rel, Files, Edge, Root).
+
+%% --page: the page of the site, next to OUTPUT (DIR/app.com). The page
+%% runs the edge part of app.com: a file with none cannot run there.
+site(#{site := _}, _Rel, _Files, [], _Root) ->
+    throw({error, "--page: app.com has no edge part, so it cannot run in a web page", []});
+site(#{site := Dir} = Opts, #{name := Name}, Files, _Edge, Root) ->
+    beam_com_wasm:write_site(Dir, Name, Files, Root, maps:get(quiet, Opts, false));
+site(_Opts, _Rel, _Files, _Edge, _Root) ->
+    ok.
 
 %% The applications of the .rel file of a release directory: [{App, Vsn}].
 rel_apps(Dir, Name, Vsn) ->
@@ -440,9 +459,10 @@ check_base(Opts) ->
     Exe = case Opts of
               #{exe := E} -> E;
               _ ->
-                  case init:get_argument(beam_com_exe) of
-                      {ok, [[E]]} -> E;
-                      _ -> none
+                  case {base_env(), init:get_argument(beam_com_exe)} of
+                      {false, {ok, [[E]]}} -> E;
+                      {false, _} -> none;
+                      {E, _} -> E
                   end
           end,
     case Exe =/= none andalso file:open(Exe, [read, binary, raw]) of
@@ -658,6 +678,34 @@ default_output(Input) ->
     filename:rootname(filename:basename(Input), filename:extension(Input)) ++ ".com".
 
 %% The executable that runs, from beam_com.c.
+%% The file that a native build copies, and its bytes: BEAM_COM_BASE, else
+%% this executable. A beam.com that --assimilate made a native file can so
+%% still make APE files (pages-app.yml): BEAM_COM_BASE names the APE file of
+%% the same version, whose zip has the same applications.
+%% exe (for the tests): the path of this executable.
+base(Opts) ->
+    Exe = case Opts of
+              #{exe := E} -> E;
+              _ -> executable()
+          end,
+    case base_env() of
+        false ->
+            read_file(Exe);
+        File ->
+            {ok, Bin} = read_file(File),
+            {ok, Self} = read_file(Exe),
+            beam_com_zip:entries(Bin) =:= beam_com_zip:entries(Self) orelse
+                throw({error, "BEAM_COM_BASE: ~ts is not a copy of this beam.com (its zip has other files)", [File]}),
+            {ok, Bin}
+    end.
+
+base_env() ->
+    case os:getenv("BEAM_COM_BASE") of
+        false -> false;
+        "" -> false;
+        File -> File
+    end.
+
 executable() ->
     case init:get_argument(beam_com_exe) of
         {ok, [[Exe]]} -> Exe;

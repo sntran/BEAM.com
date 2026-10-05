@@ -127,7 +127,10 @@ async function urlReader(url) {
 // Boots the release of the URL release, or of the native app.com of the URL
 // app (its edge part, see app-com.js: for this runtime only), with the
 // environment env (the "vars" of a Worker). BEAM_HOST is "browser".
-export async function start({ release = './release.bin', app = null, env = {} } = {}) {
+// statics: false keeps the static files of the app in the VM. Else the VM
+// does not have them (appFiles): use false for an app that serves
+// priv/static at a path other than "/" (Plug.Static with at:).
+export async function start({ release = './release.bin', app = null, env = {}, statics = true } = {}) {
   if (typeof WebAssembly.Suspending !== 'function') {
     throw new Error('this browser has no JSPI (WebAssembly.Suspending)');
   }
@@ -137,7 +140,7 @@ export async function start({ release = './release.bin', app = null, env = {} } 
   if (app) {
     const [{ appFiles }, { default: runtime }] = await Promise.all([import('./app-com.js'), import('./runtime-id.js')]);
     const { read, size } = await urlReader(new URL(app, where).href);
-    const bytes = await appFiles(read, size, { runtime });
+    const bytes = await appFiles(read, size, { runtime, statics });
     vm = new Vm({ BEAM_HOST: 'browser', ...env }, { plain: false, release: bytes, scheme: false });
   } else {
     vm = new Vm({ BEAM_HOST: 'browser', ...env, RELEASE_URL: new URL(release, where).href }, { plain: false, scheme: false });

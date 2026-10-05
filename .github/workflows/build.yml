@@ -262,7 +262,7 @@ jobs:
             tls_check.com
           if-no-files-found: error
 
-  # The static site of --target wasm32 (DIR/page/, docs/WORKERS.md): the
+  # The static site of --page (DIR with app.com, docs/WORKERS.md): the
   # workflow for the apps of users (pages-app.yml) builds two examples with
   # the beam.com of this run, and does not publish them.
   pages-app:

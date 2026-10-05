@@ -226,9 +226,9 @@ release candidate `@v0.1.0-rc.1` in place of `@v0.1.0`. With `@main`, the
 workflow uses the `edge` build of `beam.com`.
 
 The workflow ([`pages-app.yml`](.github/workflows/pages-app.yml)) builds
-the app with `beam.com --target wasm32`, and publishes the static site
-`DIR/page/`. A Mix project with Phoenix becomes a release first
-(`mix.com release`). Its inputs:
+the app with `beam.com INPUT -o DIR --page`, and publishes the static site
+`DIR`: the native file `app.com` and the page that runs it. A Mix project
+with Phoenix becomes a release first (`mix.com release`). Its inputs:
 
 | Input | Default | What |
 |---|---|---|
@@ -256,8 +256,8 @@ NIFs of the WebAssembly runtime. The limits:
   site closes, the data goes, and the next visit starts from the snapshot
   of the boot.
 - No outgoing TCP: a connection of Erlang gets `econnrefused`.
-- The first visit downloads `beam.wasm` (about 6.5 MB) and `release.bin`
-  (3.5 to 14 MB for a Phoenix app).
+- The first visit downloads `beam.wasm` (about 6.5 MB) and the parts of
+  `app.com` that the release needs (about 13 MB for a Phoenix app).
 - The browser needs JSPI: Chrome and Edge 137 or later, or Firefox 153
   or later.
 

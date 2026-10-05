@@ -30,6 +30,16 @@ Fixes from the check of the examples with 0.1.0-rc.1:
   other hosts and ports. See "HTTP through fetch()" in `docs/WORKERS.md`,
   and `specs/FetchPath.tla`.
 - `worker.capnp` gives workerd TLS for `fetch()` to `https://` URLs.
+- `beam.com INPUT -o DIR --page` writes a static site that runs the app
+  in the browser: `DIR/app.com`, the page and its runtime, with no CDN.
+  The build does not run the release, so it needs no database and no
+  secret. `pages-app.yml`, the Livebook page, the shell at `repl/` and
+  the studio at `phx/` of the site of BEAM.com use it. Before, they used
+  the full directory of `--target wasm32`. `start()` of the page takes
+  `statics: false` for an app that serves `priv/static` at a path other
+  than `/` (the studio). `BEAM_COM_BASE` names the APE file that a native
+  (assimilated) `beam.com` copies for a build, so that it still makes APE
+  files.
 - `npx beam.com --snapshot app.com` writes the snapshot of the build of
   `app.com`, and `serve(app, { snapshot })` gives it to the VMs. A full
   snapshot (`--full`) replaces the boot: a stateless Worker restores its
