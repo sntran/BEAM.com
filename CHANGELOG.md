@@ -30,6 +30,14 @@ Fixes from the check of the examples with 0.1.0-rc.1:
   other hosts and ports. See "HTTP through fetch()" in `docs/WORKERS.md`,
   and `specs/FetchPath.tla`.
 - `worker.capnp` gives workerd TLS for `fetch()` to `https://` URLs.
+- `beam.com INPUT -o DIR --page` writes a static site that runs the app
+  in the browser: `DIR/app.com`, the page and its runtime, with no CDN.
+  The build does not run the release, so it needs no database and no
+  secret. `pages-app.yml`, the Livebook page, the shell at `repl/` and
+  the studio at `phx/` of the site of BEAM.com use it. Before, they used
+  the full directory of `--target wasm32`. `start()` of the page takes
+  `statics: false` for an app that serves `priv/static` at a path other
+  than `/` (the studio).
 - On macOS arm64, the VM starts `erl_child_setup` with `posix_spawn()`
   of libSystem, through the APE loader. Before, it used `fork()`, and the
   child could hang in `_objc_atfork_child`: a process stayed after the VM

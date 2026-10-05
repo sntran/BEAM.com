@@ -616,6 +616,7 @@ defmodule BeamComWasmTest do
         files.([], [
           {~c"lib/app-0.2.0/priv/static/assets/app.css", "css"},
           {~c"lib/app-0.2.0/priv/static/assets/app.css.gz", "gz"},
+          {~c"lib/app-0.2.0/priv/static/iframe/v1.html.gz", :zlib.gzip("iframe")},
           {~c"lib/app-0.2.0/priv/static/favicon.ico", "ico"},
           {~c"lib/app-0.2.0/priv/static/.well-known/security.txt", "dot"},
           {~c"lib/app-0.2.0/priv/static/assets/.hidden.css", "dot"},
@@ -624,8 +625,12 @@ defmodule BeamComWasmTest do
           {~c"lib/app-0.2.0/ebin/app.app", "app"}
         ])
 
-      assert ["/assets/app.css", "/favicon.ico"] ==
+      assert ["/assets/app.css", "/favicon.ico", "/iframe/v1.html"] ==
                :json.decode(:proplists.get_value(~c"app/static.json", page))
+
+      # Only the .gz file: the site gets the file.
+      assert "iframe" == IO.iodata_to_binary(:proplists.get_value(~c"app/iframe/v1.html", page))
+      refute :proplists.is_defined(~c"app/iframe/v1.html.gz", page)
 
       assert "css" == :proplists.get_value(~c"app/assets/app.css", page)
       assert "ico" == :proplists.get_value(~c"app/favicon.ico", page)

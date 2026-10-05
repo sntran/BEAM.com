@@ -851,16 +851,22 @@ host_worker(Host, Js) ->
 
 %% The files of priv/static of the application of the release, as
 %% {"/PATH", Data}, without the copies that Plug.Static compresses (the
-%% site compresses its files). Not a path with a name that starts with "."
-%% (.well-known/): actions/upload-pages-artifact leaves them out of the
-%% site, so the VM serves them.
+%% site compresses its files). Only PATH.gz, with no PATH (the iframe
+%% pages of Livebook, for example), gives PATH, as the hosts serve it
+%% (worker.js). Not a path with a name that starts with "." (.well-known/):
+%% actions/upload-pages-artifact leaves them out of the site, so the VM
+%% serves them.
 static_files(Name, Files) ->
     Prefix = "lib/" ++ Name ++ "-",
-    lists:sort([{"/" ++ string:join(Parts, "/"), D}
-                || {P, D} <- Files, lists:prefix(Prefix, P),
-                   [_Vsn, "priv", "static" | Parts] <- [string:split(lists:nthtail(length(Prefix), P), "/", all)],
-                   Parts =/= [], not lists:member(filename:extension(P), [".gz", ".br"]),
-                   not lists:any(fun(F) -> lists:prefix(".", F) end, Parts)]).
+    All = [{"/" ++ string:join(Parts, "/"), D}
+           || {P, D} <- Files, lists:prefix(Prefix, P),
+              [_Vsn, "priv", "static" | Parts] <- [string:split(lists:nthtail(length(Prefix), P), "/", all)],
+              Parts =/= [], not lists:any(fun(F) -> lists:prefix(".", F) end, Parts)],
+    Plain = [F || {P, _} = F <- All, not lists:member(filename:extension(P), [".gz", ".br"])],
+    Have = maps:from_list(Plain),
+    Unzipped = [{Path, zlib:gunzip(D)} || {P, D} <- All, filename:extension(P) =:= ".gz",
+                                          Path <- [filename:rootname(P)], not is_map_key(Path, Have)],
+    lists:sort(Plain ++ Unzipped).
 
 %% beam.com INPUT -o DIR --page: a static site that runs the native file
 %% DIR/app.com in the browser of each visitor (for example on GitHub

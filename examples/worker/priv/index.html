@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <meta name="description" content="The Erlang shell from beam.com: natively, on Cloudflare Workers, on Deno Deploy, or in this page.">
 <!-- For the page mode (data-beam="page" on <html>): the files of
-     "beam.com examples/worker -o DIR --target wasm32" next to this page. -->
+     "beam.com examples/worker -o DIR --page" next to this page (pages.sh). -->
 <script type="importmap">{ "imports": {
   "node:net": "./browser/net.js",
   "./beam.wasm": "./browser/beam-wasm.js",
@@ -165,12 +165,12 @@
 
   async function connect() {
     if (document.documentElement.dataset.beam === 'page') {
-      // The VM in this page: the runtime (5 MB) and the release.
+      // The VM in this page: the runtime (5 MB) and the release of app.com.
       $('facts').textContent = 'Loading the runtime and the release…';
       const t0 = performance.now();
       try {
         const { start } = await import('./browser.js');
-        const beam = await start({ release: './release.bin' });
+        const beam = await start({ app: './app.com' });
         attach(await beam.socket('/ws'), (host) => `${where(host)} (ready in ${Math.round(performance.now() - t0)} ms)`);
       } catch (e) {
         $('facts').textContent = `The VM did not start: ${e.message}. A browser with JSPI (Chrome 137 or later) can run it.`;
