@@ -75,29 +75,22 @@ npx wrangler dev                 # Cloudflare Workers, in workerd
 npx deno serve -A worker.js      # Deno
 ```
 
-## Build a directory, then deploy
+## Deploy from this computer
 
-Build, then deploy to Cloudflare Workers:
+Deploy `app.com` to Cloudflare Workers:
 
 ```sh
-BEAM_COM=/path/to/beam.com SUBDOMAIN=NAME DENO_ORG=ORG DENO_APP=APP scripts/wasm.sh
-cd _build/wasm
-npx wrangler deploy -c wrangler.durable.jsonc --secrets-file FILE
+npm install && npm run build
+npx wrangler deploy
 ```
 
-`FILE` has one line, `SECRET_KEY_BASE=...`, from `mix phx.gen.secret`. Give it
-at the first deploy only.
-
-Deploy the same directory to Deno Deploy. `deno.env` has the variables of the
-app (`DENO_ORG` and `DENO_APP` give its host name):
+Deploy the same project to Deno Deploy, with a Deno KV database that all
+the isolates share:
 
 ```sh
-deno deploy create . --org ORG --app APP --source local \
-  --runtime-mode dynamic --entrypoint deno.js
+deno deploy create . --org ORG --app APP
 deno deploy database provision DB --kind denokv --org ORG   # the database
 deno deploy database assign DB --org ORG --app APP
-deno deploy env load deno.env --org ORG --app APP
-deno deploy env add SECRET_KEY_BASE VALUE --secret --org ORG --app APP
 deno deploy . --org ORG --app APP --prod
 ```
 

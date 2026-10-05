@@ -1,7 +1,7 @@
 # How BEAM.com works
 
 This file explains how one file runs Erlang/OTP on each system. For
-the WebAssembly runtime of `--target wasm32`, see "How it works" in
+the WebAssembly runtime of the edge part of `app.com`, see "How it works" in
 [`WORKERS.md`](WORKERS.md).
 
 ## Nothing is extracted
@@ -95,7 +95,7 @@ lib/.../                           sasl, compiler, parsetools, crypto, asn1,
 lib/elixir-1.20.4/ebin/...         and eex, ex_unit, iex, logger, mix
 lib/esqlite-.../ebin/...           SQLite
 lib/wasm-0.1.0/ebin/...            WebAssembly
-lib/wasm_host-0.1.0/...            for --target wasm32, with the runtime
+lib/wasm_host-0.1.0/...            for the edge part, with the runtime
                                    (priv/runtime/beam.wasm) and the Workers
 lib/beam_com/ebin/...              the commands (src/beam_com)
 lib/beam_com_script-0.1.0/ebin/... runs one-file programs

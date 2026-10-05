@@ -56,7 +56,10 @@ In a web page (Chrome or Edge 137 or later), as static files:
 BEAM_COM=/path/to/beam.com scripts/page.sh OUT
 ```
 
-On Cloudflare Workers, with an instance for each visitor:
+On Cloudflare Workers, with an instance for each visitor. This script uses
+the runtime directory of beam.com (see "The runtime directory (internal)"
+in docs/BUILDING.md of beam.com), because the studio serves its static
+files at `/__studio/static`:
 
 ```sh
 BEAM_COM=/path/to/beam.com scripts/wasm.sh

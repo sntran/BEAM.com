@@ -186,16 +186,11 @@ with `gen_tcp`, and all of OTP is there. Outgoing HTTP goes through
 `--cacerts FILE` for HTTPS: the runtime has no root certificates of its
 own.
 
-`beam.com INPUT -o DIR --target wasm32` writes a full directory in
-place of one file: the runtime, the release, and a Worker, a Durable
-Object and a Deno entry for it. Use it only for what `app.com` does not
-do yet:
-
-- A snapshot of the build in the global scope of a Worker, for the
-  shortest cold start. A Worker of `app.com` makes its own snapshot at
-  its first boot.
-- The static site `DIR/page/` of the workflow of GitHub Pages (below).
-- Livebook ([`wasm/livebook`](wasm/livebook)).
+A Worker makes a snapshot of its booted VM at its first boot, and the
+next isolates restore it. For the shortest cold start, the build can
+also make one, and a stateless Worker then restores its VM before the
+first request: see "The snapshot of the build" in
+[`docs/WORKERS.md`](docs/WORKERS.md).
 
 ## Publish on GitHub Pages
 
@@ -343,7 +338,7 @@ the Erlang shell in your browser is at
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |
 | [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, the file watcher. |
-| [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages: `app.com` with the npm package, Durable Objects, Ecto SQLite, HTTP through `fetch()`, snapshots, tenants, limits, and `--target wasm32`. |
+| [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages: `app.com` with the npm package, Durable Objects, Ecto SQLite, HTTP through `fetch()`, snapshots, tenants, static sites (`--page`), and limits. |
 | [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md) | The documentation as notebooks that run in your browser: a tour of beam.com, the WebAssembly VM, the anatomy of the file, WebAssembly programs, hosts and storage, networking, and building programs. |
 | [`docs/LIBRARIES.md`](docs/LIBRARIES.md) | Crypto and TLS, SQLite, and WebAssembly in Erlang code. |
 | [`docs/SANDBOX.md`](docs/SANDBOX.md) | `--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`: a program that gives up what it does not need. |

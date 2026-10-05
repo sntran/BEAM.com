@@ -11,7 +11,7 @@
 // Then:
 //
 //   import { start } from './browser.js';
-//   const beam = await start({ release: './release/release.bin' });
+//   const beam = await start({ app: './app.com' });
 //   const response = await beam.fetch('/path');   // a Response of the app
 //   const socket = await beam.socket('/ws');      // a WebSocket of the app
 //

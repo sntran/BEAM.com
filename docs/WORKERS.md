@@ -46,70 +46,23 @@ release` and `include_erts: false`, and give its directory: then
 [`examples/phoenix_demo/scripts/app-com.sh`](../examples/phoenix_demo/scripts/app-com.sh).
 See "Deploy at each git push" below.
 
-## The directory of --target wasm32
+## Stateless or stateful
 
-`beam.com INPUT -o DIR --target wasm32` writes a full directory in place
-of one file. Use it only for what `app.com` does not do yet: a snapshot
-of the build in the global scope (the shortest cold start), the static
-site `DIR/page/` (the workflow of GitHub Pages), and Livebook. The same
-directory runs on Workers, on Deno and Deno Deploy, and in a web page:
-see "Deno and Deno Deploy" and "In a web page" below.
-
-```sh
-beam.com examples/worker -o worker --target wasm32
-cd worker
-npx workerd serve worker.capnp                        # test on this computer: http://127.0.0.1:8789
-(cd release && npx wrangler deploy) && npx wrangler deploy
-```
-
-### What the build writes
-
-| File | What |
-|---|---|
-| `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | The runtime Worker (`NAME`): the VM, with no program. |
-| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | The Worker with the release (`NAME-release`, with no public URL). The runtime Worker gets `release.bin` from it at the first request of an isolate. |
-| `durable.js`, `wrangler.durable.jsonc` | The same runtime in one Durable Object (`NAME-durable`): one VM for all the requests, with SQLite storage. |
-| `global.js`, `wrangler.global.jsonc` | The runtime Worker with the release and a snapshot of the build in it. The global scope restores the VM before the first request. |
-| `durable-global.js`, `wrangler.durable-global.jsonc` | The Durable Objects, with a spare VM that the global scope restores. |
-| `worker.capnp` | Both Workers for `workerd`. |
-| `tcp-proxy.mjs` | A local TCP port for a listener of the program (see "Incoming TCP"). |
-| `licenses/` | The license texts of the software in `beam.wasm`. Wrangler uploads them with the runtime (about 80 KB). |
-| `deno.js`, `deno.json`, `deno/` | The same runtime on Deno and Deno Deploy (see below). |
-| `browser.js`, `browser/` | The same runtime in a web page (see below). |
-| `page/` | A static site that runs the app in the browser of each visitor, for example on GitHub Pages (see "A static site for any app"). |
-
-The build also runs the release one time on this computer, to find the
-modules of its boot. The Worker then loads them in one batch, and the
-first request is shorter. `BEAM_COM_WASM_NATIVE_RUN=0` turns this off,
-for a program that must not start on the build computer.
-
-### Three ways to run the VM
-
-**The runtime Worker** (`wrangler.jsonc`). Each isolate has its own VM.
-The first request of an isolate boots the VM (or restores a snapshot),
-and the VM stays for the next requests to that isolate. The VM runs only
+**Stateless** (no Durable Object). Each isolate runs its own VM. The
+first request of an isolate boots the VM (or restores a snapshot), and
+the VM stays for the next requests to that isolate. The VM runs only
 while a request is open: an idle VM costs no CPU time, and its timers
 wait for the next request. Use it for a stateless service: an API, a
 webhook, a site.
 
-**A Durable Object** (`wrangler.durable.jsonc`). One VM serves all the
-requests, and runs all the time while the object is in memory. Its
-SQLite storage is the database of Ecto SQLite. Use it for a server whose
-state must be in one place: LiveView with PubSub and Presence, a game, a
-chat room. Cloudflare bills the duration of an object while it is in
-memory.
+**Stateful** (the export `Beam` and its binding `BEAM` in
+`wrangler.jsonc`). One Durable Object runs one VM for all the requests,
+and the VM runs all the time while the object is in memory. Its SQLite
+storage is the database of Ecto SQLite. Use it for a server whose state
+must be in one place: LiveView with PubSub and Presence, a game, a chat
+room. Cloudflare bills the duration of an object while it is in memory.
 
-**The global scope** (`wrangler.global.jsonc`,
-`wrangler.durable-global.jsonc`). A snapshot of the build goes into the
-Worker, and the global scope of each new isolate restores it before the
-first request. This gives the shortest cold start. Make the snapshot
-first, with Node.js 26:
-
-```sh
-node wasm/snapshot/snapshot.mjs worker --warm 4000:/        # writes worker/release/snapshot.bin
-node wasm/snapshot/snapshot.mjs worker --boot-point         # with Ecto SQLite: at the boot point
-npx wrangler deploy -c wrangler.global.jsonc
-```
+For the shortest cold start, see "The snapshot of the build".
 
 ## One file, natively and at the edge
 
@@ -125,8 +78,7 @@ the WebAssembly runtime. The native run never reads `.wasm/`.
 | The other entries | The modules in the place of NIFs (exqlite, wasm), `etc/cacerts.pem` of `--cacerts`, and the files of a Mix release that the native file changes. |
 
 The runtime reads `lib/` and `releases/` of the zip, with the files of
-`.wasm/` in their place (`app-com.js`, which `--target wasm32` writes
-into DIR):
+`.wasm/` in their place (`app-com.js` of the npm package):
 
 - It reads three parts of the file: the end, the central directory, and
   the span of the release. The edge part is at the end of that span. So a
@@ -151,9 +103,9 @@ sure that each `.beam` of the release is a module after one gunzip at
 most.
 
 The identity of a runtime is the SHA-256 of the output of `sha256sum
-app-com.js beam.mjs beam.wasm worker.js`. `--target wasm32` writes it
-into DIR as the module `runtime-id.js`, and `.wasm/.release.json` of a
-native file holds the identity of the runtime of the build. A host gives
+app-com.js beam.mjs beam.wasm worker.js`. The npm package has it as the
+module `runtime-id.js`, and `.wasm/.release.json` of a native file holds
+the identity of the runtime of the build. A host gives
 the identity of its runtime to the loader, and does not calculate a hash
 at the start: a Worker cannot, because it gets `beam.wasm` as a module.
 So a file that passes the check also has the correct snapshot key for
@@ -171,9 +123,8 @@ Pages in October 2026 found:
 
 So a file that a web page reads with ranges must keep the name `.com`.
 
-The build of a native file does not run the program (`--target wasm32`
-does, to find the modules of the boot). So the VM loads the modules one
-by one. `--no-edge` leaves the edge part out, and a `beam.com` with no
+The build of a native file does not run the program. So the VM loads
+the modules one by one. `--no-edge` leaves the edge part out, and a `beam.com` with no
 WebAssembly runtime writes none.
 
 A release directory (`_build/prod/rel/NAME` of `mix release`, or of
@@ -386,10 +337,6 @@ Node.js 26 on Linux x86_64:
 | `worker.com` (`examples/worker`) | 31.0 MB | 13 files, 71 KB | 5.7 MB | 331 ms | 32 MB |
 | `phoenix_demo.com` (its Mix release) | 37.3 MB | 16 files, 177 KB | 12.9 MB | 440 ms | 40 MB |
 
-For `examples/phoenix_demo`, `release.bin` of `--target wasm32` has
-13.5 MB, and its VM uses 56 MB: it loads the modules of the boot in one
-batch.
-
 ## The program does not change
 
 - The application `wasm_host` goes into the release, and the boot script
@@ -423,9 +370,7 @@ batch.
   `localhost` (`wrangler dev`), a custom domain or a preview URL. The
   `Origin` of another site goes as it is, and the app refuses it.
 - `beam.com --cacerts FILE` puts the root certificates of FILE (PEM)
-  into the release of the WebAssembly runtime, for TLS: in the edge part
-  of a native file (`-o app.com`), and in the directory of `--target
-  wasm32`. The runtime has no certificates of its own, and the builder
+  into the edge part of `app.com`, for TLS. The runtime has no certificates of its own, and the builder
   does not copy the store of the build computer. A native run of the file
   uses the store of the computer, not FILE.
 
@@ -614,8 +559,7 @@ this.
 With `BEAM_PERSIST` (a list of directories, for example `"/data"`), a
 Durable Object keeps the files of these directories in its SQLite
 storage, and a new VM gets them back. With `BEAM_PERSIST`, each object
-boots its own VM, and does not take the spare VM of
-`durable-global.js`.
+boots its own VM, or restores a snapshot at the boot point.
 
 Caution: with `"cookie"` and `"path"`, all the tenants share one origin
 in the browser. A page of one tenant can run scripts on the pages of the
@@ -629,7 +573,7 @@ origin, or read the instance of another visitor with fetch().
 ## Incoming TCP and distributed Erlang
 
 Workers get HTTP requests, not TCP connections. So a WebSocket to
-`/.tcp/PORT` of the runtime Worker is a connection to the listener of
+`/.tcp/PORT` of the Worker is a connection to the listener of
 the program on PORT. On the client, `tcp-proxy.mjs LOCAL_PORT
 wss://HOST/.tcp/PORT` makes a local TCP port of it.
 
@@ -653,26 +597,23 @@ example `esqlite` or `wasm`) gets a warning, and that NIF does not load.
 
 A NIF library in WebAssembly (`priv/NAME.wasm`, see
 [`NIFS.md`](NIFS.md)) loads in the runtime too: the engine of the host
-runs it. `beam.com --target wasm32` gives it to Wrangler as a module
-(`nifs.js`), because a Worker cannot compile WebAssembly at run time. A
-snapshot holds the memory of the library too. For a Worker that runs an
-`app.com`, `beam.com --nif-modules app.com .` writes `nifs.js` (see
-`serve(app, { nifs })` below).
+runs it. A Worker cannot compile WebAssembly at run time, so
+`beam.com --nif-modules app.com .` writes `nifs.js` and `nifs/`, and the
+entry gives them to Wrangler as modules (see `serve(app, { nifs })`
+below). A snapshot holds the memory of the library too.
 
 ## Variables and bindings
 
 | Name | Where | What |
 |---|---|---|
-| `APP` | runtime Worker | The service binding to the Worker with the release. |
-| `RELEASE_URL` | runtime Worker | A URL of `release.bin`, when there is no `APP`. |
-| `PORT` | both | The port of the HTTP listener of the program (4000). |
-| `PHX_HOST` | both | The host of a Phoenix app, also for the Origin of a WebSocket. |
-| `BEAM_ERL_FLAGS` | both | More emulator flags. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
-| `BEAM_SNAPSHOT` | both | `"off"`: no snapshot. |
-| `SNAPSHOTS` | both | An R2 bucket for the snapshots, in place of the Cache API. |
-| `BEAM_VERSION` | both | The version metadata of the deploy (set by the build). |
+| `PORT` | Worker, Durable Object | The port of the HTTP listener of the program (4000). |
+| `PHX_HOST` | Worker, Durable Object | The host of a Phoenix app, also for the Origin of a WebSocket. |
+| `BEAM_ERL_FLAGS` | Worker, Durable Object | More emulator flags. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
+| `BEAM_SNAPSHOT` | Worker, Durable Object | `"off"`: no snapshot. |
+| `SNAPSHOTS` | Worker, Durable Object | An R2 bucket for the snapshots, in place of the Cache API. |
+| `BEAM_VERSION` | Worker, Durable Object | The version metadata of the deploy (set by the build). |
 | `BEAM_WARM` | global scope | The path of a warm-up request after a restore (`"/"`). |
-| `DB`, `BEAM_D1` | runtime Worker | The D1 database of Ecto SQLite, and another name for its binding. |
+| `DB`, `BEAM_D1` | Worker | The D1 database of Ecto SQLite, and another name for its binding. |
 | `BEAM_OBJECT` | Durable Object | The name of the object with no tenants (`"main"`). |
 | `BEAM_TENANTS` | Durable Object | `"cookie"`, `"host"` or `"path"` (see above). |
 | `BEAM_INSTANCES` | Durable Object | The instances at one time (then a queue). |
@@ -682,7 +623,7 @@ snapshot holds the memory of the library too. For a Worker that runs an
 | `BEAM_INSTANCE_TITLE` | Durable Object | The title of the page of `/`. |
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
-| `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
+| `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | Worker, Durable Object | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
 | `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). The others use `connect()`. Empty: no host. |
 | `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
@@ -703,7 +644,7 @@ In `workerd` on a computer, a Phoenix app answers its first request in
 0.6 s with a boot, and in 0.2 s with a snapshot. The next requests take
 3 to 5 ms, and a LiveView click takes about 50 to 70 ms.
 
-- **Size:** `beam.wasm` is about 5 MB (2 MB with gzip). `release.bin`
+- **Size:** `beam.wasm` is about 5 MB (2 MB with gzip). The release
   of a Phoenix app is 3.5 to 8.5 MB.
 - **Memory:** a booted VM uses 40 to 58 MB. An isolate has 128 MB.
 - **Speed:** Erlang code runs at 1.2 to 1.4 times the time of the native
@@ -721,39 +662,38 @@ In `workerd` on a computer, a Phoenix app answers its first request in
 
 ## Deno and Deno Deploy
 
-The output of `--target wasm32` also runs on Deno 2.9 and on Deno Deploy,
-with the same `worker.js`. JSPI works in Deno with no flag. `deno.js`,
-`deno.json` and `deno/` give the parts of the Workers runtime that
-`worker.js` uses:
+`serve(app)` of the npm package also runs on Deno 2.9 and on Deno Deploy,
+with the same `worker.js`. JSPI works in Deno with no flag. The
+condition `deno` of the package gives the parts of the Workers runtime
+that the VM uses:
 
 | Workers | Deno |
 |---|---|
 | `node:net` (`nodejs_compat`, the default from the compatibility date 2026-08-04) | `node:net` of Deno. TLS stays in `ssl` of OTP. |
-| The imports of `beam.wasm`, `release.bin` and `snapshot.bin` | Small modules in `deno/` that read the files, with `deno/worker.js`, a copy of `worker.js` with their imports (no import map). `release.bin` can be next to `worker.js` (one Worker) or in `release/`. |
+| The Data module of `app.com` | The import of `app.com` with `{ type: 'bytes' }` (the flag `raw-imports` of `deno.json`) |
 | `WebSocketPair` | `Deno.upgradeWebSocket`, when `fetch()` returns the upgrade |
 | `caches.default` | `caches.open('beam')` |
 | The SQL storage of a Durable Object | SQLite in the VM, with its pages in Deno KV (see below) |
-| The static assets (`static/`, from `wasm/erts/host/static.mjs`) | `deno.js` serves them before the VM |
+| The static assets (`priv/static` of the app) | `serve(app)` serves them before the VM |
 
-Run it in the output directory:
+Run the project of the quick start with Deno:
 
 ```sh
-deno serve --allow-net --allow-read --allow-env --allow-write=/tmp deno.js
+npx deno serve -A worker.js
 ```
 
-For Deno Deploy, make an app with the entrypoint `deno.js`, and set the
-variables of the release in the app. Then deploy the directory:
+For Deno Deploy, make an app from the repository of the project. The
+`deploy` key of `deno.json` gives the build and the entrypoint. Set the
+variables of the release in the app. With the Deno CLI:
 
 ```sh
-deno deploy create . --org ORG --app APP --source local \
-  --runtime-mode dynamic --entrypoint deno.js
+deno deploy create . --org ORG --app APP
 deno deploy env load FILE --org ORG --app APP    # a .env file of the variables
 deno deploy . --org ORG --app APP --prod
 ```
 
-The configurations of Workers upload none of the Deno files, and Deno
-does not read the configurations of Workers. So one directory deploys to
-both.
+Deno does not read the configuration of Workers, and Workers do not read
+`deno.json`. So one project deploys to both.
 
 Differences from Workers:
 
@@ -859,7 +799,8 @@ site for the snapshot. A page has no TCP connections (a connection of
 Erlang gets `econnrefused`) and no SQL storage.
 
 The page needs an import map before its first module, and then calls
-`start()`:
+`start()` with `app`, the URL of a native `app.com`. The page reads the
+release of the file with range requests:
 
 ```html
 <script type="importmap">{ "imports": {
@@ -869,19 +810,18 @@ The page needs an import map before its first module, and then calls
   "./snapshot.bin": "./browser/none.js" } }</script>
 <script type="module">
   import { start } from './browser.js';
-  const beam = await start({ release: './release/release.bin' });
+  const beam = await start({ app: './app.com' });
   const response = await beam.fetch('/');     // a Response of the app
   const socket = await beam.socket('/ws');    // a WebSocket of the app
 </script>
 ```
 
-`start()` also takes `app`, the URL of a native `app.com`, in place of
-`release`: the page then reads the release of the file with range
-requests. The page serves the files of `priv/static` of a Phoenix app at
-the root of the site, and the VM does not get them. For an app that
-serves them at another path (`Plug.Static` with `at:`), give
-`statics: false`: then the VM keeps them. The studio at `phx/` of the
-site of BEAM.com does so.
+`beam.com --page` writes this page and the files that it needs (see
+"A static site for any app"). The page serves the files of `priv/static`
+of a Phoenix app at the root of the site, and the VM does not get them.
+For an app that serves them at another path (`Plug.Static` with `at:`),
+give `statics: false`: then the VM keeps them. The studio at `phx/` of
+the site of BEAM.com does so.
 
 The app runs in the page as in a Durable Object. The shell of
 [`examples/worker`](../examples/worker) runs so at `repl/` of the site of
