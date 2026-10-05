@@ -538,6 +538,8 @@ export default {
     if (!vm) {
       const v = vm = new Vm(env, { host: new URL(request.url).hostname });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
+      // A VM that stopped: the next request starts a new one.
+      v.onDead = () => { if (vm === v) vm = undefined; };
     }
     return vm.fetch(request, ctx);
   },
@@ -1085,6 +1087,15 @@ export class Vm {
     this.nextTimer = 1;
     this.env = env;
     this.waitListen = new Map();  // port -> the resolve functions of listening()
+    this.conns = new Set();    // the open connections of bridge() (see die)
+    this.sockets = 0;          // the open WebSockets: bridge() and /.tcp/PORT
+    this.peak = 0;             // the memory (MB) of the last log of the peak
+    // The VM stopped (erlang:halt, or a trap such as an allocation that
+    // failed): dead is the reason, and died resolves. onDead: the owner of
+    // the VM drops it, so that a new VM takes the next request.
+    this.dead = null;
+    this.died = new Promise((resolve) => { this.markDead = resolve; });
+    this.onDead = null;
     // The static files of the release (appFiles of app-com.js), when the
     // release is loaded: a request for one of them needs no VM.
     this.statics = new Promise((resolve) => { this.gotStatics = resolve; });
@@ -1171,7 +1182,7 @@ export class Vm {
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
       const snapKB = snapBytes ? snapBytes.byteLength >> 10 : 0;
-      this.onready = () => { console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
+      this.onready = () => { this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
       createBeam({
         noInitialRun: !!snap,
         onRuntimeInitialized: snap ? () => {
@@ -1278,15 +1289,20 @@ export class Vm {
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
           if (this.hostFiles) m.beamHost.files = this.hostFiles;
         }],
-        print: (s) => console.log(s),
-        printErr: (s) => console.log(s),
+        print: (s) => this.log(s),
+        printErr: (s) => this.log(s),
         nifModule: (file) => nifModule(nifs, file),
         // Workers compile no WebAssembly at run time: use the imported module.
         instantiateWasm: (imports, done) => {
           WebAssembly.instantiate(wasm, imports).then((instance) => { this.exports = instance.exports; done(instance); });
           return {};
         },
-        onExit: (code) => reject(new Error(`beam exited with status ${code}`)),
+        // In a plain Worker, the thread that stopped can run in the context
+        // of a request that ended: die runs in an open request (run).
+        onExit: (code) => {
+          reject(new Error(`beam exited with status ${code}`));
+          this.run(() => this.die(`exit status ${code}`));
+        },
       }).catch(reject);
     });
   }
@@ -1446,11 +1462,93 @@ export class Vm {
     }
   }
 
+  // The linear memory of the VM in MB. It never shrinks, so it is also its
+  // peak.
+  megabytes() {
+    return this.beam ? this.beam.HEAPU8.length >> 20 : 0;
+  }
+
   memory() {
-    return `memory ${this.beam.HEAPU8.length >> 20} MB`;
+    return `memory ${this.megabytes()} MB`;
+  }
+
+  // A log line each time the memory of the VM grew by 8 MB or more since
+  // the last one (a Worker has 128 MB for all of the isolate).
+  notePeak() {
+    const mb = this.megabytes();
+    if (mb < this.peak + 8) return;
+    this.peak = mb;
+    this.log(`beam: memory ${mb} MB (a new peak of this VM)`);
+  }
+
+  // The VM stopped: each open request gets 503, each WebSocket closes with
+  // 1011, and the owner drops the VM (onDead). The threads of the VM do not
+  // run again, so without this the open requests and all later ones wait
+  // for an answer that does not come.
+  die(reason) {
+    if (this.dead) return;
+    this.dead = reason;
+    const open = [...this.conns].filter((c) => !c.status).length;
+    this.log(`beam: the VM stopped (${reason}), ${this.memory()}: ${open} open requests get 503`);
+    // Each connection in its own request (run): in a plain Worker, its
+    // response, its socket and its timer belong to that request.
+    for (const c of this.conns) {
+      const status = c.status;
+      if (!status) c.status = 503;
+      if (c.ws) this.socketGone(c);
+      this.run(() => {
+        clearTimeout(c.timer);
+        if (!status) {
+          c.resolve(this.stopped());
+          c.finished();
+        } else if (c.ws) {
+          try { c.ws.close(1011, 'the app stopped'); } catch {}
+        } else if (!c.done) {
+          c.done = true;
+          c.writer?.abort(new Error('the app stopped')).catch(() => {});
+        }
+        this.bridgeRelease(c);
+      }, c.h);
+    }
+    this.conns.clear();
+    // The other sockets: /.tcp/PORT, and the connections of the VM.
+    for (const [id, t] of this.tcps) {
+      if (!id.startsWith('b')) this.run(() => { try { t.close(); } catch {} }, t.h);
+    }
+    this.tcps.clear();
+    this.markDead();
+    this.onDead?.(reason);
+  }
+
+  // A log line. In a plain Worker, a thread of the VM can run in the
+  // context of a request that ended, where console.log throws: then an open
+  // request writes the line (run).
+  log(text) {
+    try { console.log(text); } catch { this.run(() => console.log(text)); }
+  }
+
+  // The answer of a VM that stopped. The owner starts a new VM for the
+  // next request.
+  stopped() {
+    return new Response('The app stopped. Try again.\n',
+      { status: 503, headers: { 'content-type': 'text/plain', 'retry-after': '1' } });
+  }
+
+  // The answer above a limit of the host (BEAM_MAX_REQUESTS,
+  // BEAM_MAX_WEBSOCKETS): before the VM gets the request or its body.
+  busy(what) {
+    console.log(`beam: too many ${what}: 503`);
+    return new Response(`The app has too many ${what}. Try again.\n`,
+      { status: 503, headers: { 'content-type': 'text/plain', 'retry-after': '1' } });
+  }
+
+  // A WebSocket of the VM closed (once for each one).
+  socketGone(c) {
+    if (c.counted) { c.counted = false; this.sockets--; }
   }
 
   event(header, body) {
+    if (this.dead) return;
     const h = new TextEncoder().encode(JSON.stringify(header) + '\n');
     if (!body || !body.byteLength) return this.beam.beamHost.push(h);
     const b = new Uint8Array(h.length + body.byteLength);
@@ -1479,6 +1577,10 @@ export class Vm {
       finished();
       return file;
     }
+    if (this.dead) {
+      finished();
+      return this.stopped();
+    }
     await this.ready;
     if (this.resume) {
       const f = this.resume;
@@ -1488,7 +1590,11 @@ export class Vm {
     // The first request makes the snapshot, and the other requests wait for
     // it, so that the snapshot has the state of no request.
     if (this.makeKey) this.snapping = this.makeSnapshot().finally(() => { this.snapping = null; });
-    if (this.snapping) await this.snapping;
+    if (this.snapping) await Promise.race([this.snapping, this.died]);
+    if (this.dead) {
+      finished();
+      return this.stopped();
+    }
     const url = new URL(request.url);
     const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
     const tcp = upgrade && url.pathname.match(/^\/\.tcp\/(\d+)$/);
@@ -1623,9 +1729,41 @@ export class Vm {
 
   // The request as a TCP connection to the HTTP server of the
   // app on PORT. Bandit does the HTTP; here only the bytes are framed.
+  // The limits of the host (vars, 0 for no limit):
+  // - BEAM_MAX_REQUESTS: the requests that wait for the app at one time
+  //   (no limit by default); one more gets 503 before the VM reads it;
+  // - BEAM_MAX_WEBSOCKETS: the open WebSockets (no limit by default);
+  // - BEAM_REQUEST_TIMEOUT: the seconds until the head of the response
+  //   (60 by default); then the request gets 504, and the app gets the
+  //   end of the connection.
   async bridge(request, url, upgrade, h, finished) {
+    const maxSockets = limit(this.env.BEAM_MAX_WEBSOCKETS, 0);
+    if (upgrade && maxSockets && this.sockets >= maxSockets) {
+      finished();
+      return this.busy('WebSockets');
+    }
+    const maxRequests = limit(this.env.BEAM_MAX_REQUESTS, 0);
+    if (!upgrade && maxRequests && [...this.conns].filter((c) => !c.ws).length >= maxRequests) {
+      finished();
+      return this.busy('requests');
+    }
     const port = Number(this.env.PORT ?? 4000);
-    await this.listening(port);
+    // The time limit counts from here: the app can also fail to listen.
+    const timeout = limit(this.env.BEAM_REQUEST_TIMEOUT, 60);
+    const deadline = Date.now() + timeout * 1000;
+    let late;
+    const wait = [this.listening(port), this.died];
+    if (timeout) wait.push(new Promise((resolve) => { late = setTimeout(() => resolve(LATE), timeout * 1000); }));
+    const waited = await Promise.race(wait);
+    clearTimeout(late);
+    if (this.dead) {
+      finished();
+      return this.stopped();
+    }
+    if (waited === LATE) {
+      finished();
+      return this.late(`the app did not listen on port ${port}`, timeout);
+    }
     const id = `b${this.nextId++}`;
     const headers = new Headers(request.headers);
     headers.set('host', url.host);
@@ -1661,9 +1799,15 @@ export class Vm {
     const bytes = new Uint8Array(head.length + body.length);
     bytes.set(head);
     bytes.set(body, head.length);
+    if (this.dead) {
+      finished();
+      return this.stopped();
+    }
     return new Promise((resolve) => {
       const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname };
       if (h) h.sockets++;
+      this.conns.add(c);
+      if (timeout) c.timer = setTimeout(() => this.bridgeTimeout(c, timeout), Math.max(deadline - Date.now(), 1));
       this.tcps.set(id, { send: (b) => this.bridgeData(c, b), close: () => this.bridgeEnd(c), h });
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
       this.event({ t: 'tcp_data', id }, bytes);
@@ -1687,6 +1831,7 @@ export class Vm {
         headers.append(l.slice(0, i).trim(), l.slice(i + 1).trim());
       }
       c.buf = c.buf.slice(end + 4);
+      clearTimeout(c.timer);
       if (c.status === 101 && c.upgrade) return this.bridgeUpgrade(c);
       if (c.upgrade && c.status === 403) {
         console.log(`beam: the app refused the WebSocket of ${c.path} (403) from the origin ${c.origin}. ` +
@@ -1736,6 +1881,7 @@ export class Vm {
     if (c.done) return;
     c.done = true;
     c.writer?.close().catch(() => {});
+    this.conns.delete(c);
     this.tcps.delete(c.id);
     this.event({ t: 'tcp_closed', id: c.id });
     this.bridgeRelease(c);
@@ -1746,17 +1892,40 @@ export class Vm {
     if (c.released) return;
     c.released = true;
     if (c.h) { c.h.sockets--; c.h.wake?.(); }
+    this.notePeak();
   }
 
   // The app closed the connection.
   bridgeEnd(c) {
+    clearTimeout(c.timer);
     this.tcps.delete(c.id);
     if (!c.status) {
+      c.status = 502;
       c.resolve(new Response('bad gateway\n', { status: 502 }));
       c.finished();
     }
-    if (c.ws) { try { c.ws.close(); } catch {} this.bridgeRelease(c); }
-    else this.bridgeDone(c);
+    if (c.ws) {
+      try { c.ws.close(); } catch {}
+      this.socketGone(c);
+      this.conns.delete(c);
+      this.bridgeRelease(c);
+    } else this.bridgeDone(c);
+  }
+
+  // No head of a response in BEAM_REQUEST_TIMEOUT seconds: 504 for the
+  // client, and the end of the connection for the app (tcp_closed).
+  bridgeTimeout(c, seconds) {
+    if (c.status || c.done) return;
+    c.status = 504;
+    c.resolve(this.late(`no response for ${c.path}`, seconds));
+    c.finished();
+    this.bridgeDone(c);
+  }
+
+  // The answer of BEAM_REQUEST_TIMEOUT.
+  late(what, seconds) {
+    console.log(`beam: ${what} in ${seconds} s: 504`);
+    return new Response('The app did not answer in time.\n', { status: 504, headers: { 'content-type': 'text/plain' } });
   }
 
   // A WebSocket: the client end to the browser, frames to the app.
@@ -1765,12 +1934,15 @@ export class Vm {
     server.accept();
     server.binaryType = 'arraybuffer';
     c.ws = server;
+    c.counted = true;
+    this.sockets++;
     c.frames = [];  // the parts of a message in fragments
     server.addEventListener('message', (e) => {
       const text = typeof e.data === 'string';
       this.event({ t: 'tcp_data', id: c.id }, frame(text ? 1 : 2, text ? new TextEncoder().encode(e.data) : new Uint8Array(e.data)));
     });
     server.addEventListener('close', (e) => {
+      this.socketGone(c);
       const code = e.code && e.code !== 1005 ? e.code : 1000;
       this.event({ t: 'tcp_data', id: c.id }, frame(8, new Uint8Array([code >> 8, code & 255])));
     });
@@ -1810,17 +1982,22 @@ export class Vm {
     const listener = this.listeners.get(port);
     finished();
     if (!listener) return new Response(`no listener on ${port}\n`, { status: 404 });
+    const maxSockets = limit(this.env.BEAM_MAX_WEBSOCKETS, 0);
+    if (maxSockets && this.sockets >= maxSockets) return this.busy('WebSockets');
     const id = `w${this.nextId++}`;
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     server.binaryType = 'arraybuffer';  // (the default can be Blob)
     if (h) h.sockets++;
-    this.tcps.set(id, { send: (b) => server.send(b), close: () => server.close(), h });
+    const counted = { counted: true };
+    this.sockets++;
+    this.tcps.set(id, { send: (b) => server.send(b), close: () => { this.socketGone(counted); server.close(); }, h });
     this.event({ t: 'tcp_accept', id: listener, conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
     server.addEventListener('message', (e) => {
       this.tcpData(id, typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data);
     });
     server.addEventListener('close', () => {
+      this.socketGone(counted);
       this.tcpClosed(id);
       if (h) { h.sockets--; h.wake?.(); }
     });
@@ -2113,6 +2290,17 @@ export function staticResponse(statics, request) {
   if (s.deflated) body = body.pipeThrough(new DecompressionStream('deflate-raw'));
   if (gz) body = body.pipeThrough(new DecompressionStream('gzip'));
   return new Response(body, { headers });
+}
+
+// The result of a wait that passed its time limit.
+const LATE = Symbol('late');
+
+// A limit of a var: a number above 0, else the default (0: no limit).
+// "0" turns a limit with a default off.
+function limit(text, fallback) {
+  if (text === undefined || text === null || text === '') return fallback;
+  const n = Number(text);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 // The position of the bytes pat in b, or -1.

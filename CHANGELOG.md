@@ -3,6 +3,29 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+- A VM that stops (`erlang:halt/1`, or a trap such as an allocation that
+  failed) no longer holds its requests. Each open request gets 503 with
+  `retry-after: 1`, each WebSocket closes with the code 1011, and the next
+  request gets a new VM: a stateless Worker or Deno starts one, and a
+  Durable Object resets. Before, the open requests and all later requests
+  of that VM waited with no answer. In a plain Worker, the stop now runs
+  in an open request, because the thread that stopped can run in the
+  context of a request that ended.
+- `BEAM_REQUEST_TIMEOUT` (60 s by default, `"0"` turns it off): a request
+  gets 504 when the app does not listen, or does not send the head of its
+  response, in this time.
+- `BEAM_MAX_REQUESTS` and `BEAM_MAX_WEBSOCKETS`: above these counts, a new
+  request or WebSocket gets 503 with `retry-after: 1` before the app reads
+  its body. There is no limit by default.
+- The host writes `beam: memory N MB (a new peak of this VM)` when the
+  memory of the VM grew by 8 MB or more, and the memory of the VM when it
+  stops.
+- In a plain Worker, a line of the VM (stdout and stderr) that the host
+  cannot write in the context of its thread goes to an open request.
+  Before, `console.log` could throw there, and stop the thread of the VM.
+
 ## 0.1.0-rc.2
 
 The second release candidate of 0.1.0. As 0.1.0-rc.1, it is a

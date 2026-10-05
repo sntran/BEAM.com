@@ -83,6 +83,9 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
   const full = !!snapshot && !snapshotHeader(snapshot).boot_point;
   const ready = full && !globalEnv[binding] ? (async () => {
     vm = new Vm(globalEnv, { release: await release(), snapshot });
+    // A VM that stopped: the requests then go to the Worker of worker.js,
+    // which boots a VM of its own.
+    vm.onDead = () => { vm = null; };
     await vm.ready;
     if (globalEnv.BEAM_WARM) await vm.warm(globalEnv.BEAM_WARM);
   })() : Promise.resolve();
