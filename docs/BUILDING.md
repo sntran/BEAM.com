@@ -154,7 +154,17 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
 4. **Publish the edge binary**: after a merge to `main`, the prerelease
    `edge` gets the new `beam.com`.
 5. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
-   gets `beam.com`, `beam-emu.com` and `SHA256SUMS`.
+   gets `beam.com`, `beam-emu.com`, the tarball of the npm package and
+   `SHA256SUMS`, and npm gets the same tarball. A run of this job again
+   puts its files on the release that is there, and skips npm when npm
+   has the version.
+
+For a tag, the job **Find a tested run of this commit** comes first. It
+waits for the run of the push of the same commit to `main`. When that run
+passed, the tag run builds and tests nothing: the release job takes
+`beam.com` and `beam-emu.com` of that run, and the release takes about
+two minutes. When there is no such run, or it did not pass, the tag run
+builds and tests the commit, as a run of `main` does (about 30 minutes).
 
 [Another workflow](../.github/workflows/pages.yml) publishes the site of
 BEAM.com on GitHub Pages ([`site.sh`](site.sh)): these docs as ExDoc
@@ -173,12 +183,17 @@ workflow by hand (Actions, "Run workflow").
 
 ## Make a release
 
-1. Set the version in `src/beam_com/beam_com.app.src`, write its
-   section (`## X.Y.Z`) in [`CHANGELOG.md`](../CHANGELOG.md), and merge
-   the change to `main`. The section goes at the start of the notes of
-   the release.
-2. Push a tag with the same version: `git tag v0.1.0 && git push origin
-   v0.1.0`.
-3. CI builds and tests the files on all the platforms, and then publishes
-   the release of the tag. The job stops when the tag and the version
+1. Set the version in `src/beam_com/beam_com.app.src` and
+   `package.json`, write its section (`## X.Y.Z`) in
+   [`CHANGELOG.md`](../CHANGELOG.md), and merge the change to `main`. The
+   section goes at the start of the notes of the release.
+2. Push a tag with the same version on the merge commit: `git tag -a
+   v0.1.0 -m "BEAM.com 0.1.0" && git push origin v0.1.0`.
+3. The tag run takes the files of the run of `main` for that commit (it
+   waits for that run when it has not ended), and then publishes the
+   release of the tag. The job stops when the tag and the version
    differ.
+4. npm publishes with trusted publishing: the trusted publisher of the
+   package `beam.com` on npmjs.com is the workflow `build.yml` of
+   `sntran/BEAM.com`, with no environment. The workflow needs no npm
+   token.
