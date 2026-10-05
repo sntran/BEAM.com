@@ -217,7 +217,7 @@ jobs:
 
 Then turn on Pages one time: Settings, Pages, Source "GitHub Actions". The
 `GITHUB_TOKEN` cannot do this step. Until the release `v0.1.0`, use the
-release candidate `@v0.1.0-rc.1` in place of `@v0.1.0`. With `@main`, the
+release candidate `@v0.1.0-rc.2` in place of `@v0.1.0`. With `@main`, the
 workflow uses the `edge` build of `beam.com`.
 
 The workflow ([`pages-app.yml`](.github/workflows/pages-app.yml)) builds
@@ -279,6 +279,13 @@ The package does not hold `beam.com` (about 50 MB). At the first run,
 release, and checks its SHA-256 against the value that the package
 holds. Then the file stays in the cache (`~/.cache/beam.com/npm/`). A
 host that only uses the runtime never downloads it.
+
+Each GitHub release from 0.1.0-rc.2 also holds the package, the same
+file as on npm. npm installs it with no registry:
+
+```sh
+npm install https://github.com/sntran/BEAM.com/releases/download/v0.1.0-rc.2/beam.com-0.1.0-rc.2.tgz
+```
 
 - `BEAM_COM`: the path of a `beam.com` to use. Then nothing is
   downloaded.
