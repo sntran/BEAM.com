@@ -48,10 +48,7 @@ The other changes to the generated app:
 
 A button copies this directory into a new repository of your account, and
 the host builds and deploys it at each push, with the npm package
-`beam.com` of the version in [`package.json`](package.json). Caution: with
-0.1.0-rc.1, the build of the host stops at the first dependency that is a
-rebar3 project, because no `escript` is in `PATH`. A later version puts
-its own `escript` in `PATH`.
+`beam.com` of the version in [`package.json`](package.json).
 
 The build step of the host runs `npm run build`
 ([`scripts/app-com.sh`](scripts/app-com.sh)): `npx beam.com` builds the

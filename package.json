@@ -1,6 +1,6 @@
 {
   "name": "beam.com",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Erlang/OTP and Elixir in one executable file: npx beam.com, and the WebAssembly runtime for a native app.com",
   "license": "Apache-2.0",
   "repository": {

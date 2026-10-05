@@ -217,7 +217,7 @@ jobs:
 
 Then turn on Pages one time: Settings, Pages, Source "GitHub Actions". The
 `GITHUB_TOKEN` cannot do this step. Until the release `v0.1.0`, use the
-release candidate `@v0.1.0-rc.1` in place of `@v0.1.0`. With `@main`, the
+release candidate `@v0.1.0-rc.2` in place of `@v0.1.0`. With `@main`, the
 workflow uses the `edge` build of `beam.com`.
 
 The workflow ([`pages-app.yml`](.github/workflows/pages-app.yml)) builds

@@ -69,9 +69,6 @@ npx wrangler dev                 # test on this computer
 npx wrangler deploy
 ```
 
-The option `statics` needs the npm package 0.1.0-rc.2 or later. With
-0.1.0-rc.1, the static files of the studio are not found.
-
 Caution: an instance runs the code of its visitor, as a public instance
 of Livebook does. The Durable Object of the instance is its sandbox.
 

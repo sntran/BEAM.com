@@ -3,9 +3,11 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.2
 
-Fixes from the check of the examples with 0.1.0-rc.1:
+The second release candidate of 0.1.0. As 0.1.0-rc.1, it is a
+pre-release on GitHub, and on npm it has the dist-tag `next`. It has the
+fixes from the check of the examples with 0.1.0-rc.1, and these changes:
 
 - The tools of Elixir (`mix`, `iex`, `elixir`, `elixirc`) put an
   `escript` in `PATH` when it has none, so Mix can run rebar3 for a
