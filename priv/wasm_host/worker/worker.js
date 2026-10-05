@@ -217,6 +217,12 @@ async function loadSnapshot(env) {
   }
 }
 
+// The header of a snapshot, without its pages: boot_point, release, ...
+export function snapshotHeader(bytes) {
+  const { pagesData, ...head } = parseSnapshot(bytes);
+  return head;
+}
+
 function parseSnapshot(bytes) {
   const b = new Uint8Array(bytes);
   if (new TextDecoder().decode(b.subarray(0, 8)) !== 'BEAMSNP1') throw new Error('snapshot.bin: not a snapshot');
@@ -1108,18 +1114,6 @@ export class Vm {
     if (!env.PHX_HOST && !this.vars.PHX_HOST && this.host) this.vars.PHX_HOST = this.host;
   }
 
-  // The host of the first request, for a VM that the global scope restored
-  // from a snapshot at the boot point: the program starts at that request,
-  // with PHX_HOST of autoVars (a full snapshot has PHX_HOST of the build).
-  firstHost(host) {
-    if (this.hostKnown) return;
-    this.hostKnown = true;
-    if (!this.bootPointSnap || this.env.PHX_HOST || this.vars.PHX_HOST) return;
-    if (releaseMeta(this.release).env?.PHX_SERVER !== 'true') return;
-    this.vars.PHX_HOST = host;
-    this.envVars = { ...this.envVars, PHX_HOST: host };
-  }
-
   async boot(env) {
     const t0 = Date.now();
     const [release, bundled] = this.given
@@ -1131,38 +1125,48 @@ export class Vm {
     const ownVars = Object.keys(this.vars).length;
     // A snapshot of the build holds no secret that the VM made itself.
     if (!this.capture) await this.autoVars(env, releaseMeta(release));
-    // A snapshot of the build (snapshot.bin), else one that a Worker made
-    // (BEAM_SNAPSHOT = "off" turns them off).
-    let snapBytes = bundled, key = null;
-    if (this.capture === 'boot-point') this.bootKey = 'capture';
-    if (!snapBytes && !this.capture && env.BEAM_SNAPSHOT !== 'off') {
-      // A Durable Object with Ecto SQLite (sql of .release.json): the
-      // snapshot is made at the boot point (wasm_host_server), before the
-      // program starts and runs its migrations. So all the objects (the
-      // tenants) share it, and each one runs the program on its own storage.
-      // Tenants (BEAM_TENANTS) share the snapshot too, so it is made at the
-      // boot point, before the program has the state of one tenant.
-      const meta = releaseMeta(release);
-      const atBoot = !this.plain && (this.sql || this.hostFiles)
-        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || ownVars > 0);
-      key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
-      snapBytes = await snapshots.get(env, key);
-      if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
-    }
-    let snap = snapBytes && parseSnapshot(snapBytes);
-    // A snapshot of the build (serve(app, { snapshot })) of another build
-    // of the app: a boot in its place.
-    if (snap && bundled && snap.release && snap.release !== releaseMeta(release).snapshot_key) {
+    // A snapshot of the build, else one that a Worker made (BEAM_SNAPSHOT =
+    // "off" turns them off). A snapshot that the code gives (this.given,
+    // the global scope) is used as it is. Else, of the snapshot of the
+    // build (serve(app, { snapshot }), or snapshot.bin):
+    // - a full one is used in place of the others;
+    // - one at the boot point only when the store has no snapshot, and then
+    //   the VM still makes its snapshot for the store.
+    // A snapshot of the build of another release: a boot in its place.
+    const meta = releaseMeta(release);
+    let built = bundled && parseSnapshot(bundled);
+    if (built?.release && built.release !== meta.snapshot_key) {
       console.log('beam: the snapshot of the build is for another release: a boot in its place');
-      snap = null;
-      snapBytes = null;
+      built = null;
     }
+    // A Durable Object with Ecto SQLite (sql of .release.json): the
+    // snapshot is made at the boot point (wasm_host_server), before the
+    // program starts and runs its migrations. So all the objects (the
+    // tenants) share it, and each one runs the program on its own storage.
+    // Tenants (BEAM_TENANTS) share the snapshot too, so it is made at the
+    // boot point, before the program has the state of one tenant.
+    const atBoot = !this.plain && (this.sql || this.hostFiles)
+      && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || ownVars > 0);
+    let snap = null, key = null, fallback = null;
+    if (built && (this.given || (!built.boot_point && !atBoot))) snap = built;
+    else if (built?.boot_point) fallback = built;
+    if (this.capture === 'boot-point') this.bootKey = 'capture';
+    if (!snap && !this.capture && env.BEAM_SNAPSHOT !== 'off') {
+      key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
+      const stored = await snapshots.get(env, key);
+      snap = stored && parseSnapshot(stored);
+      if (!snap && !snapshots.unavailable && atBoot && !fallback) this.bootKey = key;
+    }
+    const fromFallback = !snap && !!fallback;
+    if (fromFallback) snap = fallback;
+    let snapBytes = snap ? snap.pagesData : null;
     const nifs = await nifModules();
     // restored: this VM comes from a snapshot (the page shows it).
     this.restored = !!snap;
     this.bootPointSnap = !!snap?.boot_point;
-    // No snapshot yet: this VM makes it, before its first request.
-    this.makeKey = !snap && !snapshots.unavailable && !this.bootKey && key;
+    // No snapshot yet (or only the one of the build at the boot point):
+    // this VM makes it, before its first request.
+    this.makeKey = (!snap || (fromFallback && !atBoot)) && !snapshots.unavailable && !this.bootKey && key;
     this.release = release;
     const t1 = Date.now();
     return new Promise((resolve, reject) => {

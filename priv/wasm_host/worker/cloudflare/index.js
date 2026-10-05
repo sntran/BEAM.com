@@ -27,7 +27,7 @@
 import { env as globalEnv } from 'cloudflare:workers';
 import { release, use } from './release.js';
 import { useSnapshot } from './snapshot.js';
-import plain, { staticResponse, Vm } from './worker.js';
+import plain, { snapshotHeader, staticResponse, Vm } from './worker.js';
 import front from './durable.js';
 
 export { Beam } from './durable.js';
@@ -53,22 +53,29 @@ export { Beam } from './durable.js';
 //   },
 //
 // options.snapshot: the snapshot of the build of app.com (npx beam.com
-// --snapshot app.com, imported as a Data module, as app.com). Each new VM
-// restores it in place of a boot. A stateless Worker restores its VM in
-// the global scope, before the first request; the entry waits for it:
+// --snapshot app.com, imported as a Data module, as app.com):
+// - a full one (--full): each new VM restores it in place of a boot. A
+//   stateless Worker restores its VM in the global scope, before the
+//   first request;
+// - one at the boot point: a new VM restores it only when the store of
+//   snapshots has none (the first VM of a deploy), and then the VM makes
+//   its snapshot for the store, as with no snapshot of the build.
+// The entry waits for the VM of the global scope:
 //
 //   import snapshot from './app.snapshot';
 //   const beam = serve(app, { snapshot });
 //   await beam.ready;
 //
 // With the var BEAM_WARM (a path, as "/"), the global scope also sends one
-// GET request of that path to a full snapshot (see global.js).
+// GET request of that path to the VM of a full snapshot (see global.js).
 export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = null } = {}) {
   use(app, nifs);
   useSnapshot(snapshot);
-  // The VM of a stateless Worker, restored in the global scope.
+  // The VM of a stateless Worker, restored from a full snapshot in the
+  // global scope.
   let vm = null;
-  const ready = snapshot && !globalEnv[binding] ? (async () => {
+  const full = !!snapshot && !snapshotHeader(snapshot).boot_point;
+  const ready = full && !globalEnv[binding] ? (async () => {
     vm = new Vm(globalEnv, { release: await release(), snapshot });
     await vm.ready;
     if (globalEnv.BEAM_WARM) await vm.warm(globalEnv.BEAM_WARM);
@@ -87,12 +94,7 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
     ready,
     fetch(request, env, ctx) {
       const objects = env[binding];
-      if (!objects && snapshot) {
-        return ready.then(() => {
-          vm.firstHost(new URL(request.url).hostname);
-          return vm.fetch(request, ctx);
-        });
-      }
+      if (!objects && vm) return vm.fetch(request, ctx);
       if (!objects) return plain.fetch(request, env, ctx);
       if (typeof name === 'function') return objects.getByName(name(request)).fetch(request);
       return front.fetch(request, frontEnv(env), ctx);
