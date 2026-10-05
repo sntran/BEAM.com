@@ -370,6 +370,13 @@ jobs:
         run: |
           scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
           npm pack --pack-destination "$RUNNER_TEMP"
+          # The command of the step "Publish the npm package" of the
+          # release, with --dry-run: a path that does not start with "./"
+          # is a GitHub repository (user/repo) for npm.
+          vsn=$(node -p 'require("./package.json").version')
+          cp "$RUNNER_TEMP/beam.com-$vsn.tgz" bin/
+          npm publish "./bin/beam.com-$vsn.tgz" --dry-run --access public --tag next
+          rm "bin/beam.com-$vsn.tgz"
           mkdir -p "$RUNNER_TEMP/app/files"
           cp hashsum.com "$RUNNER_TEMP/app/"
           cp bin/beam.com "$RUNNER_TEMP/app/files/"
@@ -879,4 +886,6 @@ jobs:
               *-*) dist=next ;;
               *) dist=latest ;;
           esac
-          npm publish "bin/beam.com-${TAG#v}.tgz" --provenance --access public --tag "$dist"
+          # The path starts with "./": else npm reads bin/... as a GitHub
+          # repository (user/repo).
+          npm publish "./bin/beam.com-${TAG#v}.tgz" --provenance --access public --tag "$dist"
