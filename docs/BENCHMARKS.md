@@ -206,6 +206,6 @@ the programs was stripped, the same programs were 34.9 MB (188 ms) and
 
 ## The WebAssembly runtime
 
-For the speed and the cold start of `--target wasm32`, see "Measured" in
+For the speed and the cold start of the edge part of `app.com`, see "Measured" in
 [`WORKERS.md`](WORKERS.md), and the full tables in
 [`history/WASM-LOG.md`](history/WASM-LOG.md).

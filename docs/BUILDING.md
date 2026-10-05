@@ -106,6 +106,37 @@ closes the issue. A custom build has the WebAssembly runtime too
 (`--target wasm32`), and CI builds and runs a program with it before the
 answer. It is built from `main`, and the answer names the commit.
 
+## The runtime directory (internal)
+
+`beam.com INPUT -o DIR --target wasm32` writes the full directory of the
+WebAssembly runtime: `beam.wasm`, `worker.js` and the files of each host,
+with a release of INPUT. [`scripts/npm.sh`](../scripts/npm.sh) makes the
+`runtime/` of the npm package from such a directory (of any INPUT: the
+runtime does not depend on it), and some tests use it. It is an internal
+step: its files and options can change in any version. To deploy an
+app, use `app.com` and the npm package (see
+[`WORKERS.md`](WORKERS.md)).
+
+| File | What |
+|---|---|
+| `wrangler.jsonc`, `worker.js`, `beam.mjs`, `beam.wasm` | The runtime Worker (`NAME`): the VM, with no program. |
+| `release/wrangler.jsonc`, `release/app.js`, `release/release.bin` | The Worker with the release (`NAME-release`, with no public URL). The runtime Worker gets `release.bin` from it at the first request of an isolate. |
+| `durable.js`, `wrangler.durable.jsonc` | The same runtime in one Durable Object (`NAME-durable`): one VM for all the requests, with SQLite storage. |
+| `global.js`, `wrangler.global.jsonc` | The runtime Worker with the release and a snapshot of the build in it. The global scope restores the VM before the first request. |
+| `durable-global.js`, `wrangler.durable-global.jsonc` | The Durable Objects, with a spare VM that the global scope restores. |
+| `worker.capnp` | Both Workers for `workerd`. |
+| `tcp-proxy.mjs` | A local TCP port for a listener of the program (see "Incoming TCP" in `WORKERS.md`). |
+| `licenses/` | The license texts of the software in `beam.wasm`. Wrangler uploads them with the runtime (about 80 KB). |
+| `deno.js`, `deno.json`, `deno/` | The same runtime on Deno and Deno Deploy. |
+| `browser.js`, `browser/` | The same runtime in a web page. |
+| `page/` | A static site of the release, with its own `release.bin`. `--page` writes the site of an `app.com` (see "A static site for any app" in `WORKERS.md`). |
+
+The build also runs the release one time on this computer, to find the
+modules of its boot (`BEAM_COM_WASM_NATIVE_RUN=0` turns this off).
+[`wasm/snapshot/snapshot.mjs`](../wasm/snapshot/snapshot.mjs) makes a
+snapshot of such a directory, and `global.js` restores it in the global
+scope. For an `app.com`, `npx beam.com --snapshot` does the same.
+
 ## Continuous integration
 
 [The workflow](../.github/workflows/build.yml) has these jobs:

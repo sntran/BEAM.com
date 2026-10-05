@@ -32,7 +32,7 @@ The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 | Native NIF | 255 ms |
 | AOT file (`--bounds-checks=1`, generic CPU) | 318 ms |
 | Interpreter (`.wasm`) | 2,400 ms |
-| The WebAssembly runtime of `--target wasm32` (the engine of Node.js 26) | 339 ms |
+| The WebAssembly runtime of the edge (the engine of Node.js 26) | 339 ms |
 
 `exqlite` (SQLite), 10,000 inserts in one transaction into a database
 file: 195 ms with the AOT file, 543 ms with the interpreter.
@@ -238,21 +238,19 @@ The limits:
   The module stays loaded.
 - **At the edge.** See the next section.
 
-## At the edge (`--target wasm32`)
+## At the edge
 
-The WebAssembly runtime of `--target wasm32` (Cloudflare Workers, Deno,
-Node.js, a web page) loads the same `.wasm` file. ERTS itself runs in
+The WebAssembly runtime of the edge part of `app.com` (Cloudflare
+Workers, Deno, Node.js, a web page) loads the same `.wasm` file. ERTS itself runs in
 WebAssembly there, and the engine of the host (V8) compiles and runs the
 module, at about the speed of an AOT file (see "Speed"). The AOT files
-are not used, and `beam.com --target wasm32` leaves them out of
-`release.bin`.
+are not used, and `beam.com` leaves them out of the edge part.
 
 - **Workers.** A Worker cannot compile WebAssembly at run time. So
-  `beam.com --target wasm32` writes each NIF library of the release
-  into the runtime Worker (`nifs/`, and `nifs.js`), and Wrangler
-  compiles them. For a Worker that runs an `app.com` (`serve(app)` of
-  the npm package), `beam.com --nif-modules app.com .` writes the same
-  files next to the entry, and the entry gives them to `serve`:
+  `beam.com --nif-modules app.com .` writes each NIF library of the
+  release next to the entry (`nifs/`, and `nifs.js`), and Wrangler
+  compiles them. The entry gives them to `serve(app)` of the npm
+  package:
 
   ```js
   import app from './app.com' with { type: 'bytes' };
