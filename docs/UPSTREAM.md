@@ -1667,6 +1667,30 @@ with guard pages reserves a large virtual address range.
 **Fix upstream.** None for an application. The test did not measure the
 Workers of Cloudflare itself.
 
+### CF8. A chain of `MessageChannel` tasks gives no turn to the network
+
+**Seen with workerd of wrangler 4.142.0 and Deno 2.9.6, 2026-10-05.**
+
+**Symptom.** A scheduler of ERTS that computes (one process, 300 million
+reductions) holds the host: a new request waits 17 s, until the work
+stops. A yield to a `MessageChannel` task after each 20000 reductions
+does not help in workerd, and helps little in Deno (5 s).
+
+**Cause.** The host runs the next message of the channel before it polls
+the network, so a new connection waits. A timer does let the I/O run, but
+a nested timer costs about 2 ms in Deno and about 3 ms in workerd. In a
+plain Worker, the timer also resumes the thread in the context of the
+request that fired it, and the thread then stops when that request ends.
+
+**Workaround.** A scheduler gives the host a turn after each 20000
+reductions (`jspi_host_turn` in `wasm/erts/jspi_lib.js`, `Vm.turn` in
+`worker.js`). Deno takes `setImmediate()`, which runs after the poll and
+costs little. A Durable Object takes a timer for one turn of each
+`BEAM_YIELD_REDS` reductions (1000000), and a task for the others: a new
+request then waits about 150 ms, and long work is about 6% slower. A
+plain Worker takes only tasks, so a process that computes still holds its
+isolate.
+
 ## websock_adapter
 
 Seen with websock_adapter 0.6.0.

@@ -22,6 +22,13 @@ notes of its release.
 - The host writes `beam: memory N MB (a new peak of this VM)` when the
   memory of the VM grew by 8 MB or more, and the memory of the VM when it
   stops.
+- A process that computes no longer holds a Durable Object or Deno. The
+  scheduler gives the host a turn after each 20000 reductions, so that
+  new requests, timers and sockets run. In a Durable Object, one turn for
+  each `BEAM_YIELD_REDS` reductions (1000000 by default) waits for a
+  timer, and a request then waits about 150 ms in place of the whole
+  work. Long work is about 6% slower. A stateless Worker has no such
+  turns yet.
 - In a plain Worker, a line of the VM (stdout and stderr) that the host
   cannot write in the context of its thread goes to an open request.
   Before, `console.log` could throw there, and stop the thread of the VM.

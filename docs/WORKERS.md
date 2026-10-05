@@ -635,9 +635,16 @@ stateless Worker starts one, and a Durable Object resets (its requests get
 this VM)` when the memory of the VM grew by 8 MB or more. The memory of a
 VM does not shrink, and an isolate of a Worker has 128 MB.
 
-Caution: the time limit works only when the VM gives the time back to the
-event loop. A process that computes with no stop holds the VM, and the
-host cannot answer until it stops.
+A process that computes with no wait does not hold the host in a Durable
+Object or in Deno. The scheduler gives the host a turn: in Deno after each
+20000 reductions, and in a Durable Object with a timer after each
+`BEAM_YIELD_REDS` reductions (1000000 by default, about 50 ms of work).
+Then the new requests, the time limit, and the I/O of the app run. A
+smaller value answers sooner, but each timer costs about 3 ms of time.
+
+Caution: a stateless Worker gets no such turns. A process that computes
+holds its isolate, and the host cannot answer until it stops. Use a
+Durable Object for an app that computes for a long time.
 
 ## Variables and bindings
 
@@ -663,6 +670,7 @@ host cannot answer until it stops.
 | `BEAM_REQUEST_TIMEOUT` | Worker, Durable Object, Deno | Seconds for the head of a response (60), then 504. `"0"`: no limit. |
 | `BEAM_MAX_REQUESTS` | Worker, Durable Object, Deno | The open requests of a VM, then 503. No limit by default. |
 | `BEAM_MAX_WEBSOCKETS` | Worker, Durable Object, Deno | The open WebSockets of a VM, then 503. No limit by default. |
+| `BEAM_YIELD_REDS` | Durable Object | The reductions of work between two turns of the event loop (1000000). `"0"`: no turns. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | Worker, Durable Object | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
 | `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). The others use `connect()`. Empty: no host. |
@@ -1112,6 +1120,9 @@ WebAssembly feature):
   runs the other threads meanwhile.
 - Each thread has its own shadow stack, and puts its own stack pointer
   back after each wait.
+- A scheduler with work does not wait. So after each 20000 reductions,
+  it gives the host a turn, and the host runs its timers and its I/O (see
+  "Limits, and a VM that stops").
 
 The runtime is built from the source of the same OTP by
 [`wasm/erts/build.sh`](../wasm/erts/build.sh) (the step `wasm_runtime`

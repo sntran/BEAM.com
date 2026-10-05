@@ -3,7 +3,10 @@
 # and Deno (deno serve), with app.com of tests/programs/stop_check.erl. A
 # request with no answer in BEAM_REQUEST_TIMEOUT seconds gets 504. When the
 # VM stops (erlang:halt/1, and a trap), its open request gets 503, and a
-# later request gets 200 from a new VM.
+# later request gets 200 from a new VM. While a process computes (/spin), a
+# Durable Object and Deno answer other requests: the scheduler gives the
+# host turns (BEAM_YIELD_REDS). A plain Worker does not, so the script does
+# not check it there.
 #
 #   sh tests/host/app_stop.sh DIR
 #
@@ -21,9 +24,26 @@ get() {
     curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:$1$2" || true
 }
 
-# NAME PORT LOG: the checks on the host on PORT.
+# PORT PATH: the seconds of GET PATH.
+seconds() {
+    curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{time_total}' --max-time 60 "http://127.0.0.1:$1$2" || true
+}
+
+# NAME PORT LOG [turns]: the checks on the host on PORT. With "turns", also
+# the answer of / while /spin computes.
 check() {
     for i in $(seq 1 300); do [ "$(get "$2" /)" = 200 ] && break; sleep 0.5; done
+    if [ "${4:-}" = turns ]; then
+        get "$2" /spin > spin.code &
+        spin=$!
+        sleep 1
+        t=$(seconds "$2" /)
+        wait "$spin"
+        [ "$(cat spin.code)" = 200 ] || { echo "$1: /spin gave $(cat spin.code), not 200"; tail -n 40 "$3"; return 1; }
+        awk "BEGIN { exit !($t < 2) }" ||
+            { echo "$1: / took $t s while /spin computed (2 s at most)"; tail -n 40 "$3"; return 1; }
+        echo "$1: / in $t s while /spin computed"
+    fi
     code=$(get "$2" /slow)
     [ "$code" = 504 ] || { echo "$1: /slow gave $code, not 504"; tail -n 40 "$3"; return 1; }
     for p in /halt /abort; do
@@ -49,10 +69,12 @@ stop() {
 status=0
 rm -f workers.pid deno.pid
 host workers.pid npx wrangler dev --port 18787 --ip 127.0.0.1 > wrangler.log 2>&1
-check workers 18787 wrangler.log || status=1
+turns=
+grep -q durable_objects wrangler.jsonc && turns=turns
+check workers 18787 wrangler.log $turns || status=1
 stop workers.pid
 
 host deno.pid npx deno serve -A --port 18788 worker.js > deno.log 2>&1
-check deno 18788 deno.log || status=1
+check deno 18788 deno.log turns || status=1
 stop deno.pid
 exit "$status"

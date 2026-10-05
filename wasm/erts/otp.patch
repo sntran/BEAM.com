@@ -124,10 +124,10 @@ index b1115e8..2d39c21 100644
  	    break; /* Time to die */
  
 diff --git a/erts/emulator/beam/erl_process.c b/erts/emulator/beam/erl_process.c
-index 0201ea3..36468ce 100644
+index 0201ea3..15c2d86 100644
 --- a/erts/emulator/beam/erl_process.c
 +++ b/erts/emulator/beam/erl_process.c
-@@ -3167,6 +3167,28 @@ thr_prgr_fin_wait(void *vssi)
+@@ -3167,6 +3167,42 @@ thr_prgr_fin_wait(void *vssi)
  static void init_aux_work_data(ErtsAuxWorkData *awdp, ErtsSchedulerData *esdp,
                                 char *dawwp);
  
@@ -153,10 +153,24 @@ index 0201ea3..36468ce 100644
 +static void *poll_thread(void *vbpt);
 +#endif
 +
++#ifdef __EMSCRIPTEN__
++/*
++ * A scheduler with work does not wait, so without this it never gives the
++ * host a turn: a process that computes holds the event loop of the host
++ * (its timers, its I/O, new requests). After WASM_TURN_REDS reductions
++ * with no wait (about five time slices), the scheduler calls
++ * jspi_host_yield(), and the host decides what the turn is (see
++ * jspi_host_turn in jspi_lib.js). The count is in reductions, because the
++ * clock of a Worker does not move during work.
++ */
++#define WASM_TURN_REDS 20000
++void jspi_host_yield(void);
++#endif
++
  void
  erts_aux_thread_poke(void)
  {
-@@ -3190,6 +3212,14 @@ aux_thread(void *vix)
+@@ -3190,6 +3226,14 @@ aux_thread(void *vix)
             || (erts_no_schedulers < ix
                 && ix < erts_no_aux_work_threads));
      ASSERT(0 < id && id <= 1 + erts_no_dirty_alloc_instances);
@@ -171,7 +185,7 @@ index 0201ea3..36468ce 100644
      
  #ifdef ERTS_ENABLE_LOCK_CHECK
      {
-@@ -3233,6 +3263,9 @@ aux_thread(void *vix)
+@@ -3233,6 +3277,9 @@ aux_thread(void *vix)
  
      ERTS_MSACC_SET_STATE_CACHED(ERTS_MSACC_STATE_OTHER);
  
@@ -181,7 +195,7 @@ index 0201ea3..36468ce 100644
      while (1) {
  	erts_aint32_t flgs;
  
-@@ -3296,6 +3329,15 @@ aux_thread(void *vix)
+@@ -3296,6 +3343,15 @@ aux_thread(void *vix)
          }
  
  	flgs = sched_prep_spin_wait(ssi);
@@ -197,7 +211,7 @@ index 0201ea3..36468ce 100644
      }
      return NULL;
  }
-@@ -3344,6 +3386,14 @@ poll_thread(void *vbpt)
+@@ -3344,6 +3400,14 @@ poll_thread(void *vbpt)
      ErtsThrPrgrData *tpd;
      ERTS_MSACC_DECLARE_CACHE();
  
@@ -212,7 +226,7 @@ index 0201ea3..36468ce 100644
  #ifdef ERTS_ENABLE_LOCK_CHECK
      {
  	char buf[] = "poll_thread";
-@@ -3364,12 +3414,26 @@ poll_thread(void *vbpt)
+@@ -3364,12 +3428,26 @@ poll_thread(void *vbpt)
      tpd = erts_thr_progress_register_managed_thread(NULL, &callbacks, 0, !0);
  
      psi = erts_create_pollset_thread(bpt->id, tpd);
@@ -239,7 +253,7 @@ index 0201ea3..36468ce 100644
      }
      return NULL;
  }
-@@ -8736,6 +8800,12 @@ sched_thread_func(void *vesdp)
+@@ -8736,6 +8814,12 @@ sched_thread_func(void *vesdp)
      Uint no = esdp->no;
      erts_tse_t *tse;
  
@@ -252,7 +266,7 @@ index 0201ea3..36468ce 100644
      /* Perform platform-specific scheduler initialization, e.g. setting up an
       * alternate signal stack. Must be done before anything else. */
      erts_sys_scheduler_init();
-@@ -8796,6 +8866,21 @@ sched_thread_func(void *vesdp)
+@@ -8796,6 +8880,27 @@ sched_thread_func(void *vesdp)
      erts_utils_sched_spec_data_init();
      erts_nif_sched_init(esdp);
  
@@ -260,6 +274,7 @@ index 0201ea3..36468ce 100644
 +    /* process_main() returns after each time slice (see beam_emu.c). */
 +    esdp->wasm_c_p = NULL;
 +    esdp->wasm_reds_used = 0;
++    esdp->wasm_reds_total = 0;
 + wasm_resume:
 +    for (;;) {
 +        process_main(esdp);
@@ -269,12 +284,17 @@ index 0201ea3..36468ce 100644
 +            jspi_park(sched_thread_func, esdp);
 +            return NULL;
 +        }
++        esdp->wasm_reds_total += esdp->wasm_reds_used;
++        if (esdp->wasm_reds_total >= WASM_TURN_REDS) {
++            esdp->wasm_reds_total = 0;
++            jspi_host_yield();
++        }
 +    }
 +#endif
      process_main(esdp);
  
      /* No schedulers should *ever* terminate */
-@@ -8812,6 +8897,13 @@ sched_dirty_cpu_thread_func(void *vesdp)
+@@ -8812,6 +8917,13 @@ sched_dirty_cpu_thread_func(void *vesdp)
      ErtsSchedulerData *esdp = vesdp;
      Uint no = esdp->dirty_no;
  
@@ -288,7 +308,7 @@ index 0201ea3..36468ce 100644
      /* Perform platform-specific scheduler tweaks, e.g. setting up an alternate
       * signal stack. Must be done before anything else. */
      erts_sys_scheduler_init();
-@@ -8847,7 +8939,17 @@ sched_dirty_cpu_thread_func(void *vesdp)
+@@ -8847,7 +8959,17 @@ sched_dirty_cpu_thread_func(void *vesdp)
  
      erts_nif_sched_init(esdp);
  
@@ -306,7 +326,7 @@ index 0201ea3..36468ce 100644
      /* No schedulers should *ever* terminate */
      erts_exit(ERTS_ABORT_EXIT,
  	     "Dirty CPU scheduler thread number %beu terminated\n",
-@@ -8862,6 +8964,13 @@ sched_dirty_io_thread_func(void *vesdp)
+@@ -8862,6 +8984,13 @@ sched_dirty_io_thread_func(void *vesdp)
      ErtsSchedulerData *esdp = vesdp;
      Uint no = esdp->dirty_no;
  
@@ -320,7 +340,7 @@ index 0201ea3..36468ce 100644
      /* Perform platform-specific scheduler initialization, e.g. setting up an
       * alternate signal stack. Must be done before anything else. */
      erts_sys_scheduler_init();
-@@ -8897,7 +9006,17 @@ sched_dirty_io_thread_func(void *vesdp)
+@@ -8897,7 +9026,17 @@ sched_dirty_io_thread_func(void *vesdp)
  
      erts_nif_sched_init(esdp);
  
@@ -338,7 +358,7 @@ index 0201ea3..36468ce 100644
      /* No schedulers should *ever* terminate */
      erts_exit(ERTS_ABORT_EXIT,
  	     "Dirty I/O scheduler thread number %beu terminated\n",
-@@ -9941,6 +10060,14 @@ Process *erts_schedule(ErtsSchedulerData *esdp, Process *p, int calls)
+@@ -9941,6 +10080,14 @@ Process *erts_schedule(ErtsSchedulerData *esdp, Process *p, int calls)
  	    flags |= ERTS_RUNQ_FLG_EXEC;
              ERTS_MSACC_UPDATE_CACHE();
  	    non_empty_runq(rq);
@@ -353,7 +373,7 @@ index 0201ea3..36468ce 100644
  
  	    goto check_activities_to_run;
  	} else if (is_normal_sched &&
-@@ -15370,3 +15497,32 @@ erts_debug_proc_monitor_link_foreach(Process *proc,
+@@ -15370,3 +15517,32 @@ erts_debug_proc_monitor_link_foreach(Process *proc,
  
      }
  }
@@ -387,10 +407,10 @@ index 0201ea3..36468ce 100644
 +}
 +#endif
 diff --git a/erts/emulator/beam/erl_process.h b/erts/emulator/beam/erl_process.h
-index 185922e..c456392 100644
+index 185922e..e6a00b8 100644
 --- a/erts/emulator/beam/erl_process.h
 +++ b/erts/emulator/beam/erl_process.h
-@@ -747,6 +747,13 @@ struct ErtsSchedulerData_ {
+@@ -747,6 +747,14 @@ struct ErtsSchedulerData_ {
      erts_alloc_verify_func_t verify_unused_temp_alloc;
      Allctr_t *verify_unused_temp_alloc_data;
  #endif
@@ -400,6 +420,7 @@ index 185922e..c456392 100644
 +    struct process *wasm_c_p;
 +    int wasm_reds_used;
 +    int wasm_parked;  /* returned for a snapshot (erts_wasm_hibernate) */
++    Sint wasm_reds_total;  /* reductions since the last yield to the host */
 +#endif
  };
  

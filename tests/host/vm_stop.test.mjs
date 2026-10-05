@@ -204,3 +204,27 @@ test('the memory log: one line for each 8 MB of growth', () => {
   assert.deepEqual(lines, ['beam: memory 9 MB (a new peak of this VM)']);
   assert.equal(v.peak, 9);
 });
+
+// The turns of a scheduler that computes (jspiSchedule.turn): in a Durable
+// Object, each turnEvery-th turn is a timer, so that the I/O of the object
+// runs; the others are tasks. A plain Worker gives only tasks.
+test('a turn is a timer once for each BEAM_YIELD_REDS reductions', async () => {
+  const { v } = vm();
+  const posted = [];
+  Object.assign(v, { plain: false, turns: 0, turnEvery: 3, post: (f) => posted.push(f) });
+  const timed = [];
+  for (let i = 0; i < 6; i++) v.turn(() => timed.push(i));
+  assert.equal(posted.length, 4);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(timed, [2, 5]);
+});
+
+test('a plain Worker gives a turn to its open request', () => {
+  const { v } = vm();
+  let woke = 0;
+  Object.assign(v, { plain: true, turns: 0, turnEvery: 1, jobs: [] });
+  v.handlers.push({ wake: () => woke++ });
+  v.turn(() => {});
+  assert.equal(v.jobs.length, 1);
+  assert.equal(woke, 1);
+});
