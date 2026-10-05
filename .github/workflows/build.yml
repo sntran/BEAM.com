@@ -462,6 +462,23 @@ jobs:
           sh tests/host/app_hosts.sh "$RUNNER_TEMP/hosts-worker" /hello \
             'Hello from Erlang/OTP' 'Hello from Erlang/OTP' /ws
 
+      # The snapshot of the build (npx beam.com --snapshot, at the boot
+      # point): the stateless Worker restores its VM in the global scope,
+      # and each Durable Object restores its VM from it. Deno boots.
+      - name: The apps on Workers and Deno, with the snapshot of the build
+        run: |
+          for name in phoenix_demo worker; do
+            cp -R "$RUNNER_TEMP/hosts-$name" "$RUNNER_TEMP/snapshot-$name"
+            sh tests/host/use_snapshot.sh "$RUNNER_TEMP/snapshot-$name"
+          done
+          sh tests/host/app_hosts.sh "$RUNNER_TEMP/snapshot-phoenix_demo" / \
+            'LiveView on Cloudflare Workers' 'LiveView on Deno' '/live/websocket?vsn=2.0.0'
+          sh tests/host/app_hosts.sh "$RUNNER_TEMP/snapshot-worker" /hello \
+            'Hello from Erlang/OTP' 'Hello from Erlang/OTP' /ws
+          for name in phoenix_demo worker; do
+            grep 'beam: ready in .*, snapshot .* KB in' "$RUNNER_TEMP/snapshot-$name/wrangler.log"
+          done
+
       # The static site of phoenix_demo.com: its own small files, with the
       # code of the page from the npm package on a second origin, as from
       # jsDelivr (tests/page/app-site.mjs, check.mjs --cdn).

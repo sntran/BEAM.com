@@ -536,6 +536,52 @@ is on by default; the var `BEAM_SNAPSHOT = "off"` turns it off.
   Each object then runs the program and its migrations on its own
   storage.
 
+### The snapshot of the build
+
+`npx beam.com --snapshot app.com` writes `app.snapshot`, a snapshot of
+the VM of `app.com`, at build time. The entry gives it to `serve`:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import snapshot from './app.snapshot' with { type: 'bytes' };
+import { serve } from 'beam.com';
+
+const beam = serve(app, { snapshot });
+await beam.ready;
+```
+
+`wrangler.jsonc` gives the file as a Data module, as `app.com`:
+`"globs": ["**/*.com", "**/*.snapshot"]`. Run the command after the
+build of `app.com` (`npm run build`), with the npm package of the same
+version: a snapshot of another release does not restore, and the VM
+boots in its place.
+
+- A stateless Worker restores its VM in the global scope of each new
+  isolate, before the first request. Cloudflare runs the global scope
+  with its own limit (1 s).
+- Each new Durable Object restores its VM from the snapshot in place of a
+  boot.
+- Deno ignores the option, and boots.
+
+The kinds of snapshot:
+
+| Kind | Command | What it holds |
+|---|---|---|
+| The boot point (default) | `npx beam.com --snapshot app.com` | The VM after the modules of the boot loaded, before `runtime.exs` and the program. It holds no variable and no secret of the app. Each VM starts the program at its first request, with the variables of its host and the host name of that request (`PHX_HOST`). |
+| Full | `npx beam.com --snapshot app.com --full [--warm /] --env NAME=VALUE...` | The VM after its boot and the warm-up requests: the shortest first request. It holds the variables of `--env` and the state of the program, so all the VMs have the same `SECRET_KEY_BASE` and `PHX_HOST` of the build. A Phoenix app must give both. An app with Ecto SQLite cannot use it, because its boot changes the database. |
+
+Caution: a full snapshot puts its variables, also `SECRET_KEY_BASE`, into
+the bundle of the Worker. Use the boot point for an app with secrets, or
+keep the build and the bundle private.
+
+Measured in `wrangler dev` (October 2026), the first request of a new
+isolate:
+
+| App | No snapshot | The boot point | Full |
+|---|---|---|---|
+| `examples/worker` (stateless) | 0.86 s | 0.48 s | 0.11 s |
+| `examples/phoenix_demo` (a Durable Object) | 2.7 to 2.9 s | 1.6 s | (Ecto SQLite: no) |
+
 ## Tenants and instances (Durable Objects)
 
 With the var `BEAM_TENANTS`, each tenant has its own Durable Object: its

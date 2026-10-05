@@ -8,8 +8,13 @@
 // The file must come from the beam.com of the version of this package:
 // app-com.js refuses a file for another runtime. worker.js reads the
 // release at the first request of an isolate, not in the global scope.
+import { inflateRawSync } from 'node:zlib';
 import { appFiles, bytesReader } from '../app-com.js';
 import runtime from '../runtime-id.js';
+
+// The global scope of a Worker cannot use DecompressionStream (a VM that
+// serve(app, { snapshot }) restores there reads the release first).
+const inflate = async (raw) => new Uint8Array(inflateRawSync(raw));
 
 let app = null;
 let modules = null;
@@ -36,7 +41,7 @@ export function release() {
   }
   if (!files) {
     const { read, size } = bytesReader(app);
-    files = appFiles(read, size, { runtime });
+    files = appFiles(read, size, { runtime, inflate });
   }
   return files;
 }

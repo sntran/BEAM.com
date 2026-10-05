@@ -111,7 +111,8 @@ function gzipOf(raw, e) {
 }
 
 // The data of the entry e, in span (the bytes of the file from offset base).
-async function entryData(span, base, e) {
+// unzip: the inflate of a deflated entry.
+async function entryData(span, base, e, unzip = inflate) {
   const h = e.offset - base;
   if (h < 0 || h + 30 > span.length || u32(span, h) !== LOCAL) fail(`${e.name}: no local header`);
   const start = h + 30 + u16(span, h + 26) + u16(span, h + 28);
@@ -120,7 +121,7 @@ async function entryData(span, base, e) {
   if (e.method === DEFLATED && e.name.endsWith('.beam')) return gzipOf(raw, e);
   let d;
   if (e.method === STORED) d = raw;
-  else if (e.method === DEFLATED) d = await inflate(raw);
+  else if (e.method === DEFLATED) d = await unzip(raw);
   else fail(`${e.name}: the compression method ${e.method} is not supported`);
   if (d.length !== e.size || crc32(d) !== e.crc) fail(`${e.name}: the CRC-32 does not match`);
   return d;
@@ -134,7 +135,10 @@ export async function appRelease(read, size, options = {}) {
   return pack(meta, files);
 }
 
-export async function appFiles(read, size, { runtime, statics: split = true } = {}) {
+// options.inflate: the inflate of a deflated entry, (raw) => bytes. The
+// default uses DecompressionStream, which the global scope of a Worker
+// cannot use (cloudflare/release.js gives inflateRawSync of node:zlib).
+export async function appFiles(read, size, { runtime, statics: split = true, inflate: unzip = inflate } = {}) {
   const { entries, cdAt } = await zipEntries(read, size);
   const want = entries.filter((e) => inRelease(e.name) && !e.name.endsWith('/'));
   const json = want.find((e) => e.name === `${EDGE}.release.json`);
@@ -143,7 +147,7 @@ export async function appFiles(read, size, { runtime, statics: split = true } = 
   const lo = Math.min(...want.map((e) => e.offset));
   const span = await read(lo, cdAt - lo);
   if (span.length !== cdAt - lo) fail('a short read of the release');
-  const meta = await entryData(span, lo, json);
+  const meta = await entryData(span, lo, json, unzip);
   const release = JSON.parse(text.decode(meta));
   if (runtime && release.runtime !== runtime) {
     fail(`it was built for the runtime ${String(release.runtime).slice(0, 12)}, and this runtime is ${runtime.slice(0, 12)}: `
@@ -164,9 +168,9 @@ export async function appFiles(read, size, { runtime, statics: split = true } = 
       statics.set(e.name.slice(prefix.length - 1), staticEntry(span, lo, e));
       continue;
     }
-    files.set(e.name, await entryData(span, lo, e));
+    files.set(e.name, await entryData(span, lo, e, unzip));
   }
-  for (const e of want) if (e.name.startsWith(EDGE) && e !== json) files.set(e.name.slice(EDGE.length), await entryData(span, lo, e));
+  for (const e of want) if (e.name.startsWith(EDGE) && e !== json) files.set(e.name.slice(EDGE.length), await entryData(span, lo, e, unzip));
   const list = [...files];
   return {
     meta, files: list, statics,
