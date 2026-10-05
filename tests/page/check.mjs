@@ -249,9 +249,12 @@ async function links(browser, origin) {
 const clicks = async (frame) => Number(await frame.textContent('#clicks'));
 const counted = (frame, n) =>
   frame.waitForFunction((v) => Number(document.getElementById('clicks')?.textContent) === v, n, { timeout: 30000 });
+// The LiveView of the frame joined. Before that, LiveView cancels a
+// phx-submit and drops it (no connection).
+const connected = (frame) => frame.waitForSelector('[data-phx-main].phx-connected', { timeout: 30000 });
 const live = async (frame) => {
   await frame.waitForSelector('#click', { timeout: 30000 });
-  await frame.waitForSelector('[data-phx-main].phx-connected', { timeout: 30000 });
+  await connected(frame);
 };
 
 async function check(page, origin) {
@@ -284,6 +287,9 @@ async function check(page, origin) {
                      frame.click('a[href$="/users/log-in"]')]);
   await frame.waitForSelector('#login_form_password', { timeout: 30000 });
   step(`the link to the login page stays under ${base}app/`);
+
+  // The login page is a LiveView with phx-submit: wait until it joins.
+  await connected(frame);
 
   await frame.fill('#login_form_password input[type=email]', 'nobody@example.com');
   await frame.fill('#login_form_password input[type=password]', 'not the password');

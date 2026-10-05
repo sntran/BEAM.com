@@ -30,6 +30,10 @@ Fixes from the check of the examples with 0.1.0-rc.1:
   other hosts and ports. See "HTTP through fetch()" in `docs/WORKERS.md`,
   and `specs/FetchPath.tla`.
 - `worker.capnp` gives workerd TLS for `fetch()` to `https://` URLs.
+- On macOS arm64, the VM starts `erl_child_setup` with `posix_spawn()`
+  of libSystem, through the APE loader. Before, it used `fork()`, and the
+  child could hang in `_objc_atfork_child`: a process stayed after the VM
+  stopped. See C32 in `docs/UPSTREAM.md`.
 
 ## 0.1.0-rc.1
 
