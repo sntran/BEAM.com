@@ -339,8 +339,9 @@ export class Beam {}
 
 // The engine for the app.com of the entry (the bytes of the file): the
 // fetch handler of its VM. The options of Workers (binding, name) do not
-// apply: one VM runs in each isolate.
-export function serve(app) {
-  use(app);
+// apply: one VM runs in each isolate. statics: false keeps the static
+// files of a Phoenix app in the VM, as on Workers.
+export function serve(app, { statics = true } = {}) {
+  use(app, statics);
   return { fetch: (request, info) => handler.fetch(request, info) };
 }

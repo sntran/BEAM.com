@@ -18,12 +18,16 @@ const inflate = async (raw) => new Uint8Array(inflateRawSync(raw));
 
 let app = null;
 let modules = null;
+let split = true;
 
 // nifModules: the NIF libraries in WebAssembly of app.com, compiled by
-// Wrangler (nifs.js of "beam.com --nif-modules"), or null.
-export function use(bytes, nifModules = null) {
+// Wrangler (nifs.js of "beam.com --nif-modules"), or null. statics: false
+// keeps the static files of a Phoenix app in the release of the VM (see
+// serve(app) of index.js).
+export function use(bytes, nifModules = null, statics = true) {
   app = bytes;
   modules = nifModules;
+  split = statics;
 }
 
 // For worker.js: the path of each NIF library in /app, and its module.
@@ -41,7 +45,7 @@ export function release() {
   }
   if (!files) {
     const { read, size } = bytesReader(app);
-    files = appFiles(read, size, { runtime, inflate });
+    files = appFiles(read, size, { runtime, inflate, statics: split });
   }
   return files;
 }

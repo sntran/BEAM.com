@@ -1,0 +1,34 @@
+// Cloudflare Workers: npm run build, then npm run deploy.
+{
+  "name": "studio",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  // The VM of a Durable Object serves all the requests of its instance.
+  "compatibility_flags": ["no_handle_cross_request_promise_resolution"],
+  // app.com goes into the Worker as bytes. Without this rule, the import
+  // of worker.js puts the bytes into the JavaScript.
+  "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }],
+  "durable_objects": { "bindings": [{ "name": "BEAM", "class_name": "Beam" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Beam"] }],
+  "vars": {
+    // Instances at /t/NAME/, with a landing page and a queue: at most 5 at
+    // one time, 2 for one address, each for 30 minutes.
+    "BEAM_TENANTS": "path",
+    "BEAM_INSTANCES": "5",
+    "BEAM_INSTANCE_TTL": "1800",
+    "BEAM_INSTANCE_HOURS": "24",
+    "BEAM_INSTANCES_PER_IP": "2",
+    "BEAM_INSTANCE_TITLE": "phx.new on the edge",
+    // No allocators of ERTS: a smaller VM. /data is in the storage of the
+    // object while the instance lives.
+    "BEAM_ERL_FLAGS": "-Mea min",
+    "BEAM_PERSIST": "/data",
+    "STUDIO_ROOT": "/data/studio",
+    "HOME": "/data"
+  },
+  // A sweep each 30 minutes ends the old instances.
+  "triggers": { "crons": ["*/30 * * * *"] },
+  "observability": { "enabled": true },
+  // A new deploy makes a new snapshot of the VM.
+  "version_metadata": { "binding": "BEAM_VERSION" }
+}

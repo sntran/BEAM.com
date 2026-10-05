@@ -461,6 +461,14 @@ jobs:
             'LiveView on Cloudflare Workers' 'LiveView on Deno' '/live/websocket?vsn=2.0.0'
           sh tests/host/app_hosts.sh "$RUNNER_TEMP/hosts-worker" /hello \
             'Hello from Erlang/OTP' 'Hello from Erlang/OTP' /ws
+          # serve(app, { statics: false }): the VM serves priv/static, so
+          # Plug.Static (gzip: true) gives its vary header. The host of the
+          # default gives no vary header.
+          cp -R "$RUNNER_TEMP/hosts-phoenix_demo" "$RUNNER_TEMP/statics-phoenix_demo"
+          sed -i 's/serve(app);/serve(app, { statics: false });/' "$RUNNER_TEMP/statics-phoenix_demo/worker.js"
+          grep -q 'statics: false' "$RUNNER_TEMP/statics-phoenix_demo/worker.js"
+          sh tests/host/app_hosts.sh "$RUNNER_TEMP/statics-phoenix_demo" /robots.txt \
+            'vary: accept-encoding' 'vary: accept-encoding'
 
       # The snapshot of the build (npx beam.com --snapshot): at the boot
       # point for examples/phoenix_demo (the first Durable Object restores
