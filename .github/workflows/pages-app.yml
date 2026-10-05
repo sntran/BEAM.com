@@ -191,8 +191,12 @@ jobs:
         # Mix runs mix.com as a program, and the runner has no APE loader:
         # --assimilate makes the APE file an ELF file for this machine. The
         # zip in the file does not change. Mix runs rebar3 as an escript:
-        # the link escript is that tool.
+        # the link escript is that tool. beam.ape stays an APE file: the
+        # build of the site makes app.com from it, so that app.com is an
+        # APE file too (a native file makes only native files).
         run: |
+          cp beam.com beam.ape
+          echo "ape=$PWD/beam.ape" >> "$GITHUB_OUTPUT"
           sh ./beam.com --assimilate
           chmod +x beam.com
           ./beam.com --version
@@ -246,6 +250,7 @@ jobs:
         env:
           PHOENIX: ${{ steps.kind.outputs.phoenix }}
           SITE: ${{ runner.temp }}/site
+          BEAM_APE: ${{ steps.beam.outputs.ape }}
         run: |
           input=.
           if [ "$PHOENIX" = true ]; then
@@ -253,7 +258,7 @@ jobs:
             [ $# -eq 1 ] || { echo "the build has $# releases in _build/prod/rel" >&2; exit 1; }
             input=$1
           fi
-          beam.com "$input" -o "$SITE" --page
+          sh "$BEAM_APE" "$input" -o "$SITE" --page
           test -f "$SITE/index.html"
           test -f "$SITE/app.com"
 
