@@ -1117,6 +1117,31 @@ defmodule BeamComBuildTest do
       assert {:error, ~c"--page needs -o DIR, the directory of the site", []} == run.(%{})
     end
 
+    # BEAM_COM_BASE: the file that the build copies, with the zip of this
+    # beam.com (here: exe of the test, with the init argument beam_com_exe).
+    test "base/1: BEAM_COM_BASE", %{dir: dir} do
+      {_root, exe} = edge_prepare(dir)
+      {:ok, self} = :file.read_file(exe)
+      copy = write(dir, ~c"copy.com", self)
+      {:ok, {_, zip}} = :zip.create(~c"other.zip", [{~c"a.txt", "a"}], [:memory])
+      other = write(dir, ~c"other.com", zip)
+
+      try do
+        System.put_env("BEAM_COM_BASE", to_string(copy))
+        assert {:ok, ^self} = :beam_com_build.base(%{exe: exe})
+        System.put_env("BEAM_COM_BASE", to_string(other))
+
+        assert {:error,
+                ~c"BEAM_COM_BASE: ~ts is not a copy of this beam.com (its zip has other files)",
+                [^other]} = catch_throw(:beam_com_build.base(%{exe: exe}))
+
+        System.put_env("BEAM_COM_BASE", "")
+        assert {:ok, ^self} = :beam_com_build.base(%{exe: exe})
+      after
+        System.delete_env("BEAM_COM_BASE")
+      end
+    end
+
     # The edge part did not build (here: no runtime): no site.
     @tag timeout: 120_000
     test "run/1 with --page and no edge part", %{dir: dir} do

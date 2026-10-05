@@ -37,7 +37,9 @@ Fixes from the check of the examples with 0.1.0-rc.1:
   the studio at `phx/` of the site of BEAM.com use it. Before, they used
   the full directory of `--target wasm32`. `start()` of the page takes
   `statics: false` for an app that serves `priv/static` at a path other
-  than `/` (the studio).
+  than `/` (the studio). `BEAM_COM_BASE` names the APE file that a native
+  (assimilated) `beam.com` copies for a build, so that it still makes APE
+  files.
 - On macOS arm64, the VM starts `erl_child_setup` with `posix_spawn()`
   of libSystem, through the APE loader. Before, it used `fork()`, and the
   child could hang in `_objc_atfork_child`: a process stayed after the VM
