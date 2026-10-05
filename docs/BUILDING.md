@@ -142,18 +142,24 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
 [The workflow](../.github/workflows/build.yml) has these jobs:
 
 1. **Build** and **Build the interpreter**: `beam.com` (the JIT) and
-   `beam-emu.com` (the interpreter), on Ubuntu with cosmocc. The first
-   job also runs the unit tests.
-2. **Add a rebar3 release**: a release of `examples/greeter` and of two
+   `beam-emu.com` (the interpreter), on Ubuntu with cosmocc. A cache
+   keeps the WebAssembly runtime (the step `wasm_runtime`, about 4
+   minutes). The step uses it only when the SHA-256 of its inputs (the
+   file `build/wasm-runtime/inputs`) is the same, so a local build with
+   another runtime builds it again.
+2. **Unit tests**: `scripts/steps.sh unit` on the `beam.com` of the
+   build, in their own job, so that the other jobs do not wait for
+   them.
+3. **Add a rebar3 release**: a release of `examples/greeter` and of two
    check programs, made with a normal Erlang/OTP and rebar3, and added to
    copies of `beam.com` with `zip`.
-3. **Run on ...**: the behavior tests ([`tests/run.sh`](../tests/run.sh),
+4. **Run on ...**: the behavior tests ([`tests/run.sh`](../tests/run.sh),
    [`tests/run.ps1`](../tests/run.ps1)) and the benchmarks on Linux
    (x86_64, aarch64), macOS (arm64, x86_64), Windows, FreeBSD, NetBSD and
    OpenBSD 7.3. See [`TESTING.md`](TESTING.md).
-4. **Publish the edge binary**: after a merge to `main`, the prerelease
+5. **Publish the edge binary**: after a merge to `main`, the prerelease
    `edge` gets the new `beam.com`.
-5. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
+6. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
    gets `beam.com`, `beam-emu.com`, the tarball of the npm package and
    `SHA256SUMS`, and npm gets the same tarball. A run of this job again
    puts its files on the release that is there, and skips npm when npm
@@ -164,7 +170,7 @@ waits for the run of the push of the same commit to `main`. When that run
 passed, the tag run builds and tests nothing: the release job takes
 `beam.com` and `beam-emu.com` of that run, and the release takes about
 two minutes. When there is no such run, or it did not pass, the tag run
-builds and tests the commit, as a run of `main` does (about 30 minutes).
+builds and tests the commit, as a run of `main` does (about 25 minutes).
 
 [Another workflow](../.github/workflows/pages.yml) publishes the site of
 BEAM.com on GitHub Pages ([`site.sh`](site.sh)): these docs as ExDoc
