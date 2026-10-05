@@ -315,6 +315,8 @@ const handler = {
     if (!vm) {
       const v = vm = new Vm(env, { plain: false, sql, vars, files, secrets, host: new URL(request.url).hostname });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
+      // A VM that stopped: the next request starts a new one.
+      v.onDead = () => { if (vm === v) vm = undefined; };
     }
     // The scheme of the client (Deno gives it in the URL; Plug.SSL and
     // force_ssl read x-forwarded-proto), and the address of the client

@@ -17,8 +17,10 @@ const { Vm } = await import('../../priv/wasm_host/worker/worker.js');
 async function head(request, { scheme = true } = {}) {
   const vm = Object.create(Vm.prototype);
   const sent = [];
+  // No time limit (BEAM_REQUEST_TIMEOUT): these requests get no response.
   Object.assign(vm, {
-    env: {}, vars: {}, scheme, nextId: 0, tcps: new Map(), listeners: new Map([[4000, 'l0']]),
+    env: { BEAM_REQUEST_TIMEOUT: '0' }, vars: {}, scheme, nextId: 0, tcps: new Map(), listeners: new Map([[4000, 'l0']]),
+    conns: new Set(), sockets: 0, dead: null, died: new Promise(() => {}),
     listening: async () => {},
     event: (header, body) => sent.push({ header, body }),
   });

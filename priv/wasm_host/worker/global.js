@@ -11,16 +11,19 @@
 //   node wasm/snapshot/snapshot.mjs DIR --warm 4000:/
 //   (cd DIR && wrangler deploy -c wrangler.global.jsonc)
 import { env } from 'cloudflare:workers';
-import { Vm } from './worker.js';
+import plain, { Vm } from './worker.js';
 import release from './release/release.bin';
 import snapshot from './release/snapshot.bin';
 
-const vm = new Vm(env, { release, snapshot });
+let vm = new Vm(env, { release, snapshot });
 await vm.ready;
 if (env.BEAM_WARM) await vm.warm(env.BEAM_WARM);
+// A VM that stopped: the requests of this isolate then boot a VM of their
+// own (the Worker of worker.js).
+vm.onDead = () => { vm = null; };
 
 export default {
   fetch(request, env, ctx) {
-    return vm.fetch(request, ctx);
+    return vm ? vm.fetch(request, ctx) : plain.fetch(request, env, ctx);
   },
 };

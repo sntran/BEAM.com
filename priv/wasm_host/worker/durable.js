@@ -44,6 +44,7 @@ export class Beam extends DurableObject {
     super(ctx, env);
     this.vm = null;
     this.expires = undefined;
+    this.resetting = false;
   }
 
   // The VM starts at the first request: a path tenant gives its name there.
@@ -55,6 +56,10 @@ export class Beam extends DurableObject {
   }
 
   async fetch(request) {
+    if (this.resetting) {
+      return new Response('The app stopped. Try again.\n',
+        { status: 503, headers: { 'content-type': 'text/plain', 'retry-after': '1' } });
+    }
     if (this.env.BEAM_INSTANCES && this.env.BEAM_TENANTS === 'path') {
       this.expires ??= (await this.ctx.storage.get(EXPIRES)) ?? null;
       if (!this.expires || this.expires <= Date.now()) {
@@ -71,9 +76,22 @@ export class Beam extends DurableObject {
         vars.BEAM_TENANT_PATH = `/t/${tenant}`;
       }
       if (this.expires) vars.BEAM_INSTANCE_EXPIRES = String(Math.floor(this.expires / 1000));
-      this.vm = this.makeVm(vars, new URL(request.url).hostname);
+      const vm = this.vm = this.makeVm(vars, new URL(request.url).hostname);
+      vm.onDead = () => this.vmStopped(vm);
+      vm.ready.catch(() => this.vmStopped(vm));
     }
     return this.vm.fetch(request);
+  }
+
+  // The VM stopped (erlang:halt, or a trap such as an allocation that
+  // failed), or its boot failed. Its open requests got 503. The memory of
+  // WebAssembly does not shrink, so the object resets after these answers:
+  // a new instance of the object, with a new VM, takes the next request.
+  vmStopped(vm) {
+    if (this.vm !== vm) return;
+    this.vm = null;
+    this.resetting = true;
+    setTimeout(() => this.ctx.abort('the VM stopped'), 100);
   }
 
   // An instance: its time limit (from the registry).

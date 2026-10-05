@@ -612,6 +612,33 @@ runs it. A Worker cannot compile WebAssembly at run time, so
 entry gives them to Wrangler as modules (see `serve(app, { nifs })`
 below). A snapshot holds the memory of the library too.
 
+## Limits, and a VM that stops
+
+The host protects its requests with these limits (see the table below):
+
+- `BEAM_REQUEST_TIMEOUT` (60 s): when the app does not listen, or does
+  not send the head of its response, in this time, the request gets 504.
+  The app then gets the end of the connection. `"0"` turns the limit off.
+  The limit does not apply to the body of a response that streams, or to
+  a WebSocket.
+- `BEAM_MAX_REQUESTS`: above this count of open requests, a new request
+  gets 503 with `retry-after: 1`, before the app reads its body.
+- `BEAM_MAX_WEBSOCKETS`: above this count of open WebSockets, a new
+  upgrade gets 503.
+
+When the VM stops (`erlang:halt/1`, or a trap such as an allocation that
+failed), the host writes `beam: the VM stopped (REASON)` with the memory
+of the VM. Each open request then gets 503 with `retry-after: 1`, and each
+WebSocket closes with the code 1011. The next request gets a new VM: a
+stateless Worker starts one, and a Durable Object resets (its requests get
+503 until then). The host also writes `beam: memory N MB (a new peak of
+this VM)` when the memory of the VM grew by 8 MB or more. The memory of a
+VM does not shrink, and an isolate of a Worker has 128 MB.
+
+Caution: the time limit works only when the VM gives the time back to the
+event loop. A process that computes with no stop holds the VM, and the
+host cannot answer until it stops.
+
 ## Variables and bindings
 
 | Name | Where | What |
@@ -633,6 +660,9 @@ below). A snapshot holds the memory of the library too.
 | `BEAM_INSTANCE_TITLE` | Durable Object | The title of the page of `/`. |
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
+| `BEAM_REQUEST_TIMEOUT` | Worker, Durable Object, Deno | Seconds for the head of a response (60), then 504. `"0"`: no limit. |
+| `BEAM_MAX_REQUESTS` | Worker, Durable Object, Deno | The open requests of a VM, then 503. No limit by default. |
+| `BEAM_MAX_WEBSOCKETS` | Worker, Durable Object, Deno | The open WebSockets of a VM, then 503. No limit by default. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | Worker, Durable Object | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
 | `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). The others use `connect()`. Empty: no host. |
