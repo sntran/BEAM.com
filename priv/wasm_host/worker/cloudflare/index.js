@@ -52,6 +52,12 @@ export { Beam } from './durable.js';
 //     return beam.scheduled(controller, env, ctx);
 //   },
 //
+// options.statics: true (the default) serves the static files of a
+// Phoenix app (priv/static of the application of the release) at the root
+// of the site, before the VM: the VM does not get them. An app that serves
+// them at another path (Plug.Static with at:) gives false: then the VM
+// keeps them and serves them.
+//
 // options.snapshot: the snapshot of the build of app.com (npx beam.com
 // --snapshot app.com, imported as a Data module, as app.com):
 // - a full one (--full): each new VM restores it in place of a boot. A
@@ -68,8 +74,8 @@ export { Beam } from './durable.js';
 //
 // With the var BEAM_WARM (a path, as "/"), the global scope also sends one
 // GET request of that path to the VM of a full snapshot (see global.js).
-export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = null } = {}) {
-  use(app, nifs);
+export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = null, statics: split = true } = {}) {
+  use(app, nifs, split);
   useSnapshot(snapshot);
   // The VM of a stateless Worker, restored from a full snapshot in the
   // global scope.

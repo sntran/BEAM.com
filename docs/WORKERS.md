@@ -184,6 +184,16 @@ path tenant after its prefix, so they need no request to the Durable
 Object. `cache_manifest.json` stays in the VM, because Phoenix reads it
 at its start.
 
+An app that serves these files at another path (`Plug.Static` with
+`at:`) gives `serve(app, { statics: false })`. Then the VM keeps the
+files, and the app serves them. `start()` of a web page takes the same
+option. [`examples/studio`](../examples/studio) serves its files at
+`/__studio/static`. Its `worker.js` has this line:
+
+```js
+const beam = serve(app, { statics: false });
+```
+
 A Mix release evaluates its `runtime.exs` in the VM at the boot, so the
 host gives its variables. For Ecto SQLite, `.release.json` gives
 `DATABASE_PATH` (`/tmp/NAME.db`) when the host does not. A Phoenix app
@@ -820,8 +830,8 @@ release of the file with range requests:
 "A static site for any app"). The page serves the files of `priv/static`
 of a Phoenix app at the root of the site, and the VM does not get them.
 For an app that serves them at another path (`Plug.Static` with `at:`),
-give `statics: false`: then the VM keeps them. The studio at `phx/` of
-the site of BEAM.com does so.
+give `statics: false`: then the VM keeps them, as with `serve(app)`. The
+studio at `phx/` of the site of BEAM.com does so.
 
 The app runs in the page as in a Durable Object. The shell of
 [`examples/worker`](../examples/worker) runs so at `repl/` of the site of

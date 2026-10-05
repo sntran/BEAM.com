@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the release of the studio (_build/prod/rel/studio), with no ERTS,
-# for beam.com. page.sh and wasm.sh run it.
+# for beam.com. page.sh runs it.
 #
 #   BEAM_COM=/path/to/beam.com scripts/release.sh
 set -eu

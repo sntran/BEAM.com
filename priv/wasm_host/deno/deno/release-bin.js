@@ -4,14 +4,14 @@
 // else the path in the first argument of deno.js, else BEAM_APP): the
 // files of the release of that file (its edge part, appFiles of
 // app-com.js), for this runtime only.
-import { app as given } from './app.js';
+import { app as given, statics } from './app.js';
 
 async function release() {
   if (given) {
     const [{ appFiles, bytesReader }, { default: runtime }] =
       await Promise.all([import('../app-com.js'), import('../runtime-id.js')]);
     const { read, size } = bytesReader(given);
-    return appFiles(read, size, { runtime });
+    return appFiles(read, size, { runtime, statics });
   }
   const app = Deno.args[0] ?? Deno.env.get('BEAM_APP');
   if (app) {

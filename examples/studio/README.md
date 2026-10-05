@@ -56,15 +56,24 @@ In a web page (Chrome or Edge 137 or later), as static files:
 BEAM_COM=/path/to/beam.com scripts/page.sh OUT
 ```
 
-On Cloudflare Workers, with an instance for each visitor. This script uses
-the runtime directory of beam.com (see "The runtime directory (internal)"
-in docs/BUILDING.md of beam.com), because the studio serves its static
-files at `/__studio/static`:
+On Cloudflare Workers, with an instance for each visitor: a Durable
+Object with its own VM, at `/t/NAME/`. `npm run build` makes `app.com`
+with the npm package `beam.com`, and [`worker.js`](worker.js) serves it.
+The vars of [`wrangler.jsonc`](wrangler.jsonc) give the limits of the
+instances. The studio serves its static files at `/__studio/static`, so
+`worker.js` gives `serve(app, { statics: false })`.
 
 ```sh
-BEAM_COM=/path/to/beam.com scripts/wasm.sh
-cd _build/wasm && npx wrangler deploy -c wrangler.durable.jsonc
+npm install && npm run build
+npx wrangler dev                 # test on this computer
+npx wrangler deploy
 ```
+
+The option `statics` needs the npm package 0.1.0-rc.2 or later. With
+0.1.0-rc.1, the static files of the studio are not found.
+
+Caution: an instance runs the code of its visitor, as a public instance
+of Livebook does. The Durable Object of the instance is its sandbox.
 
 ## Limits
 

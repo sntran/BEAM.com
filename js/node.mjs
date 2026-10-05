@@ -47,8 +47,9 @@ export function release(app) {
   return readApp(app, appRelease);
 }
 
-// The release of app with get (appRelease, or appFiles: no copy).
-async function readApp(app, get) {
+// The release of app with get (appRelease, or appFiles: no copy), and the
+// options of get.
+async function readApp(app, get, options = {}) {
   const file = await fs.open(app);
   try {
     const { size } = await file.stat();
@@ -57,7 +58,7 @@ async function readApp(app, get) {
       const { bytesRead } = await file.read(b, 0, n, at);
       return b.subarray(0, bytesRead);
     };
-    return await get(read, size, { runtime: runtimeId });
+    return await get(read, size, { ...options, runtime: runtimeId });
   } finally {
     await file.close();
   }
@@ -66,8 +67,10 @@ async function readApp(app, get) {
 // The VM of an app.com, when it is ready. env: the variables of the VM.
 // There is no cache for snapshots in Node.js, so BEAM_SNAPSHOT is "off".
 // The VM keeps its state between requests (plain: false), as in Deno.
-export async function boot(app, { env = {} } = {}) {
-  const bin = await readApp(app, appFiles);
+// statics: false keeps the static files of a Phoenix app in the VM, as
+// serve(app) of a Worker does.
+export async function boot(app, { env = {}, statics = true } = {}) {
+  const bin = await readApp(app, appFiles, { statics });
   const { Vm } = await import(new URL('worker.js', runtimeUrl).href);
   const vm = new Vm({ BEAM_SNAPSHOT: 'off', ...env }, { release: bin, plain: false });
   await vm.ready;

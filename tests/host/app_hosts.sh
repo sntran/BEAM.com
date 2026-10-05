@@ -7,7 +7,8 @@
 #
 # DIR: package.json, worker.js, wrangler.jsonc, deno.json and app.com, and
 # node_modules with beam.com, wrangler and deno. Each host gives PATH with
-# its TEXT, and with WS_PATH the upgrade of a WebSocket there gives 101.
+# its TEXT (in the headers or the body, in any case), and with WS_PATH the
+# upgrade of a WebSocket there gives 101.
 # examples/phoenix_demo is stateful (the Durable Object Beam), with the
 # WebSocket of LiveView; examples/worker is stateless.
 set -eu
@@ -18,7 +19,7 @@ export WRANGLER_SEND_METRICS=false
 # NAME PORT TEXT LOG: PATH and WS_PATH of the host on PORT.
 check() {
     for i in $(seq 1 300); do curl -fs -o /dev/null --max-time 2 "http://127.0.0.1:$2$path" && break; sleep 0.5; done
-    if ! curl -fsS --compressed --max-time 120 "http://127.0.0.1:$2$path" | grep -q "$3"; then
+    if ! curl -fsSi --compressed --max-time 120 "http://127.0.0.1:$2$path" | grep -qi "$3"; then
         echo "$1: $path has no \"$3\""; tail -n 40 "$4"; return 1
     fi
     [ -n "$ws" ] || { echo "$1: $path"; return 0; }
