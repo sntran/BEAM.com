@@ -1084,6 +1084,73 @@ defmodule BeamComBuildTest do
                )
     end
 
+    # --page: OUTPUT is a site, with OUTPUT/app.com (beam_com_wasm:write_site/5).
+    @tag timeout: 120_000
+    test "run/1 with --page: a site with app.com", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+      page_prepare(root)
+      site = :filename.join(dir, ~c"site")
+      f = write(dir, ~c"hasher.erl", ~c"-module(hasher).\n-export([main/1]).\nmain(_) -> ok.\n")
+      run = %{input: f, apps: [], output: site ++ ~c"/", root: root, exe: exe, page: true}
+      :ok = silent(fn -> :beam_com_build.run(run) end)
+      {:ok, bin} = :file.read_file(:filename.join(site, ~c"app.com"))
+      assert Enum.any?(:beam_com_zip.entries(bin), &:lists.prefix(~c".wasm/", &1))
+      {:ok, index} = :file.read_file(:filename.join(site, ~c"index.html"))
+      assert index =~ "start({ app: './app.com' })"
+      assert :filelib.is_regular(:filename.join(site, ~c".nojekyll"))
+    end
+
+    test "run/1 with --page and another option" do
+      run = fn opts ->
+        catch_throw(
+          :beam_com_build.run(Map.merge(%{input: ~c"x.erl", apps: [], page: true}, opts))
+        )
+      end
+
+      assert {:error, ~c"--page writes a site with a native app.com, not with --target wasm32",
+              []} ==
+               run.(%{output: ~c"site", target: ~c"wasm32-unknown-emscripten"})
+
+      assert {:error, ~c"--page needs the edge part of app.com: not with --no-edge", []} ==
+               run.(%{output: ~c"site", edge: false})
+
+      assert {:error, ~c"--page needs -o DIR, the directory of the site", []} == run.(%{})
+    end
+
+    # The edge part did not build (here: no runtime): no site.
+    @tag timeout: 120_000
+    test "run/1 with --page and no edge part", %{dir: dir} do
+      {root, exe} = edge_prepare(dir)
+
+      :ok =
+        :file.del_dir_r(
+          :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv", ~c"runtime"])
+        )
+
+      f = write(dir, ~c"hasher.erl", ~c"-module(hasher).\n-export([main/1]).\nmain(_) -> ok.\n")
+
+      run = %{
+        input: f,
+        apps: [],
+        output: :filename.join(dir, ~c"site"),
+        root: root,
+        exe: exe,
+        page: true
+      }
+
+      assert {:error, ~c"--page: app.com has no edge part, so it cannot run in a web page", []} ==
+               silent(fn -> catch_throw(:beam_com_build.run(run)) end)
+    end
+
+    test "run/1 with --page and a file as OUTPUT", %{dir: dir} do
+      file = write(dir, ~c"site", "a file")
+
+      assert {:error, ~c"~ts: a file; --page writes a directory", [file]} ==
+               catch_throw(
+                 :beam_com_build.run(%{input: ~c"x.erl", apps: [], page: true, output: file})
+               )
+    end
+
     # wasm_host with no runtime (no beam.wasm in the zip, the cache or
     # BEAM_COM_WASM_RUNTIME): the native file has no edge part.
     @tag timeout: 120_000
@@ -1964,6 +2031,42 @@ defmodule BeamComBuildTest do
     write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.wasm", "the runtime")
     write(:filename.join([host, ~c"priv", ~c"runtime"]), ~c"beam.mjs", "the loader")
     {root, fake_exe(dir, root)}
+  end
+
+  # The files of wasm_host that a site of --page needs: the Workers, the
+  # hosts and the page.
+  defp page_prepare(root) do
+    priv = :filename.join([root, ~c"lib", ~c"wasm_host-0.1.0", ~c"priv"])
+
+    worker_js = """
+    import net from 'node:net';
+    import createBeam from './beam.mjs';
+    import wasm from './beam.wasm';
+    const release = (await import('./release.bin')).default;
+    const snapshot = await import('./snapshot.bin');
+    const nifs = (await import('./nifs.js')).default;
+    """
+
+    index =
+      "<script type=\"module\">\n  import { start } from './main.js';\n  start();\n</script>\n"
+
+    for {d, f, data} <- [
+          {~c"worker", ~c"worker.js", worker_js},
+          {~c"worker", ~c"durable.js", "durable.js"},
+          {~c"worker", ~c"global.js", "global.js"},
+          {~c"worker", ~c"durable-global.js", "durable-global.js"},
+          {~c"worker", ~c"tcp-proxy.mjs", "tcp-proxy.mjs"},
+          {~c"worker", ~c"app.js", "app.js"},
+          {~c"worker/cloudflare", ~c"index.js", "index.js"},
+          {~c"worker/cloudflare", ~c"release.js", "release.js"},
+          {~c"worker/cloudflare", ~c"snapshot.js", "snapshot.js"},
+          {~c"browser", ~c"browser.js", "browser.js"},
+          {~c"page", ~c"index.html", index},
+          {~c"page", ~c"main.js", "main.js"}
+        ],
+        do: write(:filename.join(priv, d), f, data)
+
+    :ok
   end
 
   # hasher.erl (with crypto) as a native file, with more options.

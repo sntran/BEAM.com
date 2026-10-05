@@ -187,6 +187,8 @@ build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
 build_options(["--no-edge" | Rest], Opts) ->
     build_options(Rest, Opts#{edge => false});
+build_options(["--page" | Rest], Opts) ->
+    build_options(Rest, Opts#{page => true});
 build_options(["--cacerts", File | Rest], Opts) ->
     build_options(Rest, Opts#{cacerts => File});
 build_options(["--target", Target | Rest], Opts) ->

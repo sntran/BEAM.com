@@ -36,6 +36,22 @@
 
 %% Opts: input, apps, and optionally output. root (the zip, "/zip") and
 %% exe (the path of this executable) are for the tests.
+%% --page: OUTPUT is a directory, a static site that runs the app in the
+%% browser: OUTPUT/app.com (the native file) and the page of the
+%% WebAssembly runtime (beam_com_wasm:write_site/5).
+run(#{page := true} = Opts) ->
+    maps:get(target, Opts, none) =:= ?WASM andalso
+        throw({error, "--page writes a site with a native app.com, not with --target wasm32", []}),
+    maps:get(edge, Opts, true) =:= false andalso
+        throw({error, "--page needs the edge part of app.com: not with --no-edge", []}),
+    Dir = case Opts of
+              #{output := O} -> string:trim(slashes(O, os:type()), trailing, "/\\");
+              _ -> throw({error, "--page needs -o DIR, the directory of the site", []})
+          end,
+    filelib:is_regular(Dir) andalso
+        throw({error, "~ts: a file; --page writes a directory", [Dir]}),
+    ok = filelib:ensure_path(Dir),
+    run((maps:remove(page, Opts))#{output => filename:join(Dir, "app.com"), site => Dir});
 run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Wasm = maps:get(target, Opts, none) =:= ?WASM,
     Wasm andalso maps:get(edge, Opts, true) =:= false andalso
@@ -130,7 +146,8 @@ write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
     Edge = edge(Files, [], Bin, Keep, Rel, Opts, Root),
     Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
     write_output(Output, Data),
-    summary(Output, Data, Rel, Apps, Edge, Opts).
+    summary(Output, Data, Rel, Apps, Edge, Opts),
+    site(Opts, Rel, Files, Edge, Root).
 
 %% A release directory: the new file has the applications of the release,
 %% and the applications of the zip of beam.com that the release names but
@@ -164,7 +181,17 @@ release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files :
     Edge = edge(Files, Originals, Bin, Keep, maps:with([name, vsn, kind], Rel), Opts, Root),
     Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
     write_output(Output, Data),
-    summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts).
+    summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts),
+    site(Opts, Rel, Files, Edge, Root).
+
+%% --page: the page of the site, next to OUTPUT (DIR/app.com). The page
+%% runs the edge part of app.com: a file with none cannot run there.
+site(#{site := _}, _Rel, _Files, [], _Root) ->
+    throw({error, "--page: app.com has no edge part, so it cannot run in a web page", []});
+site(#{site := Dir} = Opts, #{name := Name}, Files, _Edge, Root) ->
+    beam_com_wasm:write_site(Dir, Name, Files, Root, maps:get(quiet, Opts, false));
+site(_Opts, _Rel, _Files, _Edge, _Root) ->
+    ok.
 
 %% The applications of the .rel file of a release directory: [{App, Vsn}].
 rel_apps(Dir, Name, Vsn) ->

@@ -1,10 +1,10 @@
 name: Publish an app on GitHub Pages
 
 # A reusable workflow: it builds an Erlang or Elixir app with beam.com
-# (beam.com INPUT -o DIR --target wasm32), and publishes DIR/page/ on
-# GitHub Pages. Then the app runs in the browser of each visitor (see "A
-# static site for any app" in docs/WORKERS.md). The repository of the app
-# needs only this file:
+# (beam.com INPUT -o DIR --page), and publishes the site DIR on GitHub
+# Pages: DIR/app.com and the page that runs it. Then the app runs in the
+# browser of each visitor (see "A static site for any app" in
+# docs/WORKERS.md). The repository of the app needs only this file:
 #
 #   # .github/workflows/pages.yml
 #   name: Pages
@@ -252,19 +252,14 @@ jobs:
             set -- _build/prod/rel/*
             [ $# -eq 1 ] || { echo "the build has $# releases in _build/prod/rel" >&2; exit 1; }
             input=$1
-            # The build runs the release once on this machine, to find the
-            # modules of its boot. runtime.exs of mix phx.new needs a
-            # database and a secret for that run.
-            export DATABASE_PATH="$RUNNER_TEMP/native.db"
-            SECRET_KEY_BASE=$(MIX_ENV=prod mix.com phx.gen.secret)
-            export SECRET_KEY_BASE
           fi
-          beam.com "$input" -o "$SITE" --target wasm32
-          test -f "$SITE/page/index.html"
+          beam.com "$input" -o "$SITE" --page
+          test -f "$SITE/index.html"
+          test -f "$SITE/app.com"
 
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: ${{ runner.temp }}/site/page
+          path: ${{ runner.temp }}/site
           name: ${{ inputs.name }}
 
   deploy:
