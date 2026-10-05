@@ -37,6 +37,8 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include "libc/intrin/fds.h"                 /* struct Fds, kFdZip */
+#include "libc/dce.h"                        /* IsXnuSilicon() */
+#include "libc/dlopen/dlfcn.h"               /* cosmo_dlopen(), cosmo_dltramp() */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
 
@@ -1382,8 +1384,9 @@ static void windows_setup(const struct arglist *init, struct arglist *out)
     }
 }
 
-int beam_com_exec_helper(const char *path, char *const argv[],
-                         char *const envp[])
+/* The environment of the helper program PATH: ENVP (or the current
+ * environment) with BEAM_COM_PROGRAM, the name of the helper. */
+static char **helper_env(const char *path, char *const envp[])
 {
     extern char **environ;
     char *const *src = envp ? envp : environ;
@@ -1394,7 +1397,120 @@ int beam_com_exec_helper(const char *path, char *const argv[],
         if (strncmp(src[i], "BEAM_COM_PROGRAM=", 17) != 0)
             push(&env, src[i]);
     push(&env, join("BEAM_COM_PROGRAM=", beam_com_basename(path), ""));
-    return beam_com_execve(GetProgramExecutableName(), argv, env.v);
+    return env.v;
+}
+
+int beam_com_exec_helper(const char *path, char *const argv[],
+                         char *const envp[])
+{
+    return beam_com_execve(GetProgramExecutableName(), argv, helper_env(path, envp));
+}
+
+/*
+ * --- macOS arm64: posix_spawn() of libSystem (docs/UPSTREAM.md, C32) ---
+ *
+ * On XNU arm64, the APE loader gives Cosmopolitan its system calls, and
+ * its fork() is the fork() of libSystem, which runs the fork handlers of
+ * libSystem in the child. When the emulator has threads, the child can
+ * hang in the handlers of libobjc or libxpc before its execve(). The
+ * posix_spawn() of libSystem runs no fork handlers. The loader gives
+ * dlopen() and dlsym(), so this file calls it through cosmo_dlopen().
+ */
+typedef void *xnu_spawn_actions_t; /* posix_spawn_file_actions_t of XNU */
+typedef void *xnu_spawn_attr_t;    /* posix_spawnattr_t of XNU */
+#define XNU_POSIX_SPAWN_SETSID 0x0400
+
+struct xnu_spawn {
+    int (*spawn)(int *, const char *, const xnu_spawn_actions_t *,
+                 const xnu_spawn_attr_t *, char *const[], char *const[]);
+    int (*actions_init)(xnu_spawn_actions_t *);
+    int (*actions_destroy)(xnu_spawn_actions_t *);
+    int (*actions_adddup2)(xnu_spawn_actions_t *, int, int);
+    int (*actions_addclose)(xnu_spawn_actions_t *, int);
+    int (*attr_init)(xnu_spawn_attr_t *);
+    int (*attr_destroy)(xnu_spawn_attr_t *);
+    int (*attr_setflags)(xnu_spawn_attr_t *, short);
+    int (*executable_path)(char *, unsigned *);
+};
+
+/* The functions of libSystem, or 0 when one is not there. */
+static int xnu_spawn_load(struct xnu_spawn *x)
+{
+    static const char *const names[] = {
+        "posix_spawn", "posix_spawn_file_actions_init",
+        "posix_spawn_file_actions_destroy", "posix_spawn_file_actions_adddup2",
+        "posix_spawn_file_actions_addclose", "posix_spawnattr_init",
+        "posix_spawnattr_destroy", "posix_spawnattr_setflags",
+        "_NSGetExecutablePath"};
+    void *fns[sizeof(names) / sizeof(names[0])];
+    void *lib;
+    size_t i;
+
+    if (!(lib = cosmo_dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY)))
+        return 0;
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        void *f = cosmo_dlsym(lib, names[i]);
+        if (!f || !(fns[i] = cosmo_dltramp(f)))
+            return 0;
+    }
+    memcpy(x, fns, sizeof(fns));
+    return 1;
+}
+
+/*
+ * Starts the helper program PATH (a /zip/bin path) with ARGV, as
+ * beam_com_exec_helper() does, but with posix_spawn() of libSystem on
+ * macOS arm64: FD3 at fd 3, OTHER and FD3 closed (as the child of
+ * forker_start() does), in a new session. The loader runs the file again
+ * ("LOADER - FILE ARGV0 ARGV1 ..."). Returns the pid, or -1 on the other
+ * systems and on an error (then the caller uses fork()).
+ */
+int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
+                          int other)
+{
+    struct xnu_spawn x;
+    xnu_spawn_actions_t actions;
+    xnu_spawn_attr_t attr;
+    struct arglist args = {0};
+    char loader[4096];
+    unsigned size = sizeof(loader);
+    int pid = -1, rc, i;
+
+    if (!IsXnuSilicon() || !xnu_spawn_load(&x))
+        return -1;
+    /* The file of this process is the loader (.ape-1.10). */
+    if (x.executable_path(loader, &size) != 0)
+        return -1;
+    push(&args, loader);
+    push(&args, "-");
+    push(&args, GetProgramExecutableName());
+    for (i = 0; argv[i]; i++)
+        push(&args, argv[i]);
+
+    if (x.actions_init(&actions) != 0)
+        return -1;
+    if (x.attr_init(&attr) != 0) {
+        x.actions_destroy(&actions);
+        return -1;
+    }
+    rc = 0;
+    if (fd3 != 3)
+        rc |= x.actions_adddup2(&actions, fd3, 3);
+    if (other != 3)
+        rc |= x.actions_addclose(&actions, other);
+    if (fd3 != 3)
+        rc |= x.actions_addclose(&actions, fd3);
+    rc |= x.attr_setflags(&attr, XNU_POSIX_SPAWN_SETSID);
+    if (rc == 0)
+        rc = x.spawn(&pid, loader, &actions, &attr, args.v, helper_env(path, NULL));
+    x.attr_destroy(&attr);
+    x.actions_destroy(&actions);
+    if (getenv("BEAM_COM_VERBOSE"))
+        fprintf(stderr, "beam.com: posix_spawn of %s with the APE loader %s: %s\n",
+                path, loader, rc == 0 ? "ok" : strerror(rc));
+    if (rc != 0)
+        return -1;
+    return pid;
 }
 
 /*

@@ -27,7 +27,7 @@ order, with `git apply`.
 | | `erts/emulator/sys/common/erl_poll.c` | `FD_SETSIZE` when `sysconf(_SC_OPEN_MAX)` fails. | C15 |
 | | `erts/emulator/sys/unix/erl_main.c`, `erl_child_setup.c` | The helper programs are linked into the file, and an APE file starts with the APE loader. | O9, C11, C31 |
 | | `erts/emulator/sys/unix/sys.c` | Stop when `/dev/null` does not open. | O15 |
-| | `erts/emulator/sys/unix/sys_drivers.c` | The linked helper programs; no `erl_child_setup` on Windows or when `fork()` fails; the child closes the end of the emulator. | O9, O12, O16, C16 |
+| | `erts/emulator/sys/unix/sys_drivers.c` | The linked helper programs; no `erl_child_setup` on Windows or when `fork()` fails; the child closes the end of the emulator; `posix_spawn()` of libSystem for `erl_child_setup` on macOS arm64. | O9, O12, O16, C16, C32 |
 | | `erts/emulator/sys/unix/sys_uds.c` | The `struct cmsghdr` of BSD and XNU. | C17 |
 | | `erts/emulator/zstd/zstd.mk` | No x86_64 assembly file in the aarch64 half. | O2 |
 | | `lib/erl_interface/src/connect/ei_resolve.c` | The `gethostbyname_r` of Cosmopolitan. | O7 |

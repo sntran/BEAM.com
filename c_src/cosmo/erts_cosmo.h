@@ -117,6 +117,16 @@ int beam_com_exec_helper(const char *path, char *const argv[],
 int beam_com_execve(const char *path, char *const argv[],
                     char *const envp[]) __attribute__((__weak__));
 
+/*
+ * Defined in beam_com.c. On macOS arm64, starts the helper program of the
+ * /zip/bin path with posix_spawn() of libSystem (fd3 at fd 3, other and
+ * fd3 closed, a new session), because the child of fork() can hang in
+ * the fork handlers of libSystem (docs/UPSTREAM.md, C32). Returns the
+ * pid, or -1 on the other systems and on an error.
+ */
+int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
+                          int other) __attribute__((__weak__));
+
 #ifdef __cplusplus
 }
 #endif

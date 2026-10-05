@@ -804,11 +804,27 @@ So the child never gets to its `execve()`. This is the known limit of
 `fork()` in a process with threads on macOS: the handlers of
 libobjc and libxpc are not safe there.
 
-**Fix in BEAM.com.** None yet. A fix needs a fork with no fork handlers
-for the child that only executes a program: a `posix_spawn()` of
-libSystem, which the APE loader does not give, or the system call
-`fork` directly, which skips the handlers. Each one needs a test on
-macOS arm64.
+**Fix in BEAM.com.** On macOS arm64, `forker_start()` starts
+`erl_child_setup` with `posix_spawn()` of libSystem, which runs no fork
+handlers (`beam_com_spawn_helper()` in `c_src/cosmo/beam_com.c`, and
+`patches/otp/0001-cosmopolitan.patch`). The APE loader gives `dlopen()`
+and `dlsym()` (version 6 of its table), so the program gets
+`posix_spawn()` through `cosmo_dlopen()` and `cosmo_dltramp()`:
+
+- The file actions do what the child of `forker_start()` did: the end
+  of `erl_child_setup` at fd 3, and the end of the emulator closed.
+  `POSIX_SPAWN_SETSID` gives the new session of `setsid()`.
+- The file of the process is the loader (`_NSGetExecutablePath()`). It
+  runs this file again as `LOADER - FILE erl_child_setup MAX_FILES`,
+  with `BEAM_COM_PROGRAM=erl_child_setup`, as `beam_com_exec_helper()`
+  does.
+- When a function of libSystem is not there or `posix_spawn()` fails,
+  `fork()` starts the child as before. macOS x86_64 and the other
+  systems use `fork()`.
+
+The other forks of BEAM.com do not change: `erl_child_setup` has one
+thread when it starts the port programs, and `start_epmd()` forks before
+the threads of the emulator.
 
 **Possible upstream fix.** The APE loader gives Cosmopolitan
 `posix_spawn()` of libSystem (it runs no fork handlers), and
