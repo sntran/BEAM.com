@@ -65,6 +65,11 @@ fixes from the check of the examples with 0.1.0-rc.1, and these changes:
   option. `examples/studio` is now a project of `app.com` with the npm
   package, with `worker.js` and `wrangler.jsonc`, in place of
   `scripts/wasm.sh` and `--target wasm32`.
+- The GitHub release holds the tarball of the npm package
+  (`beam.com-VERSION.tgz`), with its attestation and its line in
+  `SHA256SUMS`. It is the file that the release job publishes on npm, so
+  `npm install URL` of the release installs the package with no
+  registry.
 - On macOS arm64, the VM starts `erl_child_setup` with `posix_spawn()`
   of libSystem, through the APE loader. Before, it used `fork()`, and the
   child could hang in `_objc_atfork_child`: a process stayed after the VM

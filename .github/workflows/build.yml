@@ -758,9 +758,9 @@ jobs:
       name: site-edge
 
   # The release of a tag vX.Y.Z or vX.Y.Z-rc.N, after all the tests:
-  # beam.com and beam-emu.com, with their SHA-256, and the npm package. The
-  # tag must be the version of beam.com (the vsn of
-  # src/beam_com/beam_com.app.src).
+  # beam.com, beam-emu.com and the tarball of the npm package, with their
+  # SHA-256, and the same tarball on npm. The tag must be the version of
+  # beam.com (the vsn of src/beam_com/beam_com.app.src).
   release:
     name: Publish the release
     needs: [test, test-bsd]
@@ -794,6 +794,24 @@ jobs:
           name: beam-emu.com
           path: bin
 
+      # npm 11.5.1 or later publishes with the token of this run (trusted
+      # publishing, OIDC), with provenance.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "26"
+
+      # The tarball of the npm package of the same version (package.json,
+      # scripts/npm.sh): npx beam.com downloads the beam.com of this
+      # release, with its SHA-256. The release holds this tarball, and the
+      # step "Publish the npm package" publishes the same file.
+      - name: Make the npm package
+        run: |
+          chmod +x bin/beam.com
+          sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/wasm32" --target wasm32 > /dev/null
+          scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
+          npm pack --pack-destination bin
+          test -f "bin/beam.com-${TAG#v}.tgz"
+
       # The provenance of the files (a signed statement of the workflow and
       # the commit that built them): gh attestation verify FILE --repo
       # sntran/BEAM.com.
@@ -802,11 +820,13 @@ jobs:
           subject-path: |
             bin/beam.com
             bin/beam-emu.com
+            bin/beam.com-*.tgz
 
       - name: Publish the release
         run: |
           cd bin
-          sha256sum beam.com beam-emu.com > SHA256SUMS
+          tgz=beam.com-${TAG#v}.tgz
+          sha256sum beam.com beam-emu.com "$tgz" > SHA256SUMS
           # The section of this version in CHANGELOG.md, then the files.
           awk -v v="## ${TAG#v}" '$0 == v {on = 1; next} /^## / {on = 0} on' \
             ../CHANGELOG.md > notes.md
@@ -820,6 +840,12 @@ jobs:
           - \`beam.com\`: with the JIT. Use this file.
           - \`beam-emu.com\`: with the BEAM interpreter. It is smaller and
             starts faster, but Erlang code runs slower.
+          - \`$tgz\`: the npm package, the same file as on npm. To
+            install it with no registry:
+
+            \`\`\`sh
+            npm install https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$tgz
+            \`\`\`
           - \`SHA256SUMS\`: check the files with \`sha256sum -c SHA256SUMS\`.
             To check where they come from: \`gh attestation verify beam.com
             --repo $GITHUB_REPOSITORY\`.
@@ -832,27 +858,17 @@ jobs:
               *-*) pre=--prerelease ;;
               *) pre= ;;
           esac
-          gh release create "$TAG" beam.com beam-emu.com SHA256SUMS \
+          gh release create "$TAG" beam.com beam-emu.com "$tgz" SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" $pre \
             --title "BEAM.com $TAG" --notes-file notes.md --generate-notes
 
-      # npm 11.5.1 or later publishes with the token of this run (trusted
-      # publishing, OIDC), with provenance.
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: "26"
-
-      # The npm package of the same version (package.json, scripts/npm.sh):
-      # npx beam.com downloads the beam.com of this release, with its
-      # SHA-256. The trusted publisher on npmjs.com is this workflow
-      # (build.yml). Without it, the secret NPM_TOKEN gives the token.
+      # The tarball of the step "Make the npm package". The trusted
+      # publisher on npmjs.com is this workflow (build.yml). Without it, the
+      # secret NPM_TOKEN gives the token.
       - name: Publish the npm package
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          chmod +x bin/beam.com
-          sh bin/beam.com examples/hashsum.erl -o "$RUNNER_TEMP/wasm32" --target wasm32 > /dev/null
-          scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
           if [ -n "$NPM_TOKEN" ]; then
             echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > "$RUNNER_TEMP/.npmrc"
             export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
@@ -863,4 +879,4 @@ jobs:
               *-*) dist=next ;;
               *) dist=latest ;;
           esac
-          npm publish --provenance --access public --tag "$dist"
+          npm publish "bin/beam.com-${TAG#v}.tgz" --provenance --access public --tag "$dist"

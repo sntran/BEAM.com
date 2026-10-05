@@ -280,6 +280,13 @@ release, and checks its SHA-256 against the value that the package
 holds. Then the file stays in the cache (`~/.cache/beam.com/npm/`). A
 host that only uses the runtime never downloads it.
 
+Each GitHub release from 0.1.0-rc.2 also holds the package, the same
+file as on npm. npm installs it with no registry:
+
+```sh
+npm install https://github.com/sntran/BEAM.com/releases/download/v0.1.0-rc.2/beam.com-0.1.0-rc.2.tgz
+```
+
 - `BEAM_COM`: the path of a `beam.com` to use. Then nothing is
   downloaded.
 - `BEAM_COM_DOWNLOAD`: the URL of a directory with the file `beam.com`,
