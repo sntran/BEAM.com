@@ -72,7 +72,13 @@ check_once() {
     watchdog=$!
     wait "$pid"
     rc=$?
-    wait "$watchdog" 2>/dev/null
+    # The watchdog checks once a second. When the program ends by itself,
+    # the watchdog ends at its next check: a wait for it adds up to one
+    # second to each check. A killed program (137) has its diagnostics:
+    # the watchdog writes them before the kill.
+    if [ $rc -eq 137 ]; then
+        wait "$watchdog" 2>/dev/null
+    fi
     # The output stays in the file: in a shell variable, a large output is
     # too long for an external printf (OpenBSD ksh). A long output is
     # shortened in the log; the checks read the whole file.

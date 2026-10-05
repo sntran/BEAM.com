@@ -13,8 +13,9 @@ tests/bench/run.ps1 -Dir DIR    # Windows
 
 The script builds [`tests/bench/bench.erl`](../tests/bench/bench.erl)
 with each variant (`beam-emu.com bench.erl -o OUTPUT` and
-`beam.com bench.erl -o OUTPUT`), runs it, and prints one Markdown table. CI runs it on each platform after the tests,
-and puts the table in the summary of the run.
+`beam.com bench.erl -o OUTPUT`), runs it, and prints one Markdown table. CI runs it on each platform after the tests
+for a push to `main`, and puts the table in the summary of the run. A pull
+request has the performance gate (below) in place of the tables.
 
 | Row | What it measures |
 |---|---|
