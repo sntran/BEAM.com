@@ -22,15 +22,38 @@ our_processes() {
         awk '$3 !~ /^Z/' | grep -e "$dir/[^ ]*\.com" -e '\.ape-' || true
 }
 
+# A process and all the processes under it, also the ones of other names
+# (a port program such as sh) and the zombies.
+tree() {
+    ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
+        { parent[$1] = $2; order[NR] = $1 }
+        END {
+            print root
+            for (changed = 1; changed; ) {
+                changed = 0
+                for (i = 1; i <= NR; i++) {
+                    p = order[i]
+                    if (!(p in seen) && (parent[p] in mark || parent[p] == root)) {
+                        seen[p] = 1; mark[p] = 1; changed = 1; print p
+                    }
+                }
+            }
+        }'
+}
+
 # Called by the watchdog before it kills a program: the processes, and
 # the stack traces where the system has a tool for it.
 diagnose() {
     echo "--- processes"
     our_processes
-    for q in "$1" $(pgrep -P "$1" 2>/dev/null); do
+    pids=$(tree "$1")
+    echo "--- the process tree of $1"
+    ps -A -o pid,ppid,pgid,stat,etime,command 2>/dev/null |
+        awk -v list=" $(echo $pids) " 'NR == 1 || index(list, " " $1 " ")'
+    for q in $pids; do
         if command -v sample >/dev/null 2>&1; then
             echo "--- sample $q (macOS)"
-            sample "$q" 1 2>&1 | head -200
+            sample "$q" 1 2>&1 | head -400
         elif command -v procstat >/dev/null 2>&1; then
             echo "--- procstat -kk $q (FreeBSD)"
             procstat -kk "$q" 2>&1 | head -100
@@ -470,7 +493,7 @@ if [ -d examples ]; then
             net_extra='write '$dir/sandbox.tmp rw_extra=listen
             net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@done'
             rw='read: ok@@read: error eacces@@write: ok@@listen: error eperm@@done'
-            runs='run: ok@@run: error@@done'
+            runs='run true: ok@@run sh: error@@done'
             env='read: ok@@read: error eacces@@done' ;;
         openbsd)
             net_extra='write '$dir/sandbox.tmp rw_extra=listen
@@ -482,7 +505,7 @@ if [ -d examples ]; then
             net_extra='write '$dir/sandbox.tmp rw_extra=listen
             net='read: ok@@read: ok@@listen: ok@@write: ok@@done'
             rw='read: ok@@read: ok@@write: ok@@listen: ok@@done'
-            runs='run: ok@@run: ok@@done'
+            runs='run true: ok@@run sh: ok@@done'
             env='read: ok@@read: ok@@done' ;;
     esac
     # -N: the network, and the files that it needs (/etc/hosts), not
