@@ -294,7 +294,19 @@ async function check(page, origin) {
   await frame.fill('#login_form_password input[type=email]', 'nobody@example.com');
   await frame.fill('#login_form_password input[type=password]', 'not the password');
   await frame.click('#login_form_password button');
-  await frame.waitForSelector('text=Invalid email or password', { timeout: 30000 });
+  await frame.waitForSelector('text=Invalid email or password', { timeout: 30000 }).catch(async (e) => {
+    // The state of the form and of the LiveView, for the log: after the
+    // event submit_password, LiveView sets phx-trigger-action and sends
+    // the POST.
+    const state = await frame.evaluate(() => {
+      const form = document.getElementById('login_form_password');
+      const main = document.querySelector('[data-phx-main]');
+      return { url: location.href, form: form && [...form.attributes].map((a) => `${a.name}=${a.value}`).join(' '),
+               main: main?.className, button: form?.querySelector('button')?.outerHTML.slice(0, 200) };
+    }).catch((err) => ({ error: err.message }));
+    log.push(`login form: ${JSON.stringify(state)}`);
+    throw e;
+  });
   if (frame.url() !== `${app}users/log-in`) throw new Error(`after the login form, the frame is at ${frame.url()}`);
   step('the login form (a POST) works: the app answers "Invalid email or password"');
 }
@@ -417,6 +429,12 @@ server.listen(0, '127.0.0.1', async () => {
     const page = await browser.newPage();
     page.on('console', (m) => log.push(`console ${m.type()}: ${m.text()}`));
     page.on('pageerror', (e) => log.push(`page error: ${e.message}`));
+    // The requests of the frame: a POST, a redirect or an error, and a
+    // request with no answer, for the log of a failure.
+    page.on('response', (r) => {
+      if (r.status() >= 300 || r.request().method() !== 'GET') log.push(`response ${r.status()} ${r.request().method()} ${r.url()}`);
+    });
+    page.on('requestfailed', (r) => log.push(`request failed ${r.method()} ${r.url()}: ${r.failure()?.errorText}`));
     await check(page, origin);
     if (flag('--phoenix-demo')) await links(browser, origin);
     if (flag('--tabs')) await tabs(browser, origin);
