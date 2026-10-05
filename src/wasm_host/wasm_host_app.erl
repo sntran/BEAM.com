@@ -19,7 +19,8 @@ stop(_State) ->
 init([]) ->
     Children = case os:getenv("WASM_HOST") of
                    false -> [];
-                   _ -> [#{id => wasm_host_server, start => {wasm_host_server, start_link, []}}]
+                   _ -> [#{id => wasm_host_server, start => {wasm_host_server, start_link, []}},
+                         #{id => wasm_host_fetch, start => {wasm_host_fetch, start_link, []}}]
                end,
     {ok, {#{strategy => one_for_one, intensity => 0, period => 1}, Children}}.
 

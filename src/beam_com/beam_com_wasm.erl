@@ -1070,7 +1070,9 @@ capnp(Phoenix, Key, Nifs) ->
      "  services = [\n"
      "    (name = \"beam\", worker = .beam),\n"
      "    (name = \"app\", worker = .app),\n"
-     "    (name = \"net\", network = (allow = [\"public\", \"private\", \"local\"])),\n"
+     %% TLS for fetch() to https:// URLs (the fetch path, DNS over HTTPS).
+     "    (name = \"net\", network = (allow = [\"public\", \"private\", \"local\"],\n"
+     "                                tlsOptions = (trustBrowserCas = true))),\n"
      "  ],\n"
      "  sockets = [ (name = \"http\", address = \"127.0.0.1:8789\", http = (), service = \"beam\") ],\n"
      ");\n\n"

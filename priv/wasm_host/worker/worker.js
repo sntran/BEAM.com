@@ -223,18 +223,91 @@ function parseSnapshot(bytes) {
 }
 
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
-// "host", "host:port", or "*.domain" (the subdomains of domain). The host
-// resolves a name, so the VM cannot reach another address through it.
-// With no BEAM_CONNECT, the VM can connect to all hosts.
-function connectAllowed(list, host, port) {
+// "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
+// hosts, as "*:443"). The host resolves a name, so the VM cannot reach
+// another address through it. With no BEAM_CONNECT, the VM can connect to
+// all hosts. BEAM_FETCH has the same rules.
+export function connectAllowed(list, host, port) {
   if (list === undefined) return true;
   const name = String(host).toLowerCase().replace(/\.$/, '');
   return list.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean).some((rule) => {
     const i = rule.lastIndexOf(':');
     const [pattern, p] = i > 0 && !rule.includes(']') ? [rule.slice(0, i), rule.slice(i + 1)] : [rule, undefined];
     if (p !== undefined && Number(p) !== port) return false;
+    if (pattern === '*') return true;
     return pattern.startsWith('*.') ? name.endsWith(pattern.slice(1)) : name === pattern;
   });
+}
+
+// The IP ranges of Cloudflare (https://www.cloudflare.com/ips-v4 and
+// ips-v6, October 2026), and the ranges of its resolver 1.1.1.1. On
+// Cloudflare, connect() of a Worker cannot reach them: the fallback of the
+// fetch path (wasm_host_fetch.erl) sends the HTTP of such a host through
+// fetch().
+export const CLOUDFLARE_RANGES = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18',
+  '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17',
+  '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+  '1.1.1.0/24', '1.0.0.0/24',
+  '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32',
+  '2a06:98c0::/29', '2c0f:f248::/32',
+];
+
+// An IP address as {bits, size} (a BigInt of 32 or 128 bits), or null.
+export function ipBits(text) {
+  const ip = String(text).replace(/^\[|\]$/g, '');
+  const v4 = (t) => {
+    const parts = t.split('.');
+    if (parts.length !== 4 || !parts.every((x) => /^\d{1,3}$/.test(x) && Number(x) < 256)) return null;
+    return parts.reduce((n, x) => (n << 8n) | BigInt(x), 0n);
+  };
+  if (!ip.includes(':')) {
+    const n = v4(ip);
+    return n === null ? null : { bits: n, size: 32 };
+  }
+  let [head, tail] = ip.split('::');
+  if (ip.split('::').length > 2) return null;
+  const words = (t) => (t ? t.split(':') : []);
+  let h = words(head), t = tail === undefined ? [] : words(tail);
+  // An IPv4 address at the end (::ffff:1.2.3.4) is two words.
+  const last = (tail === undefined ? h : t);
+  if (last.length && last.at(-1).includes('.')) {
+    const n = v4(last.pop());
+    if (n === null) return null;
+    last.push((n >> 16n).toString(16), (n & 0xffffn).toString(16));
+  }
+  const fill = tail === undefined ? 0 : 8 - h.length - t.length;
+  if (fill < 0 || (tail === undefined && h.length !== 8)) return null;
+  const all = [...h, ...Array(fill).fill('0'), ...t];
+  if (!all.every((w) => /^[0-9a-f]{1,4}$/i.test(w))) return null;
+  return { bits: all.reduce((n, w) => (n << 16n) | BigInt(parseInt(w, 16)), 0n), size: 128 };
+}
+
+// The address is in one of the ranges ("address/prefix").
+export function inRanges(address, ranges = CLOUDFLARE_RANGES) {
+  let a = ipBits(address);
+  if (!a) return false;
+  // An IPv4 address in IPv6 (::ffff:a.b.c.d) is that IPv4 address.
+  if (a.size === 128 && a.bits >> 32n === 0xffffn) a = { bits: a.bits & 0xffffffffn, size: 32 };
+  return ranges.some((r) => {
+    const [base, prefix] = r.split('/');
+    const b = ipBits(base);
+    if (!b || b.size !== a.size) return false;
+    const shift = BigInt(a.size - Number(prefix));
+    return (a.bits >> shift) === (b.bits >> shift);
+  });
+}
+
+// The URL of a request of the fetch path: the host and the port of the
+// connect of the program (never a name of the request), and the path of
+// the request. null for a path that would change the origin.
+export function fetchUrl(host, port, tls, path) {
+  const scheme = tls ? 'https' : 'http';
+  const name = String(host).includes(':') ? `[${host}]` : String(host);
+  const origin = `${scheme}://${name}${port === (tls ? 443 : 80) ? '' : `:${port}`}`;
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) return null;
+  const url = new URL(path, origin);
+  return url.origin === new URL(origin).origin ? url.href : null;
 }
 
 // The memory and the open files of the snapshot, in a new instance (before
@@ -983,7 +1056,12 @@ export class Vm {
     this.id = id;
     this.sql = sql;            // ctx.storage.sql of a Durable Object (Ecto SQLite)
     this.tcps = new Map();     // id -> {send, close, h}: a TCP socket of wasm_tcp
-    this.listeners = new Map(); // port -> the id of its listener (wasm_tcp)
+    this.listeners = new Map(); // port -> the id of its listener (wasm_tcp); 'fetch' (and
+                                // 'fetch-tls' when the VM trusts its CA): wasm_host_fetch
+    this.fetchConns = new Map(); // id -> {host, port, h}: a connection of the fetch path
+    this.fetches = new Map();  // id -> the AbortController of a fetch() of the fetch path
+    this.dns = new Map();      // host -> {at, addresses}: the names of the fetch path
+    this.fetchPending = 0;
     this.nextId = 1;
     this.plain = plain;
     this.handlers = [];        // the open requests (plain)
@@ -1064,7 +1142,8 @@ export class Vm {
         noInitialRun: !!snap,
         onRuntimeInitialized: snap ? () => {
           try {
-            this.listeners = new Map(Object.entries(snap.listeners ?? {}).map(([p, id]) => [Number(p), id]));
+            this.listeners = new Map(Object.entries(snap.listeners ?? {})
+              .map(([p, id]) => [/^\d+$/.test(p) ? Number(p) : p, id]));
             restore(this.beam, this.exports, snap);
             // In the global scope (the bytes given), the first request
             // starts the threads. A snapshot of the boot point then goes on
@@ -1226,7 +1305,7 @@ export class Vm {
   async snapshot(bootPoint) {
     const x = this.exports;
     const tick = () => new Promise((r) => setTimeout(r, 1));
-    const busy = () => this.sqlPending > 0 || this.tcps.size > 0;
+    const busy = () => this.sqlPending > 0 || this.tcps.size > 0 || this.fetchPending > 0;
     // Data in a pipe (an event of the host that Erlang did not take yet,
     // or a wake-up of ERTS) would not be in the snapshot either.
     const unread = () => this.beam.FS.streams.some((st) => st?.node?.pipe?.buckets.some((b) => b.offset > b.roffset));
@@ -1712,11 +1791,17 @@ export class Vm {
 
   // A TCP socket of wasm_tcp: net.connect() of node:net. In a plain
   // Worker it belongs to the handler h, and closes with that request.
-  async tcpConnect({ id, host, port }, h) {
+  // A connect of the VM (specs/FetchPath.tla). HTTP goes through fetch()
+  // first (fetchFirst); the other protocols use connect(). direct: the
+  // tunnel of wasm_host_fetch, which never goes back to the fetch path.
+  async tcpConnect({ id, host, port, direct }, h) {
     let socket;
     if (h) h.sockets++;
+    const allowed = connectAllowed(this.env.BEAM_CONNECT, host, port);
+    const fetchPath = this.listeners.has('fetch') && !direct;
+    if (allowed && fetchPath && this.fetchFirst(host, port)) return this.fetchPair(id, host, port, h);
     try {
-      if (!connectAllowed(this.env.BEAM_CONNECT, host, port)) throw new Error('not in BEAM_CONNECT');
+      if (!allowed) throw new Error('not in BEAM_CONNECT');
       socket = net.connect({ host, port });
       // A send resolves when the bytes are written; a close sends the
       // bytes that wait, and then ends the socket.
@@ -1733,6 +1818,15 @@ export class Vm {
       console.log(`beam: connect ${host}:${port}: ${e.message}`);
       socket?.destroy();
       this.tcps.delete(id);
+      // connect() of Cloudflare fails for a host behind Cloudflare, with the
+      // error of any other failure: the addresses of the name tell them
+      // apart. A host of Cloudflare goes through fetch() (specs/FetchPath.tla).
+      // Only on Cloudflare: Deno and a web page have no such block.
+      const cloudflare = (this.env.BEAM_HOST ?? 'cloudflare') === 'cloudflare';
+      if (allowed && fetchPath && cloudflare && (port === 443 || port === 80) && await this.isCloudflare(host)) {
+        console.log(`beam: connect ${host}:${port}: through fetch()`);
+        return this.fetchPair(id, host, port, h);
+      }
       this.event({ t: 'tcp_error', id, reason: 'econnrefused' });
       if (h) { h.sockets--; h.wake?.(); }
       return;
@@ -1745,6 +1839,101 @@ export class Vm {
     });
     this.tcpClosed(id);
     if (h) { h.sockets--; h.wake?.(); }
+  }
+
+  // BEAM_FETCH: the hosts and ports whose connect goes to fetch() with no
+  // connect(), with the rules of BEAM_CONNECT. An empty BEAM_FETCH: none.
+  // With no BEAM_FETCH: port 80, and port 443 when the trust store of the
+  // VM holds the CA of wasm_host_fetch (a build with --cacerts).
+  fetchFirst(host, port) {
+    const list = this.env.BEAM_FETCH;
+    if (list !== undefined) return connectAllowed(list, host, port);
+    return port === 80 || (port === 443 && this.listeners.has('fetch-tls'));
+  }
+
+  // The name is a host of Cloudflare: one of its addresses is in the ranges
+  // of Cloudflare. The addresses come from DNS over HTTPS (a fetch(), which
+  // reaches Cloudflare), and stay 5 minutes.
+  async isCloudflare(host) {
+    if (ipBits(host)) return inRanges(host);
+    const name = String(host).toLowerCase().replace(/\.$/, '');
+    const now = Date.now(), seen = this.dns.get(name);
+    if (seen && now - seen.at < 300000) return seen.addresses.some((a) => inRanges(a));
+    const addresses = [];
+    try {
+      for (const type of ['A', 'AAAA']) {
+        const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
+                              { headers: { accept: 'application/dns-json' } });
+        const answer = r.ok ? (await r.json()).Answer ?? [] : [];
+        for (const a of answer) if (a.type === 1 || a.type === 28) addresses.push(a.data);
+      }
+    } catch (e) {
+      console.log(`beam: resolve ${name}: ${e.message}`);
+    }
+    this.dns.set(name, { at: now, addresses });
+    return addresses.some((a) => inRanges(a));
+  }
+
+  // The fetch path: the socket id of the program and a connection of the
+  // listener of wasm_host_fetch, as a pair in the host. The program sees
+  // an open connection to host:port. The pair ends when one side closes.
+  async fetchPair(id, host, port, h) {
+    const conn = `x${this.nextId++}`;
+    let done;
+    const ended = new Promise((r) => { done = r; });
+    const end = (other) => {
+      if (!this.fetchConns.has(conn)) return;
+      this.fetchConns.delete(conn);
+      this.tcps.delete(id);
+      this.tcps.delete(conn);
+      this.event({ t: 'tcp_closed', id: other });
+      done();
+    };
+    this.fetchConns.set(conn, { host, port, h });
+    this.tcps.set(id, { send: (b) => this.event({ t: 'tcp_data', id: conn }, b), close: () => end(conn), h });
+    this.tcps.set(conn, { send: (b) => this.event({ t: 'tcp_data', id }, b), close: () => end(id), h });
+    this.event({ t: 'tcp_open', id });
+    this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port });
+    await ended;
+    if (h) { h.sockets--; h.wake?.(); }
+  }
+
+  // A request of wasm_host_fetch: fetch() of the URL of the host and the
+  // port of the connect, and the response as fetch_head, fetch_data and
+  // fetch_end (or fetch_error). fetch() gives the body decoded.
+  async fetchRequest(msg, body, h) {
+    const c = this.fetchConns.get(msg.conn);
+    if (h) h.sockets++;
+    this.fetchPending++;
+    const ac = new AbortController();
+    this.fetches.set(msg.id, ac);
+    try {
+      const url = c && fetchUrl(c.host, c.port, msg.tls, msg.path);
+      if (!url) throw new Error(c ? 'the path is not a path of the host' : 'no connection');
+      const headers = new Headers();
+      for (const [k, v] of msg.headers ?? []) headers.append(k, v);
+      const init = { method: msg.method, headers, redirect: 'manual', signal: ac.signal };
+      if (!['GET', 'HEAD'].includes(msg.method)) init.body = body;
+      const res = await fetch(url, init);
+      const out = [...res.headers].filter(([k]) => k !== 'set-cookie');
+      for (const v of res.headers.getSetCookie?.() ?? []) out.push(['set-cookie', v]);
+      this.event({ t: 'fetch_head', id: msg.id, status: res.status, reason: res.statusText, headers: out });
+      if (res.body) {
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value?.byteLength) this.event({ t: 'fetch_data', id: msg.id }, value);
+        }
+      }
+      this.event({ t: 'fetch_end', id: msg.id });
+    } catch (e) {
+      this.event({ t: 'fetch_error', id: msg.id, message: String(e?.message ?? e) });
+    } finally {
+      this.fetches.delete(msg.id);
+      this.fetchPending--;
+      if (h) { h.sockets--; h.wake?.(); }
+    }
   }
 
   // Data of a TCP socket: to Erlang, or to its peer after a splice.
@@ -1794,6 +1983,14 @@ export class Vm {
         this.run(() => this.wasmRequest(msg, body, h), h);
         break;
       }
+      case 'fetch': {
+        const h = this.fetchConns.get(msg.conn)?.h ?? this.handlers.at(-1);
+        this.run(() => this.fetchRequest(msg, body, h), h);
+        break;
+      }
+      case 'fetch_cancel':
+        this.fetches.get(msg.id)?.abort();
+        break;
       case 'tcp_send': {
         const t = this.tcps.get(msg.id);
         if (t) this.run(() => t.send(body), t.h);
@@ -1812,8 +2009,14 @@ export class Vm {
         if (a && b) { a.peer = msg.b; b.peer = msg.a; }
         break;
       }
+      // The listener of wasm_host_fetch: apart from the ports, so that no
+      // WebSocket to /.tcp/PORT reaches it.
       case 'tcp_listen':
-        if (this.listeners.has(msg.port)) {
+        if (msg.fetch) {
+          this.listeners.set('fetch', msg.id);
+          if (msg.tls) this.listeners.set('fetch-tls', msg.id);
+          this.event({ t: 'tcp_listening', id: msg.id });
+        } else if (this.listeners.has(msg.port)) {
           this.event({ t: 'tcp_error', id: msg.id, reason: 'eaddrinuse' });
         } else {
           this.listeners.set(msg.port, msg.id);

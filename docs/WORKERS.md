@@ -384,16 +384,17 @@ batch.
   the client in `x-forwarded-proto` (`https` on Cloudflare, `http` in
   `wrangler dev` on `http://localhost`), as Deno and the web page do. So
   `force_ssl: [rewrite_on: [:x_forwarded_proto]]` of Phoenix works.
-- Outgoing TCP and TLS work (`gen_tcp`, `ssl`, `:httpc`, Req) through
-  `connect()` of Workers. A connection belongs to the request
-  that opened it, and closes with it.
-- Caution: on Cloudflare, `connect()` cannot reach a host behind
-  Cloudflare. Cloudflare blocks "outbound TCP sockets to Cloudflare IP
-  ranges", and a Worker cannot connect to itself. The connection gets
-  `econnrefused`, and so does an HTTPS request to that host (for example
-  `api.cloudflare.com`, or a webhook on a site behind Cloudflare).
-  `wrangler dev` and Deno do not have this block, so a local test does
-  not show it. Test such a host on Cloudflare itself.
+- Outgoing HTTP and HTTPS (Req, Finch, Mint, Swoosh) go through `fetch()`
+  of the host: see "HTTP through fetch()". The other outgoing TCP and TLS
+  (`gen_tcp`, `ssl`: a database, SMTP, Redis) use `connect()` of Workers.
+  A connection belongs to the request that opened it, and closes with it.
+- On Cloudflare, `connect()` cannot reach a host behind Cloudflare.
+  Cloudflare blocks "outbound TCP sockets to Cloudflare IP ranges", and a
+  Worker cannot connect to itself. Protocols other than HTTP to such a
+  host get `econnrefused`.
+- `:httpc` does not work: it gives the family option `inet`, and then
+  `gen_tcp` uses `inet_tcp` of the VM, not the sockets of the host. Its
+  name lookup gets `nxdomain`. Use Req, Finch or Mint.
 - The text `vars` of the Worker and its secrets are the environment of
   the VM. `PHX_SERVER=true` is set for a release with Phoenix.
 - **The Origin of a WebSocket.** Phoenix compares the `Origin` of a
@@ -408,6 +409,69 @@ batch.
   wasm32`. The runtime has no certificates of its own, and the builder
   does not copy the store of the build computer. A native run of the file
   uses the store of the computer, not FILE.
+
+## HTTP through fetch()
+
+The HTTP of the program goes through `fetch()` of the host, and
+`connect()` is only for other protocols. `fetch()` is the HTTP client of
+each host: on Cloudflare, it is a subrequest, and it also reaches a host
+behind Cloudflare (api.cloudflare.com, a Worker on workers.dev, many
+webhooks), which `connect()` cannot reach. The code and the
+configuration of the program do not change:
+`Req.get!("https://api.cloudflare.com/...")` works.
+
+The host chooses the route of each connect of the program
+(`specs/FetchPath.tla`):
+
+| Connect | Route |
+|---|---|
+| Port 80 | `fetch()`. |
+| Port 443, with a trust store (`--cacerts`) | `fetch()`. |
+| Port 443, with no trust store | `connect()`. The program cannot trust the CA of the VM. |
+| Another port | `connect()`. |
+| `BEAM_FETCH` is set | `fetch()` for its hosts and ports, `connect()` for the others. |
+
+For `fetch()`, the socket of the program goes to a server in the VM
+(`wasm_host_fetch`), and each HTTP request on it is one `fetch()` call.
+
+- **TLS.** The server in the VM ends the TLS of the program with a
+  certificate for the SNI name, signed by a CA of the VM. The trust store
+  of `:public_key.cacerts_get/0` holds that CA, so Req, Finch, Mint and
+  Swoosh trust it. Caution: a program that gives its own CA file (for
+  example `castore`, or `certifi` of hackney), or that pins a
+  certificate, gets an unknown CA. Give it `:public_key.cacerts_get()`,
+  or keep its host out of `BEAM_FETCH`.
+- **The CA** is made at the boot, and again with the random bytes of the
+  first request after a snapshot. Only this VM trusts it.
+- **The URL** of `fetch()` is the host and the port of the connect,
+  never the `Host` header or the SNI of the request. So `BEAM_CONNECT`
+  still applies.
+- **The body.** A request body is at most 32 MiB. The response comes in
+  chunks, with chunked transfer coding. `fetch()` gives the body decoded,
+  so the response has no `content-encoding`. A large HTTPS body costs CPU
+  time: the TLS of each byte runs in WebAssembly.
+- **No retry.** When the host does not answer in 5 minutes, the server
+  closes the connection: the program does not know if the request ran.
+- **WebSocket.** An upgrade does not go through `fetch()`. The server
+  opens a tunnel: a `connect()` to the host of the connect, with TLS of
+  its own, which checks the certificate of the host with the trust store
+  of the build. Then the bytes go both ways. On Cloudflare, a tunnel to a
+  host behind Cloudflare fails (502).
+- HTTP/1.1 only (ALPN `http/1.1`): no HTTP/2.
+- **The fallback.** Off the route of `fetch()` (for example port 443 with
+  no trust store, or a host out of `BEAM_FETCH`), `connect()` to port 443
+  or 80 can fail on Cloudflare. Then the host resolves the name (DNS over
+  HTTPS) and compares the addresses with the IP ranges of Cloudflare. A
+  host of Cloudflare goes to the server in the VM. A host that is down
+  gets `econnrefused`, as before. Deno and a web page do not use the
+  fallback.
+- Caution: a Worker that fetches another Worker on the same zone (for
+  example another one on your workers.dev subdomain) gets the error
+  1042 of Cloudflare. Use a service binding for that Worker.
+- `BEAM_FETCH` gives the hosts and ports of `fetch()`, with the rules of
+  `BEAM_CONNECT`. For example, `*:80,*:443,api.local:8080` adds a port to
+  the default. An empty `BEAM_FETCH` turns `fetch()` off: then only the
+  fallback uses it.
 
 ## Ecto SQLite: D1, Durable Objects and Deno KV
 
@@ -543,7 +607,8 @@ snapshot holds the memory of the library too. For a Worker that runs an
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | both | Distributed Erlang (see above). |
-| `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, or `*.domain` (its subdomains). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
+| `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
+| `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). The others use `connect()`. Empty: no host. |
 | `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
 | `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 
