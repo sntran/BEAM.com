@@ -40,6 +40,15 @@ Fixes from the check of the examples with 0.1.0-rc.1:
   than `/` (the studio). `BEAM_COM_BASE` names the APE file that a native
   (assimilated) `beam.com` copies for a build, so that it still makes APE
   files.
+- `npx beam.com --snapshot app.com` writes the snapshot of the build of
+  `app.com`, and `serve(app, { snapshot })` gives it to the VMs. A full
+  snapshot (`--full`) replaces the boot: a stateless Worker restores its
+  VM in the global scope, and the first request of a new isolate took 82
+  to 107 ms of CPU on Cloudflare (213 to 483 ms with the snapshot of the
+  store). A snapshot at the boot point (the default) holds no variable of
+  the app: a VM restores it only when the store has no snapshot yet, so
+  the first isolate of a deploy took 844 ms (1,695 ms with a boot). See
+  "The snapshot of the build" in `docs/WORKERS.md`.
 - On macOS arm64, the VM starts `erl_child_setup` with `posix_spawn()`
   of libSystem, through the APE loader. Before, it used `fork()`, and the
   child could hang in `_objc_atfork_child`: a process stayed after the VM

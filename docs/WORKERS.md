@@ -536,6 +536,63 @@ is on by default; the var `BEAM_SNAPSHOT = "off"` turns it off.
   Each object then runs the program and its migrations on its own
   storage.
 
+### The snapshot of the build
+
+`npx beam.com --snapshot app.com` writes `app.snapshot`, a snapshot of
+the VM of `app.com`, at build time. The entry gives it to `serve`:
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import snapshot from './app.snapshot' with { type: 'bytes' };
+import { serve } from 'beam.com';
+
+const beam = serve(app, { snapshot });
+await beam.ready;
+```
+
+`wrangler.jsonc` gives the file as a Data module, as `app.com`:
+`"globs": ["**/*.com", "**/*.snapshot"]`. Run the command after the
+build of `app.com` (`npm run build`), with the npm package of the same
+version: a snapshot of another release does not restore, and the VM
+boots in its place.
+
+The kinds of snapshot:
+
+| Kind | Command | What a new VM does with it |
+|---|---|---|
+| Full | `npx beam.com --snapshot app.com --full [--warm /] --env NAME=VALUE...` | It restores it in place of a boot. A stateless Worker restores its VM in the global scope of each new isolate, before the first request. Cloudflare runs the global scope with its own limit (1 s). |
+| The boot point (default) | `npx beam.com --snapshot app.com` | It restores it only when the store of snapshots (the Cache API, or the R2 bucket `SNAPSHOTS`) has none: the first VM of a deploy, in each data center. That VM then makes its snapshot for the store, as with no snapshot of the build. |
+
+- A full snapshot is the VM after its boot and the warm-up requests. It
+  holds the variables of `--env` and the state of the program, so all
+  the VMs have the same `SECRET_KEY_BASE` and `PHX_HOST` of the build. A
+  Phoenix app must give both. An app with Ecto SQLite cannot use it,
+  because its boot changes the database. A Durable Object with tenants,
+  `BEAM_PERSIST` or Ecto SQLite does not restore it: it needs a snapshot
+  at the boot point.
+- A snapshot at the boot point is the VM after the modules of the boot
+  loaded, before `runtime.exs` and the program. It holds no variable and
+  no secret of the app: each VM starts the program with the variables of
+  its host.
+- Deno ignores the option, and boots.
+
+Caution: a full snapshot puts its variables, also `SECRET_KEY_BASE`, into
+the bundle of the Worker. Use the boot point for an app with secrets, or
+keep the build and the bundle private.
+
+Measured on Cloudflare (October 2026, `examples/worker`, stateless), the
+CPU time of the first request of a new isolate:
+
+| Snapshot of the build | First isolate of a deploy | The next isolates |
+|---|---|---|
+| None | 1,695 ms (a boot) | 213 to 483 ms (the snapshot of the store) |
+| The boot point | 844 ms | 218 to 449 ms (the snapshot of the store) |
+| Full | 82 to 107 ms (in the global scope) | 82 to 107 ms |
+
+In `wrangler dev`, the first request of `examples/phoenix_demo` (a Durable
+Object with Ecto SQLite) took 2.7 to 2.9 s with no snapshot of the
+build, and 1.4 to 1.6 s with one at the boot point.
+
 ## Tenants and instances (Durable Objects)
 
 With the var `BEAM_TENANTS`, each tenant has its own Durable Object: its

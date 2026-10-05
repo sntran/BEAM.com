@@ -184,6 +184,9 @@ function capture(m, release, listeners, bootPoint = false, skip = () => false) {
   const head = new TextEncoder().encode(JSON.stringify({
     size: heap.length, pages, fs: { files, streams }, listeners: Object.fromEntries(listeners),
     boot_point: bootPoint,
+    // The release of this memory (snapshot_key of .release.json): a VM of
+    // another release does not restore it.
+    release: releaseMeta(release).snapshot_key ?? null,
     nifs: libs && { count: libs.count, libs: libs.libs.map(({ data, ...l }) => l) },
   }));
   const out = new Uint8Array(12 + head.length + (pages.length + libPages) * PAGE);
@@ -212,6 +215,12 @@ async function loadSnapshot(env) {
   } catch {
     return null;
   }
+}
+
+// The header of a snapshot, without its pages: boot_point, release, ...
+export function snapshotHeader(bytes) {
+  const { pagesData, ...head } = parseSnapshot(bytes);
+  return head;
 }
 
 function parseSnapshot(bytes) {
@@ -1044,9 +1053,15 @@ export class Vm {
   // deno.js), and host: the host of the first request (autoVars).
   // scheme: false when the host gives x-forwarded-proto itself (the web
   // page gives https for http://localhost).
+  // capture: a VM that only makes a snapshot of the build (the tool of
+  // node.mjs): 'boot-point' gives the snapshot at the boot point to
+  // captured, and 'full' lets the tool call snapshot() itself. Such a VM
+  // makes no variables of autoVars, and uses no store of snapshots.
   constructor(env, { plain = true, sql = null, id = null, release = null, snapshot = null, vars = {}, files = null,
-                     secrets = null, host = null, scheme = true } = {}) {
+                     secrets = null, host = null, scheme = true, capture = null } = {}) {
     this.scheme = scheme;
+    this.capture = capture;
+    this.captured = new Promise((resolve) => { this.gotCapture = resolve; });
     this.vars = vars;
     this.secrets = secrets;
     this.host = host;
@@ -1108,31 +1123,50 @@ export class Vm {
     // The vars of the host choose a snapshot at the boot point (below);
     // the vars of autoVars do not.
     const ownVars = Object.keys(this.vars).length;
-    await this.autoVars(env, releaseMeta(release));
-    // A snapshot of the build (snapshot.bin), else one that a Worker made
-    // (BEAM_SNAPSHOT = "off" turns them off).
-    let snapBytes = bundled, key = null;
-    if (!snapBytes && env.BEAM_SNAPSHOT !== 'off') {
-      // A Durable Object with Ecto SQLite (sql of .release.json): the
-      // snapshot is made at the boot point (wasm_host_server), before the
-      // program starts and runs its migrations. So all the objects (the
-      // tenants) share it, and each one runs the program on its own storage.
-      // Tenants (BEAM_TENANTS) share the snapshot too, so it is made at the
-      // boot point, before the program has the state of one tenant.
-      const meta = releaseMeta(release);
-      const atBoot = !this.plain && (this.sql || this.hostFiles)
-        && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || ownVars > 0);
-      key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
-      snapBytes = await snapshots.get(env, key);
-      if (!snapBytes && !snapshots.unavailable && atBoot) this.bootKey = key;
+    // A snapshot of the build holds no secret that the VM made itself.
+    if (!this.capture) await this.autoVars(env, releaseMeta(release));
+    // A snapshot of the build, else one that a Worker made (BEAM_SNAPSHOT =
+    // "off" turns them off). A snapshot that the code gives (this.given,
+    // the global scope) is used as it is. Else, of the snapshot of the
+    // build (serve(app, { snapshot }), or snapshot.bin):
+    // - a full one is used in place of the others;
+    // - one at the boot point only when the store has no snapshot, and then
+    //   the VM still makes its snapshot for the store.
+    // A snapshot of the build of another release: a boot in its place.
+    const meta = releaseMeta(release);
+    let built = bundled && parseSnapshot(bundled);
+    if (built?.release && built.release !== meta.snapshot_key) {
+      console.log('beam: the snapshot of the build is for another release: a boot in its place');
+      built = null;
     }
-    const snap = snapBytes && parseSnapshot(snapBytes);
+    // A Durable Object with Ecto SQLite (sql of .release.json): the
+    // snapshot is made at the boot point (wasm_host_server), before the
+    // program starts and runs its migrations. So all the objects (the
+    // tenants) share it, and each one runs the program on its own storage.
+    // Tenants (BEAM_TENANTS) share the snapshot too, so it is made at the
+    // boot point, before the program has the state of one tenant.
+    const atBoot = !this.plain && (this.sql || this.hostFiles)
+      && ((meta.sql ?? true) || !!env.BEAM_PERSIST || !!env.BEAM_TENANTS || ownVars > 0);
+    let snap = null, key = null, fallback = null;
+    if (built && (this.given || (!built.boot_point && !atBoot))) snap = built;
+    else if (built?.boot_point) fallback = built;
+    if (this.capture === 'boot-point') this.bootKey = 'capture';
+    if (!snap && !this.capture && env.BEAM_SNAPSHOT !== 'off') {
+      key = await snapshotKey(env, meta, this.plain ? 'worker' : atBoot ? 'durable boot-point' : 'durable');
+      const stored = await snapshots.get(env, key);
+      snap = stored && parseSnapshot(stored);
+      if (!snap && !snapshots.unavailable && atBoot && !fallback) this.bootKey = key;
+    }
+    const fromFallback = !snap && !!fallback;
+    if (fromFallback) snap = fallback;
+    let snapBytes = snap ? snap.pagesData : null;
     const nifs = await nifModules();
     // restored: this VM comes from a snapshot (the page shows it).
     this.restored = !!snap;
     this.bootPointSnap = !!snap?.boot_point;
-    // No snapshot yet: this VM makes it, before its first request.
-    this.makeKey = !snap && !snapshots.unavailable && !this.bootKey && key;
+    // No snapshot yet (or only the one of the build at the boot point):
+    // this VM makes it, before its first request.
+    this.makeKey = (!snap || (fromFallback && !atBoot)) && !snapshots.unavailable && !this.bootKey && key;
     this.release = release;
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
@@ -1219,7 +1253,7 @@ export class Vm {
           // Livebook starts with 40 MB, not 70 MB, but :erlang.memory/0 is
           // not supported).
           const flags = (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean);
-          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...flags, ...(this.makeKey || this.bootKey ? ['-c', 'false'] : []), '--',
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...flags, ...(this.makeKey || this.bootKey || this.capture ? ['-c', 'false'] : []), '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
@@ -1283,6 +1317,9 @@ export class Vm {
     this.bootKey = null;
     if (key) {
       const bytes = await this.snapshot(true);
+      // The snapshot of the build (or 'busy', or null): the tool stops this
+      // VM, so the boot does not go on.
+      if (this.capture) return this.gotCapture(bytes);
       if (bytes && bytes !== 'busy') this.store(key, bytes);
       else console.log(`beam: no snapshot at the boot point (${bytes})`);
     }
@@ -1294,6 +1331,7 @@ export class Vm {
   }
 
   store(key, bytes) {
+    if (this.capture) return this.gotCapture(bytes);
     console.log(`beam: snapshot ${bytes.length >> 10} KB (${key.slice(0, 12)})`);
     const put = snapshots.put(this.env, key, bytes).catch((e) => console.log(`beam: snapshot not stored: ${e.message}`));
     this.waitUntil?.(put);

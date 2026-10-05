@@ -73,3 +73,51 @@ export async function boot(app, { env = {} } = {}) {
   await vm.ready;
   return vm;
 }
+
+// A snapshot of the build of an app.com, for serve(app, { snapshot }) of a
+// Worker (npx beam.com --snapshot). kind:
+// - 'boot-point' (the default): the VM loaded the modules of its boot, and
+//   the program did not start. It holds no variable of the app: each VM
+//   starts the program with the variables of its host.
+// - 'full': the VM after its boot and the warm-up requests (warm, paths).
+//   It holds the variables of env and the state of the program. A Phoenix
+//   app must give SECRET_KEY_BASE and PHX_HOST, and an app with Ecto
+//   SQLite cannot use it (its boot changes the database).
+// Gives the bytes of the snapshot.
+export async function snapshot(app, { env = {}, warm = [], kind = 'boot-point' } = {}) {
+  if (kind !== 'boot-point' && kind !== 'full') throw new Error(`the kind of snapshot is boot-point or full, not ${kind}`);
+  const bin = await readApp(app, appFiles);
+  const { Vm, releaseMeta } = await import(new URL('worker.js', runtimeUrl).href);
+  const meta = releaseMeta(bin);
+  if (kind === 'full') {
+    if (meta.sql) throw new Error(`${app}: the app has Ecto SQLite: use a snapshot at the boot point`);
+    const missing = ['SECRET_KEY_BASE', 'PHX_HOST'].filter((k) => meta.env?.PHX_SERVER === 'true' && !env[k]);
+    if (missing.length) throw new Error(`${app}: a full snapshot of a Phoenix app needs ${missing.join(' and ')}`);
+  }
+  const vm = new Vm({ BEAM_SNAPSHOT: 'off', ...env }, { release: bin, plain: false, capture: kind });
+  let bytes;
+  if (kind === 'boot-point') {
+    // wasm_host says "ready", and then it stops at the boot point. A boot
+    // that fails rejects ready.
+    let timer;
+    const late = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${app}: the VM did not stop at the boot point in 120 s`)), 120000);
+    });
+    try {
+      bytes = await Promise.race([vm.captured, vm.ready.then(() => vm.captured), late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  } else {
+    await vm.ready;
+    await vm.listening(Number(env.PORT ?? meta.env?.PORT ?? 4000));
+    for (const path of warm) {
+      const r = await vm.fetch(new Request(new URL(path, 'http://localhost')));
+      await r.arrayBuffer();
+      if (r.status >= 500) throw new Error(`${app}: the warm-up request ${path} gave ${r.status}`);
+    }
+    bytes = await vm.snapshot(false);
+  }
+  if (!(bytes instanceof Uint8Array)) throw new Error(`${app}: no snapshot (${bytes}): the VM was not quiet`);
+  return bytes;
+}

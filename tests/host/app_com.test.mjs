@@ -4,7 +4,7 @@
 // the entries, and the edge part (.wasm/) at the end.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { appFiles, appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
 import { zip } from './zip.mjs';
 
@@ -174,6 +174,20 @@ test('appFiles: the files with no copy, and the static files of a Phoenix app', 
   // appRelease keeps the static files in the release.
   const all = unpack(await appRelease(read, size)).map(([p]) => p);
   assert.ok(all.includes('lib/web-1.0/priv/static/app.js'));
+});
+
+test('appFiles: the inflate of the option for each deflated entry (a Worker in its global scope)', async () => {
+  const { read, size } = bytesReader(await phoenix());
+  const seen = [];
+  const inflate = async (raw) => {
+    seen.push(raw.length);
+    return new Uint8Array(inflateRawSync(raw));
+  };
+  const r = await appFiles(read, size, { inflate, statics: false });
+  // app.js is the one deflated entry that is not a .beam file.
+  assert.equal(seen.length, 1);
+  const js = r.files.find(([p]) => p === 'lib/web-1.0/priv/static/app.js')[1];
+  assert.equal(dec.decode(js), 'console.log(1)');
 });
 
 test('appFiles: no static files for an app that is not a Phoenix app', async () => {

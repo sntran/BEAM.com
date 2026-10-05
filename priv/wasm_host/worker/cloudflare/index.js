@@ -24,8 +24,10 @@
 //
 // wrangler.jsonc gives app.com to the Worker as a Data module:
 //   "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }]
+import { env as globalEnv } from 'cloudflare:workers';
 import { release, use } from './release.js';
-import plain, { staticResponse } from './worker.js';
+import { useSnapshot } from './snapshot.js';
+import plain, { snapshotHeader, staticResponse, Vm } from './worker.js';
 import front from './durable.js';
 
 export { Beam } from './durable.js';
@@ -49,8 +51,35 @@ export { Beam } from './durable.js';
 //   scheduled(controller, env, ctx) {
 //     return beam.scheduled(controller, env, ctx);
 //   },
-export function serve(app, { binding = 'BEAM', name, nifs = null } = {}) {
+//
+// options.snapshot: the snapshot of the build of app.com (npx beam.com
+// --snapshot app.com, imported as a Data module, as app.com):
+// - a full one (--full): each new VM restores it in place of a boot. A
+//   stateless Worker restores its VM in the global scope, before the
+//   first request;
+// - one at the boot point: a new VM restores it only when the store of
+//   snapshots has none (the first VM of a deploy), and then the VM makes
+//   its snapshot for the store, as with no snapshot of the build.
+// The entry waits for the VM of the global scope:
+//
+//   import snapshot from './app.snapshot';
+//   const beam = serve(app, { snapshot });
+//   await beam.ready;
+//
+// With the var BEAM_WARM (a path, as "/"), the global scope also sends one
+// GET request of that path to the VM of a full snapshot (see global.js).
+export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = null } = {}) {
   use(app, nifs);
+  useSnapshot(snapshot);
+  // The VM of a stateless Worker, restored from a full snapshot in the
+  // global scope.
+  let vm = null;
+  const full = !!snapshot && !snapshotHeader(snapshot).boot_point;
+  const ready = full && !globalEnv[binding] ? (async () => {
+    vm = new Vm(globalEnv, { release: await release(), snapshot });
+    await vm.ready;
+    if (globalEnv.BEAM_WARM) await vm.warm(globalEnv.BEAM_WARM);
+  })() : Promise.resolve();
   // The env of the front: the binding as BEAM, the name of the object, and
   // the static files of app.com (the front serves them, with no request
   // to the object).
@@ -62,8 +91,10 @@ export function serve(app, { binding = 'BEAM', name, nifs = null } = {}) {
     ...env, BEAM: env[binding], BEAM_OBJECT: name ?? env.BEAM_OBJECT, BEAM_STATICS: statics,
   });
   return {
+    ready,
     fetch(request, env, ctx) {
       const objects = env[binding];
+      if (!objects && vm) return vm.fetch(request, ctx);
       if (!objects) return plain.fetch(request, env, ctx);
       if (typeof name === 'function') return objects.getByName(name(request)).fetch(request);
       return front.fetch(request, frontEnv(env), ctx);
