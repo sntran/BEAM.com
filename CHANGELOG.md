@@ -70,7 +70,6 @@ notes of its release.
   Worker to `npx beam.com --snapshot --env BEAM_ERL_FLAGS=...`. Before, a
   snapshot made with no flags gave a Worker with `-Mea min` the
   allocators of ERTS, and 30 MB more memory.
-
 - A re-run of the release job after npm has the version keeps the
   `beam.com` that the npm package names (its SHA-256), and puts the
   tarball of npm on the release. A re-run with another `beam.com` stops
