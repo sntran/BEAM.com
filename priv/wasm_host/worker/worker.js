@@ -1878,6 +1878,19 @@ export class Vm {
     let total = 0;
     let part = [];
     let size = 0;
+    // The gathered part to the app, when less than UPLOAD_WINDOW bytes are
+    // unread. False when the connection ended while it waited.
+    const flush = async () => {
+      while (c.sent - c.read >= UPLOAD_WINDOW && !c.done && !this.dead) {
+        await new Promise((resolve) => { c.room = resolve; });
+      }
+      if (c.done || this.dead) return false;
+      const bytes = part.length === 1 ? part[0] : join(part, size);
+      part = [];
+      size = 0;
+      this.bridgeSend(c, chunked ? chunk(bytes) : bytes);
+      return true;
+    };
     try {
       for (;;) {
         // A read can end the stream with its last bytes (done and a value).
@@ -1889,19 +1902,18 @@ export class Vm {
             this.bridgeRefuse(c, this.tooLarge(max));
             break;
           }
-          part.push(value);
-          size += value.length;
         }
-        if (size && (size >= UPLOAD_PART || done)) {
-          while (c.sent - c.read >= UPLOAD_WINDOW && !c.done && !this.dead) {
-            await new Promise((resolve) => { c.room = resolve; });
-          }
-          if (c.done || this.dead) break;
-          const bytes = part.length === 1 ? part[0] : join(part, size);
-          part = [];
-          size = 0;
-          this.bridgeSend(c, chunked ? chunk(bytes) : bytes);
+        // A chunk of the client can be large (Deno): it goes in pieces of
+        // UPLOAD_READ bytes or less, so the window stays small.
+        let ok = true;
+        for (let at = 0; ok && value && at < value.length; at += UPLOAD_READ) {
+          const piece = value.subarray(at, at + UPLOAD_READ);
+          part.push(piece);
+          size += piece.length;
+          if (size >= UPLOAD_PART) ok = await flush();
         }
+        if (ok && done && size) ok = await flush();
+        if (!ok) break;
         if (done) {
           if (chunked) this.bridgeSend(c, CHUNKS_END);
           this.bridgeClock(c, c.timeout * 1000);
@@ -2439,7 +2451,7 @@ const LATE = Symbol('late');
 
 // A request body (bridgeUpload): the bytes that can be unread in the VM,
 // the smallest part of an event (except the last one), and the size of a
-// read in workerd. A client chunk can be 2 KB (workerd), and each event
+// read in workerd and of the largest piece of a client chunk. A client chunk can be 2 KB (workerd), and each event
 // costs a turn of the VM.
 const UPLOAD_WINDOW = 256 * 1024;
 const UPLOAD_PART = 16 * 1024;

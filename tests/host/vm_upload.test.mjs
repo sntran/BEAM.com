@@ -34,6 +34,8 @@ const url = 'https://app.example.com/upload';
 const bridge = (v, r) => v.bridge(r, new URL(r.url), false, undefined, () => {});
 const text = (b) => new TextDecoder().decode(b);
 const data = (sent) => sent.filter((s) => s.header.t === 'tcp_data');
+// The body bytes that the app got (after the head).
+const bodyBytes = (sent) => data(sent).slice(1).reduce((n, s) => n + s.body.length, 0);
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 
 // A body of n chunks of size bytes each, which the test gives one by one.
@@ -60,17 +62,22 @@ test('a body goes in chunks, and waits while 256 KB are unread', async () => {
   src.push(200000);
   src.end();
   await settle();
-  // The head and two chunks went (less than 256 KB was unread before each
-  // one); the third chunk waits for room.
-  assert.equal(data(sent).length, 3);
+  // Parts went while less than 256 KB was unread; the rest waits for room.
+  // A chunk of 200000 bytes goes in pieces: no part is above 80 KB.
+  const first = bodyBytes(sent);
+  assert.ok(head.length + first >= 256 * 1024, `${first}`);
+  assert.ok(first < 600000, `${first}`);
+  for (const s of data(sent).slice(1)) assert.ok(s.body.length <= 80 * 1024, `${s.body.length}`);
   const id = accept.header.conn;
-  v.tcps.get(id).read(head.length + 100000);
-  await settle();
-  assert.equal(data(sent).length, 3);
-  v.tcps.get(id).read(100000);
-  await settle();
-  assert.equal(data(sent).length, 4);
-  assert.equal(data(sent).slice(1).reduce((n, s) => n + s.body.length, 0), 600000);
+  // The app reads all that it got, in rounds, until the body ends.
+  let read = 0;
+  for (let i = 0; i < 10 && bodyBytes(sent) < 600000; i++) {
+    const got = head.length + bodyBytes(sent);
+    v.tcps.get(id).read(got - read);
+    read = got;
+    await settle();
+  }
+  assert.equal(bodyBytes(sent), 600000);
   v.tcps.get(id).send(new TextEncoder().encode('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok'));
   assert.equal((await pending).status, 200);
 });
@@ -127,11 +134,12 @@ test('a VM that stops ends the upload that waits for room', async () => {
   src.push(300000);
   src.push(300000);
   await settle();
-  assert.equal(data(sent).length, 2);
+  const before = data(sent).length;
+  assert.ok(bodyBytes(sent) < 600000);
   v.die('exit status 1');
   assert.equal((await pending).status, 503);
   await settle();
-  assert.equal(data(sent).length, 2);
+  assert.equal(data(sent).length, before);
 });
 
 test('small chunks of a byte stream reach the app in parts of 16 KB or more', async () => {
