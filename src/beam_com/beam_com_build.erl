@@ -13,7 +13,9 @@
 %%
 %% The zip of the new file also has its edge part (.wasm/, see
 %% beam_com_wasm:overlay/4), unless --no-edge: then the same file runs in
-%% the WebAssembly runtime too (Workers, Deno, a web page).
+%% the WebAssembly runtime too (Workers, Deno, a web page). With
+%% --edge-only, the new file is only a zip with the entries that the
+%% WebAssembly runtime reads, and no native program.
 -module(beam_com_build).
 
 -export([run/1, allow/2, check_target/1, split_dir/1, temp_dir/1, executable/0]).
@@ -40,6 +42,8 @@
 %% browser: OUTPUT/app.com (the native file) and the page of the
 %% WebAssembly runtime (beam_com_wasm:write_site/5).
 run(#{page := true} = Opts) ->
+    maps:get(edge_only, Opts, false) andalso
+        throw({error, "--edge-only writes one file, not a site of --page", []}),
     maps:get(target, Opts, none) =:= ?WASM andalso
         throw({error, "--page writes a site with a native app.com, not with --target wasm32", []}),
     maps:get(edge, Opts, true) =:= false andalso
@@ -56,6 +60,7 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
     Wasm = maps:get(target, Opts, none) =:= ?WASM,
     Wasm andalso maps:get(edge, Opts, true) =:= false andalso
         throw({error, "--no-edge is for native files, not for --target wasm32", []}),
+    check_edge_only(Opts),
     Input = string:trim(slashes(Input0, os:type()), trailing, "/\\"),
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
@@ -65,6 +70,18 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
         {true, Rel} -> beam_com_wasm:write(Output, Rel, Opts#{root => Root});
         {false, Rel} -> release_exe(Input, Output, Opts, Rel, Root)
     end.
+
+%% --edge-only: the edge part of a file of -o, with no native program.
+check_edge_only(#{edge_only := true} = Opts) ->
+    maps:get(edge, Opts, true) =:= false andalso
+        throw({error, "--edge-only needs the edge part: not with --no-edge", []}),
+    maps:is_key(target, Opts) andalso
+        throw({error, "--edge-only has no native program: not with --target", []}),
+    maps:is_key(allow, Opts) andalso
+        throw({error, "--allow-* is for native files, not for --edge-only", []}),
+    ok;
+check_edge_only(_Opts) ->
+    ok.
 
 build_input(Input, Output, Opts, ExtraApps, Base, Root) ->
     DepsLib = temp_dir("deps"),
@@ -140,8 +157,8 @@ write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
     Keep = keep(Kept, Base0),
     Rel = #{name => atom_to_list(maps:get(name, App)), vsn => maps:get(vsn, App), kind => beam_com},
     Edge = edge(Files, [], Bin, Keep, Rel, Opts, Root),
-    Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
-    write_output(Output, Data),
+    Data = output_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Edge, Opts),
+    write_output(Output, Data, mode(Opts)),
     summary(Output, Data, Rel, Apps, Edge, Opts),
     site(Opts, Rel, Files, Edge, Root).
 
@@ -171,8 +188,8 @@ release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files :
     Files = Native ++ without_docs(Kept, Base0, Root),
     Keep = keep(Kept, Base0),
     Edge = edge(Files, Originals, Bin, Keep, maps:with([name, vsn, kind], Rel), Opts, Root),
-    Data = exe_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Opts),
-    write_output(Output, Data),
+    Data = output_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Edge, Opts),
+    write_output(Output, Data, mode(Opts)),
     summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts),
     site(Opts, Rel, Files, Edge, Root).
 
@@ -284,6 +301,25 @@ kept_data(Name, Root) ->
             <<>>
     end.
 
+%% --edge-only: the entries that the WebAssembly runtime reads (lib/,
+%% releases/ and .wasm/, see app-com.js of wasm_host) and the licenses, in
+%% a zip with no native program before them.
+output_data(Bin, Keep, New, Edge, #{edge_only := true}) ->
+    Edge =:= [] andalso
+        throw({error, "--edge-only: there is no WebAssembly runtime in ~ts, so no edge part",
+               [beam_com:name()]}),
+    Exe = iolist_to_binary(beam_com_zip:write(Bin, Keep, New)),
+    beam_com_zip:only(Exe, fun edge_entry/1);
+output_data(Bin, Keep, New, _Edge, Opts) ->
+    exe_data(Bin, Keep, New, Opts).
+
+edge_entry(Name) ->
+    lists:any(fun(Dir) -> lists:prefix(Dir, Name) end, ["lib/", "releases/", ".wasm/", "licenses/"]).
+
+%% A file of --edge-only is not a program.
+mode(#{edge_only := true}) -> 8#644;
+mode(_Opts) -> 8#755.
+
 exe_data(Bin, Keep, New, Opts) ->
     case Opts of
         #{target := Target} ->
@@ -301,6 +337,10 @@ summary(Output, Data, #{name := Name, vsn := Vsn}, Apps, Edge, Opts) ->
                   [beam_com:name(), Output, iolist_size(Data), Name, Vsn,
                    lists:join(" ", [atom_to_list(A) || A <- Apps]),
                    case {Edge, maps:get(edge, Opts, true)} of
+                       _ when is_map_key(edge_only, Opts) ->
+                           io_lib:format("edge only: ~b files (~b bytes) for the WebAssembly runtime, "
+                                         "no native program",
+                                         [length(Edge), iolist_size([D || {_, D} <- Edge])]);
                        {[], false} -> "edge: none (--no-edge)";
                        {[], true} -> ["edge: none (no WebAssembly runtime in ", beam_com:name(), ")"];
                        _ -> io_lib:format("edge: ~b files (~b bytes) for the WebAssembly runtime",
@@ -1262,7 +1302,7 @@ read_file(File) ->
 
 %% The output file: a new file next to it, then a rename. The rename
 %% replaces a link at Output, and does not write through it.
-write_output(Output, Data) ->
+write_output(Output, Data, Mode) ->
     New = filename:join(filename:dirname(Output),
                         "." ++ filename:basename(Output) ++ "." ++
                             binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(8), lowercase))),
@@ -1276,7 +1316,7 @@ write_output(Output, Data) ->
         {error, Reason} ->
             throw({error, "~ts: ~ts", [New, file:format_error(Reason)]})
     end,
-    _ = file:change_mode(New, 8#755),
+    _ = file:change_mode(New, Mode),
     case file:rename(New, Output) of
         ok -> ok;
         {error, Reason2} ->

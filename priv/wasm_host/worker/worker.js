@@ -144,7 +144,7 @@ const ofRelease = (release, buffer) => (release.buffers ? release.buffers.has(bu
 // The memory and the open files of a VM whose threads all returned
 // (erts_wasm_hibernate), as snapshot.bin. The files that the boot wrote
 // are the ones that are not views of release.bin (unpack: canOwn).
-function capture(m, release, listeners, bootPoint = false, skip = () => false) {
+function capture(m, release, listeners, bootPoint = false, skip = () => false, flags = '') {
   const PAGE = 65536;
   const heap = m.HEAPU8;
   const words = new BigUint64Array(heap.buffer, 0, heap.length / 8);
@@ -187,6 +187,9 @@ function capture(m, release, listeners, bootPoint = false, skip = () => false) {
     // The release of this memory (snapshot_key of .release.json): a VM of
     // another release does not restore it.
     release: releaseMeta(release).snapshot_key ?? null,
+    // The flags of the emulator of this memory (BEAM_ERL_FLAGS): a VM with
+    // other flags does not restore it (-Mea min changes the allocators).
+    flags,
     nifs: libs && { count: libs.count, libs: libs.libs.map(({ data, ...l }) => l) },
   }));
   const out = new Uint8Array(12 + head.length + (pages.length + libPages) * PAGE);
@@ -219,17 +222,68 @@ async function loadSnapshot(env) {
 
 // The header of a snapshot, without its pages: boot_point, release, ...
 export function snapshotHeader(bytes) {
-  const { pagesData, ...head } = parseSnapshot(bytes);
+  const { pagesData, packed, ...head } = parseSnapshot(bytes);
   return head;
 }
 
-function parseSnapshot(bytes) {
+// A snapshot is "BEAMSNP1" (the pages as they are) or "BEAMSNZ1" (the
+// pages in gzip, packSnapshot): the same header, which the host reads
+// with no inflate. The pages of BEAMSNZ1 are in packed, and inflate()
+// gives pagesData.
+export function parseSnapshot(bytes) {
   const b = new Uint8Array(bytes);
-  if (new TextDecoder().decode(b.subarray(0, 8)) !== 'BEAMSNP1') throw new Error('snapshot.bin: not a snapshot');
+  const magic = new TextDecoder().decode(b.subarray(0, 8));
+  if (magic !== 'BEAMSNP1' && magic !== 'BEAMSNZ1') throw new Error('snapshot.bin: not a snapshot');
   const len = new DataView(b.buffer, b.byteOffset).getUint32(8);
   const head = JSON.parse(new TextDecoder().decode(b.subarray(12, 12 + len)));
-  return { ...head, pagesData: b.subarray(12 + len) };
+  return magic === 'BEAMSNP1' ? { ...head, pagesData: b.subarray(12 + len) }
+    : { ...head, pagesData: null, packed: b.subarray(12 + len) };
 }
+
+// The bytes of the pages of a snapshot (the pages of the VM, then the
+// pages of the NIF libraries).
+const pagesSize = (head) => 65536 * (head.pages.length + (head.nifs?.libs ?? []).reduce((n, l) => n + l.pages.length, 0));
+
+// A snapshot of BEAMSNP1 as BEAMSNZ1: the pages in gzip. A snapshot of
+// the build is a module of the Worker, and the module stays in the memory
+// of the isolate: the pages of a Phoenix app are about 21 MB, and 5 MB in
+// gzip.
+export async function packSnapshot(bytes) {
+  const b = new Uint8Array(bytes);
+  if (new TextDecoder().decode(b.subarray(0, 8)) !== 'BEAMSNP1') return b;
+  const len = new DataView(b.buffer, b.byteOffset).getUint32(8);
+  const gz = new Uint8Array(await new Response(new Blob([b.subarray(12 + len)]).stream()
+    .pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  const out = new Uint8Array(12 + len + gz.length);
+  out.set(new TextEncoder().encode('BEAMSNZ1'));
+  out.set(b.subarray(8, 12 + len), 8);
+  out.set(gz, 12 + len);
+  return out;
+}
+
+// The pages of a parsed snapshot (pagesData), with no copy of the whole
+// gzip output: the header gives their size.
+export async function inflateSnapshot(snap) {
+  if (!snap.packed) return snap;
+  const size = pagesSize(snap);
+  const out = new Uint8Array(size);
+  const reader = new Blob([snap.packed]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+  let at = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (at + value.length > size) throw new Error('snapshot: more pages than its header gives');
+    out.set(value, at);
+    at += value.length;
+  }
+  if (at !== size) throw new Error('snapshot: fewer pages than its header gives');
+  snap.pagesData = out;
+  snap.packed = null;
+  return snap;
+}
+
+// BEAM_ERL_FLAGS as one text, with one space between the flags.
+export const erlFlags = (env) => (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean).join(' ');
 
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
@@ -1154,6 +1208,13 @@ export class Vm {
       console.log('beam: the snapshot of the build is for another release: a boot in its place');
       built = null;
     }
+    // A snapshot of the build with other flags of the emulator: a boot in
+    // its place (npx beam.com --snapshot --env BEAM_ERL_FLAGS=...). A
+    // snapshot with no flags in its header was made with none.
+    if (built && (built.flags ?? '') !== erlFlags(env)) {
+      console.log(`beam: the snapshot of the build has the flags "${built.flags ?? ''}", and BEAM_ERL_FLAGS is "${erlFlags(env)}": a boot in its place`);
+      built = null;
+    }
     // A Durable Object with Ecto SQLite (sql of .release.json): the
     // snapshot is made at the boot point (wasm_host_server), before the
     // program starts and runs its migrations. So all the objects (the
@@ -1174,6 +1235,7 @@ export class Vm {
     }
     const fromFallback = !snap && !!fallback;
     if (fromFallback) snap = fallback;
+    if (snap) await inflateSnapshot(snap);
     let snapBytes = snap ? snap.pagesData : null;
     const nifs = await nifModules();
     // restored: this VM comes from a snapshot (the page shows it).
@@ -1389,7 +1451,7 @@ export class Vm {
       for (let i = 0; i < 5; i++) await tick();
     }
     try {
-      return capture(this.beam, this.release, this.listeners, bootPoint, (p) => !!this.persist?.under(p));
+      return capture(this.beam, this.release, this.listeners, bootPoint, (p) => !!this.persist?.under(p), erlFlags(this.env));
     } finally {
       x.erts_wasm_resume();
     }

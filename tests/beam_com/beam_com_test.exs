@@ -169,6 +169,11 @@ defmodule BeamComTest do
       refute Map.has_key?(opts([~c"d", ~c"-o", ~c"d.com"]), :edge)
     end
 
+    test "--edge-only: only the edge part" do
+      assert %{edge_only: true} = opts([~c"d", ~c"-o", ~c"d.com", ~c"--edge-only"])
+      refute Map.has_key?(opts([~c"d", ~c"-o", ~c"d.com"]), :edge_only)
+    end
+
     test "--page: a site" do
       assert %{page: true} = opts([~c"d", ~c"-o", ~c"site", ~c"--page"])
       refute Map.has_key?(opts([~c"d", ~c"-o", ~c"d.com"]), :page)

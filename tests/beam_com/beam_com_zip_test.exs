@@ -32,6 +32,8 @@ defmodule BeamComZipTest do
 
   defp all(_), do: true
 
+  defp only(bin, keep), do: IO.iodata_to_binary(:beam_com_zip.only(bin, keep))
+
   # The files of the zip, as stdlib reads them (without the directory
   # entries).
   defp files(bin) do
@@ -274,6 +276,28 @@ defmodule BeamComZipTest do
 
     assert [{~c"new", "n"}, {~c"second", "keep me"}, {~c"third", "and me"}] ==
              files(out)
+
+    # only/2 moves an entry with its descriptor too.
+    assert [{~c"second", "keep me"}, {~c"third", "and me"}] ==
+             files(only(base, fn n -> n != ~c"first" end))
+  end
+
+  # only/2: the kept entries in a zip of their own, with no bytes of the
+  # executable before them, and with offsets from the start of the new
+  # file (the edge part of --edge-only).
+  test "only_test" do
+    base = write(exe(prefix()), &all/1, sample())
+    out = only(base, &:lists.prefix(~c"dir/", &1))
+    assert <<0x04034B50::32-little, _::binary>> = out
+    assert names(out) == [~c"dir/", ~c"dir/b.bin", ~c"dir/c.txt"]
+    assert files(out) == Enum.filter(files(base), fn {n, _} -> :lists.prefix(~c"dir/", n) end)
+    assert 0 == Enum.min(for {_, offset} <- offsets(out), do: offset)
+  end
+
+  test "only_none_test" do
+    out = only(write(exe(prefix()), &all/1, sample()), fn _ -> false end)
+    assert 22 == byte_size(out)
+    assert [] == :beam_com_zip.entries(out)
   end
 
   test "comment_test" do
@@ -489,6 +513,28 @@ defmodule BeamComZipTest do
 
         assert files(out) ==
                  Enum.sort(for {name, data} <- expected, List.last(name) != ?/, do: {name, data})
+      end
+    end
+  end
+
+  describe "properties of only/2" do
+    property "only/2 gives the kept entries, with no prefix" do
+      check all(
+              prefix <- binary(),
+              first <- entries(),
+              mask <- list_of(boolean(), length: length(first))
+            ) do
+        kept = for {{name, _}, true} <- Enum.zip(first, mask), do: name
+        out = only(write(exe(prefix), &all/1, first), &(&1 in kept))
+        assert names(out) == Enum.sort(kept)
+
+        assert files(out) ==
+                 Enum.sort(
+                   for {name, data} <- first,
+                       name in kept,
+                       List.last(name) != ?/,
+                       do: {name, data}
+                 )
       end
     end
   end

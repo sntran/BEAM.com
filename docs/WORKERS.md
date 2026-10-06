@@ -127,6 +127,22 @@ The build of a native file does not run the program. So the VM loads
 the modules one by one. `--no-edge` leaves the edge part out, and a `beam.com` with no
 WebAssembly runtime writes none.
 
+`--edge-only` writes only the part of the file that the WebAssembly
+runtime reads: a zip with `lib/`, `releases/`, `.wasm/` and the
+licenses, with no native program before it. `serve(app)`, `deno.js` and
+the web page run it as they run `app.com`, but it does not run natively.
+It is about 25 MB smaller. A Worker keeps its modules in the memory of
+its isolate, so the VM also gets about 25 MB more of the 128 MB:
+
+```sh
+npx beam.com _build/prod/rel/my_app -o edge.com --edge-only
+```
+
+The build refuses `--edge-only` with `--no-edge`, `--target`, `--page`
+and `--allow-*`. A snapshot of the build (`npx beam.com --snapshot`) of
+`edge.com` is the same as one of `app.com` of the same build: its key is
+the release.
+
 A release directory (`_build/prod/rel/NAME` of `mix release`, or of
 rebar3) is an input of `-o` too. The file has the applications of the
 release, and the applications of the zip of `beam.com` that the release
@@ -155,7 +171,9 @@ made the file:
   (its condition `workerd`, which Wrangler uses, or `deno`), with the
   bytes of the file. One entry runs on both hosts (see "Deploy at each
   git push"). On Workers, Wrangler bundles the file into the Worker as a
-  Data module (a Worker has 64 MiB). On Deno, `deno.js` of the package is
+  Data module. A Worker can be at most 64 MiB, and gzip does not change
+  this limit: for a large app with a snapshot of the build, deploy the
+  file of `--edge-only`. On Deno, `deno.js` of the package is
   the module `beam.com`. It also runs as it is, with the path of `app.com`
   as its first argument (or `BEAM_APP`):
   `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. It needs
@@ -510,6 +528,29 @@ await beam.ready;
 build of `app.com` (`npm run build`), with the npm package of the same
 version: a snapshot of another release does not restore, and the VM
 boots in its place.
+
+Give the command the `BEAM_ERL_FLAGS` of the Worker, for example
+`--env "BEAM_ERL_FLAGS=-Mea min"`. The header of the snapshot keeps the
+flags of the emulator. A Worker with other flags boots in place of the
+snapshot, and writes `beam: the snapshot of the build has the flags
+...: a boot in its place`. Before, such a Worker restored a VM with the
+allocators of ERTS: with `-Mea min`, a Phoenix app used 72 MB in place
+of 42 MB.
+
+The pages of the snapshot are in gzip (the format `BEAMSNZ1`), and the
+host inflates them before the restore. `--no-compress` writes them as
+they are (`BEAMSNP1`). Measured with a small app in `wrangler dev`
+(October 2026):
+
+| | Snapshot | Before the restore |
+|---|---|---|
+| gzip (default) | 5.1 MB | 170 to 610 ms |
+| `--no-compress` | 18.2 MB | 26 to 32 ms |
+
+The module of the snapshot stays in the memory of the isolate, so the
+gzip pages give the VM about 13 MB more. A snapshot of a Phoenix app is
+about 21 MB, and 5 MB in gzip. The snapshots that a Worker makes itself
+(the Cache API, or the R2 bucket `SNAPSHOTS`) have no gzip.
 
 The kinds of snapshot:
 

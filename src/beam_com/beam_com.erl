@@ -187,6 +187,8 @@ build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
 build_options(["--no-edge" | Rest], Opts) ->
     build_options(Rest, Opts#{edge => false});
+build_options(["--edge-only" | Rest], Opts) ->
+    build_options(Rest, Opts#{edge_only => true});
 build_options(["--page" | Rest], Opts) ->
     build_options(Rest, Opts#{page => true});
 build_options(["--cacerts", File | Rest], Opts) ->
@@ -288,6 +290,11 @@ help([]) ->
      "  --no-edge (with -o) no WebAssembly part in OUTPUT. By default, the\n"
      "            same file also runs in the WebAssembly runtime (Workers,\n"
      "            Deno, a web page), with about 40 to 80 KB more\n"
+     "  --edge-only\n"
+     "            (with -o) OUTPUT has only the part that the WebAssembly\n"
+     "            runtime reads: a zip with the release and the edge part, with\n"
+     "            no native program (about 25 MB less). It runs at the edge\n"
+     "            (serve(app) of the npm package beam.com), but not natively\n"
      "  --cacerts FILE\n"
      "            the trusted root certificates of the WebAssembly runtime\n"
      "            (TLS), a PEM file, in the edge part of OUTPUT; by default,\n"
