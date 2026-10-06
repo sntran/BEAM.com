@@ -29,6 +29,16 @@ notes of its release.
   timer, and a request then waits about 150 ms in place of the whole
   work. Long work is about 6% slower. A stateless Worker has no such
   turns yet.
+- A request body goes to the app in parts, as the client sends it, with
+  flow control: the host sends a part only while less than 256 KB is
+  unread in the VM (the new event `tcp_read` of `wasm_tcp`). Before, the
+  host read the whole body first, and the VM held several copies of it:
+  an upload of 32 MB made the memory of the VM grow to 208 MB (a Worker
+  has 128 MB). Now it stays at about 40 MB. A body with no
+  `content-length` goes as `transfer-encoding: chunked`.
+- `BEAM_MAX_BODY`: a request body above this count of bytes gets 413. For
+  a request with a body, `BEAM_REQUEST_TIMEOUT` starts at the end of the
+  body.
 - In a plain Worker, a line of the VM (stdout and stderr) that the host
   cannot write in the context of its thread goes to an open request.
   Before, `console.log` could throw there, and stop the thread of the VM.

@@ -560,13 +560,14 @@ jobs:
             cp "$RUNNER_TEMP/$name.com" "$app/app.com"
             (cd "$app" && npm install --no-audit --no-fund "$RUNNER_TEMP"/beam.com-*.tgz wrangler@4.142.0 deno@2.9.6)
           done
-          # A VM that stops (tests/programs/stop_check.erl), as the Durable
-          # Object and as the stateless Worker: 504, 503, then a new VM.
-          sh bin/beam.com tests/programs/stop_check.erl -o "$RUNNER_TEMP/stop_check.com"
+          # The limits of the hosts (tests/programs/limits_check.erl), as the
+          # Durable Object and as the stateless Worker: 504, 503, a new VM, the
+          # turns of a process that computes, and large uploads.
+          sh bin/beam.com tests/programs/limits_check.erl -o "$RUNNER_TEMP/limits_check.com"
           for name in phoenix_demo worker; do
-            cp -R "$RUNNER_TEMP/hosts-$name" "$RUNNER_TEMP/stop-$name"
-            cp "$RUNNER_TEMP/stop_check.com" "$RUNNER_TEMP/stop-$name/app.com"
-            sh tests/host/app_stop.sh "$RUNNER_TEMP/stop-$name"
+            cp -R "$RUNNER_TEMP/hosts-$name" "$RUNNER_TEMP/limits-$name"
+            cp "$RUNNER_TEMP/limits_check.com" "$RUNNER_TEMP/limits-$name/app.com"
+            sh tests/host/app_limits.sh "$RUNNER_TEMP/limits-$name"
           done
           sh tests/host/app_hosts.sh "$RUNNER_TEMP/hosts-phoenix_demo" / \
             'LiveView on Cloudflare Workers' 'LiveView on Deno' '/live/websocket?vsn=2.0.0'

@@ -1518,6 +1518,7 @@ export class Vm {
     // Each connection in its own request (run): in a plain Worker, its
     // response, its socket and its timer belong to that request.
     for (const c of this.conns) {
+      this.bridgeRoom(c);
       const status = c.status;
       if (!status) c.status = 503;
       if (c.ws) this.socketGone(c);
@@ -1759,8 +1760,11 @@ export class Vm {
   //   (no limit by default); one more gets 503 before the VM reads it;
   // - BEAM_MAX_WEBSOCKETS: the open WebSockets (no limit by default);
   // - BEAM_REQUEST_TIMEOUT: the seconds until the head of the response
-  //   (60 by default); then the request gets 504, and the app gets the
-  //   end of the connection.
+  //   (60 by default), after the end of the request body; then the request
+  //   gets 504, and the app gets the end of the connection;
+  // - BEAM_MAX_BODY: the bytes of a request body (no limit by default);
+  //   a larger one gets 413.
+  // The body goes to the app in the chunks of the client (bridgeUpload).
   async bridge(request, url, upgrade, h, finished) {
     const maxSockets = limit(this.env.BEAM_MAX_WEBSOCKETS, 0);
     if (upgrade && maxSockets && this.sockets >= maxSockets) {
@@ -1771,6 +1775,13 @@ export class Vm {
     if (!upgrade && maxRequests && [...this.conns].filter((c) => !c.ws).length >= maxRequests) {
       finished();
       return this.busy('requests');
+    }
+    const body = request.method === 'GET' || request.method === 'HEAD' || upgrade ? null : request.body;
+    const declared = request.headers.get('content-length');
+    const maxBody = limit(this.env.BEAM_MAX_BODY, 0);
+    if (body && maxBody && declared !== null && Number(declared) > maxBody) {
+      finished();
+      return this.tooLarge(maxBody);
     }
     const port = Number(this.env.PORT ?? 4000);
     // The time limit counts from here: the app can also fail to listen.
@@ -1815,28 +1826,115 @@ export class Vm {
     } else {
       headers.set('connection', 'close');
     }
-    const body = request.method === 'GET' || request.method === 'HEAD' || upgrade
-      ? new Uint8Array(0) : new Uint8Array(await request.arrayBuffer());
-    if (body.length || !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', String(body.length));
+    // A body of no declared length goes to the app as chunked.
+    if (body && declared !== null) headers.set('content-length', declared);
+    else if (body) {
+      headers.delete('content-length');
+      headers.set('transfer-encoding', 'chunked');
+    } else if (!upgrade && !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', '0');
     let head = `${request.method} ${url.pathname}${url.search} HTTP/1.1\r\n`;
     for (const [k, v] of headers) head += `${k}: ${v}\r\n`;
-    head = new TextEncoder().encode(head + '\r\n');
-    const bytes = new Uint8Array(head.length + body.length);
-    bytes.set(head);
-    bytes.set(body, head.length);
+    const bytes = new TextEncoder().encode(head + '\r\n');
     if (this.dead) {
       finished();
       return this.stopped();
     }
     return new Promise((resolve) => {
-      const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname };
+      const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname, sent: 0, read: 0, room: null };
       if (h) h.sockets++;
       this.conns.add(c);
-      if (timeout) c.timer = setTimeout(() => this.bridgeTimeout(c, timeout), Math.max(deadline - Date.now(), 1));
-      this.tcps.set(id, { send: (b) => this.bridgeData(c, b), close: () => this.bridgeEnd(c), h });
-      this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
-      this.event({ t: 'tcp_data', id }, bytes);
+      c.timeout = timeout;
+      // A body can take long to come: the time limit starts at its end.
+      if (!body) this.bridgeClock(c, deadline - Date.now());
+      this.tcps.set(id, { send: (b) => this.bridgeData(c, b), close: () => this.bridgeEnd(c), read: (n) => this.bridgeRead(c, n), h });
+      // ack: wasm_tcp tells the host what the app read (tcp_read).
+      this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body });
+      this.bridgeSend(c, bytes);
+      if (body) this.bridgeUpload(c, body, declared === null, maxBody);
     });
+  }
+
+  // Bytes to the app on the connection c.
+  bridgeSend(c, bytes) {
+    c.sent += bytes.length;
+    this.event({ t: 'tcp_data', id: c.id }, bytes);
+  }
+
+  // The body of a request to the app, in parts of UPLOAD_PART bytes or more
+  // (or the rest of the body): one event for each part, not for each small
+  // chunk of the client. A part goes when less than UPLOAD_WINDOW bytes are
+  // unread in the VM (tcp_read of wasm_tcp): so a large body does not fill
+  // the memory of the VM, and a slow app slows the client.
+  async bridgeUpload(c, body, chunked, max) {
+    let byob = null;
+    try { byob = body.getReader({ mode: 'byob' }); } catch {}
+    const reader = byob ?? body.getReader();
+    // workerd has readAtLeast; the standard has the option min.
+    const read = !byob ? () => reader.read()
+      : byob.readAtLeast ? () => byob.readAtLeast(UPLOAD_PART, new Uint8Array(UPLOAD_READ))
+      : () => byob.read(new Uint8Array(UPLOAD_READ), { min: UPLOAD_PART });
+    let total = 0;
+    try {
+      for (;;) {
+        const { value, done } = await read();
+        if (c.done || this.dead) break;
+        if (done) {
+          if (chunked) this.bridgeSend(c, CHUNKS_END);
+          this.bridgeClock(c, c.timeout * 1000);
+          return;
+        }
+        total += value.length;
+        if (max && total > max) {
+          this.bridgeRefuse(c, this.tooLarge(max));
+          break;
+        }
+        while (c.sent - c.read >= UPLOAD_WINDOW && !c.done && !this.dead) {
+          await new Promise((resolve) => { c.room = resolve; });
+        }
+        if (c.done || this.dead) break;
+        if (value.length) this.bridgeSend(c, chunked ? chunk(value) : value);
+      }
+      reader.cancel().catch(() => {});
+    } catch {
+      // The client stopped the upload.
+      this.bridgeRefuse(c, new Response('bad request\n', { status: 400 }));
+    }
+  }
+
+  // The time limit of the response of c: BEAM_REQUEST_TIMEOUT, in ms ms.
+  bridgeClock(c, ms) {
+    if (c.timeout && !c.status && !c.done) c.timer = setTimeout(() => this.bridgeTimeout(c, c.timeout), Math.max(ms, 1));
+  }
+
+  // The app read n bytes of the connection c (tcp_read).
+  bridgeRead(c, n) {
+    c.read += n;
+    this.bridgeRoom(c);
+  }
+
+  // The upload of c waits no more (more room, or the end of c).
+  bridgeRoom(c) {
+    const room = c.room;
+    c.room = null;
+    room?.();
+  }
+
+  // The answer of the host in place of the app (when the app has not
+  // answered yet), and the end of the connection for the app.
+  bridgeRefuse(c, response) {
+    if (!c.status) {
+      clearTimeout(c.timer);
+      c.status = response.status;
+      c.resolve(response);
+      c.finished();
+    }
+    this.bridgeDone(c);
+  }
+
+  // The answer above BEAM_MAX_BODY.
+  tooLarge(max) {
+    this.log(`beam: a request body above ${max} bytes: 413`);
+    return new Response(`The body is larger than ${max} bytes.\n`, { status: 413, headers: { 'content-type': 'text/plain' } });
   }
 
   // Bytes from the HTTP server of the app to the connection c of bridge().
@@ -1905,6 +2003,7 @@ export class Vm {
   bridgeDone(c) {
     if (c.done) return;
     c.done = true;
+    this.bridgeRoom(c);
     c.writer?.close().catch(() => {});
     this.conns.delete(c);
     this.tcps.delete(c.id);
@@ -2236,6 +2335,10 @@ export class Vm {
         if (t) this.run(() => t.send(body), t.h);
         break;
       }
+      // wasm_tcp: the app read n bytes of a connection of bridge().
+      case 'tcp_read':
+        this.tcps.get(msg.id)?.read?.(msg.n);
+        break;
       case 'tcp_close': {
         const t = this.tcps.get(msg.id);
         this.tcps.delete(msg.id);
@@ -2319,6 +2422,25 @@ export function staticResponse(statics, request) {
 
 // The result of a wait that passed its time limit.
 const LATE = Symbol('late');
+
+// A request body (bridgeUpload): the bytes that can be unread in the VM,
+// the smallest part of an event (except the last one), and the size of a
+// read. A client chunk can be 2 KB (workerd), and each event costs a turn
+// of the VM.
+const UPLOAD_WINDOW = 256 * 1024;
+const UPLOAD_PART = 16 * 1024;
+const UPLOAD_READ = 64 * 1024;
+
+// A chunk of a chunked body, and the end of the body.
+const CHUNKS_END = new TextEncoder().encode('0\r\n\r\n');
+function chunk(data) {
+  const size = new TextEncoder().encode(`${data.length.toString(16)}\r\n`);
+  const b = new Uint8Array(size.length + data.length + 2);
+  b.set(size);
+  b.set(data, size.length);
+  b.set([13, 10], size.length + data.length);
+  return b;
+}
 
 // A limit of a var: a number above 0, else the default (0: no limit).
 // "0" turns a limit with a default off.

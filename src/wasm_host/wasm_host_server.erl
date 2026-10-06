@@ -8,6 +8,9 @@
 %%     {"t":"tcp_data","id":"t7"}
 %%     {"t":"tcp_accept","id":"l3","conn":"a9","host":"1.2.3.4","port":5678}
 %%
+%% With "ack": true in tcp_accept, the connection tells the host the bytes
+%% that its owner read ({"t":"tcp_read","id":"a9","n":65536}, wasm_tcp).
+%%
 %% It also starts distributed Erlang over wasm_tcp (DIST_NAME).
 -module(wasm_host_server).
 -behaviour(gen_server).
