@@ -531,7 +531,10 @@ version: a snapshot of another release does not restore, and the VM
 boots in its place.
 
 Give the command the `BEAM_ERL_FLAGS` of the Worker, for example
-`--env "BEAM_ERL_FLAGS=-Mea min"`. The header of the snapshot keeps the
+`--env "BEAM_ERL_FLAGS=-Mea min"`. Without `--env BEAM_ERL_FLAGS`, the
+command reads it from the `vars` of `wrangler.jsonc` (or `wrangler.json`)
+of the directory where it runs. It warns when the app file and the
+snapshot are above 56 MiB, because a Worker can be at most 64 MiB. The header of the snapshot keeps the
 flags of the emulator. A Worker with other flags boots in place of the
 snapshot, and writes `beam: the snapshot of the build has the flags
 ...: a boot in its place`. Before, such a Worker restored a VM with the
@@ -700,6 +703,35 @@ smaller value answers sooner, but each timer costs about 3 ms of time.
 Caution: a stateless Worker gets no such turns. A process that computes
 holds its isolate, and the host cannot answer until it stops. Use a
 Durable Object for an app that computes for a long time.
+
+### Memory and capacity
+
+An isolate of a Worker has 128 MB for the VM, the modules of the Worker
+and JavaScript. Plan for these costs:
+
+- The idle VM of a Phoenix app takes about 32 MB. The VM grows, but it
+  does not shrink: the peak of the VM is what counts.
+- The modules stay in the memory of the isolate for its life: `app.com`
+  and the snapshot of the build. A file of `--target wasm32` with
+  `-o FILE.com` is about 25 MB smaller, and a snapshot in gzip about 13
+  MB smaller.
+- Each open WebSocket and each process that waits keeps its heap. A
+  Phoenix app with 75 LiveViews went over the 128 MB on Cloudflare.
+
+Caution: `wrangler dev` does not apply the limit of 128 MB. A test that
+passes in `wrangler dev` can reset the object on Cloudflare. Test the
+memory on Cloudflare, and read the lines `beam: memory N MB (a new peak
+of this VM)` of `wrangler tail`.
+
+The bridge of the host has one listener for each port, so the app needs
+one acceptor. In a Phoenix app, give Bandit `thousand_island_options:
+[num_acceptors: 1]` in the `http` options of the endpoint: else each of
+its 100 acceptors is a process that takes memory with no work.
+
+One Durable Object served about 120 to 190 small requests each second on
+Cloudflare (mkfifo.com, October 2026), and fewer for requests that use
+the CPU. Use `BEAM_MAX_REQUESTS` so that the host answers 503 before
+Cloudflare stops the requests with "Durable Object is overloaded".
 
 ## Variables and bindings
 

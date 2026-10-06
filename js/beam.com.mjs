@@ -7,11 +7,11 @@
 // APP.com for serve(app, { snapshot }) of a Worker (snapshot() of
 // node.mjs), in FILE (default APP.snapshot), with its pages in gzip (not
 // with --full: the global scope of a Worker cannot inflate). Give
-// the BEAM_ERL_FLAGS of the Worker with --env: a Worker with other flags
-// boots in place of the snapshot. It runs here, with no download of
-// beam.com.
+// the BEAM_ERL_FLAGS of the Worker with --env, or in the vars of
+// wrangler.jsonc of this directory: a Worker with other flags boots in
+// place of the snapshot. It runs here, with no download of beam.com.
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
 import { command, ensure } from './download.mjs';
 
@@ -48,14 +48,37 @@ async function snapshotCommand(args) {
   if (!app) throw new Error('usage: npx beam.com --snapshot APP.com [-o FILE] [--full] [--warm PATH]... [--env NAME=VALUE]... [--no-compress]');
   if (opts.warm.length && opts.kind !== 'full') throw new Error('--warm is for a full snapshot (--full)');
   out ??= app.replace(/\.com$/, '') + '.snapshot';
+  // The flags of the Worker, when --env does not give them: the vars of
+  // its wrangler.jsonc. A Worker with other flags boots in place of the
+  // snapshot.
+  let source = '--env';
+  if (opts.env.BEAM_ERL_FLAGS === undefined) {
+    const { wranglerVars } = await import('./wrangler.mjs');
+    const w = wranglerVars('.');
+    if (typeof w?.vars.BEAM_ERL_FLAGS === 'string') {
+      opts.env.BEAM_ERL_FLAGS = w.vars.BEAM_ERL_FLAGS;
+      source = w.file;
+    }
+  }
   const { snapshot } = await import('./node.mjs');
   const t0 = performance.now();
   const bytes = await snapshot(app, opts);
   writeFileSync(out, bytes);
   const flags = (opts.env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean).join(' ');
   console.error(`beam.com: wrote ${out} (${(bytes.length / 1048576).toFixed(1)} MB, ${opts.kind}, `
-    + `BEAM_ERL_FLAGS "${flags}", in ${Math.round(performance.now() - t0)} ms)`);
-  if (!flags) console.error('beam.com: a Worker with BEAM_ERL_FLAGS boots in place of this snapshot: give its flags with --env BEAM_ERL_FLAGS=...');
+    + `BEAM_ERL_FLAGS "${flags}"${flags ? ` of ${source}` : ''}, in ${Math.round(performance.now() - t0)} ms)`);
+  if (!flags) console.error('beam.com: a Worker with BEAM_ERL_FLAGS boots in place of this snapshot: give its flags with --env BEAM_ERL_FLAGS=..., or in the vars of wrangler.jsonc');
+  // A Worker can be at most 64 MiB, with all its modules (gzip does not
+  // count): the app file and the snapshot are most of it.
+  const total = statSync(app).size + bytes.length;
+  if (total > 56 * 1048576) {
+    // An APE file starts with "MZ"; a file of --target wasm32 is a zip.
+    const head = Buffer.alloc(2), fd = openSync(app, 'r');
+    try { readSync(fd, head, 0, 2, 0); } finally { closeSync(fd); }
+    const native = head.toString() === 'MZ';
+    console.error(`beam.com: warning: ${app} and ${out} are ${(total / 1048576).toFixed(1)} MiB, and a Worker can be at most 64 MiB`
+      + (native ? `. Build the app with -o FILE.com --target wasm32: a file with no native program, about 25 MB smaller` : ''));
+  }
 }
 
 let release = null;
