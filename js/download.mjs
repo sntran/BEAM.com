@@ -14,6 +14,9 @@ import path from 'node:path';
 
 export const REPOSITORY = 'sntran/BEAM.com';
 
+// The time with no bytes that stops a download (ms).
+const IDLE = 60000;
+
 // The cache directory of beam.com (beam_com:cache_dir/0).
 export function cacheDir(env = process.env) {
   if (env.BEAM_COM_CACHE) return env.BEAM_COM_CACHE;
@@ -37,7 +40,8 @@ export function downloadUrl({ version }, env = process.env) {
 
 // The path of a beam.com that runs. The file in the cache was checked when
 // it was downloaded: a file is in the cache only after the check.
-export async function ensure(release, { env = process.env, platform = process.platform, fetch = globalThis.fetch, log = () => {} } = {}) {
+// idle: the download stops when no bytes come in this time (ms).
+export async function ensure(release, { env = process.env, platform = process.platform, fetch = globalThis.fetch, log = () => {}, idle = IDLE } = {}) {
   if (env.BEAM_COM) return env.BEAM_COM;
   if (!release?.version || !/^[0-9a-f]{64}$/.test(release?.sha256 ?? '')) {
     throw new Error('this package has no release of beam.com (runtime/release.json): set BEAM_COM to the path of a beam.com');
@@ -46,16 +50,36 @@ export async function ensure(release, { env = process.env, platform = process.pl
   if (fs.existsSync(file)) return file;
   const url = downloadUrl(release, env);
   log(`beam.com: downloading ${url}`);
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`beam.com: ${url}: status ${response.status}`);
+  const ac = new AbortController();
+  let timer;
+  const wait = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => ac.abort(new Error(`beam.com: ${url}: no bytes in ${idle / 1000} s`)), idle);
+  };
+  wait();
+  let response;
+  try {
+    response = await fetch(url, { signal: ac.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    throw ac.signal.aborted ? ac.signal.reason : e;
+  }
+  if (!response.ok) {
+    clearTimeout(timer);
+    throw new Error(`beam.com: ${url}: status ${response.status}`);
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const part = `${file}.${process.pid}.part`;
   const out = fs.createWriteStream(part, { mode: 0o755 });
+  // An error of the file (a full disk): no drain comes after it.
+  const failed = new Promise((_, reject) => out.once('error', reject));
+  failed.catch(() => {});
   const hash = createHash('sha256');
   try {
     for await (const chunk of response.body) {
+      wait();
       hash.update(chunk);
-      if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+      if (!out.write(chunk)) await Promise.race([new Promise((r) => out.once('drain', r)), failed]);
     }
     await new Promise((resolve, reject) => out.end((e) => (e ? reject(e) : resolve())));
     const got = hash.digest('hex');
@@ -64,7 +88,10 @@ export async function ensure(release, { env = process.env, platform = process.pl
     }
     fs.chmodSync(part, 0o755);
     fs.renameSync(part, file);
+  } catch (e) {
+    throw ac.signal.aborted ? ac.signal.reason : e;
   } finally {
+    clearTimeout(timer);
     out.destroy();
     fs.rmSync(part, { force: true });
   }

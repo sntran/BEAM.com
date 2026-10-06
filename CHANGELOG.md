@@ -70,6 +70,32 @@ notes of its release.
   Worker to `npx beam.com --snapshot --env BEAM_ERL_FLAGS=...`. Before, a
   snapshot made with no flags gave a Worker with `-Mea min` the
   allocators of ERTS, and 30 MB more memory.
+- The bridge of the host is more robust:
+  - A response of the app with a bad head (a status outside 100 to 599,
+    a head above 1 MiB) gets 502, and the VM goes on. Before, an
+    exception there stopped the thread of the VM.
+  - The host skips a `1xx` head of the app (`100 Continue`, `103 Early
+    Hints`) and waits for the final head. It removes `expect` from the
+    request, because the host already has the body.
+  - The head of a request and of a response is Latin-1, as in HTTP/1.1.
+    Before, a header with bytes above 127 changed.
+  - A client that cancels its request closes the connection of the app.
+  - A request that waits for the listener of the app, or for a snapshot,
+    stops when the VM stops, and leaves no wait behind.
+  - An exception of the host on a message of the VM goes to the log, and
+    does not stop the VM.
+- `wasm_tcp` forgets each connection of a listener when its process
+  stops. Before, the map of the listener grew with each connection.
+- `BEAM_PERSIST`: a VM that stops saves the files that it wrote after the
+  last save. Before, a stop lost up to 1 s of writes.
+- The fetch path stops the `fetch()` of a request when the app closes its
+  connection, and the cache of names holds at most 1024 names.
+- A Durable Object that the host cannot reset (`ctx.abort` throws) starts
+  a new VM at the next request. Before, it gave 503 to each request.
+- A Worker whose snapshot does not restore in the global scope boots a VM
+  in each request, and writes the cause to the log.
+- `npx beam.com` stops the download of `beam.com` when no bytes come in
+  60 s, and gives an error when the file cannot be written.
 
 ## 0.1.0-rc.2
 

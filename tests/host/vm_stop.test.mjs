@@ -11,16 +11,17 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { Vm } = await import('../../priv/wasm_host/worker/worker.js');
+const { Vm, Persist } = await import('../../priv/wasm_host/worker/worker.js');
 
 // A Vm with the state of a VM that is ready, and the events that it gives
 // to the app in sent. listening: the listener of the app on port 4000.
-function vm(env = {}, { listening = async () => {} } = {}) {
+// listens: the app listens on its port (the listener of wasm_tcp).
+function vm(env = {}, { listening = async () => {}, listens = true } = {}) {
   const v = Object.create(Vm.prototype);
   const sent = [];
   let markDead;
   Object.assign(v, {
-    env, vars: {}, scheme: true, nextId: 0, tcps: new Map(), listeners: new Map([[4000, 'l0']]),
+    env, vars: {}, scheme: true, nextId: 0, tcps: new Map(), listeners: new Map(listens ? [[4000, 'l0']] : []), waitListen: new Map(),
     conns: new Set(), sockets: 0, peak: 0, dead: null, onDead: null, handlers: [], jobs: [],
     died: new Promise((r) => { markDead = r; }),
     statics: Promise.resolve(null), ready: Promise.resolve(),
@@ -104,7 +105,7 @@ test('after the stop, a new request gets 503 at once', async () => {
 });
 
 test('a request that waits for the listener of the app gets 503 when the VM stops', async () => {
-  const { v } = vm({}, { listening: () => new Promise(() => {}) });
+  const { v } = vm({}, { listens: false });
   const pending = bridge(v, request('/'));
   await null;
   v.die('exit status 1');
@@ -134,11 +135,14 @@ test('no head of a response in BEAM_REQUEST_TIMEOUT seconds: 504, and the app ge
 });
 
 test('an app that does not listen in BEAM_REQUEST_TIMEOUT seconds: 504', async () => {
-  const { v, sent } = vm({ BEAM_REQUEST_TIMEOUT: '0.05' }, { listening: () => new Promise(() => {}) });
+  const { v, sent } = vm({ BEAM_REQUEST_TIMEOUT: '0.05' }, { listens: false });
   const r = await bridge(v, request('/'));
   assert.equal(r.status, 504);
   assert.equal(sent.length, 0);
   assert.equal(v.conns.size, 0);
+  // The request that ended waits no more.
+  assert.equal(v.waitListen.size, 0);
+  assert.equal(v.stopWaits.size, 0);
 });
 
 test('BEAM_REQUEST_TIMEOUT=0 sets no time limit', async () => {
@@ -227,4 +231,28 @@ test('a plain Worker gives a turn to its open request', () => {
   v.turn(() => {});
   assert.equal(v.jobs.length, 1);
   assert.equal(woke, 1);
+});
+
+// BEAM_PERSIST: a write saves after 1 s. A stop of the VM in that time
+// saves the file at once, so the stop loses no write.
+test('a VM that stops saves the files that it wrote after the last save', () => {
+  const rows = [];
+  const sql = { exec: (q, ...a) => { rows.push([q.split(' ')[0], ...a]); return []; } };
+  const persist = new Persist(sql, ['/data']);
+  const FS = {
+    cwd: () => '/', write() {}, close() {}, truncate() {}, mkdir() {}, unlink() {}, rmdir() {}, rename() {},
+    lookupPath: () => ({ node: { mode: 0o100644 } }),
+    isDir: () => false, isFile: () => true,
+    readFile: () => new Uint8Array([1, 2, 3]),
+  };
+  persist.attach(FS);
+  FS.write({ path: '/data/a.db' });
+  assert.ok(persist.flush, 'no timer for the save');
+  assert.ok(persist.dirty.has('/data/a.db'));
+  const { v } = vm();
+  v.persist = persist;
+  v.die('exit status 1');
+  assert.equal(persist.flush, null);
+  assert.equal(persist.dirty.size, 0);
+  assert.ok(rows.some(([q, path, , size]) => q === 'INSERT' && path === '/data/a.db' && size === 3), 'the file did not save');
 });

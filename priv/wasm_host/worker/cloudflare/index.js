@@ -91,7 +91,12 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
     vm.onDead = () => { vm = null; };
     await vm.ready;
     if (globalEnv.BEAM_WARM) await vm.warm(globalEnv.BEAM_WARM);
-  })() : Promise.resolve();
+  })().catch((e) => {
+    // A VM that did not restore: the same, and the entry still loads
+    // (await beam.ready).
+    console.log(`beam: the snapshot of the build did not restore in the global scope (${e?.message ?? e}): each request boots a VM`);
+    vm = null;
+  }) : Promise.resolve();
   // The env of the front: the binding as BEAM, the name of the object, and
   // the static files of app.com (the front serves them, with no request
   // to the object).
