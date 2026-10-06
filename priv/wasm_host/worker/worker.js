@@ -1902,7 +1902,7 @@ export class Vm {
       return this.stopped();
     }
     return new Promise((resolve) => {
-      const c = { id, buf: new Uint8Array(0), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname, sent: 0, read: 0, room: null };
+      const c = { id, in: new Pieces(), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname, sent: 0, read: 0, room: null };
       if (h) h.sockets++;
       this.conns.add(c);
       c.timeout = timeout;
@@ -2027,21 +2027,20 @@ export class Vm {
 
   // Bytes from the HTTP server of the app to the connection c of bridge().
   bridgeData(c, data) {
-    const b = new Uint8Array(c.buf.length + data.length);
-    b.set(c.buf);
-    b.set(data, c.buf.length);
-    c.buf = b;
+    c.in.push(data);
     if (!c.status) {
-      const end = indexOf(c.buf, [13, 10, 13, 10]);
+      // The head of the response: it is small, so the bytes are joined.
+      const head = c.in.peek(c.in.size);
+      const end = indexOf(head, [13, 10, 13, 10]);
       if (end < 0) return;
-      const lines = new TextDecoder().decode(c.buf.subarray(0, end)).split('\r\n');
+      const lines = new TextDecoder().decode(head.subarray(0, end)).split('\r\n');
+      c.in.drop(end + 4);
       c.status = Number(lines[0].split(' ')[1]);
       const headers = new Headers();
       for (const l of lines.slice(1)) {
         const i = l.indexOf(':');
         headers.append(l.slice(0, i).trim(), l.slice(i + 1).trim());
       }
-      c.buf = c.buf.slice(end + 4);
       clearTimeout(c.timer);
       if (c.status === 101 && c.upgrade) return this.bridgeUpgrade(c);
       if (c.upgrade && c.status === 403) {
@@ -2052,7 +2051,8 @@ export class Vm {
       c.chunked = /chunked/i.test(headers.get('transfer-encoding') ?? '');
       headers.delete('transfer-encoding');
       headers.delete('connection');
-      if (c.head || c.status === 204 || c.status === 304) c.length = 0;
+      if (c.head || c.status === 204 || c.status === 304) { c.length = 0; c.chunked = false; }
+      c.left = 0;
       const { readable, writable } = new TransformStream();
       c.writer = writable.getWriter();
       // The app compressed the body (Bandit: gzip, deflate): the runtime
@@ -2066,26 +2066,56 @@ export class Vm {
   }
 
   // The body of a response: by content-length, chunked, or until the end.
+  // The pieces of the app go to the stream as they are (views, no copy):
+  // also the data of a large chunk, before its end.
   bridgeBody(c) {
     if (c.done) return;
+    const pieces = c.in;
     if (c.chunked) {
-      for (;;) {
-        const nl = indexOf(c.buf, [13, 10]);
-        if (nl < 0) return;
-        const size = parseInt(new TextDecoder().decode(c.buf.subarray(0, nl)), 16);
+      while (pieces.size && !c.done) {
+        if (c.left > 0) {
+          const part = pieces.next(c.left);
+          c.left -= part.length;
+          c.writer.write(part);
+          if (c.left === 0) c.left = -2;  // then the CRLF of the chunk
+          continue;
+        }
+        if (c.left < 0) {
+          const n = Math.min(-c.left, pieces.size);
+          pieces.drop(n);
+          c.left += n;
+          continue;
+        }
+        // The size line of the next chunk (a chunk extension after ";").
+        const line = pieces.peek(Math.min(pieces.size, CHUNK_LINE));
+        const nl = line.indexOf(10);
+        if (nl < 0) {
+          if (line.length >= CHUNK_LINE) this.bridgeBad(c);
+          return;
+        }
+        const size = parseInt(new TextDecoder().decode(line.subarray(0, nl)), 16);
+        pieces.drop(nl + 1);
         if (size === 0) return this.bridgeDone(c);
-        if (c.buf.length < nl + 2 + size + 2) return;
-        c.writer.write(c.buf.slice(nl + 2, nl + 2 + size));
-        c.buf = c.buf.slice(nl + 2 + size + 2);
+        if (!(size > 0)) return this.bridgeBad(c);
+        c.left = size;
       }
+      return;
     }
-    if (c.buf.length) {
-      const part = c.length === null ? c.buf : c.buf.subarray(0, c.length);
-      if (part.length) c.writer.write(part.slice());
+    while (pieces.size && c.length !== 0) {
+      const part = pieces.next(c.length ?? Infinity);
       if (c.length !== null) c.length -= part.length;
-      c.buf = new Uint8Array(0);
+      c.writer.write(part);
     }
     if (c.length === 0) this.bridgeDone(c);
+  }
+
+  // A chunked body that is not HTTP/1.1: the stream of the response
+  // fails, and the app gets the end of the connection.
+  bridgeBad(c) {
+    console.log(`beam: a bad chunked body from the app for ${c.path}: the response stops`);
+    c.writer?.abort(new Error('a bad chunked body from the app')).catch(() => {});
+    c.writer = null;
+    this.bridgeDone(c);
   }
 
   bridgeDone(c) {
@@ -2165,15 +2195,18 @@ export class Vm {
 
   // WebSocket frames from the app (not masked) to messages for the client.
   bridgeFrames(c) {
+    const pieces = c.in;
     for (;;) {
-      const b = c.buf;
+      // The head of a frame (2 to 10 bytes), then its payload in one array.
+      const b = pieces.peek(Math.min(pieces.size, 10));
       if (b.length < 2) return;
       let len = b[1] & 127, at = 2;
       if (len === 126) { if (b.length < 4) return; len = (b[2] << 8) | b[3]; at = 4; }
       else if (len === 127) { if (b.length < 10) return; len = Number(new DataView(b.buffer, b.byteOffset).getBigUint64(2)); at = 10; }
-      if (b.length < at + len) return;
-      const fin = b[0] & 128, op = b[0] & 15, data = b.slice(at, at + len);
-      c.buf = b.slice(at + len);
+      if (pieces.size < at + len) return;
+      const fin = b[0] & 128, op = b[0] & 15;
+      pieces.drop(at);
+      const data = pieces.take(len);
       if (op === 9) { this.event({ t: 'tcp_data', id: c.id }, frame(10, data)); continue; }
       if (op === 10) continue;
       if (op === 8) { c.ws.close(len >= 2 ? (data[0] << 8) | data[1] : 1000); continue; }
@@ -2387,7 +2420,8 @@ export class Vm {
   onsend(bytes) {
     const nl = bytes.indexOf(10);
     const msg = JSON.parse(new TextDecoder().decode(bytes.subarray(0, nl)));
-    const body = bytes.slice(nl + 1);
+    // bytes is a new array (jspi_host_send): the body is a view of it.
+    const body = bytes.subarray(nl + 1);
     switch (msg.t) {
       case 'ready':
         this.onready();
@@ -2547,6 +2581,56 @@ function limit(text, fallback) {
 }
 
 // The position of the bytes pat in b, or -1.
+// The longest size line of a chunk of a response (with its extensions).
+const CHUNK_LINE = 4096;
+
+// Bytes in pieces (views of the arrays that came, no copy), joined only
+// when a reader needs them in one array (peek, take).
+export class Pieces {
+  constructor() { this.list = []; this.size = 0; }
+  push(b) {
+    if (!b.length) return;
+    this.list.push(b);
+    this.size += b.length;
+  }
+  // The first n bytes in one array. A view when the first piece has them;
+  // else a join, which then is the first piece.
+  peek(n) {
+    if (!this.list.length || this.list[0].length >= n) return (this.list[0] ?? new Uint8Array(0)).subarray(0, n);
+    const out = new Uint8Array(n);
+    let at = 0;
+    for (const p of this.list) {
+      if (at >= n) break;
+      const k = Math.min(p.length, n - at);
+      out.set(p.subarray(0, k), at);
+      at += k;
+    }
+    this.drop(n);
+    this.list.unshift(out);
+    this.size += n;
+    return out;
+  }
+  drop(n) {
+    this.size -= n;
+    while (n > 0) {
+      const p = this.list[0];
+      if (p.length <= n) { this.list.shift(); n -= p.length; }
+      else { this.list[0] = p.subarray(n); n = 0; }
+    }
+  }
+  take(n) {
+    const b = this.peek(n);
+    this.drop(n);
+    return b;
+  }
+  // At most max bytes of the first piece (a view).
+  next(max) {
+    const b = this.list[0].subarray(0, Math.min(max, this.list[0].length));
+    this.drop(b.length);
+    return b;
+  }
+}
+
 function indexOf(b, pat) {
   outer: for (let i = 0; i + pat.length <= b.length; i++) {
     for (let j = 0; j < pat.length; j++) if (b[i + j] !== pat[j]) continue outer;

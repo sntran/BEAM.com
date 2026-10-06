@@ -54,6 +54,17 @@ notes of its release.
   (`--full`) has no gzip: a stateless Worker restores it in the global
   scope, which cannot inflate. A full snapshot in gzip restores in the
   first request.
+- A response of the app goes to the client as the pieces come, with no
+  new copy of the whole buffer for each piece. Before, the host joined
+  each piece to the buffer, and copied an incomplete chunk again with
+  each piece of it. The data of a large chunk now goes to the client
+  before the end of the chunk. A bad chunked body stops the response.
+- `npx beam.com --snapshot` reads `BEAM_ERL_FLAGS` from the `vars` of
+  `wrangler.jsonc` when `--env` does not give it, and warns when the app
+  file and the snapshot are near the 64 MiB of a Worker.
+- `docs/WORKERS.md` has "Memory and capacity": the costs of an isolate,
+  the limit that `wrangler dev` does not apply, one acceptor for Bandit,
+  and the capacity of one Durable Object.
 - The header of a snapshot keeps `BEAM_ERL_FLAGS`, and a Worker with other
   flags boots in place of the snapshot of the build. Give the flags of the
   Worker to `npx beam.com --snapshot --env BEAM_ERL_FLAGS=...`. Before, a
