@@ -297,6 +297,10 @@ handle_info({accept_timeout, From}, #{kind := listen, acceptors := As} = S) ->
 handle_info({'DOWN', Ref, process, _, _}, #{kind := listen, ref := Ref, id := Id} = S) ->
     ?HOST:send_host(#{t => tcp_unlisten, id => Id}),
     {stop, normal, S};
+%% A connection process stopped: its events go to it no more (it
+%% registered with the pump at its start), so its entry goes.
+handle_info({'DOWN', _, process, Pid, _}, #{kind := listen, started := Started} = S) ->
+    {noreply, S#{started := maps:filter(fun(_, P) -> P =/= Pid end, Started)}};
 handle_info(_, #{kind := listen} = S) ->
     {noreply, S};
 %% --- a socket ----------------------------------------------------------------
@@ -344,8 +348,12 @@ hand({_Id, Pid}, {From, Owner, TRef}, S) ->
     gen_server:reply(From, {ok, ?SOCKET(Pid)}),
     S.
 
+%% The events that came before the process of the connection, to it. The
+%% events that the pump sent before the process registered can still come
+%% to the listener: started keeps the process until it stops.
 forward_early(Id, Pid, #{early := Early, started := Started} = S) ->
     [Pid ! Msg || Msg <- lists:reverse(maps:get(Id, Early, []))],
+    erlang:monitor(process, Pid),
     S#{early := maps:remove(Id, Early), started := Started#{Id => Pid}}.
 
 cancel(undefined) -> ok;

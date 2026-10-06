@@ -105,3 +105,19 @@ test('BEAM_COM: no download; and no release.json: an error that names BEAM_COM',
     await assert.rejects(ensure(release, { env: {} }), /set BEAM_COM to the path of a beam.com/);
   }
 });
+
+test('a download with no bytes for the idle time stops, and nothing stays in the cache', async () => {
+  const release = { version: '1.2.3', sha256: 'ab'.repeat(32) };
+  const s = http.createServer((req, res) => { res.writeHead(200); res.write('#!'); });
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${s.address().port}`;
+  const env = { BEAM_COM_CACHE: tmp(), BEAM_COM_DOWNLOAD: url };
+  try {
+    await assert.rejects(ensure(release, { env, platform: 'linux', idle: 200 }),
+                         { message: `beam.com: ${url}/beam.com: no bytes in 0.2 s` });
+    assert.deepEqual(fs.readdirSync(path.dirname(cachePath(release, env, 'linux'))), []);
+  } finally {
+    s.closeAllConnections();
+    await new Promise((r) => s.close(r));
+  }
+});

@@ -131,3 +131,75 @@ test('Pieces: peek, take, drop and next give the bytes in order, for each split'
     assert.deepEqual(Buffer.concat(rest), Buffer.from(all.subarray(front)));
   }
 });
+
+// The request head that the app got.
+const appHead = (sent) => new TextDecoder('latin1').decode(sent.find((s) => s.header.t === 'tcp_data').body);
+const closed = (sent) => sent.some((s) => s.header.t === 'tcp_closed');
+
+test('a 100 Continue of the app, then the head of the response', async () => {
+  const { pending, send } = await request();
+  send('HTTP/1.1 100 Continue\r\n\r\n');
+  send('HTTP/1.1 103 Early Hints\r\nlink: </a.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
+  const r = await pending;
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), 'ok');
+});
+
+test('the app gets no expect header, and the head of the request as bytes', async () => {
+  const { v, sent } = vm();
+  v.bridge(new Request('https://app.example.com/x', { method: 'POST', body: 'a', headers: { expect: '100-continue', 'x-name': 'café' } }),
+    new URL('https://app.example.com/x'), false, undefined, () => {});
+  await settle();
+  const head = appHead(sent);
+  assert.doesNotMatch(head, /^expect:/im);
+  // One byte for each character of the value (é is 0xE9).
+  assert.match(head, /x-name: café\r\n/);
+});
+
+test('a header value of bytes above 0x7F (UTF-8 of the app) goes as bytes', async () => {
+  const { pending, send, v } = await request();
+  send(new Uint8Array([...enc('HTTP/1.1 200 OK\r\nx-title: '), 0xc3, 0xa9, ...enc('\r\ncontent-length: 0\r\n\r\n')]));
+  const r = await pending;
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-title'), 'Ã©');
+  assert.equal(v.dead, null);
+});
+
+test('a status that a Response does not take gives 502, and the VM goes on', async () => {
+  const { pending, send, v, sent } = await request();
+  send('HTTP/1.1 600 Odd\r\ncontent-length: 0\r\n\r\n');
+  assert.equal((await pending).status, 502);
+  assert.equal(v.dead, null);
+  assert.ok(closed(sent));
+  assert.equal(v.conns.size, 0);
+});
+
+test('a client that cancels the body: the app gets the end of the connection', async () => {
+  const { pending, send, sent, v } = await request();
+  send('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n');
+  const r = await pending;
+  const reader = r.body.getReader();
+  await reader.read();
+  await reader.cancel();
+  await settle();
+  assert.ok(closed(sent));
+  assert.equal(v.conns.size, 0);
+  // The app sends more: the host drops it.
+  assert.equal(v.tcps.size, 0);
+});
+
+test('a request to an app that listens leaves no wait behind', async () => {
+  const { v } = vm();
+  for (let i = 0; i < 3; i++) {
+    const { send, pending } = await (async () => {
+      const p = v.bridge(new Request('https://app.example.com/x'), new URL('https://app.example.com/x'), false, undefined, () => {});
+      await settle();
+      const id = [...v.tcps.keys()].at(-1);
+      return { pending: p, send: (t) => v.tcps.get(id).send(enc(t)) };
+    })();
+    send('HTTP/1.1 204 No Content\r\n\r\n');
+    assert.equal((await pending).status, 204);
+  }
+  assert.equal(v.stopWaits?.size ?? 0, 0);
+  assert.equal(v.conns.size, 0);
+});

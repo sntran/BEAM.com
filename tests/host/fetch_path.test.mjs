@@ -251,3 +251,44 @@ test('a snapshot waits while a fetch() runs', async () => {
     globalThis.fetch = old;
   }
 });
+
+test('the end of a fetch connection stops its fetches, and only them', async () => {
+  const { v, events } = vm();
+  v.listeners.set('fetch', 'lf');
+  v.tcpConnect({ id: 't1', host: '104.16.0.1', port: 443 });
+  for (let i = 0; i < 200 && !events.some((e) => e.t === 'tcp_accept'); i++) await tick();
+  const conn = events.find((e) => e.t === 'tcp_accept').conn;
+  v.fetchConns.set('x99', { host: 'api.cloudflare.com', port: 443 });
+  const old = globalThis.fetch;
+  globalThis.fetch = (url, init) => new Promise((_, reject) => {
+    init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+  });
+  try {
+    const mine = v.fetchRequest({ id: 'f1', conn, tls: true, method: 'GET', path: '/' });
+    v.fetchRequest({ id: 'f2', conn: 'x99', tls: true, method: 'GET', path: '/' });
+    await tick();
+    v.tcps.get('t1').close();
+    await mine;
+    assert.ok(events.some((e) => e.t === 'fetch_error' && e.id === 'f1'));
+    assert.ok(!events.some((e) => e.id === 'f2'), 'the fetch of another connection stopped');
+    assert.deepEqual([...v.fetches.keys()], ['f2']);
+    v.fetches.get('f2').abort();
+  } finally {
+    globalThis.fetch = old;
+  }
+});
+
+test('the cache of names holds at most 1024 names, and a new name removes the oldest', async () => {
+  const { v } = vm();
+  const old = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ Answer: [] });
+  try {
+    for (let i = 0; i < 1030; i++) await v.isCloudflare(`h${i}.example.com`);
+    assert.equal(v.dns.size, 1024);
+    assert.ok(!v.dns.has('h5.example.com'));
+    assert.ok(v.dns.has('h6.example.com'));
+    assert.ok(v.dns.has('h1029.example.com'));
+  } finally {
+    globalThis.fetch = old;
+  }
+});
