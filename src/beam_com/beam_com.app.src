@@ -1,6 +1,6 @@
 {application, beam_com,
  [{description, "The commands of beam.com"},
-  {vsn, "0.1.0-rc.2"},
+  {vsn, "0.1.0-rc.3"},
   {modules, [beam_com, beam_com_build, beam_com_elixir, beam_com_hex, beam_com_make,
              beam_com_zip]},
   {registered, []},
