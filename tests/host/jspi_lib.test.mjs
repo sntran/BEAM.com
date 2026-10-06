@@ -15,10 +15,14 @@ function library() {
   // as runJobs of worker.js does.
   const timers = new Map();
   let next = 1;
+  const later = [];
   const scope = {
     jspi: lib.$jspi,
     jspiTimer: (f, ms) => { timers.set(next, f); return next++; },
     jspiClear: (id) => timers.delete(id),
+    jspiLater: (f) => later.push(f),
+    Module: {},
+    ENVIRONMENT_IS_NODE: true,
   };
   const bind = (f) => new Function(...Object.keys(scope), `return ${f.toString()}`)(...Object.values(scope));
   return {
@@ -26,6 +30,9 @@ function library() {
     suspend: bind(lib.jspi_suspend),
     resume: bind(lib.jspi_resume),
     fireAll: () => { const fs = [...timers.values()]; timers.clear(); for (const f of fs) f(); },
+    turn: bind(lib.jspi_host_turn),
+    Module: scope.Module,
+    later,
   };
 }
 
@@ -78,4 +85,24 @@ test('a late resume keeps the next waiter', async () => {
   assert.equal(h.jspi.waiters.has(2), true);
   h.resume(2);
   assert.equal(await q, 1);
+});
+
+// The turn of a scheduler that computes (jspi_host_turn): the host decides
+// what it is (Module.jspiTurn of worker.js), else setImmediate (Node.js),
+// which runs after the poll of the I/O of the host.
+test('a turn goes to Module.jspiTurn of the host', async () => {
+  const h = library();
+  const turns = [];
+  h.Module.jspiTurn = (f) => turns.push(f);
+  const p = h.turn();
+  assert.equal(turns.length, 1);
+  assert.equal(await settled(p), 'pending');
+  turns[0]();
+  assert.equal(await settled(p), undefined);
+});
+
+test('with no jspiTurn, a turn in Node.js waits for setImmediate', async () => {
+  const h = library();
+  await h.turn();
+  assert.equal(h.later.length, 0);
 });

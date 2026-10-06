@@ -151,6 +151,20 @@ addToLibrary({
   // after it (not Node.js, which exits then): no wait of it in a snapshot.
   jspi_main_may_return__sig: 'i',
   jspi_main_may_return: () => ENVIRONMENT_IS_NODE ? 0 : 1,
+  // A turn of the host for a scheduler that computes (jspi_host_yield of
+  // jspi_pthread.c, after a count of reductions). Module.jspiTurn
+  // (worker.js) decides what it is. Else setImmediate in Node.js: it runs
+  // after the poll of the I/O of the host. A task of jspiLater is not
+  // enough there, because tasks can run one after the other with no poll
+  // of the network.
+  jspi_host_turn__deps: ['$jspiLater'],
+  jspi_host_turn__async: true,
+  jspi_host_turn__sig: 'v',
+  jspi_host_turn: () => new Promise((r) => {
+    if (Module['jspiTurn']) Module['jspiTurn'](r);
+    else if (ENVIRONMENT_IS_NODE) setImmediate(r);
+    else jspiLater(r);
+  }),
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
   jspi_yield__sig: 'v',

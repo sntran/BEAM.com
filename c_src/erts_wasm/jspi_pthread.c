@@ -30,6 +30,7 @@ void jspi_spawn(struct __pthread *);
 int jspi_suspend(struct __pthread *, int timeout_ms);
 void jspi_resume(struct __pthread *);
 void jspi_yield(void);
+void jspi_host_turn(void);
 uintptr_t jspi_get_sp(void);
 void jspi_set_sp(uintptr_t);
 
@@ -207,6 +208,19 @@ int sched_yield(void)
     jspi_set_sp(sp);
     cur = self;
     return 0;
+}
+
+/* A turn of the event loop of the host: its I/O and timers run (the
+ * scheduler of ERTS calls it after a count of reductions). sched_yield()
+ * gives only a task, for the spin waits of ERTS. */
+void jspi_host_yield(void)
+{
+    struct __pthread *self = cur;
+    uintptr_t sp = jspi_get_sp();
+
+    jspi_host_turn();
+    jspi_set_sp(sp);
+    cur = self;
 }
 
 void pthread_exit(void *ret)

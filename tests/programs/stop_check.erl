@@ -5,6 +5,8 @@
 %%   GET /halt    the VM stops with erlang:halt(3)
 %%   GET /abort   the VM stops with erlang:halt(abort) (a trap in the runtime)
 %%   GET /slow    no answer
+%%   GET /spin    200 after a computation of about 100 million reductions,
+%%                with no wait
 %%   GET PATH     200 with the start time of the VM, for example "vm 12345"
 %%
 %% A new VM has a new start time, so the text shows that the host started a
@@ -30,8 +32,12 @@ serve(S) ->
         <<"/halt">> -> erlang:halt(3);
         <<"/abort">> -> erlang:halt(abort);
         <<"/slow">> -> receive after infinity -> ok end;
+        <<"/spin">> -> reply(S, io_lib:format("spin ~p~n", [spin(100000000, 0)]));
         _ -> reply(S, io_lib:format("vm ~p~n", [erlang:system_info(start_time)]))
     end.
+
+spin(0, A) -> A;
+spin(N, A) -> spin(N - 1, (A + N) rem 1000003).
 
 reply(S, Body) ->
     gen_tcp:send(S, ["HTTP/1.1 200 OK\r\ncontent-length: ", integer_to_list(iolist_size(Body)),

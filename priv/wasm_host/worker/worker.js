@@ -1087,6 +1087,10 @@ export class Vm {
     this.nextTimer = 1;
     this.env = env;
     this.waitListen = new Map();  // port -> the resolve functions of listening()
+    // BEAM_YIELD_REDS (1000000, about 50 ms of work; "0": none): the
+    // reductions between the timers of the turns (see turn).
+    this.turns = 0;
+    this.turnEvery = Math.ceil(limit(env.BEAM_YIELD_REDS, 1000000) / 20000);
     this.conns = new Set();    // the open connections of bridge() (see die)
     this.sockets = 0;          // the open WebSockets: bridge() and /.tcp/PORT
     this.peak = 0;             // the memory (MB) of the last log of the peak
@@ -1210,6 +1214,7 @@ export class Vm {
         } : undefined,
         // The boot arguments are set in preRun, after the release is unpacked.
         arguments: [],
+        jspiTurn: (f) => this.turn(f),
         // A plain Worker runs the jobs and timers of the threads in its
         // open requests. After adopt() (a Durable Object), they run on a
         // MessageChannel and on setTimeout.
@@ -1460,6 +1465,26 @@ export class Vm {
     } finally {
       crypto.getRandomValues = random;
     }
+  }
+
+  // A turn for a scheduler that computes (jspi_host_turn of jspi_lib.js,
+  // each 20000 reductions with no wait), so that the I/O of the host (new
+  // requests, sockets) runs while a process computes:
+  // - Deno: setImmediate, which runs after the poll of the I/O, and costs
+  //   little;
+  // - a Durable Object (and a web page): one turn for each BEAM_YIELD_REDS
+  //   reductions waits for a timer (about 1 ms or more); the other turns
+  //   are tasks;
+  // - a plain Worker: only tasks. A timer there resumes the thread in the
+  //   request that fired it, and that request can end before the work.
+  turn(f) {
+    if (this.plain) {
+      this.jobs.push(f);
+      return void this.handlers.at(-1)?.wake?.();
+    }
+    if (typeof Deno == 'object') return void setImmediate(f);
+    if (this.turnEvery && ++this.turns % this.turnEvery === 0) return void setTimeout(f, 0);
+    this.post(f);
   }
 
   // The linear memory of the VM in MB. It never shrinks, so it is also its
