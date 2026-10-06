@@ -125,7 +125,7 @@ the sorted keys and the deterministic encoding of such a map.
 
 ## 2. Models
 
-TLC checks the models of four protocols. Each model has an invariant
+TLC checks the models of five protocols. Each model has an invariant
 that a known fault breaks, so a check that passes means something.
 
 | Model | What it checks |
@@ -133,6 +133,7 @@ that a known fault breaks, so a check that passes means something.
 | `specs/KvBlocks.tla` | The blocks of a value in Workers KV: a reader gets a whole version or no version, and the old version stays until the new one is complete. |
 | `specs/GreenThreads.tla` | The green threads of the wasm runtime (`jspi_lib.js`, `jspi_pthread.c`): one thread runs at a time, no wake is lost, and no thread wakes before it waits. |
 | `specs/Admission.tla` (with `MC_Admission.tla`) | The admission of visitors: at most `Max` run, at most one for each address, and the queue keeps its order. |
+| `specs/SendWindow.tla` | The send window of a socket (`wasm_tcp`, `tcpSend` of `worker.js`): a send that waits always has a `tcp_sent` to come, the host holds less than the window and one send, and all the sends end. A drain that does not send when the window has room breaks it. |
 | `BeamCom.Protocol.Instance` | An Accord contract of one instance: each instance ends, and an instance that ended has no storage. |
 
 ```sh

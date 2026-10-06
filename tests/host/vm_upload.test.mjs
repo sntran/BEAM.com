@@ -73,7 +73,7 @@ test('a body goes in chunks, and waits while 256 KB are unread', async () => {
   let read = 0;
   for (let i = 0; i < 10 && bodyBytes(sent) < 600000; i++) {
     const got = head.length + bodyBytes(sent);
-    v.tcps.get(id).read(got - read);
+    v.tcps.get(id).ack(got - read);
     read = got;
     await settle();
   }

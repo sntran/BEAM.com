@@ -101,6 +101,16 @@ notes of its release.
   tarball of npm on the release. A re-run with another `beam.com` stops
   with an error. Before, a re-run could replace the file of the release,
   and `npx beam.com` then refused the download.
+- Flow control in the two directions. A send of the app waits while
+  256 KB or more of its socket waits for the peer (the new event
+  `tcp_sent` of `wasm_tcp`), so a client that reads slowly slows the app.
+  In Node.js, a download of 64 MiB to a slow client held 64 MB in the
+  host, and now 3 MB. The messages of a WebSocket client, a `connect()`
+  socket, and the body of a `fetch()` of the fetch path go to the VM
+  while less than 256 KB is unread there. A WebSocket whose app reads
+  too slowly closes with the code 1008 above 16 MiB that wait.
+- `gen_tcp:send/2` on a socket that the peer closed gives
+  `{error, closed}`. Before, it gave `ok`.
 
 ## 0.1.0-rc.2
 

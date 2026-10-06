@@ -684,6 +684,21 @@ as `transfer-encoding: chunked`. The host sends a part only while less
 than 256 KB of the body is unread in the VM: so a large upload does not
 fill the memory of the VM, and an app that reads slowly slows the client.
 
+The other directions have the same flow control:
+
+- A response of the app: a send of the app (`gen_tcp:send/2`) waits while
+  256 KB or more of the sends of its socket wait for the client. So a
+  client that reads slowly slows the app, and the host holds little of
+  the response. Before, a download of 64 MiB to a slow client held up to
+  64 MiB in the isolate.
+- The messages of a WebSocket client, and the data of a `connect()`
+  socket and of a `fetch()` of the fetch path: the host gives them to the
+  VM while less than 256 KB is unread there. A `connect()` socket pauses.
+  The messages of a WebSocket wait in the host; above 16 MiB that wait,
+  the WebSocket closes with the code 1008.
+- A WebSocket of the app to the client has no flow control: a WebSocket
+  of Workers does not tell the host how much waits.
+
 When the VM stops (`erlang:halt/1`, or a trap such as an allocation that
 failed), the host writes `beam: the VM stopped (REASON)` with the memory
 of the VM. Each open request then gets 503 with `retry-after: 1`, and each

@@ -129,7 +129,7 @@ test('a refused connect to a host of Cloudflare joins the fetch listener', async
   for (let i = 0; i < 200 && !events.some((e) => e.t === 'tcp_accept'); i++) await tick();
   assert.deepEqual(events.map((e) => e.t), ['tcp_open', 'tcp_accept']);
   const conn = events[1].conn;
-  assert.deepEqual(events[1], { t: 'tcp_accept', id: 'lf', conn, host: '104.16.0.1', port: 443, body: undefined });
+  assert.deepEqual(events[1], { t: 'tcp_accept', id: 'lf', conn, host: '104.16.0.1', port: 443, ack: true, sent: true, body: undefined });
   // The bytes of each side go to the other side.
   v.tcps.get('t1').send(new TextEncoder().encode('hello'));
   v.tcps.get(conn).send(new TextEncoder().encode('world'));

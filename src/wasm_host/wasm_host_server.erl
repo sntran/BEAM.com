@@ -19,7 +19,7 @@
 -export([init/1, handle_call/3, handle_cast/2]).
 
 -define(TABLE, ?MODULE).
--define(EVENTS, [<<"tcp_open">>, <<"tcp_data">>, <<"tcp_closed">>, <<"tcp_error">>,
+-define(EVENTS, [<<"tcp_open">>, <<"tcp_data">>, <<"tcp_closed">>, <<"tcp_error">>, <<"tcp_sent">>,
                  <<"tcp_listening">>, <<"sql_reply">>, <<"wasm_reply">>,
                  <<"fetch_head">>, <<"fetch_data">>, <<"fetch_end">>, <<"fetch_error">>]).
 
