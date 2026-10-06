@@ -133,13 +133,22 @@ defmodule WasmHostFetchTest do
     test "a failure after the head closes the connection" do
       {socket, _} =
         serve_plain(fn _req ->
-          {:ok, 200, "", [], fn -> {:data, "part", fn -> {:error, "reset"} end} end}
+          {:ok, 200, "", [], fn :more -> {:data, "part", fn :more -> {:error, "reset"} end} end}
         end)
 
       :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\n\r\n")
       assert {:ok, bytes} = recv_all(socket)
       assert bytes =~ "4\r\npart\r\n"
       refute bytes =~ "0\r\n\r\n"
+    end
+
+    test "a client that closes during the body stops the body" do
+      test = self()
+      {socket, _} = serve_plain(fn _req -> {:ok, 200, "", [], endless(test)} end)
+      :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\n\r\n")
+      assert {:ok, _} = :gen_tcp.recv(socket, 0, 5000)
+      :ok = :gen_tcp.close(socket)
+      assert_receive :stopped, 5000
     end
 
     test "no bad framing, no body over 32 MiB, and no call for them" do
@@ -286,9 +295,17 @@ defmodule WasmHostFetchTest do
     {socket, fn -> :counters.get(counter, 1) end}
   end
 
+  # A body with no end. Its stop sends :stopped to the test.
+  defp endless(test) do
+    fn
+      :more -> {:data, String.duplicate("x", 4096), endless(test)}
+      :stop -> send(test, :stopped)
+    end
+  end
+
   defp data(parts) do
-    Enum.reduce(Enum.reverse(parts), fn -> :done end, fn part, next ->
-      fn -> {:data, part, next} end
+    Enum.reduce(Enum.reverse(parts), fn :more -> :done end, fn part, next ->
+      fn :more -> {:data, part, next} end
     end)
   end
 

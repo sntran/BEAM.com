@@ -91,7 +91,19 @@ export class Beam extends DurableObject {
     if (this.vm !== vm) return;
     this.vm = null;
     this.resetting = true;
-    setTimeout(() => this.ctx.abort('the VM stopped'), 100);
+    setTimeout(() => this.reset('the VM stopped'), 100);
+  }
+
+  // A new instance of the object. When the host cannot abort the object,
+  // the next request starts a new VM in this instance: no request stays
+  // at 503.
+  reset(reason) {
+    try {
+      this.ctx.abort(reason);
+    } catch (e) {
+      console.log(`beam: the object did not reset (${e.message}): the next request starts a new VM`);
+      this.resetting = false;
+    }
   }
 
   // An instance: its time limit (from the registry).
@@ -110,7 +122,7 @@ export class Beam extends DurableObject {
   async expire() {
     this.expires = null;
     await this.ctx.storage.deleteAll();
-    if (this.vm) setTimeout(() => this.ctx.abort('the instance expired'), 0);
+    if (this.vm) setTimeout(() => this.reset('the instance expired'), 0);
   }
 
   // The registry (the object ".registry") admits a visitor: a ticket and a

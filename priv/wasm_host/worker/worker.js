@@ -437,7 +437,7 @@ function seed(m) {
 // most).
 const CHUNK = 1 << 20;
 
-class Persist {
+export class Persist {
   constructor(sql, dirs) {
     this.sql = sql;
     this.dirs = dirs.map((d) => d.replace(/\/+$/, '')).filter((d) => d.startsWith('/') && d.length > 1);
@@ -483,6 +483,14 @@ class Persist {
     }
   }
 
+  // Each file that the VM wrote after the last save. The timer of a write
+  // calls it, and also the stop of the VM, so a stop loses no write.
+  saveDirty() {
+    clearTimeout(this.flush);
+    this.flush = null;
+    for (const p of [...this.dirty]) this.save(this.fs, p);
+  }
+
   // A file or a directory, and all under it.
   remove(path) {
     for (const t of ['beam_fs', 'beam_fs_chunk']) {
@@ -502,6 +510,7 @@ class Persist {
   // Wrap the functions of FS that change files (the system calls of the
   // VM call them).
   attach(FS) {
+    this.fs = FS;
     const abs = (p) => (typeof p === 'string' && !p.startsWith('/') ? `${FS.cwd()}/${p}` : p);
     const wrap = (name, after) => {
       const f = FS[name];
@@ -514,10 +523,7 @@ class Persist {
     wrap('write', (stream) => {
       if (!this.under(stream.path)) return;
       this.dirty.add(stream.path);
-      this.flush ??= setTimeout(() => {
-        this.flush = null;
-        for (const p of [...this.dirty]) this.save(FS, p);
-      }, 1000);
+      this.flush ??= setTimeout(() => this.saveDirty(), 1000);
     });
     wrap('close', (stream) => {
       if (this.under(stream.path) && ((stream.flags & 3) !== 0 || this.dirty.has(stream.path))) this.save(FS, stream.path);
@@ -1153,6 +1159,9 @@ export class Vm {
     // the VM drops it, so that a new VM takes the next request.
     this.dead = null;
     this.died = new Promise((resolve) => { this.markDead = resolve; });
+    // The waits that the stop of the VM ends (stopWait): a race with
+    // this.died itself keeps one reaction for each race until the VM stops.
+    this.stopWaits = new Set();
     this.onDead = null;
     // The static files of the release (appFiles of app-com.js), when the
     // release is loaded: a request for one of them needs no VM.
@@ -1575,6 +1584,7 @@ export class Vm {
   die(reason) {
     if (this.dead) return;
     this.dead = reason;
+    try { this.persist?.saveDirty(); } catch (e) { this.log(`beam: persist: the save at the stop failed (${e.message})`); }
     const open = [...this.conns].filter((c) => !c.status).length;
     this.log(`beam: the VM stopped (${reason}), ${this.memory()}: ${open} open requests get 503`);
     // Each connection in its own request (run): in a plain Worker, its
@@ -1605,6 +1615,8 @@ export class Vm {
     }
     this.tcps.clear();
     this.markDead();
+    for (const resolve of this.stopWaits ?? []) resolve();
+    this.stopWaits?.clear();
     this.onDead?.(reason);
   }
 
@@ -1678,7 +1690,9 @@ export class Vm {
     // The first request makes the snapshot, and the other requests wait for
     // it, so that the snapshot has the state of no request.
     if (this.makeKey) this.snapping = this.makeSnapshot().finally(() => { this.snapping = null; });
-    if (this.snapping) await Promise.race([this.snapping, this.died]);
+    // A snapshot that takes too long does not hold the request: the VM
+    // goes on, and the snapshot ends later or fails.
+    if (this.snapping) await this.stopWait(this.snapping, SNAPSHOT_WAIT);
     if (this.dead) {
       finished();
       return this.stopped();
@@ -1802,6 +1816,37 @@ export class Vm {
     return new Promise((r) => this.waitListen.set(port, [...(this.waitListen.get(port) ?? []), r]));
   }
 
+  // The first of promise, the stop of the VM, and ms milliseconds (LATE).
+  // The wait leaves nothing behind when it ends.
+  async stopWait(promise, ms = 0) {
+    if (this.dead) return;
+    let resolve, timer;
+    const stop = new Promise((r) => { resolve = r; });
+    (this.stopWaits ??= new Set()).add(resolve);
+    if (ms) timer = setTimeout(() => resolve(LATE), ms);
+    try {
+      return await Promise.race([promise, stop]);
+    } finally {
+      clearTimeout(timer);
+      this.stopWaits.delete(resolve);
+    }
+  }
+
+  // The wait of a request for the listener of port, or null when it
+  // listens. cancel() removes the wait of a request that ends first.
+  listenWait(port) {
+    if (this.listeners.has(port)) return null;
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    this.waitListen.set(port, [...(this.waitListen.get(port) ?? []), resolve]);
+    const cancel = () => {
+      const rest = (this.waitListen.get(port) ?? []).filter((r) => r !== resolve);
+      if (rest.length) this.waitListen.set(port, rest);
+      else this.waitListen.delete(port);
+    };
+    return { promise, cancel };
+  }
+
   // The Origin that the app gets. Phoenix compares the Origin of a
   // WebSocket with the host of its config (PHX_HOST), so a page of the app on
   // another name of the Worker (wrangler dev, a custom domain, a preview URL,
@@ -1849,11 +1894,13 @@ export class Vm {
     // The time limit counts from here: the app can also fail to listen.
     const timeout = limit(this.env.BEAM_REQUEST_TIMEOUT, 60);
     const deadline = Date.now() + timeout * 1000;
-    let late;
-    const wait = [this.listening(port), this.died];
-    if (timeout) wait.push(new Promise((resolve) => { late = setTimeout(() => resolve(LATE), timeout * 1000); }));
-    const waited = await Promise.race(wait);
-    clearTimeout(late);
+    // Only a request that comes before the app listens waits here.
+    const listen = this.listenWait(port);
+    let waited;
+    if (listen) {
+      waited = await this.stopWait(listen.promise, timeout * 1000);
+      listen.cancel();
+    }
     if (this.dead) {
       finished();
       return this.stopped();
@@ -1874,6 +1921,8 @@ export class Vm {
     if (origin) headers.set('origin', origin);
     headers.delete('transfer-encoding');
     headers.delete('sec-websocket-extensions');  // no compression: frames as they are
+    // The host has the whole request: no "100 Continue" from the app.
+    headers.delete('expect');
     // The Workers runtime compresses the response for each client. The app
     // gets only gzip of Accept-Encoding: Plug.Static serves the files that
     // are gzipped already (Livebook has no other ones), and the response
@@ -1896,7 +1945,8 @@ export class Vm {
     } else if (!upgrade && !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', '0');
     let head = `${request.method} ${url.pathname}${url.search} HTTP/1.1\r\n`;
     for (const [k, v] of headers) head += `${k}: ${v}\r\n`;
-    const bytes = new TextEncoder().encode(head + '\r\n');
+    // The values of Headers are bytes (one character for each byte).
+    const bytes = latin1Bytes(head + '\r\n');
     if (this.dead) {
       finished();
       return this.stopped();
@@ -1908,7 +1958,12 @@ export class Vm {
       c.timeout = timeout;
       // A body can take long to come: the time limit starts at its end.
       if (!body) this.bridgeClock(c, deadline - Date.now());
-      this.tcps.set(id, { send: (b) => this.bridgeData(c, b), close: () => this.bridgeEnd(c), read: (n) => this.bridgeRead(c, n), h });
+      // An error of one connection ends that connection, not the VM.
+      this.tcps.set(id, {
+        send: (b) => this.bridgeGuard(c, () => this.bridgeData(c, b)),
+        close: () => this.bridgeGuard(c, () => this.bridgeEnd(c)),
+        read: (n) => this.bridgeRead(c, n), h,
+      });
       // ack: wasm_tcp tells the host what the app read (tcp_read).
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body });
       this.bridgeSend(c, bytes);
@@ -2028,22 +2083,33 @@ export class Vm {
   // Bytes from the HTTP server of the app to the connection c of bridge().
   bridgeData(c, data) {
     c.in.push(data);
-    if (!c.status) {
+    while (!c.status) {
       // The head of the response: it is small, so the bytes are joined.
       const head = c.in.peek(c.in.size);
       const end = indexOf(head, [13, 10, 13, 10]);
-      if (end < 0) return;
-      const lines = new TextDecoder().decode(head.subarray(0, end)).split('\r\n');
+      if (end < 0) {
+        if (head.length > HEAD_MAX) throw new Error(`a head of a response above ${HEAD_MAX} bytes`);
+        return;
+      }
+      // The bytes of a header value are characters of one byte (Headers
+      // takes no character above U+00FF).
+      const lines = latin1(head.subarray(0, end)).split('\r\n');
       c.in.drop(end + 4);
-      c.status = Number(lines[0].split(' ')[1]);
+      const status = Number(lines[0].split(' ')[1]);
+      // An informational head (100 Continue, 103 Early Hints): the head of
+      // the response comes after it.
+      if (status >= 100 && status < 200 && !(status === 101 && c.upgrade)) continue;
       const headers = new Headers();
       for (const l of lines.slice(1)) {
         const i = l.indexOf(':');
         headers.append(l.slice(0, i).trim(), l.slice(i + 1).trim());
       }
       clearTimeout(c.timer);
-      if (c.status === 101 && c.upgrade) return this.bridgeUpgrade(c);
-      if (c.upgrade && c.status === 403) {
+      if (status === 101) {
+        c.status = 101;
+        return this.bridgeUpgrade(c);
+      }
+      if (c.upgrade && status === 403) {
         console.log(`beam: the app refused the WebSocket of ${c.path} (403) from the origin ${c.origin}. ` +
           `A Phoenix app compares the Origin with the host of its config (PHX_HOST=${this.env.PHX_HOST ?? this.vars.PHX_HOST ?? ''}): see check_origin.`);
       }
@@ -2051,14 +2117,21 @@ export class Vm {
       c.chunked = /chunked/i.test(headers.get('transfer-encoding') ?? '');
       headers.delete('transfer-encoding');
       headers.delete('connection');
-      if (c.head || c.status === 204 || c.status === 304) { c.length = 0; c.chunked = false; }
+      if (c.head || status === 204 || status === 304) { c.length = 0; c.chunked = false; }
       c.left = 0;
       const { readable, writable } = new TransformStream();
-      c.writer = writable.getWriter();
       // The app compressed the body (Bandit: gzip, deflate): the runtime
       // must send it as it is, not compress it again.
       const encodeBody = headers.has('content-encoding') ? 'manual' : 'automatic';
-      c.resolve(new Response(c.length === 0 ? null : readable, { status: c.status, headers, encodeBody }));
+      // The Response first: a status that it refuses ends the connection
+      // with 502 (bridgeGuard), and the client gets an answer.
+      const response = new Response(c.length === 0 ? null : readable, { status, headers, encodeBody });
+      c.status = status;
+      c.writer = writable.getWriter();
+      // The client went away (or the stream failed): the app gets the end
+      // of the connection.
+      c.writer.closed.catch(() => this.bridgeDone(c));
+      c.resolve(response);
       c.finished();
     }
     if (c.ws) return this.bridgeFrames(c);
@@ -2076,7 +2149,7 @@ export class Vm {
         if (c.left > 0) {
           const part = pieces.next(c.left);
           c.left -= part.length;
-          c.writer.write(part);
+          this.bridgeWrite(c, part);
           if (c.left === 0) c.left = -2;  // then the CRLF of the chunk
           continue;
         }
@@ -2104,9 +2177,40 @@ export class Vm {
     while (pieces.size && c.length !== 0) {
       const part = pieces.next(c.length ?? Infinity);
       if (c.length !== null) c.length -= part.length;
-      c.writer.write(part);
+      this.bridgeWrite(c, part);
     }
     if (c.length === 0) this.bridgeDone(c);
+  }
+
+  // A part of the body to the client. A write to a stream that the client
+  // closed fails, and writer.closed then ends the connection.
+  bridgeWrite(c, part) {
+    c.writer?.write(part).catch(() => {});
+  }
+
+  // fn for the connection c (an event of the app). An exception ends c:
+  // 502 before the head of the response, else the end of the stream or of
+  // the WebSocket. Before, it stopped the thread of the VM, and so the VM.
+  bridgeGuard(c, fn) {
+    try {
+      fn();
+    } catch (e) {
+      this.log(`beam: the response of ${c.path} failed (${e.message}): the connection ends`);
+      if (c.ws) {
+        try { c.ws.close(1011); } catch {}
+        this.socketGone(c);
+        this.conns.delete(c);
+        this.tcps.delete(c.id);
+        this.event({ t: 'tcp_closed', id: c.id });
+        this.bridgeRelease(c);
+      } else if (!c.status) {
+        this.bridgeRefuse(c, new Response('bad gateway\n', { status: 502 }));
+      } else {
+        c.writer?.abort(e).catch(() => {});
+        c.writer = null;
+        this.bridgeDone(c);
+      }
+    }
   }
 
   // A chunked body that is not HTTP/1.1: the stream of the response
@@ -2185,7 +2289,7 @@ export class Vm {
     });
     server.addEventListener('close', (e) => {
       this.socketGone(c);
-      const code = e.code && e.code !== 1005 ? e.code : 1000;
+      const code = wireCode(e.code);
       this.event({ t: 'tcp_data', id: c.id }, frame(8, new Uint8Array([code >> 8, code & 255])));
     });
     c.resolve(new Response(null, { status: 101, webSocket: client }));
@@ -2209,7 +2313,7 @@ export class Vm {
       const data = pieces.take(len);
       if (op === 9) { this.event({ t: 'tcp_data', id: c.id }, frame(10, data)); continue; }
       if (op === 10) continue;
-      if (op === 8) { c.ws.close(len >= 2 ? (data[0] << 8) | data[1] : 1000); continue; }
+      if (op === 8) { closeSocket(c.ws, len >= 2 ? (data[0] << 8) | data[1] : 1000); continue; }
       if (op !== 0) c.op = op;
       c.frames.push(data);
       if (!fin) continue;
@@ -2217,7 +2321,8 @@ export class Vm {
       let i = 0;
       for (const f of c.frames) { all.set(f, i); i += f.length; }
       c.frames = [];
-      c.ws.send(c.op === 1 ? new TextDecoder().decode(all) : all);
+      // The client can close at any time: a send after it is dropped.
+      try { c.ws.send(c.op === 1 ? new TextDecoder().decode(all) : all); } catch {}
     }
   }
 
@@ -2236,7 +2341,7 @@ export class Vm {
     if (h) h.sockets++;
     const counted = { counted: true };
     this.sockets++;
-    this.tcps.set(id, { send: (b) => server.send(b), close: () => { this.socketGone(counted); server.close(); }, h });
+    this.tcps.set(id, { send: (b) => { try { server.send(b); } catch {} }, close: () => { this.socketGone(counted); try { server.close(); } catch {} }, h });
     this.event({ t: 'tcp_accept', id: listener, conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
     server.addEventListener('message', (e) => {
       this.tcpData(id, typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data);
@@ -2330,6 +2435,9 @@ export class Vm {
     } catch (e) {
       console.log(`beam: resolve ${name}: ${e.message}`);
     }
+    // At most DNS_MAX names: a new name removes the oldest.
+    this.dns.delete(name);
+    if (this.dns.size >= DNS_MAX) this.dns.delete(this.dns.keys().next().value);
     this.dns.set(name, { at: now, addresses });
     return addresses.some((a) => inRanges(a));
   }
@@ -2346,6 +2454,8 @@ export class Vm {
       this.fetchConns.delete(conn);
       this.tcps.delete(id);
       this.tcps.delete(conn);
+      // The fetches of this connection: no one reads their bodies now.
+      for (const ac of this.fetches.values()) if (ac.conn === conn) ac.abort();
       this.event({ t: 'tcp_closed', id: other });
       done();
     };
@@ -2366,6 +2476,7 @@ export class Vm {
     if (h) h.sockets++;
     this.fetchPending++;
     const ac = new AbortController();
+    ac.conn = msg.conn;
     this.fetches.set(msg.id, ac);
     try {
       const url = c && fetchUrl(c.host, c.port, msg.tls, msg.path);
@@ -2417,7 +2528,18 @@ export class Vm {
     }
   }
 
+  // A message of the VM (jspi_host_send). It runs in the thread of the VM:
+  // an exception of the host must not stop that thread, so it goes to the
+  // log.
   onsend(bytes) {
+    try {
+      this.onsendEvent(bytes);
+    } catch (e) {
+      this.log(`beam: the host failed on a message of the VM (${e?.message ?? e})`);
+    }
+  }
+
+  onsendEvent(bytes) {
     const nl = bytes.indexOf(10);
     const msg = JSON.parse(new TextDecoder().decode(bytes.subarray(0, nl)));
     // bytes is a new array (jspi_host_send): the body is a view of it.
@@ -2581,8 +2703,41 @@ function limit(text, fallback) {
 }
 
 // The position of the bytes pat in b, or -1.
-// The longest size line of a chunk of a response (with its extensions).
+// The longest size line of a chunk of a response (with its extensions),
+// and the longest head of a response.
 const CHUNK_LINE = 4096;
+const HEAD_MAX = 1 << 20;
+// The longest wait of a request for a snapshot that the VM makes.
+const SNAPSHOT_WAIT = 10000;
+// The names of the fetch path in the cache of isCloudflare.
+const DNS_MAX = 1024;
+
+// Bytes as text of one character for each byte (ISO-8859-1), and back.
+function latin1(b) {
+  let s = '';
+  for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192));
+  return s;
+}
+function latin1Bytes(s) {
+  const b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+  return b;
+}
+
+// The close code of a client for the app: 1005, 1006 and 1015 are not
+// codes for the wire (RFC 6455).
+function wireCode(code) {
+  if (code === 1006 || code === 1015) return 1001;
+  return code && code !== 1005 ? code : 1000;
+}
+
+// close(code) of a WebSocket, with a code that it takes (else 1000), and
+// no exception for a socket that is closed already.
+function closeSocket(ws, code) {
+  try {
+    ws.close(code === 1000 || (code >= 3000 && code <= 4999) || (code >= 1001 && code <= 1014 && ![1004, 1005, 1006].includes(code)) ? code : 1000);
+  } catch {}
+}
 
 // Bytes in pieces (views of the arrays that came, no copy), joined only
 // when a reader needs them in one array (peek, take).

@@ -212,8 +212,9 @@ handshake_opts(CA) ->
 %% --- HTTP ----------------------------------------------------------------------
 
 %% The requests of one connection, one at a time. Call(Request) gives
-%% {ok, Status, Reason, Headers, Next} or {error, Reason}, and Next() gives
-%% {data, Bin, Next}, done or {error, Reason}. For an upgrade, the request
+%% {ok, Status, Reason, Headers, Next} or {error, Reason}. Next(more) gives
+%% {data, Bin, Next}, done or {error, Reason}, and Next(stop) stops the
+%% body (the program closed the connection). For an upgrade, the request
 %% has the key upgrade, the bytes of its head. Then Call gives
 %% {tunnel, Transport} (a connection to the host, which got the head) or
 %% {error, Reason}, and the bytes of the two connections go both ways.
@@ -304,11 +305,11 @@ pipe(From, To) ->
 %% The body of the response, chunk by chunk. A failure after the head can
 %% only close the connection: the program sees a body that ends early.
 stream(T, Next) ->
-    case Next() of
+    case Next(more) of
         {data, Data, Next1} ->
             case send(T, wasm_host_http:chunk(Data)) of
                 ok -> stream(T, Next1);
-                _ -> closed
+                _ -> Next1(stop), closed
             end;
         done ->
             send(T, wasm_host_http:last_chunk());
@@ -317,7 +318,7 @@ stream(T, Next) ->
     end.
 
 drain(Next) ->
-    case Next() of
+    case Next(more) of
         {data, _, Next1} -> drain(Next1);
         done -> ok;
         {error, _} -> closed
@@ -437,7 +438,7 @@ call_host(#{conn := Conn, tls := Tls, method := Method, path := Path, headers :=
     receive
         {wasm_host, <<"fetch_head">>, #{<<"id">> := Id} = M, _} ->
             {ok, maps:get(<<"status">>, M), maps:get(<<"reason">>, M, <<>>),
-             [{K, V} || [K, V] <- maps:get(<<"headers">>, M, [])], fun() -> next(Id) end};
+             [{K, V} || [K, V] <- maps:get(<<"headers">>, M, [])], body(Id)};
         {wasm_host, <<"fetch_error">>, #{<<"id">> := Id} = M, _} ->
             done(Id),
             {error, maps:get(<<"message">>, M, <<"error">>)}
@@ -448,7 +449,7 @@ call_host(#{conn := Conn, tls := Tls, method := Method, path := Path, headers :=
 
 next(Id) ->
     receive
-        {wasm_host, <<"fetch_data">>, #{<<"id">> := Id}, Data} -> {data, Data, fun() -> next(Id) end};
+        {wasm_host, <<"fetch_data">>, #{<<"id">> := Id}, Data} -> {data, Data, body(Id)};
         {wasm_host, <<"fetch_end">>, #{<<"id">> := Id}, _} -> done(Id), done;
         {wasm_host, <<"fetch_error">>, #{<<"id">> := Id} = M, _} ->
             done(Id),
@@ -456,6 +457,12 @@ next(Id) ->
     after ?IDLE_TIMEOUT ->
         cancel(Id),
         {error, <<"the host sent no data">>}
+    end.
+
+%% The rest of the body of the fetch Id: more, or stop.
+body(Id) ->
+    fun(more) -> next(Id);
+       (stop) -> cancel(Id)
     end.
 
 done(Id) -> wasm_host_server:unregister(Id).
