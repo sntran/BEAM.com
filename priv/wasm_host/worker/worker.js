@@ -1866,18 +1866,21 @@ export class Vm {
   // unread in the VM (tcp_read of wasm_tcp): so a large body does not fill
   // the memory of the VM, and a slow app slows the client.
   async bridgeUpload(c, body, chunked, max) {
+    // workerd has readAtLeast. The option min of the standard BYOB read is
+    // not safe: when the stream closes with fewer bytes than min, the read
+    // errors the stream (Node.js 26, Chromium). So the other hosts use the
+    // default reader, and the parts come from the chunks here.
     let byob = null;
     try { byob = body.getReader({ mode: 'byob' }); } catch {}
+    if (byob && !byob.readAtLeast) { byob.releaseLock(); byob = null; }
     const reader = byob ?? body.getReader();
-    // workerd has readAtLeast; the standard has the option min.
-    const read = !byob ? () => reader.read()
-      : byob.readAtLeast ? () => byob.readAtLeast(UPLOAD_PART, new Uint8Array(UPLOAD_READ))
-      : () => byob.read(new Uint8Array(UPLOAD_READ), { min: UPLOAD_PART });
+    const read = byob ? () => byob.readAtLeast(UPLOAD_PART, new Uint8Array(UPLOAD_READ)) : () => reader.read();
     let total = 0;
+    let part = [];
+    let size = 0;
     try {
       for (;;) {
-        // A read with min can end the stream with its last bytes (done
-        // and a value).
+        // A read can end the stream with its last bytes (done and a value).
         const { value, done } = await read();
         if (c.done || this.dead) break;
         if (value?.length) {
@@ -1886,11 +1889,18 @@ export class Vm {
             this.bridgeRefuse(c, this.tooLarge(max));
             break;
           }
+          part.push(value);
+          size += value.length;
+        }
+        if (size && (size >= UPLOAD_PART || done)) {
           while (c.sent - c.read >= UPLOAD_WINDOW && !c.done && !this.dead) {
             await new Promise((resolve) => { c.room = resolve; });
           }
           if (c.done || this.dead) break;
-          this.bridgeSend(c, chunked ? chunk(value) : value);
+          const bytes = part.length === 1 ? part[0] : join(part, size);
+          part = [];
+          size = 0;
+          this.bridgeSend(c, chunked ? chunk(bytes) : bytes);
         }
         if (done) {
           if (chunked) this.bridgeSend(c, CHUNKS_END);
@@ -2429,11 +2439,19 @@ const LATE = Symbol('late');
 
 // A request body (bridgeUpload): the bytes that can be unread in the VM,
 // the smallest part of an event (except the last one), and the size of a
-// read. A client chunk can be 2 KB (workerd), and each event costs a turn
-// of the VM.
+// read in workerd. A client chunk can be 2 KB (workerd), and each event
+// costs a turn of the VM.
 const UPLOAD_WINDOW = 256 * 1024;
 const UPLOAD_PART = 16 * 1024;
 const UPLOAD_READ = 64 * 1024;
+
+// The size bytes of the list parts, as one array.
+function join(parts, size) {
+  const b = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) { b.set(p, at); at += p.length; }
+  return b;
+}
 
 // A chunk of a chunked body, and the end of the body.
 const CHUNKS_END = new TextEncoder().encode('0\r\n\r\n');

@@ -18,8 +18,9 @@
 # examples/worker, the stateless Worker.
 set -eu
 cd "$1"
-export WRANGLER_SEND_METRICS=false BEAM_REQUEST_TIMEOUT=2
-printf 'BEAM_REQUEST_TIMEOUT=2\n' > .dev.vars
+# 8 s: /spin computes for 1 to 3 s on a CI runner, and must end with 200.
+export WRANGLER_SEND_METRICS=false BEAM_REQUEST_TIMEOUT=8
+printf 'BEAM_REQUEST_TIMEOUT=8\n' > .dev.vars
 
 # PORT PATH: the status of GET PATH (000: no answer in 20 s).
 get() {

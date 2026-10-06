@@ -114,7 +114,7 @@ test('a body that grows above BEAM_MAX_BODY gets 413, and the app gets the end',
   await settle();
   const id = sent.find((s) => s.header.t === 'tcp_accept').header.conn;
   assert.ok(sent.some((s) => s.header.t === 'tcp_closed' && s.header.id === id));
-  assert.equal(data(sent).length, 2);  // the head and the first 6 bytes
+  assert.equal(data(sent).length, 1);  // the head: 6 bytes are not a part
   assert.equal(v.conns.size, 0);
 });
 
@@ -146,6 +146,25 @@ test('small chunks of a byte stream reach the app in parts of 16 KB or more', as
   await settle();
   const parts = data(sent).slice(1).map((s) => s.body.length);
   assert.equal(parts.reduce((a, b) => a + b, 0), 20 * 2048);
+  assert.ok(parts.length < 20, `parts: ${parts}`);
+  for (const n of parts.slice(0, -1)) assert.ok(n >= 16384, `parts: ${parts}`);
+});
+
+// The option min of a BYOB read errors a stream that closes with fewer
+// bytes (Node.js 26, Chromium): outside workerd, the host gathers the
+// chunks of the default reader.
+test('small chunks of a stream that is not a byte stream also go in parts of 16 KB or more', async () => {
+  const { v, sent } = vm();
+  const src = source();
+  bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': String(20 * 2048 + 5) },
+  }));
+  for (let i = 0; i < 20; i++) src.push(2048);
+  src.push(5);
+  src.end();
+  await settle();
+  const parts = data(sent).slice(1).map((s) => s.body.length);
+  assert.equal(parts.reduce((a, b) => a + b, 0), 20 * 2048 + 5);
   assert.ok(parts.length < 20, `parts: ${parts}`);
   for (const n of parts.slice(0, -1)) assert.ok(n >= 16384, `parts: ${parts}`);
 });
