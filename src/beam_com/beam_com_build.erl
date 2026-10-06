@@ -13,9 +13,9 @@
 %%
 %% The zip of the new file also has its edge part (.wasm/, see
 %% beam_com_wasm:overlay/4), unless --no-edge: then the same file runs in
-%% the WebAssembly runtime too (Workers, Deno, a web page). With
-%% --edge-only, the new file is only a zip with the entries that the
-%% WebAssembly runtime reads, and no native program.
+%% the WebAssembly runtime too (Workers, Deno, a web page). With --target
+%% wasm32 and -o FILE.com, the new file is only a zip with the entries
+%% that the WebAssembly runtime reads, and no native program.
 -module(beam_com_build).
 
 -export([run/1, allow/2, check_target/1, split_dir/1, temp_dir/1, executable/0]).
@@ -42,8 +42,6 @@
 %% browser: OUTPUT/app.com (the native file) and the page of the
 %% WebAssembly runtime (beam_com_wasm:write_site/5).
 run(#{page := true} = Opts) ->
-    maps:get(edge_only, Opts, false) andalso
-        throw({error, "--edge-only writes one file, not a site of --page", []}),
     maps:get(target, Opts, none) =:= ?WASM andalso
         throw({error, "--page writes a site with a native app.com, not with --target wasm32", []}),
     maps:get(edge, Opts, true) =:= false andalso
@@ -56,10 +54,12 @@ run(#{page := true} = Opts) ->
         throw({error, "~ts: a file; --page writes a directory", [Dir]}),
     ok = filelib:ensure_path(Dir),
     run((maps:remove(page, Opts))#{output => filename:join(Dir, "app.com"), site => Dir});
-run(#{input := Input0, apps := ExtraApps} = Opts) ->
-    Wasm = maps:get(target, Opts, none) =:= ?WASM,
-    Wasm andalso maps:get(edge, Opts, true) =:= false andalso
+run(#{input := Input0, apps := ExtraApps} = Opts0) ->
+    Wasm0 = maps:get(target, Opts0, none) =:= ?WASM,
+    Wasm0 andalso maps:get(edge, Opts0, true) =:= false andalso
         throw({error, "--no-edge is for native files, not for --target wasm32", []}),
+    Opts = edge_file(Opts0),
+    Wasm = maps:get(target, Opts, none) =:= ?WASM,
     check_edge_only(Opts),
     Input = string:trim(slashes(Input0, os:type()), trailing, "/\\"),
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
@@ -71,14 +71,21 @@ run(#{input := Input0, apps := ExtraApps} = Opts) ->
         {false, Rel} -> release_exe(Input, Output, Opts, Rel, Root)
     end.
 
-%% --edge-only: the edge part of a file of -o, with no native program.
+%% --target wasm32 with -o FILE.com: the file of a native build with only
+%% its edge part (edge_only), and no native program. Another OUTPUT is the
+%% directory of the runtime (beam_com_wasm:write/3).
+edge_file(#{target := ?WASM, output := Output} = Opts) ->
+    case lists:suffix(".com", Output) of
+        true -> (maps:remove(target, Opts))#{edge_only => true};
+        false -> Opts
+    end;
+edge_file(Opts) ->
+    Opts.
+
+%% The sandbox is for a native program.
 check_edge_only(#{edge_only := true} = Opts) ->
-    maps:get(edge, Opts, true) =:= false andalso
-        throw({error, "--edge-only needs the edge part: not with --no-edge", []}),
-    maps:is_key(target, Opts) andalso
-        throw({error, "--edge-only has no native program: not with --target", []}),
     maps:is_key(allow, Opts) andalso
-        throw({error, "--allow-* is for native files, not for --edge-only", []}),
+        throw({error, "--allow-* is for native files, not for --target wasm32", []}),
     ok;
 check_edge_only(_Opts) ->
     ok.
@@ -301,12 +308,12 @@ kept_data(Name, Root) ->
             <<>>
     end.
 
-%% --edge-only: the entries that the WebAssembly runtime reads (lib/,
-%% releases/ and .wasm/, see app-com.js of wasm_host) and the licenses, in
-%% a zip with no native program before them.
+%% --target wasm32 with -o FILE.com: the entries that the WebAssembly
+%% runtime reads (lib/, releases/ and .wasm/, see app-com.js of wasm_host)
+%% and the licenses, in a zip with no native program before them.
 output_data(Bin, Keep, New, Edge, #{edge_only := true}) ->
     Edge =:= [] andalso
-        throw({error, "--edge-only: there is no WebAssembly runtime in ~ts, so no edge part",
+        throw({error, "--target wasm32: there is no WebAssembly runtime in ~ts, so no edge part",
                [beam_com:name()]}),
     Exe = iolist_to_binary(beam_com_zip:write(Bin, Keep, New)),
     beam_com_zip:only(Exe, fun edge_entry/1);
@@ -316,7 +323,7 @@ output_data(Bin, Keep, New, _Edge, Opts) ->
 edge_entry(Name) ->
     lists:any(fun(Dir) -> lists:prefix(Dir, Name) end, ["lib/", "releases/", ".wasm/", "licenses/"]).
 
-%% A file of --edge-only is not a program.
+%% A file of only the edge part is not a program.
 mode(#{edge_only := true}) -> 8#644;
 mode(_Opts) -> 8#755.
 

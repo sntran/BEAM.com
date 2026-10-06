@@ -127,19 +127,20 @@ The build of a native file does not run the program. So the VM loads
 the modules one by one. `--no-edge` leaves the edge part out, and a `beam.com` with no
 WebAssembly runtime writes none.
 
-`--edge-only` writes only the part of the file that the WebAssembly
-runtime reads: a zip with `lib/`, `releases/`, `.wasm/` and the
-licenses, with no native program before it. `serve(app)`, `deno.js` and
+`--target wasm32` with `-o FILE.com` writes only the part of the file
+that the WebAssembly runtime reads: a zip with `lib/`, `releases/`,
+`.wasm/` and the licenses, with no native program before it. `serve(app)`, `deno.js` and
 the web page run it as they run `app.com`, but it does not run natively.
 It is about 25 MB smaller. A Worker keeps its modules in the memory of
 its isolate, so the VM also gets about 25 MB more of the 128 MB:
 
 ```sh
-npx beam.com _build/prod/rel/my_app -o edge.com --edge-only
+npx beam.com _build/prod/rel/my_app -o edge.com --target wasm32
 ```
 
-The build refuses `--edge-only` with `--no-edge`, `--target`, `--page`
-and `--allow-*`. A snapshot of the build (`npx beam.com --snapshot`) of
+The build refuses it with `--no-edge` and `--allow-*`. An output that
+does not end with `.com` is the runtime directory (see "The runtime
+directory (internal)" in `docs/BUILDING.md`). A snapshot of the build (`npx beam.com --snapshot`) of
 `edge.com` is the same as one of `app.com` of the same build: its key is
 the release.
 
@@ -173,7 +174,7 @@ made the file:
   git push"). On Workers, Wrangler bundles the file into the Worker as a
   Data module. A Worker can be at most 64 MiB, and gzip does not change
   this limit: for a large app with a snapshot of the build, deploy the
-  file of `--edge-only`. On Deno, `deno.js` of the package is
+  file of `--target wasm32` with `-o FILE.com`. On Deno, `deno.js` of the package is
   the module `beam.com`. It also runs as it is, with the path of `app.com`
   as its first argument (or `BEAM_APP`):
   `deno serve -A node_modules/beam.com/runtime/deno.js app.com`. It needs
@@ -537,9 +538,12 @@ snapshot, and writes `beam: the snapshot of the build has the flags
 allocators of ERTS: with `-Mea min`, a Phoenix app used 72 MB in place
 of 42 MB.
 
-The pages of the snapshot are in gzip (the format `BEAMSNZ1`), and the
-host inflates them before the restore. `--no-compress` writes them as
-they are (`BEAMSNP1`). Measured with a small app in `wrangler dev`
+The pages of a snapshot at the boot point are in gzip (the format
+`BEAMSNZ1`), and the host inflates them before the restore.
+`--no-compress` writes them as they are (`BEAMSNP1`). A full snapshot
+has no gzip, because a stateless Worker restores it in the global scope,
+and the global scope cannot inflate. A full snapshot in gzip restores in
+the first request. Measured with a small app in `wrangler dev`
 (October 2026):
 
 | | Snapshot | Before the restore |

@@ -5,7 +5,8 @@
 // npx beam.com --snapshot APP.com [-o FILE] [--full] [--warm PATH]...
 // [--env NAME=VALUE]... [--no-compress]: the snapshot of the build of
 // APP.com for serve(app, { snapshot }) of a Worker (snapshot() of
-// node.mjs), in FILE (default APP.snapshot), with its pages in gzip. Give
+// node.mjs), in FILE (default APP.snapshot), with its pages in gzip (not
+// with --full: the global scope of a Worker cannot inflate). Give
 // the BEAM_ERL_FLAGS of the Worker with --env: a Worker with other flags
 // boots in place of the snapshot. It runs here, with no download of
 // beam.com.

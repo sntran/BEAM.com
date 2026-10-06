@@ -187,8 +187,6 @@ build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
 build_options(["--no-edge" | Rest], Opts) ->
     build_options(Rest, Opts#{edge => false});
-build_options(["--edge-only" | Rest], Opts) ->
-    build_options(Rest, Opts#{edge_only => true});
 build_options(["--page" | Rest], Opts) ->
     build_options(Rest, Opts#{page => true});
 build_options(["--cacerts", File | Rest], Opts) ->
@@ -283,18 +281,17 @@ help([]) ->
      "            (with -o) a native file for one system, not an APE file:\n"
      "            x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,\n"
      "            x86_64-unknown-freebsd or x86_64-apple-darwin (also\n"
-     "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos)\n"
+     "            x86_64-linux, aarch64-linux, x86_64-freebsd, x86_64-macos).\n"
+     "            wasm32 with -o FILE.com: only the part that the WebAssembly\n"
+     "            runtime reads (a zip with the release and the edge part), with\n"
+     "            no native program: about 25 MB less, for serve(app) of the\n"
+     "            npm package beam.com. It does not run natively\n"
      "  --page    (with -o) OUTPUT is a directory: a static site that runs\n"
      "            the app in the browser of each visitor (GitHub Pages), with\n"
      "            OUTPUT/app.com and the page of the WebAssembly runtime\n"
      "  --no-edge (with -o) no WebAssembly part in OUTPUT. By default, the\n"
      "            same file also runs in the WebAssembly runtime (Workers,\n"
      "            Deno, a web page), with about 40 to 80 KB more\n"
-     "  --edge-only\n"
-     "            (with -o) OUTPUT has only the part that the WebAssembly\n"
-     "            runtime reads: a zip with the release and the edge part, with\n"
-     "            no native program (about 25 MB less). It runs at the edge\n"
-     "            (serve(app) of the npm package beam.com), but not natively\n"
      "  --cacerts FILE\n"
      "            the trusted root certificates of the WebAssembly runtime\n"
      "            (TLS), a PEM file, in the edge part of OUTPUT; by default,\n"

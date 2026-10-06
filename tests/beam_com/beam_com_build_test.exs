@@ -1084,14 +1084,14 @@ defmodule BeamComBuildTest do
                )
     end
 
-    # --edge-only: a zip with only the entries that the WebAssembly runtime
-    # reads (lib/, releases/, .wasm/) and the licenses, with no native
-    # program before them (beam_com_zip:only/2).
+    # --target wasm32 with -o FILE.com: a zip with only the entries that the
+    # WebAssembly runtime reads (lib/, releases/, .wasm/) and the licenses,
+    # with no native program before them (beam_com_zip:only/2).
     @tag timeout: 120_000
-    test "run/1 with --edge-only: only the edge part", %{dir: dir} do
+    test "run/1 with --target wasm32 and -o FILE.com: only the edge part", %{dir: dir} do
       {root, exe} = edge_prepare(dir)
       {:ok, full} = :file.read_file(edge_build(dir, root, exe, %{}))
-      out = edge_build(dir, root, exe, %{edge_only: true})
+      out = edge_build(dir, root, exe, %{target: ~c"wasm32-unknown-emscripten"})
       {:ok, bin} = :file.read_file(out)
 
       edge? = fn n ->
@@ -1113,7 +1113,7 @@ defmodule BeamComBuildTest do
       assert 0o644 == (elem(info, 7) &&& 0o777)
     end
 
-    test "run/1 with --edge-only and no WebAssembly runtime", %{dir: dir} do
+    test "run/1 with --target wasm32, -o FILE.com and no WebAssembly runtime", %{dir: dir} do
       {root, exe} = prepare(dir)
       f = write(dir, ~c"x.erl", ~c"-module(x).\n-export([main/1]).\nmain(_) -> ok.\n")
 
@@ -1123,34 +1123,36 @@ defmodule BeamComBuildTest do
         output: :filename.join(dir, ~c"x.com"),
         root: root,
         exe: exe,
-        edge_only: true
+        target: ~c"wasm32-unknown-emscripten"
       }
 
-      assert {:error, ~c"--edge-only: there is no WebAssembly runtime in ~ts, so no edge part",
-              [_]} =
+      assert {:error,
+              ~c"--target wasm32: there is no WebAssembly runtime in ~ts, so no edge part", [_]} =
                catch_throw(silent(fn -> :beam_com_build.run(run) end))
     end
 
-    test "run/1 with --edge-only and another option" do
+    test "run/1 with --target wasm32, -o FILE.com and another option" do
       run = fn opts ->
         catch_throw(
           :beam_com_build.run(
-            Map.merge(%{input: ~c"x.erl", apps: [], output: ~c"x.com", edge_only: true}, opts)
+            Map.merge(
+              %{
+                input: ~c"x.erl",
+                apps: [],
+                output: ~c"x.com",
+                target: ~c"wasm32-unknown-emscripten"
+              },
+              opts
+            )
           )
         )
       end
 
-      assert {:error, ~c"--edge-only needs the edge part: not with --no-edge", []} ==
+      assert {:error, ~c"--no-edge is for native files, not for --target wasm32", []} ==
                run.(%{edge: false})
 
-      assert {:error, ~c"--edge-only has no native program: not with --target", []} ==
-               run.(%{target: ~c"x86_64-unknown-linux-gnu"})
-
-      assert {:error, ~c"--allow-* is for native files, not for --edge-only", []} ==
+      assert {:error, ~c"--allow-* is for native files, not for --target wasm32", []} ==
                run.(%{allow: %{}})
-
-      assert {:error, ~c"--edge-only writes one file, not a site of --page", []} ==
-               run.(%{page: true, output: ~c"site"})
     end
 
     # --page: OUTPUT is a site, with OUTPUT/app.com (beam_com_wasm:write_site/5).

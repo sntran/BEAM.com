@@ -586,14 +586,14 @@ jobs:
       # point for examples/phoenix_demo (the first Durable Object restores
       # it, as the store has no snapshot yet), and a full one for
       # examples/worker (the stateless Worker restores its VM in the global
-      # scope). Deno boots. examples/worker runs the file of --edge-only:
-      # the edge part, with no native program.
+      # scope). Deno boots. examples/worker runs the file of --target wasm32
+      # with -o FILE.com: the edge part, with no native program.
       - name: The apps on Workers and Deno, with the snapshot of the build
         run: |
           for name in phoenix_demo worker; do
             cp -R "$RUNNER_TEMP/hosts-$name" "$RUNNER_TEMP/snapshot-$name"
           done
-          sh bin/beam.com examples/worker -o "$RUNNER_TEMP/worker-edge.com" --edge-only
+          sh bin/beam.com examples/worker -o "$RUNNER_TEMP/worker-edge.com" --target wasm32
           [ "$(wc -c < "$RUNNER_TEMP/worker-edge.com")" -lt "$(wc -c < "$RUNNER_TEMP/worker.com")" ]
           cp "$RUNNER_TEMP/worker-edge.com" "$RUNNER_TEMP/snapshot-worker/app.com"
           sh tests/host/use_snapshot.sh "$RUNNER_TEMP/snapshot-phoenix_demo"

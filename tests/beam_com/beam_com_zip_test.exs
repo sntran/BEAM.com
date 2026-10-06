@@ -284,7 +284,7 @@ defmodule BeamComZipTest do
 
   # only/2: the kept entries in a zip of their own, with no bytes of the
   # executable before them, and with offsets from the start of the new
-  # file (the edge part of --edge-only).
+  # file (the edge part of --target wasm32 with -o FILE.com).
   test "only_test" do
     base = write(exe(prefix()), &all/1, sample())
     out = only(base, &:lists.prefix(~c"dir/", &1))

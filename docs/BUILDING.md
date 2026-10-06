@@ -108,14 +108,15 @@ answer. It is built from `main`, and the answer names the commit.
 
 ## The runtime directory (internal)
 
-`beam.com INPUT -o DIR --target wasm32` writes the full directory of the
-WebAssembly runtime: `beam.wasm`, `worker.js` and the files of each host,
+`beam.com INPUT -o DIR --target wasm32` (an output that does not end
+with `.com`) writes the full directory of the WebAssembly runtime: `beam.wasm`, `worker.js` and the files of each host,
 with a release of INPUT. [`scripts/npm.sh`](../scripts/npm.sh) makes the
 `runtime/` of the npm package from such a directory (of any INPUT: the
 runtime does not depend on it), and some tests use it. It is an internal
 step: its files and options can change in any version. To deploy an
 app, use `app.com` and the npm package (see
-[`WORKERS.md`](WORKERS.md)).
+[`WORKERS.md`](WORKERS.md)). With `-o FILE.com`, `--target wasm32` writes
+`app.com` with only its edge part, and no native program.
 
 | File | What |
 |---|---|
