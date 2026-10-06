@@ -618,13 +618,23 @@ The host protects its requests with these limits (see the table below):
 
 - `BEAM_REQUEST_TIMEOUT` (60 s): when the app does not listen, or does
   not send the head of its response, in this time, the request gets 504.
-  The app then gets the end of the connection. `"0"` turns the limit off.
-  The limit does not apply to the body of a response that streams, or to
-  a WebSocket.
+  For a request with a body, the time starts at the end of the body. The
+  app then gets the end of the connection. `"0"` turns the limit off. The
+  limit does not apply to the body of a response that streams, or to a
+  WebSocket.
 - `BEAM_MAX_REQUESTS`: above this count of open requests, a new request
   gets 503 with `retry-after: 1`, before the app reads its body.
 - `BEAM_MAX_WEBSOCKETS`: above this count of open WebSockets, a new
   upgrade gets 503.
+- `BEAM_MAX_BODY`: a request body above this count of bytes gets 413.
+  With a `content-length` above it, the app does not see the request.
+  Else the app gets the end of the connection when the body passes it.
+
+A request body goes to the app in parts of 16 KB or more (or the rest of
+the body), as the client sends it. A body with no `content-length` goes
+as `transfer-encoding: chunked`. The host sends a part only while less
+than 256 KB of the body is unread in the VM: so a large upload does not
+fill the memory of the VM, and an app that reads slowly slows the client.
 
 When the VM stops (`erlang:halt/1`, or a trap such as an allocation that
 failed), the host writes `beam: the VM stopped (REASON)` with the memory
@@ -667,9 +677,10 @@ Durable Object for an app that computes for a long time.
 | `BEAM_INSTANCE_TITLE` | Durable Object | The title of the page of `/`. |
 | `BEAM_RETIRE` | Durable Object | Objects of an earlier mode, whose storage the sweep deletes. |
 | `BEAM_PERSIST` | Durable Object | Directories whose files stay in the storage of the object. |
-| `BEAM_REQUEST_TIMEOUT` | Worker, Durable Object, Deno | Seconds for the head of a response (60), then 504. `"0"`: no limit. |
+| `BEAM_REQUEST_TIMEOUT` | Worker, Durable Object, Deno | Seconds for the head of a response after the request body (60), then 504. `"0"`: no limit. |
 | `BEAM_MAX_REQUESTS` | Worker, Durable Object, Deno | The open requests of a VM, then 503. No limit by default. |
 | `BEAM_MAX_WEBSOCKETS` | Worker, Durable Object, Deno | The open WebSockets of a VM, then 503. No limit by default. |
+| `BEAM_MAX_BODY` | Worker, Durable Object, Deno | The bytes of a request body, then 413. No limit by default. |
 | `BEAM_YIELD_REDS` | Durable Object | The reductions of work between two turns of the event loop (1000000). `"0"`: no turns. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | Worker, Durable Object | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |

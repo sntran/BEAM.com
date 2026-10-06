@@ -13,6 +13,12 @@
 %% tcp_accept) from the pump (wasm_host_server) and sends
 %% tcp_connect, tcp_send, tcp_close, tcp_listen and tcp_unlisten. Packets:
 %% raw (0), 1, 2, 4 and line.
+%%
+%% Flow control: a connection whose tcp_accept has "ack": true (the bridge
+%% of worker.js) tells the host how many bytes its owner took from the
+%% buffer (tcp_read, after each ?ACK_BYTES and when the buffer is empty).
+%% The host sends more data only while little is unread, so the buffer of
+%% a socket stays small (a request body in chunks).
 -module(wasm_tcp).
 -behaviour(gen_server).
 
@@ -24,6 +30,7 @@
 
 -define(SOCKET(Pid), {'$inet', ?MODULE, Pid}).
 -define(HOST, wasm_host_server).
+-define(ACK_BYTES, 65536).
 
 %% The host resolves the names.
 getaddrs(Address, _Timer) -> {ok, [Address]}.
@@ -122,9 +129,9 @@ init({Owner, Opts}) ->
     {ok, options(Opts, socket(Id, Owner))};
 %% A connection of a listener: open, and passive until accept/2 gives it
 %% to its owner (with the options of the listener).
-init({accepted, Id, Peer, Opts}) ->
+init({accepted, Id, Peer, Opts, Ack}) ->
     ?HOST:register(Id),
-    S = options(Opts, (socket(Id, self()))#{peer := Peer}),
+    S = options(Opts, (socket(Id, self()))#{peer := Peer, ack := Ack}),
     {ok, S#{active := false, later => maps:get(active, S)}}.
 
 new_id(Prefix) ->
@@ -134,7 +141,8 @@ socket(Id, Owner) ->
     #{kind => socket, id => Id, owner => Owner, ref => monitor(process, Owner),
       active => true, mode => list, packet => raw, other => #{}, buf => <<>>, recv => undefined,
       connect => undefined, peer => undefined, closed => false,
-      recv_cnt => 0, recv_oct => 0, send_cnt => 0, send_oct => 0}.
+      recv_cnt => 0, recv_oct => 0, send_cnt => 0, send_oct => 0,
+      ack => false, unacked => 0}.
 
 options(Opts, S) -> lists:foldl(fun option/2, S, Opts).
 
@@ -200,7 +208,7 @@ handle_call(host_info, _From, #{id := Id, peer := {Host, Port}} = S) ->
     {reply, {ok, #{id => Id, host => Host, port => Port}}, S};
 handle_call({splice, Peer}, _From, #{buf := Buf} = S) ->
     Buf =/= <<>> andalso ?HOST:send_host(#{t => tcp_send, id => Peer}, Buf),
-    {reply, ok, S#{spliced => Peer, buf := <<>>, active := false}};
+    {reply, ok, taken(<<>>, S#{spliced => Peer, active := false})};
 %% {wasm_direct, true}: connect() of the host, never the fetch path (the
 %% tunnel of wasm_host_fetch).
 handle_call({connect, Host, Port, Timeout}, From, #{id := Id, other := O} = S) ->
@@ -263,7 +271,8 @@ handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{kind := listen, listen := F
 handle_info({wasm_host, <<"tcp_accept">>, Meta, _}, #{kind := listen, opts := Opts} = S) ->
     #{<<"conn">> := Id} = Meta,
     Peer = {maps:get(<<"host">>, Meta, <<"0.0.0.0">>), maps:get(<<"port">>, Meta, 0)},
-    {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, Opts}, []),
+    Ack = maps:get(<<"ack">>, Meta, false) =:= true,
+    {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, Opts, Ack}, []),
     %% The events of the connection that came before its process: to it.
     S1 = forward_early(Id, Pid, S),
     case queue:out(maps:get(acceptors, S1)) of
@@ -303,9 +312,9 @@ handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{owner := Owner} = S) ->
     Owner ! {tcp_error, ?SOCKET(self()), reason(Meta)},
     {noreply, S};
 %% Data that came before the host joined the sockets: to the peer.
-handle_info({wasm_host, <<"tcp_data">>, _, Data}, #{spliced := Peer} = S) ->
+handle_info({wasm_host, <<"tcp_data">>, _, Data}, #{spliced := Peer, unacked := U} = S) ->
     ?HOST:send_host(#{t => tcp_send, id => Peer}, Data),
-    {noreply, S};
+    {noreply, ack(S#{unacked := U + byte_size(Data)})};
 handle_info({wasm_host, <<"tcp_closed">>, _, _}, #{spliced := _} = S) ->
     {stop, normal, S};
 handle_info({wasm_host, <<"tcp_data">>, _, Data}, #{recv_cnt := C, recv_oct := O} = S) ->
@@ -375,7 +384,7 @@ push(#{owner := Owner, active := A} = S) ->
         {Packet, Rest} ->
             Socket = ?SOCKET(self()),
             Owner ! {tcp, Socket, data(Packet, S)},
-            S1 = S#{buf := Rest},
+            S1 = taken(Rest, S),
             case A of
                 true -> push(S1);
                 once -> S1#{active := false};
@@ -386,20 +395,32 @@ push(#{owner := Owner, active := A} = S) ->
 
 flush_active(S) -> push(S).
 
+%% The owner took the start of the buffer: Rest stays.
+taken(Rest, #{buf := Buf, unacked := U} = S) ->
+    ack(S#{buf := Rest, unacked := U + byte_size(Buf) - byte_size(Rest)}).
+
+%% tcp_read to the host (with "ack": true), after ?ACK_BYTES taken bytes,
+%% and when the buffer is empty.
+ack(#{ack := true, unacked := U, buf := Buf, id := Id} = S)
+  when U >= ?ACK_BYTES; U > 0, Buf =:= <<>> ->
+    ?HOST:send_host(#{t => tcp_read, id => Id, n => U}),
+    S#{unacked := 0};
+ack(S) -> S.
+
 serve_recv(#{recv := {From, 0, TRef}} = S) ->
     case next_packet(S) of
         none -> serve_closed(S);
         {Packet, Rest} ->
             cancel(TRef),
             gen_server:reply(From, {ok, data(Packet, S)}),
-            S#{recv := undefined, buf := Rest}
+            taken(Rest, S#{recv := undefined})
     end;
 serve_recv(#{recv := {From, Len, TRef}, buf := Buf} = S)
   when Len > 0, byte_size(Buf) >= Len ->
     cancel(TRef),
     <<Part:Len/binary, Rest/binary>> = Buf,
     gen_server:reply(From, {ok, data(Part, S)}),
-    S#{recv := undefined, buf := Rest};
+    taken(Rest, S#{recv := undefined});
 serve_recv(S) -> serve_closed(S).
 
 serve_closed(#{recv := {From, _, TRef}, closed := true} = S) ->

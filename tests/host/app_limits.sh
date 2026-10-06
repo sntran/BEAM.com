@@ -1,6 +1,8 @@
 #!/bin/sh
-# A VM that stops, on the hosts of the npm package: workerd (wrangler dev)
-# and Deno (deno serve), with app.com of tests/programs/stop_check.erl. A
+# The limits of the hosts of the npm package: workerd (wrangler dev) and
+# Deno (deno serve), with app.com of tests/programs/limits_check.erl. A
+# body of 32 MB goes to the app in parts (with content-length, and chunked
+# to an app that reads slowly), and the memory of the VM stays below 96 MB. A
 # request with no answer in BEAM_REQUEST_TIMEOUT seconds gets 504. When the
 # VM stops (erlang:halt/1, and a trap), its open request gets 503, and a
 # later request gets 200 from a new VM. While a process computes (/spin), a
@@ -8,7 +10,7 @@
 # host turns (BEAM_YIELD_REDS). A plain Worker does not, so the script does
 # not check it there.
 #
-#   sh tests/host/app_stop.sh DIR
+#   sh tests/host/app_limits.sh DIR
 #
 # DIR: package.json, worker.js, wrangler.jsonc, deno.json and app.com, and
 # node_modules with beam.com, wrangler and deno. With the wrangler.jsonc of
@@ -16,8 +18,9 @@
 # examples/worker, the stateless Worker.
 set -eu
 cd "$1"
-export WRANGLER_SEND_METRICS=false BEAM_REQUEST_TIMEOUT=2
-printf 'BEAM_REQUEST_TIMEOUT=2\n' > .dev.vars
+# 8 s: /spin computes for 1 to 3 s on a CI runner, and must end with 200.
+export WRANGLER_SEND_METRICS=false BEAM_REQUEST_TIMEOUT=8
+printf 'BEAM_REQUEST_TIMEOUT=8\n' > .dev.vars
 
 # PORT PATH: the status of GET PATH (000: no answer in 20 s).
 get() {
@@ -29,10 +32,34 @@ seconds() {
     curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{time_total}' --max-time 60 "http://127.0.0.1:$1$2" || true
 }
 
+head -c 33554432 /dev/urandom > body.bin
+
+# PORT PATH [chunked]: the answer of a POST of body.bin to PATH (with
+# "chunked", with no content-length).
+upload() {
+    if [ "${3:-}" = chunked ]; then
+        curl --noproxy 127.0.0.1 -s --max-time 120 -H 'Transfer-Encoding: chunked' \
+            --data-binary @body.bin "http://127.0.0.1:$1$2" || true
+    else
+        curl --noproxy 127.0.0.1 -s --max-time 120 --data-binary @body.bin "http://127.0.0.1:$1$2" || true
+    fi
+}
+
 # NAME PORT LOG [turns]: the checks on the host on PORT. With "turns", also
 # the answer of / while /spin computes.
 check() {
     for i in $(seq 1 300); do [ "$(get "$2" /)" = 200 ] && break; sleep 0.5; done
+    out=$(upload "$2" /upload)
+    [ "$out" = "got 33554432" ] || { echo "$1: /upload gave \"$out\""; tail -n 40 "$3"; return 1; }
+    out=$(upload "$2" /upload-slow chunked)
+    [ "$out" = "got 33554432" ] || { echo "$1: /upload-slow (chunked) gave \"$out\""; tail -n 40 "$3"; return 1; }
+    peak=$(sed -n 's/.*beam: memory \([0-9]*\) MB (a new peak.*/\1/p' "$3" | sort -n | tail -n 1)
+    # On a CI runner, the peak is 40 to 72 MB (the timing of the garbage
+    # collector and of the allocator). A host that keeps the body in the VM
+    # grows above 200 MB.
+    [ "${peak:-0}" -lt 96 ] || { echo "$1: the memory of the VM grew to $peak MB with the uploads"; tail -n 40 "$3"; return 1; }
+    if [ -n "$peak" ]; then echo "$1: two uploads of 32 MB, the memory of the VM at $peak MB at most"
+    else echo "$1: two uploads of 32 MB, with no new peak of the memory of the VM"; fi
     if [ "${4:-}" = turns ]; then
         get "$2" /spin > spin.code &
         spin=$!
