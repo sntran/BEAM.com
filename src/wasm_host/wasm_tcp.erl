@@ -14,11 +14,17 @@
 %% tcp_connect, tcp_send, tcp_close, tcp_listen and tcp_unlisten. Packets:
 %% raw (0), 1, 2, 4 and line.
 %%
-%% Flow control: a connection whose tcp_accept has "ack": true (the bridge
-%% of worker.js) tells the host how many bytes its owner took from the
-%% buffer (tcp_read, after each ?ACK_BYTES and when the buffer is empty).
-%% The host sends more data only while little is unread, so the buffer of
-%% a socket stays small (a request body in chunks).
+%% Flow control, in the two directions. The tcp_accept or tcp_open of a
+%% socket gives the flags of the host:
+%%
+%% - "ack": true: the socket tells the host how many bytes its owner took
+%%   from the buffer (tcp_read, after each ?ACK_BYTES and when the buffer
+%%   is empty). The host sends more data only while little is unread, so
+%%   the buffer of a socket stays small (a request body in chunks).
+%% - "sent": true: the host tells the socket how many bytes of tcp_send it
+%%   gave to the peer (tcp_sent). While ?SEND_WINDOW bytes or more wait in
+%%   the host, a send waits for tcp_sent, so a slow peer slows the sender
+%%   and the host holds little.
 -module(wasm_tcp).
 -behaviour(gen_server).
 
@@ -31,6 +37,7 @@
 -define(SOCKET(Pid), {'$inet', ?MODULE, Pid}).
 -define(HOST, wasm_host_server).
 -define(ACK_BYTES, 65536).
+-define(SEND_WINDOW, 262144).
 
 %% The host resolves the names.
 getaddrs(Address, _Timer) -> {ok, [Address]}.
@@ -129,9 +136,9 @@ init({Owner, Opts}) ->
     {ok, options(Opts, socket(Id, Owner))};
 %% A connection of a listener: open, and passive until accept/2 gives it
 %% to its owner (with the options of the listener).
-init({accepted, Id, Peer, Opts, Ack}) ->
+init({accepted, Id, Peer, Opts, Flags}) ->
     ?HOST:register(Id),
-    S = options(Opts, (socket(Id, self()))#{peer := Peer, ack := Ack}),
+    S = options(Opts, maps:merge((socket(Id, self()))#{peer := Peer}, Flags)),
     {ok, S#{active := false, later => maps:get(active, S)}}.
 
 new_id(Prefix) ->
@@ -142,7 +149,12 @@ socket(Id, Owner) ->
       active => true, mode => list, packet => raw, other => #{}, buf => <<>>, recv => undefined,
       connect => undefined, peer => undefined, closed => false,
       recv_cnt => 0, recv_oct => 0, send_cnt => 0, send_oct => 0,
-      ack => false, unacked => 0}.
+      ack => false, unacked => 0, sack => false, inflight => 0, sends => queue:new()}.
+
+%% The flow control of the host for a socket (tcp_accept, tcp_open).
+flags(Meta) ->
+    #{ack => maps:get(<<"ack">>, Meta, false) =:= true,
+      sack => maps:get(<<"sent">>, Meta, false) =:= true}.
 
 options(Opts, S) -> lists:foldl(fun option/2, S, Opts).
 
@@ -219,10 +231,15 @@ handle_call({connect, Host, Port, Timeout}, From, #{id := Id, other := O} = S) -
         _ -> erlang:send_after(Timeout, self(), connect_timeout)
     end,
     {noreply, S#{connect := {From, TRef}, peer := {Host, Port}}};
-handle_call({send, Data}, _From, #{id := Id, packet := P, send_cnt := C, send_oct := O} = S) ->
-    Size = iolist_size(Data),
-    ?HOST:send_host(#{t => tcp_send, id => Id}, [header(P, Size), Data]),
-    {reply, ok, S#{send_cnt := C + 1, send_oct := O + Size}};
+handle_call({send, _}, _From, #{closed := true} = S) ->
+    {reply, {error, closed}, S};
+%% The host holds ?SEND_WINDOW bytes or more of this socket: the send waits
+%% for tcp_sent (drain/1).
+handle_call({send, Data}, From, #{sack := true, inflight := F, sends := Q} = S)
+  when F >= ?SEND_WINDOW ->
+    {noreply, S#{sends := queue:in({From, Data}, Q)}};
+handle_call({send, Data}, _From, S) ->
+    {reply, ok, send_data(Data, S)};
 %% The counters (the distribution checks them to see traffic).
 handle_call({getstat, Opts}, _From, S) ->
     Stat = fun(send_pend) -> 0; (K) -> maps:get(K, S, 0) end,
@@ -271,8 +288,7 @@ handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{kind := listen, listen := F
 handle_info({wasm_host, <<"tcp_accept">>, Meta, _}, #{kind := listen, opts := Opts} = S) ->
     #{<<"conn">> := Id} = Meta,
     Peer = {maps:get(<<"host">>, Meta, <<"0.0.0.0">>), maps:get(<<"port">>, Meta, 0)},
-    Ack = maps:get(<<"ack">>, Meta, false) =:= true,
-    {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, Opts, Ack}, []),
+    {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, Opts, flags(Meta)}, []),
     %% The events of the connection that came before its process: to it.
     S1 = forward_early(Id, Pid, S),
     case queue:out(maps:get(acceptors, S1)) of
@@ -304,10 +320,13 @@ handle_info({'DOWN', _, process, Pid, _}, #{kind := listen, started := Started} 
 handle_info(_, #{kind := listen} = S) ->
     {noreply, S};
 %% --- a socket ----------------------------------------------------------------
-handle_info({wasm_host, <<"tcp_open">>, _, _}, #{connect := {From, TRef}} = S) ->
+handle_info({wasm_host, <<"tcp_open">>, Meta, _}, #{connect := {From, TRef}} = S) ->
     cancel(TRef),
     gen_server:reply(From, ok),
-    {noreply, S#{connect := undefined}};
+    {noreply, maps:merge(S#{connect := undefined}, flags(Meta))};
+%% The host gave N bytes of tcp_send to the peer: the sends that wait go.
+handle_info({wasm_host, <<"tcp_sent">>, #{<<"n">> := N}, _}, #{inflight := F} = S) ->
+    {noreply, drain(S#{inflight := max(F - N, 0)})};
 handle_info({wasm_host, <<"tcp_error">>, Meta, _}, #{connect := {From, TRef}} = S) ->
     cancel(TRef),
     gen_server:reply(From, {error, reason(Meta)}),
@@ -355,6 +374,34 @@ forward_early(Id, Pid, #{early := Early, started := Started} = S) ->
     [Pid ! Msg || Msg <- lists:reverse(maps:get(Id, Early, []))],
     erlang:monitor(process, Pid),
     S#{early := maps:remove(Id, Early), started := Started#{Id => Pid}}.
+
+%% The data of a send to the host, with the header of the packet.
+send_data(Data, #{id := Id, packet := P, sack := Sack, inflight := F,
+                  send_cnt := C, send_oct := O} = S) ->
+    Size = iolist_size(Data),
+    Header = header(P, Size),
+    ?HOST:send_host(#{t => tcp_send, id => Id}, [Header, Data]),
+    Held = case Sack of
+        true -> F + byte_size(Header) + Size;
+        false -> F
+    end,
+    S#{send_cnt := C + 1, send_oct := O + Size, inflight := Held}.
+
+%% The sends that wait, in order, while the host holds less than
+%% ?SEND_WINDOW bytes.
+drain(#{inflight := F, sends := Q} = S) when F < ?SEND_WINDOW ->
+    case queue:out(Q) of
+        {{value, {From, Data}}, Rest} ->
+            gen_server:reply(From, ok),
+            drain(send_data(Data, S#{sends := Rest}));
+        {empty, _} -> S
+    end;
+drain(S) -> S.
+
+%% The sends that wait get {error, closed}: no tcp_sent comes now.
+refuse_sends(#{sends := Q} = S) ->
+    [gen_server:reply(From, {error, closed}) || {From, _} <- queue:to_list(Q)],
+    S#{sends := queue:new()}.
 
 cancel(undefined) -> ok;
 cancel(TRef) -> erlang:cancel_timer(TRef).
@@ -446,4 +493,4 @@ closed(#{active := A, owner := Owner} = S) when A =/= false ->
     {stop, normal, S};
 closed(S) ->
     %% Passive: the owner gets the rest of the buffer, then {error, closed}.
-    {noreply, S#{closed := true}}.
+    {noreply, refuse_sends(S#{closed := true})}.

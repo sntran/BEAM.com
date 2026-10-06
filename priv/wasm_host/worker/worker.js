@@ -1614,6 +1614,8 @@ export class Vm {
       if (!id.startsWith('b')) this.run(() => { try { t.close(); } catch {} }, t.h);
     }
     this.tcps.clear();
+    // The fetch() calls of the VM: no one reads their bodies now.
+    for (const ac of this.fetches?.values() ?? []) ac.abort();
     this.markDead();
     for (const resolve of this.stopWaits ?? []) resolve();
     this.stopWaits?.clear();
@@ -1959,13 +1961,17 @@ export class Vm {
       // A body can take long to come: the time limit starts at its end.
       if (!body) this.bridgeClock(c, deadline - Date.now());
       // An error of one connection ends that connection, not the VM.
+      // A send ends when the client read its bytes (the newest write of
+      // the response, c.wrote): tcpSend then tells the VM (tcp_sent).
       this.tcps.set(id, {
-        send: (b) => this.bridgeGuard(c, () => this.bridgeData(c, b)),
+        send: (b) => { this.bridgeGuard(c, () => this.bridgeData(c, b)); return c.wrote; },
         close: () => this.bridgeGuard(c, () => this.bridgeEnd(c)),
-        read: (n) => this.bridgeRead(c, n), h,
+        ack: (n) => this.bridgeRead(c, n), h,
       });
-      // ack: wasm_tcp tells the host what the app read (tcp_read).
-      this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body });
+      // ack: wasm_tcp tells the host what the app read (tcp_read): the
+      // body of the request, and the messages of a WebSocket. sent: the
+      // host tells wasm_tcp what the client took (tcp_sent).
+      this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body || upgrade, sent: true });
       this.bridgeSend(c, bytes);
       if (body) this.bridgeUpload(c, body, declared === null, maxBody);
     });
@@ -2053,6 +2059,7 @@ export class Vm {
   bridgeRead(c, n) {
     c.read += n;
     this.bridgeRoom(c);
+    c.inbound?.flush();
   }
 
   // The upload of c waits no more (more room, or the end of c).
@@ -2185,7 +2192,7 @@ export class Vm {
   // A part of the body to the client. A write to a stream that the client
   // closed fails, and writer.closed then ends the connection.
   bridgeWrite(c, part) {
-    c.writer?.write(part).catch(() => {});
+    if (c.writer) c.wrote = c.writer.write(part).catch(() => {});
   }
 
   // fn for the connection c (an event of the app). An exception ends c:
@@ -2283,14 +2290,20 @@ export class Vm {
     c.counted = true;
     this.sockets++;
     c.frames = [];  // the parts of a message in fragments
+    // The messages of the client go while less than UPLOAD_WINDOW bytes
+    // are unread in the VM; the others wait here (Inbound).
+    c.inbound = new Inbound(c, (b) => this.bridgeSend(c, b), () => {
+      console.log(`beam: the app reads the WebSocket of ${c.path} too slowly: it closes (1008)`);
+      closeSocket(server, 1008);
+    });
     server.addEventListener('message', (e) => {
       const text = typeof e.data === 'string';
-      this.event({ t: 'tcp_data', id: c.id }, frame(text ? 1 : 2, text ? new TextEncoder().encode(e.data) : new Uint8Array(e.data)));
+      c.inbound.push(frame(text ? 1 : 2, text ? new TextEncoder().encode(e.data) : new Uint8Array(e.data)));
     });
     server.addEventListener('close', (e) => {
       this.socketGone(c);
       const code = wireCode(e.code);
-      this.event({ t: 'tcp_data', id: c.id }, frame(8, new Uint8Array([code >> 8, code & 255])));
+      c.inbound.push(frame(8, new Uint8Array([code >> 8, code & 255])), true);
     });
     c.resolve(new Response(null, { status: 101, webSocket: client }));
     c.finished();
@@ -2341,10 +2354,17 @@ export class Vm {
     if (h) h.sockets++;
     const counted = { counted: true };
     this.sockets++;
-    this.tcps.set(id, { send: (b) => { try { server.send(b); } catch {} }, close: () => { this.socketGone(counted); try { server.close(); } catch {} }, h });
-    this.event({ t: 'tcp_accept', id: listener, conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0 });
+    const t = { send: (b) => { try { server.send(b); } catch {} }, close: () => { this.socketGone(counted); try { server.close(); } catch {} }, h };
+    const win = { sent: 0, read: 0 };
+    const inbound = new Inbound(win, (b) => this.tcpIn(id, win, b), () => {
+      console.log(`beam: the app reads the connection ${id} to port ${port} too slowly: it closes (1008)`);
+      closeSocket(server, 1008);
+    });
+    t.ack = (n) => { win.read += n; inbound.flush(); };
+    this.tcps.set(id, t);
+    this.event({ t: 'tcp_accept', id: listener, conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: true, sent: true });
     server.addEventListener('message', (e) => {
-      this.tcpData(id, typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data);
+      inbound.push(typeof e.data === 'string' ? new TextEncoder().encode(e.data) : new Uint8Array(e.data));
     });
     server.addEventListener('close', () => {
       this.socketGone(counted);
@@ -2360,7 +2380,7 @@ export class Vm {
   // first (fetchFirst); the other protocols use connect(). direct: the
   // tunnel of wasm_host_fetch, which never goes back to the fetch path.
   async tcpConnect({ id, host, port, direct }, h) {
-    let socket;
+    let socket, inbound;
     if (h) h.sockets++;
     const allowed = connectAllowed(this.env.BEAM_CONNECT, host, port);
     const fetchPath = this.listeners.has('fetch') && !direct;
@@ -2370,11 +2390,21 @@ export class Vm {
       socket = net.connect({ host, port });
       // A send resolves when the bytes are written; a close sends the
       // bytes that wait, and then ends the socket.
-      this.tcps.set(id, {
+      const t = {
         send: (b) => new Promise((resolve) => socket.write(b, () => resolve())),
         close: () => socket.end(() => socket.destroy()),
         h,
-      });
+      };
+      // The data of the peer goes while less than UPLOAD_WINDOW bytes are
+      // unread in the VM; else the socket pauses.
+      const win = { sent: 0, read: 0 };
+      inbound = new Inbound(win, (b) => this.tcpIn(id, win, b), () => {});
+      t.ack = (n) => {
+        win.read += n;
+        inbound.flush();
+        if (!inbound.full()) socket.resume();
+      };
+      this.tcps.set(id, t);
       await new Promise((resolve, reject) => {
         socket.once('connect', resolve);
         socket.once('error', reject);
@@ -2396,9 +2426,12 @@ export class Vm {
       if (h) { h.sockets--; h.wake?.(); }
       return;
     }
-    this.event({ t: 'tcp_open', id });
+    this.event({ t: 'tcp_open', id, ack: true, sent: true });
     await new Promise((resolve) => {
-      socket.on('data', (b) => this.tcpData(id, new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
+      socket.on('data', (b) => {
+        inbound.push(new Uint8Array(b.buffer, b.byteOffset, b.byteLength), true);
+        if (inbound.full()) socket.pause();
+      });
       socket.on('error', () => {});
       socket.once('close', resolve);
     });
@@ -2447,7 +2480,7 @@ export class Vm {
   // an open connection to host:port. The pair ends when one side closes.
   async fetchPair(id, host, port, h) {
     const conn = `x${this.nextId++}`;
-    let done;
+    let done, pairEnd;
     const ended = new Promise((r) => { done = r; });
     const end = (other) => {
       if (!this.fetchConns.has(conn)) return;
@@ -2456,14 +2489,20 @@ export class Vm {
       this.tcps.delete(conn);
       // The fetches of this connection: no one reads their bodies now.
       for (const ac of this.fetches.values()) if (ac.conn === conn) ac.abort();
+      pairEnd();
       this.event({ t: 'tcp_closed', id: other });
       done();
     };
     this.fetchConns.set(conn, { host, port, h });
-    this.tcps.set(id, { send: (b) => this.event({ t: 'tcp_data', id: conn }, b), close: () => end(conn), h });
-    this.tcps.set(conn, { send: (b) => this.event({ t: 'tcp_data', id }, b), close: () => end(id), h });
-    this.event({ t: 'tcp_open', id });
-    this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port });
+    // A send of one socket ends when the other socket read the bytes
+    // (tcp_read): so the window of the sender (tcp_sent) holds them.
+    const toConn = relay((b) => this.event({ t: 'tcp_data', id: conn }, b));
+    const toId = relay((b) => this.event({ t: 'tcp_data', id }, b));
+    pairEnd = () => { toConn.end(); toId.end(); };
+    this.tcps.set(id, { send: toConn.send, close: () => end(conn), ack: toId.read, h });
+    this.tcps.set(conn, { send: toId.send, close: () => end(id), ack: toConn.read, h });
+    this.event({ t: 'tcp_open', id, ack: true, sent: true });
+    this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port, ack: true, sent: true });
     await ended;
     if (h) { h.sockets--; h.wake?.(); }
   }
@@ -2477,6 +2516,11 @@ export class Vm {
     this.fetchPending++;
     const ac = new AbortController();
     ac.conn = msg.conn;
+    // ack: wasm_host_fetch tells the host what it read (fetch_read). The
+    // body then goes while less than UPLOAD_WINDOW bytes are unread.
+    ac.sent = 0;
+    ac.read = 0;
+    ac.signal.addEventListener('abort', () => ac.room?.());
     this.fetches.set(msg.id, ac);
     try {
       const url = c && fetchUrl(c.host, c.port, msg.tls, msg.path);
@@ -2494,7 +2538,13 @@ export class Vm {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (value?.byteLength) this.event({ t: 'fetch_data', id: msg.id }, value);
+          if (!value?.byteLength) continue;
+          this.event({ t: 'fetch_data', id: msg.id }, value);
+          ac.sent += value.byteLength;
+          while (msg.ack && ac.sent - ac.read >= UPLOAD_WINDOW && !ac.signal.aborted) {
+            await new Promise((resolve) => { ac.room = resolve; });
+          }
+          if (ac.signal.aborted) throw new Error('the fetch stopped');
         }
       }
       this.event({ t: 'fetch_end', id: msg.id });
@@ -2507,12 +2557,42 @@ export class Vm {
     }
   }
 
-  // Data of a TCP socket: to Erlang, or to its peer after a splice.
+  // Data of a TCP socket: to Erlang (then true), or to its peer after a
+  // splice.
   tcpData(id, bytes) {
     const t = this.tcps.get(id);
     const peer = t?.peer && this.tcps.get(t.peer);
     if (peer) this.run(() => peer.send(bytes), peer.h);
     else this.event({ t: 'tcp_data', id }, bytes);
+    return !peer;
+  }
+
+  // Data of a peer for the socket id, with the window win of Inbound: the
+  // bytes that go to Erlang count, and the bytes to a spliced peer do not
+  // (no tcp_read comes for them).
+  tcpIn(id, win, bytes) {
+    if (this.tcpData(id, bytes)) win.sent += bytes.length;
+  }
+
+  // A send of the VM to the socket t. The host tells the VM how many bytes
+  // the peer took (tcp_sent), after each ACK_BYTES: wasm_tcp holds a send
+  // while SEND_WINDOW bytes wait in the host. A send that fails counts
+  // too, because the socket then ends.
+  tcpSend(id, t, body) {
+    const done = () => {
+      t.took = (t.took ?? 0) + body.length;
+      if (t.took >= ACK_BYTES) {
+        this.event({ t: 'tcp_sent', id, n: t.took });
+        t.took = 0;
+      }
+    };
+    let r;
+    try {
+      r = t.send(body);
+    } finally {
+      if (typeof r?.then !== 'function') done();
+    }
+    if (typeof r?.then === 'function') r.then(done, done);
   }
 
   // The end of a TCP socket: to Erlang, and the end of its peer too.
@@ -2574,15 +2654,22 @@ export class Vm {
       case 'fetch_cancel':
         this.fetches.get(msg.id)?.abort();
         break;
-      case 'tcp_send': {
-        const t = this.tcps.get(msg.id);
-        if (t) this.run(() => t.send(body), t.h);
+      // wasm_host_fetch read n bytes of the body of a fetch().
+      case 'fetch_read': {
+        const ac = this.fetches.get(msg.id);
+        if (ac) { ac.read += msg.n; ac.room?.(); }
         break;
       }
-      // wasm_tcp: the app read n bytes of a connection of bridge().
-      case 'tcp_read':
-        this.tcps.get(msg.id)?.read?.(msg.n);
+      case 'tcp_send': {
+        const t = this.tcps.get(msg.id);
+        if (t) this.run(() => this.tcpSend(msg.id, t, body), t.h);
         break;
+      }
+      // wasm_tcp: the app read n bytes of a socket.
+      case 'tcp_read': {
+        this.tcps.get(msg.id)?.ack?.(msg.n);
+        break;
+      }
       case 'tcp_close': {
         const t = this.tcps.get(msg.id);
         this.tcps.delete(msg.id);
@@ -2709,6 +2796,13 @@ const CHUNK_LINE = 4096;
 const HEAD_MAX = 1 << 20;
 // The longest wait of a request for a snapshot that the VM makes.
 const SNAPSHOT_WAIT = 10000;
+// Flow control of the sockets: wasm_tcp gives tcp_read after each
+// ACK_BYTES that the app read, and the host gives tcp_sent after each
+// ACK_BYTES that a peer took. Above SOCKET_QUEUE bytes from a peer that
+// wait for the app (Inbound), a WebSocket closes.
+const ACK_BYTES = 64 * 1024;
+const SOCKET_QUEUE = 16 * 1024 * 1024;
+
 // The names of the fetch path in the cache of isCloudflare.
 const DNS_MAX = 1024;
 
@@ -2741,6 +2835,66 @@ function closeSocket(ws, code) {
 
 // Bytes in pieces (views of the arrays that came, no copy), joined only
 // when a reader needs them in one array (peek, take).
+// The bytes from a peer to a socket of the VM, with flow control: they go
+// while less than UPLOAD_WINDOW bytes are unread in the VM (win.sent, and
+// win.read from tcp_read), and the others wait here. Above SOCKET_QUEUE
+// bytes that wait, over() runs once, and the next bytes are dropped. A
+// forced push always waits (the end of a WebSocket).
+export class Inbound {
+  constructor(win, send, over) {
+    Object.assign(this, { win, send, over, queue: [], queued: 0, overflow: false });
+  }
+
+  full() {
+    return this.win.sent - this.win.read >= UPLOAD_WINDOW;
+  }
+
+  push(bytes, force = false) {
+    if (!this.queue.length && !this.full()) return this.send(bytes);
+    if (!force && (this.overflow || this.queued + bytes.length > SOCKET_QUEUE)) {
+      if (!this.overflow) {
+        this.overflow = true;
+        this.over();
+      }
+      return;
+    }
+    this.queue.push(bytes);
+    this.queued += bytes.length;
+  }
+
+  // After a tcp_read: the bytes that wait, while the window has room.
+  flush() {
+    while (this.queue.length && !this.full()) {
+      const bytes = this.queue.shift();
+      this.queued -= bytes.length;
+      this.send(bytes);
+    }
+  }
+}
+
+// The bytes from one socket of the VM to another one in the host (the
+// fetch path): deliver gives them to the other socket. A send ends when
+// the other socket read them (read, from its tcp_read), so the window of
+// the sender (tcp_sent) holds the bytes that wait. end() ends each send.
+export function relay(deliver) {
+  let sent = 0, read = 0;
+  const waits = [];
+  return {
+    send: (b) => {
+      deliver(b);
+      sent += b.length;
+      if (read >= sent) return undefined;
+      const mark = sent;
+      return new Promise((resolve) => waits.push([mark, resolve]));
+    },
+    read: (n) => {
+      read += n;
+      while (waits.length && waits[0][0] <= read) waits.shift()[1]();
+    },
+    end: () => { for (const [, resolve] of waits.splice(0)) resolve(); },
+  };
+}
+
 export class Pieces {
   constructor() { this.list = []; this.size = 0; }
   push(b) {

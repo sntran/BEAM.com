@@ -429,11 +429,14 @@ client_opts(Store, Name) ->
 %% --- the host ------------------------------------------------------------------
 
 %% One request to the host, and its response as Next functions. The id
-%% stays registered until the end of the response, in this process.
+%% stays registered until the end of the response, in this process. With
+%% ack, the host sends the body while less than a window is unread here:
+%% each Next(more) tells the host that the part before it is read
+%% (fetch_read).
 call_host(#{conn := Conn, tls := Tls, method := Method, path := Path, headers := Headers, body := Body}) ->
     Id = iolist_to_binary(["f", integer_to_binary(erlang:unique_integer([positive]))]),
     wasm_host_server:register(Id),
-    wasm_host_server:send_host(#{t => fetch, id => Id, conn => Conn, tls => Tls, method => Method,
+    wasm_host_server:send_host(#{t => fetch, id => Id, ack => true, conn => Conn, tls => Tls, method => Method,
                                  path => Path, headers => [[K, V] || {K, V} <- Headers]}, Body),
     receive
         {wasm_host, <<"fetch_head">>, #{<<"id">> := Id} = M, _} ->
@@ -449,7 +452,7 @@ call_host(#{conn := Conn, tls := Tls, method := Method, path := Path, headers :=
 
 next(Id) ->
     receive
-        {wasm_host, <<"fetch_data">>, #{<<"id">> := Id}, Data} -> {data, Data, body(Id)};
+        {wasm_host, <<"fetch_data">>, #{<<"id">> := Id}, Data} -> {data, Data, body(Id, byte_size(Data))};
         {wasm_host, <<"fetch_end">>, #{<<"id">> := Id}, _} -> done(Id), done;
         {wasm_host, <<"fetch_error">>, #{<<"id">> := Id} = M, _} ->
             done(Id),
@@ -459,9 +462,14 @@ next(Id) ->
         {error, <<"the host sent no data">>}
     end.
 
-%% The rest of the body of the fetch Id: more, or stop.
-body(Id) ->
-    fun(more) -> next(Id);
+%% The rest of the body of the fetch Id: more, or stop. Read: the bytes
+%% that the program took before this call.
+body(Id) -> body(Id, 0).
+
+body(Id, Read) ->
+    fun(more) ->
+            Read > 0 andalso wasm_host_server:send_host(#{t => fetch_read, id => Id, n => Read}),
+            next(Id);
        (stop) -> cancel(Id)
     end.
 

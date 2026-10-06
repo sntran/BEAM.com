@@ -3,6 +3,8 @@
 # Deno (deno serve), with app.com of tests/programs/limits_check.erl. A
 # body of 32 MB goes to the app in parts (with content-length, and chunked
 # to an app that reads slowly), and the memory of the VM stays below 96 MB. A
+# download of 64 MiB goes to a client that reads at 16 MB/s, and the sends
+# of the app wait for the client (tcp_sent). A
 # request with no answer in BEAM_REQUEST_TIMEOUT seconds gets 504. When the
 # VM stops (erlang:halt/1, and a trap), its open request gets 503, and a
 # later request gets 200 from a new VM. While a process computes (/spin), a
@@ -60,6 +62,10 @@ check() {
     [ "${peak:-0}" -lt 96 ] || { echo "$1: the memory of the VM grew to $peak MB with the uploads"; tail -n 40 "$3"; return 1; }
     if [ -n "$peak" ]; then echo "$1: two uploads of 32 MB, the memory of the VM at $peak MB at most"
     else echo "$1: two uploads of 32 MB, with no new peak of the memory of the VM"; fi
+    size=$(curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{size_download}' --limit-rate 16M \
+        --max-time 60 "http://127.0.0.1:$2/download" || true)
+    [ "$size" = 67108864 ] || { echo "$1: /download gave $size bytes, not 67108864"; tail -n 40 "$3"; return 1; }
+    echo "$1: a download of 64 MiB to a client at 16 MB/s"
     if [ "${4:-}" = turns ]; then
         get "$2" /spin > spin.code &
         spin=$!
