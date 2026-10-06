@@ -96,6 +96,11 @@ notes of its release.
   in each request, and writes the cause to the log.
 - `npx beam.com` stops the download of `beam.com` when no bytes come in
   60 s, and gives an error when the file cannot be written.
+- A re-run of the release job after npm has the version keeps the
+  `beam.com` that the npm package names (its SHA-256), and puts the
+  tarball of npm on the release. A re-run with another `beam.com` stops
+  with an error. Before, a re-run could replace the file of the release,
+  and `npx beam.com` then refused the download.
 
 ## 0.1.0-rc.2
 

@@ -906,7 +906,9 @@ jobs:
   # beam.com (the vsn of src/beam_com/beam_com.app.src). The files of
   # beam.com come from the tested run of the job reuse, else from this run.
   # A run of this job again (a re-run) puts its files on the release that
-  # is there, and does not publish a version that npm has.
+  # is there, and does not publish a version that npm has. When npm has
+  # the version, the re-run must have the same beam.com (the step "Check
+  # the files of npm"), so the files of npm and of the release stay equal.
   release:
     name: Publish the release
     needs: [reuse, unit, test, test-bsd]
@@ -967,6 +969,31 @@ jobs:
           scripts/npm.sh bin/beam.com "$RUNNER_TEMP/wasm32"
           npm pack --pack-destination bin
           test -f "bin/beam.com-${TAG#v}.tgz"
+
+      # A re-run after npm has the version: the package on npm holds the
+      # SHA-256 of beam.com (runtime/release.json), and npx beam.com checks
+      # the file of the release with it. So the release keeps that
+      # beam.com, and the tarball of npm. A run with another beam.com stops
+      # here, before it replaces a file of the release.
+      - name: Check the files of npm
+        run: |
+          vsn=${TAG#v}
+          if ! npm view "beam.com@$vsn" version > /dev/null 2>&1; then
+            echo "npm does not have beam.com@$vsn: the release gets the files of this run"
+            exit 0
+          fi
+          mkdir "$RUNNER_TEMP/npm"
+          (cd "$RUNNER_TEMP/npm" && npm pack --loglevel=warn "beam.com@$vsn" > /dev/null)
+          tar -xzf "$RUNNER_TEMP/npm/beam.com-$vsn.tgz" -C "$RUNNER_TEMP/npm" package/runtime/release.json
+          want=$(node -p "require(process.argv[1]).sha256" "$RUNNER_TEMP/npm/package/runtime/release.json")
+          got=$(sha256sum bin/beam.com | cut -d' ' -f1)
+          if [ "$want" != "$got" ]; then
+            echo "npm has beam.com@$vsn for the beam.com with the SHA-256 $want, and this run has $got." >&2
+            echo "npx beam.com refuses another file: make a new version, or re-run the job of the first build." >&2
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/npm/beam.com-$vsn.tgz" "bin/beam.com-$vsn.tgz"
+          echo "npm has beam.com@$vsn for this beam.com: the release gets the tarball of npm"
 
       # The provenance of the files (a signed statement of the workflow and
       # the commit that built them): gh attestation verify FILE --repo
