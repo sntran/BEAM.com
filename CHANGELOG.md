@@ -42,6 +42,23 @@ notes of its release.
 - In a plain Worker, a line of the VM (stdout and stderr) that the host
   cannot write in the context of its thread goes to an open request.
   Before, `console.log` could throw there, and stop the thread of the VM.
+- `beam.com INPUT -o edge.com --target wasm32` (an output that ends with
+  `.com`) writes only the part that the WebAssembly runtime reads: a zip
+  with the release and the edge part, with no native program. Another
+  output of `--target wasm32` is still the runtime directory. It is about 25 MB smaller, so a Worker with a
+  snapshot of the build stays below the 64 MiB of a Worker, and the VM
+  gets about 25 MB more of the memory of the isolate.
+- `npx beam.com --snapshot` writes the pages of the snapshot in gzip (about
+  a quarter of the size; `--no-compress` writes them as they are). The
+  host inflates them before the restore, in about 150 ms. A full snapshot
+  (`--full`) has no gzip: a stateless Worker restores it in the global
+  scope, which cannot inflate. A full snapshot in gzip restores in the
+  first request.
+- The header of a snapshot keeps `BEAM_ERL_FLAGS`, and a Worker with other
+  flags boots in place of the snapshot of the build. Give the flags of the
+  Worker to `npx beam.com --snapshot --env BEAM_ERL_FLAGS=...`. Before, a
+  snapshot made with no flags gave a Worker with `-Mea min` the
+  allocators of ERTS, and 30 MB more memory.
 
 ## 0.1.0-rc.2
 

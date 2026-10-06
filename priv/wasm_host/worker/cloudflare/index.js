@@ -27,7 +27,7 @@
 import { env as globalEnv } from 'cloudflare:workers';
 import { release, use } from './release.js';
 import { useSnapshot } from './snapshot.js';
-import plain, { snapshotHeader, staticResponse, Vm } from './worker.js';
+import plain, { parseSnapshot, staticResponse, Vm } from './worker.js';
 import front from './durable.js';
 
 export { Beam } from './durable.js';
@@ -62,7 +62,9 @@ export { Beam } from './durable.js';
 // --snapshot app.com, imported as a Data module, as app.com):
 // - a full one (--full): each new VM restores it in place of a boot. A
 //   stateless Worker restores its VM in the global scope, before the
-//   first request;
+//   first request. The global scope cannot inflate the pages of a
+//   snapshot in gzip (BEAMSNZ1), so such a snapshot restores in the first
+//   request;
 // - one at the boot point: a new VM restores it only when the store of
 //   snapshots has none (the first VM of a deploy), and then the VM makes
 //   its snapshot for the store, as with no snapshot of the build.
@@ -80,7 +82,8 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
   // The VM of a stateless Worker, restored from a full snapshot in the
   // global scope.
   let vm = null;
-  const full = !!snapshot && !snapshotHeader(snapshot).boot_point;
+  const parsed = snapshot && parseSnapshot(snapshot);
+  const full = !!parsed && !parsed.boot_point && !parsed.packed;
   const ready = full && !globalEnv[binding] ? (async () => {
     vm = new Vm(globalEnv, { release: await release(), snapshot });
     // A VM that stopped: the requests then go to the Worker of worker.js,

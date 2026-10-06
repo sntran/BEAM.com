@@ -119,7 +119,9 @@ cd hello && ../mix.com deps.get && ../mix.com ecto.migrate
 ```
 
 One file runs natively and in the WebAssembly runtime. Each executable of
-`-o` also has its edge part, of 40 to 180 KB (`--no-edge` leaves it out).
+`-o` also has its edge part, of 40 to 180 KB (`--no-edge` leaves it out,
+and `--target wasm32 -o FILE.com` writes only the edge part, with no native
+program).
 A release directory of `mix release` is an input too:
 
 ```sh

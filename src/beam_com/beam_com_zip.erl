@@ -9,11 +9,12 @@
 %%
 %% write/3 keeps the bytes of the executable up to the first entry that
 %% it removes, moves the entries after that point that it keeps, adds the
-%% new entries, and writes a new central directory. Zip64 is not
-%% supported.
+%% new entries, and writes a new central directory. only/2 writes a zip
+%% with some of the entries of an executable, and no executable before
+%% them. Zip64 is not supported.
 -module(beam_com_zip).
 
--export([entries/1, write/3]).
+-export([entries/1, write/3, only/2]).
 
 -define(LOCAL, 16#04034b50).
 -define(CENTRAL, 16#02014b50).
@@ -69,8 +70,22 @@ write(Bin, Keep, New) ->
     Count < 16#ffff orelse error(too_many_entries),
     CdOffset + CdSize < 16#ffffffff orelse error(zip64_not_supported),
     [binary:part(Bin, 0, PrefixEnd), MovedData, NewData, Central,
-     <<?END:32/little, 0:16, 0:16, Count:16/little, Count:16/little,
-       CdSize:32/little, CdOffset:32/little, 0:16>>].
+     end_of(Count, CdSize, CdOffset)].
+
+%% A zip with only the entries of Bin that Keep keeps, and none of the
+%% bytes before them (the program of an executable): the same records,
+%% at new offsets.
+-spec only(binary(), fun((string()) -> boolean())) -> iodata().
+only(Bin, Keep) ->
+    Entries = [E || E <- lists:keysort(#entry.offset, central_directory(Bin)),
+                    Keep(binary_to_list(E#entry.name))],
+    {Data, Moved, CdOffset} = move(Bin, Entries, 0),
+    Central = [central(E) || E <- Moved],
+    [Data, Central, end_of(length(Central), iolist_size(Central), CdOffset)].
+
+end_of(Count, CdSize, CdOffset) ->
+    <<?END:32/little, 0:16, 0:16, Count:16/little, Count:16/little,
+      CdSize:32/little, CdOffset:32/little, 0:16>>.
 
 %% Copy the local records (header, name, extra field, data and data
 %% descriptor) of the entries, starting at offset Pos.

@@ -3,9 +3,13 @@
 // (download.mjs). For example: npx beam.com app.erl -o app.com
 //
 // npx beam.com --snapshot APP.com [-o FILE] [--full] [--warm PATH]...
-// [--env NAME=VALUE]...: the snapshot of the build of APP.com for
-// serve(app, { snapshot }) of a Worker (snapshot() of node.mjs), in FILE
-// (default APP.snapshot). It runs here, with no download of beam.com.
+// [--env NAME=VALUE]... [--no-compress]: the snapshot of the build of
+// APP.com for serve(app, { snapshot }) of a Worker (snapshot() of
+// node.mjs), in FILE (default APP.snapshot), with its pages in gzip (not
+// with --full: the global scope of a Worker cannot inflate). Give
+// the BEAM_ERL_FLAGS of the Worker with --env: a Worker with other flags
+// boots in place of the snapshot. It runs here, with no download of
+// beam.com.
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
@@ -32,6 +36,7 @@ async function snapshotCommand(args) {
     };
     if (a === '-o') out = value();
     else if (a === '--full') opts.kind = 'full';
+    else if (a === '--no-compress') opts.compress = false;
     else if (a === '--warm') opts.warm.push(value());
     else if (a === '--env') {
       const v = value(), at = v.indexOf('=');
@@ -40,14 +45,17 @@ async function snapshotCommand(args) {
     } else if (!a.startsWith('-') && !app) app = a;
     else throw new Error(`--snapshot: unknown argument ${a}`);
   }
-  if (!app) throw new Error('usage: npx beam.com --snapshot APP.com [-o FILE] [--full] [--warm PATH]... [--env NAME=VALUE]...');
+  if (!app) throw new Error('usage: npx beam.com --snapshot APP.com [-o FILE] [--full] [--warm PATH]... [--env NAME=VALUE]... [--no-compress]');
   if (opts.warm.length && opts.kind !== 'full') throw new Error('--warm is for a full snapshot (--full)');
   out ??= app.replace(/\.com$/, '') + '.snapshot';
   const { snapshot } = await import('./node.mjs');
   const t0 = performance.now();
   const bytes = await snapshot(app, opts);
   writeFileSync(out, bytes);
-  console.error(`beam.com: wrote ${out} (${(bytes.length / 1048576).toFixed(1)} MB, ${opts.kind}, in ${Math.round(performance.now() - t0)} ms)`);
+  const flags = (opts.env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean).join(' ');
+  console.error(`beam.com: wrote ${out} (${(bytes.length / 1048576).toFixed(1)} MB, ${opts.kind}, `
+    + `BEAM_ERL_FLAGS "${flags}", in ${Math.round(performance.now() - t0)} ms)`);
+  if (!flags) console.error('beam.com: a Worker with BEAM_ERL_FLAGS boots in place of this snapshot: give its flags with --env BEAM_ERL_FLAGS=...');
 }
 
 let release = null;

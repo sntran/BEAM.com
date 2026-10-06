@@ -86,11 +86,16 @@ export async function boot(app, { env = {}, statics = true } = {}) {
 //   It holds the variables of env and the state of the program. A Phoenix
 //   app must give SECRET_KEY_BASE and PHX_HOST, and an app with Ecto
 //   SQLite cannot use it (its boot changes the database).
+// The header of the snapshot keeps BEAM_ERL_FLAGS of env: a Worker with
+// other flags boots in place of the snapshot. compress gives the pages in
+// gzip (BEAMSNZ1, about a quarter of the size). It is the default at the
+// boot point. A full snapshot has no gzip by default: a stateless Worker
+// restores it in the global scope, which cannot inflate.
 // Gives the bytes of the snapshot.
-export async function snapshot(app, { env = {}, warm = [], kind = 'boot-point' } = {}) {
+export async function snapshot(app, { env = {}, warm = [], kind = 'boot-point', compress = kind !== 'full' } = {}) {
   if (kind !== 'boot-point' && kind !== 'full') throw new Error(`the kind of snapshot is boot-point or full, not ${kind}`);
   const bin = await readApp(app, appFiles);
-  const { Vm, releaseMeta } = await import(new URL('worker.js', runtimeUrl).href);
+  const { Vm, releaseMeta, packSnapshot } = await import(new URL('worker.js', runtimeUrl).href);
   const meta = releaseMeta(bin);
   if (kind === 'full') {
     if (meta.sql) throw new Error(`${app}: the app has Ecto SQLite: use a snapshot at the boot point`);
@@ -122,5 +127,5 @@ export async function snapshot(app, { env = {}, warm = [], kind = 'boot-point' }
     bytes = await vm.snapshot(false);
   }
   if (!(bytes instanceof Uint8Array)) throw new Error(`${app}: no snapshot (${bytes}): the VM was not quiet`);
-  return bytes;
+  return compress ? packSnapshot(bytes) : bytes;
 }
