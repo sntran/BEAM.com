@@ -1876,23 +1876,27 @@ export class Vm {
     let total = 0;
     try {
       for (;;) {
+        // A read with min can end the stream with its last bytes (done
+        // and a value).
         const { value, done } = await read();
         if (c.done || this.dead) break;
+        if (value?.length) {
+          total += value.length;
+          if (max && total > max) {
+            this.bridgeRefuse(c, this.tooLarge(max));
+            break;
+          }
+          while (c.sent - c.read >= UPLOAD_WINDOW && !c.done && !this.dead) {
+            await new Promise((resolve) => { c.room = resolve; });
+          }
+          if (c.done || this.dead) break;
+          this.bridgeSend(c, chunked ? chunk(value) : value);
+        }
         if (done) {
           if (chunked) this.bridgeSend(c, CHUNKS_END);
           this.bridgeClock(c, c.timeout * 1000);
           return;
         }
-        total += value.length;
-        if (max && total > max) {
-          this.bridgeRefuse(c, this.tooLarge(max));
-          break;
-        }
-        while (c.sent - c.read >= UPLOAD_WINDOW && !c.done && !this.dead) {
-          await new Promise((resolve) => { c.room = resolve; });
-        }
-        if (c.done || this.dead) break;
-        if (value.length) this.bridgeSend(c, chunked ? chunk(value) : value);
       }
       reader.cancel().catch(() => {});
     } catch {

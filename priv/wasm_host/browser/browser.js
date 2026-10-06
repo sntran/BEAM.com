@@ -86,14 +86,15 @@ if (globalThis.caches && !caches.default) {
 
 // A request to the app. A Request of a page drops the headers Upgrade and
 // Sec-*, so the request is an object with the fields that worker.js reads,
-// and a Headers of its own.
+// and a Headers of its own. The body is a stream, as the body of a Request
+// (bridgeUpload of worker.js reads it in parts), with its size.
 function request(url, { method = 'GET', headers = {}, body = null } = {}) {
-  return {
-    url: url.href,
-    method,
-    headers: new Headers(headers),
-    arrayBuffer: () => new NativeResponse(body).arrayBuffer(),
-  };
+  const h = new Headers(headers);
+  if (body != null && !h.has('content-length')) {
+    const size = typeof body === 'string' ? new TextEncoder().encode(body).length : body.byteLength ?? body.size;
+    if (size !== undefined) h.set('content-length', String(size));
+  }
+  return { url: url.href, method, headers: h, body: body == null ? null : new NativeResponse(body).body };
 }
 
 // A reader of the bytes of the file of url (app-com.js): one range for each

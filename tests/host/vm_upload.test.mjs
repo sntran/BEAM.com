@@ -162,3 +162,18 @@ test('with a body, BEAM_REQUEST_TIMEOUT starts at the end of the body', async ()
   src.end();
   assert.equal((await pending).status, 504);
 });
+
+// The web page (browser.js) gives an object with url, method, headers and
+// body (a stream of a Response), not a Request.
+test('a request object as browser.js gives it', async () => {
+  const { v, sent } = vm();
+  const r = {
+    url, method: 'POST', headers: new Headers({ 'content-length': '5' }),
+    body: new Response('a=b&c').body,
+  };
+  bridge(v, r);
+  await settle();
+  const parts = data(sent).map((s) => text(s.body));
+  assert.match(parts[0], /content-length: 5\r\n/);
+  assert.equal(parts.slice(1).join(''), 'a=b&c');
+});
