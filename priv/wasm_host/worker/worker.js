@@ -285,6 +285,17 @@ export async function inflateSnapshot(snap) {
 // BEAM_ERL_FLAGS as one text, with one space between the flags.
 export const erlFlags = (env) => (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean).join(' ');
 
+// The flags of the allocators of the VM, before BEAM_ERL_FLAGS (a later
+// flag wins). A binary or a heap of 512 KB or more got its own carrier,
+// and in WebAssembly these carriers made the memory of the VM grow far
+// above the memory that Erlang used (14 MB): 16 clients that sent bodies
+// of 2.7 MiB grew it to 1 GB and more. With a threshold of 8 MB, the peak
+// was about 200 MB. With -Mea min, the allocators of ERTS are off, and
+// these flags do not apply.
+export function allocFlags(flags) {
+  return flags.includes('-Mea') ? [] : ['-MBsbct', '8192', '-MHsbct', '8192'];
+}
+
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
 // hosts, as "*:443"). The host resolves a name, so the VM cannot reach
@@ -1340,7 +1351,7 @@ export class Vm {
           // Livebook starts with 40 MB, not 70 MB, but :erlang.memory/0 is
           // not supported).
           const flags = (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean);
-          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...flags, ...(this.makeKey || this.bootKey || this.capture ? ['-c', 'false'] : []), '--',
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...allocFlags(flags), ...flags, ...(this.makeKey || this.bootKey || this.capture ? ['-c', 'false'] : []), '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
@@ -1664,12 +1675,20 @@ export class Vm {
     if (ctx) this.waitUntil = (p) => ctx.waitUntil(p);
     let finished = () => {};
     const h = this.plain ? this.serve(ctx, new Promise((r) => { finished = r; })) : undefined;
+    let response;
     try {
-      return await this.request(request, h, finished);
+      response = await this.request(request, h, finished);
     } catch (e) {
       finished();
       throw e;
     }
+    // A response before the VM read the body (a limit of the host, a VM
+    // that stopped): the body goes to no reader (see drain).
+    if (request.body && !request.body.locked) {
+      const reader = request.body.getReader();
+      await drain(() => reader.read(), () => reader.cancel());
+    }
+    return response;
   }
 
   async request(request, h, finished) {
@@ -1953,8 +1972,9 @@ export class Vm {
       finished();
       return this.stopped();
     }
-    return new Promise((resolve) => {
-      const c = { id, in: new Pieces(), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname, sent: 0, read: 0, room: null };
+    let c;
+    const response = await new Promise((resolve) => {
+      c = { id, in: new Pieces(), resolve, finished, upgrade, head: request.method === 'HEAD', h, origin: request.headers.get('origin'), path: url.pathname, sent: 0, read: 0, room: null };
       if (h) h.sockets++;
       this.conns.add(c);
       c.timeout = timeout;
@@ -1966,7 +1986,7 @@ export class Vm {
       this.tcps.set(id, {
         send: (b) => { this.bridgeGuard(c, () => this.bridgeData(c, b)); return c.wrote; },
         close: () => this.bridgeGuard(c, () => this.bridgeEnd(c)),
-        ack: (n) => this.bridgeRead(c, n), h,
+        ack: (n, msg) => this.bridgeRead(c, n, msg), h,
       });
       // ack: wasm_tcp tells the host what the app read (tcp_read): the
       // body of the request, and the messages of a WebSocket. sent: the
@@ -1974,14 +1994,20 @@ export class Vm {
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body || upgrade, sent: true });
       // With a body, the head goes in the event of the first part of the
       // body (bridgeUpload): a small body is one event, as before the parts.
-      if (body) this.bridgeUpload(c, body, declared === null, maxBody, bytes);
+      if (body) c.upload = this.bridgeUpload(c, body, declared === null, maxBody, bytes);
       else this.bridgeSend(c, bytes);
     });
+    // A response before the end of the body: the rest of the body goes to
+    // the app while it reads, else bridgeUpload reads and drops it (see
+    // drain). The response waits for that, DRAIN_TIME ms at most.
+    if (c.upload) await within(c.upload, DRAIN_TIME);
+    return response;
   }
 
   // Bytes to the app on the connection c.
   bridgeSend(c, bytes) {
     c.sent += bytes.length;
+    if (c.need) c.need = Math.max(0, c.need - bytes.length);
     this.event({ t: 'tcp_data', id: c.id }, bytes);
   }
 
@@ -1989,9 +2015,12 @@ export class Vm {
   // (or the rest of the body): one event for each part, not for each small
   // chunk of the client. A part goes when less than UPLOAD_WINDOW bytes are
   // unread in the VM (tcp_read of wasm_tcp): so a large body does not fill
-  // the memory of the VM, and a slow app slows the client. The head of the
-  // request goes with the bytes of the first read of the client, with no
-  // wait for UPLOAD_PART bytes.
+  // the memory of the VM, and a slow app slows the client. While a recv of
+  // the app waits for more bytes (c.need, as Bandit reads a body), a part
+  // has those bytes, UPLOAD_LARGE at most: the app holds them anyway, and
+  // each event costs a turn of the VM. The head of the request goes with
+  // the bytes of the first read of the client, with no wait for
+  // UPLOAD_PART bytes.
   async bridgeUpload(c, body, chunked, max, head) {
     // workerd has readAtLeast. The option min of the standard BYOB read is
     // not safe: when the stream closes with fewer bytes than min, the read
@@ -2046,7 +2075,7 @@ export class Vm {
           const piece = value.subarray(at, at + UPLOAD_READ);
           part.push(piece);
           size += piece.length;
-          if (size >= UPLOAD_PART) ok = await flush();
+          if (size >= Math.min(Math.max(c.need ?? 0, UPLOAD_PART), UPLOAD_LARGE)) ok = await flush();
         }
         if (ok && (done || head) && size) ok = await flush();
         if (!ok) break;
@@ -2057,11 +2086,15 @@ export class Vm {
           return;
         }
       }
-      reader.cancel().catch(() => {});
     } catch {
       // The client stopped the upload.
       this.bridgeRefuse(c, new Response('bad request\n', { status: 400 }));
+      return;
+    } finally {
+      clearTimeout(alone);
     }
+    // The app ended the connection, or the body is above BEAM_MAX_BODY.
+    await drain(() => read(UPLOAD_PART), () => reader.cancel());
   }
 
   // The time limit of the response of c: BEAM_REQUEST_TIMEOUT, in ms ms.
@@ -2069,9 +2102,12 @@ export class Vm {
     if (c.timeout && !c.status && !c.done) c.timer = setTimeout(() => this.bridgeTimeout(c, c.timeout), Math.max(ms, 1));
   }
 
-  // The app read n bytes of the connection c (tcp_read).
-  bridgeRead(c, n) {
+  // The app read n bytes of the connection c (tcp_read). msg.want and
+  // msg.got give the bytes that a recv of the app still waits for, beyond
+  // the bytes on their way to it (c.need).
+  bridgeRead(c, n, msg) {
     c.read += n;
+    if (msg?.want !== undefined) c.need = Math.max(0, msg.got + msg.want - c.sent);
     this.bridgeRoom(c);
     c.inbound?.flush();
   }
@@ -2681,7 +2717,7 @@ export class Vm {
       }
       // wasm_tcp: the app read n bytes of a socket.
       case 'tcp_read': {
-        this.tcps.get(msg.id)?.ack?.(msg.n);
+        this.tcps.get(msg.id)?.ack?.(msg.n, msg);
         break;
       }
       case 'tcp_close': {
@@ -2774,10 +2810,49 @@ const LATE = Symbol('late');
 // costs a turn of the VM.
 const UPLOAD_WINDOW = 256 * 1024;
 const UPLOAD_PART = 32 * 1024;
+const UPLOAD_LARGE = 1024 * 1024;
 // The time that the head of a request waits for the first bytes of its
 // body (bridgeUpload), in ms.
 const HEAD_WAIT = 20;
 const UPLOAD_READ = 64 * 1024;
+// The rest of a request body that the app did not read (drain): the
+// bytes that the host reads at most before the response goes, the ms with
+// no new bytes, and the ms in all.
+const DRAIN_BYTES = 64 * 1024 * 1024;
+const DRAIN_IDLE = 5000;
+const DRAIN_TIME = 60000;
+
+// The rest of a request body, read and dropped before the response goes,
+// when the app answered before it read the whole body (a 413, for
+// example). workerd cannot read a request body after the response has
+// gone, and it then closes the connection with the bytes that were not
+// read. wrangler dev uses that connection again, and its next request
+// fails with 500. The read stops after DRAIN_BYTES, after DRAIN_IDLE ms
+// with no bytes, or after DRAIN_TIME ms, and then cancel() ends the body.
+// read() gives { value, done }. limits replaces the bounds (a test).
+export async function drain(read, cancel, { bytes = DRAIN_BYTES, idle = DRAIN_IDLE, time = DRAIN_TIME } = {}) {
+  const end = Date.now() + time;
+  let n = 0;
+  try {
+    for (;;) {
+      const r = await within(read(), Math.min(idle, end - Date.now()));
+      if (r === LATE) break;
+      if (r.done) return;
+      n += r.value?.byteLength ?? 0;
+      if (n > bytes || Date.now() >= end) break;
+    }
+  } catch {
+    return;  // the client stopped the body
+  }
+  try { await cancel(); } catch {}
+}
+
+// The promise p, or LATE after ms ms.
+function within(p, ms) {
+  let timer;
+  const late = new Promise((r) => { timer = setTimeout(r, Math.max(ms, 0), LATE); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 // The size bytes of the list parts, as one array.
 function join(parts, size) {

@@ -24,7 +24,10 @@
 %%   the owner waits for more bytes than the buffer holds (a recv of a
 %%   length, as Bandit reads a body, or a packet that is not complete),
 %%   the bytes of the buffer count as taken: else a recv of more than the
-%%   window of the host never gets its bytes.
+%%   window of the host never gets its bytes. Each tcp_read also gives
+%%   "want", the bytes that a waiting recv of a length needs beyond the
+%%   buffer, and "got", the bytes that the socket got from the host. With
+%%   them, the host sends larger parts while a long recv waits.
 %% - "sent": true: the host tells the socket how many bytes of tcp_send it
 %%   gave to the peer (tcp_sent). While ?SEND_WINDOW bytes or more wait in
 %%   the host, a send waits for tcp_sent, so a slow peer slows the sender
@@ -256,7 +259,7 @@ handle_call({recv, Length, Timeout}, From, S) ->
         infinity -> undefined;
         _ -> erlang:send_after(Timeout, self(), recv_timeout)
     end,
-    {noreply, wanted(serve_recv(S#{recv := {From, Length, TRef}}))};
+    {noreply, hint(wanted(serve_recv(S#{recv := {From, Length, TRef}})))};
 handle_call({unrecv, Data}, _From, #{buf := Buf} = S) ->
     {reply, ok, S#{buf := <<(iolist_to_binary(Data))/binary, Buf/binary>>}};
 handle_call(close, _From, S) ->
@@ -410,9 +413,21 @@ next_packet(#{packet := P, buf := Buf}) ->
     end.
 
 %% Data from the host: to the buffer, then to the owner (active modes) or
-%% to a waiting recv.
+%% to a waiting recv. An append to a binary that is not writable allocates
+%% twice the new size, so a large recv held a binary of twice its length.
+%% Data to an empty buffer is the buffer, and the data that completes a
+%% waiting recv makes one binary of the exact size.
 deliver(Data, #{buf := Buf} = S) ->
-    wanted(serve_recv(push(S#{buf := <<Buf/binary, Data/binary>>}))).
+    Next = if
+        Buf =:= <<>> -> Data;
+        true ->
+            case S of
+                #{recv := {_, Len, _}} when Len > 0, byte_size(Buf) + byte_size(Data) >= Len ->
+                    iolist_to_binary([Buf, Data]);
+                _ -> <<Buf/binary, Data/binary>>
+            end
+    end,
+    wanted(serve_recv(push(S#{buf := Next}))).
 
 %% The owner waits, and the buffer does not have what it waits for: the
 %% bytes of the buffer that tcp_read did not count yet count now (ahead).
@@ -455,11 +470,29 @@ taken(Rest, #{buf := Buf, unacked := U, ahead := A} = S) ->
 
 %% tcp_read to the host (with "ack": true), after ?ACK_BYTES taken bytes,
 %% and when the buffer is empty.
-ack(#{ack := true, unacked := U, buf := Buf, id := Id} = S)
+ack(#{ack := true, unacked := U, buf := Buf} = S)
   when U >= ?ACK_BYTES; U > 0, Buf =:= <<>> ->
-    ?HOST:send_host(#{t => tcp_read, id => Id, n => U}),
-    S#{unacked := 0};
+    read_host(S);
 ack(S) -> S.
+
+%% A new recv that waits for ?ACK_BYTES or more beyond the buffer: the
+%% host learns it at once, not at the next tcp_read.
+hint(#{ack := true} = S) ->
+    case want(S) >= ?ACK_BYTES of
+        true -> read_host(S);
+        false -> S
+    end;
+hint(S) -> S.
+
+%% tcp_read: n, the bytes that the owner took since the last tcp_read;
+%% want and got (see the start of this module).
+read_host(#{id := Id, unacked := U, recv_oct := Got} = S) ->
+    ?HOST:send_host(#{t => tcp_read, id => Id, n => U, want => want(S), got => Got}),
+    S#{unacked := 0}.
+
+%% The bytes that a waiting recv of a length needs beyond the buffer.
+want(#{recv := {_, Len, _}, buf := Buf}) when Len > byte_size(Buf) -> Len - byte_size(Buf);
+want(_) -> 0.
 
 serve_recv(#{recv := {From, 0, TRef}} = S) ->
     case next_packet(S) of

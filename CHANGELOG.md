@@ -3,6 +3,39 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+Fixes from the check of 0.1.0-rc.4:
+
+- An app that answers before it reads the whole request body (a 413 of
+  its own, for example) no longer breaks the next request. Before, in
+  `wrangler dev`, the next POST of any client got 500, and workerd logged
+  "Uncaught TypeError: Can't read from request stream after response has
+  been sent" for a Durable Object. Now the host reads the rest of the
+  body and drops it before the response goes (64 MiB at most, and a stop
+  after 5 s with no bytes), in a plain Worker, a Durable Object and Deno.
+  The front Worker of a Durable Object pipes the body to the object
+  itself, with a handler for a read that fails.
+- A large request body that the app reads with a `recv` of a length (as
+  Bandit reads a body) goes in parts of up to 1 MiB in place of 32 KB:
+  each `tcp_read` of `wasm_tcp` tells the host how many bytes the `recv`
+  still waits for. A body that the app reads in small parts still goes in
+  parts of 32 KB, so the memory of the VM stays low. In `wrangler dev`,
+  bodies of 2.7 MiB that the app reads with one `recv` each: 32.6
+  requests each second for one client (0.1.0-rc.4: 19.0, 0.1.0-rc.2:
+  28.2), and 60.2 for 16 clients (0.1.0-rc.4: 24.5, 0.1.0-rc.2: 17.7). With
+  a Durable Object: 25.9 and 45.0 (0.1.0-rc.4: 15.0 and 17.4).
+- The memory of the VM with large bodies at one time. In WebAssembly, a
+  binary or a process heap of 512 KB or more got a carrier of its own,
+  and the memory of the VM grew far above the memory that Erlang used
+  (`erlang:memory/0` gave 14 MB in all). 16 clients that sent bodies of 2.7 MiB grew the memory of the VM to 345 MB
+  with 0.1.0-rc.4 in workerd, and to more than 1 GB with the larger parts
+  above. Now the peak is 202 MB. The host starts the VM with
+  `-MBsbct 8192 -MHsbct 8192` (`BEAM_ERL_FLAGS` comes after them, and
+  `-Mea min` turns them off). Also, data to an empty buffer of a socket
+  is that buffer with no copy, and the data that completes a waiting
+  `recv` makes one binary of its length, not of twice its length.
+
 ## 0.1.0-rc.4
 
 The fourth release candidate of 0.1.0. As 0.1.0-rc.3, it is a

@@ -113,6 +113,8 @@ defmodule WasmTcpTest do
       size = 600_000
       reading = Task.async(fn -> :wasm_tcp.recv(socket, size, 5000) end)
       wait_until(fn -> match?({_, ^size, _}, :sys.get_state(pid).recv) end)
+      # The recv tells the host the bytes that it waits for.
+      assert_receive {:host, %{"t" => "tcp_read", "n" => 0, "want" => ^size, "got" => 0}, _}, 5000
       part = :binary.copy("x", 60_000)
 
       # As the host: 300 KB, more than the window, and then nothing until
@@ -136,6 +138,59 @@ defmodule WasmTcpTest do
       assert n == 100_000
       send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, rest})
       assert_receive {:tcp, ^socket, ^payload}, 5000
+    end
+
+    test "a tcp_read gives the bytes that a recv waits for (want), and the bytes that came (got)" do
+      {socket, pid} = accepted(%{ack: true, sack: false}, active: false)
+      reading = Task.async(fn -> :wasm_tcp.recv(socket, 300_000, 5000) end)
+
+      assert_receive {:host, %{"t" => "tcp_read", "n" => 0, "want" => 300_000, "got" => 0}, _},
+                     5000
+
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, :binary.copy("w", 100_000)})
+
+      assert_receive {:host,
+                      %{"t" => "tcp_read", "n" => 100_000, "want" => 200_000, "got" => 100_000},
+                      _},
+                     5000
+
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, :binary.copy("w", 200_000)})
+      assert {:ok, data} = Task.await(reading, 5000)
+      assert byte_size(data) == 300_000
+
+      assert_receive {:host, %{"t" => "tcp_read", "n" => 200_000, "want" => 0, "got" => 300_000},
+                      _},
+                     5000
+    end
+
+    test "a recv that parts complete gets one binary of its length, not of twice its length" do
+      {socket, pid} = accepted(%{ack: true, sack: false}, active: false)
+      reading = Task.async(fn -> :wasm_tcp.recv(socket, 300_000, 5000) end)
+      wait_until(fn -> match?({_, 300_000, _}, :sys.get_state(pid).recv) end)
+
+      for _ <- 1..3,
+          do: send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, :binary.copy("v", 100_000)})
+
+      assert {:ok, data} = Task.await(reading, 5000)
+      assert byte_size(data) == 300_000
+      assert :binary.referenced_byte_size(data) == 300_000
+    end
+
+    test "data to an empty buffer is the buffer, with no copy" do
+      {socket, pid} = accepted(%{ack: true, sack: false}, active: false)
+      part = :binary.copy("u", 100_000)
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, part})
+      wait_until(fn -> byte_size(:sys.get_state(pid).buf) == 100_000 end)
+      assert {:ok, data} = :wasm_tcp.recv(socket, 0, 5000)
+      assert data == part
+      assert :binary.referenced_byte_size(data) == 100_000
+    end
+
+    test "a recv of fewer bytes than ACK_BYTES sends no tcp_read before its bytes come" do
+      {socket, pid} = accepted(%{ack: true, sack: false}, active: false)
+      Task.start(fn -> :wasm_tcp.recv(socket, 1000, 5000) end)
+      wait_until(fn -> match?({_, 1000, _}, :sys.get_state(pid).recv) end)
+      refute_receive {:host, %{"t" => "tcp_read"}, _}, 200
     end
 
     test "the bytes that no one waits for do not count as read" do

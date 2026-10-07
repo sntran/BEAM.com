@@ -12,7 +12,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { packSnapshot, parseSnapshot, inflateSnapshot, snapshotHeader, erlFlags } =
+const { packSnapshot, parseSnapshot, inflateSnapshot, snapshotHeader, erlFlags, allocFlags } =
   await import('../../priv/wasm_host/worker/worker.js');
 
 const PAGE = 65536;
@@ -71,6 +71,12 @@ test('BEAMSNZ1 with pages that its header does not give is an error', async () =
 
 test('a file that is not a snapshot', () => {
   assert.throws(() => parseSnapshot(new TextEncoder().encode('BEAMSNX1\0\0\0\0{}')), /not a snapshot/);
+});
+
+test('allocFlags: an 8 MB carrier threshold for binaries and heaps, except with -Mea', () => {
+  assert.deepEqual(allocFlags([]), ['-MBsbct', '8192', '-MHsbct', '8192']);
+  assert.deepEqual(allocFlags(['-MBsbct', '4096']), ['-MBsbct', '8192', '-MHsbct', '8192']);
+  assert.deepEqual(allocFlags(['-Mea', 'min']), []);
 });
 
 test('erlFlags: the flags as one text', () => {

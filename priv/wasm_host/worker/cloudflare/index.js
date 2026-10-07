@@ -28,7 +28,7 @@ import { env as globalEnv } from 'cloudflare:workers';
 import { release, use } from './release.js';
 import { useSnapshot } from './snapshot.js';
 import plain, { parseSnapshot, staticResponse, Vm } from './worker.js';
-import front from './durable.js';
+import front, { forward } from './durable.js';
 
 export { Beam } from './durable.js';
 
@@ -113,7 +113,7 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
       const objects = env[binding];
       if (!objects && vm) return vm.fetch(request, ctx);
       if (!objects) return plain.fetch(request, env, ctx);
-      if (typeof name === 'function') return objects.getByName(name(request)).fetch(request);
+      if (typeof name === 'function') return forward(objects.getByName(name(request)), request);
       return front.fetch(request, frontEnv(env), ctx);
     },
     scheduled(controller, env, ctx) {

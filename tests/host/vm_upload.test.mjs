@@ -12,7 +12,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { Vm } = await import('../../priv/wasm_host/worker/worker.js');
+const { Vm, drain } = await import('../../priv/wasm_host/worker/worker.js');
 
 // A Vm with the state of a VM that is ready, and the events that it gives
 // to the app in sent.
@@ -41,6 +41,9 @@ const headOf = (sent) => all(sent).slice(0, all(sent).indexOf('\r\n\r\n') + 4);
 // The body bytes that the app got (after the head).
 const bodyBytes = (sent) => data(sent).reduce((n, s) => n + s.body.length, 0) - headOf(sent).length;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+
+// True when the promise p does not settle in a few turns.
+const waiting = (p) => Promise.race([p.then(() => false, () => false), settle().then(() => true)]);
 
 // A body of n chunks of size bytes each, which the test gives one by one.
 function source() {
@@ -120,6 +123,10 @@ test('a body that grows above BEAM_MAX_BODY gets 413, and the app gets the end',
   const pending = bridge(v, new Request(url, { method: 'POST', body: src.stream, duplex: 'half' }));
   src.push(6);
   src.push(6);
+  // The response waits while the host reads the rest of the body (drain).
+  assert.equal(await waiting(pending), true);
+  src.push(6);
+  src.end();
   const r = await pending;
   assert.equal(r.status, 413);
   await settle();
@@ -141,6 +148,7 @@ test('a VM that stops ends the upload that waits for room', async () => {
   const before = data(sent).length;
   assert.ok(bodyBytes(sent) < 600000);
   v.die('exit status 1');
+  src.end();
   assert.equal((await pending).status, 503);
   await settle();
   assert.equal(data(sent).length, before);
@@ -225,4 +233,76 @@ test('a client that sends no body yet: the head goes alone after 20 ms', async (
   src.end();
   await settle();
   assert.equal(all(sent).slice(headOf(sent).length), 'xxx');
+});
+
+test('an app that answers before the end of the body: the response goes after the host read the rest', async () => {
+  const { v, sent } = vm();
+  const src = source();
+  const pending = bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': '400000' },
+  }));
+  src.push(100000);
+  await settle();
+  const id = sent.find((s) => s.header.t === 'tcp_accept').header.conn;
+  const app = v.tcps.get(id);
+  app.send(new TextEncoder().encode('HTTP/1.1 413 Payload Too Large\r\ncontent-length: 0\r\n\r\n'));
+  app.close();
+  assert.equal(await waiting(pending), true);
+  const before = data(sent).length;
+  src.push(300000);
+  assert.equal(await waiting(pending), true);
+  src.end();
+  assert.equal((await pending).status, 413);
+  // The rest went to no app: the app closed its connection.
+  assert.equal(data(sent).length, before);
+});
+
+test('drain reads a body to its end, and cancels it at a bound', async () => {
+  const chunks = (n, size) => {
+    let left = n, cancelled = false;
+    const stream = new ReadableStream({
+      pull(c) { if (left-- > 0) c.enqueue(new Uint8Array(size)); else c.close(); },
+      cancel() { cancelled = true; },
+    });
+    const reader = stream.getReader();
+    return { read: () => reader.read(), cancel: () => reader.cancel(), cancelled: () => cancelled, left: () => left };
+  };
+  const all = chunks(10, 1000);
+  await drain(all.read, all.cancel);
+  assert.equal(all.cancelled(), false);
+  assert.ok(all.left() < 0);
+  // Above the bytes: cancel.
+  const big = chunks(10, 1000);
+  await drain(big.read, big.cancel, { bytes: 2500 });
+  assert.equal(big.cancelled(), true);
+  // No bytes in the idle time: cancel.
+  let cancelled = false;
+  const silent = new ReadableStream({ cancel() { cancelled = true; } }).getReader();
+  await drain(() => silent.read(), () => silent.cancel(), { idle: 20 });
+  assert.equal(cancelled, true);
+  // A client that stops its body: no cancel, no error.
+  const broken = new ReadableStream({ pull(c) { c.error(new Error('the client stopped')); } }).getReader();
+  await drain(() => broken.read(), () => assert.fail('no cancel'));
+});
+
+test('while a recv of the app waits for many bytes, a part has those bytes', async () => {
+  const { v, sent } = vm();
+  const src = source();
+  const pending = bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': String(1000000) },
+  }));
+  src.push(100000);
+  await settle();
+  const id = sent.find((s) => s.header.t === 'tcp_accept').header.conn;
+  const got = data(sent).reduce((n, s) => n + s.body.length, 0);
+  assert.equal(bodyBytes(sent), 100000);
+  const before = data(sent).length;
+  // wasm_tcp: a recv waits for the other 900000 bytes of the body.
+  v.tcps.get(id).ack(got, { t: 'tcp_read', id, n: got, want: 900000, got });
+  for (let i = 0; i < 9; i++) src.push(100000);
+  src.end();
+  await settle();
+  assert.equal(bodyBytes(sent), 1000000);
+  assert.equal(data(sent).length, before + 1);  // one part of 900000 bytes, not 28
+  assert.equal(await waiting(pending), true);  // no response yet
 });
