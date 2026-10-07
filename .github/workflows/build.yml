@@ -736,13 +736,15 @@ jobs:
           merge-multiple: true
 
       # The packages of QEMU for the VM actions, with time limits: when the
-      # Ubuntu archives do not answer, the job stops in minutes, with this
-      # step in the log. The VM action then finds the packages.
+      # Ubuntu archives do not answer, the job stops before its own limit,
+      # with this step in the log. The VM action then finds the packages.
+      # The download is about 28 MB, and a slow mirror gave 100 KB/s.
       - name: Install QEMU
         run: |
           for try in 1 2; do
             sudo timeout 120 apt-get update -q &&
-              sudo timeout 240 apt-get install -y -q --no-install-recommends qemu-utils qemu-system-x86 ovmf &&
+              sudo timeout 600 apt-get install -y -q -o Acquire::Retries=3 --no-install-recommends \
+                qemu-utils qemu-system-x86 ovmf &&
               exit 0
             echo "Try $try to install QEMU failed."
             sleep 10
