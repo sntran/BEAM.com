@@ -13,6 +13,7 @@
 %%   POST /upload-slow  the same, with a pause of 2 ms after each recv
 %%   POST /upload-whole 200 with the size of the body: one recv of the
 %%                      length of the body, as Bandit reads a body
+%%   POST /refuse       413 at once: the app reads no part of the body
 %%   GET /download      200 with 64 MiB, in sends of 64 KB with no wait: a
 %%                      client that reads slowly slows the sends (tcp_sent)
 %%   GET PATH     200 with the start time of the VM, for example "vm 12345"
@@ -44,6 +45,7 @@ serve(S) ->
         <<"/upload">> -> upload(S, Data, 0);
         <<"/upload-slow">> -> upload(S, Data, 2);
         <<"/upload-whole">> -> whole(S, Data);
+        <<"/refuse">> -> reply(S, "413 Payload Too Large", "too large\n");
         <<"/download">> -> download(S);
         _ -> reply(S, io_lib:format("vm ~p~n", [erlang:system_info(start_time)]))
     end.
@@ -122,7 +124,9 @@ download(S) ->
     [ok = gen_tcp:send(S, Part) || _ <- lists:seq(1, ?DOWNLOAD_PARTS)],
     gen_tcp:close(S).
 
-reply(S, Body) ->
-    gen_tcp:send(S, ["HTTP/1.1 200 OK\r\ncontent-length: ", integer_to_list(iolist_size(Body)),
+reply(S, Body) -> reply(S, "200 OK", Body).
+
+reply(S, Status, Body) ->
+    gen_tcp:send(S, ["HTTP/1.1 ", Status, "\r\ncontent-length: ", integer_to_list(iolist_size(Body)),
                      "\r\nconnection: close\r\n\r\n", Body]),
     gen_tcp:close(S).

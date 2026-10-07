@@ -686,7 +686,29 @@ part only while less than 256 KB of the body is unread in the VM: so a
 large upload does not fill the memory of the VM, and an app that reads
 slowly slows the client. While the app waits for more bytes than the VM
 holds (a `recv` of a length, as Bandit reads a body), these bytes count
-as read, so a body of any size reaches a `recv` of its length.
+as read, so a body of any size reaches a `recv` of its length. The
+socket also tells the host how many bytes that `recv` still waits for,
+and the host then sends parts of up to 1 MiB: the app holds these bytes
+anyway, and each part costs a turn of the VM.
+
+The host starts the VM with `-MBsbct 8192 -MHsbct 8192`: a binary or a
+process heap goes into a carrier of its own only above 8 MB, in place of
+512 KB. In WebAssembly, these carriers made the memory of the VM grow far
+above the memory that Erlang used: 16 clients that sent bodies of 2.7 MiB
+at one time grew the memory of the VM to more than 1 GB. With the new threshold, the peak
+was about 200 MB, and with `-Mea min` about 100 MB. Erlang itself used 14
+MB in each case. With `-Mea min` in `BEAM_ERL_FLAGS`, the host leaves out
+its flags.
+
+When the app answers before it reads the whole body (a 413 of its own,
+for example), the host reads the rest of the body and drops it, and then
+the response goes. workerd cannot read a request body after the response
+has gone, and it closes the connection with the bytes that it did not
+read: `wrangler dev` uses that connection again, and its next request
+gets 500. The host reads 64 MiB at most, and stops when no bytes come for
+5 s, or after 60 s. The front Worker of a Durable Object pipes the body to
+the object itself, with a handler for a read that fails, in place of the
+pipe of workerd.
 
 The other directions have the same flow control:
 
@@ -758,7 +780,7 @@ Cloudflare stops the requests with "Durable Object is overloaded".
 |---|---|---|
 | `PORT` | Worker, Durable Object | The port of the HTTP listener of the program (4000). |
 | `PHX_HOST` | Worker, Durable Object | The host of a Phoenix app, also for the Origin of a WebSocket. |
-| `BEAM_ERL_FLAGS` | Worker, Durable Object | More emulator flags. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
+| `BEAM_ERL_FLAGS` | Worker, Durable Object | More emulator flags, after the flags of the host (`-MBsbct 8192 -MHsbct 8192`, see below), so a flag here wins. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
 | `BEAM_SNAPSHOT` | Worker, Durable Object | `"off"`: no snapshot. |
 | `SNAPSHOTS` | Worker, Durable Object | An R2 bucket for the snapshots, in place of the Cache API. |
 | `BEAM_VERSION` | Worker, Durable Object | The version metadata of the deploy (set by the build). |

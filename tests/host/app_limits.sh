@@ -3,7 +3,9 @@
 # Deno (deno serve), with app.com of tests/programs/limits_check.erl. A
 # body of 32 MB goes to the app in parts (with content-length, and chunked
 # to an app that reads slowly), and the memory of the VM stays below 96
-# MB. A body of 1 MiB goes to one recv of its length. A download of 64 MiB
+# MB. A body of 1 MiB goes to one recv of its length. When the app answers
+# 413 before it reads its body, the host reads the rest, and the next POST
+# gets 200 (wrangler dev uses the connection again). A download of 64 MiB
 # goes to a client that reads at 16 MB/s, and the sends of the app wait
 # for the client (tcp_sent). A request with no answer in
 # BEAM_REQUEST_TIMEOUT seconds gets 504. When the VM stops (erlang:halt/1,
@@ -70,6 +72,17 @@ check() {
     out=$(curl --noproxy 127.0.0.1 -s --max-time 60 --data-binary @whole.bin "http://127.0.0.1:$2/upload-whole" || true)
     [ "$out" = "got 1048576" ] || { echo "$1: /upload-whole gave \"$out\""; tail -n 40 "$3"; return 1; }
     echo "$1: a body of 1 MiB to one recv of its length"
+    for i in 1 2 3; do
+        code=$(curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{http_code}' --max-time 60 \
+            --data-binary @whole.bin "http://127.0.0.1:$2/refuse" || true)
+        [ "$code" = 413 ] || { echo "$1: /refuse gave $code, not 413"; tail -n 40 "$3"; return 1; }
+        out=$(curl --noproxy 127.0.0.1 -s --max-time 60 --data-binary @whole.bin "http://127.0.0.1:$2/upload" || true)
+        [ "$out" = "got 1048576" ] || { echo "$1: after a 413, /upload gave \"$out\""; tail -n 40 "$3"; return 1; }
+    done
+    if grep -q "Can't read from request stream" "$3"; then
+        echo "$1: a read of a request body after its response"; tail -n 40 "$3"; return 1
+    fi
+    echo "$1: a 413 before the app read the body, and then 200"
     size=$(curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{size_download}' --limit-rate 16M \
         --max-time 60 "http://127.0.0.1:$2/download" || true)
     [ "$size" = 67108864 ] || { echo "$1: /download gave $size bytes, not 67108864"; tail -n 40 "$3"; return 1; }

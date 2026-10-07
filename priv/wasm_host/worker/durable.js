@@ -36,6 +36,21 @@ import { DurableObject } from 'cloudflare:workers';
 import { Vm } from './worker.js';
 
 const valid = (name) => /^[a-z0-9-]{1,32}$/.test(name ?? '');
+
+// The request to the object stub. workerd pipes the body from the client
+// to the object, and that pipe reads on after the response has gone when
+// the object stops its read early. The read then fails with no handler:
+// "Uncaught TypeError: Can't read from request stream after response has
+// been sent". Here the pipe is one of this Worker, with a handler. A
+// FixedLengthStream (workerd) keeps the length of the body.
+export function forward(stub, request) {
+  if (!request.body) return stub.fetch(request);
+  const length = Number(request.headers.get('content-length') ?? NaN);
+  const pass = Number.isSafeInteger(length) && typeof FixedLengthStream === 'function'
+    ? new FixedLengthStream(length) : new TransformStream();
+  request.body.pipeTo(pass.writable).catch(() => {});
+  return stub.fetch(new Request(request, { body: pass.readable, duplex: 'half' }));
+}
 const REGISTRY = '.registry';
 const EXPIRES = 'beam:expires';
 
@@ -363,7 +378,7 @@ export default {
       // The app can trust the header: a client cannot give it.
       request = new Request(inner, request);
       request.headers.set('x-beam-tenant', m[1]);
-      const response = await env.BEAM.get(env.BEAM.idFromName(m[1])).fetch(request);
+      const response = await forward(env.BEAM.get(env.BEAM.idFromName(m[1])), request);
       if (!response.headers.has('service-worker-allowed')) return response;
       const out = new Response(response.body, response);
       out.headers.delete('service-worker-allowed');
@@ -386,6 +401,6 @@ export default {
     request = new Request(request);
     if (env.BEAM_TENANTS) request.headers.set('x-beam-tenant', name);
     else request.headers.delete('x-beam-tenant');
-    return env.BEAM.get(env.BEAM.idFromName(name)).fetch(request);
+    return forward(env.BEAM.get(env.BEAM.idFromName(name)), request);
   },
 };
