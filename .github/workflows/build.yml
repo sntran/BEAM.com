@@ -209,12 +209,15 @@ jobs:
 
       # The file formats of the output and of a program that it built
       # (tests/check_format.sh): ZIP, PE, ELF and Mach-O. The Mach-O check
-      # needs llvm-objdump.
+      # needs llvm-objdump. check_format.sh finds the one of an LLVM of the
+      # image (/usr/lib/llvm-*/bin), so the step installs llvm only when
+      # the image has none, with time limits: when the Ubuntu archives did
+      # not answer, apt-get update waited until the limit of the step.
       - name: Check the file formats
         timeout-minutes: 10
         run: |
-          command -v llvm-objdump >/dev/null ||
-            { sudo apt-get update -q >/dev/null && sudo apt-get install -y -q llvm >/dev/null; }
+          command -v llvm-objdump >/dev/null || ls /usr/lib/llvm-*/bin/llvm-objdump >/dev/null 2>&1 ||
+            { sudo timeout 120 apt-get update -q >/dev/null && sudo timeout 240 apt-get install -y -q llvm >/dev/null; }
           tests/check_format.sh "$OUT" build/hashsum.com
 
       - name: Trace a failed test
@@ -705,10 +708,14 @@ jobs:
           "### Benchmarks: ${{ matrix.name }}`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           Get-Content bench.md | Out-File -Append $env:GITHUB_STEP_SUMMARY
 
+  # Ubuntu 26.04: the package index of the Ubuntu 24.04 image named an
+  # ovmf that the mirrors no longer had, so each VM action read a new index
+  # first, and that read waited until the time limit of the job when the
+  # Ubuntu archives did not answer (October 2026).
   test-bsd:
     name: Run on ${{ matrix.name }}
     needs: [build, example-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -727,6 +734,22 @@ jobs:
         with:
           path: bin
           merge-multiple: true
+
+      # The packages of QEMU for the VM actions, with time limits: when the
+      # Ubuntu archives do not answer, the job stops before its own limit,
+      # with this step in the log. The VM action then finds the packages.
+      # The download is about 28 MB, and a slow mirror gave 100 KB/s.
+      - name: Install QEMU
+        run: |
+          for try in 1 2; do
+            sudo timeout 120 apt-get update -q &&
+              sudo timeout 600 apt-get install -y -q -o Acquire::Retries=3 --no-install-recommends \
+                qemu-utils qemu-system-x86 ovmf &&
+              exit 0
+            echo "Try $try to install QEMU failed."
+            sleep 10
+          done
+          exit 1
 
       # The benchmarks run after a merge to main, not for a pull request
       # (the performance gate of the job test compares a pull request).
