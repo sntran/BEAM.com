@@ -209,12 +209,15 @@ jobs:
 
       # The file formats of the output and of a program that it built
       # (tests/check_format.sh): ZIP, PE, ELF and Mach-O. The Mach-O check
-      # needs llvm-objdump.
+      # needs llvm-objdump. check_format.sh finds the one of an LLVM of the
+      # image (/usr/lib/llvm-*/bin), so the step installs llvm only when
+      # the image has none, with time limits: when the Ubuntu archives did
+      # not answer, apt-get update waited until the limit of the step.
       - name: Check the file formats
         timeout-minutes: 10
         run: |
-          command -v llvm-objdump >/dev/null ||
-            { sudo apt-get update -q >/dev/null && sudo apt-get install -y -q llvm >/dev/null; }
+          command -v llvm-objdump >/dev/null || ls /usr/lib/llvm-*/bin/llvm-objdump >/dev/null 2>&1 ||
+            { sudo timeout 120 apt-get update -q >/dev/null && sudo timeout 240 apt-get install -y -q llvm >/dev/null; }
           tests/check_format.sh "$OUT" build/hashsum.com
 
       - name: Trace a failed test
