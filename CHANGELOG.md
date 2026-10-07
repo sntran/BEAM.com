@@ -3,6 +3,27 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+Fixes from the check of 0.1.0-rc.3:
+
+- Security: the events of a new connection keep their order. Before, a
+  part of a request body could reach the app before the head of the
+  request, when the VM was busy. A client could then make its body a
+  request of its own, with header fields that only the Worker may set.
+  Now the pump holds the events of a connection until the process of the
+  connection claims it, and gives them to it first, in order.
+- A `recv` of more than 256 KB gets its bytes. Before, a body above
+  256 KB that the app read with one `recv` of its length (as Bandit reads
+  a body) got no more bytes, and the request got 408 or no answer. Now
+  the bytes count as read while the app waits for them.
+- A request body goes in parts of 32 KB in place of 16 KB, and the head
+  goes with the first bytes of the body (or alone, when they do not come
+  in 20 ms). A small request is one event again, as in rc.2. In Node.js,
+  20 bodies of 2.5 MB that the app reads with one `recv` each take 0.3 to
+  0.6 s (rc.2: 1.6 s). Parts of 64 KB made the memory of the VM in Deno
+  grow to 110 MB with the uploads of 32 MB, so the parts stay at 32 KB.
+
 ## 0.1.0-rc.3
 
 The third release candidate of 0.1.0. As 0.1.0-rc.2, it is a

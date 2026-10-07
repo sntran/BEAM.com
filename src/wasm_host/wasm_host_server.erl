@@ -11,11 +11,24 @@
 %% With "ack": true in tcp_accept, the connection tells the host the bytes
 %% that its owner read ({"t":"tcp_read","id":"a9","n":65536}, wasm_tcp).
 %%
+%% The events of a new connection (after its tcp_accept) wait in the pump
+%% until the process of the connection claims its id (claim/1). Then the
+%% pump gives them to that process first, in order. The pump is the only
+%% sender of the events, so no event of a connection can come before an
+%% earlier one. (Before, the events went to the listener until the
+%% connection registered, and a part of a body could come before the head
+%% of its request.)
+%%
 %% It also starts distributed Erlang over wasm_tcp (DIST_NAME).
 -module(wasm_host_server).
 -behaviour(gen_server).
 
--export([start_link/0, register/1, unregister/1, send_host/1, send_host/2]).
+-export([start_link/0, register/1, claim/1, unregister/1, send_host/1, send_host/2]).
+%% For the tests: one event, or one message (a claim, the end of a
+%% listener), in the state of the pump.
+-export([handle_event/2, handle_message/2]).
+
+-define(PUMP, wasm_host_pump).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 -define(TABLE, ?MODULE).
@@ -30,6 +43,15 @@ start_link() ->
 register(Id) -> ets:insert(?TABLE, {Id, self()}).
 unregister(Id) -> ets:delete(?TABLE, Id).
 
+%% The calling process is the process of the connection Id of a listener:
+%% the pump gives it the events that wait for it, and then the next ones.
+%% With no pump (a native test), the same as register/1.
+claim(Id) ->
+    case whereis(?PUMP) of
+        undefined -> register(Id);
+        Pump -> Pump ! {claim, Id, self()}, true
+    end.
+
 %% A message to the host: a header (a map) and a body.
 send_host(Header) -> send_host(Header, <<>>).
 send_host(Header, Body) -> wasm_host:send([json:encode(Header), $\n, Body]).
@@ -42,7 +64,7 @@ init([]) ->
     ok = inet_db:set_tcp_module(wasm_tcp),
     %% No native resolver (inet_gethost is a port program): the hosts file.
     ok = inet_db:set_lookup([file]),
-    Pump = spawn_link(fun pump/0),
+    Pump = spawn_link(fun() -> erlang:register(?PUMP, self()), pump(#{}) end),
     %% After the pump: a listener waits for an event of the host.
     spawn(fun start_distribution/0),
     %% The host can take requests now.
@@ -106,29 +128,76 @@ keep_connected(Node) ->
     keep_connected(Node).
 
 %% The events of the host, until there is none; then wait for the next.
-pump() ->
+%% Waiting: the connections that no process claimed yet, Conn => {the
+%% monitor of the listener, the events in reverse order}.
+pump(Waiting) ->
+    Waiting1 = claims(Waiting),
     case wasm_host:take() of
         empty ->
             ok = wasm_host:select(),
-            receive {select, _, _, ready_input} -> ok end;
+            receive
+                {select, _, _, ready_input} -> pump(Waiting1);
+                Msg -> pump(handle_message(Msg, Waiting1))
+            end;
         Event ->
-            event(Event)
-    end,
-    pump().
+            pump(handle_event(Event, Waiting1))
+    end.
 
-event(Event) ->
+%% The claims and the ends of listeners that came, with no wait.
+claims(Waiting) ->
+    receive
+        {claim, _, _} = Msg -> claims(handle_message(Msg, Waiting));
+        {'DOWN', _, process, _, _} = Msg -> claims(handle_message(Msg, Waiting))
+    after 0 -> Waiting
+    end.
+
+handle_message({claim, Id, Pid}, Waiting) -> handle_claim(Id, Pid, Waiting);
+handle_message({'DOWN', Ref, process, _, _}, Waiting) ->
+    %% A listener stopped before a process claimed its connections: the
+    %% host closes them.
+    maps:filter(fun(Conn, {R, _}) when R =:= Ref -> send_host(#{t => tcp_close, id => Conn}), false;
+                   (_, _) -> true
+                end, Waiting);
+handle_message(_, Waiting) -> Waiting.
+
+%% The process Pid takes the connection Id: first the events that wait.
+handle_claim(Id, Pid, Waiting) ->
+    ets:insert(?TABLE, {Id, Pid}),
+    case maps:take(Id, Waiting) of
+        {{Ref, Events}, Rest} ->
+            demonitor(Ref, [flush]),
+            [Pid ! E || E <- lists:reverse(Events)],
+            Rest;
+        error -> Waiting
+    end.
+
+handle_event(Event, Waiting) ->
     [Header, Body] = binary:split(Event, <<"\n">>),
     case json:decode(Header) of
-        %% A connection to a listener of wasm_tcp: its events go to the
-        %% listener until the process of the connection registers.
+        %% A connection to a listener of wasm_tcp: its events wait here
+        %% until the process of the connection claims it.
         #{<<"t">> := <<"tcp_accept">>, <<"id">> := Id, <<"conn">> := Conn} = Meta ->
             case ets:lookup(?TABLE, Id) of
                 [{Id, Pid}] ->
-                    ets:insert_new(?TABLE, {Conn, Pid}),
-                    Pid ! {wasm_host, <<"tcp_accept">>, Meta, Body};
+                    Pid ! {wasm_host, <<"tcp_accept">>, Meta, Body},
+                    Waiting#{Conn => {monitor(process, Pid), []}};
                 [] ->
-                    send_host(#{t => tcp_close, id => Conn})
+                    send_host(#{t => tcp_close, id => Conn}),
+                    Waiting
             end;
+        #{<<"t">> := T, <<"id">> := Id} = Meta when is_map_key(Id, Waiting) ->
+            {Ref, Events} = maps:get(Id, Waiting),
+            case lists:member(T, ?EVENTS) of
+                true -> Waiting#{Id := {Ref, [{wasm_host, T, Meta, Body} | Events]}};
+                false -> Waiting
+            end;
+        Decoded ->
+            event(Decoded, Body),
+            Waiting
+    end.
+
+event(Decoded, Body) ->
+    case Decoded of
         %% The VM continues from a snapshot of its memory (worker.js): all
         %% the isolates restored from it have the same state, so OpenSSL
         %% gets new random bytes from the host (the next

@@ -34,8 +34,12 @@ const url = 'https://app.example.com/upload';
 const bridge = (v, r) => v.bridge(r, new URL(r.url), false, undefined, () => {});
 const text = (b) => new TextDecoder().decode(b);
 const data = (sent) => sent.filter((s) => s.header.t === 'tcp_data');
+// All the bytes that the app got, as text: the head, then the body. The
+// head goes in the event of the first part of the body.
+const all = (sent) => data(sent).map((s) => text(s.body)).join('');
+const headOf = (sent) => all(sent).slice(0, all(sent).indexOf('\r\n\r\n') + 4);
 // The body bytes that the app got (after the head).
-const bodyBytes = (sent) => data(sent).slice(1).reduce((n, s) => n + s.body.length, 0);
+const bodyBytes = (sent) => data(sent).reduce((n, s) => n + s.body.length, 0) - headOf(sent).length;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 
 // A body of n chunks of size bytes each, which the test gives one by one.
@@ -54,20 +58,20 @@ test('a body goes in chunks, and waits while 256 KB are unread', async () => {
   await settle();
   const accept = sent.find((s) => s.header.t === 'tcp_accept');
   assert.equal(accept.header.ack, true);
-  const head = text(data(sent)[0].body);
-  assert.match(head, /^POST \/upload HTTP\/1.1\r\n/);
-  assert.match(head, /content-length: 600000\r\n/);
   src.push(200000);
   src.push(200000);
   src.push(200000);
   src.end();
   await settle();
+  const head = headOf(sent);
+  assert.match(head, /^POST \/upload HTTP\/1.1\r\n/);
+  assert.match(head, /content-length: 600000\r\n/);
   // Parts went while less than 256 KB was unread; the rest waits for room.
   // A chunk of 200000 bytes goes in pieces: no part is above 80 KB.
   const first = bodyBytes(sent);
   assert.ok(head.length + first >= 256 * 1024, `${first}`);
   assert.ok(first < 600000, `${first}`);
-  for (const s of data(sent).slice(1)) assert.ok(s.body.length <= 80 * 1024, `${s.body.length}`);
+  for (const s of data(sent)) assert.ok(s.body.length <= 80 * 1024 + head.length, `${s.body.length}`);
   const id = accept.header.conn;
   // The app reads all that it got, in rounds, until the body ends.
   let read = 0;
@@ -89,10 +93,10 @@ test('a body of no declared length goes as chunked', async () => {
   src.push(3);
   src.end();
   await settle();
-  const parts = data(sent).map((s) => text(s.body));
-  assert.match(parts[0], /transfer-encoding: chunked\r\n/);
-  assert.doesNotMatch(parts[0], /content-length/);
-  assert.deepEqual(parts.slice(1), ['3\r\nxxx\r\n', '0\r\n\r\n']);
+  const head = headOf(sent);
+  assert.match(head, /transfer-encoding: chunked\r\n/);
+  assert.doesNotMatch(head, /content-length/);
+  assert.equal(all(sent).slice(head.length), '3\r\nxxx\r\n0\r\n\r\n');
 });
 
 test('a request with no body asks for no tcp_read', async () => {
@@ -121,7 +125,7 @@ test('a body that grows above BEAM_MAX_BODY gets 413, and the app gets the end',
   await settle();
   const id = sent.find((s) => s.header.t === 'tcp_accept').header.conn;
   assert.ok(sent.some((s) => s.header.t === 'tcp_closed' && s.header.id === id));
-  assert.equal(data(sent).length, 1);  // the head: 6 bytes are not a part
+  assert.equal(data(sent).length, 1);  // the head and the first 6 bytes
   assert.equal(v.conns.size, 0);
 });
 
@@ -142,39 +146,40 @@ test('a VM that stops ends the upload that waits for room', async () => {
   assert.equal(data(sent).length, before);
 });
 
-test('small chunks of a byte stream reach the app in parts of 16 KB or more', async () => {
+test('small chunks of a byte stream reach the app in parts of 32 KB or more', async () => {
   const { v, sent } = vm();
   let ctl;
   const stream = new ReadableStream({ type: 'bytes', start(c) { ctl = c; } });
   bridge(v, new Request(url, {
-    method: 'POST', body: stream, duplex: 'half', headers: { 'content-length': String(20 * 2048) },
+    method: 'POST', body: stream, duplex: 'half', headers: { 'content-length': String(100 * 2048) },
   }));
-  for (let i = 0; i < 20; i++) ctl.enqueue(new Uint8Array(2048).fill(120));
+  for (let i = 0; i < 100; i++) ctl.enqueue(new Uint8Array(2048).fill(120));
   ctl.close();
   await settle();
+  assert.equal(bodyBytes(sent), 100 * 2048);
+  // The first event: the head and the first read. Then parts of 32 KB.
   const parts = data(sent).slice(1).map((s) => s.body.length);
-  assert.equal(parts.reduce((a, b) => a + b, 0), 20 * 2048);
-  assert.ok(parts.length < 20, `parts: ${parts}`);
-  for (const n of parts.slice(0, -1)) assert.ok(n >= 16384, `parts: ${parts}`);
+  assert.ok(parts.length < 10, `parts: ${parts}`);
+  for (const n of parts.slice(0, -1)) assert.ok(n >= 32768, `parts: ${parts}`);
 });
 
 // The option min of a BYOB read errors a stream that closes with fewer
 // bytes (Node.js 26, Chromium): outside workerd, the host gathers the
 // chunks of the default reader.
-test('small chunks of a stream that is not a byte stream also go in parts of 16 KB or more', async () => {
+test('small chunks of a stream that is not a byte stream also go in parts of 32 KB or more', async () => {
   const { v, sent } = vm();
   const src = source();
   bridge(v, new Request(url, {
-    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': String(20 * 2048 + 5) },
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': String(100 * 2048 + 5) },
   }));
-  for (let i = 0; i < 20; i++) src.push(2048);
+  for (let i = 0; i < 100; i++) src.push(2048);
   src.push(5);
   src.end();
   await settle();
+  assert.equal(bodyBytes(sent), 100 * 2048 + 5);
   const parts = data(sent).slice(1).map((s) => s.body.length);
-  assert.equal(parts.reduce((a, b) => a + b, 0), 20 * 2048 + 5);
-  assert.ok(parts.length < 20, `parts: ${parts}`);
-  for (const n of parts.slice(0, -1)) assert.ok(n >= 16384, `parts: ${parts}`);
+  assert.ok(parts.length < 10, `parts: ${parts}`);
+  for (const n of parts.slice(0, -1)) assert.ok(n >= 32768, `parts: ${parts}`);
 });
 
 test('with a body, BEAM_REQUEST_TIMEOUT starts at the end of the body', async () => {
@@ -200,7 +205,24 @@ test('a request object as browser.js gives it', async () => {
   };
   bridge(v, r);
   await settle();
-  const parts = data(sent).map((s) => text(s.body));
-  assert.match(parts[0], /content-length: 5\r\n/);
-  assert.equal(parts.slice(1).join(''), 'a=b&c');
+  assert.match(headOf(sent), /content-length: 5\r\n/);
+  assert.equal(all(sent).slice(headOf(sent).length), 'a=b&c');
+  // A small body goes with its head, in one event.
+  assert.equal(data(sent).length, 1);
+});
+
+test('a client that sends no body yet: the head goes alone after 20 ms', async () => {
+  const { v, sent } = vm();
+  const src = source();
+  bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': '3' },
+  }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(data(sent).length, 1);
+  assert.match(headOf(sent), /content-length: 3\r\n/);
+  assert.equal(bodyBytes(sent), 0);
+  src.push(3);
+  src.end();
+  await settle();
+  assert.equal(all(sent).slice(headOf(sent).length), 'xxx');
 });

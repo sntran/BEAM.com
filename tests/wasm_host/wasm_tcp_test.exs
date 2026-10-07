@@ -107,6 +107,104 @@ defmodule WasmTcpTest do
     assert %{ack: true, sack: true} = :sys.get_state(pid)
   end
 
+  describe "a read with the flag ack of the host" do
+    test "a recv of more than the window gets its bytes: the buffer counts as read" do
+      {socket, pid} = accepted(%{ack: true, sack: false}, active: false)
+      size = 600_000
+      reading = Task.async(fn -> :wasm_tcp.recv(socket, size, 5000) end)
+      wait_until(fn -> match?({_, ^size, _}, :sys.get_state(pid).recv) end)
+      part = :binary.copy("x", 60_000)
+
+      # As the host: 300 KB, more than the window, and then nothing until
+      # a tcp_read comes.
+      for _ <- 1..5, do: send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, part})
+      assert_receive {:host, %{"t" => "tcp_read", "n" => first}, _}, 5000
+      for _ <- 1..5, do: send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, part})
+
+      assert {:ok, data} = Task.await(reading, 5000)
+      assert byte_size(data) == size
+      assert first + read_total() == size
+    end
+
+    test "a packet that is not complete counts as read, so the rest comes" do
+      {socket, pid} = accepted(%{ack: true, sack: false}, active: :once, packet: 4)
+      size = 300_000
+      payload = :binary.copy("y", size)
+      <<first::binary-size(100_000), rest::binary>> = <<size::32, payload::binary>>
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, first})
+      assert_receive {:host, %{"t" => "tcp_read", "n" => n}, _}, 5000
+      assert n == 100_000
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, rest})
+      assert_receive {:tcp, ^socket, ^payload}, 5000
+    end
+
+    test "the bytes that no one waits for do not count as read" do
+      {_socket, pid} = accepted(%{ack: true, sack: false}, active: false)
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "c1"}, :binary.copy("z", 300_000)})
+      wait_until(fn -> byte_size(:sys.get_state(pid).buf) == 300_000 end)
+      refute_receive {:host, %{"t" => "tcp_read"}, _}, 200
+    end
+  end
+
+  describe "the pump" do
+    test "the events of a new connection wait for its process, and keep their order" do
+      :ets.insert(:wasm_host_server, {"l9", self()})
+      event = fn header, body -> [JSON.encode!(header), "\n", body] |> IO.iodata_to_binary() end
+
+      w =
+        :wasm_host_server.handle_event(event.(%{t: "tcp_accept", id: "l9", conn: "c9"}, ""), %{})
+
+      assert_receive {:wasm_host, "tcp_accept", %{"conn" => "c9"}, ""}, 5000
+
+      w =
+        :wasm_host_server.handle_event(
+          event.(%{t: "tcp_data", id: "c9"}, "POST / HTTP/1.1\r\n"),
+          w
+        )
+
+      w = :wasm_host_server.handle_event(event.(%{t: "tcp_data", id: "c9"}, "x"), w)
+      refute_receive {:wasm_host, "tcp_data", _, _}, 200
+      w = :wasm_host_server.handle_message({:claim, "c9", self()}, w)
+      assert w == %{}
+      w = :wasm_host_server.handle_event(event.(%{t: "tcp_data", id: "c9"}, "y"), w)
+      assert w == %{}
+
+      got =
+        for _ <- 1..3 do
+          assert_receive {:wasm_host, "tcp_data", %{"id" => "c9"}, body}, 5000
+          body
+        end
+
+      assert got == ["POST / HTTP/1.1\r\n", "x", "y"]
+      :ets.delete(:wasm_host_server, "l9")
+      :ets.delete(:wasm_host_server, "c9")
+    end
+
+    test "a listener that stops before a claim: the host closes its connections" do
+      listener = spawn(fn -> receive do: (:stop -> :ok) end)
+      :ets.insert(:wasm_host_server, {"l8", listener})
+      header = JSON.encode!(%{t: "tcp_accept", id: "l8", conn: "c8"})
+      w = :wasm_host_server.handle_event(header <> "\n", %{})
+      assert Map.has_key?(w, "c8")
+      ref = Process.monitor(listener)
+      send(listener, :stop)
+      assert_receive {:DOWN, ^ref, :process, _, _}, 5000
+      {mon, _} = w["c8"]
+      assert %{} == :wasm_host_server.handle_message({:DOWN, mon, :process, listener, :normal}, w)
+      assert_receive {:host, %{"t" => "tcp_close", "id" => "c8"}, _}, 5000
+      :ets.delete(:wasm_host_server, "l8")
+    end
+  end
+
+  # The bytes of the tcp_read messages to the host, until none comes.
+  defp read_total(total \\ 0) do
+    receive do
+      {:host, %{"t" => "tcp_read", "n" => n}, _} -> read_total(total + n)
+    after
+      200 -> total
+    end
+  end
+
   # A connection of a listener, given to the test (accept/2 of wasm_tcp).
   defp accepted(flags, opts \\ []) do
     {:ok, pid} =

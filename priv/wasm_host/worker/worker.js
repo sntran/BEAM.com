@@ -1972,8 +1972,10 @@ export class Vm {
       // body of the request, and the messages of a WebSocket. sent: the
       // host tells wasm_tcp what the client took (tcp_sent).
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body || upgrade, sent: true });
-      this.bridgeSend(c, bytes);
-      if (body) this.bridgeUpload(c, body, declared === null, maxBody);
+      // With a body, the head goes in the event of the first part of the
+      // body (bridgeUpload): a small body is one event, as before the parts.
+      if (body) this.bridgeUpload(c, body, declared === null, maxBody, bytes);
+      else this.bridgeSend(c, bytes);
     });
   }
 
@@ -1987,8 +1989,10 @@ export class Vm {
   // (or the rest of the body): one event for each part, not for each small
   // chunk of the client. A part goes when less than UPLOAD_WINDOW bytes are
   // unread in the VM (tcp_read of wasm_tcp): so a large body does not fill
-  // the memory of the VM, and a slow app slows the client.
-  async bridgeUpload(c, body, chunked, max) {
+  // the memory of the VM, and a slow app slows the client. The head of the
+  // request goes with the bytes of the first read of the client, with no
+  // wait for UPLOAD_PART bytes.
+  async bridgeUpload(c, body, chunked, max, head) {
     // workerd has readAtLeast. The option min of the standard BYOB read is
     // not safe: when the stream closes with fewer bytes than min, the read
     // errors the stream (Node.js 26, Chromium). So the other hosts use the
@@ -1997,7 +2001,7 @@ export class Vm {
     try { byob = body.getReader({ mode: 'byob' }); } catch {}
     if (byob && !byob.readAtLeast) { byob.releaseLock(); byob = null; }
     const reader = byob ?? body.getReader();
-    const read = byob ? () => byob.readAtLeast(UPLOAD_PART, new Uint8Array(UPLOAD_READ)) : () => reader.read();
+    const read = byob ? (min) => byob.readAtLeast(min, new Uint8Array(UPLOAD_READ)) : () => reader.read();
     let total = 0;
     let part = [];
     let size = 0;
@@ -2011,13 +2015,22 @@ export class Vm {
       const bytes = part.length === 1 ? part[0] : join(part, size);
       part = [];
       size = 0;
-      this.bridgeSend(c, chunked ? chunk(bytes) : bytes);
+      out(chunked ? chunk(bytes) : bytes);
       return true;
     };
+    // Bytes to the app, after the head when it did not go yet.
+    const out = (bytes) => {
+      clearTimeout(alone);
+      this.bridgeSend(c, head ? join([head, bytes], head.length + bytes.length) : bytes);
+      head = null;
+    };
+    // A client that sends no body yet: the head goes alone after HEAD_WAIT
+    // ms, so the app sees the request (and its own time limits run).
+    const alone = setTimeout(() => { if (head && !c.done && !this.dead) out(new Uint8Array(0)); }, HEAD_WAIT);
     try {
       for (;;) {
         // A read can end the stream with its last bytes (done and a value).
-        const { value, done } = await read();
+        const { value, done } = await read(head ? 1 : UPLOAD_PART);
         if (c.done || this.dead) break;
         if (value?.length) {
           total += value.length;
@@ -2035,10 +2048,11 @@ export class Vm {
           size += piece.length;
           if (size >= UPLOAD_PART) ok = await flush();
         }
-        if (ok && done && size) ok = await flush();
+        if (ok && (done || head) && size) ok = await flush();
         if (!ok) break;
         if (done) {
-          if (chunked) this.bridgeSend(c, CHUNKS_END);
+          if (chunked) out(CHUNKS_END);
+          else if (head) out(new Uint8Array(0));
           this.bridgeClock(c, c.timeout * 1000);
           return;
         }
@@ -2759,7 +2773,10 @@ const LATE = Symbol('late');
 // read in workerd and of the largest piece of a client chunk. A client chunk can be 2 KB (workerd), and each event
 // costs a turn of the VM.
 const UPLOAD_WINDOW = 256 * 1024;
-const UPLOAD_PART = 16 * 1024;
+const UPLOAD_PART = 32 * 1024;
+// The time that the head of a request waits for the first bytes of its
+// body (bridgeUpload), in ms.
+const HEAD_WAIT = 20;
 const UPLOAD_READ = 64 * 1024;
 
 // The size bytes of the list parts, as one array.
