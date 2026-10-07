@@ -3,7 +3,11 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.3
+
+The third release candidate of 0.1.0. As 0.1.0-rc.2, it is a
+pre-release on GitHub, and on npm it has the dist-tag `next`. It has the
+fixes from the feedback on 0.1.0-rc.2, and these changes:
 
 - A VM that stops (`erlang:halt/1`, or a trap such as an allocation that
   failed) no longer holds its requests. Each open request gets 503 with
