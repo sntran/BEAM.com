@@ -219,7 +219,7 @@ jobs:
 
 Then turn on Pages one time: Settings, Pages, Source "GitHub Actions". The
 `GITHUB_TOKEN` cannot do this step. Until the release `v0.1.0`, use the
-release candidate `@v0.1.0-rc.4` in place of `@v0.1.0`. With `@main`, the
+release candidate `@v0.1.0-rc.5` in place of `@v0.1.0`. With `@main`, the
 workflow uses the `edge` build of `beam.com`.
 
 The workflow ([`pages-app.yml`](.github/workflows/pages-app.yml)) builds
@@ -286,7 +286,7 @@ Each GitHub release from 0.1.0-rc.2 also holds the package, the same
 file as on npm. npm installs it with no registry:
 
 ```sh
-npm install https://github.com/sntran/BEAM.com/releases/download/v0.1.0-rc.4/beam.com-0.1.0-rc.4.tgz
+npm install https://github.com/sntran/BEAM.com/releases/download/v0.1.0-rc.5/beam.com-0.1.0-rc.5.tgz
 ```
 
 - `BEAM_COM`: the path of a `beam.com` to use. Then nothing is

@@ -3,9 +3,11 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.5
 
-Fixes from the check of 0.1.0-rc.4:
+The fifth release candidate of 0.1.0. As 0.1.0-rc.4, it is a
+pre-release on GitHub, and on npm it has the dist-tag `next`. It has the
+fixes from the check of 0.1.0-rc.4:
 
 - An app that answers before it reads the whole request body (a 413 of
   its own, for example) no longer breaks the next request. Before, in
