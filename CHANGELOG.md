@@ -3,9 +3,11 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.4
 
-Fixes from the check of 0.1.0-rc.3:
+The fourth release candidate of 0.1.0. As 0.1.0-rc.3, it is a
+pre-release on GitHub, and on npm it has the dist-tag `next`. It has the
+fixes from the check of 0.1.0-rc.3:
 
 - Security: the events of a new connection keep their order. Before, a
   part of a request body could reach the app before the head of the
