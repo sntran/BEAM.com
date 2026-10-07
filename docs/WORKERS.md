@@ -678,11 +678,15 @@ The host protects its requests with these limits (see the table below):
   With a `content-length` above it, the app does not see the request.
   Else the app gets the end of the connection when the body passes it.
 
-A request body goes to the app in parts of 16 KB or more (or the rest of
-the body), as the client sends it. A body with no `content-length` goes
-as `transfer-encoding: chunked`. The host sends a part only while less
-than 256 KB of the body is unread in the VM: so a large upload does not
-fill the memory of the VM, and an app that reads slowly slows the client.
+A request body goes to the app in parts of 32 KB or more (or the rest of
+the body), as the client sends it. The head of the request goes with the
+first bytes of the body, so a small body is one event. A body with no
+`content-length` goes as `transfer-encoding: chunked`. The host sends a
+part only while less than 256 KB of the body is unread in the VM: so a
+large upload does not fill the memory of the VM, and an app that reads
+slowly slows the client. While the app waits for more bytes than the VM
+holds (a `recv` of a length, as Bandit reads a body), these bytes count
+as read, so a body of any size reaches a `recv` of its length.
 
 The other directions have the same flow control:
 

@@ -20,7 +20,11 @@
 %% - "ack": true: the socket tells the host how many bytes its owner took
 %%   from the buffer (tcp_read, after each ?ACK_BYTES and when the buffer
 %%   is empty). The host sends more data only while little is unread, so
-%%   the buffer of a socket stays small (a request body in chunks).
+%%   the buffer of a socket stays small (a request body in chunks). While
+%%   the owner waits for more bytes than the buffer holds (a recv of a
+%%   length, as Bandit reads a body, or a packet that is not complete),
+%%   the bytes of the buffer count as taken: else a recv of more than the
+%%   window of the host never gets its bytes.
 %% - "sent": true: the host tells the socket how many bytes of tcp_send it
 %%   gave to the peer (tcp_sent). While ?SEND_WINDOW bytes or more wait in
 %%   the host, a send waits for tcp_sent, so a slow peer slows the sender
@@ -129,7 +133,7 @@ init({listen, Owner, Port, Opts}) ->
     ?HOST:register(Id),
     {ok, #{kind => listen, id => Id, owner => Owner, ref => monitor(process, Owner),
            port => Port, opts => Opts, listen => undefined,
-           conns => queue:new(), acceptors => queue:new(), early => #{}, started => #{}}};
+           conns => queue:new(), acceptors => queue:new()}};
 init({Owner, Opts}) ->
     Id = new_id(<<"t">>),
     ?HOST:register(Id),
@@ -137,7 +141,8 @@ init({Owner, Opts}) ->
 %% A connection of a listener: open, and passive until accept/2 gives it
 %% to its owner (with the options of the listener).
 init({accepted, Id, Peer, Opts, Flags}) ->
-    ?HOST:register(Id),
+    %% The pump gives this process the events that came before it, first.
+    ?HOST:claim(Id),
     S = options(Opts, maps:merge((socket(Id, self()))#{peer := Peer}, Flags)),
     {ok, S#{active := false, later => maps:get(active, S)}}.
 
@@ -149,7 +154,7 @@ socket(Id, Owner) ->
       active => true, mode => list, packet => raw, other => #{}, buf => <<>>, recv => undefined,
       connect => undefined, peer => undefined, closed => false,
       recv_cnt => 0, recv_oct => 0, send_cnt => 0, send_oct => 0,
-      ack => false, unacked => 0, sack => false, inflight => 0, sends => queue:new()}.
+      ack => false, unacked => 0, ahead => 0, sack => false, inflight => 0, sends => queue:new()}.
 
 %% The flow control of the host for a socket (tcp_accept, tcp_open).
 flags(Meta) ->
@@ -213,7 +218,7 @@ handle_call(_, _From, #{kind := listen} = S) ->
 handle_call({accepted, Owner}, _From, #{ref := Ref, later := A} = S) ->
     demonitor(Ref, [flush]),
     S1 = maps:remove(later, S#{owner := Owner, ref := monitor(process, Owner), active := A}),
-    {reply, ok, serve_recv(flush_active(S1))};
+    {reply, ok, wanted(serve_recv(flush_active(S1)))};
 handle_call(sockname, _From, S) ->
     {reply, {ok, {{0, 0, 0, 0}, 0}}, S};
 handle_call(host_info, _From, #{id := Id, peer := {Host, Port}} = S) ->
@@ -251,7 +256,7 @@ handle_call({recv, Length, Timeout}, From, S) ->
         infinity -> undefined;
         _ -> erlang:send_after(Timeout, self(), recv_timeout)
     end,
-    {noreply, serve_recv(S#{recv := {From, Length, TRef}})};
+    {noreply, wanted(serve_recv(S#{recv := {From, Length, TRef}}))};
 handle_call({unrecv, Data}, _From, #{buf := Buf} = S) ->
     {reply, ok, S#{buf := <<(iolist_to_binary(Data))/binary, Buf/binary>>}};
 handle_call(close, _From, S) ->
@@ -262,7 +267,7 @@ handle_call({controlling_process, Caller, New}, _From, #{owner := Caller, ref :=
 handle_call({controlling_process, _, _}, _From, S) ->
     {reply, {error, not_owner}, S};
 handle_call({setopts, Opts}, _From, S) ->
-    {reply, ok, flush_active(options(Opts, S))};
+    {reply, ok, wanted(flush_active(options(Opts, S)))};
 handle_call({getopts, Opts}, _From, #{active := A, mode := M, packet := P, other := O} = S) ->
     Known = maps:merge(maps:merge(?DEFAULTS, O), #{active => A, mode => M, packet => P, header => 0}),
     {reply, {ok, [{K, V} || K <- Opts, {ok, V} <- [maps:find(K, Known)]]}, S};
@@ -289,19 +294,9 @@ handle_info({wasm_host, <<"tcp_accept">>, Meta, _}, #{kind := listen, opts := Op
     #{<<"conn">> := Id} = Meta,
     Peer = {maps:get(<<"host">>, Meta, <<"0.0.0.0">>), maps:get(<<"port">>, Meta, 0)},
     {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, Opts, flags(Meta)}, []),
-    %% The events of the connection that came before its process: to it.
-    S1 = forward_early(Id, Pid, S),
-    case queue:out(maps:get(acceptors, S1)) of
-        {{value, A}, Rest} -> {noreply, hand({Id, Pid}, A, S1#{acceptors := Rest})};
-        {empty, _} -> {noreply, S1#{conns := queue:in({Id, Pid}, maps:get(conns, S1))}}
-    end;
-%% An event of a connection that the pump gave to the listener (before the
-%% process of the connection was registered): to that process.
-handle_info({wasm_host, T, #{<<"id">> := Id}, _} = Msg, #{kind := listen, early := Early, started := Started} = S)
-  when T =/= <<"tcp_listening">>, T =/= <<"tcp_error">> ->
-    case Started of
-        #{Id := Pid} -> Pid ! Msg, {noreply, S};
-        _ -> {noreply, S#{early := Early#{Id => [Msg | maps:get(Id, Early, [])]}}}
+    case queue:out(maps:get(acceptors, S)) of
+        {{value, A}, Rest} -> {noreply, hand({Id, Pid}, A, S#{acceptors := Rest})};
+        {empty, _} -> {noreply, S#{conns := queue:in({Id, Pid}, maps:get(conns, S))}}
     end;
 handle_info({accept_timeout, From}, #{kind := listen, acceptors := As} = S) ->
     case lists:keytake(From, 1, queue:to_list(As)) of
@@ -313,10 +308,6 @@ handle_info({accept_timeout, From}, #{kind := listen, acceptors := As} = S) ->
 handle_info({'DOWN', Ref, process, _, _}, #{kind := listen, ref := Ref, id := Id} = S) ->
     ?HOST:send_host(#{t => tcp_unlisten, id => Id}),
     {stop, normal, S};
-%% A connection process stopped: its events go to it no more (it
-%% registered with the pump at its start), so its entry goes.
-handle_info({'DOWN', _, process, Pid, _}, #{kind := listen, started := Started} = S) ->
-    {noreply, S#{started := maps:filter(fun(_, P) -> P =/= Pid end, Started)}};
 handle_info(_, #{kind := listen} = S) ->
     {noreply, S};
 %% --- a socket ----------------------------------------------------------------
@@ -366,14 +357,6 @@ hand({_Id, Pid}, {From, Owner, TRef}, S) ->
     ok = gen_server:call(Pid, {accepted, Owner}),
     gen_server:reply(From, {ok, ?SOCKET(Pid)}),
     S.
-
-%% The events that came before the process of the connection, to it. The
-%% events that the pump sent before the process registered can still come
-%% to the listener: started keeps the process until it stops.
-forward_early(Id, Pid, #{early := Early, started := Started} = S) ->
-    [Pid ! Msg || Msg <- lists:reverse(maps:get(Id, Early, []))],
-    erlang:monitor(process, Pid),
-    S#{early := maps:remove(Id, Early), started := Started#{Id => Pid}}.
 
 %% The data of a send to the host, with the header of the packet.
 send_data(Data, #{id := Id, packet := P, sack := Sack, inflight := F,
@@ -429,7 +412,20 @@ next_packet(#{packet := P, buf := Buf}) ->
 %% Data from the host: to the buffer, then to the owner (active modes) or
 %% to a waiting recv.
 deliver(Data, #{buf := Buf} = S) ->
-    serve_recv(push(S#{buf := <<Buf/binary, Data/binary>>})).
+    wanted(serve_recv(push(S#{buf := <<Buf/binary, Data/binary>>}))).
+
+%% The owner waits, and the buffer does not have what it waits for: the
+%% bytes of the buffer that tcp_read did not count yet count now (ahead).
+wanted(#{ack := true, buf := Buf, ahead := A, unacked := U} = S)
+  when byte_size(Buf) > A ->
+    case waits(S) of
+        true -> ack(S#{ahead := byte_size(Buf), unacked := U + byte_size(Buf) - A});
+        false -> S
+    end;
+wanted(S) -> S.
+
+waits(#{recv := {_, _, _}}) -> true;
+waits(#{active := A}) -> A =/= false.
 
 %% In an active mode: the packets of the buffer to the owner.
 push(#{active := false} = S) -> S;
@@ -450,9 +446,12 @@ push(#{owner := Owner, active := A} = S) ->
 
 flush_active(S) -> push(S).
 
-%% The owner took the start of the buffer: Rest stays.
-taken(Rest, #{buf := Buf, unacked := U} = S) ->
-    ack(S#{buf := Rest, unacked := U + byte_size(Buf) - byte_size(Rest)}).
+%% The owner took the start of the buffer: Rest stays. The bytes that
+%% wanted/1 counted (ahead) do not count again.
+taken(Rest, #{buf := Buf, unacked := U, ahead := A} = S) ->
+    T = byte_size(Buf) - byte_size(Rest),
+    C = min(T, A),
+    ack(S#{buf := Rest, unacked := U + T - C, ahead := A - C}).
 
 %% tcp_read to the host (with "ack": true), after ?ACK_BYTES taken bytes,
 %% and when the buffer is empty.

@@ -2,15 +2,16 @@
 # The limits of the hosts of the npm package: workerd (wrangler dev) and
 # Deno (deno serve), with app.com of tests/programs/limits_check.erl. A
 # body of 32 MB goes to the app in parts (with content-length, and chunked
-# to an app that reads slowly), and the memory of the VM stays below 96 MB. A
-# download of 64 MiB goes to a client that reads at 16 MB/s, and the sends
-# of the app wait for the client (tcp_sent). A
-# request with no answer in BEAM_REQUEST_TIMEOUT seconds gets 504. When the
-# VM stops (erlang:halt/1, and a trap), its open request gets 503, and a
-# later request gets 200 from a new VM. While a process computes (/spin), a
-# Durable Object and Deno answer other requests: the scheduler gives the
-# host turns (BEAM_YIELD_REDS). A plain Worker does not, so the script does
-# not check it there.
+# to an app that reads slowly), and the memory of the VM stays below 96
+# MB. A body of 1 MiB goes to one recv of its length. A download of 64 MiB
+# goes to a client that reads at 16 MB/s, and the sends of the app wait
+# for the client (tcp_sent). A request with no answer in
+# BEAM_REQUEST_TIMEOUT seconds gets 504. When the VM stops (erlang:halt/1,
+# and a trap), its open request gets 503, and a later request gets 200
+# from a new VM. While a process computes (/spin), a Durable Object and
+# Deno answer other requests: the scheduler gives the host turns
+# (BEAM_YIELD_REDS). A plain Worker does not, so the script does not check
+# it there.
 #
 #   sh tests/host/app_limits.sh DIR
 #
@@ -35,6 +36,7 @@ seconds() {
 }
 
 head -c 33554432 /dev/urandom > body.bin
+head -c 1048576 /dev/urandom > whole.bin
 
 # PORT PATH [chunked]: the answer of a POST of body.bin to PATH (with
 # "chunked", with no content-length).
@@ -62,6 +64,12 @@ check() {
     [ "${peak:-0}" -lt 96 ] || { echo "$1: the memory of the VM grew to $peak MB with the uploads"; tail -n 40 "$3"; return 1; }
     if [ -n "$peak" ]; then echo "$1: two uploads of 32 MB, the memory of the VM at $peak MB at most"
     else echo "$1: two uploads of 32 MB, with no new peak of the memory of the VM"; fi
+    # One recv of the length of the body (as Bandit reads it), four times
+    # the window of the host. The app holds the whole body, so this check
+    # comes after the check of the memory.
+    out=$(curl --noproxy 127.0.0.1 -s --max-time 60 --data-binary @whole.bin "http://127.0.0.1:$2/upload-whole" || true)
+    [ "$out" = "got 1048576" ] || { echo "$1: /upload-whole gave \"$out\""; tail -n 40 "$3"; return 1; }
+    echo "$1: a body of 1 MiB to one recv of its length"
     size=$(curl --noproxy 127.0.0.1 -s -o /dev/null -w '%{size_download}' --limit-rate 16M \
         --max-time 60 "http://127.0.0.1:$2/download" || true)
     [ "$size" = 67108864 ] || { echo "$1: /download gave $size bytes, not 67108864"; tail -n 40 "$3"; return 1; }

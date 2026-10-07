@@ -11,6 +11,8 @@
 %%                      content-length or chunked, read in recv calls of any
 %%                      size
 %%   POST /upload-slow  the same, with a pause of 2 ms after each recv
+%%   POST /upload-whole 200 with the size of the body: one recv of the
+%%                      length of the body, as Bandit reads a body
 %%   GET /download      200 with 64 MiB, in sends of 64 KB with no wait: a
 %%                      client that reads slowly slows the sends (tcp_sent)
 %%   GET PATH     200 with the start time of the VM, for example "vm 12345"
@@ -41,6 +43,7 @@ serve(S) ->
         <<"/spin">> -> reply(S, io_lib:format("spin ~p~n", [spin(100000000, 0)]));
         <<"/upload">> -> upload(S, Data, 0);
         <<"/upload-slow">> -> upload(S, Data, 2);
+        <<"/upload-whole">> -> whole(S, Data);
         <<"/download">> -> download(S);
         _ -> reply(S, io_lib:format("vm ~p~n", [erlang:system_info(start_time)]))
     end.
@@ -97,6 +100,17 @@ more(S, Buf, Ms) ->
         <<>> -> B;
         _ -> <<Buf/binary, B/binary>>
     end.
+
+%% The body in one recv of its length (content-length).
+whole(S, Data) ->
+    {Head, Rest} = head(S, Data),
+    {match, [N]} = re:run(Head, "content-length: *([0-9]+)", [caseless, {capture, all_but_first, binary}]),
+    Left = binary_to_integer(N) - byte_size(Rest),
+    Size = case Left > 0 of
+        true -> {ok, B} = gen_tcp:recv(S, Left), byte_size(Rest) + byte_size(B);
+        false -> byte_size(Rest)
+    end,
+    reply(S, io_lib:format("got ~p~n", [Size])).
 
 -define(DOWNLOAD_PARTS, 1024).
 
