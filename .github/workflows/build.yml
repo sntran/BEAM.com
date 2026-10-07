@@ -4,7 +4,8 @@ name: Build and test BEAM.com
 # push runs it only on main (after a merge). A change of the docs only
 # (Markdown files, docs/, the issue forms) starts no run. Run the
 # workflow by hand (workflow_dispatch) to test a branch without a pull
-# request. A tag vX.Y.Z starts a run that publishes the release.
+# request. A tag vX.Y.Z starts a run that publishes the release, and so
+# does a run by hand on main with the input release (docs/BUILDING.md).
 on:
   push:
     branches: [main]
@@ -21,11 +22,19 @@ on:
       - ".github/ISSUE_TEMPLATE/**"
       - "LICENSE*"
   workflow_dispatch:
+    inputs:
+      release:
+        description: >-
+          To publish a release of main: its version, as in
+          src/beam_com/beam_com.app.src (for example 0.1.0-rc.4). The run
+          makes the tag. Empty: build and test the branch.
+        required: false
+        default: ""
 
 # A new push to a pull request stops the run of its older commit. Runs
 # on main are not stopped, so that each merge is tested.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (inputs.release && format('release-{0}', inputs.release)) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The token of a job can read the repository. Only the jobs that publish
@@ -40,14 +49,14 @@ env:
   EMSDK_VERSION: "6.0.10"
 
 jobs:
-  # A tag on a commit of main: the run of that push to main already built
-  # and tested the commit. This job waits for that run, and when it
+  # A tag on a commit of main (or a run by hand with the input release):
+  # the run of that push to main already built and tested the commit. This job waits for that run, and when it
   # passed, it gives its id: then this run builds and tests nothing, and
   # the release job takes the files of that run. With no such run, or one
   # that did not pass, this run builds and tests the commit.
   #
   # The job runs for each event, and it does not fail: for a run that is
-  # not for a tag, it gives no id at once. A job that a job of its needs
+  # not for a release, it gives no id at once. A job that a job of its needs
   # skipped (also through other jobs) does not run, so a skip of this job
   # stops all the tests.
   reuse:
@@ -60,12 +69,14 @@ jobs:
       run: ${{ steps.find.outputs.run }}
     env:
       GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ inputs.release }}
     steps:
       - id: find
         run: |
-          case $GITHUB_EVENT_NAME:$GITHUB_REF in
-            push:refs/tags/v*) ;;
-            *) echo "not a run for a tag: this run builds and tests the commit"; exit 0 ;;
+          case $GITHUB_EVENT_NAME:$GITHUB_REF:${RELEASE:+release} in
+            push:refs/tags/v*:) ;;
+            workflow_dispatch:refs/heads/main:release) ;;
+            *) echo "not a run for a release: this run builds and tests the commit"; exit 0 ;;
           esac
           runs="repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?event=push&branch=main&head_sha=$GITHUB_SHA"
           # 100 tries, 30 s apart: the job ends before its timeout, and an
@@ -900,7 +911,9 @@ jobs:
       deploy: false
       name: site-edge
 
-  # The release of a tag vX.Y.Z or vX.Y.Z-rc.N, after all the tests:
+  # The release of a tag vX.Y.Z or vX.Y.Z-rc.N, or of a run by hand on
+  # main with the input release (the job makes the tag), after all the
+  # tests:
   # beam.com, beam-emu.com and the tarball of the npm package, with their
   # SHA-256, and the same tarball on npm. The tag must be the version of
   # beam.com (the vsn of src/beam_com/beam_com.app.src). The files of
@@ -913,7 +926,9 @@ jobs:
     name: Publish the release
     needs: [reuse, unit, test, test-bsd]
     if: >-
-      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      !cancelled() &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release != '')) &&
       (needs.reuse.outputs.run != '' || (needs.unit.result == 'success' &&
         needs.test.result == 'success' && needs.test-bsd.result == 'success'))
     runs-on: ubuntu-latest
@@ -925,7 +940,9 @@ jobs:
       attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
+      # A run by hand: the tag of the input release, which the step "Make
+      # the tag" makes.
+      TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.release) || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Check the version
@@ -1004,6 +1021,30 @@ jobs:
             bin/beam.com
             bin/beam-emu.com
             bin/beam.com-*.tgz
+
+      # A run by hand: the annotated tag of the version on this commit of
+      # main. A tag that the token of a run pushes starts no other run, so
+      # this run publishes the release itself. A re-run finds the tag of
+      # this commit; a tag on another commit stops the job.
+      - name: Make the tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha' 2>/dev/null); then
+            sha=${ref#* }
+            case $ref in
+              tag\ *) sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .object.sha) ;;
+            esac
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              echo "The tag $TAG is on $sha, not on $GITHUB_SHA" >&2
+              exit 1
+            fi
+            echo "the tag $TAG is on this commit"
+            exit 0
+          fi
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="BEAM.com ${TAG#v}" \
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag" > /dev/null
+          echo "made the tag $TAG on $GITHUB_SHA"
 
       - name: Publish the release
         run: |
