@@ -186,7 +186,7 @@ A run starts for each pull request (and again for each new push to it;
 the run of the older commit stops), for each push to `main`, and for each
 tag `v*`. A change of the docs only (Markdown files, `docs/`, the issue
 forms) starts no run. To test a branch without a pull request, run the
-workflow by hand (Actions, "Run workflow").
+workflow by hand (Actions, "Run workflow") with no `release`.
 
 ## Make a release
 
@@ -194,12 +194,19 @@ workflow by hand (Actions, "Run workflow").
    `package.json`, write its section (`## X.Y.Z`) in
    [`CHANGELOG.md`](../CHANGELOG.md), and merge the change to `main`. The
    section goes at the start of the notes of the release.
-2. Push a tag with the same version on the merge commit: `git tag -a
-   v0.1.0 -m "BEAM.com 0.1.0" && git push origin v0.1.0`.
-3. The tag run takes the files of the run of `main` for that commit (it
+2. Start the release in one of two ways:
+   - Run the workflow by hand on `main` (Actions, "Build and test
+     BEAM.com", "Run workflow"), with the version in the field
+     `release`, for example `0.1.0`. The job makes the annotated tag
+     `v0.1.0` on the commit of `main`. It stops when the version is not
+     the version of `beam_com.app.src`, and when the tag is on another
+     commit.
+   - Or push a tag with the same version on the merge commit: `git tag -a
+     v0.1.0 -m "BEAM.com 0.1.0" && git push origin v0.1.0`.
+3. The run takes the files of the run of `main` for that commit (it
    waits for that run when it has not ended), and then publishes the
    release of the tag. The job stops when the tag and the version
-   differ.
+   differ. A re-run of a run by hand finds its tag, and goes on.
 4. npm publishes with trusted publishing: the trusted publisher of the
    package `beam.com` on npmjs.com is the workflow `build.yml` of
    `sntran/BEAM.com`, with no environment. The workflow needs no npm
