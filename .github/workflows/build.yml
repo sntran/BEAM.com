@@ -705,10 +705,14 @@ jobs:
           "### Benchmarks: ${{ matrix.name }}`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           Get-Content bench.md | Out-File -Append $env:GITHUB_STEP_SUMMARY
 
+  # Ubuntu 26.04: the package index of the Ubuntu 24.04 image named an
+  # ovmf that the mirrors no longer had, so each VM action read a new index
+  # first, and that read waited until the time limit of the job when the
+  # Ubuntu archives did not answer (October 2026).
   test-bsd:
     name: Run on ${{ matrix.name }}
     needs: [build, example-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -727,6 +731,20 @@ jobs:
         with:
           path: bin
           merge-multiple: true
+
+      # The packages of QEMU for the VM actions, with time limits: when the
+      # Ubuntu archives do not answer, the job stops in minutes, with this
+      # step in the log. The VM action then finds the packages.
+      - name: Install QEMU
+        run: |
+          for try in 1 2; do
+            sudo timeout 120 apt-get update -q &&
+              sudo timeout 240 apt-get install -y -q --no-install-recommends qemu-utils qemu-system-x86 ovmf &&
+              exit 0
+            echo "Try $try to install QEMU failed."
+            sleep 10
+          done
+          exit 1
 
       # The benchmarks run after a merge to main, not for a pull request
       # (the performance gate of the job test compares a pull request).
