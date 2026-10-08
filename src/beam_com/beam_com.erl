@@ -11,7 +11,8 @@
 
 -ifdef(TEST).
 -export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
-         is_project/1, nif_include/0, fresh/3, write_inputs/2, after_build/2]).
+         is_project/1, nif_include/0, fresh/3, write_inputs/2, after_build/2,
+         self_file/0]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").

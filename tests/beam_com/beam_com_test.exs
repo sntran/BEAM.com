@@ -618,12 +618,26 @@ defmodule BeamComTest do
         end
 
       File.mkdir_p!(Path.dirname(List.to_string(out)))
-      {false, inputs} = :beam_com.fresh(out, String.to_charlist(input), :none)
       File.write!(out, "app")
-      :ok = :beam_com.write_inputs(out, inputs)
+
+      # The peer node writes the inputs with its own beam.com: in CI, the
+      # tests run on beam.com, and beam.com is an input of the cache.
+      setup = fn peer ->
+        self = :peer.call(peer, :beam_com, :self_file, [])
+
+        {false, inputs} =
+          :peer.call(peer, :beam_com, :fresh, [out, String.to_charlist(input), self])
+
+        :ok = :peer.call(peer, :beam_com, :write_inputs, [out, inputs])
+      end
 
       {status, ""} =
-        BeamCom.PeerNode.run({:beam_com, :main, []}, argv: ["app.erl"], env: env, cd: dir)
+        BeamCom.PeerNode.run({:beam_com, :main, []},
+          argv: ["app.erl"],
+          env: env,
+          cd: dir,
+          setup: setup
+        )
 
       assert status == 0
       assert File.read!(run) == List.to_string(out)
