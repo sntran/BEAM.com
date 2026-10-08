@@ -9,6 +9,8 @@
 # APE loader there: RUNNER=DIR/ape-x86_64.elf.
 set -u
 dir=${1:-.}
+# tests/symtab.py, with an absolute path: some checks change the directory.
+symtab_py=$(cd "$(dirname "$0")" && pwd)/symtab.py
 limit=${LIMIT:-120}
 runner=${RUNNER:-sh}
 tmp=${TMPDIR:-/tmp}/beam_com_test.$$
@@ -41,6 +43,23 @@ tree() {
         }'
 }
 
+# The sample of macOS of a process: PID LINES. sample gives no names for
+# the functions of an APE file, so tests/symtab.py adds them from the
+# symbol table in the zip of the file (.symtab.arm64 or .symtab.amd64).
+# Without python3 or a table, the sample has only the addresses.
+sample_named() {
+    com=$(lsof -p "$1" 2>/dev/null | awk '$4 == "txt" && $NF ~ /\.com$/ {print $NF; exit}')
+    case $(uname -m) in arm64) table=.symtab.arm64 ;; *) table=.symtab.amd64 ;; esac
+    if [ -n "$com" ] && command -v python3 >/dev/null 2>&1 &&
+        unzip -p "$com" "$table" > "$tmp.symtab" 2>/dev/null && [ -s "$tmp.symtab" ]; then
+        echo "(the names are from $table of $com)"
+        sample "$1" 1 2>&1 | python3 "$symtab_py" "$tmp.symtab" | head -n "$2"
+    else
+        sample "$1" 1 2>&1 | head -n "$2"
+    fi
+    rm -f "$tmp.symtab"
+}
+
 # Called by the watchdog before it kills a program: the processes, and
 # the stack traces where the system has a tool for it.
 diagnose() {
@@ -53,7 +72,7 @@ diagnose() {
     for q in $pids; do
         if command -v sample >/dev/null 2>&1; then
             echo "--- sample $q (macOS)"
-            sample "$q" 1 2>&1 | head -400
+            sample_named "$q" 400
         elif command -v procstat >/dev/null 2>&1; then
             echo "--- procstat -kk $q (FreeBSD)"
             procstat -kk "$q" 2>&1 | head -100
@@ -1194,7 +1213,7 @@ if [ -n "$left" ]; then
     fi
     if command -v sample >/dev/null 2>&1; then
         echo "--- sample $first (macOS)"
-        sample "$first" 1 > "$tmp.sample" 2>&1
+        sample_named "$first" 400 > "$tmp.sample"
         head -80 "$tmp.sample"
         # A child of fork() in a fork handler of libSystem: C32 of docs/UPSTREAM.md.
         if grep -q '_atfork_child' "$tmp.sample"; then
