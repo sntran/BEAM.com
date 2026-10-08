@@ -224,6 +224,10 @@ beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
 - The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
   (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
   `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).
+- A comparison of n files costs O(n): an index of the paths finds the
+  entry of each file. With 20,000 files (a Phoenix project with its
+  `deps` and `_build`), the comparison every half second uses about 10%
+  of one CPU.
 
 ## Phoenix on Cloudflare Workers
 

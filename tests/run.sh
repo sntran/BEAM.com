@@ -897,6 +897,78 @@ if [ -f "$dir/beam.com" ]; then
     rm -rf "$wdir"
 fi
 
+# Many files: the watcher finds the entry of each file in an index of the
+# paths, so a comparison of n files costs O(n). With its input closed,
+# mac_listener exits after its first comparison: of 40000 files, it must
+# end in 10 seconds (a linear search for each file took about 25 seconds
+# on a fast computer). Then 1000 files, of which the watcher sees 500
+# removed and 500 changed: each removal moves an entry in the table, and
+# each change must still come one time, with its path.
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    i=0
+    while [ $i -lt 100 ]; do
+        mkdir "$wdir/d$i"
+        (cd "$wdir/d$i" && awk 'BEGIN { for (j = 0; j < 400; j++) print "f" j }' | xargs touch)
+        i=$((i + 1))
+    done
+    echo "==> beam.com mac_listener (40000 files)"
+    $runner "$dir/beam.com" mac_listener "$wdir" < /dev/null > "$tmp.watch" 2>&1 &
+    watcher=$!
+    i=0
+    while [ $i -lt 10 ] && kill -0 "$watcher" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        exited=no
+    else
+        exited=yes
+    fi
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    if [ "$exited" = yes ] && [ ! -s "$tmp.watch" ]; then
+        echo "PASS: beam.com mac_listener (40000 files)"
+    else
+        echo "FAIL: beam.com mac_listener (40000 files)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (40000 files): no end of the comparison in 10 s ($exited), or output"
+    fi
+    rm -rf "$wdir"
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    mkdir "$wdir/m"
+    (cd "$wdir/m" && awk 'BEGIN { for (j = 0; j < 1000; j++) print "f" j }' | xargs touch)
+    echo "==> beam.com mac_listener (1000 files)"
+    (sleep 8) | $runner "$dir/beam.com" mac_listener --latency=0.2 "$wdir" \
+        > "$tmp.watch" 2>&1 &
+    watcher=$!
+    sleep 2
+    (cd "$wdir/m" && awk 'BEGIN { for (j = 0; j < 1000; j += 2) print "f" j }' | xargs rm)
+    for f in $(awk 'BEGIN { for (j = 1; j < 1000; j += 2) print "f" j }'); do
+        echo x >> "$wdir/m/$f"
+    done
+    sleep 3
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    tab=$(printf '\t')
+    removed=$(grep -c "^[0-9]*${tab}0x00010200=\[removed,isfile\]${tab}$wdir/m/f[0-9]*[02468]$" "$tmp.watch")
+    modified=$(grep -c "^[0-9]*${tab}0x00011000=\[modified,isfile\]${tab}$wdir/m/f[0-9]*[13579]$" "$tmp.watch")
+    others=$(grep -v "${tab}0x00020400=\[inodemetamod,isdir\]${tab}$wdir/m$" "$tmp.watch" | grep -c -v -e "removed,isfile" -e "modified,isfile")
+    echo "removed $removed, modified $modified, other lines $others"
+    if [ "$removed" = 500 ] && [ "$modified" = 500 ] && [ "$others" = 0 ]; then
+        echo "PASS: beam.com mac_listener (1000 files)"
+    else
+        cat "$tmp.watch"
+        echo "FAIL: beam.com mac_listener (1000 files)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (1000 files): $removed removed and $modified changed of 500, $others other lines"
+    fi
+    rm -rf "$wdir"
+fi
+
 # kqueue (macOS and the BSDs): a change starts the comparison at once.
 # The interval is 5 seconds, so a change seen in 2 seconds comes from
 # kqueue. The watcher first reports probe files, so that it surely runs

@@ -18,6 +18,11 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- The file watcher (`inotifywait` on the BSDs, `mac_listener`) finds the
+  entry of each file in an index of the paths. Before, a comparison of n
+  files cost O(n²): with 20,000 files, the comparison every half second
+  used half of one CPU or more, also when kqueue worked. Now it uses about
+  10%.
 
 ## 0.1.0-rc.5
 

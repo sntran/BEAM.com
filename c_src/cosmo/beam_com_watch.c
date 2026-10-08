@@ -268,6 +268,7 @@ static int run_inotify(char **paths, int npaths)
 
 struct entry {
     char *path;
+    uint32_t hash; /* of the path */
     int isdir, isreg;
     struct timespec mtime, ctime;
     off_t size;
@@ -280,12 +281,64 @@ struct entry {
 static struct entry *entries;
 static int nentries, capentries;
 
-static struct entry *find_entry(const char *path)
+/* The index of the entries by path, so that a comparison of n files costs
+ * O(n): open addressing, with the index + 1 of an entry, or 0 (an empty
+ * slot). Its size is a power of 2, and at least two times nentries. */
+static int *ehash;
+static int ehcap;
+
+static uint32_t path_hash(const char *s)
 {
-    int i;
+    uint32_t h = 2166136261u;
+
+    while (*s)
+        h = (h ^ (unsigned char)*s++) * 16777619u;
+    return h;
+}
+
+static void ehash_put(int i)
+{
+    int k, mask = ehcap - 1;
+
+    for (k = (int)(entries[i].hash & (uint32_t)mask); ehash[k]; k = (k + 1) & mask)
+        ;
+    ehash[k] = i + 1;
+}
+
+/* Make the index again, for the entries 0 to nentries - 1. */
+static void ehash_rebuild(void)
+{
+    int i, cap = ehcap ? ehcap : 512;
+    int *n;
+
+    while (cap < 2 * nentries + 2)
+        cap *= 2;
+    if (cap != ehcap) {
+        if (!(n = malloc((size_t)cap * sizeof(*n)))) {
+            fprintf(stderr, "%s (BEAM.com): no memory\n", mac_mode ? "mac_listener" : "inotifywait");
+            exit(1);
+        }
+        free(ehash);
+        ehash = n;
+        ehcap = cap;
+    }
+    memset(ehash, 0, (size_t)ehcap * sizeof(*ehash));
     for (i = 0; i < nentries; i++)
-        if (strcmp(entries[i].path, path) == 0)
-            return &entries[i];
+        ehash_put(i);
+}
+
+static struct entry *find_entry(const char *path, uint32_t hash)
+{
+    int k, mask = ehcap - 1;
+    struct entry *e;
+
+    if (!ehcap)
+        return NULL;
+    for (k = (int)(hash & (uint32_t)mask); ehash[k]; k = (k + 1) & mask) {
+        e = &entries[ehash[k] - 1];
+        if (e->hash == hash && strcmp(e->path, path) == 0)
+            return e;
+    }
     return NULL;
 }
 
@@ -592,13 +645,14 @@ static void scan(const char *path, int depth, int report_changes)
 {
     struct stat st;
     struct entry *e;
+    uint32_t hash = path_hash(path);
     DIR *d;
     struct dirent *de;
     char *sub;
 
     if (stat(path, &st) != 0)
         return;
-    e = find_entry(path);
+    e = find_entry(path, hash);
     if (e && (st.st_dev != e->dev || st.st_ino != e->ino)) {
         /* An other file has this name now (a move, or the save of an
          * editor). Its descriptor for kqueue is for the old file. */
@@ -614,6 +668,7 @@ static void scan(const char *path, int depth, int report_changes)
         }
         e = &entries[nentries++];
         e->path = strdup(path);
+        e->hash = hash;
         e->isdir = S_ISDIR(st.st_mode);
         e->isreg = S_ISREG(st.st_mode);
         e->mtime = st.st_mtim;
@@ -622,6 +677,10 @@ static void scan(const char *path, int depth, int report_changes)
         e->dev = st.st_dev;
         e->ino = st.st_ino;
         e->fd = -1;
+        if (2 * nentries + 2 > ehcap)
+            ehash_rebuild();
+        else
+            ehash_put(nentries - 1);
         if (report_changes && depth > 0)
             report(path, W_CREATE | (e->isdir ? W_ISDIR : 0));
     } else if (!e->isdir &&
@@ -677,7 +736,7 @@ static void wait_scan(int ms)
 
 static void run_poll(char **paths, int npaths, int ms)
 {
-    int i, first = 1, added = 0;
+    int i, first = 1, added = 0, removed;
 
     kq_start();
     for (;;) {
@@ -685,16 +744,20 @@ static void run_poll(char **paths, int npaths, int ms)
             entries[i].seen = 0;
         for (i = 0; i < npaths; i++)
             scan(paths[i], 0, !first);
-        for (i = 0; i < nentries;) {
+        for (i = 0, removed = 0; i < nentries;) {
             if (!entries[i].seen) {
                 report(entries[i].path, W_DELETE | (entries[i].isdir ? W_ISDIR : 0));
                 kq_unwatch(&entries[i]);
                 free(entries[i].path);
                 entries[i] = entries[--nentries];
+                removed = 1;
             } else {
                 i++;
             }
         }
+        /* The last entry moved to the place of each removed entry. */
+        if (removed)
+            ehash_rebuild();
         first = 0;
         if (kq >= 0)
             added = kq_sync();
