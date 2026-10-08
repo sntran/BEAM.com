@@ -64,6 +64,13 @@ notes of its release.
   not answer". The request may have run.
 - `wasm:run/2` in the WebAssembly runtime leaves no process behind. Before,
   each call left two processes, until the end of the caller.
+- The errors of the VM have the names of the BEAM. Before, 11 to 13
+  POSIX errors, by host, had the name `errno_N`: for example, a loop of
+  symbolic links gave `{error,errno_40}` in place of `{error,eloop}`,
+  and `etimedout`, `ealready` and `enotempty` were also `errno_N`. The
+  errors that only one host has, such as `eremoteio` on Linux and
+  `eauth` on macOS and the BSDs, also have their names now. See C35 in
+  `docs/UPSTREAM.md`.
 
 ## 0.1.0-rc.5
 

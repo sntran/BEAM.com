@@ -631,6 +631,13 @@ main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers
 ESCRIPT
 check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
 check beam.com '^55$' elixir -e 'IO.puts(Enum.sum(1..10))'
+# The errno names of the BEAM on each system: ELOOP gave errno_40 on
+# Linux and errno_62 on macOS (C35 of docs/UPSTREAM.md).
+rm -f "$tmp.loop1" "$tmp.loop2"
+ln -s "$tmp.loop2" "$tmp.loop1"
+ln -s "$tmp.loop1" "$tmp.loop2"
+check beam.com '^eloop$' elixir -e "{:error, e} = File.read(\"$tmp.loop1\"); IO.puts(e)"
+rm -f "$tmp.loop1" "$tmp.loop2"
 check beam.com '^Mix 1\.' mix --version
 if [ -f "$dir/beam.com" ]; then
     here=$(pwd)
