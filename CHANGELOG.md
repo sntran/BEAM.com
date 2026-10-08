@@ -32,6 +32,12 @@ notes of its release.
   before it writes a file. Before, a download and an unpack had no
   limit. An error response with no length stops only at the timeout of
   60 s: see O25 in `docs/UPSTREAM.md`.
+- `beam.com app.erl` builds the program again when the data of an input
+  changes, also in the same second as the last run, or in the hour that
+  the end of daylight saving time repeats. Before, the run compared the
+  local times of change, with a resolution of 1 s, and could run the old
+  program. A file next to the program in the cache keeps the SHA-256 of
+  each input. A run with no change reads the data of no input.
 
 ## 0.1.0-rc.5
 

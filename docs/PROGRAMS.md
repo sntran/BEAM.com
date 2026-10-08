@@ -22,10 +22,21 @@ or after `INPUT`, and the arguments of the program come after `--`.
 `beam.com app.erl -- one two` runs `app.erl` with the arguments `one`
 and `two`; `beam.com app.erl -o app.com` makes `app.com`. A run makes
 the same executable in the cache of BEAM.com (`BEAM_COM_CACHE`, else
-`~/.cache/beam.com/run`), again only when a file of `INPUT` is newer,
-and runs it: the program gets the terminal, and its exit status is the
-exit status of `beam.com`. In a directory with `mix.exs`,
-`rebar.config` or `src/`, `beam.com` alone runs that project.
+`~/.cache/beam.com/run`), again only when the data of a file of `INPUT`
+or of `beam.com` changes, and runs it: the program gets the terminal,
+and its exit status is the exit status of `beam.com`. In a directory
+with `mix.exs`, `rebar.config` or `src/`, `beam.com` alone runs that
+project.
+
+The SHA-256 of each file decides, not its time of change: a change in
+the same second as the last run, or in the hour that the end of daylight
+saving time repeats, makes a new build. A file next to the executable
+in the cache (its name and `.inputs`) keeps the SHA-256, the size and
+the time of each file. A run reads a file again only when its size or
+its time changed, or when its time is less than 2 s before the time of
+its last hash. So a run with no change reads the data of no input, as
+before. The directories `_build`, `deps`, `.git` and `.elixir_ls` are
+not inputs.
 
 `INPUT` is one of these:
 
