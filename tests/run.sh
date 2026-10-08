@@ -969,6 +969,81 @@ if [ -f "$dir/beam.com" ]; then
     rm -rf "$wdir"
 fi
 
+# Symbolic links in a watched tree, as inotifywait -r: the watcher follows
+# a PATH that is a link (root), but no link below it. Two links to the
+# root (a, b) make a walk that does not end when the watcher follows the
+# links, and the link of Mix (_build/dev/lib/app/priv -> ../../../../priv)
+# gives each change of priv/ a second path. A new link is an entry of its
+# own (issymlink for mac_listener). The same tree for both watchers.
+watch_links() {
+    mkdir -p "$1/real/priv/static" "$1/real/_build/dev/lib/app"
+    ln -s ../../../../priv "$1/real/_build/dev/lib/app/priv"
+    ln -s . "$1/real/a"
+    ln -s . "$1/real/b"
+    ln -s real "$1/root"
+}
+watch_link_changes() {
+    sleep 2
+    echo x > "$1/real/priv/static/app.css"
+    mkdir "$1/real/priv/new"
+    sleep 1
+    echo y > "$1/real/priv/new/b.txt"
+    ln -s .. "$1/real/priv/new/up"
+    sleep 2
+}
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    watch_links "$wdir"
+    echo "==> beam.com inotifywait (links)"
+    $runner "$dir/beam.com" inotifywait -e modify -e close_write -e moved_to \
+        -e moved_from -e create -e delete -e attrib --format '%w|%e|%f' \
+        --quiet -m -r "$wdir/root" > "$tmp.watch" 2>&1 &
+    watcher=$!
+    watch_link_changes "$wdir"
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    if grep -q "^$wdir/root/priv/static/|CREATE|app.css$" "$tmp.watch" &&
+       grep -q "^$wdir/root/priv/|CREATE,ISDIR|new$" "$tmp.watch" &&
+       grep -q "^$wdir/root/priv/new/|CREATE|b.txt$" "$tmp.watch" &&
+       grep -q "^$wdir/root/priv/new/|CREATE|up$" "$tmp.watch" &&
+       ! grep -Eq "^$wdir/root/(a|b|_build|priv/new/up)/" "$tmp.watch"; then
+        echo "PASS: beam.com inotifywait (links)"
+    else
+        echo "FAIL: beam.com inotifywait (links)"
+        fail=1
+        failed="$failed
+  beam.com inotifywait (links): missing events, or events under a link"
+    fi
+    rm -rf "$wdir"
+fi
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    watch_links "$wdir"
+    echo "==> beam.com mac_listener (links)"
+    (sleep 7) | $runner "$dir/beam.com" mac_listener --latency=0.2 -F "$wdir/root" \
+        > "$tmp.watch" 2>&1 &
+    watcher=$!
+    watch_link_changes "$wdir"
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    tab=$(printf '\t')
+    if grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/root/priv/static/app.css$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00020100=\[created,isdir\]${tab}$wdir/root/priv/new$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/root/priv/new/b.txt$" "$tmp.watch" &&
+       grep -q "^[0-9]*${tab}0x00040100=\[created,issymlink\]${tab}$wdir/root/priv/new/up$" "$tmp.watch" &&
+       ! grep -Eq "${tab}$wdir/root/(a|b|_build|priv/new/up)/" "$tmp.watch"; then
+        echo "PASS: beam.com mac_listener (links)"
+    else
+        echo "FAIL: beam.com mac_listener (links)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (links): missing events, or events under a link"
+    fi
+    rm -rf "$wdir"
+fi
+
 # kqueue (macOS and the BSDs): a change starts the comparison at once.
 # The interval is 5 seconds, so a change seen in 2 seconds comes from
 # kqueue. The watcher first reports probe files, so that it surely runs

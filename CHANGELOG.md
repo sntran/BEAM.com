@@ -23,6 +23,14 @@ notes of its release.
   files cost O(n²): with 20,000 files, the comparison every half second
   used half of one CPU or more, also when kqueue worked. Now it uses about
   10%.
+- The file watcher (`inotifywait -r`, `mac_listener`) follows no symbolic
+  link below a watched directory, as `inotifywait -r` of inotify-tools.
+  Before, two links to a parent directory (`ln -s . a; ln -s . b`) made
+  a walk that did not end, so no event came, and the link
+  `_build/dev/lib/APP/priv` of Mix gave the changes of `priv/` under
+  `_build/`. The watcher also goes into each directory one time, also
+  through a bind mount. A link is an entry of its own: `mac_listener`
+  gives it `issymlink`.
 
 ## 0.1.0-rc.5
 

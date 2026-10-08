@@ -33,6 +33,14 @@
  * removed, modified and inodemetamod, with isfile or isdir): when kqueue
  * sees a change, and every SECONDS (0.5 when not given, at most 5). It
  * exits when its input closes, as mac_listener does.
+ *
+ * The walk of the directories below a PATH (-r, and mac_listener) does
+ * as inotifywait -r: it follows a PATH that is a symbolic link, but no
+ * symbolic link below a PATH. Such a link is an entry of its own (as
+ * FSEvents, mac_listener gives it "issymlink"). One walk goes into each
+ * directory (st_dev and st_ino) one time, so a bind mount of a directory
+ * in itself cannot make a walk that does not end. When two PATHs have a
+ * directory, its changes come one time, with the first PATH.
  */
 #include <cosmo.h>
 #include <dirent.h>
@@ -59,7 +67,10 @@
 #define W_DELETE 0x200
 #define W_DELETE_SELF 0x400
 #define W_IGNORED 0x8000
+#define W_DONT_FOLLOW 0x02000000
 #define W_ISDIR 0x40000000
+/* Not a bit of inotify: an entry that is a symbolic link (no walk). */
+#define W_ISLNK 0x20000000
 
 static const struct {
     const char *name;
@@ -145,10 +156,100 @@ static void add_watch_entry(int wd, const char *dir)
     nwatches++;
 }
 
-static int is_dir(const char *path)
+/* --- the directories of a walk --------------------------------------- */
+
+/* A directory that the walk went into. A slot is used when its gen is the
+ * gen of the walk, so a new walk empties the set with no cost. */
+struct dir_id {
+    dev_t dev;
+    ino_t ino;
+    unsigned gen;
+};
+
+static struct dir_id *walked;
+static size_t nwalked, capwalked; /* capwalked: 0 or a power of 2 */
+static unsigned walk_gen;
+
+static void walk_start(void)
 {
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+    nwalked = 0;
+    if (++walk_gen == 0) {
+        if (walked)
+            memset(walked, 0, capwalked * sizeof(*walked));
+        walk_gen = 1;
+    }
+}
+
+static size_t dir_hash(dev_t dev, ino_t ino)
+{
+    uint64_t x = (uint64_t)ino * 0x9e3779b97f4a7c15ull ^ (uint64_t)dev;
+    x ^= x >> 31;
+    x *= 0xbf58476d1ce4e5b9ull;
+    return (size_t)(x ^ (x >> 29));
+}
+
+/* Add the directory of ST to the walk. Gives 0 when the walk went into it
+ * already (or when there is no memory for the set), else 1. A system that
+ * gives no inode (0) makes no set: such a walk follows no link, so only a
+ * bind mount can show a directory again. */
+static int walk_add(const struct stat *st)
+{
+    size_t i, mask;
+
+    if (st->st_ino == 0)
+        return 1;
+    if (2 * (nwalked + 1) > capwalked) {
+        size_t ncap = capwalked ? 2 * capwalked : 256, j;
+        struct dir_id *n = calloc(ncap, sizeof(*n));
+
+        if (!n)
+            return 0;
+        for (j = 0; j < capwalked; j++) {
+            if (walked[j].gen != walk_gen)
+                continue;
+            for (i = dir_hash(walked[j].dev, walked[j].ino) & (ncap - 1); n[i].gen;
+                 i = (i + 1) & (ncap - 1))
+                ;
+            n[i] = walked[j];
+        }
+        free(walked);
+        walked = n;
+        capwalked = ncap;
+    }
+    mask = capwalked - 1;
+    for (i = dir_hash(st->st_dev, st->st_ino) & mask; walked[i].gen == walk_gen; i = (i + 1) & mask)
+        if (walked[i].dev == st->st_dev && walked[i].ino == st->st_ino)
+            return 0;
+    walked[i].dev = st->st_dev;
+    walked[i].ino = st->st_ino;
+    walked[i].gen = walk_gen;
+    nwalked++;
+    return 1;
+}
+
+/* Open the directory PATH of the walk, only when it is still the file of
+ * ST: a link can replace the directory after the stat. */
+static DIR *open_walked(const char *path, const struct stat *st)
+{
+    struct stat ds;
+    DIR *d = opendir(path);
+
+    if (d && fstat(dirfd(d), &ds) == 0 && (ds.st_dev != st->st_dev || ds.st_ino != st->st_ino)) {
+        closedir(d);
+        return NULL;
+    }
+    return d;
+}
+
+/* The path of the entry NAME of the directory PATH (malloc). */
+static char *sub_path(const char *path, const char *name)
+{
+    size_t n = strlen(path);
+    char *sub = malloc(n + strlen(name) + 2);
+
+    if (sub)
+        sprintf(sub, "%s%s%s", path, n && path[n - 1] == '/' ? "" : "/", name);
+    return sub;
 }
 
 /* --- Linux: inotify ---------------------------------------------------- */
@@ -188,10 +289,13 @@ static long linux_syscall(long n, long a, long b, long c)
 
 static int ifd;
 
-static void inotify_watch_tree(const char *path)
+/* Watch PATH, and with -r the directories below it. ROOT: PATH is a PATH
+ * of the command line, so a link is followed (only there). */
+static void inotify_watch_tree(const char *path, int root)
 {
-    unsigned mask = wanted | W_CREATE | W_MOVED_TO | W_DELETE_SELF;
+    unsigned mask = wanted | W_CREATE | W_MOVED_TO | W_DELETE_SELF | (root ? 0 : W_DONT_FOLLOW);
     long wd = linux_syscall(NR_INOTIFY_ADD_WATCH, ifd, (long)path, mask);
+    struct stat st;
     DIR *d;
     struct dirent *e;
     char *sub;
@@ -199,15 +303,16 @@ static void inotify_watch_tree(const char *path)
     if (wd < 0)
         return;
     add_watch_entry((int)wd, path);
-    if (!recursive || !(d = opendir(path)))
+    if (!recursive || (root ? stat(path, &st) : lstat(path, &st)) != 0 ||
+        !S_ISDIR(st.st_mode) || !walk_add(&st) || !(d = open_walked(path, &st)))
         return;
     while ((e = readdir(d))) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
             continue;
-        sub = malloc(strlen(path) + strlen(e->d_name) + 2);
-        sprintf(sub, "%s%s%s", path, path[strlen(path) - 1] == '/' ? "" : "/", e->d_name);
-        if (is_dir(sub))
-            inotify_watch_tree(sub);
+        if (!(sub = sub_path(path, e->d_name)))
+            continue;
+        if (lstat(sub, &st) == 0 && S_ISDIR(st.st_mode))
+            inotify_watch_tree(sub, 0);
         free(sub);
     }
     closedir(d);
@@ -232,8 +337,9 @@ static int run_inotify(char **paths, int npaths)
     ifd = (int)linux_syscall(NR_INOTIFY_INIT1, 0, 0, 0);
     if (ifd < 0)
         return -1;
+    walk_start();
     for (i = 0; i < npaths; i++)
-        inotify_watch_tree(paths[i]);
+        inotify_watch_tree(paths[i], 1);
     for (;;) {
         n = read(ifd, buf, sizeof(buf));
         if (n <= 0) {
@@ -250,11 +356,12 @@ static int run_inotify(char **paths, int npaths)
             p += 16 + len;
             if (!(dir = inotify_dir(wd)))
                 continue;
-            /* A new directory in a recursive watch: watch it too. */
-            if (recursive && name && (mask & W_ISDIR) && (mask & (W_CREATE | W_MOVED_TO))) {
-                sub = malloc(strlen(dir) + strlen(name) + 1);
-                sprintf(sub, "%s%s", dir, name);
-                inotify_watch_tree(sub);
+            /* A new directory in a recursive watch: watch it too (a new
+             * link has no W_ISDIR). */
+            if (recursive && name && (mask & W_ISDIR) && (mask & (W_CREATE | W_MOVED_TO)) &&
+                (sub = sub_path(dir, name))) {
+                walk_start();
+                inotify_watch_tree(sub, 0);
                 free(sub);
                 dir = inotify_dir(wd);
             }
@@ -269,7 +376,7 @@ static int run_inotify(char **paths, int npaths)
 struct entry {
     char *path;
     uint32_t hash; /* of the path */
-    int isdir, isreg;
+    int isdir, isreg, islnk;
     struct timespec mtime, ctime;
     off_t size;
     dev_t dev;
@@ -340,6 +447,12 @@ static struct entry *find_entry(const char *path, uint32_t hash)
             return e;
     }
     return NULL;
+}
+
+/* The bits of the kind of an entry, for report(). */
+static unsigned entry_kind(const struct entry *e)
+{
+    return (e->isdir ? W_ISDIR : 0) | (e->islnk ? W_ISLNK : 0);
 }
 
 /* --- macOS and the BSDs: kqueue wakes the comparison ------------------- */
@@ -619,8 +732,8 @@ static void report_mac(const char *path, unsigned mask)
     }
     if (!flag)
         return;
-    flag |= (mask & W_ISDIR) ? 0x20000 : 0x10000;
-    strcat(names, (mask & W_ISDIR) ? ",isdir" : ",isfile");
+    flag |= (mask & W_ISLNK) ? 0x40000 : (mask & W_ISDIR) ? 0x20000 : 0x10000;
+    strcat(names, (mask & W_ISLNK) ? ",issymlink" : (mask & W_ISDIR) ? ",isdir" : ",isfile");
     printf("%llu\t%#.8x=[%s]\t%s\n", ++mac_id, flag, names, path);
     fflush(stdout);
 }
@@ -641,6 +754,9 @@ static void report(const char *path, unsigned mask)
     free(dir);
 }
 
+/* Compare PATH (a PATH of the command line at depth 0) and the files below
+ * it with the entries. A link is followed only at depth 0, and the walk
+ * goes into each directory one time (walk_add()). */
 static void scan(const char *path, int depth, int report_changes)
 {
     struct stat st;
@@ -650,7 +766,7 @@ static void scan(const char *path, int depth, int report_changes)
     struct dirent *de;
     char *sub;
 
-    if (stat(path, &st) != 0)
+    if ((depth == 0 ? stat(path, &st) : lstat(path, &st)) != 0)
         return;
     e = find_entry(path, hash);
     if (e && (st.st_dev != e->dev || st.st_ino != e->ino)) {
@@ -660,6 +776,7 @@ static void scan(const char *path, int depth, int report_changes)
         e->dev = st.st_dev;
         e->ino = st.st_ino;
         e->isreg = S_ISREG(st.st_mode);
+        e->islnk = S_ISLNK(st.st_mode);
     }
     if (!e) {
         if (nentries == capentries) {
@@ -671,6 +788,7 @@ static void scan(const char *path, int depth, int report_changes)
         e->hash = hash;
         e->isdir = S_ISDIR(st.st_mode);
         e->isreg = S_ISREG(st.st_mode);
+        e->islnk = S_ISLNK(st.st_mode);
         e->mtime = st.st_mtim;
         e->ctime = st.st_ctim;
         e->size = st.st_size;
@@ -682,28 +800,29 @@ static void scan(const char *path, int depth, int report_changes)
         else
             ehash_put(nentries - 1);
         if (report_changes && depth > 0)
-            report(path, W_CREATE | (e->isdir ? W_ISDIR : 0));
+            report(path, W_CREATE | entry_kind(e));
     } else if (!e->isdir &&
                (st.st_mtim.tv_sec != e->mtime.tv_sec ||
                 st.st_mtim.tv_nsec != e->mtime.tv_nsec || st.st_size != e->size)) {
         e->mtime = st.st_mtim;
         e->ctime = st.st_ctim;
         e->size = st.st_size;
-        report(path, W_MODIFY);
-        report(path, W_CLOSE_WRITE);
+        report(path, W_MODIFY | entry_kind(e));
+        report(path, W_CLOSE_WRITE | entry_kind(e));
     } else if (st.st_ctim.tv_sec != e->ctime.tv_sec ||
                st.st_ctim.tv_nsec != e->ctime.tv_nsec) {
         e->ctime = st.st_ctim;
-        report(path, W_ATTRIB | (e->isdir ? W_ISDIR : 0));
+        report(path, W_ATTRIB | entry_kind(e));
     }
     e->seen = 1;
-    if (!S_ISDIR(st.st_mode) || (depth > 0 && !recursive) || !(d = opendir(path)))
+    if (!S_ISDIR(st.st_mode) || (depth > 0 && !recursive) || !walk_add(&st) ||
+        !(d = open_walked(path, &st)))
         return;
     while ((de = readdir(d))) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
             continue;
-        sub = malloc(strlen(path) + strlen(de->d_name) + 2);
-        sprintf(sub, "%s%s%s", path, path[strlen(path) - 1] == '/' ? "" : "/", de->d_name);
+        if (!(sub = sub_path(path, de->d_name)))
+            continue;
         scan(sub, depth + 1, report_changes);
         free(sub);
     }
@@ -742,11 +861,12 @@ static void run_poll(char **paths, int npaths, int ms)
     for (;;) {
         for (i = 0; i < nentries; i++)
             entries[i].seen = 0;
+        walk_start();
         for (i = 0; i < npaths; i++)
             scan(paths[i], 0, !first);
         for (i = 0, removed = 0; i < nentries;) {
             if (!entries[i].seen) {
-                report(entries[i].path, W_DELETE | (entries[i].isdir ? W_ISDIR : 0));
+                report(entries[i].path, W_DELETE | entry_kind(&entries[i]));
                 kq_unwatch(&entries[i]);
                 free(entries[i].path);
                 entries[i] = entries[--nentries];
