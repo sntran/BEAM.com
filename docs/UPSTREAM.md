@@ -834,6 +834,55 @@ the threads of the emulator.
 Cosmopolitan uses it on XNU for `posix_spawn()` and for a `vfork()`
 that executes a program at once.
 
+### C33. x86_64: memchr() of 0 bytes reads 16 bytes
+
+**Status:** 4.0.2 (`libc/intrin/memchr.c`). The `memchr()` of the
+`master` branch of Cosmopolitan gives `NULL` at once when `n` is 0, but
+4.0.2 does not have that change. Seen in CI one time in about 50 runs
+of the unit tests (October 2026).
+
+**Symptom.** `beam.com test --cover` stopped with `Uncaught SIGSEGV
+(SEGV_MAPERR)` in `memchr`, which `decode_packet_3` called. `RDX` (n)
+was 0, and `RDI` (s) was the first byte after a mapping.
+
+**Reproducer.**
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  long pg = sysconf(_SC_PAGESIZE);
+  size_t n = argc - 1; /* 0 with no argument; not a constant */
+  char *m = mmap(0, 2 * pg, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  munmap(m + pg, pg);
+  printf("%p\n", memchr(m + pg - n, '\n', n)); /* n = 0: SIGSEGV */
+  return 0;
+}
+```
+
+With a length of 0 that is a constant, GCC gives `NULL` at compile
+time, and the program does not call `memchr()`.
+
+**Cause.** `memchr_sse()` reads the aligned 16 bytes at `s & -16`
+before it compares `s` with the end, also when `n` is 0. When `s` is the
+first byte after a mapping that ends on a page boundary, that read
+faults. The C standard permits `memchr(end, c, 0)`, and the result is
+`NULL`. ERTS calls `memchr(ptr, '\n', 0)` for an empty binary in
+`decode_packet/3` (`packet_get_length()`), so a binary that ends exactly
+at the end of a mapping stopped the VM. `memrchr()` reads nothing when
+`n` is 0. On aarch64, `memchr()` has another implementation.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=memchr`, and `__wrap_memchr()` in `c_src/cosmo/beam_com.c`
+gives `NULL` when `n` is 0. Else it calls the `memchr()` of
+Cosmopolitan.
+
+**Possible upstream fix.** A release after 4.0.2 that has the
+`memchr()` of `master`. Then remove the wrap.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
