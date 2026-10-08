@@ -2405,6 +2405,9 @@ export class Vm {
     const counted = { counted: true };
     this.sockets++;
     const t = { send: (b) => { try { server.send(b); } catch {} }, close: () => { this.socketGone(counted); try { server.close(); } catch {} }, h };
+    // A WebSocket has no end of one direction: a shutdown of write closes
+    // it (docs/WORKERS.md).
+    t.shutdown = () => t.close();
     const win = { sent: 0, read: 0 };
     const inbound = new Inbound(win, (b) => this.tcpIn(id, win, b), () => {
       console.log(`beam: the app reads the connection ${id} to port ${port} too slowly: it closes (1008)`);
@@ -2443,6 +2446,7 @@ export class Vm {
       const t = {
         send: (b) => new Promise((resolve) => socket.write(b, () => resolve())),
         close: () => socket.end(() => socket.destroy()),
+        shutdown: () => socket.end(),
         h,
       };
       // The data of the peer goes while less than UPLOAD_WINDOW bytes are
@@ -2549,8 +2553,11 @@ export class Vm {
     const toConn = relay((b) => this.event({ t: 'tcp_data', id: conn }, b));
     const toId = relay((b) => this.event({ t: 'tcp_data', id }, b));
     pairEnd = () => { toConn.end(); toId.end(); };
-    this.tcps.set(id, { send: toConn.send, close: () => end(conn), ack: toId.read, h });
-    this.tcps.set(conn, { send: toId.send, close: () => end(id), ack: toConn.read, h });
+    // A shutdown of write of one socket: the other one gets the end of the
+    // data (tcp_closed with half), after the data, and can still send.
+    const half = (other) => this.event({ t: 'tcp_closed', id: other, half: true });
+    this.tcps.set(id, { send: toConn.send, close: () => end(conn), shutdown: () => half(conn), ack: toId.read, h });
+    this.tcps.set(conn, { send: toId.send, close: () => end(id), shutdown: () => half(id), ack: toConn.read, h });
     this.event({ t: 'tcp_open', id, ack: true, sent: true });
     this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port, ack: true, sent: true });
     await ended;
@@ -2645,6 +2652,33 @@ export class Vm {
     if (typeof r?.then === 'function') r.then(done, done);
   }
 
+  // A shutdown of write of the socket t of the VM (tcp_shutdown): a
+  // connect() socket ends its writes (end() of node:net closes the writer
+  // of cloudflare:sockets), and a socket of the fetch path gives the end to
+  // the other socket. A connection of bridge() ends its response, and the
+  // rest of the request body still goes to the app (bridgeHalf).
+  tcpShutdown(id, t) {
+    if (t.shutdown) return t.shutdown();
+    for (const c of this.conns) {
+      if (c.id === id) return this.bridgeGuard(c, () => this.bridgeHalf(c));
+    }
+  }
+
+  // The app ended its writes on the connection c of bridge(): the response
+  // ends, as with the end of a body that has no length. The request body
+  // still goes to the app; then the connection ends, as a client ends it
+  // after the response. With no head of a response, or for a WebSocket,
+  // it is the end of the connection (bridgeEnd).
+  bridgeHalf(c) {
+    if (!c.status || c.ws) return this.bridgeEnd(c);
+    clearTimeout(c.timer);
+    c.writer?.close().catch(() => {});
+    c.writer = null;
+    const done = () => this.bridgeDone(c);
+    if (c.upload) c.upload.then(done, done);
+    else done();
+  }
+
   // The end of a TCP socket: to Erlang, and the end of its peer too.
   tcpClosed(id) {
     const t = this.tcps.get(id);
@@ -2724,6 +2758,13 @@ export class Vm {
         const t = this.tcps.get(msg.id);
         this.tcps.delete(msg.id);
         if (t) this.run(() => t.close(), t.h);
+        break;
+      }
+      // gen_tcp:shutdown(S, write) of wasm_tcp: the peer gets the end of
+      // the data, and the socket still reads.
+      case 'tcp_shutdown': {
+        const t = this.tcps.get(msg.id);
+        if (t) this.run(() => this.tcpShutdown(msg.id, t), t.h);
         break;
       }
       // wasm_tcp:splice/2: the data of each socket goes to the other one,

@@ -403,6 +403,63 @@ Node.js 26 on Linux x86_64:
   does not copy the store of the build computer. A native run of the file
   uses the store of the computer, not FILE.
 
+### The sockets of the host and gen_tcp
+
+The sockets of the host (`wasm_tcp`) give the program the results and
+the messages of `gen_tcp` with its default backend (`inet_drv`) of the
+same OTP. A test does the same steps on a socket of `gen_tcp` on
+127.0.0.1 and on a socket of `wasm_tcp`, and compares the results and
+the messages ([`tests/support/tcp_diff.ex`](../tests/support/tcp_diff.ex)).
+For example:
+
+- The options of inet, and their checks: a wrong option gives `{error,
+  einval}`. `setopts/2` sets the options from the last one to the first
+  one, and `{active, N}` adds N to the counter, with `{tcp_passive, S}`
+  at 0.
+- All the packet types of inet, with `packet_size`, `line_delimiter`, and
+  `{http, S, Packet}` in an active mode.
+- The end of the peer comes after the data. A passive socket then gives
+  `{error, closed}` one time, and then `{error, enotconn}`. An active
+  socket gets `{tcp_closed, S}` after the data, also when it becomes
+  active after the end.
+- One `recv` at a time: a second one gets `{error, ealready}`.
+- `gen_tcp:shutdown(S, write)`: the peer gets the end of the data, and the
+  socket still reads. A send after it gives `{error, closed}`.
+- `controlling_process/2` gives the `tcp` and `tcp_closed` messages of the
+  socket in the mailbox of the old owner to the new owner.
+
+These differences stay, because the host has no socket of the operating
+system:
+
+- `inet:sockname/1` gives `{{0,0,0,0}, 0}` for a connection, and the port
+  of `listen/2` for a listener (also 0). `inet:peername/1` gives the
+  address that the host gave, or `{0,0,0,0}` for a name.
+- `getopts/2` gives the value that the program set, or the value of a
+  socket of Linux. The options of the operating system (`buffer`,
+  `recbuf`, `sndbuf`, `nodelay`, `keepalive`, `linger`, ...) do nothing.
+  `buffer` is 65536 by default: as in `inet_drv`, a line of `{packet,
+  line}` or of the HTTP packets is at most one buffer.
+- A socket is a process, not a port. The owner gets no exit signal from
+  it, as with the `socket` backend of `gen_tcp`. With `exit_on_close`, an
+  error of a read gives `{tcp_error, S, Reason}` and `{tcp_closed, S}`,
+  and the socket stops. The port of `inet_drv` also exits with that
+  reason, and its owner gets the exit signal. `inet:monitor/1` and
+  `inet:info/1` do not take a socket of the host.
+- The end of the peer of a `connect()` socket closes the socket in the
+  host in the two directions (`node:net` ends it). With `exit_on_close`
+  false, a send after the end of the peer goes nowhere: the first one
+  gives `ok`, and the next one `{error, closed}`, as after a reset.
+- Only the Node.js host of the tests gives the reason `econnreset` of a
+  reset. In Workers and Deno, a reset of the peer is an end
+  (`show_econnreset` shows nothing).
+- A connection of `/.tcp/PORT` is a WebSocket, which cannot end one
+  direction: `gen_tcp:shutdown(S, write)` closes it.
+- `send_timeout` counts the wait of a send for the window of the host
+  (256 KB), not for the buffer of the operating system. As in `inet_drv`,
+  the data of a send that timed out goes later.
+- `{deliver, port}` sends `{S, {data, Data}}`, where `S` is the socket,
+  not a port.
+
 ## HTTP through fetch()
 
 The HTTP of the program goes through `fetch()` of the host, and

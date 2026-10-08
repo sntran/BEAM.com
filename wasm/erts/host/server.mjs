@@ -71,6 +71,8 @@ function onsend(bytes) {
     case 'tcp_unlisten': servers.get(msg.id)?.close(); servers.delete(msg.id); break;
     case 'tcp_send': tcps.get(msg.id)?.write(body); break;
     case 'tcp_close': tcps.get(msg.id)?.destroy(); tcps.delete(msg.id); break;
+    // gen_tcp:shutdown(S, write): the end of the data to the peer.
+    case 'tcp_shutdown': tcps.get(msg.id)?.end(); break;
   }
 }
 
