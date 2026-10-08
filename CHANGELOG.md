@@ -45,6 +45,10 @@ notes of its release.
   read the rest of the request body first, as the answers of the VM do
   since 0.1.0-rc.5. Before, in `wrangler dev`, the next request on that
   connection got 500.
+- Security: with `serve(app, { name })` and a function, the host removes
+  the header `x-beam-tenant` of the client. Before, the app got the
+  header of the client, which it trusts, and with `BEAM_TENANTS = "path"`
+  the object also took `BEAM_TENANT` from it.
 
 ## 0.1.0-rc.5
 

@@ -271,7 +271,9 @@ export default {
   function of the request that gives it, for one object for each tenant
   (the var `BEAM_OBJECT`, else `main`, by default). With no function,
   the vars of the tenants and the instances (`BEAM_TENANTS`,
-  `BEAM_INSTANCES`, see below) route the requests.
+  `BEAM_INSTANCES`, see below) route the requests. With a function, the
+  host removes the header `x-beam-tenant` of the client, and the app
+  gets no tenant from the host.
 - `serve(app, { nifs })`: the NIF libraries in WebAssembly of `app.com`
   (see [`NIFS.md`](NIFS.md)), for an app that has them. `beam.com
   --nif-modules app.com .` writes `nifs.js` and `nifs/`, and the entry
