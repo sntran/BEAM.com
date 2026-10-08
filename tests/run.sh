@@ -274,6 +274,22 @@ check_status 1 beam.com 'there is no command build: use "beam.com INPUT -o OUTPU
 check_status 1 beam.com 'the arguments of the program come after "--"' x.erl y
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
 check beam.com 'SYS @@Erlang/OTP  : ' --strace --version
+# A port program gets only the descriptors 0, 1 and 2 of the emulator, as
+# with the BEAM; ls lists its own descriptor 3 too. On macOS, the
+# closefrom() of erl_child_setup closed nothing (C37 of docs/UPSTREAM.md).
+fds_eval='P = open_port({spawn_executable, "/bin/ls"}, [binary, exit_status, {args, ["/dev/fd"]}]),
+    F = fun F(A) -> receive {P, {data, D}} -> F(<<A/binary, D/binary>>); {P, {exit_status, _}} -> A end end,
+    io:format("fds: ~s~n", [lists:join(" ", string:lexemes(F(<<>>), "\n"))]),
+    halt().'
+case $os in linux|darwin) check beam.com '^fds: 0 1 2 3$' -noshell -eval "$fds_eval" ;; esac
+# 200 port programs, one after the other: erl_child_setup forks for each
+# one (C36 of docs/UPSTREAM.md).
+ports_eval='N = length([ok || _ <- lists:seq(1, 200),
+        begin P = open_port({spawn_executable, "/bin/sh"}, [exit_status, {args, ["-c", "exit 0"]}]),
+              receive {P, {exit_status, 0}} -> true end end]),
+    io:format("ports: ~p~n", [N]),
+    halt().'
+check beam.com '^ports: 200$' -noshell -eval "$ports_eval"
 
 # Linux: when the APE loader runs beam.com (sh starts it), the helper
 # programs start with that loader, and the kernel never gets the APE file

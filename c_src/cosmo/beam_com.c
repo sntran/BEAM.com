@@ -1518,6 +1518,48 @@ int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
 }
 
 /*
+ * fork() for erl_child_setup (docs/UPSTREAM.md, C36). On macOS arm64, the
+ * fork() of Cosmopolitan blocks all signals, calls the fork() of
+ * libSystem, and then makes its list of threads again in the child. In CI,
+ * a child once faulted in that list (in __dll_remove()), and because the
+ * signals were blocked, the fault did not stop it: the child ran the same
+ * store again forever, and the emulator waited for it. erl_child_setup
+ * has one thread, so the locks of the fork() of Cosmopolitan have no other
+ * holder. Here the child gets the fork() of libSystem through the
+ * trampoline of cosmo_dlopen(), which blocks the signals only during the
+ * call, and the child keeps the list of its parent. A fault in the child
+ * then stops it with a report. On the other systems, and when a function
+ * of libSystem is not there, this is fork().
+ */
+int beam_com_helper_fork(void)
+{
+    static int (*xnu_fork)(void);
+    static int *(*xnu_errno)(void);
+    static int loaded;
+    void *lib, *f, *e;
+    int pid;
+
+    if (!IsXnuSilicon())
+        return fork();
+    if (!loaded) {
+        loaded = 1;
+        if ((lib = cosmo_dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY)) &&
+            (f = cosmo_dlsym(lib, "fork")) && (e = cosmo_dlsym(lib, "__error"))) {
+            xnu_errno = cosmo_dltramp(e);
+            xnu_fork = xnu_errno ? cosmo_dltramp(f) : 0;
+        }
+    }
+    if (!xnu_fork)
+        return fork();
+    pid = xnu_fork();
+    /* The errno of libSystem: the numbers of the host are the numbers of
+     * Cosmopolitan on XNU. */
+    if (pid == -1)
+        errno = *xnu_errno();
+    return pid;
+}
+
+/*
  * Distributed Erlang needs epmd. It starts only for -sname, -name (the
  * long form) or -remsh, never otherwise, as erlexec starts "epmd -daemon"
  * before the emulator (unless -start_epmd false). epmd is this file: the
