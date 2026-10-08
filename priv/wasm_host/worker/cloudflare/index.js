@@ -113,7 +113,15 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
       const objects = env[binding];
       if (!objects && vm) return vm.fetch(request, ctx);
       if (!objects) return plain.fetch(request, env, ctx);
-      if (typeof name === 'function') return forward(objects.getByName(name(request)), request);
+      if (typeof name === 'function') {
+        // No front: the object gets no x-beam-tenant of the client, because
+        // the app trusts that header (and with BEAM_TENANTS = "path", the
+        // object takes BEAM_TENANT from it).
+        const object = objects.getByName(name(request));
+        const inner = new Request(request);
+        inner.headers.delete('x-beam-tenant');
+        return forward(object, inner);
+      }
       return front.fetch(request, frontEnv(env), ctx);
     },
     scheduled(controller, env, ctx) {

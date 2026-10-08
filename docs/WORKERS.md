@@ -271,7 +271,9 @@ export default {
   function of the request that gives it, for one object for each tenant
   (the var `BEAM_OBJECT`, else `main`, by default). With no function,
   the vars of the tenants and the instances (`BEAM_TENANTS`,
-  `BEAM_INSTANCES`, see below) route the requests.
+  `BEAM_INSTANCES`, see below) route the requests. With a function, the
+  host removes the header `x-beam-tenant` of the client, and the app
+  gets no tenant from the host.
 - `serve(app, { nifs })`: the NIF libraries in WebAssembly of `app.com`
   (see [`NIFS.md`](NIFS.md)), for an app that has them. `beam.com
   --nif-modules app.com .` writes `nifs.js` and `nifs/`, and the entry
@@ -375,6 +377,15 @@ Node.js 26 on Linux x86_64:
 - The Worker gives each request to the listener of the program on
   `PORT` (default 4000) as an HTTP/1.1 connection, and gives the answer
   back. WebSockets work (LiveView). HTTP stays in Bandit or Cowboy.
+- The 101 of a WebSocket has the headers of the 101 of the app: the
+  subprotocol that the app chose (`sec-websocket-protocol`, for example
+  for `new WebSocket(url, ['graphql-transport-ws'])`) and its cookies.
+  The host does not give the headers of the handshake and of the
+  connection of the app (`sec-websocket-accept`,
+  `sec-websocket-extensions`, `connection`, `upgrade`, `content-length`,
+  `transfer-encoding`): the runtime makes them, with its own compression.
+  On Deno, the subprotocol goes to `Deno.upgradeWebSocket`. In a web
+  page, the socket has the subprotocol, and the page keeps the cookies.
 - The connection to the app has no TLS. The Worker gives the scheme of
   the client in `x-forwarded-proto` (`https` on Cloudflare, `http` in
   `wrangler dev` on `http://localhost`), as Deno and the web page do. So
@@ -414,15 +425,16 @@ configuration of the program do not change:
 `Req.get!("https://api.cloudflare.com/...")` works.
 
 The host chooses the route of each connect of the program
-(`specs/FetchPath.tla`):
+(`specs/FetchPath.tla`). It sees the port of the connect, not the
+protocol:
 
 | Connect | Route |
 |---|---|
 | Port 80 | `fetch()`. |
 | Port 443, with a trust store (`--cacerts`) | `fetch()`. |
-| Port 443, with no trust store | `connect()`. The program cannot trust the CA of the VM. |
-| Another port | `connect()`. |
-| `BEAM_FETCH` is set | `fetch()` for its hosts and ports, `connect()` for the others. |
+| Port 443, with no trust store | `connect()`, also when `BEAM_FETCH` names the port. The program cannot trust the CA of the VM. |
+| Another port | `connect()`, except when a rule of `BEAM_FETCH` names the port. A protocol that is not HTTP (a database, SMTP) must not go to `fetch()`. |
+| `BEAM_FETCH` is set | Only its hosts and ports, with the two rules above. |
 
 For `fetch()`, the socket of the program goes to a server in the VM
 (`wasm_host_fetch`), and each HTTP request on it is one `fetch()` call.
@@ -462,9 +474,22 @@ For `fetch()`, the socket of the program goes to a server in the VM
   example another one on your workers.dev subdomain) gets the error
   1042 of Cloudflare. Use a service binding for that Worker.
 - `BEAM_FETCH` gives the hosts and ports of `fetch()`, with the rules of
-  `BEAM_CONNECT`. For example, `*:80,*:443,api.local:8080` adds a port to
-  the default. An empty `BEAM_FETCH` turns `fetch()` off: then only the
-  fallback uses it.
+  `BEAM_CONNECT`:
+  - A rule with no port (`host`, `*.domain`, `*`) gives ports 80 and 443
+    of its hosts. So `*` is the default, and a database on another port
+    still uses `connect()`.
+  - A rule with a port (`host:8080`, `*:8080`) gives that port. For
+    example, `*:80,*:443,api.local:8080` adds a port to the default.
+  - Port 443 goes through `fetch()` only with a trust store
+    (`--cacerts`), also when a rule names it.
+  - An empty `BEAM_FETCH` turns `fetch()` off: then only the fallback
+    uses it.
+
+  Caution: name another port only when the program speaks HTTP or HTTPS
+  on it. The server in the VM speaks only HTTP, and the host cannot see
+  the protocol before the route. For HTTPS on such a port, build with
+  `--cacerts`. Else the program does not trust the certificate of the
+  server in the VM.
 
 ## Ecto SQLite: D1, Durable Objects and Deno KV
 
@@ -509,6 +534,13 @@ is on by default; the var `BEAM_SNAPSHOT = "off"` turns it off.
   modules of the boot are loaded, before `runtime.exs` and the program.
   Each object then runs the program and its migrations on its own
   storage.
+- **A quiet moment.** A snapshot waits while the VM has I/O of the host,
+  which the snapshot cannot hold: a SQL call, a socket, a `fetch()` of
+  the fetch path, an operation of WebAssembly (the application `wasm`),
+  or a module or an instance of WebAssembly that the host keeps for the
+  VM. A restored VM would wait for a reply that does not come, or use a
+  handle that the new host does not have. After about 2 s, the VM makes
+  no snapshot, and the next new VM tries again.
 
 ### The snapshot of the build
 
@@ -691,6 +723,15 @@ socket also tells the host how many bytes that `recv` still waits for,
 and the host then sends parts of up to 1 MiB: the app holds these bytes
 anyway, and each part costs a turn of the VM.
 
+A body with a `content-length` must have that number of bytes. The app
+gets at most these bytes, so the rest of a body cannot be a second
+request on the connection of the app. A body with more bytes or with
+fewer bytes gets 400, and the app gets the end of the connection. A
+`content-length` that is not a number of bytes gets 400 before the app
+sees the request. A client of Workers or Deno cannot send such a body,
+but a `Request` of the code of a host can (`boot()` of Node.js, or an
+entry that makes its own `Request`).
+
 The host starts the VM with `-MBsbct 8192 -MHsbct 8192`: a binary or a
 process heap goes into a carrier of its own only above 8 MB, in place of
 512 KB. In WebAssembly, these carriers made the memory of the VM grow far
@@ -700,15 +741,23 @@ was about 200 MB, and with `-Mea min` about 100 MB. Erlang itself used 14
 MB in each case. With `-Mea min` in `BEAM_ERL_FLAGS`, the host leaves out
 its flags.
 
-When the app answers before it reads the whole body (a 413 of its own,
-for example), the host reads the rest of the body and drops it, and then
-the response goes. workerd cannot read a request body after the response
-has gone, and it closes the connection with the bytes that it did not
-read: `wrangler dev` uses that connection again, and its next request
-gets 500. The host reads 64 MiB at most, and stops when no bytes come for
-5 s, or after 60 s. The front Worker of a Durable Object pipes the body to
-the object itself, with a handler for a read that fails, in place of the
-pipe of workerd.
+When the app answers before it reads the whole body (a 413 of its own, or
+a response that streams while the app reads the body), the response goes
+at once, and the client reads it while the body comes. The end of the
+response waits for the end of the request body. The app reads the rest,
+or, after the end of the response of the app, the host reads the rest and
+drops it. workerd sends a response at the end of its body, and it cannot
+read a request body after that. It then closes the connection with the
+bytes that it did not read: `wrangler dev` uses that connection again,
+and its next request gets 500. The host reads 64 MiB at most, and stops
+when no bytes come for 5 s, or after 60 s. A response with no body (HEAD,
+204, 304, a length of 0, or an answer of the host) goes after the host
+read the rest of the body. The front Worker of a Durable Object pipes the
+body to the object itself, with a handler for a read that fails, in place
+of the pipe of workerd. The answers that the front Worker and the object
+make themselves (a 400 or a 404 of the routes of the tenants, a
+redirect, the 503 of an object that resets, the 410 of an instance that
+ended) also read the rest of the body first, with the same bounds.
 
 The other directions have the same flow control:
 
@@ -802,7 +851,7 @@ Cloudflare stops the requests with "Durable Object is overloaded".
 | `BEAM_YIELD_REDS` | Durable Object | The reductions of work between two turns of the event loop (1000000). `"0"`: no turns. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | Worker, Durable Object | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
-| `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). The others use `connect()`. Empty: no host. |
+| `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"): a rule with no port gives ports 80 and 443, port 443 needs `--cacerts`, and another port needs a rule that names it. The others use `connect()`. Empty: no host. |
 | `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
 | `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 

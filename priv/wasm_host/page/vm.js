@@ -78,7 +78,9 @@ async function socketVm({ path, protocols }, port) {
     if (e.data.close) socket.close(e.data.code, e.data.reason);
     else socket.send(e.data.message);
   };
-  port.postMessage({ open: true, protocol: protocols[0] ?? '' });
+  // The cookies and the subprotocol of the 101 of the app.
+  keep(socket);
+  port.postMessage({ open: true, protocol: socket.protocol ?? protocols[0] ?? '' });
 }
 
 function handle(e) {

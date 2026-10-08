@@ -18,6 +18,50 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- A response of the app before the end of a large request body goes at
+  once again (a regression of 0.1.0-rc.5). Before, the response waited
+  for the end of the upload, and the upload waited for the app. So an app
+  that answered with 512 KB before it read a body of 2 MiB, or that
+  streamed its response while it read the body, held its response for
+  60 s. Now the end of the response waits for the end of the request
+  body, so the next request on the connection still works.
+- Security: a request body with more bytes than its `content-length`
+  can no longer put a second request on the connection of the app.
+  Before, the host gave the app the `content-length` and all the bytes
+  of the body stream, for example of a `Request` of `boot()` in Node.js.
+  Now the app gets at most that number of bytes. A body with more bytes
+  or with fewer bytes gets 400, and the app gets the end of the
+  connection.
+- The 101 of a WebSocket has the headers of the 101 of the app, on
+  Workers, Deno and in a web page: the subprotocol that the app chose
+  and its cookies. Before, the host dropped them. So a browser that
+  offered a subprotocol (`new WebSocket(url, ['graphql-transport-ws'])`,
+  or a Phoenix 1.8 socket with `authToken`) failed the handshake, with
+  "Sent non-empty 'Sec-WebSocket-Protocol' header but no response was
+  received" in Chrome.
+- The answers that the front Worker and the Durable Object make
+  themselves (a 400 or a 404 of the routes of the tenants, a redirect,
+  the 503 of an object that resets, the 410 of an instance that ended)
+  read the rest of the request body first, as the answers of the VM do
+  since 0.1.0-rc.5. Before, in `wrangler dev`, the next request on that
+  connection got 500.
+- Security: with `serve(app, { name })` and a function, the host removes
+  the header `x-beam-tenant` of the client. Before, the app got the
+  header of the client, which it trusts, and with `BEAM_TENANTS = "path"`
+  the object also took `BEAM_TENANT` from it.
+- A snapshot waits while an operation of WebAssembly of the application
+  `wasm` runs in the host, and while the host keeps a module or an
+  instance for the VM, as it waits for a socket. Before, a snapshot could
+  copy a VM that waited for the reply of such an operation, and a VM that
+  restored it waited forever, or used a handle that its host did not
+  have.
+- `BEAM_FETCH` keeps the rules of the fetch path. Port 443 goes through
+  `fetch()` only with a trust store (`--cacerts`), also when a rule names
+  it, and another port only when a rule names that port. Before, `*:443`
+  with no `--cacerts` sent each HTTPS connection to a server whose CA the
+  program did not trust, and `*` sent each connection, also of a
+  database, to a server that speaks only HTTP. A rule with no port now
+  gives ports 80 and 443. `specs/FetchPath.tla` models the rules.
 - The file watcher (`inotifywait` on the BSDs, `mac_listener`) finds the
   entry of each file in an index of the paths. Before, a comparison of n
   files cost O(n²): with 20,000 files, the comparison every half second
