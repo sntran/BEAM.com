@@ -731,7 +731,10 @@ when no bytes come for 5 s, or after 60 s. A response with no body (HEAD,
 204, 304, a length of 0, or an answer of the host) goes after the host
 read the rest of the body. The front Worker of a Durable Object pipes the
 body to the object itself, with a handler for a read that fails, in place
-of the pipe of workerd.
+of the pipe of workerd. The answers that the front Worker and the object
+make themselves (a 400 or a 404 of the routes of the tenants, a
+redirect, the 503 of an object that resets, the 410 of an instance that
+ended) also read the rest of the body first, with the same bounds.
 
 The other directions have the same flow control:
 

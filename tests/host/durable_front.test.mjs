@@ -15,7 +15,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { forward } = await import('../../priv/wasm_host/worker/durable.js');
+const { default: front, forward, Beam } = await import('../../priv/wasm_host/worker/durable.js');
 
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 
@@ -55,4 +55,59 @@ test('an error of the body after the answer of the object has a handler', async 
   assert.equal((await forward(object, request)).status, 413);
   ctl.error(new TypeError("Can't read from request stream after response has been sent."));
   await settle();
+});
+
+// A body of n chunks; read() tells how many of them the host read, and
+// cancelled() if the host cancelled it.
+function body(n, size = 1000) {
+  let pulled = 0, cancelled = false;
+  const stream = new ReadableStream({
+    pull(c) { if (pulled < n) { pulled++; c.enqueue(new Uint8Array(size)); } else c.close(); },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  return { stream, read: () => pulled, cancelled: () => cancelled };
+}
+const post = (url, b, headers = {}) => new Request(url, { method: 'POST', body: b.stream, duplex: 'half', headers });
+
+// wrangler dev: the next request on the connection of an answer that did
+// not read the body got 500 (the problem of 0.1.0-rc.4).
+test('the answers of the front read the whole body first', async () => {
+  for (const [env, url, status] of [
+    [{ BEAM_TENANTS: 'path' }, 'https://app.example.com/x', 404],
+    [{ BEAM_TENANTS: 'path' }, 'https://app.example.com/t/Bad!/x', 400],
+    [{ BEAM_TENANTS: 'path' }, 'https://app.example.com/t/one', 301],
+    [{ BEAM_TENANTS: 'cookie' }, 'https://app.example.com/.tenant/Bad!', 400],
+    [{ BEAM_TENANTS: 'cookie' }, 'https://app.example.com/.tenant/one', 303],
+    [{ BEAM_TENANTS: 'host' }, 'https://Bad!.example.com/', 400],
+  ]) {
+    const b = body(20);
+    const r = await front.fetch(post(url, b), env);
+    assert.equal(r.status, status, url);
+    assert.equal(b.read(), 20, url);
+    assert.equal(b.cancelled(), false, url);
+  }
+});
+
+test('a request that goes to the object keeps its body for the object', async () => {
+  const b = body(5);
+  let got = 0;
+  const object = { async fetch(request) { got = (await request.arrayBuffer()).byteLength; return new Response('ok'); } };
+  const env = { BEAM_TENANTS: 'path', BEAM: { idFromName: (n) => n, get: () => object } };
+  const r = await front.fetch(post('https://app.example.com/t/one/x', b), env);
+  assert.equal(await r.text(), 'ok');
+  assert.equal(got, 5000);
+});
+
+test('the object reads the whole body before its 503 while it resets, and before the 410 of an instance', async () => {
+  const resetting = new Beam({}, {});
+  resetting.resetting = true;
+  const b = body(20);
+  const r = await resetting.fetch(post('https://app.example.com/x', b));
+  assert.equal(r.status, 503);
+  assert.equal(b.read(), 20);
+  const instance = new Beam({ storage: { get: async () => null } }, { BEAM_INSTANCES: '1', BEAM_TENANTS: 'path' });
+  const b2 = body(20);
+  const r2 = await instance.fetch(post('https://app.example.com/x', b2));
+  assert.equal(r2.status, 410);
+  assert.equal(b2.read(), 20);
 });

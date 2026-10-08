@@ -39,6 +39,12 @@ notes of its release.
   or a Phoenix 1.8 socket with `authToken`) failed the handshake, with
   "Sent non-empty 'Sec-WebSocket-Protocol' header but no response was
   received" in Chrome.
+- The answers that the front Worker and the Durable Object make
+  themselves (a 400 or a 404 of the routes of the tenants, a redirect,
+  the 503 of an object that resets, the 410 of an instance that ended)
+  read the rest of the request body first, as the answers of the VM do
+  since 0.1.0-rc.5. Before, in `wrangler dev`, the next request on that
+  connection got 500.
 
 ## 0.1.0-rc.5
 
