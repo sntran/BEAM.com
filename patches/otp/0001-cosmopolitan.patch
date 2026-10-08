@@ -524,3 +524,165 @@ index 72a9397..6a68609 100644
    struct hostent *result;
    int err;
  
+diff --git a/erts/emulator/beam/erl_errno_str.c b/erts/emulator/beam/erl_errno_str.c
+--- a/erts/emulator/beam/erl_errno_str.c
++++ b/erts/emulator/beam/erl_errno_str.c
+@@ -976,6 +976,144 @@
+ 
+ #endif /* !defined(ERTS_HAVE_ERRNO_NAME_LOOKUP_FUNC) */
+ 
++/*
++ * Cosmopolitan 4.0.2: each errno name is a variable, because its value
++ * comes from the host at run time. In #if, the preprocessor reads such a
++ * name as 0. A native BEAM gives the same names as cosmo_errno_name(), on
++ * each host. A later Cosmopolitan has an integer constant for each name,
++ * with the number of Linux, and then the guards of errno_name() work.
++ */
++#if defined(__COSMOPOLITAN__) && ELOOP == 0
++#define COSMO_ERRNO_VARIABLES 1
++#include <cosmo.h>
++
++#define COSMO_LINUX   1
++#define COSMO_XNU     2
++#define COSMO_FREEBSD 4
++#define COSMO_OPENBSD 8
++#define COSMO_NETBSD  16
++#define COSMO_BSD     (COSMO_XNU | COSMO_FREEBSD | COSMO_OPENBSD | COSMO_NETBSD)
++
++/*
++ * The names that Cosmopolitan does not define with #define, with the
++ * numbers of the errno.h of each host. A native BEAM gets them from
++ * strerrorname_np() on Linux, and from errno_name_fallback() on macOS
++ * and the BSDs.
++ */
++static const struct {
++    int eno;
++    int hosts;
++    const char *name;
++} cosmo_host_errnos[] = {
++    {44, COSMO_LINUX, "ECHRNG"},
++    {45, COSMO_LINUX, "EL2NSYNC"},
++    {46, COSMO_LINUX, "EL3HLT"},
++    {47, COSMO_LINUX, "EL3RST"},
++    {48, COSMO_LINUX, "ELNRNG"},
++    {49, COSMO_LINUX, "EUNATCH"},
++    {50, COSMO_LINUX, "ENOCSI"},
++    {51, COSMO_LINUX, "EL2HLT"},
++    {52, COSMO_LINUX, "EBADE"},
++    {53, COSMO_LINUX, "EBADR"},
++    {54, COSMO_LINUX, "EXFULL"},
++    {55, COSMO_LINUX, "ENOANO"},
++    {56, COSMO_LINUX, "EBADRQC"},
++    {57, COSMO_LINUX, "EBADSLT"},
++    {59, COSMO_LINUX, "EBFONT"},
++    {65, COSMO_LINUX, "ENOPKG"},
++    {68, COSMO_LINUX, "EADV"},
++    {69, COSMO_LINUX, "ESRMNT"},
++    {70, COSMO_LINUX, "ECOMM"},
++    {73, COSMO_LINUX, "EDOTDOT"},
++    {76, COSMO_LINUX, "ENOTUNIQ"},
++    {77, COSMO_LINUX, "EBADFD"},
++    {78, COSMO_LINUX, "EREMCHG"},
++    {79, COSMO_LINUX, "ELIBACC"},
++    {80, COSMO_LINUX, "ELIBBAD"},
++    {81, COSMO_LINUX, "ELIBSCN"},
++    {82, COSMO_LINUX, "ELIBMAX"},
++    {83, COSMO_LINUX, "ELIBEXEC"},
++    {86, COSMO_LINUX, "ESTRPIPE"},
++    {117, COSMO_LINUX, "EUCLEAN"},
++    {118, COSMO_LINUX, "ENOTNAM"},
++    {119, COSMO_LINUX, "ENAVAIL"},
++    {120, COSMO_LINUX, "EISNAM"},
++    {121, COSMO_LINUX, "EREMOTEIO"},
++    {126, COSMO_LINUX, "ENOKEY"},
++    {127, COSMO_LINUX, "EKEYEXPIRED"},
++    {128, COSMO_LINUX, "EKEYREVOKED"},
++    {129, COSMO_LINUX, "EKEYREJECTED"},
++    {132, COSMO_LINUX, "ERFKILL"},
++    {133, COSMO_LINUX, "EHWPOISON"},
++    {67, COSMO_BSD, "EPROCLIM"},
++    {72, COSMO_BSD, "EBADRPC"},
++    {73, COSMO_BSD, "ERPCMISMATCH"},
++    {74, COSMO_BSD, "EPROGUNAVAIL"},
++    {75, COSMO_BSD, "EPROGMISMATCH"},
++    {76, COSMO_BSD, "EPROCUNAVAIL"},
++    {80, COSMO_BSD, "EAUTH"},
++    {81, COSMO_BSD, "ENEEDAUTH"},
++    {82, COSMO_XNU, "EPWROFF"},
++    {82, COSMO_OPENBSD, "EIPSEC"},
++    {83, COSMO_XNU, "EDEVERR"},
++    {83, COSMO_OPENBSD, "ENOATTR"},
++    {85, COSMO_XNU, "EBADEXEC"},
++    {86, COSMO_XNU, "EBADARCH"},
++    {87, COSMO_XNU, "ESHLIBVERS"},
++    {87, COSMO_FREEBSD, "ENOATTR"},
++    {88, COSMO_XNU, "EBADMACHO"},
++    {88, COSMO_FREEBSD, "EDOOFUS"},
++    {93, COSMO_XNU | COSMO_NETBSD, "ENOATTR"},
++    {93, COSMO_FREEBSD, "ENOTCAPABLE"},
++    {94, COSMO_FREEBSD, "ECAPMODE"},
++    {97, COSMO_FREEBSD, "EINTEGRITY"},
++    {103, COSMO_XNU, "ENOPOLICY"},
++    {106, COSMO_XNU, "EQFULL"},
++    {107, COSMO_XNU, "ENOTCAPABLE"},
++};
++
++static const char *cosmo_errno_name(int eno)
++{
++    int host;
++    size_t i;
++
++    /*
++     * The #if guards of errno_name() compare two names, and the
++     * preprocessor reads each name as 0, so they left these cases out:
++     * EALREADY gave errno_114 on Linux, and ELOOP gave errno_40. These are
++     * the same guards, at run time, in the order of errno_name(). For a
++     * name that a host does not have, Cosmopolitan can give the value of a
++     * near name: ETIME is ETIMEDOUT on FreeBSD and OpenBSD, and ENOSR is
++     * ENOMSG on OpenBSD. Two more guards keep the name of the host.
++     */
++    if (eno == EALREADY && EBUSY != EALREADY) return "EALREADY";
++    if (eno == EDEADLK && EWOULDBLOCK != EDEADLK) return "EDEADLK";
++    if (eno == EIDRM && EINPROGRESS != EIDRM) return "EIDRM";
++    if (eno == ELOOP && ENOENT != ELOOP) return "ELOOP";
++    if (eno == ENOBUFS && ENOSR != ENOBUFS) return "ENOBUFS";
++    if (eno == ENOSTR && ENOTTY != ENOSTR) return "ENOSTR";
++    if (eno == ENODATA && ECONNREFUSED != ENODATA) return "ENODATA";
++    if (eno == ENOSR && ENAMETOOLONG != ENOSR && ENOMSG != ENOSR) return "ENOSR";
++    if (eno == ENOTEMPTY && EEXIST != ENOTEMPTY) return "ENOTEMPTY";
++    if (eno == EOPNOTSUPP && ENOTSUP != EOPNOTSUPP) return "EOPNOTSUPP";
++    if (eno == ETIME && ELOOP != ETIME && ETIMEDOUT != ETIME) return "ETIME";
++    if (eno == ETIMEDOUT && ENOSTR != ETIMEDOUT && EAGAIN != ETIMEDOUT) return "ETIMEDOUT";
++    if (eno == EWOULDBLOCK && EAGAIN != EWOULDBLOCK) return "EWOULDBLOCK";
++
++    host = IsLinux() ? COSMO_LINUX
++        : IsXnu() ? COSMO_XNU
++        : IsFreebsd() ? COSMO_FREEBSD
++        : IsOpenbsd() ? COSMO_OPENBSD
++        : IsNetbsd() ? COSMO_NETBSD
++        : 0;
++    for (i = 0; i < sizeof(cosmo_host_errnos) / sizeof(cosmo_host_errnos[0]); i++) {
++        if (cosmo_host_errnos[i].eno == eno && (cosmo_host_errnos[i].hosts & host))
++            return cosmo_host_errnos[i].name;
++    }
++    return NULL;
++}
++#endif
++
+ static const char *errno_name(int eno)
+ {
+ 
+@@ -1106,6 +1244,13 @@
+ 
+     default:
+ 
++#ifdef COSMO_ERRNO_VARIABLES
++        {
++            const char *name = cosmo_errno_name(eno);
++            if (name)
++                return name;
++        }
++#endif
+ #if !defined(ERTS_HAVE_ERRNO_NAME_LOOKUP_FUNC)
+         return errno_name_fallback(eno);
+ #elif defined(HAVE_STRERRORNAME_NP)

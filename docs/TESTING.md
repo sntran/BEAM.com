@@ -49,6 +49,10 @@ the tests.
   CI sets `BEAM_COM_NETNS=1`, so there the test must run.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
+- `tests/errno_test.exs`: the errors of the VM have the names of the
+  BEAM, such as `eloop` and `ealready` (C35 in
+  [`UPSTREAM.md`](UPSTREAM.md)). In CI, the tests run in `beam.com`, so
+  the test checks the patch of `erl_errno_str.c`.
 - `examples/studio/test`: the tests of the import rewrite of the studio.
   `make unit` runs them after the tests of the root project.
 
@@ -125,7 +129,7 @@ the sorted keys and the deterministic encoding of such a map.
 
 ## 2. Models
 
-TLC checks the models of five protocols. Each model has an invariant
+TLC checks the models of six protocols. Each model has an invariant
 that a known fault breaks, so a check that passes means something.
 
 | Model | What it checks |
@@ -134,6 +138,7 @@ that a known fault breaks, so a check that passes means something.
 | `specs/GreenThreads.tla` | The green threads of the wasm runtime (`jspi_lib.js`, `jspi_pthread.c`): one thread runs at a time, no wake is lost, and no thread wakes before it waits. |
 | `specs/Admission.tla` (with `MC_Admission.tla`) | The admission of visitors: at most `Max` run, at most one for each address, and the queue keeps its order. |
 | `specs/SendWindow.tla` | The send window of a socket (`wasm_tcp`, `tcpSend` of `worker.js`): a send that waits always has a `tcp_sent` to come, the host holds less than the window and one send, and all the sends end. A drain that does not send when the window has room breaks it. |
+| `specs/FetchPath.tla` | The HTTP of the VM through `fetch()` (`tcpConnect` of `worker.js`, `wasm_host_fetch`): the route of a connect for each port, rule of `BEAM_FETCH` and trust store, the CA of the server in the VM, and the guard of a snapshot. TLS goes to the server only when the VM trusts its CA, and another protocol than HTTP never goes there. A rule with no port that also gives another port breaks it. |
 | `BeamCom.Protocol.Instance` | An Accord contract of one instance: each instance ends, and an instance that ended has no storage. |
 
 ```sh
@@ -171,8 +176,8 @@ Node.
 the programs that it builds, on each system, and check the output and
 the exit status of each one, with a time limit. They also check the
 errors of `beam.com INPUT -o OUTPUT` (the exit status and the message).
-A check that uses the network gets one more try after 10 s when it
-fails, and the log shows both tries. Both runners do this for the HTTPS
+A check that uses the network gets two more tries when it fails, after
+10 s and after 30 s, and the log shows each try. Both runners do this for the HTTPS
 request of `tls_check`, and `tests/run.sh` also does it for Hex and Mix.
 
 ```sh
@@ -183,7 +188,7 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 |---|---|
 | `tests/programs/wasm_tests.erl` | WebAssembly: every value type at its limits, wrong arguments, all trap kinds and the recovery after a trap, stack exhaustion, memory bounds and growth, 50 processes that call one instance, missing imports, and WASI arguments, environment and exit codes. |
 | `tests/programs/wasm_check.erl`, `tests/programs/hello_go` | A WebAssembly module, and a WASI program in Go (`GOOS=wasip1`). |
-| `tests/programs/nif_check` | A NIF library in WebAssembly ([`NIFS.md`](NIFS.md)): an application with a NIF in C and its `.wasm` and AOT files in `priv/`, built with `-o`. The terms, binaries, maps, resources and their destructors, monitors and their down callbacks, `enif_send`, `enif_snprintf`, an I/O queue, exceptions, a trap and the recovery after it, `enif_schedule_nif`, a dirty NIF, an unsupported function, and 32 processes that call the library at the same time. With the AOT file and with the interpreter. |
+| `tests/programs/nif_check` | A NIF library in WebAssembly ([`NIFS.md`](NIFS.md)): an application with a NIF in C and its `.wasm` and AOT files in `priv/`, built with `-o`. The terms, binaries, maps, resources and their destructors, monitors and their down callbacks, `enif_send`, `enif_snprintf`, an I/O queue, exceptions, a trap and the recovery after it, `enif_schedule_nif`, a dirty NIF, an unsupported function, and 32 processes that call the library at the same time. The bad calls that ERTS checks only in a debug build (each one must trap), functions of other types (four results, four parameters, an `i64`), and 20 `load_nif/2` calls that ERTS refuses (on Linux, the address space must not grow by their modules). With the AOT file and with the interpreter. |
 | `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB). On Windows, which has no port programs, it checks that `peer` gives `enotsup`. |
 | `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS`. |
 | `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. |

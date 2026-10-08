@@ -249,6 +249,198 @@ defmodule BeamComTest do
     end
   end
 
+  # fresh/3: the executable of a run in the cache, and FILE.inputs. A test
+  # makes the "build" itself: it writes the executable and FILE.inputs.
+  describe "fresh_test_" do
+    setup %{tmp_dir: dir} do
+      input = Path.join(dir, "app.erl")
+      File.write!(input, "-module(app).\n")
+      exe = Path.join(dir, "beam.com")
+      File.write!(exe, "beam.com 1")
+
+      %{
+        input: String.to_charlist(input),
+        out: String.to_charlist(Path.join(dir, "app-0.com")),
+        exe: String.to_charlist(exe),
+        now: System.os_time(:second)
+      }
+    end
+
+    # The build of a run: the executable and FILE.inputs.
+    defp build(out, inputs) do
+      File.write!(out, "app")
+      :ok = :beam_com.write_inputs(out, inputs)
+    end
+
+    # Write a file, and give it a time of change (POSIX).
+    defp change(path, data, time) do
+      File.write!(path, data)
+      File.touch!(path, time)
+    end
+
+    defp keys({:beam_com_inputs_1, entries}), do: for({key, _, _, _} <- entries, do: key)
+
+    test "no executable: not fresh", %{input: input, out: out, exe: exe} do
+      assert {false, inputs} = :beam_com.fresh(out, input, exe)
+      assert [[], [{:self, exe}]] == keys(inputs)
+    end
+
+    # A file with the same size and time is not read again, when that time
+    # is 2 s or more before the time of its hash. So this change, which
+    # keeps the size and an old time, is not seen.
+    test "the same inputs: fresh, and no file is read",
+         %{input: input, out: out, exe: exe, now: now} do
+      File.touch!(input, now - 100)
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      assert :beam_com.fresh(out, input, exe)
+      change(input, "-module(xyz).\n", now - 100)
+      assert :beam_com.fresh(out, input, exe)
+    end
+
+    # The change of a script in the same second as the run, with the same
+    # size: a time with a resolution of 1 s cannot show it, the data can.
+    test "a change in the same second", %{input: input, out: out, exe: exe, now: now} do
+      File.touch!(input, now)
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      change(input, "-module(xyz).\n", now)
+      assert {false, _} = :beam_com.fresh(out, input, exe)
+    end
+
+    # In the hour that the end of DST repeats, the local time of a change
+    # can be before the local time of the build. The data shows the change.
+    test "a change with an older time", %{input: input, out: out, exe: exe, now: now} do
+      File.touch!(input, now - 100)
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      File.touch!(out, now + 3600)
+      change(input, "-module(xyz).\n", now - 3700)
+      assert {false, _} = :beam_com.fresh(out, input, exe)
+    end
+
+    # A file with a new time and the same data: no build, and FILE.inputs
+    # gets the new time. After that, the file is not read again.
+    test "a new time with the same data", %{input: input, out: out, exe: exe, now: now} do
+      File.touch!(input, now)
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      File.touch!(input, now - 100)
+      assert :beam_com.fresh(out, input, exe)
+      record = :erlang.binary_to_term(File.read!(List.to_string(out) <> ".inputs"))
+      assert {:beam_com_inputs_1, [{[], {14, time}, _, _} | _]} = record
+      assert time == now - 100
+      change(input, "-module(xyz).\n", now - 100)
+      assert :beam_com.fresh(out, input, exe)
+    end
+
+    test "a change of beam.com", %{input: input, out: out, exe: exe, tmp_dir: dir} do
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      assert :beam_com.fresh(out, input, exe)
+      File.write!(exe, "beam.com 2")
+      assert {false, _} = :beam_com.fresh(out, input, exe)
+      other = Path.join(dir, "beam-emu.com")
+      File.write!(other, "beam.com 1")
+      assert {false, _} = :beam_com.fresh(out, input, String.to_charlist(other))
+    end
+
+    test "no executable, or no FILE.inputs that reads", %{input: input, out: out, exe: exe} do
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      File.rm!(out)
+      assert {false, _} = :beam_com.fresh(out, input, exe)
+      build(out, inputs)
+      record = List.to_string(out) <> ".inputs"
+
+      for bad <- [
+            "junk",
+            :erlang.term_to_binary({:other, []}),
+            :erlang.term_to_binary({:beam_com_inputs_1, [:a | :b]})
+          ] do
+        File.write!(record, bad)
+        assert {false, _} = :beam_com.fresh(out, input, exe)
+      end
+    end
+
+    test "a directory: new files, removed files and the names left out",
+         %{tmp_dir: dir, out: out} do
+      app = Path.join(dir, "app")
+      File.mkdir_p!(Path.join(app, "src"))
+      File.write!(Path.join(app, "src/a.erl"), "-module(a).\n")
+      input = String.to_charlist(app)
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      assert [[~c"src", ~c"a.erl"]] == keys(inputs)
+      build(out, inputs)
+
+      for name <- ["_build", "deps", ".git", ".elixir_ls"] do
+        File.mkdir_p!(Path.join([app, "src", name]))
+        File.write!(Path.join([app, "src", name, "x"]), "x")
+      end
+
+      assert :beam_com.fresh(out, input, :none)
+      File.write!(Path.join(app, "src/b.erl"), "-module(b).\n")
+      assert {false, inputs} = :beam_com.fresh(out, input, :none)
+      build(out, inputs)
+      assert :beam_com.fresh(out, input, :none)
+      File.rm!(Path.join(app, "src/b.erl"))
+      assert {false, _} = :beam_com.fresh(out, input, :none)
+    end
+
+    # A file that cannot be read, as a link to no file, is an input too:
+    # its entry has the error.
+    test "a link to no file", %{tmp_dir: dir, out: out} do
+      app = Path.join(dir, "app")
+      File.mkdir_p!(app)
+      File.ln_s!(Path.join(dir, "none"), Path.join(app, "link"))
+      input = String.to_charlist(app)
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      assert {:beam_com_inputs_1, [{[~c"link"], :error, {:error, :enoent}, _}]} = inputs
+      build(out, inputs)
+      assert :beam_com.fresh(out, input, :none)
+      File.write!(Path.join(dir, "none"), "x")
+      assert {false, _} = :beam_com.fresh(out, input, :none)
+    end
+
+    # The open of a FIFO waits for a writer, so fresh/3 does not read a
+    # file that is not a regular file. Its type is its entry.
+    @tag skip: if(System.find_executable("mkfifo"), do: false, else: "no mkfifo")
+    test "a FIFO in a directory", %{tmp_dir: dir, out: out} do
+      app = Path.join(dir, "app")
+      File.mkdir_p!(app)
+      {_, 0} = System.cmd("mkfifo", [Path.join(app, "fifo")])
+      input = String.to_charlist(app)
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      assert {:beam_com_inputs_1, [{[~c"fifo"], :other, :other, _}]} = inputs
+      build(out, inputs)
+      assert :beam_com.fresh(out, input, :none)
+    end
+
+    # The build writes rebar.lock when it resolves the versions of the Hex
+    # packages. after_build/2 takes the entries of the lock files from
+    # after the build, so the next run does not build again.
+    test "after_build/2: the lock files of the build", %{tmp_dir: dir, out: out} do
+      app = Path.join(dir, "app")
+      File.mkdir_p!(app)
+      File.write!(Path.join(app, "rebar.config"), "{deps, [jsx]}.\n")
+      input = String.to_charlist(app)
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      File.write!(Path.join(app, "rebar.lock"), "[].\n")
+      build(out, inputs)
+      assert {false, _} = :beam_com.fresh(out, input, :none)
+      build(out, :beam_com.after_build(inputs, input))
+      assert [[~c"rebar.config"], [~c"rebar.lock"]] == keys(:beam_com.after_build(inputs, input))
+      assert :beam_com.fresh(out, input, :none)
+      File.write!(Path.join(app, "rebar.lock"), "[{x}].\n")
+      assert {false, _} = :beam_com.fresh(out, input, :none)
+    end
+
+    test "after_build/2 of a file", %{input: input, exe: exe, out: out} do
+      {false, inputs} = :beam_com.fresh(out, input, exe)
+      assert inputs == :beam_com.after_build(inputs, input)
+    end
+  end
+
   test "is_project_test_", %{tmp_dir: tmp_dir} do
     dir = Path.join(tmp_dir, "beam_com_is_project")
     File.mkdir!(dir)
@@ -405,6 +597,51 @@ defmodule BeamComTest do
 
       assert status == 1
       assert out == "beam.com: usage: beam.com --version\n"
+    end
+
+    # A run with a fresh executable in the cache does not build: it gives
+    # the path of the executable to beam_com.c in BEAM_COM_RUN_FILE. (A
+    # build cannot run here: the test node has no /zip.)
+    test "a run with a fresh executable in the cache", %{tmp_dir: dir} do
+      input = Path.join(dir, "app.erl")
+      File.write!(input, "-module(app).\n")
+      cache = Path.join(dir, "cache")
+      run = Path.join(dir, "run-file")
+      env = [BEAM_COM_CACHE: cache, BEAM_COM_RUN_FILE: run]
+      System.put_env("BEAM_COM_CACHE", cache)
+
+      out =
+        try do
+          :beam_com.run_file(String.to_charlist(input), %{apps: []})
+        after
+          System.delete_env("BEAM_COM_CACHE")
+        end
+
+      File.mkdir_p!(Path.dirname(List.to_string(out)))
+      File.write!(out, "app")
+
+      # The peer node writes the inputs with its own beam.com: in CI, the
+      # tests run on beam.com, and beam.com is an input of the cache.
+      setup = fn peer ->
+        self = :peer.call(peer, :beam_com, :self_file, [])
+
+        {false, inputs} =
+          :peer.call(peer, :beam_com, :fresh, [out, String.to_charlist(input), self])
+
+        :ok = :peer.call(peer, :beam_com, :write_inputs, [out, inputs])
+      end
+
+      {status, ""} =
+        BeamCom.PeerNode.run({:beam_com, :main, []},
+          argv: ["app.erl"],
+          env: env,
+          cd: dir,
+          setup: setup
+        )
+
+      assert status == 0
+      assert File.read!(run) == List.to_string(out)
+      assert File.read!(out) == "app"
     end
 
     test "--target with no -o: the status 1", %{tmp_dir: dir} do

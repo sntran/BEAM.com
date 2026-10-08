@@ -205,6 +205,54 @@ defmodule WasmHostHttpTest do
     end
   end
 
+  describe "the bytes above 0x7F of a value (obs-text)" do
+    test "a head with them parses, and its value keeps its bytes" do
+      assert {:ok, %{path: <<"/caf", 0xE9>>, headers: [{"x-name", <<"caf", 0xE9>>}]}, ""} =
+               :wasm_host_http.head(
+                 <<"GET /caf", 0xE9, " HTTP/1.1\r\nX-Name: caf", 0xE9, "\r\n\r\n">>
+               )
+    end
+
+    test "the tokens of the framing and of the connection" do
+      assert {:error, :bad_encoding} ==
+               :wasm_host_http.framing([{"transfer-encoding", <<"Chunked", 0xE9>>}])
+
+      assert :chunked == :wasm_host_http.framing([{"transfer-encoding", " Chunked\t"}])
+      assert {:error, :bad_length} == :wasm_host_http.framing([{"content-length", <<"2", 0xE9>>}])
+      refute :wasm_host_http.keep_alive({1, 1}, [{"connection", <<"x", 0xE9, ", close">>}])
+      refute :wasm_host_http.continue([{"expect", <<"100-continue", 0xE9>>}])
+
+      assert [{"x-a", <<0xE9>>}] ==
+               :wasm_host_http.request_headers([
+                 {"connection", <<"X-B, ", 0xE9>>},
+                 {"x-b", "1"},
+                 {"x-a", <<0xE9>>}
+               ])
+    end
+
+    test "a value of the host with them goes to the head as it is" do
+      assert <<"HTTP/1.1 200 OK\r\nx-a: caf", 0xE9, "\r\nconnection: close\r\n\r\n">> ==
+               IO.iodata_to_binary(
+                 :wasm_host_http.response(200, "", [{"X-A", <<"caf", 0xE9>>}], %{
+                   chunked: false,
+                   close: true
+                 })
+               )
+    end
+  end
+
+  test "response/4 with length: a content-length, and no chunked coding" do
+    assert "HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\ncontent-length: 4\r\n" <>
+             "connection: close\r\n\r\n" ==
+             IO.iodata_to_binary(
+               :wasm_host_http.response(502, "", [{"content-type", "text/plain"}], %{
+                 chunked: false,
+                 close: true,
+                 length: 4
+               })
+             )
+  end
+
   test "chunk/1 and last_chunk/0" do
     assert "5\r\nhello\r\n" == IO.iodata_to_binary(:wasm_host_http.chunk("hello"))
     assert [] == :wasm_host_http.chunk("")

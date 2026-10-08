@@ -300,14 +300,15 @@ export function allocFlags(flags) {
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
 // hosts, as "*:443"). The host resolves a name, so the VM cannot reach
 // another address through it. With no BEAM_CONNECT, the VM can connect to
-// all hosts. BEAM_FETCH has the same rules.
-export function connectAllowed(list, host, port) {
+// all hosts. BEAM_FETCH has the same rules. named: only a rule that names
+// the port counts (BEAM_FETCH for a port other than 80 and 443).
+export function connectAllowed(list, host, port, named = false) {
   if (list === undefined) return true;
   const name = String(host).toLowerCase().replace(/\.$/, '');
   return list.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean).some((rule) => {
     const i = rule.lastIndexOf(':');
     const [pattern, p] = i > 0 && !rule.includes(']') ? [rule.slice(0, i), rule.slice(i + 1)] : [rule, undefined];
-    if (p !== undefined && Number(p) !== port) return false;
+    if (p === undefined ? named : Number(p) !== port) return false;
     if (pattern === '*') return true;
     return pattern.startsWith('*.') ? name.endsWith(pattern.slice(1)) : name === pattern;
   });
@@ -1440,13 +1441,23 @@ export class Vm {
     this.waitUntil?.(put);
   }
 
+  // The VM has I/O of the host that a snapshot cannot hold
+  // (NoSnapshotInFlight of specs/FetchPath.tla): a SQL call, a socket, a
+  // fetch() of the fetch path, or an operation of WasmHost in flight. A
+  // module or an instance of WasmHost is in the host only, as a socket is:
+  // a restored VM would have its handle, and the new host would not.
+  inFlight() {
+    return this.sqlPending > 0 || this.tcps.size > 0 || this.fetchPending > 0 || this.wasmPending > 0
+      || (this.wasm?.modules.size ?? 0) + (this.wasm?.instances.size ?? 0) > 0;
+  }
+
   // All the threads return (erts_wasm_hibernate), the memory is copied, and
   // the threads go on: about 1 ms of the VM, and the time of the copy.
   // 'busy': not a quiet moment (I/O of the host); null: no snapshot.
   async snapshot(bootPoint) {
     const x = this.exports;
     const tick = () => new Promise((r) => setTimeout(r, 1));
-    const busy = () => this.sqlPending > 0 || this.tcps.size > 0 || this.fetchPending > 0;
+    const busy = () => this.inFlight();
     // Data in a pipe (an event of the host that Erlang did not take yet,
     // or a wake-up of ERTS) would not be in the snapshot either.
     const unread = () => this.beam.FS.streams.some((st) => st?.node?.pipe?.buckets.some((b) => b.offset > b.roffset));
@@ -1614,7 +1625,7 @@ export class Vm {
           try { c.ws.close(1011, 'the app stopped'); } catch {}
         } else if (!c.done) {
           c.done = true;
-          c.writer?.abort(new Error('the app stopped')).catch(() => {});
+          this.bridgeFinish(c, (w) => w.abort(new Error('the app stopped')));
         }
         this.bridgeRelease(c);
       }, c.h);
@@ -1816,9 +1827,10 @@ export class Vm {
   }
 
   // One operation of wasm_host_wasm (WasmHost). It keeps the request h open
-  // until the answer, as a D1 call does.
+  // until the answer, as a D1 call does, and a snapshot waits for it.
   async wasmRequest(msg, body, h) {
     if (h) h.sockets++;
+    this.wasmPending = (this.wasmPending ?? 0) + 1;
     let reply;
     try {
       this.wasm ??= new WasmHost();
@@ -1826,6 +1838,7 @@ export class Vm {
     } catch (e) {
       reply = { error: String(e?.message ?? e) };
     } finally {
+      this.wasmPending--;
       if (h) { h.sockets--; h.wake?.(); }
     }
     this.event({ t: 'wasm_reply', id: msg.id }, new TextEncoder().encode(JSON.stringify(reply)));
@@ -1906,8 +1919,16 @@ export class Vm {
     }
     const body = request.method === 'GET' || request.method === 'HEAD' || upgrade ? null : request.body;
     const declared = request.headers.get('content-length');
+    // The bytes of the body that the app gets (null: chunked). The host
+    // sends the app at most these bytes, so a declared length that is not
+    // a number of bytes is a bad request.
+    const length = body && declared !== null ? Number(declared) : null;
+    if (length !== null && !(/^\d+$/.test(declared) && Number.isSafeInteger(length))) {
+      finished();
+      return this.badLength(declared);
+    }
     const maxBody = limit(this.env.BEAM_MAX_BODY, 0);
-    if (body && maxBody && declared !== null && Number(declared) > maxBody) {
+    if (body && maxBody && length !== null && length > maxBody) {
       finished();
       return this.tooLarge(maxBody);
     }
@@ -1958,12 +1979,16 @@ export class Vm {
     } else {
       headers.set('connection', 'close');
     }
-    // A body of no declared length goes to the app as chunked.
-    if (body && declared !== null) headers.set('content-length', declared);
+    // A body of no declared length goes to the app as chunked. A request
+    // with no body gets no content-length of the client.
+    if (length !== null) headers.set('content-length', String(length));
     else if (body) {
       headers.delete('content-length');
       headers.set('transfer-encoding', 'chunked');
-    } else if (!upgrade && !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', '0');
+    } else {
+      headers.delete('content-length');
+      if (!upgrade && !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', '0');
+    }
     let head = `${request.method} ${url.pathname}${url.search} HTTP/1.1\r\n`;
     for (const [k, v] of headers) head += `${k}: ${v}\r\n`;
     // The values of Headers are bytes (one character for each byte).
@@ -1994,13 +2019,18 @@ export class Vm {
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body || upgrade, sent: true });
       // With a body, the head goes in the event of the first part of the
       // body (bridgeUpload): a small body is one event, as before the parts.
-      if (body) c.upload = this.bridgeUpload(c, body, declared === null, maxBody, bytes);
+      if (body) c.upload = this.bridgeUpload(c, body, length, maxBody, bytes);
       else this.bridgeSend(c, bytes);
     });
     // A response before the end of the body: the rest of the body goes to
     // the app while it reads, else bridgeUpload reads and drops it (see
-    // drain). The response waits for that, DRAIN_TIME ms at most.
-    if (c.upload) await within(c.upload, DRAIN_TIME);
+    // drain). A response with a body stream goes at once, and the end of
+    // its body waits for the upload (bridgeFinish): the client reads the
+    // response while the app reads the request. A response with no stream
+    // (an answer of the host, or HEAD, 204, 304 and a length of 0) ends
+    // when it goes, so it waits for the upload here. The upload ends
+    // within the bounds of drain after the end of the connection.
+    if (c.upload && !c.stream) await c.upload;
     return response;
   }
 
@@ -2020,8 +2050,12 @@ export class Vm {
   // has those bytes, UPLOAD_LARGE at most: the app holds them anyway, and
   // each event costs a turn of the VM. The head of the request goes with
   // the bytes of the first read of the client, with no wait for
-  // UPLOAD_PART bytes.
-  async bridgeUpload(c, body, chunked, max, head) {
+  // UPLOAD_PART bytes. length: the declared length of the body (null: the
+  // body goes as chunked). A body with more bytes, or with fewer bytes, is
+  // a bad request: the app gets at most length bytes, so the rest of a
+  // stream cannot be a second request on the connection of the app.
+  async bridgeUpload(c, body, length, max, head) {
+    const chunked = length === null;
     // workerd has readAtLeast. The option min of the standard BYOB read is
     // not safe: when the stream closes with fewer bytes than min, the read
     // errors the stream (Node.js 26, Chromium). So the other hosts use the
@@ -2056,17 +2090,34 @@ export class Vm {
     // A client that sends no body yet: the head goes alone after HEAD_WAIT
     // ms, so the app sees the request (and its own time limits run).
     const alone = setTimeout(() => { if (head && !c.done && !this.dead) out(new Uint8Array(0)); }, HEAD_WAIT);
+    // The end of the connection (bridgeRoom calls c.ended) ends the wait
+    // for a read of a client that sends no more bytes: then drain reads
+    // with its bounds, from that read (pending). Each wait has its own
+    // promise, so a long upload keeps no reaction for each read.
+    let pending = null;
     try {
       for (;;) {
         // A read can end the stream with its last bytes (done and a value).
-        const { value, done } = await read(head ? 1 : UPLOAD_PART);
-        if (c.done || this.dead) break;
-        if (value?.length) {
-          total += value.length;
-          if (max && total > max) {
-            this.bridgeRefuse(c, this.tooLarge(max));
-            break;
-          }
+        const next = read(head ? 1 : UPLOAD_PART);
+        const r = c.done || this.dead ? null : await new Promise((resolve, reject) => {
+          c.ended = () => resolve(null);
+          next.then(resolve, reject);
+        });
+        c.ended = null;
+        if (c.done || this.dead) {
+          pending = next;
+          break;
+        }
+        const { value, done } = r;
+        if (value?.length) total += value.length;
+        // No byte of a read past the declared length goes to the app.
+        if (!chunked && (total > length || (done && total < length))) {
+          this.bridgeRefuse(c, this.badLength(length));
+          break;
+        }
+        if (max && total > max) {
+          this.bridgeRefuse(c, this.tooLarge(max));
+          break;
         }
         // A chunk of the client can be large (Deno): it goes in pieces of
         // UPLOAD_READ bytes or less, so the window stays small.
@@ -2094,7 +2145,13 @@ export class Vm {
       clearTimeout(alone);
     }
     // The app ended the connection, or the body is above BEAM_MAX_BODY.
-    await drain(() => read(UPLOAD_PART), () => reader.cancel());
+    // this.drainLimits replaces the bounds of drain (a test).
+    const rest = () => {
+      const p = pending ?? read(UPLOAD_PART);
+      pending = null;
+      return p;
+    };
+    await drain(rest, () => reader.cancel(), this.drainLimits);
   }
 
   // The time limit of the response of c: BEAM_REQUEST_TIMEOUT, in ms ms.
@@ -2112,11 +2169,13 @@ export class Vm {
     c.inbound?.flush();
   }
 
-  // The upload of c waits no more (more room, or the end of c).
+  // The upload of c waits no more (more room, or the end of c). At the end
+  // of c, it also waits no more for a read of the client (c.ended).
   bridgeRoom(c) {
     const room = c.room;
     c.room = null;
     room?.();
+    if (c.done || this.dead) c.ended?.();
   }
 
   // The answer of the host in place of the app (when the app has not
@@ -2135,6 +2194,15 @@ export class Vm {
   tooLarge(max) {
     this.log(`beam: a request body above ${max} bytes: 413`);
     return new Response(`The body is larger than ${max} bytes.\n`, { status: 413, headers: { 'content-type': 'text/plain' } });
+  }
+
+  // The answer to a body that does not have the bytes of its
+  // content-length (a Request of a host adapter, for example), or to a
+  // content-length that is not a number of bytes.
+  badLength(declared) {
+    this.log(`beam: a request body that does not have its content-length (${String(declared).slice(0, 32)}): 400`);
+    return new Response('The body does not have the length of its content-length.\n',
+      { status: 400, headers: { 'content-type': 'text/plain' } });
   }
 
   // Bytes from the HTTP server of the app to the connection c of bridge().
@@ -2164,7 +2232,7 @@ export class Vm {
       clearTimeout(c.timer);
       if (status === 101) {
         c.status = 101;
-        return this.bridgeUpgrade(c);
+        return this.bridgeUpgrade(c, headers);
       }
       if (c.upgrade && status === 403) {
         console.log(`beam: the app refused the WebSocket of ${c.path} (403) from the origin ${c.origin}. ` +
@@ -2182,7 +2250,9 @@ export class Vm {
       const encodeBody = headers.has('content-encoding') ? 'manual' : 'automatic';
       // The Response first: a status that it refuses ends the connection
       // with 502 (bridgeGuard), and the client gets an answer.
-      const response = new Response(c.length === 0 ? null : readable, { status, headers, encodeBody });
+      const stream = c.length !== 0;
+      const response = new Response(stream ? readable : null, { status, headers, encodeBody });
+      c.stream = stream;
       c.status = status;
       c.writer = writable.getWriter();
       // The client went away (or the stream failed): the app gets the end
@@ -2263,8 +2333,7 @@ export class Vm {
       } else if (!c.status) {
         this.bridgeRefuse(c, new Response('bad gateway\n', { status: 502 }));
       } else {
-        c.writer?.abort(e).catch(() => {});
-        c.writer = null;
+        this.bridgeFinish(c, (w) => w.abort(e));
         this.bridgeDone(c);
       }
     }
@@ -2274,16 +2343,29 @@ export class Vm {
   // fails, and the app gets the end of the connection.
   bridgeBad(c) {
     console.log(`beam: a bad chunked body from the app for ${c.path}: the response stops`);
-    c.writer?.abort(new Error('a bad chunked body from the app')).catch(() => {});
-    c.writer = null;
+    this.bridgeFinish(c, (w) => w.abort(new Error('a bad chunked body from the app')));
     this.bridgeDone(c);
+  }
+
+  // The end of the body of the response of c (once): end(writer) closes
+  // or aborts the stream, after the upload of c. workerd sends a response
+  // only at the end of its body, and it cannot read the request body after
+  // that. So the host can read the rest of the request body until then
+  // (drain), and the next request on the connection of the client works.
+  bridgeFinish(c, end) {
+    const writer = c.writer;
+    if (!writer) return;
+    c.writer = null;
+    const run = () => end(writer).catch(() => {});
+    if (c.upload) c.upload.then(run, run);
+    else run();
   }
 
   bridgeDone(c) {
     if (c.done) return;
     c.done = true;
     this.bridgeRoom(c);
-    c.writer?.close().catch(() => {});
+    this.bridgeFinish(c, (w) => w.close());
     this.conns.delete(c);
     this.tcps.delete(c.id);
     this.event({ t: 'tcp_closed', id: c.id });
@@ -2331,8 +2413,13 @@ export class Vm {
     return new Response('The app did not answer in time.\n', { status: 504, headers: { 'content-type': 'text/plain' } });
   }
 
-  // A WebSocket: the client end to the browser, frames to the app.
-  bridgeUpgrade(c) {
+  // A WebSocket: the client end to the browser, frames to the app. The 101
+  // of the client has the headers of the 101 of the app (the subprotocol
+  // of sec-websocket-protocol, a set-cookie), without the headers of the
+  // handshake and of the connection: the runtime makes its own.
+  bridgeUpgrade(c, appHeaders = new Headers()) {
+    const headers = new Headers();
+    for (const [k, v] of appHeaders) if (!UPGRADE_OWN.has(k)) headers.append(k, v);
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     server.binaryType = 'arraybuffer';
@@ -2355,7 +2442,7 @@ export class Vm {
       const code = wireCode(e.code);
       c.inbound.push(frame(8, new Uint8Array([code >> 8, code & 255])), true);
     });
-    c.resolve(new Response(null, { status: 101, webSocket: client }));
+    c.resolve(new Response(null, { status: 101, webSocket: client, headers }));
     c.finished();
     this.bridgeFrames(c);
   }
@@ -2405,6 +2492,9 @@ export class Vm {
     const counted = { counted: true };
     this.sockets++;
     const t = { send: (b) => { try { server.send(b); } catch {} }, close: () => { this.socketGone(counted); try { server.close(); } catch {} }, h };
+    // A WebSocket has no end of one direction: a shutdown of write closes
+    // it (docs/WORKERS.md).
+    t.shutdown = () => t.close();
     const win = { sent: 0, read: 0 };
     const inbound = new Inbound(win, (b) => this.tcpIn(id, win, b), () => {
       console.log(`beam: the app reads the connection ${id} to port ${port} too slowly: it closes (1008)`);
@@ -2443,6 +2533,7 @@ export class Vm {
       const t = {
         send: (b) => new Promise((resolve) => socket.write(b, () => resolve())),
         close: () => socket.end(() => socket.destroy()),
+        shutdown: () => socket.end(),
         h,
       };
       // The data of the peer goes while less than UPLOAD_WINDOW bytes are
@@ -2489,14 +2580,24 @@ export class Vm {
     if (h) { h.sockets--; h.wake?.(); }
   }
 
-  // BEAM_FETCH: the hosts and ports whose connect goes to fetch() with no
-  // connect(), with the rules of BEAM_CONNECT. An empty BEAM_FETCH: none.
-  // With no BEAM_FETCH: port 80, and port 443 when the trust store of the
-  // VM holds the CA of wasm_host_fetch (a build with --cacerts).
+  // The route of a connect (Route of specs/FetchPath.tla): true when it
+  // goes to fetch() with no connect(). The host sees the port, not the
+  // protocol:
+  // - Port 80 is HTTP.
+  // - Port 443 is HTTPS. It goes to fetch() only when the trust store of the
+  //   VM holds the CA of wasm_host_fetch (a build with --cacerts), so that
+  //   the program trusts the server of the VM (TlsOnlyWithTrust).
+  // - Another port goes to fetch() only when a rule of BEAM_FETCH names it
+  //   ("host:8080", "*:8080"): a protocol that is not HTTP (a database,
+  //   SMTP) must not go to the server of the VM (TcpNeverFetch).
+  // BEAM_FETCH has the rules of BEAM_CONNECT. A rule with no port ("host",
+  // "*.domain", "*") gives ports 80 and 443. With no BEAM_FETCH: ports 80
+  // and 443 of all hosts. An empty BEAM_FETCH: none.
   fetchFirst(host, port) {
     const list = this.env.BEAM_FETCH;
-    if (list !== undefined) return connectAllowed(list, host, port);
-    return port === 80 || (port === 443 && this.listeners.has('fetch-tls'));
+    if (port === 443 && !this.listeners.has('fetch-tls')) return false;
+    if (list === undefined) return port === 80 || port === 443;
+    return connectAllowed(list, host, port, port !== 80 && port !== 443);
   }
 
   // The name is a host of Cloudflare: one of its addresses is in the ranges
@@ -2549,8 +2650,11 @@ export class Vm {
     const toConn = relay((b) => this.event({ t: 'tcp_data', id: conn }, b));
     const toId = relay((b) => this.event({ t: 'tcp_data', id }, b));
     pairEnd = () => { toConn.end(); toId.end(); };
-    this.tcps.set(id, { send: toConn.send, close: () => end(conn), ack: toId.read, h });
-    this.tcps.set(conn, { send: toId.send, close: () => end(id), ack: toConn.read, h });
+    // A shutdown of write of one socket: the other one gets the end of the
+    // data (tcp_closed with half), after the data, and can still send.
+    const half = (other) => this.event({ t: 'tcp_closed', id: other, half: true });
+    this.tcps.set(id, { send: toConn.send, close: () => end(conn), shutdown: () => half(conn), ack: toId.read, h });
+    this.tcps.set(conn, { send: toId.send, close: () => end(id), shutdown: () => half(id), ack: toConn.read, h });
     this.event({ t: 'tcp_open', id, ack: true, sent: true });
     this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port, ack: true, sent: true });
     await ended;
@@ -2645,6 +2749,33 @@ export class Vm {
     if (typeof r?.then === 'function') r.then(done, done);
   }
 
+  // A shutdown of write of the socket t of the VM (tcp_shutdown): a
+  // connect() socket ends its writes (end() of node:net closes the writer
+  // of cloudflare:sockets), and a socket of the fetch path gives the end to
+  // the other socket. A connection of bridge() ends its response, and the
+  // rest of the request body still goes to the app (bridgeHalf).
+  tcpShutdown(id, t) {
+    if (t.shutdown) return t.shutdown();
+    for (const c of this.conns) {
+      if (c.id === id) return this.bridgeGuard(c, () => this.bridgeHalf(c));
+    }
+  }
+
+  // The app ended its writes on the connection c of bridge(): the response
+  // ends, as with the end of a body that has no length. The request body
+  // still goes to the app; then the connection ends, as a client ends it
+  // after the response. With no head of a response, or for a WebSocket,
+  // it is the end of the connection (bridgeEnd).
+  bridgeHalf(c) {
+    if (!c.status || c.ws) return this.bridgeEnd(c);
+    clearTimeout(c.timer);
+    c.writer?.close().catch(() => {});
+    c.writer = null;
+    const done = () => this.bridgeDone(c);
+    if (c.upload) c.upload.then(done, done);
+    else done();
+  }
+
   // The end of a TCP socket: to Erlang, and the end of its peer too.
   tcpClosed(id) {
     const t = this.tcps.get(id);
@@ -2726,6 +2857,13 @@ export class Vm {
         if (t) this.run(() => t.close(), t.h);
         break;
       }
+      // gen_tcp:shutdown(S, write) of wasm_tcp: the peer gets the end of
+      // the data, and the socket still reads.
+      case 'tcp_shutdown': {
+        const t = this.tcps.get(msg.id);
+        if (t) this.run(() => this.tcpShutdown(msg.id, t), t.h);
+        break;
+      }
       // wasm_tcp:splice/2: the data of each socket goes to the other one,
       // no longer through Erlang.
       case 'tcp_splice': {
@@ -2804,6 +2942,12 @@ export function staticResponse(statics, request) {
 // The result of a wait that passed its time limit.
 const LATE = Symbol('late');
 
+// The headers of the 101 of the app that the client does not get
+// (bridgeUpgrade): the runtime makes the handshake and the connection of
+// the WebSocket of the client, with its own compression.
+const UPGRADE_OWN = new Set(['connection', 'upgrade', 'sec-websocket-accept', 'sec-websocket-extensions',
+  'content-length', 'transfer-encoding']);
+
 // A request body (bridgeUpload): the bytes that can be unread in the VM,
 // the smallest part of an event (except the last one), and the size of a
 // read in workerd and of the largest piece of a client chunk. A client chunk can be 2 KB (workerd), and each event
@@ -2816,20 +2960,21 @@ const UPLOAD_LARGE = 1024 * 1024;
 const HEAD_WAIT = 20;
 const UPLOAD_READ = 64 * 1024;
 // The rest of a request body that the app did not read (drain): the
-// bytes that the host reads at most before the response goes, the ms with
-// no new bytes, and the ms in all.
+// bytes that the host reads at most before the end of the response, the
+// ms with no new bytes, and the ms in all.
 const DRAIN_BYTES = 64 * 1024 * 1024;
 const DRAIN_IDLE = 5000;
 const DRAIN_TIME = 60000;
 
-// The rest of a request body, read and dropped before the response goes,
-// when the app answered before it read the whole body (a 413, for
-// example). workerd cannot read a request body after the response has
-// gone, and it then closes the connection with the bytes that were not
-// read. wrangler dev uses that connection again, and its next request
-// fails with 500. The read stops after DRAIN_BYTES, after DRAIN_IDLE ms
-// with no bytes, or after DRAIN_TIME ms, and then cancel() ends the body.
-// read() gives { value, done }. limits replaces the bounds (a test).
+// The rest of a request body, read and dropped before the end of the
+// response, when the app answered before it read the whole body (a 413,
+// for example). workerd sends a response at the end of its body, and it
+// cannot read the request body after that: it then closes the connection
+// with the bytes that were not read. wrangler dev uses that connection
+// again, and its next request fails with 500. The read stops after
+// DRAIN_BYTES, after DRAIN_IDLE ms with no bytes, or after DRAIN_TIME ms,
+// and then cancel() ends the body. read() gives { value, done }. limits
+// replaces the bounds (a test).
 export async function drain(read, cancel, { bytes = DRAIN_BYTES, idle = DRAIN_IDLE, time = DRAIN_TIME } = {}) {
   const end = Date.now() + time;
   let n = 0;

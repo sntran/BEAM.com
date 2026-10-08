@@ -188,9 +188,74 @@ defmodule BeamComHexTest do
 
     test "read_lock/1 of the file", %{lock: file} do
       assert %{
-               a: %{pkg: "a", vsn: ~c"1.1.0", inner: "CC", outer: "DD"},
-               b: %{pkg: "b_pkg", vsn: ~c"0.2.0", inner: "AA", outer: "BB"}
+               a: %{pkg: "a", vsn: ~c"1.1.0", level: 0, inner: "CC", outer: "DD"},
+               b: %{pkg: "b_pkg", vsn: ~c"0.2.0", level: 1, inner: "AA", outer: "BB"}
              } == :beam_com_hex.read_lock(file)
+    end
+
+    # The format 1.0.0 of rebar3 has no checksums, and the format 1.1.0
+    # has only pkg_hash.
+    test "read_lock/1 of the older formats of rebar.lock", %{dir: dir} do
+      file = :filename.join(dir, ~c"old.lock")
+
+      :ok =
+        :file.write_file(
+          file,
+          "[{<<\"a\">>,{pkg,<<\"a\">>,<<\"1.1.0\">>},0},{<<\"b\">>,{pkg,<<\"b_pkg\">>,<<\"0.2.0\">>},1}].\n"
+        )
+
+      assert %{
+               a: %{pkg: "a", vsn: ~c"1.1.0", level: 0, inner: :undefined, outer: :undefined},
+               b: %{pkg: "b_pkg", vsn: ~c"0.2.0", level: 1, inner: :undefined, outer: :undefined}
+             } == :beam_com_hex.read_lock(file)
+
+      :ok =
+        :file.write_file(
+          file,
+          "{\"1.1.0\",[{<<\"a\">>,{pkg,<<\"a\">>,<<\"1.1.0\">>},0}]}.\n[{pkg_hash,[{<<\"a\">>,<<\"CC\">>}]}].\n"
+        )
+
+      assert %{a: %{pkg: "a", vsn: ~c"1.1.0", level: 0, inner: "CC", outer: :undefined}} ==
+               :beam_com_hex.read_lock(file)
+    end
+
+    # Hex reads an element that is not there as nil (Hex.Utils.lock/1).
+    test "read_lock/2 of the older entries of mix.lock", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      :ok =
+        :file.write_file(file, """
+        %{
+          "a": {:hex, :a, "1.0.0"},
+          "b": {:hex, :b, "1.0.0", "BB"},
+          "c": {:hex, :c, "1.0.0", "CC", [:mix], []},
+          "d": {:hex, :d_pkg, "1.0.0", "DD", [:mix], [], "hexpm"},
+          "e": {:hex, :e, "1.0.0", "EE", [:mix], [], "hexpm", nil},
+        }
+        """)
+
+      none = :undefined
+
+      assert %{
+               a: %{pkg: "a", vsn: ~c"1.0.0", inner: none, outer: none},
+               b: %{pkg: "b", vsn: ~c"1.0.0", inner: "BB", outer: none},
+               c: %{pkg: "c", vsn: ~c"1.0.0", inner: "CC", outer: none},
+               d: %{pkg: "d_pkg", vsn: ~c"1.0.0", inner: "DD", outer: none},
+               e: %{pkg: "e", vsn: ~c"1.0.0", inner: "EE", outer: none}
+             } == :beam_com_hex.read_lock(:mix, file)
+    end
+
+    test "read_lock/2: a bad checksum and an entry that is not Hex", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+      :ok = :file.write_file(file, ~s(%{"a": {:hex, :a, "1.0.0", 12}}\n))
+
+      assert {:error, ~c"mix.lock: ~ts has a bad checksum: ~tp", [:a, 12]} ==
+               catch_throw(:beam_com_hex.read_lock(:mix, file))
+
+      :ok = :file.write_file(file, ~s(%{"a": {:git, "https://example.com/a.git", "abc", []}}\n))
+
+      assert {:error, ~c"mix.lock: ~ts is not a Hex package (only Hex packages are supported)",
+              [:a]} == catch_throw(:beam_com_hex.read_lock(:mix, file))
     end
 
     test "the format of rebar3", %{lock: file} do
@@ -335,6 +400,43 @@ defmodule BeamComHexTest do
 
       assert {:error, ~c"~ts: the package has a file that is not a regular file: ~ts",
               [out, ~c"evil"]} ==
+               catch_throw(:beam_com_hex.unpack(bad, :undefined, out))
+    end
+
+    # The limit is the size of contents.tar.gz without compression.
+    test "unpack/4: the limit of the contents", %{tar: tar, out: out} do
+      {:ok, files} = :erl_tar.extract({:binary, tar}, [:memory])
+      {_, contents} = :lists.keyfind(~c"contents.tar.gz", 1, files)
+      size = byte_size(:zlib.gunzip(contents))
+      too_large = ~c"~ts: contents.tar.gz has more than ~b bytes without compression"
+
+      assert {:error, too_large, [out, size - 1]} ==
+               catch_throw(:beam_com_hex.unpack(tar, :undefined, out, size - 1))
+
+      refute :filelib.is_file(out)
+      assert %{inner: _} = :beam_com_hex.unpack(tar, :undefined, out, size)
+      assert :filelib.is_regular(:filename.join([out, ~c"src", ~c"u.erl"]))
+    end
+
+    # 300 MiB of zeros are about 300 KB with gzip. unpack/3 refuses them
+    # (the limit is 256 MiB) before it writes a file, and it keeps no
+    # copy of them in memory.
+    test "unpack/3: a small contents.tar.gz with too much data", %{out: out} do
+      tar = HexFixture.hex_tar("{<<\"name\">>, <<\"u\">>}.\n", zeros_tar_gz(300 * 1024 * 1024))
+      memory = :erlang.memory(:total)
+
+      assert {:error, ~c"~ts: contents.tar.gz has more than ~b bytes without compression",
+              [out, 256 * 1024 * 1024]} ==
+               catch_throw(:beam_com_hex.unpack(tar, :undefined, out))
+
+      assert :erlang.memory(:total) - memory < 64 * 1024 * 1024
+      refute :filelib.is_file(out)
+    end
+
+    test "contents.tar.gz that is not gzip", %{out: out} do
+      bad = HexFixture.hex_tar("{<<\"name\">>, <<\"u\">>}.\n", "not gzip")
+
+      assert {:error, ~c"~ts: not a Hex tarball (contents)", [out]} ==
                catch_throw(:beam_com_hex.unpack(bad, :undefined, out))
     end
 
@@ -552,7 +654,8 @@ defmodule BeamComHexTest do
 
     setup %{tmp_dir: tmp_dir} do
       dir = String.to_charlist(tmp_dir)
-      {pid, port} = HexFixture.serve(fetch_routes())
+      routes = fetch_routes()
+      {pid, port} = HexFixture.serve(routes)
       url = "http://127.0.0.1:" <> Integer.to_string(port)
 
       System.put_env(%{
@@ -576,7 +679,7 @@ defmodule BeamComHexTest do
         )
 
       lib = fn n -> :filename.join(dir, ~c"lib" ++ Integer.to_charlist(n)) end
-      %{dir: dir, pid: pid, app: app, lib: lib}
+      %{dir: dir, pid: pid, app: app, lib: lib, routes: routes, url: url}
     end
 
     # The fetch to lib1 writes rebar.lock and fills the cache. ExUnit runs
@@ -629,6 +732,320 @@ defmodule BeamComHexTest do
 
       assert {:error, ~c"~ts: not found", [_]} =
                catch_throw(fetch_quiet(no_app, lib.(4)))
+    end
+
+    # rebar.lock of the format 1.0.0 has the versions and no checksum. The
+    # API gives the checksum of each release, the tarballs are checked
+    # with it, and rebar.lock gets the checksums and keeps its levels.
+    test "rebar.lock with no checksums", %{app: app, lib: lib, pid: pid, routes: routes} do
+      lock = :filename.join(app, ~c"rebar.lock")
+
+      :ok =
+        :file.write_file(
+          lock,
+          "[{<<\"alpha\">>,{pkg,<<\"alpha\">>,<<\"1.1.0\">>},0},{<<\"beta\">>,{pkg,<<\"beta\">>,<<\"0.2.0\">>},1}].\n"
+        )
+
+      {got, output} = with_io(fn -> :beam_com_hex.fetch(app, lib.(1)) end)
+      assert [:beta, :alpha] == for(%{name: n} <- got, do: n)
+      assert output =~ "wrote " <> List.to_string(lock)
+      requests = HexFixture.requests(pid)
+      assert ~c"/api/packages/alpha/releases/1.1.0" in requests
+      assert ~c"/api/packages/beta/releases/0.2.0" in requests
+
+      assert %{
+               alpha: %{level: 0, outer: alpha_outer, inner: alpha_inner},
+               beta: %{level: 1, outer: beta_outer, inner: beta_inner}
+             } = :beam_com_hex.read_lock(lock)
+
+      assert alpha_outer == outer_sum(routes, ~c"alpha-1.1.0")
+      assert beta_outer == outer_sum(routes, ~c"beta-0.2.0")
+      assert alpha_inner == inner_sum(routes, ~c"alpha-1.1.0")
+      assert beta_inner == inner_sum(routes, ~c"beta-0.2.0")
+
+      # With the checksums in rebar.lock and the cache: no request.
+      before = length(HexFixture.requests(pid))
+      _ = fetch_quiet(app, lib.(2))
+      assert before == length(HexFixture.requests(pid))
+    end
+
+    # The cache can be shared, and its tarballs can change. A lock with no
+    # checksum does not make a tarball of the cache trusted.
+    test "rebar.lock with no checksums and a changed tarball in the cache",
+         %{dir: dir, app: app, lib: lib, pid: pid} do
+      lock = :filename.join(app, ~c"rebar.lock")
+      :ok = :file.write_file(lock, "[{<<\"beta\">>,{pkg,<<\"beta\">>,<<\"0.2.0\">>},0}].\n")
+      :ok = :file.write_file(:filename.join(app, ~c"rebar.config"), "{deps, [beta]}.\n")
+      cache = :filename.join([dir, ~c"cache", ~c"hex", ~c"tarballs", ~c"beta-0.2.0.tar"])
+      :ok = :filelib.ensure_dir(cache)
+
+      evil =
+        HexFixture.package(
+          "beta",
+          ~c"0.2.0",
+          app_files("beta", ~c"0.2.0", [], ~c"f() -> evil.\n"),
+          [],
+          ["rebar3"]
+        )
+
+      :ok = :file.write_file(cache, evil)
+      _ = fetch_quiet(app, lib.(1))
+      assert ~c"/repo/tarballs/beta-0.2.0.tar" == List.last(HexFixture.requests(pid))
+
+      {:ok, code} =
+        :file.read_file(:filename.join([lib.(1), ~c"beta-0.2.0", ~c"src", ~c"beta.erl"]))
+
+      assert code =~ "f() -> beta."
+    end
+
+    test "rebar.lock with no checksums, and the API with no checksum",
+         %{app: app, lib: lib, routes: routes} do
+      release = ~c"/api/packages/beta/releases/0.2.0"
+      {pid, port} = HexFixture.serve(Map.put(routes, release, ~s({"requirements": {}})))
+      on_exit(fn -> HexFixture.stop(pid) end)
+      System.put_env("HEX_API_URL", "http://127.0.0.1:" <> Integer.to_string(port) <> "/api")
+      :ok = :file.write_file(:filename.join(app, ~c"rebar.config"), "{deps, [beta]}.\n")
+
+      :ok =
+        :file.write_file(
+          :filename.join(app, ~c"rebar.lock"),
+          "[{<<\"beta\">>,{pkg,<<\"beta\">>,<<\"0.2.0\">>},0}].\n"
+        )
+
+      assert {:error, ~c"~ts ~ts: the Hex API gives no checksum", ["beta", ~c"0.2.0"]} ==
+               catch_throw(fetch_quiet(app, lib.(1)))
+    end
+
+    # rebar.lock of the format 1.1.0 has only pkg_hash: the tarball is
+    # checked with the checksum of the API and with pkg_hash.
+    test "rebar.lock with pkg_hash only", %{app: app, lib: lib, routes: routes} do
+      lock = :filename.join(app, ~c"rebar.lock")
+      :ok = :file.write_file(:filename.join(app, ~c"rebar.config"), "{deps, [beta]}.\n")
+
+      write = fn inner ->
+        :file.write_file(
+          lock,
+          "{\"1.1.0\",[{<<\"beta\">>,{pkg,<<\"beta\">>,<<\"0.2.0\">>},0}]}.\n" <>
+            "[{pkg_hash,[{<<\"beta\">>,<<\"" <> inner <> "\">>}]}].\n"
+        )
+      end
+
+      :ok = write.(String.duplicate("0", 64))
+      dir = :filename.join(lib.(1), ~c"beta-0.2.0")
+
+      assert {:error, ~c"~ts: the checksum does not match rebar.lock", [dir]} ==
+               catch_throw(fetch_quiet(app, lib.(1)))
+
+      :ok = write.(inner_sum(routes, ~c"beta-0.2.0"))
+      _ = fetch_quiet(app, lib.(1))
+      assert %{beta: %{outer: outer}} = :beam_com_hex.read_lock(lock)
+      assert outer == outer_sum(routes, ~c"beta-0.2.0")
+    end
+
+    # Older versions of Hex wrote mix.lock with no outer checksum, or with
+    # no checksum. Mix writes the keys as quoted atoms.
+    test "mix.lock with no outer checksums", %{app: app, lib: lib, pid: pid, routes: routes} do
+      lock = :filename.join(app, ~c"mix.lock")
+      inner = :string.lowercase(inner_sum(routes, ~c"alpha-1.1.0"))
+
+      :ok =
+        :file.write_file(lock, """
+        %{
+          "alpha": {:hex, :alpha, "1.1.0", "#{inner}", [:rebar3], [], "hexpm"},
+          "beta": {:hex, :beta, "0.2.0"},
+        }
+        """)
+
+      deps = [{:alpha, "alpha", ~c"~> 1.0"}]
+      {got, output} = with_io(fn -> :beam_com_hex.fetch(app, lib.(1), deps, :mix) end)
+      assert [:beta, :alpha] == for(%{name: n} <- got, do: n)
+      assert output =~ "wrote " <> List.to_string(lock)
+
+      assert %{alpha: %{outer: alpha_outer}, beta: %{outer: beta_outer, inner: beta_inner}} =
+               :beam_com_hex.read_lock(:mix, lock)
+
+      assert alpha_outer == :string.lowercase(outer_sum(routes, ~c"alpha-1.1.0"))
+      assert beta_outer == :string.lowercase(outer_sum(routes, ~c"beta-0.2.0"))
+      assert beta_inner == :string.lowercase(inner_sum(routes, ~c"beta-0.2.0"))
+
+      before = length(HexFixture.requests(pid))
+      {_, _} = with_io(fn -> :beam_com_hex.fetch(app, lib.(2), deps, :mix) end)
+      assert before == length(HexFixture.requests(pid))
+    end
+
+    # The repository gives at most 32 MiB for a tarball.
+    test "a tarball with no end", %{app: app, lib: lib, routes: routes} do
+      endless = {:endless, :binary.copy("x", 65536)}
+      {pid, port} = HexFixture.serve(Map.put(routes, ~c"/repo/tarballs/beta-0.2.0.tar", endless))
+      on_exit(fn -> HexFixture.stop(pid) end)
+      mirror = "http://127.0.0.1:" <> Integer.to_string(port) <> "/repo"
+      System.put_env("HEX_MIRROR", mirror)
+
+      assert {:error, ~c"~ts: the response has more than ~b bytes",
+              [String.to_charlist(mirror) ++ ~c"/tarballs/beta-0.2.0.tar", 32 * 1024 * 1024]} ==
+               catch_throw(fetch_quiet(app, lib.(1)))
+    end
+
+    # A file of the cache with more than 32 MiB is not read, also when
+    # rebar.lock has its checksum: the tarball is downloaded again.
+    test "a tarball in the cache that is too large",
+         %{dir: dir, app: app, lib: lib, pid: pid, routes: routes} do
+      _ = fetch_quiet(app, lib.(1))
+      cache = :filename.join([dir, ~c"cache", ~c"hex", ~c"tarballs", ~c"beta-0.2.0.tar"])
+      {:ok, tar} = :file.read_file(cache)
+      large = [tar, :binary.copy(<<0>>, 32 * 1024 * 1024)]
+      :ok = :file.write_file(cache, large)
+      _ = fetch_quiet(app, lib.(2))
+      assert ~c"/repo/tarballs/beta-0.2.0.tar" == List.last(HexFixture.requests(pid))
+      assert {:ok, ^tar} = :file.read_file(cache)
+
+      lock = Path.join(List.to_string(app), "rebar.lock")
+      large_sum = :binary.encode_hex(:crypto.hash(:sha256, large))
+
+      File.write!(
+        lock,
+        String.replace(File.read!(lock), outer_sum(routes, ~c"beta-0.2.0"), large_sum)
+      )
+
+      :ok = :file.write_file(cache, large)
+
+      assert {:error, ~c"~ts ~ts: the checksum of the tarball does not match",
+              ["beta", ~c"0.2.0"]} == catch_throw(fetch_quiet(app, lib.(3)))
+    end
+  end
+
+  # fetch/5 with a registry in memory: the tarballs and the checksums of
+  # the API.
+  describe "fetch_registry_test_" do
+    setup %{tmp_dir: tmp_dir} do
+      dir = String.to_charlist(tmp_dir)
+      System.put_env("BEAM_COM_CACHE", List.to_string(:filename.join(dir, ~c"cache")))
+      on_exit(fn -> System.delete_env("BEAM_COM_CACHE") end)
+      app = :filename.join(dir, ~c"app")
+      :ok = :filelib.ensure_path(app)
+
+      :ok =
+        :file.write_file(
+          :filename.join(app, ~c"rebar.lock"),
+          "[{<<\"beta\">>,{pkg,<<\"beta\">>,<<\"0.2.0\">>},0}].\n"
+        )
+
+      tar =
+        HexFixture.package(
+          "beta",
+          ~c"0.2.0",
+          app_files("beta", ~c"0.2.0", [], ~c"f() -> beta.\n"),
+          [],
+          ["rebar3"]
+        )
+
+      sum = :string.lowercase(:binary.encode_hex(:crypto.hash(:sha256, tar)))
+
+      registry = fn checksum, served ->
+        %{
+          versions: fn _ -> :erlang.error(:not_used) end,
+          release: fn "beta", ~c"0.2.0" -> %{checksum: checksum, requirements: []} end,
+          tarball: fn "beta", ~c"0.2.0" -> served end
+        }
+      end
+
+      fetch = fn reg ->
+        {got, _} =
+          with_io(fn ->
+            :beam_com_hex.fetch(
+              app,
+              :filename.join(dir, ~c"lib"),
+              [{:beta, "beta", :any}],
+              :rebar,
+              reg
+            )
+          end)
+
+        got
+      end
+
+      %{tar: tar, sum: sum, registry: registry, fetch: fetch}
+    end
+
+    test "the tarball of the checksum of the API", %{tar: tar, sum: sum, registry: r, fetch: f} do
+      assert [%{name: :beta}] = f.(r.(String.to_charlist(sum), tar))
+    end
+
+    # HEX_MIRROR can be a server that is not trusted.
+    test "a tarball that does not match the API", %{tar: tar, registry: r, fetch: f} do
+      other = String.duplicate("0", 64)
+
+      assert {:error, ~c"~ts ~ts: the checksum of the tarball does not match",
+              ["beta", ~c"0.2.0"]} == catch_throw(f.(r.(String.to_charlist(other), tar)))
+    end
+
+    test "the API gives no checksum", %{tar: tar, registry: r, fetch: f} do
+      assert {:error, ~c"~ts ~ts: the Hex API gives no checksum", ["beta", ~c"0.2.0"]} ==
+               catch_throw(f.(r.(:undefined, tar)))
+    end
+  end
+
+  # http_get/2: the limit of the size of a body.
+  describe "http_test_" do
+    setup do
+      routes = %{
+        ~c"/1000" => :binary.copy("a", 1000),
+        ~c"/chunked" => {:chunked, :binary.copy("c", 1000)},
+        ~c"/endless" => {:endless, :binary.copy("e", 65536)}
+      }
+
+      {pid, port} = HexFixture.serve(routes)
+      on_exit(fn -> HexFixture.stop(pid) end)
+      %{url: fn path -> ~c"http://127.0.0.1:" ++ Integer.to_charlist(port) ++ path end}
+    end
+
+    @too_large ~c"~ts: the response has more than ~b bytes"
+
+    test "a body of the limit", %{url: url} do
+      assert :binary.copy("a", 1000) == :beam_com_hex.http_get(url.(~c"/1000"), 1000)
+      assert :binary.copy("c", 1000) == :beam_com_hex.http_get(url.(~c"/chunked"), 1000)
+    end
+
+    # httpc stops a body with a length (Content-Length, or a chunk) above
+    # the limit before it comes.
+    test "a body with a length above the limit", %{url: url} do
+      for path <- [~c"/1000", ~c"/chunked"] do
+        assert {:error, @too_large, [url.(path), 999]} ==
+                 catch_throw(:beam_com_hex.http_get(url.(path), 999))
+      end
+    end
+
+    # A body with no length comes in parts, and the request stops after
+    # the limit. The server sends until the client closes.
+    test "a body with no end", %{url: url} do
+      assert {:error, @too_large, [url.(~c"/endless"), 1024 * 1024]} ==
+               catch_throw(:beam_com_hex.http_get(url.(~c"/endless"), 1024 * 1024))
+    end
+
+    test "no server, and a URL that is not valid" do
+      {:ok, listen} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+      {:ok, port} = :inet.port(listen)
+      :ok = :gen_tcp.close(listen)
+      url = ~c"http://127.0.0.1:" ++ Integer.to_charlist(port) ++ ~c"/x"
+
+      assert {:error, ~c"~ts: ~p", [^url, {:failed_connect, _}]} =
+               catch_throw(:beam_com_hex.http_get(url, 1000))
+
+      assert {:error, ~c"~ts: ~p", [~c"not a URL", :invalid_uri]} ==
+               catch_throw(:beam_com_hex.http_get(~c"not a URL", 1000))
+    end
+  end
+
+  describe "read_limited_test_" do
+    test "a file of the limit, a larger file and no file", %{tmp_dir: dir} do
+      file = Path.join(dir, "f")
+      # More than one part of 1 MiB.
+      data = :crypto.strong_rand_bytes(3 * 1024 * 1024)
+      File.write!(file, data)
+      assert {:ok, data} == :beam_com_hex.read_limited(file, byte_size(data))
+      assert {:error, :too_large} == :beam_com_hex.read_limited(file, byte_size(data) - 1)
+      assert {:ok, data} == :beam_com_hex.read_limited(file, byte_size(data) + 1)
+      assert {:error, :enoent} == :beam_com_hex.read_limited(Path.join(dir, "none"), 10)
     end
   end
 
@@ -779,6 +1196,52 @@ defmodule BeamComHexTest do
         assert root |> File.ls!() |> Enum.sort() == Enum.sort(["contents.tar.gz" | in_out(out)])
       end
     end
+
+    # unpack/4 takes the contents when they have at most Max bytes without
+    # compression, and refuses them before it writes a file otherwise. The
+    # oracle is zlib:gunzip/1.
+    @tag :tmp_dir
+    property "unpack/4 and the limit of the contents", %{tmp_dir: dir} do
+      check all(
+              data <- list_of(binary(max_length: 3000), min_length: 1, max_length: 3),
+              delta <- integer(-600..600)
+            ) do
+        files = Enum.zip(["a", "b/c", "d.txt"], data)
+        root = Path.join(dir, "p#{System.unique_integer([:positive])}")
+        out = Path.join(root, "pkg")
+        File.mkdir_p!(root)
+        file = Path.join(root, "contents.tar.gz")
+
+        :ok =
+          :erl_tar.create(
+            String.to_charlist(file),
+            for({name, data} <- files, do: {String.to_charlist(name), data}),
+            [:compressed]
+          )
+
+        contents = File.read!(file)
+        size = byte_size(:zlib.gunzip(contents))
+        max = max(size + delta, 1)
+        tar = HexFixture.hex_tar("{<<\"name\">>, <<\"u\">>}.\n", contents)
+
+        result =
+          try do
+            :beam_com_hex.unpack(tar, :undefined, String.to_charlist(out), max)
+          catch
+            :throw, error -> error
+          end
+
+        if size <= max do
+          assert %{inner: _} = result
+          for {name, data} <- files, do: assert(File.read!(Path.join(out, name)) == data)
+        else
+          assert {:error, ~c"~ts: contents.tar.gz has more than ~b bytes without compression",
+                  [_, ^max]} = result
+
+          refute File.exists?(out)
+        end
+      end
+    end
   end
 
   # An Erlang term that metadata.config can have: integers, atoms that
@@ -835,6 +1298,76 @@ defmodule BeamComHexTest do
 
     :ok = :erl_tar.close(tar)
     File.read!(file)
+  end
+
+  # The checksums of the tarball NAME-VSN of the routes, as rebar.lock
+  # has them: the SHA-256 of the file, and the CHECKSUM file.
+  defp outer_sum(routes, name) do
+    :binary.encode_hex(:crypto.hash(:sha256, routes[~c"/repo/tarballs/" ++ name ++ ~c".tar"]))
+  end
+
+  defp inner_sum(routes, name) do
+    tar = routes[~c"/repo/tarballs/" ++ name ++ ~c".tar"]
+    {:ok, files} = :erl_tar.extract({:binary, tar}, [:memory])
+    {_, sum} = :lists.keyfind(~c"CHECKSUM", 1, files)
+    sum
+  end
+
+  # contents.tar.gz with one file of `size` zero bytes. It is made in
+  # parts of 1 MiB, so the data is never all in memory.
+  defp zeros_tar_gz(size) do
+    z = :zlib.open()
+    :ok = :zlib.deflateInit(z, 1, :deflated, 31, 8, :default)
+    part = :binary.copy(<<0>>, 1024 * 1024)
+
+    parts =
+      Enum.reduce(1..div(size, byte_size(part))//1, [:zlib.deflate(z, tar_header("z", size))], fn
+        _, acc -> [acc | :zlib.deflate(z, part)]
+      end)
+
+    # The rest of the file, the padding to a block of 512 bytes, and the
+    # two empty blocks of the end.
+    padding = rem(512 - rem(size, 512), 512)
+
+    last =
+      :zlib.deflate(z, :binary.copy(<<0>>, rem(size, byte_size(part)) + padding + 1024), :finish)
+
+    :zlib.close(z)
+    IO.iodata_to_binary([parts | last])
+  end
+
+  # The ustar header of a regular file.
+  defp tar_header(name, size) do
+    field = fn value, length -> value <> :binary.copy(<<0>>, length - byte_size(value)) end
+
+    octal = fn n, length ->
+      String.pad_leading(Integer.to_string(n, 8), length - 1, "0") <> <<0>>
+    end
+
+    header = fn sum ->
+      Enum.join([
+        field.(name, 100),
+        octal.(0o644, 8),
+        octal.(0, 8),
+        octal.(0, 8),
+        octal.(size, 12),
+        octal.(0, 12),
+        sum,
+        "0",
+        field.("", 100),
+        "ustar\0",
+        "00",
+        field.("", 32),
+        field.("", 32),
+        octal.(0, 8),
+        octal.(0, 8),
+        field.("", 155),
+        field.("", 12)
+      ])
+    end
+
+    sum = header.("        ") |> :binary.bin_to_list() |> Enum.sum()
+    header.(String.pad_leading(Integer.to_string(sum, 8), 6, "0") <> <<0, ?\s>>)
   end
 
   defp safe_name?(name) do

@@ -23,7 +23,7 @@
 -module(wasm_host_server).
 -behaviour(gen_server).
 
--export([start_link/0, register/1, claim/1, unregister/1, send_host/1, send_host/2]).
+-export([start_link/0, register/1, claim/1, unregister/1, registered/1, send_host/1, send_host/2]).
 %% For the tests: one event, or one message (a claim, the end of a
 %% listener), in the state of the pump.
 -export([handle_event/2, handle_message/2]).
@@ -42,6 +42,9 @@ start_link() ->
 %% The calling process gets the events of the socket or listener Id.
 register(Id) -> ets:insert(?TABLE, {Id, self()}).
 unregister(Id) -> ets:delete(?TABLE, Id).
+
+%% The ids that the process Pid has (for example after its end).
+registered(Pid) -> [Id || [Id] <- ets:match(?TABLE, {'$1', Pid})].
 
 %% The calling process is the process of the connection Id of a listener:
 %% the pump gives it the events that wait for it, and then the next ones.

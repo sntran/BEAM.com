@@ -920,6 +920,62 @@ fixed size can get it.
 **Possible upstream fix.** `srclen = strnlen(src, dstlen)` in place of
 `strlen(src)` in `strncpy()`.
 
+### C35. The `#if` guards of ERTS cannot compare two errno names
+
+**Status:** 4.0.2 (`libc/errno.h`), with Erlang/OTP 29.1.1
+(`erts/emulator/beam/erl_errno_str.c`). In `master`, each errno name is
+an integer constant with the number of Linux.
+
+**Symptom.** The VM gave the atom `errno_N` in place of the name of the
+BEAM for 11 to 13 POSIX errors, by host. On Linux, a loop of symbolic
+links gave `{error,errno_40}` in place of `{error,eloop}`, and a second
+`recv` on a socket gave `errno_114` in place of `ealready`. The other names were
+`edeadlk`, `eidrm`, `enobufs`, `enostr`, `enodata`, `enosr`,
+`enotempty`, `eopnotsupp`, `etime`, `etimedout`, and `ewouldblock`. The
+names of the errors that only one host has, such as `eremoteio` on Linux
+and `eauth` on macOS and the BSDs, were also `errno_N`. The differential
+test of `wasm_tcp` (`tests/support/tcp_diff.ex`) found it.
+
+**Cause.** In Cosmopolitan, each errno name is a variable, because its
+value comes from the host at run time. `libc/errno.h` has
+`#define ELOOP ELOOP`, so `#ifdef ELOOP` is true. But in `#if`, the
+preprocessor reads the name as 0. `errno_name()` of ERTS has a guard
+for each pair of names that can have one value, for example
+`#if !defined(ENOENT) || ENOENT != ELOOP`. With Cosmopolitan, each such
+guard is `0 != 0`, so it leaves the case out. Then `errno_name()` calls
+`errno_name_fallback()`, because Cosmopolitan has no
+`strerrorname_np()`. The cases of the fallback for these names are
+comments. Cosmopolitan declares most of the names of one host, such as
+`ECHRNG` and `EAUTH`, but it has no `#define` for them, so `#ifdef`
+leaves them out too.
+
+Also, for a name that a host does not have, Cosmopolitan can give the
+value of a near name: `ETIME` is `ETIMEDOUT` (60) on FreeBSD and
+OpenBSD, and `ENOSR` is `ENOMSG` (90) on OpenBSD.
+
+**Workaround in BEAM.com.** `patches/otp/0001-cosmopolitan.patch` adds
+`cosmo_errno_name()` to `erl_errno_str.c`. `errno_name()` calls it
+before the fallback. It does the 13 guards at run time, in the order of
+`errno_name()`, with two more guards for `ETIME` and `ENOSR`. Then it
+reads a table of the names of one host, with the numbers of the
+`errno.h` of Linux, macOS, FreeBSD, OpenBSD, and NetBSD, and
+`IsLinux()` and the other host functions of `<cosmo.h>`. A check with
+the patched file found the names of a native BEAM for each number on
+these five hosts: a native build with the values of each host, and a
+cosmocc build with the values of Cosmopolitan for each host. In CI,
+`tests/errno_test.exs` checks `eloop` and `ealready`, and `tests/run.sh`
+checks `eloop` on each system. On Windows, the names stay as before: a
+native BEAM on Windows reads the codes of Windows.
+
+The patch compiles this code only when `ELOOP == 0` in `#if`, that is,
+when the errno names are variables. With a later cosmocc, the code goes
+away. Then check the names that only one host has again, because
+`master` gives the numbers of Linux on each host.
+
+**Possible upstream fix.** In Cosmopolitan, `master` already has an
+integer constant for each errno name. In ERTS: the comparisons of the
+guards in C code at run time, when the errno names are not constants.
+
 ### C36. macOS arm64: a child of fork() faults with all signals blocked
 
 **Status:** 4.0.2 (`libc/proc/fork.c`), seen one time in CI, in 1 of 24
@@ -1181,6 +1237,37 @@ copies once. The test then takes 0.6 s.
 **Possible upstream fix.** An option of WAMR to reserve the maximum size
 without hardware bounds checks, and a capacity that doubles at each
 copy.
+
+### W11. `wasm_runtime_call_indirect()` checks no type
+
+**Status:** WAMR 2.4.5.
+
+**Effect.** `wasm_runtime_call_indirect(exec_env, element, argc, argv)`
+calls the function of an element of table 0 with no check of its type.
+The interpreter checks only that `argc` has the cells of the
+parameters, and writes all the results into `argv`: a function with
+four `i32` results writes past an `argv` of three cells. AOT code reads
+all its parameters from `argv`, also past `argc`. In a NIF library in
+WebAssembly, a module gives the table index of each callback (a NIF, a
+destructor, the function of `enif_schedule_nif`), so a module of an
+other type wrote the stack of the VM (the test showed "stack smashing
+detected"). `wasm_table_get_func_inst()` and `wasm_func_get_*()` give
+the type of an element, but only for a table with an export, and the
+table of a module of wasm-ld has none.
+
+**Workaround in BEAM.com.**
+[`patches/wamr/0003-indirect-func-type.patch`](../patches/wamr/0003-indirect-func-type.patch):
+`wasm_runtime_get_indirect_func_type()` gives the type of the function
+of an element of table 0, for the interpreter and AOT code.
+`c_src/wasm/nif_wasm.c` calls only a function with `i32` parameters, one
+for each argument of the call, and at most one `i32` result. Else the
+call traps with "indirect call type mismatch". The exports that it calls
+(`nif_init`, the allocator, `chdir`) have their types checked with
+`wasm_func_get_*()`.
+
+**Possible upstream fix.** A public function for the type of a table
+element without an export, or a `wasm_runtime_call_indirect()` that
+takes the expected type, as the `call_indirect` instruction does.
 
 ## Erlang/OTP
 
@@ -1596,9 +1683,100 @@ itself is in WebAssembly there, and defines the `enif_*` functions.
 `wasm/erts/build.sh` applies the same patch to the WebAssembly runtime of
 `--target wasm32`.
 
+ERTS can refuse the entry after the hook, before the `load` callback: an
+upgrade (new code while the old code has the library), or a bad library
+(a version, a module name or a function that does not match). Nothing
+then freed the library: each such `load_nif/2` kept a WebAssembly module
+and its linear memory (4 GiB of address space on Linux; 20 refused loads
+added 80 GiB). The same patch adds the hook `erts_wasm_nif_close`, which
+`erts_load_nif()` calls with the entry of `erts_wasm_nif_open` on its
+error path. `nif_wasm.c` frees the library when its `load` callback did
+not run (when it ran and failed, `nif_load()` freed it).
+
 **Possible upstream fix.** Not likely as it is. A general form could be
 a documented hook for "a NIF entry from another loader", used by
-embedded or single-file runtimes.
+embedded or single-file runtimes, with a close of an entry that ERTS
+refuses.
+
+### O25. httpc does not limit a body with no length
+
+**Status:** OTP 29.1.1 (`lib/inets/src/http_client/httpc_handler.erl`,
+`handle_http_body/2`).
+
+**Symptom.** With the request option `{max_body_size, Max}`, httpc
+refuses a body whose `Content-Length` is more than `Max`, and a chunk
+that is larger than `Max`. A body with no `Content-Length` and no chunks
+(it ends when the server closes the connection) has no limit. httpc
+streams only the body of a 200 or a 206, so the client cannot stop the
+body of another status either.
+
+**Cause.** `handle_http_body/2` takes the length from `Content-Length`,
+and a body with no `Content-Length` has the length -1. The check
+`Length =< MaxBodySize` is true for -1, so httpc reads to the close.
+
+**Reproducer.** In the Erlang shell: a server that sends an endless body
+with the status 500. On Linux x86_64, the request gives
+`{error, timeout}` after 5 s, and the memory of the VM grows by about
+1 GB.
+
+```erlang
+{ok, L} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127,0,0,1}}]),
+{ok, Port} = inet:port(L),
+spawn(fun() ->
+          {ok, S} = gen_tcp:accept(L),
+          {ok, _} = gen_tcp:recv(S, 0),
+          ok = gen_tcp:send(S, "HTTP/1.1 500 Error\r\nConnection: close\r\n\r\n"),
+          Part = binary:copy(<<0>>, 65536),
+          Send = fun F() -> case gen_tcp:send(S, Part) of ok -> F(); _ -> ok end end,
+          Send()
+      end),
+ok = inets:start(),
+httpc:request(get, {"http://127.0.0.1:" ++ integer_to_list(Port) ++ "/", []},
+              [{timeout, 5000}], [{max_body_size, 1024}]).
+```
+
+**Workaround in BEAM.com.** Only a part. `beam_com_hex:http_get/2` (the
+Hex API and the tarballs) gets the body of a 200 in parts
+(`{stream, {self, once}}`), and stops after its limit. `max_body_size`
+stops the other bodies that have a length. A body with no length and
+another status stops at the timeout of the request (60 s).
+
+**Possible upstream fix.** Count the bytes of a body with no length when
+they come, and stop at `max_body_size` with `{error, body_too_big}`.
+
+### O26. `enif_port_command` on a dirty scheduler to a closed port stops the VM
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/erl_nif.c`,
+`enif_port_command()`).
+
+**Symptom.** A dirty NIF that calls `enif_port_command()` with a port
+that closed stops the VM with SIGSEGV. Reproducer, as a native NIF:
+
+```c
+static ERL_NIF_TERM cmd(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ErlNifPort port;
+    enif_get_local_port(env, argv[0], &port);
+    return enif_make_int(env, enif_port_command(env, &port, NULL, argv[1]));
+}
+static ErlNifFunc funcs[] = { { "cmd", 2, cmd, ERL_NIF_DIRTY_JOB_CPU_BOUND } };
+```
+
+```erlang
+P = open_port({spawn, "cat"}, []), port_close(P), pc:cmd(P, <<"x">>).
+```
+
+**Cause.** On a dirty scheduler (`scheduler <= 0`), the function calls
+`erts_port_dec_refc(prt)` also when `erts_thr_port_lookup()` found no
+port (`prt` is NULL).
+
+**Workaround in BEAM.com.** For a NIF library in WebAssembly,
+`c_src/wasm/nif_wasm.c` gives 0 on a dirty scheduler when
+`enif_is_port_alive()` gives false. The port can still close between the
+two lookups.
+
+**Possible upstream fix.** `if (prt) erts_port_dec_refc(prt);`, as in
+`enif_is_port_alive()`.
 
 ## Emscripten
 

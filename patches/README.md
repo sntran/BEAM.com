@@ -21,6 +21,7 @@ order, with `git apply`.
 |---|---|---|---|
 | `0001-cosmopolitan.patch` | `erts/emulator/Makefile.in` | One run of the recipe makes all the static NIF libraries (`make -j`). | O11 |
 | | `erts/emulator/beam/erl_bits.c` | `FP16_FROM_FP64` with no compiler helper. | O1, C9 |
+| | `erts/emulator/beam/erl_errno_str.c` | The errno names of a native BEAM on each host: the names that the `#if` guards left out, and the names that Cosmopolitan does not define. | C35 |
 | | `erts/emulator/beam/erl_init.c` | On Windows, the exit status itself, not a wait status. | C21 |
 | | `erts/emulator/beam/sys.h` | No `ERTS_LOW_WRITE` section with Cosmopolitan. | C1, O3 |
 | | `erts/emulator/sys/common/erl_mmap.h` | No `MAP_FIXED` over a reservation (Windows). | C12 |
@@ -32,7 +33,7 @@ order, with `git apply`.
 | | `erts/emulator/zstd/zstd.mk` | No x86_64 assembly file in the aarch64 half. | O2 |
 | | `lib/erl_interface/src/connect/ei_resolve.c` | The `gethostbyname_r` of Cosmopolitan. | O7 |
 | `0002-jit.patch` | `erts/configure*`, `make/autoconf/otp.m4`, `erts/emulator/Makefile.in`, `asmjit`, `beam/jit/` | A fat JIT: both backends, selected at compile time for each CPU half and at run time for macOS. | O13, O14, C22 |
-| `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hook for NIF libraries in WebAssembly, and `erl_nif.h` for `__wasm__` (not Emscripten). `wasm/erts/build.sh` applies it too. | O24 |
+| `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hooks for NIF libraries in WebAssembly (an open, and a close of an entry that ERTS refuses), and `erl_nif.h` for `__wasm__` (not Emscripten). `wasm/erts/build.sh` applies it too. | O24 |
 
 ## Elixir (`patches/elixir/`)
 
@@ -74,6 +75,7 @@ order, with `git apply`.
 |---|---|---|---|
 | `0001-cosmopolitan-aarch64-jit.patch` | `core/shared/platform/common/posix/posix_memmap.c`, `posix_thread.c` | `MAP_JIT` and the write protection of macOS on Apple silicon at run time, and the cache flush on aarch64. | W5, W6 |
 | `0002-reserve-linear-memory.patch` | `core/iwasm/common/wasm_memory.c` | A linear memory of wasm32 has its maximum size in virtual memory from the start, so a growth copies nothing. On Windows and OpenBSD, its mapping has room for twice its pages, so the copies take linear time. | W10 |
+| `0003-indirect-func-type.patch` | `core/iwasm/common/wasm_runtime_common.c`, `core/iwasm/include/wasm_export.h` | `wasm_runtime_get_indirect_func_type()`: the type of the function of an element of table 0, also for a table with no export, so that a caller can check it before `wasm_runtime_call_indirect()`. | W11 |
 
 ## Changes that are not patch files
 

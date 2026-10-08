@@ -12,7 +12,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { WasmHost, wasmSignatures } = await import('../../priv/wasm_host/worker/worker.js');
+const { WasmHost, wasmSignatures, Vm } = await import('../../priv/wasm_host/worker/worker.js');
 
 // (module (func (export "add") (param i32 i32) (result i32) ...)
 //         (func (export "big") (param i64) (result i64) x * x)
@@ -102,4 +102,46 @@ test('the bounds of the requests, and release', async () => {
   assert.equal((await host.op('release', { id })).ok, true);
   assert.equal((await host.op('memory_size', { instance: id })).error, 'unknown instance');
   assert.equal(host.instances.size, 0);
+});
+
+// A Vm with no VM: the host I/O of a snapshot (inFlight), and the events
+// of the replies.
+function vm() {
+  const v = Object.create(Vm.prototype);
+  const events = [];
+  Object.assign(v, { tcps: new Map(), fetchPending: 0, sqlPending: 0, event: (h) => events.push(h.t) });
+  return { v, events };
+}
+const json = (o) => new TextEncoder().encode(JSON.stringify(o));
+
+// NoSnapshotInFlight of specs/FetchPath.tla: a restored VM would wait for
+// the reply forever, or hold a handle that the new host does not have.
+test('a snapshot waits while an operation of WasmHost runs, and while the host holds a module', async () => {
+  const { v, events } = vm();
+  let release;
+  v.wasm = new WasmHost();
+  const op = v.wasm.op.bind(v.wasm);
+  v.wasm.op = (name, q) => (name === 'call' ? new Promise((r) => { release = () => r({ ok: [] }); }) : op(name, q));
+  assert.equal(v.inFlight(), false);
+  const call = v.wasmRequest({ id: 'w1', op: 'call' }, json({ instance: 'i1', name: 'f', args: [] }));
+  assert.equal(v.inFlight(), true);
+  const order = [];
+  v.exports = { erts_wasm_hibernate: () => { order.push('hibernate'); throw new Error('the copy of the test'); } };
+  const snapshot = v.snapshot(false).catch((e) => e.message);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(order, []);
+  release();
+  await call;
+  order.push('reply');
+  assert.equal(await snapshot, 'the copy of the test');
+  assert.deepEqual(order, ['reply', 'hibernate']);
+  assert.deepEqual(events, ['wasm_reply']);
+  // A module in the host, until its release.
+  await v.wasmRequest({ id: 'w2', op: 'compile' }, json({ bytes: b64(small) }));
+  assert.equal(v.inFlight(), true);
+  await v.wasmRequest({ id: 'w3', op: 'release' }, json({ id: [...v.wasm.modules.keys()][0] }));
+  assert.equal(v.inFlight(), false);
+  // An operation that fails ends too.
+  await v.wasmRequest({ id: 'w4', op: 'compile' }, new TextEncoder().encode('not json'));
+  assert.equal(v.inFlight(), false);
 });

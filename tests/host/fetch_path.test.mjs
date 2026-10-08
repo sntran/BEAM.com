@@ -92,12 +92,18 @@ test('the rules of BEAM_CONNECT and BEAM_FETCH', () => {
   assert.ok(!connectAllowed('*:443', 'a.example', 80));
   assert.ok(connectAllowed('db.local, *.example.com', 'api.example.com', 1));
   assert.ok(!connectAllowed('*.example.com', 'example.org', 1));
+  // named: only a rule that names the port.
+  assert.ok(!connectAllowed('*', 'a.example', 5432, true));
+  assert.ok(!connectAllowed('a.example', 'a.example', 8080, true));
+  assert.ok(connectAllowed('a.example:8080', 'a.example', 8080, true));
+  assert.ok(connectAllowed('*:8080', 'A.Example', 8080, true));
+  assert.ok(!connectAllowed('*:8080', 'a.example', 8081, true));
 });
 
 // The route of a connect: fetch() first, or connect(). open.example is up,
 // so connect() gives tcp_open only, and fetch() gives tcp_open and
 // tcp_accept.
-test('fetch first: port 80, port 443 when the VM trusts its CA, BEAM_FETCH, and direct', async () => {
+test('fetch first: port 80, port 443 when the VM trusts its CA, the rules of BEAM_FETCH, and direct', async () => {
   for (const [env, port, tls, direct, route] of [
     [{}, 80, false, false, 'fetch'],
     [{}, 443, false, false, 'connect'],
@@ -108,6 +114,18 @@ test('fetch first: port 80, port 443 when the VM trusts its CA, BEAM_FETCH, and 
     [{ BEAM_FETCH: '' }, 80, true, false, 'connect'],
     [{ BEAM_FETCH: 'open.example:8080' }, 8080, false, false, 'fetch'],
     [{ BEAM_FETCH: 'open.example:8080' }, 80, false, false, 'connect'],
+    // TcpNeverFetch: a rule with no port gives only ports 80 and 443.
+    [{ BEAM_FETCH: '*' }, 5432, true, false, 'connect'],
+    [{ BEAM_FETCH: 'open.example' }, 8080, true, false, 'connect'],
+    [{ BEAM_FETCH: '*' }, 80, false, false, 'fetch'],
+    [{ BEAM_FETCH: '*' }, 443, true, false, 'fetch'],
+    [{ BEAM_FETCH: '*:5432' }, 5432, false, false, 'fetch'],
+    // TlsOnlyWithTrust: port 443 needs the trust store, also in BEAM_FETCH.
+    [{ BEAM_FETCH: '*:443' }, 443, false, false, 'connect'],
+    [{ BEAM_FETCH: '*:443' }, 443, true, false, 'fetch'],
+    [{ BEAM_FETCH: '*:80,*:443,open.example:8080' }, 443, false, false, 'connect'],
+    [{ BEAM_FETCH: '*:80,*:443,open.example:8080' }, 8080, false, false, 'fetch'],
+    [{ BEAM_FETCH: '*:80,*:443,open.example:8080' }, 80, false, false, 'fetch'],
     [{ BEAM_CONNECT: 'other.example' }, 80, true, false, 'none'],
   ]) {
     const { v, events } = vm(env);

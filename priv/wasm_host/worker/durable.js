@@ -33,7 +33,7 @@
 //
 //   wrangler deploy -c wrangler.durable.jsonc
 import { DurableObject } from 'cloudflare:workers';
-import { Vm } from './worker.js';
+import { Vm, drain } from './worker.js';
 
 const valid = (name) => /^[a-z0-9-]{1,32}$/.test(name ?? '');
 
@@ -51,6 +51,19 @@ export function forward(stub, request) {
   request.body.pipeTo(pass.writable).catch(() => {});
   return stub.fetch(new Request(request, { body: pass.readable, duplex: 'half' }));
 }
+
+// The rest of a request body that no one reads, read and dropped before an
+// answer of the host itself (drain of worker.js: 64 MiB at most, and a stop
+// after 5 s with no bytes, or after 60 s). workerd cannot read a request
+// body after the response has gone, and it then closes the connection with
+// the bytes that it did not read: wrangler dev uses that connection again,
+// and its next request gets 500.
+export async function dropBody(body) {
+  if (!body || body.locked) return;
+  const reader = body.getReader();
+  await drain(() => reader.read(), () => reader.cancel());
+}
+
 const REGISTRY = '.registry';
 const EXPIRES = 'beam:expires';
 
@@ -72,6 +85,7 @@ export class Beam extends DurableObject {
 
   async fetch(request) {
     if (this.resetting) {
+      await dropBody(request.body);
       return new Response('The app stopped. Try again.\n',
         { status: 503, headers: { 'content-type': 'text/plain', 'retry-after': '1' } });
     }
@@ -79,6 +93,7 @@ export class Beam extends DurableObject {
       this.expires ??= (await this.ctx.storage.get(EXPIRES)) ?? null;
       if (!this.expires || this.expires <= Date.now()) {
         if (this.expires) await this.expire();
+        await dropBody(request.body);
         return page(410, 'This instance is not available', `<p>An instance stops at its time limit, and its files are deleted.</p>
 <form method="post" action="/.instance"><button>Start a new instance</button></form>`);
       }
@@ -343,7 +358,7 @@ At the end, the instance stops, and its files are deleted.</p>
   { ...headers, refresh: '10; url=/.instance' });
 }
 
-export default {
+const front = {
   // The cron trigger of the instances (see sweep()).
   async scheduled(controller, env, ctx) {
     if (!env.BEAM_INSTANCES) return;
@@ -351,7 +366,19 @@ export default {
     ctx.waitUntil(registry.sweep().then((r) => console.log(`beam: sweep: ${r.expired} expired, ${r.retired} retired`)));
   },
 
+  // The answers of the front itself (a page, a redirect, an error, a
+  // static file) read the rest of the body first. forward() pipes the body
+  // to the object, and so locks it.
   async fetch(request, env) {
+    const body = request.body;
+    const response = await front.route(request, env);
+    await dropBody(body);
+    return response;
+  },
+
+  // The route of a request: an answer of the front, or the response of the
+  // object of the tenant.
+  async route(request, env) {
     const url = new URL(request.url);
     if (env.BEAM_TENANTS === 'path') {
       const m = /^\/t\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -404,3 +431,5 @@ export default {
     return forward(env.BEAM.get(env.BEAM.idFromName(name)), request);
   },
 };
+
+export default front;
