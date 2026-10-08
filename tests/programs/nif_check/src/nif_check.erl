@@ -211,7 +211,7 @@ bad_dtor() ->
     bad_dtor_count().
 
 %% enif_port_command of a dirty NIF to a closed port: ERTS 29.1.1 stops
-%% the VM (O25 of docs/UPSTREAM.md), and the bridge gives 0. Only where a
+%% the VM (O26 of docs/UPSTREAM.md), and the bridge gives 0. Only where a
 %% UDP socket (a port) opens.
 dirty_port() ->
     try gen_udp:open(0) of

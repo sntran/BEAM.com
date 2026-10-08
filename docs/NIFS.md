@@ -274,7 +274,7 @@ The limits:
     mismatch`.
 
   On a dirty scheduler, `enif_port_command` to a closed port gives 0
-  (ERTS 29.1.1 stops there, O25 in [`UPSTREAM.md`](UPSTREAM.md)).
+  (ERTS 29.1.1 stops there, O26 in [`UPSTREAM.md`](UPSTREAM.md)).
 - **At the edge.** See the next section.
 
 ## At the edge

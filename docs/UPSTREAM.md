@@ -1574,7 +1574,7 @@ a documented hook for "a NIF entry from another loader", used by
 embedded or single-file runtimes, with a close of an entry that ERTS
 refuses.
 
-### O25. `enif_port_command` on a dirty scheduler to a closed port stops the VM
+### O26. `enif_port_command` on a dirty scheduler to a closed port stops the VM
 
 **Status:** OTP 29.1.1 (`erts/emulator/beam/erl_nif.c`,
 `enif_port_command()`).
