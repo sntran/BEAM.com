@@ -700,15 +700,20 @@ was about 200 MB, and with `-Mea min` about 100 MB. Erlang itself used 14
 MB in each case. With `-Mea min` in `BEAM_ERL_FLAGS`, the host leaves out
 its flags.
 
-When the app answers before it reads the whole body (a 413 of its own,
-for example), the host reads the rest of the body and drops it, and then
-the response goes. workerd cannot read a request body after the response
-has gone, and it closes the connection with the bytes that it did not
-read: `wrangler dev` uses that connection again, and its next request
-gets 500. The host reads 64 MiB at most, and stops when no bytes come for
-5 s, or after 60 s. The front Worker of a Durable Object pipes the body to
-the object itself, with a handler for a read that fails, in place of the
-pipe of workerd.
+When the app answers before it reads the whole body (a 413 of its own, or
+a response that streams while the app reads the body), the response goes
+at once, and the client reads it while the body comes. The end of the
+response waits for the end of the request body. The app reads the rest,
+or, after the end of the response of the app, the host reads the rest and
+drops it. workerd sends a response at the end of its body, and it cannot
+read a request body after that. It then closes the connection with the
+bytes that it did not read: `wrangler dev` uses that connection again,
+and its next request gets 500. The host reads 64 MiB at most, and stops
+when no bytes come for 5 s, or after 60 s. A response with no body (HEAD,
+204, 304, a length of 0, or an answer of the host) goes after the host
+read the rest of the body. The front Worker of a Durable Object pipes the
+body to the object itself, with a handler for a read that fails, in place
+of the pipe of workerd.
 
 The other directions have the same flow control:
 

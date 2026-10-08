@@ -306,3 +306,157 @@ test('while a recv of the app waits for many bytes, a part has those bytes', asy
   assert.equal(data(sent).length, before + 1);  // one part of 900000 bytes, not 28
   assert.equal(await waiting(pending), true);  // no response yet
 });
+
+const enc = (t) => new TextEncoder().encode(t);
+const WINDOW = 256 * 1024;
+const conn = (sent) => sent.find((s) => s.header.t === 'tcp_accept').header.conn;
+
+// The app on the connection id, as wasm_tcp gives it: a send waits while
+// 256 KB or more of the sends of the socket wait for the client
+// (SEND_WINDOW), and goes on at each tcp_sent. read(n) is a tcp_read.
+function app(v, id) {
+  const t = v.tcps.get(id);
+  let waiting = 0;
+  const queue = [];
+  const pump = () => {
+    while (queue.length && waiting < WINDOW) {
+      const [b, resolve] = queue.shift();
+      waiting += b.length;
+      v.tcpSend(id, t, b);
+      resolve();
+    }
+  };
+  const event = v.event;
+  v.event = (header, body) => {
+    event(header, body);
+    if (header.t === 'tcp_sent' && header.id === id) queueMicrotask(() => { waiting -= header.n; pump(); });
+  };
+  return {
+    send: (b) => new Promise((resolve) => { queue.push([typeof b === 'string' ? enc(b) : b, resolve]); pump(); }),
+    read: (n) => v.tcps.get(id)?.ack(n),
+  };
+}
+
+// The bytes of a stream to its end.
+async function readAll(reader) {
+  let n = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return n;
+    n += value.length;
+  }
+}
+
+// 0.1.0-rc.5 held such a response until the end of the upload, and the
+// upload waited for the app, which waited for the client: 60 s.
+test('a large answer before the app reads the body goes at once, and its end waits for the rest of the body', async () => {
+  const { v, sent } = vm();
+  const src = source();
+  const pending = bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': String(2 << 20) },
+  }));
+  for (let i = 0; i < 8; i++) src.push(65536);
+  await settle();
+  const a = app(v, conn(sent));
+  const size = 512 * 1024;
+  a.send(`HTTP/1.1 200 OK\r\ncontent-length: ${size}\r\n\r\n`);
+  for (let i = 0; i < 8; i++) a.send(new Uint8Array(65536).fill(i));
+  assert.equal(await waiting(pending), false);
+  const r = await pending;
+  assert.equal(r.status, 200);
+  const reader = r.body.getReader();
+  let got = 0;
+  while (got < size) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false);
+    got += value.length;
+  }
+  assert.equal(got, size);
+  // All the bytes went, and the app got the end of the connection. The end
+  // of the response waits while the host reads the rest of the body.
+  await settle();
+  assert.ok(sent.some((s) => s.header.t === 'tcp_closed'));
+  const end = reader.read();
+  assert.equal(await waiting(end), true);
+  for (let i = 8; i < 32; i++) src.push(65536);
+  assert.equal(await waiting(end), true);
+  src.end();
+  assert.equal((await end).done, true);
+});
+
+test('a client that sends no more of the body: the end of the response comes at the bound of drain', async () => {
+  const { v, sent } = vm();
+  v.drainLimits = { idle: 50 };
+  let cancelled = false, ctl;
+  const stream = new ReadableStream({ start(c) { ctl = c; }, cancel() { cancelled = true; } });
+  const pending = bridge(v, new Request(url, {
+    method: 'POST', body: stream, duplex: 'half', headers: { 'content-length': '100000' },
+  }));
+  ctl.enqueue(new Uint8Array(1000));
+  await settle();
+  v.tcps.get(conn(sent)).send(enc('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok'));
+  const r = await pending;
+  const t0 = Date.now();
+  assert.equal(await r.text(), 'ok');
+  assert.ok(Date.now() - t0 >= 40, `${Date.now() - t0} ms`);
+  assert.equal(cancelled, true);
+});
+
+test('a streamed echo of a large body: the response goes while the body comes', { timeout: 20000 }, async () => {
+  const { v, sent } = vm();
+  const src = source();
+  const total = 2 << 20;
+  const part = 65536;
+  const pending = bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': String(total) },
+  }));
+  src.push(part);
+  let pushed = part;
+  await settle();
+  const head = headOf(sent).length;
+  const a = app(v, conn(sent));
+  await a.send('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n');
+  const r = await pending;
+  const back = readAll(r.body.getReader());
+  // The app reads each part of the body, and sends it back as a chunk.
+  let seen = 0, echoed = 0;
+  while (echoed < total) {
+    if (pushed < total) {
+      src.push(part);
+      pushed += part;
+      if (pushed === total) src.end();
+    }
+    await settle();
+    const bytes = data(sent).reduce((n, s) => n + s.body.length, 0);
+    if (bytes === seen) continue;
+    a.read(bytes - seen);
+    const n = bytes - Math.max(seen, head);
+    seen = bytes;
+    await a.send(`${n.toString(16)}\r\n`);
+    await a.send(new Uint8Array(n));
+    await a.send('\r\n');
+    echoed += n;
+  }
+  await a.send('0\r\n\r\n');
+  assert.equal(await back, total);
+});
+
+test('a VM that stops while a response streams and the body comes: the stream fails after the rest of the body', async () => {
+  const { v, sent } = vm();
+  const src = source();
+  const pending = bridge(v, new Request(url, {
+    method: 'POST', body: src.stream, duplex: 'half', headers: { 'content-length': '200000' },
+  }));
+  src.push(1000);
+  await settle();
+  v.tcps.get(conn(sent)).send(enc('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n'));
+  const r = await pending;
+  const reader = r.body.getReader();
+  assert.equal(text((await reader.read()).value), 'abc');
+  v.die('exit status 1');
+  const next = reader.read();
+  assert.equal(await waiting(next.catch(() => {})), true);
+  src.push(199000);
+  src.end();
+  await assert.rejects(next, /the app stopped/);
+});

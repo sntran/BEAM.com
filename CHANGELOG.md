@@ -18,6 +18,13 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- A response of the app before the end of a large request body goes at
+  once again (a regression of 0.1.0-rc.5). Before, the response waited
+  for the end of the upload, and the upload waited for the app. So an app
+  that answered with 512 KB before it read a body of 2 MiB, or that
+  streamed its response while it read the body, held its response for
+  60 s. Now the end of the response waits for the end of the request
+  body, so the next request on the connection still works.
 
 ## 0.1.0-rc.5
 

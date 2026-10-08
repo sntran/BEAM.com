@@ -1614,7 +1614,7 @@ export class Vm {
           try { c.ws.close(1011, 'the app stopped'); } catch {}
         } else if (!c.done) {
           c.done = true;
-          c.writer?.abort(new Error('the app stopped')).catch(() => {});
+          this.bridgeFinish(c, (w) => w.abort(new Error('the app stopped')));
         }
         this.bridgeRelease(c);
       }, c.h);
@@ -1999,8 +1999,13 @@ export class Vm {
     });
     // A response before the end of the body: the rest of the body goes to
     // the app while it reads, else bridgeUpload reads and drops it (see
-    // drain). The response waits for that, DRAIN_TIME ms at most.
-    if (c.upload) await within(c.upload, DRAIN_TIME);
+    // drain). A response with a body stream goes at once, and the end of
+    // its body waits for the upload (bridgeFinish): the client reads the
+    // response while the app reads the request. A response with no stream
+    // (an answer of the host, or HEAD, 204, 304 and a length of 0) ends
+    // when it goes, so it waits for the upload here. The upload ends
+    // within the bounds of drain after the end of the connection.
+    if (c.upload && !c.stream) await c.upload;
     return response;
   }
 
@@ -2056,11 +2061,25 @@ export class Vm {
     // A client that sends no body yet: the head goes alone after HEAD_WAIT
     // ms, so the app sees the request (and its own time limits run).
     const alone = setTimeout(() => { if (head && !c.done && !this.dead) out(new Uint8Array(0)); }, HEAD_WAIT);
+    // The end of the connection (bridgeRoom calls c.ended) ends the wait
+    // for a read of a client that sends no more bytes: then drain reads
+    // with its bounds, from that read (pending). Each wait has its own
+    // promise, so a long upload keeps no reaction for each read.
+    let pending = null;
     try {
       for (;;) {
         // A read can end the stream with its last bytes (done and a value).
-        const { value, done } = await read(head ? 1 : UPLOAD_PART);
-        if (c.done || this.dead) break;
+        const next = read(head ? 1 : UPLOAD_PART);
+        const r = c.done || this.dead ? null : await new Promise((resolve, reject) => {
+          c.ended = () => resolve(null);
+          next.then(resolve, reject);
+        });
+        c.ended = null;
+        if (c.done || this.dead) {
+          pending = next;
+          break;
+        }
+        const { value, done } = r;
         if (value?.length) {
           total += value.length;
           if (max && total > max) {
@@ -2094,7 +2113,13 @@ export class Vm {
       clearTimeout(alone);
     }
     // The app ended the connection, or the body is above BEAM_MAX_BODY.
-    await drain(() => read(UPLOAD_PART), () => reader.cancel());
+    // this.drainLimits replaces the bounds of drain (a test).
+    const rest = () => {
+      const p = pending ?? read(UPLOAD_PART);
+      pending = null;
+      return p;
+    };
+    await drain(rest, () => reader.cancel(), this.drainLimits);
   }
 
   // The time limit of the response of c: BEAM_REQUEST_TIMEOUT, in ms ms.
@@ -2112,11 +2137,13 @@ export class Vm {
     c.inbound?.flush();
   }
 
-  // The upload of c waits no more (more room, or the end of c).
+  // The upload of c waits no more (more room, or the end of c). At the end
+  // of c, it also waits no more for a read of the client (c.ended).
   bridgeRoom(c) {
     const room = c.room;
     c.room = null;
     room?.();
+    if (c.done || this.dead) c.ended?.();
   }
 
   // The answer of the host in place of the app (when the app has not
@@ -2182,7 +2209,9 @@ export class Vm {
       const encodeBody = headers.has('content-encoding') ? 'manual' : 'automatic';
       // The Response first: a status that it refuses ends the connection
       // with 502 (bridgeGuard), and the client gets an answer.
-      const response = new Response(c.length === 0 ? null : readable, { status, headers, encodeBody });
+      const stream = c.length !== 0;
+      const response = new Response(stream ? readable : null, { status, headers, encodeBody });
+      c.stream = stream;
       c.status = status;
       c.writer = writable.getWriter();
       // The client went away (or the stream failed): the app gets the end
@@ -2263,8 +2292,7 @@ export class Vm {
       } else if (!c.status) {
         this.bridgeRefuse(c, new Response('bad gateway\n', { status: 502 }));
       } else {
-        c.writer?.abort(e).catch(() => {});
-        c.writer = null;
+        this.bridgeFinish(c, (w) => w.abort(e));
         this.bridgeDone(c);
       }
     }
@@ -2274,16 +2302,29 @@ export class Vm {
   // fails, and the app gets the end of the connection.
   bridgeBad(c) {
     console.log(`beam: a bad chunked body from the app for ${c.path}: the response stops`);
-    c.writer?.abort(new Error('a bad chunked body from the app')).catch(() => {});
-    c.writer = null;
+    this.bridgeFinish(c, (w) => w.abort(new Error('a bad chunked body from the app')));
     this.bridgeDone(c);
+  }
+
+  // The end of the body of the response of c (once): end(writer) closes
+  // or aborts the stream, after the upload of c. workerd sends a response
+  // only at the end of its body, and it cannot read the request body after
+  // that. So the host can read the rest of the request body until then
+  // (drain), and the next request on the connection of the client works.
+  bridgeFinish(c, end) {
+    const writer = c.writer;
+    if (!writer) return;
+    c.writer = null;
+    const run = () => end(writer).catch(() => {});
+    if (c.upload) c.upload.then(run, run);
+    else run();
   }
 
   bridgeDone(c) {
     if (c.done) return;
     c.done = true;
     this.bridgeRoom(c);
-    c.writer?.close().catch(() => {});
+    this.bridgeFinish(c, (w) => w.close());
     this.conns.delete(c);
     this.tcps.delete(c.id);
     this.event({ t: 'tcp_closed', id: c.id });
@@ -2816,20 +2857,21 @@ const UPLOAD_LARGE = 1024 * 1024;
 const HEAD_WAIT = 20;
 const UPLOAD_READ = 64 * 1024;
 // The rest of a request body that the app did not read (drain): the
-// bytes that the host reads at most before the response goes, the ms with
-// no new bytes, and the ms in all.
+// bytes that the host reads at most before the end of the response, the
+// ms with no new bytes, and the ms in all.
 const DRAIN_BYTES = 64 * 1024 * 1024;
 const DRAIN_IDLE = 5000;
 const DRAIN_TIME = 60000;
 
-// The rest of a request body, read and dropped before the response goes,
-// when the app answered before it read the whole body (a 413, for
-// example). workerd cannot read a request body after the response has
-// gone, and it then closes the connection with the bytes that were not
-// read. wrangler dev uses that connection again, and its next request
-// fails with 500. The read stops after DRAIN_BYTES, after DRAIN_IDLE ms
-// with no bytes, or after DRAIN_TIME ms, and then cancel() ends the body.
-// read() gives { value, done }. limits replaces the bounds (a test).
+// The rest of a request body, read and dropped before the end of the
+// response, when the app answered before it read the whole body (a 413,
+// for example). workerd sends a response at the end of its body, and it
+// cannot read the request body after that: it then closes the connection
+// with the bytes that were not read. wrangler dev uses that connection
+// again, and its next request fails with 500. The read stops after
+// DRAIN_BYTES, after DRAIN_IDLE ms with no bytes, or after DRAIN_TIME ms,
+// and then cancel() ends the body. read() gives { value, done }. limits
+// replaces the bounds (a test).
 export async function drain(read, cancel, { bytes = DRAIN_BYTES, idle = DRAIN_IDLE, time = DRAIN_TIME } = {}) {
   const end = Date.now() + time;
   let n = 0;
