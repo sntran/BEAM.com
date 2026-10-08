@@ -22,6 +22,8 @@
 %%   the lock has no outer checksum for a package (rebar.lock of the
 %%   format 1.0.0, for example), the API gives it, and fetch/5 writes the
 %%   lock again with the checksums.
+%% - The limits: a tarball has at most ?MAX_TARBALL bytes, and its
+%%   contents.tar.gz at most ?MAX_CONTENTS bytes without compression.
 -module(beam_com_hex).
 
 -export([fetch/2, fetch/4]).
@@ -29,7 +31,7 @@
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
          rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
-         unpack/3, resolve/3, fetch/5,
+         unpack/3, unpack/4, resolve/3, fetch/5, http_get/2, read_limited/2,
          registry/0, consult/1, meta_requirements/1]).
 -endif.
 
@@ -37,6 +39,22 @@
 %% The requirements of one package, at most (see app_name/1).
 -define(MAX_REQUIREMENTS, 256).
 -define(REPO, "https://repo.hex.pm").
+
+%% The size limits of a package. hex.pm takes a tarball of at most 16 MiB
+%% (@tarball_max_size in lib/hexpm_web/controllers/api/release_controller.ex
+%% of hexpm/hexpm), and hex_core refuses a contents.tar.gz of more than
+%% 128 MiB without compression (tarball_max_uncompressed_size in
+%% src/hex_core.erl of hexpm/hex_core). The limits here are two times
+%% these values: each package of hex.pm fits, also after a small increase
+%% of the limits of hex.pm. The limits stop a download or an unpack that
+%% has no end before it fills the memory or the disk.
+-define(MAX_TARBALL, 32 * 1024 * 1024).
+-define(MAX_CONTENTS, 256 * 1024 * 1024).
+%% The JSON of the API for one package or release, at most. The JSON of
+%% phoenix, with all its releases, has less than 64 KB.
+-define(MAX_JSON, 16 * 1024 * 1024).
+%% The time limit of a request to the API or the repository (ms).
+-define(HTTP_TIMEOUT, 60000).
 
 %% Fetch the deps of the application in Dir, and unpack each one into
 %% LibDir/NAME-VSN. The result: the packages in the order to compile
@@ -460,12 +478,14 @@ outer_checksum(#{pkg := Pkg, vsn := Vsn} = P, Registry) ->
     end.
 
 %% The tarball of a release: from the cache, or downloaded. Expected is
-%% the outer checksum (hex).
+%% the outer checksum (hex). When the file of the cache is larger than
+%% ?MAX_TARBALL, or does not match, this function downloads the tarball
+%% again.
 tarball(Pkg, Vsn, Expected, Registry) ->
     Name = binary_to_list(Pkg) ++ "-" ++ Vsn ++ ".tar",
     Cache = filename:join([cache_dir(), "hex", "tarballs", Name]),
     Checked = fun(Tar) -> string:uppercase(to_list(Expected)) =:= sha256(Tar) end,
-    case file:read_file(Cache) of
+    case read_limited(Cache, ?MAX_TARBALL) of
         {ok, Tar} ->
             case Checked(Tar) of
                 true -> Tar;
@@ -473,6 +493,27 @@ tarball(Pkg, Vsn, Expected, Registry) ->
             end;
         _ ->
             download(Pkg, Vsn, Cache, Checked, Registry)
+    end.
+
+%% The data of File, when it has at most Max bytes. The read stops after
+%% Max + 1 bytes: a large file is never all in memory.
+read_limited(File, Max) ->
+    case file:open(File, [read, raw, binary]) of
+        {ok, F} ->
+            try read_limited(F, Max, 0, [])
+            after file:close(F)
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+read_limited(F, Max, Size, Parts) ->
+    case file:read(F, min(Max - Size + 1, 1 bsl 20)) of
+        {ok, Data} when Size + byte_size(Data) =< Max ->
+            read_limited(F, Max, Size + byte_size(Data), [Data | Parts]);
+        {ok, _} -> {error, too_large};
+        eof -> {ok, iolist_to_binary(lists:reverse(Parts))};
+        {error, _} = Error -> Error
     end.
 
 download(Pkg, Vsn, Cache, Checked, Registry) ->
@@ -485,8 +526,12 @@ download(Pkg, Vsn, Cache, Checked, Registry) ->
     Tar.
 
 %% Check a tarball and unpack its contents into Dir. Inner is the inner
-%% checksum of rebar.lock, when it is known.
+%% checksum of rebar.lock, when it is known. Max is the limit of the
+%% size of contents.tar.gz without compression.
 unpack(Tar, Inner, Dir) ->
+    unpack(Tar, Inner, Dir, ?MAX_CONTENTS).
+
+unpack(Tar, Inner, Dir, Max) ->
     Files = case erl_tar:extract({binary, Tar}, [memory]) of
                 {ok, F} -> F;
                 {error, _} -> throw({error, "~ts: not a Hex tarball", [Dir]})
@@ -505,6 +550,7 @@ unpack(Tar, Inner, Dir) ->
         throw({error, "~ts: the inner checksum does not match", [Dir]}),
     Inner =:= undefined orelse string:uppercase(to_list(Inner)) =:= Sum orelse
         throw({error, "~ts: the checksum does not match rebar.lock", [Dir]}),
+    check_size(Contents, Max, Dir),
     safe_entries(Contents, Dir),
     _ = file:del_dir_r(Dir),
     ok = filelib:ensure_path(Dir),
@@ -513,6 +559,34 @@ unpack(Tar, Inner, Dir) ->
         {error, E} -> throw({error, "~ts: ~p", [Dir, E]})
     end,
     #{inner => list_to_binary(Sum), metadata => consult(Meta)}.
+
+%% contents.tar.gz has at most Max bytes without compression. A small
+%% gzip file can have many GB without compression, and erl_tar keeps all
+%% the data in memory, so this check comes first. It reads the data in
+%% parts and keeps no part. As erl_tar, it reads only the first gzip
+%% member (cut). The tar data has the files, so their size and their
+%% number also have a limit.
+check_size(Contents, Max, Dir) ->
+    Z = zlib:open(),
+    try
+        ok = zlib:inflateInit(Z, 31, cut),
+        inflated_size(Z, Contents, Max, Dir, 0)
+    catch
+        error:_ -> throw({error, "~ts: not a Hex tarball (contents)", [Dir]})
+    after
+        zlib:close(Z)
+    end.
+
+inflated_size(Z, Data, Max, Dir, Size) ->
+    {Status, Part} = zlib:safeInflate(Z, Data),
+    Size1 = Size + iolist_size(Part),
+    Size1 =< Max orelse
+        throw({error, "~ts: contents.tar.gz has more than ~b bytes without compression",
+               [Dir, Max]}),
+    case Status of
+        continue -> inflated_size(Z, <<>>, Max, Dir, Size1);
+        finished -> Size1
+    end.
 
 %% The files of contents.tar.gz: regular files and directories, with
 %% relative names in the package. A Hex package has no links, and a link
@@ -742,11 +816,12 @@ registry() ->
       tarball => fun repo_tarball/2}.
 
 api_versions(Pkg) ->
-    #{<<"releases">> := Releases} = json:decode(http_get(api_url(["packages", Pkg]))),
+    #{<<"releases">> := Releases} =
+        json:decode(http_get(api_url(["packages", Pkg]), ?MAX_JSON)),
     [binary_to_list(V) || #{<<"version">> := V} <- Releases].
 
 api_release(Pkg, Vsn) ->
-    Info = json:decode(http_get(api_url(["packages", Pkg, "releases", Vsn]))),
+    Info = json:decode(http_get(api_url(["packages", Pkg, "releases", Vsn]), ?MAX_JSON)),
     case Info of
         #{<<"meta">> := #{<<"build_tools">> := Tools}} -> mix_only(Pkg, Tools);
         _ -> ok
@@ -765,7 +840,7 @@ api_release(Pkg, Vsn) ->
 
 repo_tarball(Pkg, Vsn) ->
     Base = env("HEX_MIRROR", ?REPO),
-    http_get(Base ++ "/tarballs/" ++ binary_to_list(Pkg) ++ "-" ++ Vsn ++ ".tar").
+    http_get(Base ++ "/tarballs/" ++ binary_to_list(Pkg) ++ "-" ++ Vsn ++ ".tar", ?MAX_TARBALL).
 
 api_url(Parts) ->
     env("HEX_API_URL", ?API) ++ lists:append(["/" ++ uri_string:quote(to_list(P)) || P <- Parts]).
@@ -776,18 +851,59 @@ env(Name, Default) ->
         _ -> Default
     end.
 
-http_get(Url) ->
+%% The body of a GET of Url, with at most Max bytes. httpc gives the body
+%% of a 200 in parts (stream), and the next part only after stream_next/1,
+%% so the request stops after Max bytes and one part. max_body_size stops
+%% a body whose length (Content-Length, or a chunk) is more than Max
+%% before it comes. httpc does not limit the body of another status when
+%% it has no length: see O25 in docs/UPSTREAM.md.
+http_get(Url, Max) ->
     ok = start_http(),
     Tls = [{verify, verify_peer}, {cacerts, public_key:cacerts_get()},
            {customize_hostname_check,
             [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}],
     Headers = [{"user-agent", "beam.com"}, {"accept", "application/json"}],
-    case httpc:request(get, {Url, Headers}, [{ssl, Tls}, {timeout, 60000}],
-                       [{body_format, binary}], beam_com) of
-        {ok, {{_, 200, _}, _, Body}} -> Body;
-        {ok, {{_, 404, _}, _, _}} -> throw({error, "~ts: not found", [Url]});
-        {ok, {{_, Code, _}, _, _}} -> throw({error, "~ts: HTTP ~b", [Url, Code]});
+    case httpc:request(get, {Url, Headers}, [{ssl, Tls}, {timeout, ?HTTP_TIMEOUT}],
+                       [{sync, false}, {stream, {self, once}}, {body_format, binary},
+                        {max_body_size, Max}], beam_com) of
+        {ok, Ref} -> body(Ref, Url, Max, undefined, 0, []);
         {error, Reason} -> throw({error, "~ts: ~p", [Url, Reason]})
+    end.
+
+body(Ref, Url, Max, Handler, Size, Parts) ->
+    receive
+        {http, {Ref, stream_start, _Headers, Pid}} ->
+            ok = httpc:stream_next(Pid),
+            body(Ref, Url, Max, Pid, Size, Parts);
+        {http, {Ref, stream, Part}} when Size + byte_size(Part) =< Max ->
+            ok = httpc:stream_next(Handler),
+            body(Ref, Url, Max, Handler, Size + byte_size(Part), [Part | Parts]);
+        {http, {Ref, stream, _}} ->
+            ok = httpc:cancel_request(Ref, beam_com),
+            flush(Ref),
+            too_large(Url, Max);
+        {http, {Ref, stream_end, _Headers}} ->
+            iolist_to_binary(lists:reverse(Parts));
+        {http, {Ref, {{_, 404, _}, _, _}}} -> throw({error, "~ts: not found", [Url]});
+        {http, {Ref, {{_, Code, _}, _, _}}} -> throw({error, "~ts: HTTP ~b", [Url, Code]});
+        {http, {Ref, {error, body_too_big}}} -> too_large(Url, Max);
+        {http, {Ref, {error, {body_too_long, _}}}} -> too_large(Url, Max);
+        {http, {Ref, {error, Reason}}} -> throw({error, "~ts: ~p", [Url, Reason]})
+    after 2 * ?HTTP_TIMEOUT ->
+            %% httpc answers at its timeout: this is only a guard.
+            ok = httpc:cancel_request(Ref, beam_com),
+            throw({error, "~ts: ~p", [Url, timeout]})
+    end.
+
+too_large(Url, Max) ->
+    throw({error, "~ts: the response has more than ~b bytes", [Url, Max]}).
+
+%% A request can still send a message after cancel_request/2.
+flush(Ref) ->
+    receive
+        {http, Message} when element(1, Message) =:= Ref -> flush(Ref)
+    after 0 ->
+            ok
     end.
 
 %% httpc in its own profile, with the proxy of HTTPS_PROXY.

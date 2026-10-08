@@ -26,6 +26,12 @@ notes of its release.
   The build then writes the lock again with the checksums, so the next
   build needs no request. The older `mix.lock` entries are no longer
   refused as "not a Hex package".
+- A Hex tarball has at most 32 MiB, and its `contents.tar.gz` at most
+  256 MiB without compression: two times the limits of hex.pm. A
+  download stops after its limit, and the build refuses larger contents
+  before it writes a file. Before, a download and an unpack had no
+  limit. An error response with no length stops only at the timeout of
+  60 s: see O25 in `docs/UPSTREAM.md`.
 
 ## 0.1.0-rc.5
 

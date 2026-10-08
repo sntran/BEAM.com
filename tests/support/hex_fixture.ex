@@ -124,6 +124,10 @@ defmodule BeamCom.HexFixture do
   Starts a small HTTP/1.1 server on the loopback address. The server
   answers a GET of each path of `routes`, with one request for each
   connection. The result is `{pid, port}`.
+
+  The body of a route is iodata (with Content-Length), `{:chunked,
+  body}` (one chunk), or `{:endless, part}`: no length, and the part
+  again and again until the client closes the connection.
   """
   def serve(routes) do
     parent = self()
@@ -189,12 +193,32 @@ defmodule BeamCom.HexFixture do
     p = :erlang.binary_to_list(path)
     send(server, {:request, p})
 
-    {status, body} =
-      case routes do
-        %{^p => b} -> {"200 OK", :erlang.iolist_to_binary(b)}
-        _ -> {"404 Not Found", "not found"}
-      end
+    case routes do
+      %{^p => {:endless, part}} ->
+        :ok = :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+        send_until_closed(socket, part)
 
+      %{^p => {:chunked, body}} ->
+        :ok =
+          :gen_tcp.send(socket, [
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            Integer.to_string(byte_size(body), 16),
+            "\r\n",
+            body,
+            "\r\n0\r\n\r\n"
+          ])
+
+      %{^p => b} ->
+        send_whole(socket, "200 OK", :erlang.iolist_to_binary(b))
+
+      _ ->
+        send_whole(socket, "404 Not Found", "not found")
+    end
+
+    :gen_tcp.close(socket)
+  end
+
+  defp send_whole(socket, status, body) do
     :ok =
       :gen_tcp.send(socket, [
         "HTTP/1.1 ",
@@ -204,8 +228,13 @@ defmodule BeamCom.HexFixture do
         "\r\nConnection: close\r\n\r\n",
         body
       ])
+  end
 
-    :gen_tcp.close(socket)
+  defp send_until_closed(socket, part) do
+    case :gen_tcp.send(socket, part) do
+      :ok -> send_until_closed(socket, part)
+      {:error, _} -> :ok
+    end
   end
 
   defp read_head(socket, acc) do

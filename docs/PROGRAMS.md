@@ -101,6 +101,12 @@ and compiled into the program, as rebar3 does, without rebar3:
   levels, so the next build needs no request. The same rules apply to
   `mix.lock`, also to an entry that an older version of Hex wrote (with
   no outer checksum, or with no checksum).
+- **Limits.** A tarball has at most 32 MiB, and its `contents.tar.gz` at
+  most 256 MiB without compression: two times the limits of hex.pm (16
+  MiB and 128 MiB). A download stops when it gets more than the limit,
+  and the builder writes no file of a package whose contents are larger.
+  The builder does not read a tarball of the cache that is larger: it
+  downloads the tarball again.
 - **Cache.** The tarballs are kept in the cache of the user
   (`~/.cache/beam.com` on Linux; `BEAM_COM_CACHE` changes it). With
   `rebar.lock` (with its checksums) and a full cache, a build does not
