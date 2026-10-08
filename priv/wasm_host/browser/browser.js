@@ -65,15 +65,16 @@ globalThis.WebSocketPair = class {
   }
 };
 
-// new Response(null, { status: 101, webSocket }) of Workers: a page refuses
-// the status 101, so the response keeps the client end in webSocket. A
-// page also drops the Set-Cookie headers of a Response: setCookies keeps
-// them (a Headers of its own keeps them).
+// new Response(null, { status: 101, webSocket, headers }) of Workers: a
+// page refuses the status 101, so the response keeps the client end in
+// webSocket, and the headers of the 101 of the app. A page also drops the
+// Set-Cookie headers of a Response: setCookies keeps them (a Headers of
+// its own keeps them).
 const NativeResponse = Response;
 globalThis.Response = class extends NativeResponse {
   constructor(body, init) {
     const webSocket = init?.webSocket;
-    super(webSocket ? null : body, webSocket ? { status: 200 } : init);
+    super(webSocket ? null : body, webSocket ? { status: 200, headers: init.headers } : init);
     if (webSocket) this.webSocket = webSocket;
     this.setCookies = init?.headers ? new Headers(init.headers).getSetCookie() : [];
   }
@@ -152,12 +153,16 @@ export async function start({ release = './release.bin', app = null, env = {}, s
     vm,
     name: releaseMeta(vm.release).name,
     fetch: (path, init) => vm.fetch(request(new URL(path, origin), init)),
-    // init.headers: more headers of the upgrade request (a cookie, for example).
+    // init.headers: more headers of the upgrade request (a cookie, for
+    // example). The socket has the subprotocol that the app chose
+    // (protocol), and the Set-Cookie headers of its 101 (setCookies).
     async socket(path, init = {}) {
       const headers = { ...init.headers, upgrade: 'websocket' };
       const response = await vm.fetch(request(new URL(path, origin), { headers }));
       const socket = response.webSocket;
       if (!socket) throw new Error(`${path}: no WebSocket (status ${response.status})`);
+      socket.protocol = response.headers.get('sec-websocket-protocol') ?? '';
+      socket.setCookies = response.setCookies;
       setTimeout(() => socket.emit(new Event('open')));
       return socket;
     },
