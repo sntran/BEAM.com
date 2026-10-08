@@ -920,6 +920,62 @@ fixed size can get it.
 **Possible upstream fix.** `srclen = strnlen(src, dstlen)` in place of
 `strlen(src)` in `strncpy()`.
 
+### C35. The `#if` guards of ERTS cannot compare two errno names
+
+**Status:** 4.0.2 (`libc/errno.h`), with Erlang/OTP 29.1.1
+(`erts/emulator/beam/erl_errno_str.c`). In `master`, each errno name is
+an integer constant with the number of Linux.
+
+**Symptom.** The VM gave the atom `errno_N` in place of the name of the
+BEAM for 11 to 13 POSIX errors, by host. On Linux, a loop of symbolic
+links gave `{error,errno_40}` in place of `{error,eloop}`, and a second
+`recv` on a socket gave `errno_114` in place of `ealready`. The other names were
+`edeadlk`, `eidrm`, `enobufs`, `enostr`, `enodata`, `enosr`,
+`enotempty`, `eopnotsupp`, `etime`, `etimedout`, and `ewouldblock`. The
+names of the errors that only one host has, such as `eremoteio` on Linux
+and `eauth` on macOS and the BSDs, were also `errno_N`. The differential
+test of `wasm_tcp` (`tests/support/tcp_diff.ex`) found it.
+
+**Cause.** In Cosmopolitan, each errno name is a variable, because its
+value comes from the host at run time. `libc/errno.h` has
+`#define ELOOP ELOOP`, so `#ifdef ELOOP` is true. But in `#if`, the
+preprocessor reads the name as 0. `errno_name()` of ERTS has a guard
+for each pair of names that can have one value, for example
+`#if !defined(ENOENT) || ENOENT != ELOOP`. With Cosmopolitan, each such
+guard is `0 != 0`, so it leaves the case out. Then `errno_name()` calls
+`errno_name_fallback()`, because Cosmopolitan has no
+`strerrorname_np()`. The cases of the fallback for these names are
+comments. Cosmopolitan declares most of the names of one host, such as
+`ECHRNG` and `EAUTH`, but it has no `#define` for them, so `#ifdef`
+leaves them out too.
+
+Also, for a name that a host does not have, Cosmopolitan can give the
+value of a near name: `ETIME` is `ETIMEDOUT` (60) on FreeBSD and
+OpenBSD, and `ENOSR` is `ENOMSG` (90) on OpenBSD.
+
+**Workaround in BEAM.com.** `patches/otp/0001-cosmopolitan.patch` adds
+`cosmo_errno_name()` to `erl_errno_str.c`. `errno_name()` calls it
+before the fallback. It does the 13 guards at run time, in the order of
+`errno_name()`, with two more guards for `ETIME` and `ENOSR`. Then it
+reads a table of the names of one host, with the numbers of the
+`errno.h` of Linux, macOS, FreeBSD, OpenBSD, and NetBSD, and
+`IsLinux()` and the other host functions of `<cosmo.h>`. A check with
+the patched file found the names of a native BEAM for each number on
+these five hosts: a native build with the values of each host, and a
+cosmocc build with the values of Cosmopolitan for each host. In CI,
+`tests/errno_test.exs` checks `eloop` and `ealready`, and `tests/run.sh`
+checks `eloop` on each system. On Windows, the names stay as before: a
+native BEAM on Windows reads the codes of Windows.
+
+The patch compiles this code only when `ELOOP == 0` in `#if`, that is,
+when the errno names are variables. With a later cosmocc, the code goes
+away. Then check the names that only one host has again, because
+`master` gives the numbers of Linux on each host.
+
+**Possible upstream fix.** In Cosmopolitan, `master` already has an
+integer constant for each errno name. In ERTS: the comparisons of the
+guards in C code at run time, when the errno names are not constants.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

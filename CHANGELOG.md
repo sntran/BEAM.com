@@ -18,6 +18,13 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- The errors of the VM have the names of the BEAM. Before, 11 to 13
+  POSIX errors, by host, had the name `errno_N`: for example, a loop of
+  symbolic links gave `{error,errno_40}` in place of `{error,eloop}`,
+  and `etimedout`, `ealready` and `enotempty` were also `errno_N`. The
+  errors that only one host has, such as `eremoteio` on Linux and
+  `eauth` on macOS and the BSDs, also have their names now. See C35 in
+  `docs/UPSTREAM.md`.
 
 ## 0.1.0-rc.5
 
