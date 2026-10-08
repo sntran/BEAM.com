@@ -48,6 +48,9 @@ env:
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
 
+# The Linux jobs name their image (ubuntu-26.04), not ubuntu-latest: that
+# label moves to a new Ubuntu on a date of GitHub (26.04 from 2026-10-19),
+# and a named image does not change under a release candidate.
 jobs:
   # A tag on a commit of main (or a run by hand with the input release):
   # the run of that push to main already built and tested the commit. This job waits for that run, and when it
@@ -61,7 +64,7 @@ jobs:
   # stops all the tests.
   reuse:
     name: Find a tested run of this commit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       actions: read
@@ -95,7 +98,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: reuse
     if: ${{ !cancelled() && needs.reuse.outputs.run == '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -246,7 +249,7 @@ jobs:
   unit:
     name: Unit tests
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       OUT: ${{ github.workspace }}/build/beam.com
@@ -292,8 +295,8 @@ jobs:
           node-version: "26"
 
       # The test of the Elixir patch of the Mix lock runs in a user and
-      # network namespace (tests/elixir_patches_test.exs). Ubuntu 24.04
-      # blocks unprivileged user namespaces through AppArmor.
+      # network namespace (tests/elixir_patches_test.exs). Ubuntu (24.04
+      # and later) blocks unprivileged user namespaces through AppArmor.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
@@ -310,7 +313,7 @@ jobs:
     name: Check the models
     needs: reuse
     if: ${{ !cancelled() && needs.reuse.outputs.run == '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       TLA2TOOLS_JAR: ${{ github.workspace }}/tla2tools.jar
@@ -337,7 +340,7 @@ jobs:
   example-release:
     name: Add a rebar3 release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -400,7 +403,7 @@ jobs:
   page:
     name: Run the sites in a web page
     needs: pages-app
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -431,7 +434,7 @@ jobs:
   one-file:
     name: Run one file natively and at the edge
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -636,7 +639,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Linux x86_64, os: ubuntu-latest }
+          - { name: Linux x86_64, os: ubuntu-26.04 }
           - { name: Linux aarch64, os: ubuntu-24.04-arm }
           - { name: macOS arm64, os: macos-latest }
           - { name: macOS x86_64, os: macos-15-intel }
@@ -825,7 +828,7 @@ jobs:
     name: Publish the edge binary
     needs: [unit, test, test-bsd]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # One publish at a time, and only the run of the newest commit of main
     # publishes: an older run that ends later does not replace edge.
@@ -954,7 +957,7 @@ jobs:
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release != '')) &&
       (needs.reuse.outputs.run != '' || (needs.unit.result == 'success' &&
         needs.test.result == 'success' && needs.test-bsd.result == 'success'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       actions: read
