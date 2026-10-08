@@ -43,6 +43,9 @@ notes of its release.
   results wrote past the arguments of the call). `enif_port_command` of
   a dirty NIF to a closed port gives 0 (ERTS 29.1.1 stops there). See
   "Checks" in `docs/NIFS.md`.
+- A `load_nif/2` of a NIF library in WebAssembly that ERTS refuses (an
+  upgrade, or a bad library) no longer keeps the module and its linear
+  memory: before, each such call kept up to 4 GiB of address space.
 
 ## 0.1.0-rc.5
 

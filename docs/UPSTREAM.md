@@ -1559,9 +1559,20 @@ itself is in WebAssembly there, and defines the `enif_*` functions.
 `wasm/erts/build.sh` applies the same patch to the WebAssembly runtime of
 `--target wasm32`.
 
+ERTS can refuse the entry after the hook, before the `load` callback: an
+upgrade (new code while the old code has the library), or a bad library
+(a version, a module name or a function that does not match). Nothing
+then freed the library: each such `load_nif/2` kept a WebAssembly module
+and its linear memory (4 GiB of address space on Linux; 20 refused loads
+added 80 GiB). The same patch adds the hook `erts_wasm_nif_close`, which
+`erts_load_nif()` calls with the entry of `erts_wasm_nif_open` on its
+error path. `nif_wasm.c` frees the library when its `load` callback did
+not run (when it ran and failed, `nif_load()` freed it).
+
 **Possible upstream fix.** Not likely as it is. A general form could be
 a documented hook for "a NIF entry from another loader", used by
-embedded or single-file runtimes.
+embedded or single-file runtimes, with a close of an entry that ERTS
+refuses.
 
 ### O25. `enif_port_command` on a dirty scheduler to a closed port stops the VM
 

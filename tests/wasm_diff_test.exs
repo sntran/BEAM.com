@@ -93,11 +93,10 @@ defmodule BeamCom.WasmDiffTest do
     File.mkdir_p!(ebin)
     File.mkdir_p!(Path.dirname(file))
 
-    {:ok, _} =
-      :compile.file(String.to_charlist(Path.join([src, "src", "nif_check.erl"])), [
-        :report,
-        outdir: String.to_charlist(ebin)
-      ])
+    for erl <- Path.wildcard(Path.join([src, "src", "*.erl"])) do
+      {:ok, _} =
+        :compile.file(String.to_charlist(erl), [:report, outdir: String.to_charlist(ebin)])
+    end
 
     bytes = File.read!(Path.join([src, "priv", "nif_check.wasm"]))
     File.write!(file, bytes)

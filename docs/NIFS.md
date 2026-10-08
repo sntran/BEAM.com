@@ -224,7 +224,9 @@ The limits:
 - **Copies in I/O queues.** `enif_ioq_enq_binary`, `enif_ioq_enqv` and
   `enif_inspect_iovec` copy the bytes into the memory of the module.
 - **No upgrade.** `load_nif/2` of new code, while the old code of the
-  module has the library, fails with `upgrade`.
+  module has the library, fails with `upgrade`. `beam.com` then frees
+  the module that it loaded for that call, as for any `load_nif/2` that
+  ERTS refuses before the `load` callback.
 - **Files.** The module can open files, as a native NIF can: WASI gets
   `/`, and the module starts in the work directory of the VM. The
   sandbox of `beam.com` ([`SANDBOX.md`](SANDBOX.md)) limits these files
@@ -330,13 +332,17 @@ application with a NIF in C (`c_src/nif_check.c`, and
 and AOT files in `priv/`, and `build.sh`, which makes them. `tests/run.sh`
 builds it with `-o` and runs its checks on each system, with the AOT
 file and with the interpreter. The checks also make each bad call of
-"Checks" above, and call functions of other types.
+"Checks" above, call functions of other types, and make 20 `load_nif/2`
+calls that ERTS refuses: on Linux, the address space of the VM must not
+grow by their modules.
 
 ## How it works
 
 - `patches/otp/0003-wasm-nif.patch`: `erts_load_nif` calls the hook
-  `erts_wasm_nif_open` before it opens a dynamic library. The headers of
-  `--nif-include` (`erl_nif.h` for `__wasm__`) are from the same patch.
+  `erts_wasm_nif_open` before it opens a dynamic library, and the hook
+  `erts_wasm_nif_close` with an entry of the first hook that it refuses
+  before the `load` callback. The headers of `--nif-include` (`erl_nif.h`
+  for `__wasm__`) are from the same patch.
 - `patches/wamr/0003-indirect-func-type.patch`: the type of the function
   of an element of the table of a module, so that the bridge checks the
   type of each function that it calls through the table.

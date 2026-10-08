@@ -4058,12 +4058,30 @@ ErlNifEntry *nif_wasm_open(const char *path, char *error, size_t size)
     return &c->entry;
 }
 
+/* ERTS refused the entry of the last nif_wasm_open() of this thread before
+ * its load callback: an upgrade, or a bad library. Free the library, else
+ * each such load_nif/2 keeps a module and its linear memory. After a load
+ * callback, nif_load() freed the library, or ERTS has it. */
+void nif_wasm_close(ErlNifEntry *entry)
+{
+    ctx *c = loading;
+    if (c && entry == &c->entry) {
+        loading = NULL;
+        if (debug)
+            fprintf(stderr, "nif_wasm: %s: refused by ERTS, freed\n", c->entry.name);
+        ctx_free(c);
+    }
+}
+
 #ifdef BEAM_COM_ERTS_HOOK
-/* ERTS (patches/otp/0003-wasm-nif.patch) calls this hook in load_nif/2. */
+/* ERTS (patches/otp/0003-wasm-nif.patch) calls these hooks in
+ * load_nif/2. */
 extern ErlNifEntry *(*erts_wasm_nif_open)(const char *path, char *error, size_t size);
+extern void (*erts_wasm_nif_close)(ErlNifEntry *entry);
 
 __attribute__((constructor)) static void nif_wasm_hook(void)
 {
     erts_wasm_nif_open = nif_wasm_open;
+    erts_wasm_nif_close = nif_wasm_close;
 }
 #endif

@@ -20,11 +20,14 @@
 -on_load(init/0).
 
 init() ->
+    erlang:load_nif(nif_file(), 1).
+
+nif_file() ->
     Priv = case code:priv_dir(nif_check) of
                {error, _} -> filename:join(filename:dirname(filename:dirname(code:which(?MODULE))), "priv");
                Dir -> Dir
            end,
-    erlang:load_nif(filename:join(Priv, "nif_check"), 1).
+    filename:join(Priv, "nif_check").
 
 add(_, _) -> erlang:nif_error(not_loaded).
 echo(_) -> erlang:nif_error(not_loaded).
@@ -187,7 +190,8 @@ bad_checks() ->
         {i64_nif, fun() -> trap(fun() -> i64_nif() end) end, trap},
         {bad_dtor, fun bad_dtor/0, 0},
         {dirty_port, fun dirty_port/0, 0},
-        {after_bad, fun() -> {add(1, 2), echo(Map), counter_add(counter_new(), 3)} end, {3, Map, 3}}].
+        {after_bad, fun() -> {add(1, 2), echo(Map), counter_add(counter_new(), 3)} end, {3, Map, 3}},
+        {refused_loads, fun refused_loads/0, {[bad_lib], true, 3}}].
 
 trap(F) ->
     try F() of
@@ -218,6 +222,30 @@ dirty_port() ->
             0
     catch
         _:_ -> 0
+    end.
+
+%% ERTS refuses a load_nif/2 of the library by an other module (bad_lib)
+%% after the loader loaded its module. The loader then frees the module:
+%% 20 refused loads do not keep 20 linear memories (on Linux, each one has
+%% 4 GiB of address space; /proc/self/status gives it, else 0).
+refused_loads() ->
+    File = nif_file(),
+    Before = vm_size(),
+    Results = [nif_check_other:load(File) || _ <- lists:seq(1, 20)],
+    After = vm_size(),
+    {lists:usort([element(1, Reason) || {error, Reason} <- Results] ++
+                 [R || R <- Results, not is_tuple(R) orelse element(1, R) =/= error]),
+     After - Before < 2 bsl 30 orelse {grew, After - Before}, add(1, 2)}.
+
+vm_size() ->
+    case file:read_file("/proc/self/status") of
+        {ok, Status} ->
+            case re:run(Status, "VmSize:\\s+(\\d+) kB", [{capture, all_but_first, list}]) of
+                {match, [Kb]} -> list_to_integer(Kb) * 1024;
+                nomatch -> 0
+            end;
+        _ ->
+            0
     end.
 
 %% The destructor of a counter runs when its process ends.
