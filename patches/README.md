@@ -21,6 +21,7 @@ order, with `git apply`.
 |---|---|---|---|
 | `0001-cosmopolitan.patch` | `erts/emulator/Makefile.in` | One run of the recipe makes all the static NIF libraries (`make -j`). | O11 |
 | | `erts/emulator/beam/erl_bits.c` | `FP16_FROM_FP64` with no compiler helper. | O1, C9 |
+| | `erts/emulator/beam/erl_errno_str.c` | The errno names of a native BEAM on each host: the names that the `#if` guards left out, and the names that Cosmopolitan does not define. | C35 |
 | | `erts/emulator/beam/erl_init.c` | On Windows, the exit status itself, not a wait status. | C21 |
 | | `erts/emulator/beam/sys.h` | No `ERTS_LOW_WRITE` section with Cosmopolitan. | C1, O3 |
 | | `erts/emulator/sys/common/erl_mmap.h` | No `MAP_FIXED` over a reservation (Windows). | C12 |

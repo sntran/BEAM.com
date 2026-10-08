@@ -49,6 +49,10 @@ the tests.
   CI sets `BEAM_COM_NETNS=1`, so there the test must run.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
+- `tests/errno_test.exs`: the errors of the VM have the names of the
+  BEAM, such as `eloop` and `ealready` (C35 in
+  [`UPSTREAM.md`](UPSTREAM.md)). In CI, the tests run in `beam.com`, so
+  the test checks the patch of `erl_errno_str.c`.
 - `examples/studio/test`: the tests of the import rewrite of the studio.
   `make unit` runs them after the tests of the root project.
 
