@@ -460,3 +460,84 @@ test('a VM that stops while a response streams and the body comes: the stream fa
   src.end();
   await assert.rejects(next, /the app stopped/);
 });
+
+// A Request of a host adapter (boot() of Node.js, for example) can give a
+// content-length and a stream with other bytes.
+function lying(length, ...chunks) {
+  let i = 0;
+  const stream = new ReadableStream({
+    pull(c) { if (i < chunks.length) c.enqueue(enc(chunks[i++])); else c.close(); },
+  });
+  return new Request(url, { method: 'POST', body: stream, duplex: 'half', headers: { 'content-length': String(length) } });
+}
+const closedFor = (sent) => sent.some((s) => s.header.t === 'tcp_closed' && s.header.id === conn(sent));
+
+test('a body with more bytes than its content-length gets 400, and the app gets none of them', async () => {
+  const smuggled = 'GET /admin HTTP/1.1\r\nhost: x\r\n\r\n';
+  const { v, sent } = vm();
+  const r = await bridge(v, lying(5, `hello${smuggled}`));
+  assert.equal(r.status, 400);
+  assert.equal(all(sent), '');
+  assert.ok(closedFor(sent));
+  // The bytes past the length come in a later read: the app got only the
+  // bytes of the length.
+  const second = vm();
+  const r2 = await bridge(second.v, lying(5, 'hello', smuggled));
+  assert.equal(r2.status, 400);
+  assert.doesNotMatch(all(second.sent), /admin/);
+  assert.ok(bodyBytes(second.sent) <= 5);
+  assert.ok(closedFor(second.sent));
+  assert.equal(second.v.conns.size, 0);
+});
+
+test('a body with fewer bytes than its content-length gets 400, and the app gets the end', async () => {
+  const { v, sent } = vm();
+  const r = await bridge(v, lying(10, 'abc'));
+  assert.equal(r.status, 400);
+  assert.ok(bodyBytes(sent) <= 3);
+  assert.ok(closedFor(sent));
+  assert.equal(v.conns.size, 0);
+});
+
+test('a body with the bytes of its content-length goes as it is', async () => {
+  const { v, sent } = vm();
+  const pending = bridge(v, lying(10, 'abcde', 'fghij'));
+  await settle();
+  assert.equal(all(sent).slice(headOf(sent).length), 'abcdefghij');
+  assert.equal(closedFor(sent), false);
+  v.tcps.get(conn(sent)).send(enc('HTTP/1.1 204 No Content\r\n\r\n'));
+  assert.equal((await pending).status, 204);
+});
+
+test('after the answer of the app, a body with more bytes ends the connection', async () => {
+  const { v, sent } = vm();
+  let ctl;
+  const stream = new ReadableStream({ start(c) { ctl = c; } });
+  const pending = bridge(v, new Request(url, { method: 'POST', body: stream, duplex: 'half', headers: { 'content-length': '3' } }));
+  ctl.enqueue(enc('abc'));
+  await settle();
+  v.tcps.get(conn(sent)).send(enc('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nok\r\n'));
+  const r = await pending;
+  assert.equal(r.status, 200);
+  ctl.enqueue(enc('GET / HTTP/1.1\r\n\r\n'));
+  ctl.close();
+  assert.equal(await r.text(), 'ok');
+  assert.ok(closedFor(sent));
+  assert.equal(bodyBytes(sent), 3);
+});
+
+test('a content-length that is not a number of bytes gets 400 before the app sees the request', async () => {
+  for (const declared of ['abc', '-1', '1.5', '5, 5', '1e3', '99999999999999999999']) {
+    const { v, sent } = vm();
+    const r = await bridge(v, new Request(url, { method: 'POST', body: 'hello', headers: { 'content-length': declared } }));
+    assert.equal(r.status, 400, declared);
+    assert.equal(sent.length, 0, declared);
+  }
+});
+
+test('a request with no body gets no content-length of the client', async () => {
+  const { v, sent } = vm();
+  bridge(v, new Request('https://app.example.com/', { headers: { 'content-length': '10' } }));
+  await settle();
+  assert.doesNotMatch(headOf(sent), /content-length/);
+});

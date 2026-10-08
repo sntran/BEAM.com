@@ -691,6 +691,15 @@ socket also tells the host how many bytes that `recv` still waits for,
 and the host then sends parts of up to 1 MiB: the app holds these bytes
 anyway, and each part costs a turn of the VM.
 
+A body with a `content-length` must have that number of bytes. The app
+gets at most these bytes, so the rest of a body cannot be a second
+request on the connection of the app. A body with more bytes or with
+fewer bytes gets 400, and the app gets the end of the connection. A
+`content-length` that is not a number of bytes gets 400 before the app
+sees the request. A client of Workers or Deno cannot send such a body,
+but a `Request` of the code of a host can (`boot()` of Node.js, or an
+entry that makes its own `Request`).
+
 The host starts the VM with `-MBsbct 8192 -MHsbct 8192`: a binary or a
 process heap goes into a carrier of its own only above 8 MB, in place of
 512 KB. In WebAssembly, these carriers made the memory of the VM grow far

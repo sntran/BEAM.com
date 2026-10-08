@@ -1906,8 +1906,16 @@ export class Vm {
     }
     const body = request.method === 'GET' || request.method === 'HEAD' || upgrade ? null : request.body;
     const declared = request.headers.get('content-length');
+    // The bytes of the body that the app gets (null: chunked). The host
+    // sends the app at most these bytes, so a declared length that is not
+    // a number of bytes is a bad request.
+    const length = body && declared !== null ? Number(declared) : null;
+    if (length !== null && !(/^\d+$/.test(declared) && Number.isSafeInteger(length))) {
+      finished();
+      return this.badLength(declared);
+    }
     const maxBody = limit(this.env.BEAM_MAX_BODY, 0);
-    if (body && maxBody && declared !== null && Number(declared) > maxBody) {
+    if (body && maxBody && length !== null && length > maxBody) {
       finished();
       return this.tooLarge(maxBody);
     }
@@ -1958,12 +1966,16 @@ export class Vm {
     } else {
       headers.set('connection', 'close');
     }
-    // A body of no declared length goes to the app as chunked.
-    if (body && declared !== null) headers.set('content-length', declared);
+    // A body of no declared length goes to the app as chunked. A request
+    // with no body gets no content-length of the client.
+    if (length !== null) headers.set('content-length', String(length));
     else if (body) {
       headers.delete('content-length');
       headers.set('transfer-encoding', 'chunked');
-    } else if (!upgrade && !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', '0');
+    } else {
+      headers.delete('content-length');
+      if (!upgrade && !['GET', 'HEAD'].includes(request.method)) headers.set('content-length', '0');
+    }
     let head = `${request.method} ${url.pathname}${url.search} HTTP/1.1\r\n`;
     for (const [k, v] of headers) head += `${k}: ${v}\r\n`;
     // The values of Headers are bytes (one character for each byte).
@@ -1994,7 +2006,7 @@ export class Vm {
       this.event({ t: 'tcp_accept', id: this.listeners.get(port), conn: id, host: request.headers.get('cf-connecting-ip') ?? '0.0.0.0', port: 0, ack: !!body || upgrade, sent: true });
       // With a body, the head goes in the event of the first part of the
       // body (bridgeUpload): a small body is one event, as before the parts.
-      if (body) c.upload = this.bridgeUpload(c, body, declared === null, maxBody, bytes);
+      if (body) c.upload = this.bridgeUpload(c, body, length, maxBody, bytes);
       else this.bridgeSend(c, bytes);
     });
     // A response before the end of the body: the rest of the body goes to
@@ -2025,8 +2037,12 @@ export class Vm {
   // has those bytes, UPLOAD_LARGE at most: the app holds them anyway, and
   // each event costs a turn of the VM. The head of the request goes with
   // the bytes of the first read of the client, with no wait for
-  // UPLOAD_PART bytes.
-  async bridgeUpload(c, body, chunked, max, head) {
+  // UPLOAD_PART bytes. length: the declared length of the body (null: the
+  // body goes as chunked). A body with more bytes, or with fewer bytes, is
+  // a bad request: the app gets at most length bytes, so the rest of a
+  // stream cannot be a second request on the connection of the app.
+  async bridgeUpload(c, body, length, max, head) {
+    const chunked = length === null;
     // workerd has readAtLeast. The option min of the standard BYOB read is
     // not safe: when the stream closes with fewer bytes than min, the read
     // errors the stream (Node.js 26, Chromium). So the other hosts use the
@@ -2080,12 +2096,15 @@ export class Vm {
           break;
         }
         const { value, done } = r;
-        if (value?.length) {
-          total += value.length;
-          if (max && total > max) {
-            this.bridgeRefuse(c, this.tooLarge(max));
-            break;
-          }
+        if (value?.length) total += value.length;
+        // No byte of a read past the declared length goes to the app.
+        if (!chunked && (total > length || (done && total < length))) {
+          this.bridgeRefuse(c, this.badLength(length));
+          break;
+        }
+        if (max && total > max) {
+          this.bridgeRefuse(c, this.tooLarge(max));
+          break;
         }
         // A chunk of the client can be large (Deno): it goes in pieces of
         // UPLOAD_READ bytes or less, so the window stays small.
@@ -2162,6 +2181,15 @@ export class Vm {
   tooLarge(max) {
     this.log(`beam: a request body above ${max} bytes: 413`);
     return new Response(`The body is larger than ${max} bytes.\n`, { status: 413, headers: { 'content-type': 'text/plain' } });
+  }
+
+  // The answer to a body that does not have the bytes of its
+  // content-length (a Request of a host adapter, for example), or to a
+  // content-length that is not a number of bytes.
+  badLength(declared) {
+    this.log(`beam: a request body that does not have its content-length (${String(declared).slice(0, 32)}): 400`);
+    return new Response('The body does not have the length of its content-length.\n',
+      { status: 400, headers: { 'content-type': 'text/plain' } });
   }
 
   // Bytes from the HTTP server of the app to the connection c of bridge().

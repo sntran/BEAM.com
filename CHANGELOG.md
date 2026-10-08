@@ -25,6 +25,13 @@ notes of its release.
   streamed its response while it read the body, held its response for
   60 s. Now the end of the response waits for the end of the request
   body, so the next request on the connection still works.
+- Security: a request body with more bytes than its `content-length`
+  can no longer put a second request on the connection of the app.
+  Before, the host gave the app the `content-length` and all the bytes
+  of the body stream, for example of a `Request` of `boot()` in Node.js.
+  Now the app gets at most that number of bytes. A body with more bytes
+  or with fewer bytes gets 400, and the app gets the end of the
+  connection.
 
 ## 0.1.0-rc.5
 
