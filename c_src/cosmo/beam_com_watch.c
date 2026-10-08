@@ -809,6 +809,10 @@ static void scan(const char *path, int depth, int report_changes)
         e->size = st.st_size;
         report(path, W_MODIFY | entry_kind(e));
         report(path, W_CLOSE_WRITE | entry_kind(e));
+    } else if (st.st_nlink == 0) {
+        /* A stat during the removal of the file can give a link count of
+         * 0 and a new ctime. The next comparison gives "removed", with no
+         * "inodemetamod", as inotify and FSEvents do. */
     } else if (st.st_ctim.tv_sec != e->ctime.tv_sec ||
                st.st_ctim.tv_nsec != e->ctime.tv_nsec) {
         e->ctime = st.st_ctim;

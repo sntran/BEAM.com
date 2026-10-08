@@ -907,8 +907,10 @@ fi
 # on Linux only: the code is the same on each system, and the BSDs run in
 # a slow VM. Then 1000 files, of which the watcher sees 500 removed and
 # 500 changed: each removal moves an entry in the table, and each change
-# must still come one time, with its path. The checks of the events wait
-# for their lines (watch_until), not for a fixed time.
+# must still come one time, with its path. A comparison during the rm
+# gives no other event for a removed file (its link count is 0). The
+# checks of the events wait for their lines (watch_until), not for a
+# fixed time.
 #
 # watch_until SECONDS TEST...: run TEST each second until it passes, at
 # most SECONDS times.

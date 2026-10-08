@@ -31,6 +31,10 @@ notes of its release.
   `_build/`. The watcher also goes into each directory one time, also
   through a bind mount. A link is an entry of its own: `mac_listener`
   gives it `issymlink`.
+- The file watcher (`inotifywait` on the BSDs, `mac_listener`) gives
+  only "removed" for a file that a process removes during a comparison.
+  Before, a stat during the removal could see the link count 0 and a new
+  ctime, and the watcher also gave `inodemetamod` (`ATTRIB`).
 - A NIF library in WebAssembly can no longer give Erlang memory of the
   VM, or stop the VM, with a bad call that ERTS checks only in a debug
   build. Such a call now raises `error:{wasm_trap, Message}`: for
