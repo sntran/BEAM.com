@@ -180,6 +180,17 @@ notes of its release.
   (`scripts/version.sh`), or when `CHANGELOG.md` has no section of the
   version. Each commit of `main` has its own CI group, so a merge does
   not stop the waiting run of the merge before it.
+- On macOS arm64, the start of a port program no longer hangs. In CI, a
+  child of `erl_child_setup` once faulted in the `fork()` of
+  Cosmopolitan, before its `execve()`. The signals were blocked, so the
+  child did not stop, and the emulator waited for it. `erl_child_setup`
+  now uses the `fork()` of libSystem there. See C36 in
+  `docs/UPSTREAM.md`.
+- On macOS, a port program gets only the descriptors 0, 1 and 2. Before,
+  it got each descriptor of the emulator that had no `FD_CLOEXEC`,
+  because `closefrom()` did nothing. See C37 in `docs/UPSTREAM.md`.
+- When a program of `tests/run.sh` hangs on macOS, the stacks in the log
+  have the names of the functions (`tests/symtab.py`).
 
 ## 0.1.0-rc.5
 

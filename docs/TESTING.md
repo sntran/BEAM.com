@@ -206,6 +206,19 @@ check of WSL2 in a user namespace of Linux, and the blue-green spike
 (`examples/bluegreen/check.sh`: a check on Linux, a probe on the other
 Unix systems).
 
+When a program does not stop in its time limit, or a process stays after
+the tests, `tests/run.sh` writes the processes and their stacks: `sample`
+on macOS, `procstat -kk` on FreeBSD, and the wait channels on Linux. The
+`sample` of macOS gives only addresses for an APE file, so
+`tests/symtab.py` adds the name of each function. It reads the symbol
+table that cosmocc puts in the zip of the file (`.symtab.arm64` or
+`.symtab.amd64`). It also works on a log of CI:
+
+```sh
+unzip -p beam.com .symtab.arm64 > symtab    # the beam.com of that run
+python3 tests/symtab.py symtab 0x8008485bc  # an address of the log
+```
+
 ## 4. File formats
 
 `tests/check_format.sh FILE...` checks the formats of an APE file with

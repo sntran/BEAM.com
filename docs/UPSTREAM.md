@@ -976,6 +976,74 @@ away. Then check the names that only one host has again, because
 integer constant for each errno name. In ERTS: the comparisons of the
 guards in C code at run time, when the errno names are not constants.
 
+### C36. macOS arm64: a child of fork() faults with all signals blocked
+
+**Status:** 4.0.2 (`libc/proc/fork.c`), seen one time in CI, in 1 of 24
+runs of the job "Run on macOS arm64".
+
+**Symptom.** The build of `examples/greeter_ex` did not stop, and the
+watchdog of `tests/run.sh` stopped it. A child that `erl_child_setup`
+made with `fork()`, for a port program, stayed in the state R for 4
+minutes, before its `execve()`. The emulator waited for the port
+program. All 687 samples of `sample` were at one address. With the
+symbol table of a build of the same commit (`tests/symtab.py`), the
+stack was `erl_child_setup_main` → `fork` → `_fork` → `__dll_remove`,
+at the store `elem->next->prev = elem->prev` (`str x0, [x2, #8]`).
+
+**Cause.** In the child, `_fork()` takes the thread out of
+`_pthread_list` and puts it back as the only thread. The store of
+`dll_remove()` faulted: the next element of the list was not a valid
+address in the child. `_fork()` blocks all signals (`BLOCK_SIGNALS`),
+so the signal of the fault stays pending, and macOS runs the same store
+again, with no end. We do not know why the list was wrong.
+`erl_child_setup` has one thread, so the list holds one element when
+the data is correct. The value of `me` comes from x28, the TLS register
+of Cosmopolitan. The trampoline of `cosmo_dltramp()` blocks the signals
+during a call of libSystem because x28 is not the TLS there, but the
+calls of libSystem in libc (the table `__syslib`: `mmap`, `munmap`,
+`clock_gettime`, `sigaction` and others) do not. A signal handler that
+runs in such a call reads its TLS from a wrong x28. This is one
+possible cause.
+
+**Workaround in BEAM.com.** On macOS arm64, `erl_child_setup` makes its
+children with the `fork()` of libSystem, through `cosmo_dltramp()`
+(`beam_com_helper_fork()` in `c_src/cosmo/beam_com.c`, and
+`patches/otp/0001-cosmopolitan.patch`). `erl_child_setup` has one
+thread, so the locks of the `fork()` of Cosmopolitan have no other
+holder. The child keeps the list of threads of its parent, and keeps
+the signal mask of `erl_child_setup`: a fault in the child then stops
+it with a report, and the port gets the exit status. The other systems
+use `fork()`. `tests/run.sh` starts 200 port programs, one after the
+other, on each system.
+
+**Possible upstream fix.** In `_fork()`: let a synchronous signal (a
+fault) stop the child, and block the signals in each call of
+`__syslib`, as `cosmo_dltramp()` does.
+
+### C37. closefrom() does nothing on macOS
+
+**Status:** 4.0.2 and `master` (`libc/calls/closefrom.c`).
+
+**Symptom.** On macOS, each port program got the descriptors of the
+emulator that do not have `FD_CLOEXEC`: in CI, `lsof` showed pipes of
+the emulator and the `com.apple.netsrc` sockets of libSystem in a child
+of `erl_child_setup`. A native BEAM on macOS closes them.
+
+**Cause.** `closefrom()` gives `ENOSYS` on XNU, and closes nothing.
+The `configure` of OTP finds `closefrom()` in Cosmopolitan, so
+`erl_child_setup` calls `closefrom(4)` and does not check the result.
+The native build on macOS has no `closefrom()`, and closes each
+descriptor of `/dev/fd`.
+
+**Workaround in BEAM.com.** When `closefrom(4)` fails, `erl_child_setup`
+closes each descriptor of `/dev/fd` from 4, as on the systems with no
+`closefrom()` (`patches/otp/0001-cosmopolitan.patch`). `tests/run.sh`
+checks that a port program gets only the descriptors 0, 1 and 2, on
+Linux and macOS.
+
+**Possible upstream fix.** On XNU, a loop over the descriptors of
+`/dev/fd`, or over `getdtablesize()`, in `closefrom()`.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

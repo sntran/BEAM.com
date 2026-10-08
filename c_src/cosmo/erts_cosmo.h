@@ -127,6 +127,13 @@ int beam_com_execve(const char *path, char *const argv[],
 int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
                           int other) __attribute__((__weak__));
 
+/*
+ * Defined in beam_com.c. fork() for erl_child_setup: on macOS arm64, the
+ * fork() of libSystem, with no change to the list of threads in the child
+ * (docs/UPSTREAM.md, C36). On the other systems, fork().
+ */
+int beam_com_helper_fork(void) __attribute__((__weak__));
+
 #ifdef __cplusplus
 }
 #endif

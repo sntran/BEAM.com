@@ -98,10 +98,20 @@ index eac9926..a68088e 100644
  	!defined(_DARWIN_UNLIMITED_SELECT)
      if (max_fds > FD_SETSIZE)
 diff --git a/erts/emulator/sys/unix/erl_child_setup.c b/erts/emulator/sys/unix/erl_child_setup.c
-index aa5c2e9..1f1bf91 100644
+index aa5c2e9..9dee841 100644
 --- a/erts/emulator/sys/unix/erl_child_setup.c
 +++ b/erts/emulator/sys/unix/erl_child_setup.c
-@@ -360,6 +360,16 @@ start_new_child(int pipes[])
+@@ -61,6 +61,9 @@
+ #include <sys/types.h>
+ #include <sys/socket.h>
+ #include <termios.h>
++#ifdef __COSMOPOLITAN__
++#include <dirent.h>
++#endif
+ 
+ #define WANT_NONBLOCKING
+ 
+@@ -360,6 +363,16 @@ start_new_child(int pipes[])
  
      if (args) {
          /* spawn_executable */
@@ -118,6 +128,56 @@ index aa5c2e9..1f1bf91 100644
          execve(cmd, args, new_environ);
      } else {
          execle(SHELL, "sh", "-c", cmd, (char *) NULL, new_environ);
+@@ -451,7 +464,7 @@ main(int argc, char *argv[])
+ {
+     /* This fd should be open from beam */
+     int uds_fd = 3, max_fd = 3;
+-#ifndef HAVE_CLOSEFROM
++#if !defined(HAVE_CLOSEFROM) || defined(__COSMOPOLITAN__)
+     int i;
+     DIR *dir;
+ #endif
+@@ -466,9 +479,15 @@ main(int argc, char *argv[])
+    CLOEXEC flags set on them. This means that we
+    only have to close a very limited number of fds
+    after we fork before the exec. */
+-#if defined(HAVE_CLOSEFROM)
++#if defined(HAVE_CLOSEFROM) && !defined(__COSMOPOLITAN__)
+     closefrom(4);
+ #else
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: the closefrom() of Cosmopolitan gives ENOSYS on macOS,
++     * and then closes nothing (docs/UPSTREAM.md, C37). The loop below is
++     * the one of the systems with no closefrom(). */
++    if (closefrom(4) != 0) {
++#endif
+     dir = opendir("/dev/fd");
+     if (dir == NULL) { /* /dev/fd not available */
+         for (i = 4; i < max_files; i++)
+@@ -492,6 +511,9 @@ main(int argc, char *argv[])
+ 
+         closedir(dir);
+     }
++#ifdef __COSMOPOLITAN__
++    }
++#endif
+ #endif
+ 
+     if (pipe(sigchld_pipe) < 0) {
+@@ -585,7 +607,13 @@ main(int argc, char *argv[])
+ 
+             errno = 0;
+ 
++#ifdef __COSMOPOLITAN__
++            /* BEAM.com: on macOS arm64, the fork() of libSystem, not the
++             * fork() of Cosmopolitan (docs/UPSTREAM.md, C36). */
++            os_pid = beam_com_helper_fork ? beam_com_helper_fork() : fork();
++#else
+             os_pid = fork();
++#endif
+             if (os_pid == 0)
+                 start_new_child(pipes);
+ 
 diff --git a/erts/emulator/sys/unix/erl_main.c b/erts/emulator/sys/unix/erl_main.c
 index 2d1d60e..c72eb74 100644
 --- a/erts/emulator/sys/unix/erl_main.c
