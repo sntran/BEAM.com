@@ -1,7 +1,10 @@
 # Blue-green upgrade of one beam.com file (a spike)
 
 This spike replaces a running program with a new file of the same
-program. No request fails, and the state of the program stays.
+program. The state of the program stays. Almost no request fails: on
+Linux, a request that waits in the accept queue of the old server can
+get `econnreset` when that server closes its listener (see
+[Limits](#limits)).
 [`bluegreen.erl`](bluegreen.erl) is a small HTTP server. It counts its
 requests, and it is also its own load client.
 
@@ -100,9 +103,12 @@ requests, and `sh` starts `check.sh` with `RUNNER` for each APE file.
 - **Linux.** When a listener with `SO_REUSEPORT` closes, Linux resets the
   connections in its accept queue. The acceptor of the old server keeps
   that queue short, and the runs had no failure, but the risk is not
-  zero: one run of 5000 requests had one `econnreset`. Linux 5.14 and
+  zero: one run of 5000 requests had one `econnreset`, and one CI run
+  on Linux aarch64 had one in 2000 (October 2026). Linux 5.14 and
   later can move these connections to the other listener
-  (`sysctl net.ipv4.tcp_migrate_req=1`).
+  (`sysctl net.ipv4.tcp_migrate_req=1`). A handover with no reset needs
+  another method, for example to give the listening socket itself to
+  the new server. That work comes after 0.1.0.
 - **macOS and the BSDs** have other rules for `SO_REUSEPORT`. CI runs the
   check there as a probe, to get the result.
 - **The state** is in one process here. A real program must collect the

@@ -72,8 +72,6 @@ systems.
 
 ### Cloudflare Workers
 
-- A test in CI that runs the Workers in `workerd` (CI builds them, and
-  checks the files, but does not run them yet).
 - Host tenants for the public Livebook (a domain with a wildcard), so
   that each instance has its own origin in the browser.
 - `BEAM_CONNECT`: rules with IPv6 addresses (`[::1]:443`) and with a
@@ -90,7 +88,7 @@ systems.
 - Incoming TCP through the `connect()` handler of Workers, when
   Cloudflare makes it available.
 
-## Watch list (checked 2026-09-26)
+## Watch list (checked 2026-10-08)
 
 All the parts of the build are at their latest stable release (cosmocc
 4.0.2, Erlang/OTP 29.1.1, Elixir 1.20.4, OpenSSL 4.0.3, SQLite 3.53.4,
@@ -98,10 +96,13 @@ WAMR 2.4.5, emsdk 6.0.10).
 
 - **Cosmopolitan master** has fixes that are not in a release yet: in
   threads and locks (`EINTR` in condition variables, the lock on NetBSD,
-  the locks on Windows and XNU). Take the next cosmocc release when it
-  comes, and run the stress tests again (C25 in
-  [`UPSTREAM.md`](UPSTREAM.md)). C25 and C26 are candidates to send
-  upstream.
+  the locks on Windows and XNU), and in `memchr()` of 0 bytes (C33).
+  Take the next cosmocc release when it comes, run the stress tests
+  again (C25 in [`UPSTREAM.md`](UPSTREAM.md)), and remove the wrap of
+  `memchr()`. C25 and C26 are candidates to send upstream.
+- **OpenSSL 4.1** comes in October 2026. It is a feature release with
+  short support, not a long-term support release. Stay on the 4.0
+  releases and take their security fixes.
 - **OpenBSD 7.4 and later** accept system calls only from the places
   that the kernel records (`pinsyscalls`). This needs a change in
   Cosmopolitan itself (C14). CI stays on OpenBSD 7.3 until then.

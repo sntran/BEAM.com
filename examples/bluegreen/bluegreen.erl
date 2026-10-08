@@ -1,6 +1,7 @@
 %% A blue-green upgrade of one beam.com file: a new file of the program
-%% takes the place of the running one, with no failed request and no lost
-%% state. A spike: see examples/bluegreen/README.md.
+%% takes the place of the running one, with no lost state. On Linux, a
+%% request in the accept queue of the old listener can get a reset (see
+%% "Limits" in examples/bluegreen/README.md). A spike: see that file.
 %%
 %%   beam.com examples/bluegreen/bluegreen.erl -o bluegreen.com
 %%   ./bluegreen.com serve PORT            serve "count C version V upgrades U"
