@@ -497,11 +497,19 @@ For `fetch()`, the socket of the program goes to a server in the VM
   never the `Host` header or the SNI of the request. So `BEAM_CONNECT`
   still applies.
 - **The body.** A request body is at most 32 MiB. The response comes in
-  chunks, with chunked transfer coding. `fetch()` gives the body decoded,
-  so the response has no `content-encoding`. A large HTTPS body costs CPU
-  time: the TLS of each byte runs in WebAssembly.
-- **No retry.** When the host does not answer in 5 minutes, the server
-  closes the connection: the program does not know if the request ran.
+  chunks, with chunked transfer coding. An HTTP/1.0 request gets a body
+  with no chunked coding (RFC 9112), and the end of the connection ends
+  the body. `fetch()` gives the body decoded, so the response has no
+  `content-encoding`. A large HTTPS body costs CPU time: the TLS of each
+  byte runs in WebAssembly.
+- **The headers.** A value of a header can hold bytes above 0x7F
+  (obs-text). They go to `fetch()` as they are, and the bytes of the
+  headers of the response come back as they are. A byte above 0x7F in a
+  path goes as `%XX`.
+- **No retry.** When the host gives no head of a response in 5 minutes,
+  the server answers 504 (Gateway Timeout) and closes the connection. The
+  request may have run. Caution: do not send again a request that is not
+  idempotent (a payment, for example) before you check its result.
 - **WebSocket.** An upgrade does not go through `fetch()`. The server
   opens a tunnel: a `connect()` to the host of the connect, with TLS of
   its own, which checks the certificate of the host with the trust store

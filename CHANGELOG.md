@@ -52,6 +52,16 @@ notes of its release.
   `send_timeout_close`, `deliver`, `header` and `mode` work. The calls on
   a socket that closed give the errors of the BEAM, and `close/1` takes
   the `tcp_closed` of the socket from the mailbox.
+- The fetch path: a header value or a path with bytes above 0x7F
+  (obs-text) no longer stops the connection. The bytes go to `fetch()` as
+  they are, and a path gets them as `%XX`. A connection that stops leaves
+  no fetch behind in the host.
+- The fetch path answers an HTTP/1.0 request with no chunked coding (RFC
+  9112): the end of the connection ends the body. The answers of the
+  server itself have a `content-length`.
+- The fetch path answers 504 (Gateway Timeout) when the host gives no
+  head of a response in 5 minutes. Before, it answered 502 "the host did
+  not answer". The request may have run.
 
 ## 0.1.0-rc.5
 
