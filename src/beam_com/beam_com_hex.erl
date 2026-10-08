@@ -559,8 +559,15 @@ consult_terms(Chars, Acc) ->
         Rest ->
             {T, Rest1} = term(Rest, 0),
             [$. | Rest2] = skip(Rest1),
+            true = end_dot(Rest2),
             consult_terms(Rest2, [T | Acc])
     end.
+
+%% As in erl_scan, a dot ends a term only before white space, a comment
+%% or the end of the text. So "1.5." is not the terms 1 and 5: it is a
+%% float, and this reader refuses it.
+end_dot([]) -> true;
+end_dot([C | _]) -> C =:= $\s orelse C =:= $\t orelse C =:= $\n orelse C =:= $\r orelse C =:= $%.
 
 -define(MAX_DEPTH, 64).
 
