@@ -236,6 +236,43 @@ The limits:
 - **Errors.** A trap of the module (for example an access out of its
   memory) raises `error:{wasm_trap, Message}` in the calling process.
   The module stays loaded.
+- **Checks.** ERTS checks some conditions of the `enif_*` functions only
+  in a debug build. A native NIF that breaks one can give Erlang memory
+  of the VM, or stop the VM. `beam.com` checks them for a module, and a
+  bad call is a trap (`error:{wasm_trap, Message}`):
+  - A term in a new term (a tuple, a list, a map, a sub-binary, the
+    reason of an exception, a message of a message environment), and
+    the result of a NIF, is of the same environment, or immediate (an
+    atom, a small integer, a local pid). `enif_make_copy` copies a term
+    into an other environment. The parts of a term (of `enif_get_tuple`,
+    `enif_get_list_cell`, a map) are of the environment of the term.
+  - The result of an exception (`enif_make_badarg`, for example of
+    `enif_make_double` of a NaN) is no term. In a new term, the new term
+    is the same result, so the call raises the exception, as in ERTS.
+  - `enif_make_sub_binary` gets a binary or a bitstring, and a range in
+    its whole bytes. An `ErlNifPid` holds a local pid or `undefined`, and
+    an `ErlNifPort` a local port.
+  - A resource needs a reference for `enif_keep_resource`,
+    `enif_make_resource` and the monitors: a reference of the module
+    (`enif_alloc_resource`, `enif_keep_resource`), or a term of the
+    resource in an open environment (for example of
+    `enif_get_resource`). `enif_release_resource` releases only a
+    reference of the module. The destructor of a resource cannot keep
+    it. `enif_alloc_resource` fails in the `load` callback, where ERTS
+    has not completed the new types.
+  - `enif_is_current_process_alive`, `enif_consume_timeslice` and
+    `enif_schedule_nif` need the environment of a NIF call, and
+    `enif_whereis_pid` and `enif_whereis_port` on a dirty scheduler too.
+  - A map iterator ends with the environment of its map.
+  - Each function of the module that `beam.com` calls (a NIF, `load`,
+    `unload`, a destructor, a down callback, the function of
+    `enif_schedule_nif`) has the type of its C declaration: `i32`
+    parameters (one for each argument) and at most one `i32` result.
+    For an other type, the call traps with `indirect call type
+    mismatch`.
+
+  On a dirty scheduler, `enif_port_command` to a closed port gives 0
+  (ERTS 29.1.1 stops there, O25 in [`UPSTREAM.md`](UPSTREAM.md)).
 - **At the edge.** See the next section.
 
 ## At the edge
@@ -288,16 +325,21 @@ the compiled module of a Worker, and after a snapshot and its restore.
 ## The test
 
 [`tests/programs/nif_check`](../tests/programs/nif_check) is an
-application with a NIF in C (`c_src/nif_check.c`), its `.wasm` and AOT
-files in `priv/`, and `build.sh`, which makes them. `tests/run.sh`
+application with a NIF in C (`c_src/nif_check.c`, and
+`c_src/nif_check_mv.c` for a function with four results), its `.wasm`
+and AOT files in `priv/`, and `build.sh`, which makes them. `tests/run.sh`
 builds it with `-o` and runs its checks on each system, with the AOT
-file and with the interpreter.
+file and with the interpreter. The checks also make each bad call of
+"Checks" above, and call functions of other types.
 
 ## How it works
 
 - `patches/otp/0003-wasm-nif.patch`: `erts_load_nif` calls the hook
   `erts_wasm_nif_open` before it opens a dynamic library. The headers of
   `--nif-include` (`erl_nif.h` for `__wasm__`) are from the same patch.
+- `patches/wamr/0003-indirect-func-type.patch`: the type of the function
+  of an element of the table of a module, so that the bridge checks the
+  type of each function that it calls through the table.
 - `c_src/wasm/nif_wasm.c`: the hook loads the module in WAMR, reads the
   `ErlNifEntry` of the module, and gives ERTS an entry with a native
   function for each NIF. Each `enif_*` import changes the 32-bit

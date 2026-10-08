@@ -74,6 +74,7 @@ order, with `git apply`.
 |---|---|---|---|
 | `0001-cosmopolitan-aarch64-jit.patch` | `core/shared/platform/common/posix/posix_memmap.c`, `posix_thread.c` | `MAP_JIT` and the write protection of macOS on Apple silicon at run time, and the cache flush on aarch64. | W5, W6 |
 | `0002-reserve-linear-memory.patch` | `core/iwasm/common/wasm_memory.c` | A linear memory of wasm32 has its maximum size in virtual memory from the start, so a growth copies nothing. On Windows and OpenBSD, its mapping has room for twice its pages, so the copies take linear time. | W10 |
+| `0003-indirect-func-type.patch` | `core/iwasm/common/wasm_runtime_common.c`, `core/iwasm/include/wasm_export.h` | `wasm_runtime_get_indirect_func_type()`: the type of the function of an element of table 0, also for a table with no export, so that a caller can check it before `wasm_runtime_call_indirect()`. | W11 |
 
 ## Changes that are not patch files
 

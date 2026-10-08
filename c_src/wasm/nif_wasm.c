@@ -34,6 +34,24 @@
  *   can enter again, for example for the destructor of a resource that
  *   a call releases. The module has no threads, so its mutexes and
  *   condition variables do nothing.
+ * - ERTS checks some conditions of the enif_* functions only with ASSERT
+ *   (in a debug build). This file checks them, and a bad call traps
+ *   (error:{wasm_trap, Message}), so a module cannot give Erlang memory
+ *   of the VM or stop the VM:
+ *     - a term in a new term is of the environment of the new term, or
+ *       immediate (ASSERT_IN_ENV). A handle holds the slot of the
+ *       environment that keeps its term: the parts of a tuple, a list
+ *       or a map get the slot of their tuple, list or map;
+ *     - the result of an exception (THE_NON_VALUE) is no term. In a new
+ *       term, it gives the same result, as the call raises it;
+ *     - a sub-binary is inside its binary, an ErlNifPid holds a local
+ *       pid (or undefined), and an ErlNifPort a local port;
+ *     - a resource has a reference: one of the module (its count), or a
+ *       term in an open environment. It has none in its destructor;
+ *     - the functions of a process get the environment of a process;
+ *     - a map iterator ends with the environment of its map;
+ *     - a function of the module that this file calls has the type of
+ *       the call.
  */
 #include <errno.h>
 #include <stdint.h>
@@ -84,6 +102,10 @@ void wasm_exec_env_set_thread_info(wasm_exec_env_t exec_env);
  * 64-bit): the primary tag 3, and the small integer tag 0xF. */
 #define IS_IMMEDIATE(t) (((t) & 0x3) == 0x3)
 #define IS_SMALL(t) (((t) & 0xF) == 0xF)
+/* THE_NON_VALUE of ERTS (erl_term.h without ET_DEBUG: TAG_PRIMARY_HEADER):
+ * the result of enif_make_badarg, enif_raise_exception and
+ * enif_schedule_nif. It is not a term. */
+#define NON_VALUE ((ERL_NIF_TERM)0)
 
 typedef struct {
     unsigned char *host;
@@ -99,6 +121,8 @@ typedef struct {
     uint32_t nfree, capfree;
     pending_t *pend;            /* binaries of enif_make_new_binary */
     uint32_t npend, cappend;
+    uint32_t gen;               /* + 1 when the slot loses its terms */
+    uint32_t niter;             /* the map iterators of its maps */
 } slot_t;
 
 typedef struct {
@@ -113,7 +137,17 @@ typedef struct {
     struct ctx *c;
     uint32_t rtype;             /* index into ctx.rtypes */
     uint32_t gptr, size;
+    uint32_t refs;              /* the references of the module */
+    uint32_t pslot, pgen;       /* a slot (index + 1) and its gen: a term of
+                                 * the resource is in it, or 0 */
+    int dying;                  /* its destructor runs */
 } hres_t;
+
+/* A map iterator of the module: it ends with the slot of its map. */
+typedef struct {
+    ErlNifMapIterator it;
+    uint32_t slot;              /* index of the slot of the map */
+} iter_t;
 
 typedef struct {
     uint32_t g;                 /* 0: empty, 1: removed */
@@ -166,8 +200,12 @@ typedef struct ctx {
     uint32_t nrt, caprt;
     res_slot_t *res;            /* guest pointer -> host object */
     uint32_t nres, capres;
-    ErlNifMapIterator **iters;
+    iter_t **iters;
     uint32_t niter, capiter;
+    int in_load;                /* the load callback runs */
+#ifndef NIF_WASM_EDGE
+    wasm_func_type_t good_type[5];  /* a type of guest_type_ok() for each argc */
+#endif
     uint32_t tsd[MAX_TSD];
     uint32_t ntsd;
     uint32_t erts_version, otp_release;     /* strings of enif_system_info */
@@ -346,14 +384,35 @@ static void flush_all(ctx *c)
         }
 }
 
-/* Empty the slot (its terms, its memory in the module), and keep it. */
+/* End the map iterators of the maps of the slot: ERTS keeps pointers
+ * into a map in its iterator, so a later call cannot use an iterator of a
+ * map that is gone. The maps must still be there. */
+static void slot_iters_end(ctx *c, slot_t *sl)
+{
+    uint32_t i, s = (uint32_t)(sl - c->slots);
+    for (i = 0; sl->niter && i < c->niter; i++)
+        if (c->iters[i] && c->iters[i]->slot == s) {
+            enif_map_iterator_destroy(sl->env, &c->iters[i]->it);
+            free(c->iters[i]);
+            c->iters[i] = NULL;
+            sl->niter--;
+        }
+    sl->niter = 0;
+}
+
+/* Empty the slot (its terms, its memory in the module), and keep it.
+ * Call it before ERTS clears or frees the environment (the map iterators
+ * of the slot read their maps). A proof of a resource in the slot
+ * (hres_t.pslot) ends with the gen. */
 static void slot_reset(ctx *c, slot_t *sl)
 {
     uint32_t i;
+    slot_iters_end(c, sl);
     for (i = 0; i < sl->nfree; i++)
         gfree(c, sl->frees[i]);
     c->npend -= sl->npend;
     sl->n = sl->nfree = sl->npend = 0;
+    sl->gen++;
 }
 
 static void slot_close(ctx *c, int s)
@@ -377,6 +436,9 @@ static uint32_t scratch(ctx *c, uint32_t e, uint32_t n)
 {
     slot_t *sl = &c->slots[e - 1];
     uint32_t m = (n + 7) & ~7u, g;
+    /* (n + 7) of a size near 4 GiB wraps: not 8 bytes for it. */
+    if (n > UINT32_MAX - 7)
+        return 0;
     if (m == 0)
         m = 8;
     if (!sl->owned && c->arena && m <= ARENA_SIZE - c->arena_used) {
@@ -476,21 +538,60 @@ static int get_term(ctx *c, uint32_t h, ERL_NIF_TERM *t)
     return 1;
 }
 
-/* Read N handles at OFF into OUT (terms). */
-static int get_terms(ctx *c, uint32_t off, uint32_t n, ERL_NIF_TERM *out)
+/* The term T of the handle H is immediate (each environment can have
+ * it), or a term of the slot of the environment E. */
+static int in_env(uint32_t e, uint32_t h, ERL_NIF_TERM t)
+{
+    return (h & 3) != 0 || IS_IMMEDIATE(t) || ((h >> 2) >> IDX_BITS) == e - 1;
+}
+
+/* The environment (slot + 1) that keeps the term of the handle H, for
+ * the parts of the term (its elements, its tail): they are in the same
+ * memory. An immediate term has no parts: E. */
+static uint32_t env_of(uint32_t e, uint32_t h)
+{
+    return (h & 3) == 0 ? ((h >> 2) >> IDX_BITS) + 1 : e;
+}
+
+/* The results of part(). */
+#define PART_OK 0
+#define PART_BAD 1          /* no term */
+#define PART_OTHER_ENV 2    /* a term of an other environment */
+#define PART_EXCEPTION 3    /* the result of an exception of the environment */
+
+/* The term of the handle H, for a new term of the environment ENV (slot
+ * E). ERTS checks it only in a debug build (ASSERT_IN_ENV): a term of an
+ * other environment in the new term points to memory that ENV does not
+ * keep. The result of an exception is no term: when ENV has an exception,
+ * the call raises it, so the new term is the same result. */
+static int part(ctx *c, ErlNifEnv *env, uint32_t e, uint32_t h, ERL_NIF_TERM *t)
+{
+    if (!get_term(c, h, t))
+        return PART_BAD;
+    if (*t == NON_VALUE)
+        return enif_has_pending_exception(env, NULL) ? PART_EXCEPTION : PART_BAD;
+    return in_env(e, h, *t) ? PART_OK : PART_OTHER_ENV;
+}
+
+/* part() for N handles at OFF, into OUT. A bad term comes before an
+ * exception. */
+static int get_parts(ctx *c, ErlNifEnv *env, uint32_t e, uint32_t off, uint32_t n, ERL_NIF_TERM *out)
 {
     uint32_t i, h;
     const uint8_t *p;
+    int r, exc = 0;
     if (n == 0)
-        return 1;
+        return PART_OK;
     if (n > UINT32_MAX / 4 || !(p = gaddr(c, off, 4 * n)))
-        return 0;
+        return PART_BAD;
     for (i = 0; i < n; i++) {
         memcpy(&h, p + 4 * i, 4);
-        if (!get_term(c, h, &out[i]))
-            return 0;
+        r = part(c, env, e, h, &out[i]);
+        if (r == PART_BAD || r == PART_OTHER_ENV)
+            return r;
+        exc |= r == PART_EXCEPTION;
     }
-    return 1;
+    return exc ? PART_EXCEPTION : PART_OK;
 }
 
 /* Write the handles of N terms into new memory of the slot. Gives the
@@ -548,8 +649,60 @@ static void leave(ctx *c)
     enif_mutex_unlock(c->lock);
 }
 
+#ifndef NIF_WASM_EDGE
+/* The function type T of the module: NP parameters and at most NR
+ * results, all i32. WAMR writes all the results of a call into its
+ * arguments, and AOT code reads all its parameters from them, so a call
+ * of an other type reads or writes past the arguments. */
+static int type_ok(wasm_func_type_t t, uint32_t np, uint32_t nr)
+{
+    uint32_t i, n = wasm_func_type_get_result_count(t);
+    if (wasm_func_type_get_param_count(t) != np || n > nr)
+        return 0;
+    for (i = 0; i < np; i++)
+        if (wasm_func_type_get_param_valkind(t, i) != WASM_I32)
+            return 0;
+    for (i = 0; i < n; i++)
+        if (wasm_func_type_get_result_valkind(t, i) != WASM_I32)
+            return 0;
+    return 1;
+}
+#endif
+
+/* The table index FIDX of the module is a function with ARGC parameters
+ * and 0 or 1 result, all i32, as the callbacks get them (a NIF, load,
+ * unload, a destructor, a down callback). Gives NULL, or the error. In
+ * the WebAssembly runtime of --target wasm32, host_call() of
+ * nif_wasm_host.c checks the same. */
+static const char *guest_type_error(ctx *c, uint32_t fidx, uint32_t argc)
+{
+#ifdef NIF_WASM_EDGE
+    (void)c;
+    (void)fidx;
+    (void)argc;
+    return NULL;
+#else
+    /* patches/wamr/0003-indirect-func-type.patch */
+    wasm_func_type_t t = wasm_runtime_get_indirect_func_type(c->inst, fidx);
+    if (!t)
+        return "undefined element";
+    if (argc < 5 && t == c->good_type[argc])
+        return NULL;
+    if (!type_ok(t, argc, 1))
+        return "indirect call type mismatch";
+    if (argc < 5)
+        c->good_type[argc] = t;
+    return NULL;
+#endif
+}
+
 static int guest_call(ctx *c, uint32_t fidx, uint32_t argc, uint32_t *argv)
 {
+    const char *error = guest_type_error(c, fidx, argc);
+    if (error) {
+        wasm_runtime_set_exception(c->inst, error);
+        return 0;
+    }
     call_ready(c);
     return wasm_runtime_call_indirect(c->exec, fidx, argc, argv);
 }
@@ -592,7 +745,9 @@ static ERL_NIF_TERM call_nif(ctx *c, uint32_t fidx, ErlNifEnv *env, int argc, co
                                                        enif_make_atom(env, "no_memory")));
     else if (!guest_call(c, fidx, 3, a))
         r = trap(c, env);
-    else if (!get_term(c, a[0], &r))
+    else if (!get_term(c, a[0], &r) || !in_env(s + 1, a[0], r))
+        /* The result is a term of the call (or immediate): ERTS keeps no
+         * other environment for it. */
         r = enif_raise_exception(env, enif_make_tuple2(env, enif_make_atom(env, "wasm_trap"),
                                                        enif_make_atom(env, "bad_term")));
     flush_all(c);
@@ -691,6 +846,37 @@ static void res_del(ctx *c, uint32_t g)
         }
 }
 
+/* The slot of the proof of res_seen() is open, with the same terms. */
+static int res_proof(ctx *c, hres_t *h)
+{
+    slot_t *sl;
+    if (!h->pslot)
+        return 0;
+    sl = &c->slots[h->pslot - 1];
+    return sl->used && sl->gen == h->pgen;
+}
+
+/* ERTS keeps the resource H: the module has a reference, or a term of
+ * the resource is in an open environment (the proof of res_seen()). ERTS
+ * checks the count only with ASSERT: a keep, a new term or a monitor of a
+ * resource whose count is 0 uses memory that ERTS frees after its
+ * destructor. */
+static int res_live(ctx *c, hres_t *h)
+{
+    return !h->dying && (h->refs || res_proof(c, h));
+}
+
+/* A term of the resource H is in the environment E (slot + 1). A proof
+ * in an environment of enif_alloc_env stays over a proof in a call: it
+ * can stay open after the call. */
+static void res_seen(ctx *c, hres_t *h, uint32_t e)
+{
+    if (res_proof(c, h) && (c->slots[h->pslot - 1].owned || !c->slots[e - 1].owned))
+        return;
+    h->pslot = e;
+    h->pgen = c->slots[e - 1].gen;
+}
+
 static void host_dtor(ErlNifEnv *env, void *obj)
 {
     hres_t *h = obj;
@@ -700,6 +886,8 @@ static void host_dtor(ErlNifEnv *env, void *obj)
     if (!c)
         return;
     enter(c);
+    /* The count is 0: the destructor cannot keep the resource. */
+    h->dying = 1;
     rt = &c->rtypes[h->rtype];
     if (rt->dtor) {
         uint32_t a[2];
@@ -739,11 +927,47 @@ static ctx *ctx_of(wasm_exec_env_t x)
             return fail(c, "enif: bad environment"); \
         var = sl_->env; \
     } while (0)
-#define TERM(var, h) ERL_NIF_TERM var; if (!get_term(c, (h), &var)) return fail(c, "enif: bad term")
+/* A term. The result of an exception is no term: only enif_is_* take it
+ * (TERMX), as they look only at its tag. */
+#define TERM(var, h) ERL_NIF_TERM var; \
+    if (!get_term(c, (h), &var) || var == NON_VALUE) return fail(c, "enif: bad term")
+#define TERMX(var, h) ERL_NIF_TERM var; if (!get_term(c, (h), &var)) return fail(c, "enif: bad term")
+/* A term for a new term of the environment env (slot e), see part().
+ * EXC: the result when the term is the result of an exception of env. */
+#define PART(var, h, exc) ERL_NIF_TERM var; do { int r_ = part(c, env, e, (h), &var); \
+        if (r_ == PART_EXCEPTION) return (exc); \
+        if (r_ != PART_OK) return part_fail(c, r_); } while (0)
 #define RET(e, t) do { uint32_t h_ = handle(c, (e), (t)); \
     return h_ ? h_ : fail(c, "enif: no memory for terms"); } while (0)
 #define OUT(off, e, t) do { uint32_t h_ = handle(c, (e), (t)); \
     if (!h_ || !put32(c, (off), h_)) return fail(c, "enif: bad pointer"); } while (0)
+
+static uint32_t part_fail(ctx *c, int r)
+{
+    return fail(c, r == PART_OTHER_ENV ? "enif: a term of an other environment" : "enif: bad term");
+}
+
+/* The handle of the result of an exception of the environment E. */
+static uint32_t exc_term(ctx *c, uint32_t e)
+{
+    uint32_t h = handle(c, e, NON_VALUE);
+    return h ? h : fail(c, "enif: no memory for terms");
+}
+
+/* ENV is the environment of a process (of a NIF call), not one of
+ * enif_alloc_env or of a callback. */
+static int proc_env(ErlNifEnv *env)
+{
+    ErlNifPid pid;
+    return enif_self(env, &pid) != NULL;
+}
+
+/* enif_whereis_* read the process of ENV on a dirty scheduler. */
+static int whereis_env(ErlNifEnv *env)
+{
+    int t = enif_thread_type();
+    return proc_env(env) || (t != ERL_NIF_THR_DIRTY_CPU_SCHEDULER && t != ERL_NIF_THR_DIRTY_IO_SCHEDULER);
+}
 
 static uint32_t w_priv_data(wasm_exec_env_t x, uint32_t e)
 {
@@ -789,7 +1013,7 @@ static uint32_t w_realloc(wasm_exec_env_t x, uint32_t p, uint32_t n)
 }
 
 #define IS(name) static uint32_t w_##name(wasm_exec_env_t x, uint32_t e, uint32_t h) \
-    { CTX; ENV(env, e); TERM(t, h); return (uint32_t)enif_##name(env, t); }
+    { CTX; ENV(env, e); TERMX(t, h); return (uint32_t)enif_##name(env, t); }
 IS(is_atom) IS(is_binary) IS(is_ref) IS(is_fun) IS(is_pid) IS(is_port) IS(is_list)
 IS(is_tuple) IS(is_map) IS(is_number) IS(is_empty_list) IS(is_exception)
 
@@ -980,13 +1204,42 @@ static uint32_t w_make_new_binary(wasm_exec_env_t x, uint32_t e, uint32_t n, uin
     return g;
 }
 
+/* The whole bytes of the bitstring T (1), or 0 when T is no bitstring. */
+static int bitstring_bytes(ErlNifEnv *env, ERL_NIF_TERM t, size_t *bytes)
+{
+    ErlNifBinary b;
+    int ok = 0;
+    if (enif_inspect_binary(env, t, &b)) {
+        *bytes = b.size;
+        return 1;
+    }
+    /* A bitstring with bits after its last whole byte: its external
+     * format has its size (BIT_BINARY_EXT: 131, 77, Len:32, Bits:8, with
+     * Len bytes, the last one not whole). */
+    if (enif_term_type(env, t) != ERL_NIF_TERM_TYPE_BITSTRING || !enif_term_to_binary(env, t, &b))
+        return 0;
+    if (b.size >= 6 && b.data[0] == 131 && b.data[1] == 77) {
+        uint32_t len = (uint32_t)b.data[2] << 24 | (uint32_t)b.data[3] << 16 |
+                       (uint32_t)b.data[4] << 8 | b.data[5];
+        *bytes = len ? len - 1 : 0;
+        ok = 1;
+    }
+    enif_release_binary(&b);
+    return ok;
+}
+
 static uint32_t w_make_sub_binary(wasm_exec_env_t x, uint32_t e, uint32_t h, uint32_t pos, uint32_t n)
 {
+    size_t bytes;
     CTX;
     ENV(env, e);
-    TERM(t, h);
+    PART(t, h, exc_term(c, e));
     /* ERTS copies the bytes of a small sub-binary at once. */
     flush_all(c);
+    /* ERTS checks the term and the range only with ASSERT: a sub-binary
+     * past the end of its binary gives Erlang memory of the VM. */
+    if (!bitstring_bytes(env, t, &bytes) || pos > bytes || n > bytes - pos)
+        return fail(c, "enif_make_sub_binary: no binary, or a range out of it");
     RET(e, enif_make_sub_binary(env, t, pos, n));
 }
 
@@ -1319,13 +1572,14 @@ static uint32_t w_get_string_length(wasm_exec_env_t x, uint32_t e, uint32_t h, u
 static uint32_t make_from(wasm_exec_env_t x, uint32_t e, uint32_t arr, uint32_t n, int tuple)
 {
     ERL_NIF_TERM *ts, t;
+    int r;
     CTX;
     ENV(env, e);
     if (n > (1u << 24) || !(ts = malloc((n ? n : 1) * sizeof(ERL_NIF_TERM))))
         return fail(c, "enif: too many elements");
-    if (!get_terms(c, arr, n, ts)) {
+    if ((r = get_parts(c, env, e, arr, n, ts)) != PART_OK) {
         free(ts);
-        return fail(c, "enif: bad term");
+        return r == PART_EXCEPTION ? exc_term(c, e) : part_fail(c, r);
     }
     t = tuple ? enif_make_tuple_from_array(env, ts, n) : enif_make_list_from_array(env, ts, n);
     free(ts);
@@ -1362,7 +1616,7 @@ static uint32_t w_get_tuple(wasm_exec_env_t x, uint32_t e, uint32_t h, uint32_t 
     TERM(t, h);
     if (!enif_get_tuple(env, t, &arity, &arr))
         return 0;
-    if (!(g = put_terms(c, e, arr, (uint32_t)arity)))
+    if (!(g = put_terms(c, env_of(e, h), arr, (uint32_t)arity)))
         return fail(c, "enif_get_tuple: no memory");
     if (!put32(c, arityp, (uint32_t)arity) || !put32(c, arrayp, g))
         return fail(c, "enif_get_tuple: bad pointer");
@@ -1373,8 +1627,8 @@ static uint32_t w_make_list_cell(wasm_exec_env_t x, uint32_t e, uint32_t hh, uin
 {
     CTX;
     ENV(env, e);
-    TERM(hd, hh);
-    TERM(tl, th);
+    PART(hd, hh, exc_term(c, e));
+    PART(tl, th, exc_term(c, e));
     RET(e, enif_make_list_cell(env, hd, tl));
 }
 
@@ -1386,8 +1640,8 @@ static uint32_t w_get_list_cell(wasm_exec_env_t x, uint32_t e, uint32_t h, uint3
     TERM(t, h);
     if (!enif_get_list_cell(env, t, &hd, &tl))
         return 0;
-    OUT(hp, e, hd);
-    OUT(tp, e, tl);
+    OUT(hp, env_of(e, h), hd);
+    OUT(tp, env_of(e, h), tl);
     return 1;
 }
 
@@ -1407,7 +1661,8 @@ static uint32_t w_make_reverse_list(wasm_exec_env_t x, uint32_t e, uint32_t h, u
     ERL_NIF_TERM r;
     CTX;
     ENV(env, e);
-    TERM(t, h);
+    /* The new cells have the elements of the list. */
+    PART(t, h, 0);
     if (!enif_make_reverse_list(env, t, &r))
         return 0;
     OUT(lp, e, r);
@@ -1428,9 +1683,9 @@ static uint32_t w_make_map_put(wasm_exec_env_t x, uint32_t e, uint32_t mh, uint3
     ERL_NIF_TERM r;
     CTX;
     ENV(env, e);
-    TERM(m, mh);
-    TERM(k, kh);
-    TERM(v, vh);
+    PART(m, mh, 0);
+    PART(k, kh, 0);
+    PART(v, vh, 0);
     flush_all(c);
     if (!enif_make_map_put(env, m, k, v, &r))
         return 0;
@@ -1443,9 +1698,9 @@ static uint32_t w_make_map_update(wasm_exec_env_t x, uint32_t e, uint32_t mh, ui
     ERL_NIF_TERM r;
     CTX;
     ENV(env, e);
-    TERM(m, mh);
-    TERM(k, kh);
-    TERM(v, vh);
+    PART(m, mh, 0);
+    PART(k, kh, 0);
+    PART(v, vh, 0);
     flush_all(c);
     if (!enif_make_map_update(env, m, k, v, &r))
         return 0;
@@ -1458,7 +1713,8 @@ static uint32_t w_make_map_remove(wasm_exec_env_t x, uint32_t e, uint32_t mh, ui
     ERL_NIF_TERM r;
     CTX;
     ENV(env, e);
-    TERM(m, mh);
+    /* The new map has the other keys and values of M. K is only compared. */
+    PART(m, mh, 0);
     TERM(k, kh);
     flush_all(c);
     if (!enif_make_map_remove(env, m, k, &r))
@@ -1477,7 +1733,7 @@ static uint32_t w_get_map_value(wasm_exec_env_t x, uint32_t e, uint32_t mh, uint
     flush_all(c);
     if (!enif_get_map_value(env, m, k, &v))
         return 0;
-    OUT(vp, e, v);
+    OUT(vp, env_of(e, mh), v);
     return 1;
 }
 
@@ -1496,19 +1752,28 @@ static uint32_t w_make_map_from_arrays(wasm_exec_env_t x, uint32_t e, uint32_t k
                                        uint32_t n, uint32_t op)
 {
     ERL_NIF_TERM *ks, *vs, r;
-    int ok;
+    int ok, rk = PART_OK, rv = PART_OK;
     CTX;
     ENV(env, e);
     if (n > (1u << 24))
         return fail(c, "enif_make_map_from_arrays: too many elements");
     ks = malloc((n ? n : 1) * sizeof(ERL_NIF_TERM));
     vs = malloc((n ? n : 1) * sizeof(ERL_NIF_TERM));
-    ok = ks && vs && get_terms(c, keys, n, ks) && get_terms(c, vals, n, vs);
+    ok = ks && vs;
+    if (ok)
+        rk = get_parts(c, env, e, keys, n, ks);
+    if (ok && (rk == PART_OK || rk == PART_EXCEPTION))
+        rv = get_parts(c, env, e, vals, n, vs);
+    ok = ok && rk == PART_OK && rv == PART_OK;
     flush_all(c);
     if (ok)
         ok = enif_make_map_from_arrays(env, ks, vs, n, &r);
     free(ks);
     free(vs);
+    if (rk == PART_BAD || rk == PART_OTHER_ENV)
+        return part_fail(c, rk);
+    if (rv == PART_BAD || rv == PART_OTHER_ENV)
+        return part_fail(c, rv);
     if (!ok)
         return 0;
     OUT(op, e, r);
@@ -1516,8 +1781,10 @@ static uint32_t w_make_map_from_arrays(wasm_exec_env_t x, uint32_t e, uint32_t k
 }
 
 /* An iterator of the module holds an index into ctx.iters (in its first
- * word). The module never reads the other fields. */
-static ErlNifMapIterator *iter_of(ctx *c, uint32_t ip, uint32_t *idx)
+ * word). The module never reads the other fields. The iterator ends with
+ * the slot of its map (slot_iters_end()): ERTS keeps pointers into the
+ * map in it. */
+static iter_t *iter_of(ctx *c, uint32_t ip, uint32_t *idx)
 {
     uint32_t i;
     if (!get32(c, ip, &i) || i == 0 || i > c->niter || !c->iters[i - 1])
@@ -1529,38 +1796,40 @@ static ErlNifMapIterator *iter_of(ctx *c, uint32_t ip, uint32_t *idx)
 
 static uint32_t w_map_iterator_create(wasm_exec_env_t x, uint32_t e, uint32_t mh, uint32_t ip, uint32_t entry)
 {
-    ErlNifMapIterator *it;
+    iter_t *it;
     uint32_t i;
     CTX;
     ENV(env, e);
     TERM(m, mh);
     if (!(it = malloc(sizeof(*it))))
         return 0;
-    if (!enif_map_iterator_create(env, m, it, (ErlNifMapIteratorEntry)entry)) {
+    if (!enif_map_iterator_create(env, m, &it->it, (ErlNifMapIteratorEntry)entry)) {
         free(it);
         return 0;
     }
+    it->slot = env_of(e, mh) - 1;
     for (i = 0; i < c->niter && c->iters[i]; i++)
         ;
     if (i == c->niter && !grow((void **)&c->iters, &c->capiter, ++c->niter, sizeof(void *))) {
         c->niter--;
-        enif_map_iterator_destroy(env, it);
+        enif_map_iterator_destroy(env, &it->it);
         free(it);
         return 0;
     }
     c->iters[i] = it;
     if (!put32(c, ip, i + 1)) {
         c->iters[i] = NULL;
-        enif_map_iterator_destroy(env, it);
+        enif_map_iterator_destroy(env, &it->it);
         free(it);
         return fail(c, "enif_map_iterator_create: bad pointer");
     }
+    c->slots[it->slot].niter++;
     return 1;
 }
 
 static void w_map_iterator_destroy(wasm_exec_env_t x, uint32_t e, uint32_t ip)
 {
-    ErlNifMapIterator *it;
+    iter_t *it;
     slot_t *sl;
     uint32_t i;
     CTXV;
@@ -1568,29 +1837,31 @@ static void w_map_iterator_destroy(wasm_exec_env_t x, uint32_t e, uint32_t ip)
         fail(c, "enif_map_iterator_destroy: bad iterator");
         return;
     }
-    enif_map_iterator_destroy(sl->env, it);
+    enif_map_iterator_destroy(sl->env, &it->it);
+    c->slots[it->slot].niter--;
     free(it);
     c->iters[i] = NULL;
 }
 
 #define ITER(name) static uint32_t w_map_iterator_##name(wasm_exec_env_t x, uint32_t e, uint32_t ip) \
-    { ErlNifMapIterator *it; CTX; ENV(env, e); \
+    { iter_t *it; CTX; ENV(env, e); \
       if (!(it = iter_of(c, ip, NULL))) return fail(c, "enif_map_iterator: bad iterator"); \
-      return (uint32_t)enif_map_iterator_##name(env, it); }
+      return (uint32_t)enif_map_iterator_##name(env, &it->it); }
 ITER(is_head) ITER(is_tail) ITER(next) ITER(prev)
 
 static uint32_t w_map_iterator_get_pair(wasm_exec_env_t x, uint32_t e, uint32_t ip, uint32_t kp, uint32_t vp)
 {
-    ErlNifMapIterator *it;
+    iter_t *it;
     ERL_NIF_TERM k, v;
     CTX;
     ENV(env, e);
     if (!(it = iter_of(c, ip, NULL)))
         return fail(c, "enif_map_iterator_get_pair: bad iterator");
-    if (!enif_map_iterator_get_pair(env, it, &k, &v))
+    if (!enif_map_iterator_get_pair(env, &it->it, &k, &v))
         return 0;
-    OUT(kp, e, k);
-    OUT(vp, e, v);
+    /* The key and the value are parts of the map. */
+    OUT(kp, it->slot + 1, k);
+    OUT(vp, it->slot + 1, v);
     return 1;
 }
 
@@ -1653,12 +1924,15 @@ static void w_free_env(wasm_exec_env_t x, uint32_t e)
 {
     slot_t *sl;
     CTXV;
+    ErlNifEnv *env;
     if (!(sl = slot_of(c, e)) || !sl->owned) {
         fail(c, "enif_free_env: bad environment");
         return;
     }
-    enif_free_env(sl->env);
+    /* The slot first: its map iterators read their maps. */
+    env = sl->env;
     slot_close(c, (int)e - 1);
+    enif_free_env(env);
 }
 
 static void w_clear_env(wasm_exec_env_t x, uint32_t e)
@@ -1669,14 +1943,21 @@ static void w_clear_env(wasm_exec_env_t x, uint32_t e)
         fail(c, "enif_clear_env: bad environment");
         return;
     }
-    enif_clear_env(sl->env);
     slot_reset(c, sl);
+    enif_clear_env(sl->env);
 }
 
+/* An ErlNifPid holds a local pid, or undefined (enif_set_pid_undefined).
+ * ERTS checks it only with ASSERT: a monitor of an other term keeps the
+ * term, after its environment ends. */
 static int get_pid(ctx *c, uint32_t pidp, ErlNifPid *pid)
 {
+    ErlNifPid local;
     uint32_t h;
-    return get32(c, pidp, &h) && get_term(c, h, &pid->pid);
+    if (!get32(c, pidp, &h) || !get_term(c, h, &pid->pid))
+        return 0;
+    enif_set_pid_undefined(&local);
+    return pid->pid == local.pid || enif_get_local_pid(NULL, pid->pid, &local);
 }
 
 static uint32_t w_send(wasm_exec_env_t x, uint32_t e, uint32_t pidp, uint32_t me, uint32_t mh)
@@ -1697,13 +1978,21 @@ static uint32_t w_send(wasm_exec_env_t x, uint32_t e, uint32_t pidp, uint32_t me
         if (!(msl = slot_of(c, me)) || !msl->owned)
             return fail(c, "enif_send: bad message environment");
         menv = msl->env;
+        /* ERTS sends the memory of the message environment, with no
+         * copy: a term of an other environment stays there. */
+        if (!in_env(me, mh, m))
+            return fail(c, "enif_send: a term of an other environment");
     }
     if (!get_pid(c, pidp, &pid))
         return fail(c, "enif_send: bad pid");
     flush_all(c);
-    r = enif_send(env, &pid, menv, m);
-    /* enif_send clears the message environment. */
+    /* The maps of the message environment go with the message. */
     if (msl)
+        slot_iters_end(c, msl);
+    r = enif_send(env, &pid, menv, m);
+    /* A send clears the message environment, and a failed send keeps
+     * it. */
+    if (msl && r)
         slot_reset(c, msl);
     return (uint32_t)r;
 }
@@ -1745,6 +2034,9 @@ static uint32_t w_is_current_process_alive(wasm_exec_env_t x, uint32_t e)
 {
     CTX;
     ENV(env, e);
+    /* ERTS stops the VM without a process. */
+    if (!proc_env(env))
+        return fail(c, "enif_is_current_process_alive: no process");
     return (uint32_t)enif_is_current_process_alive(env);
 }
 
@@ -1754,6 +2046,8 @@ static uint32_t w_whereis_pid(wasm_exec_env_t x, uint32_t e, uint32_t h, uint32_
     CTX;
     ENV(env, e);
     TERM(t, h);
+    if (!whereis_env(env))
+        return fail(c, "enif_whereis_pid: no process on a dirty scheduler");
     if (!enif_whereis_pid(env, t, &pid))
         return 0;
     OUT(pidp, e, pid.pid);
@@ -1818,6 +2112,8 @@ static void host_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *
         }
     rt = &c->rtypes[h->rtype];
     if (rt->down && (s = slot_open(c, env, 0)) >= 0) {
+        /* ERTS keeps the resource during the callback. */
+        res_seen(c, h, (uint32_t)s + 1);
         gp = scratch(c, s + 1, 4);
         gm = scratch(c, s + 1, 16);
         hp = handle(c, s + 1, pid->pid);
@@ -1917,9 +2213,16 @@ static uint32_t w_alloc_resource(wasm_exec_env_t x, uint32_t type, uint32_t n)
     CTX;
     if (!(rt = rtype_of(c, type)))
         return fail(c, "enif_alloc_resource: bad type");
+    /* ERTS completes a new type after the load callback, and checks it
+     * only with ASSERT: a resource of the load has no type yet. */
+    if (c->in_load)
+        return fail(c, "enif_alloc_resource: not in the load callback");
     if (!(h = enif_alloc_resource(rt->type, sizeof(hres_t))))
         return 0;
     h->c = NULL;
+    h->refs = 1;
+    h->pslot = h->pgen = 0;
+    h->dying = 0;
     if (!(g = gmalloc(c, n)) || !res_put(c, g, h)) {
         gfree(c, g);
         enif_release_resource(h);
@@ -1936,10 +2239,13 @@ static void w_release_resource(wasm_exec_env_t x, uint32_t obj)
 {
     hres_t *h;
     CTXV;
-    if (!(h = res_get(c, obj))) {
+    /* Only a reference of the module: a release of an other one frees
+     * the resource while terms have it. */
+    if (!(h = res_get(c, obj)) || !h->refs) {
         fail(c, "enif_release_resource: bad resource");
         return;
     }
+    h->refs--;
     enif_release_resource(h);
 }
 
@@ -1947,10 +2253,11 @@ static void w_keep_resource(wasm_exec_env_t x, uint32_t obj)
 {
     hres_t *h;
     CTXV;
-    if (!(h = res_get(c, obj))) {
+    if (!(h = res_get(c, obj)) || !res_live(c, h) || h->refs == UINT32_MAX) {
         fail(c, "enif_keep_resource: bad resource");
         return;
     }
+    h->refs++;
     enif_keep_resource(h);
 }
 
@@ -1959,8 +2266,9 @@ static uint32_t w_make_resource(wasm_exec_env_t x, uint32_t e, uint32_t obj)
     hres_t *h;
     CTX;
     ENV(env, e);
-    if (!(h = res_get(c, obj)))
+    if (!(h = res_get(c, obj)) || !res_live(c, h))
         return fail(c, "enif_make_resource: bad resource");
+    res_seen(c, h, e);
     RET(e, enif_make_resource(env, h));
 }
 
@@ -1975,6 +2283,8 @@ static uint32_t w_get_resource(wasm_exec_env_t x, uint32_t e, uint32_t th, uint3
         return fail(c, "enif_get_resource: bad type");
     if (!enif_get_resource(env, t, rt->type, &obj) || !((hres_t *)obj)->c)
         return 0;
+    /* The term keeps the resource while its environment is open. */
+    res_seen(c, obj, env_of(e, th));
     return put32(c, objp, ((hres_t *)obj)->gptr) ? 1 : fail(c, "enif_get_resource: bad pointer");
 }
 
@@ -2000,7 +2310,8 @@ static uint32_t w_raise_exception(wasm_exec_env_t x, uint32_t e, uint32_t h)
 {
     CTX;
     ENV(env, e);
-    TERM(t, h);
+    /* ERTS keeps the reason in the process, after the environment. */
+    PART(t, h, exc_term(c, e));
     RET(e, enif_raise_exception(env, t));
 }
 
@@ -2020,6 +2331,9 @@ static uint32_t w_consume_timeslice(wasm_exec_env_t x, uint32_t e, uint32_t perc
 {
     CTX;
     ENV(env, e);
+    /* ERTS counts the reductions of the process, with no check. */
+    if (!proc_env(env))
+        return fail(c, "enif_consume_timeslice: no process");
     return (uint32_t)enif_consume_timeslice(env, (int)percent);
 }
 
@@ -2041,12 +2355,17 @@ static uint32_t w_schedule_nif(wasm_exec_env_t x, uint32_t e, uint32_t name, uin
 {
     ERL_NIF_TERM ts[256], r;
     const char *s;
+    int p;
     CTX;
     ENV(env, e);
+    /* ERTS schedules the call in the process of ENV, with no check. */
+    if (!proc_env(env))
+        return fail(c, "enif_schedule_nif: no process");
     if (argc > 254 || !(s = gstr(c, name)) || !(s = keep_string(c, s)))
         return fail(c, "enif_schedule_nif: bad argument");
-    if (!get_terms(c, argv, argc, ts))
-        return fail(c, "enif_schedule_nif: bad term");
+    /* The next call gets the terms: terms of ENV (the process). */
+    if ((p = get_parts(c, env, e, argv, argc, ts)) != PART_OK)
+        return part_fail(c, p == PART_EXCEPTION ? PART_BAD : p);
     ts[argc] = enif_make_uint(env, fp);
     r = enif_schedule_nif(env, s, (int)flags, sched_tramp, (int)argc + 1, ts);
     RET(e, r);
@@ -2189,10 +2508,13 @@ static uint32_t w_get_local_port(wasm_exec_env_t x, uint32_t e, uint32_t h, uint
     return 1;
 }
 
+/* An ErlNifPort holds a local port. */
 static int get_port(ctx *c, uint32_t portp, ErlNifPort *port)
 {
+    ErlNifPort local;
     uint32_t h;
-    return get32(c, portp, &h) && get_term(c, h, &port->port_id);
+    return get32(c, portp, &h) && get_term(c, h, &port->port_id) &&
+           enif_get_local_port(NULL, port->port_id, &local);
 }
 
 static uint32_t w_is_port_alive(wasm_exec_env_t x, uint32_t e, uint32_t portp)
@@ -2211,6 +2533,8 @@ static uint32_t w_whereis_port(wasm_exec_env_t x, uint32_t e, uint32_t h, uint32
     CTX;
     ENV(env, e);
     TERM(t, h);
+    if (!whereis_env(env))
+        return fail(c, "enif_whereis_port: no process on a dirty scheduler");
     if (!enif_whereis_port(env, t, &port))
         return 0;
     OUT(portp, e, port.port_id);
@@ -2233,6 +2557,13 @@ static uint32_t w_port_command(wasm_exec_env_t x, uint32_t e, uint32_t portp, ui
     }
     if (!get_port(c, portp, &port))
         return fail(c, "enif_port_command: bad port");
+    /* On a dirty scheduler, enif_port_command of ERTS 29.1.1 releases
+     * the port also when it found none (a NULL pointer): only a port
+     * that is alive goes there. The port can still close between the
+     * two lookups. */
+    if ((enif_thread_type() == ERL_NIF_THR_DIRTY_CPU_SCHEDULER ||
+         enif_thread_type() == ERL_NIF_THR_DIRTY_IO_SCHEDULER) && !enif_is_port_alive(env, &port))
+        return 0;
     flush_all(c);
     r = enif_port_command(env, &port, menv, m);
     return (uint32_t)r;
@@ -2352,7 +2683,7 @@ static uint32_t w_monitor_process(wasm_exec_env_t x, uint32_t e, uint32_t obj, u
             return fail(c, "enif_monitor_process: bad environment");
         env = sl->env;
     }
-    if (!(h = res_get(c, obj)) || !get_pid(c, pidp, &pid))
+    if (!(h = res_get(c, obj)) || !res_live(c, h) || !get_pid(c, pidp, &pid))
         return fail(c, "enif_monitor_process: bad argument");
     if (monp) {
         for (i = 0; i < c->nmon && c->mons[i].used; i++)
@@ -2386,7 +2717,8 @@ static uint32_t w_demonitor_process(wasm_exec_env_t x, uint32_t e, uint32_t obj,
             return fail(c, "enif_demonitor_process: bad environment");
         env = sl->env;
     }
-    if (!(h = res_get(c, obj)))
+    /* In the destructor, ERTS destroyed the lock of the monitors. */
+    if (!(h = res_get(c, obj)) || !res_live(c, h))
         return fail(c, "enif_demonitor_process: bad resource");
     if (!(m = mon_of(c, monp)) || m->h != h)
         return 1;
@@ -2607,7 +2939,9 @@ static int format(ctx *c, const char *fmt, uint32_t va, out_t *o)
             ERL_NIF_TERM t;
             int n;
             char *tmp;
-            if (!va_get(c, &va, 4, &h) || !get_term(c, h, &t))
+            /* The result of an exception is no term (erts_printf of it
+             * reads a header). */
+            if (!va_get(c, &va, 4, &h) || !get_term(c, h, &t) || t == NON_VALUE)
                 return -1;
             flush_all(c);
             /* enif_snprintf of ERTS needs a buffer: try larger ones. */
@@ -2951,12 +3285,10 @@ static uint32_t w_inspect_iovec(wasm_exec_env_t x, uint32_t e, uint32_t max, uin
     }
     FREE_HV();
 #undef FREE_HV
-    if (e) {
-        OUT(tailp, e, tail);
-    } else {
+    {
         /* The tail is a part of the input term: it goes into the slot of
          * that term (a list has a handle of a slot). */
-        uint32_t th = (h & 3) == 0 ? handle(c, ((h >> 2) >> IDX_BITS) + 1, tail) : h;
+        uint32_t th = (h & 3) == 0 ? handle(c, env_of(e, h), tail) : h;
         if (!th || !put32(c, tailp, th))
             return fail(c, "enif_inspect_iovec: bad pointer");
     }
@@ -3262,8 +3594,12 @@ static void ctx_free(ctx *c)
     free(c->ihash);
     free(c->rtypes);
     free(c->res);
+    /* The iterators of environments that the module did not free. */
     for (i = 0; i < c->niter; i++)
-        free(c->iters[i]);
+        if (c->iters[i]) {
+            enif_map_iterator_destroy(NULL, &c->iters[i]->it);
+            free(c->iters[i]);
+        }
     free(c->iters);
     free(c->mons);
     for (i = 0; i < c->nioq; i++)
@@ -3296,12 +3632,14 @@ static int nif_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
             a[0] = s + 1;
             a[1] = pp;
             a[2] = hi;
+            c->in_load = 1;
             if (guest_call(c, c->load_fn, 3, a))
                 r = (int)a[0];
             else {
                 fprintf(stderr, "%s: load: %s\n", c->entry.name, wasm_runtime_get_exception(c->inst));
                 wasm_runtime_clear_exception(c->inst);
             }
+            c->in_load = 0;
             get32(c, pp, &c->priv);
         }
         flush_all(c);
@@ -3455,10 +3793,38 @@ static int check_imports(wasm_module_t m, const char *file, char *error, size_t 
 static const char *wasi_dirs[] = { "/", "." };
 #endif
 
+/* The export NAME of the module: a function with NP parameters and NR
+ * results, all i32, or NULL. wasm_runtime_call_wasm() writes all the
+ * results into the arguments (see type_ok()). In the WebAssembly runtime
+ * of --target wasm32, host_call() of nif_wasm_host.c checks the type. */
+static wasm_function_inst_t lookup(ctx *c, const char *name, uint32_t np, uint32_t nr)
+{
+    wasm_function_inst_t f = wasm_runtime_lookup_function(c->inst, name);
+#ifndef NIF_WASM_EDGE
+    wasm_valkind_t k[1];
+    uint32_t i;
+    if (!f || np > 1 || nr > 1 || wasm_func_get_param_count(f, c->inst) != np ||
+        wasm_func_get_result_count(f, c->inst) != nr)
+        return NULL;
+    wasm_func_get_param_types(f, c->inst, k);
+    for (i = 0; i < np; i++)
+        if (k[i] != WASM_I32)
+            return NULL;
+    wasm_func_get_result_types(f, c->inst, k);
+    for (i = 0; i < nr; i++)
+        if (k[i] != WASM_I32)
+            return NULL;
+#else
+    (void)np;
+    (void)nr;
+#endif
+    return f;
+}
+
 /* The module starts in the work directory of ERTS (at the load). */
 static void set_cwd(ctx *c)
 {
-    wasm_function_inst_t f = wasm_runtime_lookup_function(c->inst, "erl_nif_wasm_chdir");
+    wasm_function_inst_t f = lookup(c, "erl_nif_wasm_chdir", 1, 1);
     char cwd[4096];
     uint32_t a[1], g, n;
     void *p;
@@ -3536,8 +3902,8 @@ static ctx *instantiate(uint8_t *bytes, uint32_t n, const char *file, char *erro
         goto failed;
     }
     wasm_runtime_set_user_data(c->exec, c);
-    c->malloc_fn = wasm_runtime_lookup_function(c->inst, "erl_nif_wasm_malloc");
-    c->free_fn = wasm_runtime_lookup_function(c->inst, "erl_nif_wasm_free");
+    c->malloc_fn = lookup(c, "erl_nif_wasm_malloc", 1, 1);
+    c->free_fn = lookup(c, "erl_nif_wasm_free", 1, 0);
     if (!c->malloc_fn || !c->free_fn)
         c->malloc_fn = c->free_fn = NULL;
     if (!(c->lock = enif_mutex_create("nif_wasm"))) {
@@ -3577,12 +3943,12 @@ static char *entry_string(ctx *c, uint32_t off)
  * ErlNifFunc of wasm32: name, arity, fptr, flags. */
 static int read_entry(ctx *c, char *error, size_t size)
 {
-    wasm_function_inst_t init = wasm_runtime_lookup_function(c->inst, "nif_init");
+    wasm_function_inst_t init = lookup(c, "nif_init", 0, 1);
     uint32_t a[1] = { 0 }, ge[13], gf[4];
     const uint8_t *p;
     int i;
     if (!init) {
-        snprintf(error, size, "no export nif_init");
+        snprintf(error, size, "no export nif_init (no parameters, an i32 result)");
         return 0;
     }
     call_ready(c);

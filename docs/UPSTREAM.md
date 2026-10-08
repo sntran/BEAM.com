@@ -1114,6 +1114,37 @@ copies once. The test then takes 0.6 s.
 without hardware bounds checks, and a capacity that doubles at each
 copy.
 
+### W11. `wasm_runtime_call_indirect()` checks no type
+
+**Status:** WAMR 2.4.5.
+
+**Effect.** `wasm_runtime_call_indirect(exec_env, element, argc, argv)`
+calls the function of an element of table 0 with no check of its type.
+The interpreter checks only that `argc` has the cells of the
+parameters, and writes all the results into `argv`: a function with
+four `i32` results writes past an `argv` of three cells. AOT code reads
+all its parameters from `argv`, also past `argc`. In a NIF library in
+WebAssembly, a module gives the table index of each callback (a NIF, a
+destructor, the function of `enif_schedule_nif`), so a module of an
+other type wrote the stack of the VM (the test showed "stack smashing
+detected"). `wasm_table_get_func_inst()` and `wasm_func_get_*()` give
+the type of an element, but only for a table with an export, and the
+table of a module of wasm-ld has none.
+
+**Workaround in BEAM.com.**
+[`patches/wamr/0003-indirect-func-type.patch`](../patches/wamr/0003-indirect-func-type.patch):
+`wasm_runtime_get_indirect_func_type()` gives the type of the function
+of an element of table 0, for the interpreter and AOT code.
+`c_src/wasm/nif_wasm.c` calls only a function with `i32` parameters, one
+for each argument of the call, and at most one `i32` result. Else the
+call traps with "indirect call type mismatch". The exports that it calls
+(`nif_init`, the allocator, `chdir`) have their types checked with
+`wasm_func_get_*()`.
+
+**Possible upstream fix.** A public function for the type of a table
+element without an export, or a `wasm_runtime_call_indirect()` that
+takes the expected type, as the `call_indirect` instruction does.
+
 ## Erlang/OTP
 
 These are small, general changes. They help any unusual libc or
@@ -1531,6 +1562,40 @@ itself is in WebAssembly there, and defines the `enif_*` functions.
 **Possible upstream fix.** Not likely as it is. A general form could be
 a documented hook for "a NIF entry from another loader", used by
 embedded or single-file runtimes.
+
+### O25. `enif_port_command` on a dirty scheduler to a closed port stops the VM
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/erl_nif.c`,
+`enif_port_command()`).
+
+**Symptom.** A dirty NIF that calls `enif_port_command()` with a port
+that closed stops the VM with SIGSEGV. Reproducer, as a native NIF:
+
+```c
+static ERL_NIF_TERM cmd(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ErlNifPort port;
+    enif_get_local_port(env, argv[0], &port);
+    return enif_make_int(env, enif_port_command(env, &port, NULL, argv[1]));
+}
+static ErlNifFunc funcs[] = { { "cmd", 2, cmd, ERL_NIF_DIRTY_JOB_CPU_BOUND } };
+```
+
+```erlang
+P = open_port({spawn, "cat"}, []), port_close(P), pc:cmd(P, <<"x">>).
+```
+
+**Cause.** On a dirty scheduler (`scheduler <= 0`), the function calls
+`erts_port_dec_refc(prt)` also when `erts_thr_port_lookup()` found no
+port (`prt` is NULL).
+
+**Workaround in BEAM.com.** For a NIF library in WebAssembly,
+`c_src/wasm/nif_wasm.c` gives 0 on a dirty scheduler when
+`enif_is_port_alive()` gives false. The port can still close between the
+two lookups.
+
+**Possible upstream fix.** `if (prt) erts_port_dec_refc(prt);`, as in
+`enif_is_port_alive()`.
 
 ## Emscripten
 

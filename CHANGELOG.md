@@ -31,6 +31,18 @@ notes of its release.
   `_build/`. The watcher also goes into each directory one time, also
   through a bind mount. A link is an entry of its own: `mac_listener`
   gives it `issymlink`.
+- A NIF library in WebAssembly can no longer give Erlang memory of the
+  VM, or stop the VM, with a bad call that ERTS checks only in a debug
+  build. Such a call now raises `error:{wasm_trap, Message}`: for
+  example `enif_make_sub_binary` out of its binary (before, 1 MiB of
+  memory of the VM for a 10-byte binary), a term of an other environment
+  in a new term or in a result, the result of `enif_make_badarg` in
+  `enif_term_type`, a second `enif_release_resource`, a map iterator of
+  an earlier call, `enif_consume_timeslice` with no process, and a NIF
+  or a callback of an other function type (before, a function with four
+  results wrote past the arguments of the call). `enif_port_command` of
+  a dirty NIF to a closed port gives 0 (ERTS 29.1.1 stops there). See
+  "Checks" in `docs/NIFS.md`.
 
 ## 0.1.0-rc.5
 
