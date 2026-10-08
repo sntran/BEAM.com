@@ -11,8 +11,14 @@
 
 -ifdef(TEST).
 -export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
-         is_project/1, nif_include/0]).
+         is_project/1, nif_include/0, fresh/3, write_inputs/2, after_build/2,
+         self_file/0]).
 -endif.
+
+-include_lib("kernel/include/file.hrl").
+
+%% The first element of the term in FILE.inputs (see fresh/3).
+-define(INPUTS, beam_com_inputs_1).
 
 main() ->
     Status = try command(init:get_plain_arguments()) of
@@ -78,20 +84,21 @@ is_project(Dir) ->
               ["mix.exs", "rebar.config", "src"]).
 
 %% Run INPUT: the executable that "-o" would make, in the cache of
-%% BEAM.com (made again when a file of INPUT or this file is newer). This
-%% process ends, and beam_com.c replaces it with the executable (execv,
-%% at exit; the path in the file BEAM_COM_RUN_FILE), with the arguments
-%% after "--": the program gets the terminal, and its exit status is the
-%% one of beam.com.
+%% BEAM.com (made again when the data of a file of INPUT or of this file
+%% changes, see fresh/3). This process ends, and beam_com.c replaces it
+%% with the executable (execv, at exit; the path in the file
+%% BEAM_COM_RUN_FILE), with the arguments after "--": the program gets
+%% the terminal, and its exit status is the one of beam.com.
 run(#{target := _}) ->
     throw({error, "--target makes a file for another system: use it with -o", []});
 run(#{input := Input} = Opts) ->
     File = run_file(Input, maps:without([input, args], Opts)),
-    case is_fresh(File, Input) of
+    case fresh(File, Input, self_file()) of
         true -> ok;
-        false ->
+        {false, Inputs} ->
             ok = filelib:ensure_dir(File),
-            beam_com_build:run(Opts#{output => File, quiet => true})
+            beam_com_build:run(Opts#{output => File, quiet => true}),
+            write_inputs(File, after_build(Inputs, Input))
     end,
     %% beam_com.c runs File at exit (execv): it names the file for its path.
     case os:getenv("BEAM_COM_RUN_FILE") of
@@ -117,27 +124,135 @@ cache_dir() ->
         {_, _, _, H} -> filename:join([H, ".cache", "beam.com"])
     end.
 
-%% The file in the cache is newer than the files of INPUT (not _build,
-%% deps, .git) and than this file.
-is_fresh(File, Input) ->
-    case filelib:last_modified(File) of
-        0 -> false;
-        T ->
-            Self = case init:get_argument(beam_com_exe) of
-                       {ok, [[Exe | _] | _]} -> filelib:last_modified(Exe);
-                       _ -> 0
-                   end,
-            Self =< T andalso newest(Input) =< T
+%% The executable File in the cache is fresh when the inputs of its build
+%% have the same data: the files of INPUT (not _build, deps, .git and
+%% .elixir_ls) and this file (Self). FILE.inputs has an entry for each
+%% one, {Key, Meta, Hash, Time}: the names of the file in INPUT, its size
+%% and its time of change (Meta), the SHA-256 of its data, and the time
+%% of the hash.
+%%
+%% fresh/3 does not read a file again when its size and its time of
+%% change are the same, but only when that time is 2 s or more before the
+%% time of its hash. The
+%% times of the files have a resolution of 1 s (2 s on FAT), so a change
+%% in the same second as the hash can keep the size and the time. The
+%% times are POSIX times (UTC): a change of the local time (DST) has no
+%% effect.
+%%
+%% The result is true, or {false, Inputs}: the entries for
+%% write_inputs/2 after the build. They come from before the build, so a
+%% change during the build makes the next run build again. When File is
+%% fresh and fresh/3 read a file again, FILE.inputs gets the new entries.
+fresh(File, Input, Self) ->
+    Old = read_inputs(File),
+    OldMap = case Old of
+                 none -> #{};
+                 _ -> maps:from_list([{Key, E} || {Key, _, _, _} = E <- Old])
+             end,
+    Selves = [{[{self, Self}], Self} || Self =/= none],
+    {Entries, Read} = lists:unzip(lists:append([inputs(Path, Key, OldMap)
+                                                || {Key, Path} <- Selves ++ [{[], Input}]])),
+    Inputs = {?INPUTS, lists:keysort(1, Entries)},
+    case Old =/= none andalso filelib:is_regular(File)
+        andalso hashes(Inputs) =:= hashes({?INPUTS, Old}) of
+        true ->
+            lists:member(true, Read) andalso write_inputs(File, Inputs),
+            true;
+        false ->
+            {false, Inputs}
     end.
 
-newest(Path) ->
-    case filelib:is_dir(Path) of
-        false -> filelib:last_modified(Path);
-        true ->
-            {ok, Names} = file:list_dir(Path),
-            lists:max([filelib:last_modified(Path) |
-                       [newest(filename:join(Path, N))
-                        || N <- Names, not lists:member(N, ["_build", "deps", ".git", ".elixir_ls"])]])
+-define(LEFT_OUT, ["_build", "deps", ".git", ".elixir_ls"]).
+
+%% The entries of Path and of the files in it, as {Entry, Read}: Read is
+%% true when this function read the data of the file. Key is the list of
+%% the names of Path in INPUT.
+inputs(Path, Key, Old) ->
+    Now = os:system_time(second),
+    case file:read_file_info(Path, [{time, posix}]) of
+        {ok, #file_info{type = directory}} ->
+            case file:list_dir(Path) of
+                {ok, Names} ->
+                    lists:append([inputs(filename:join(Path, N), Key ++ [N], Old)
+                                  || N <- lists:sort(Names), not lists:member(N, ?LEFT_OUT)]);
+                {error, Reason} ->
+                    [{{Key, directory, {error, Reason}, Now}, false}]
+            end;
+        {ok, #file_info{type = regular, size = Size, mtime = Time}} ->
+            Meta = {Size, Time},
+            case Old of
+                #{Key := {_, Meta, Hash, HashTime}} when is_integer(HashTime),
+                                                         Time + 2 =< HashTime ->
+                    [{{Key, Meta, Hash, HashTime}, false}];
+                _ ->
+                    [{{Key, Meta, file_hash(Path), Now}, true}]
+            end;
+        {ok, #file_info{type = Type}} ->
+            [{{Key, Type, Type, Now}, false}];
+        {error, Reason} ->
+            [{{Key, error, {error, Reason}, Now}, false}]
+    end.
+
+hashes({?INPUTS, Entries}) ->
+    [{Key, Hash} || {Key, _, Hash, _} <- Entries].
+
+%% The SHA-256 of the data of a file, read in parts of 1 MiB (this file
+%% has tens of MB), or the error of the read.
+file_hash(Path) ->
+    case file:open(Path, [read, raw, binary]) of
+        {ok, F} ->
+            try file_hash(F, crypto:hash_init(sha256))
+            after file:close(F)
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+file_hash(F, State) ->
+    case file:read(F, 1 bsl 20) of
+        {ok, Data} -> file_hash(F, crypto:hash_update(State, Data));
+        eof -> crypto:hash_final(State);
+        {error, Reason} -> {error, Reason}
+    end.
+
+%% The build of a directory writes rebar.lock or mix.lock when it
+%% resolves the versions of the Hex packages (beam_com_hex). The entries
+%% of these two files come from after the build, so the next run does not
+%% build again for them.
+after_build({?INPUTS, Entries}, Input) ->
+    Locks = [["rebar.lock"], ["mix.lock"]],
+    New = [E || filelib:is_dir(Input), [Name] = Key <- Locks,
+                {{_, Meta, _, _} = E, _} <- inputs(filename:join(Input, Name), Key, #{}),
+                Meta =/= error],
+    {?INPUTS, lists:keysort(1, New ++ [E || {Key, _, _, _} = E <- Entries,
+                                            not lists:member(Key, Locks)])}.
+
+%% The entries of FILE.inputs, or none. Other programs can write the
+%% cache, so this function reads the term with the option safe (no new
+%% atoms).
+read_inputs(File) ->
+    try
+        {ok, Bin} = file:read_file(inputs_file(File)),
+        {?INPUTS, Entries} = binary_to_term(Bin, [safe]),
+        _ = length(Entries),
+        Entries
+    catch
+        _:_ -> none
+    end.
+
+%% When the write of FILE.inputs fails, the next run builds again.
+write_inputs(File, Inputs) ->
+    _ = file:write_file(inputs_file(File), term_to_binary(Inputs)),
+    ok.
+
+inputs_file(File) ->
+    File ++ ".inputs".
+
+%% This file, from the argument -beam_com_exe of beam_com.c.
+self_file() ->
+    case init:get_argument(beam_com_exe) of
+        {ok, [[Exe | _] | _]} -> Exe;
+        _ -> none
     end.
 
 %% The name of this file for the messages: beam.com, beam-emu.com, or
@@ -309,7 +424,8 @@ help([]) ->
      "            (default: rebar)\n"
      "\n"
      "A run builds the executable in the cache of ", Name, " (BEAM_COM_CACHE, else\n"
-     "~/.cache/beam.com), again when a file of INPUT is newer, and runs it.\n"
+     "~/.cache/beam.com), again when the data of a file of INPUT changes, and\n"
+     "runs it.\n"
      "\n"
      "The tools:\n"
      "  escript FILE [ARGUMENTS]\n"

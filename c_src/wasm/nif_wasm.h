@@ -19,4 +19,8 @@ int nif_wasm_runtime_init(void);
  * NULL and a message in ERROR when a file does not load. */
 ErlNifEntry *nif_wasm_open(const char *path, char *error, size_t size);
 
+/* ERTS refused ENTRY, of the last nif_wasm_open() of this thread, before
+ * its load callback (an upgrade, or a bad library): free the library. */
+void nif_wasm_close(ErlNifEntry *entry);
+
 #endif

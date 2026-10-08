@@ -71,6 +71,111 @@ notes of its release.
   errors that only one host has, such as `eremoteio` on Linux and
   `eauth` on macOS and the BSDs, also have their names now. See C35 in
   `docs/UPSTREAM.md`.
+- A response of the app before the end of a large request body goes at
+  once again (a regression of 0.1.0-rc.5). Before, the response waited
+  for the end of the upload, and the upload waited for the app. So an app
+  that answered with 512 KB before it read a body of 2 MiB, or that
+  streamed its response while it read the body, held its response for
+  60 s. Now the end of the response waits for the end of the request
+  body, so the next request on the connection still works.
+- Security: a request body with more bytes than its `content-length`
+  can no longer put a second request on the connection of the app.
+  Before, the host gave the app the `content-length` and all the bytes
+  of the body stream, for example of a `Request` of `boot()` in Node.js.
+  Now the app gets at most that number of bytes. A body with more bytes
+  or with fewer bytes gets 400, and the app gets the end of the
+  connection.
+- The 101 of a WebSocket has the headers of the 101 of the app, on
+  Workers, Deno and in a web page: the subprotocol that the app chose
+  and its cookies. Before, the host dropped them. So a browser that
+  offered a subprotocol (`new WebSocket(url, ['graphql-transport-ws'])`,
+  or a Phoenix 1.8 socket with `authToken`) failed the handshake, with
+  "Sent non-empty 'Sec-WebSocket-Protocol' header but no response was
+  received" in Chrome.
+- The answers that the front Worker and the Durable Object make
+  themselves (a 400 or a 404 of the routes of the tenants, a redirect,
+  the 503 of an object that resets, the 410 of an instance that ended)
+  read the rest of the request body first, as the answers of the VM do
+  since 0.1.0-rc.5. Before, in `wrangler dev`, the next request on that
+  connection got 500.
+- Security: with `serve(app, { name })` and a function, the host removes
+  the header `x-beam-tenant` of the client. Before, the app got the
+  header of the client, which it trusts, and with `BEAM_TENANTS = "path"`
+  the object also took `BEAM_TENANT` from it.
+- A snapshot waits while an operation of WebAssembly of the application
+  `wasm` runs in the host, and while the host keeps a module or an
+  instance for the VM, as it waits for a socket. Before, a snapshot could
+  copy a VM that waited for the reply of such an operation, and a VM that
+  restored it waited forever, or used a handle that its host did not
+  have.
+- `BEAM_FETCH` keeps the rules of the fetch path. Port 443 goes through
+  `fetch()` only with a trust store (`--cacerts`), also when a rule names
+  it, and another port only when a rule names that port. Before, `*:443`
+  with no `--cacerts` sent each HTTPS connection to a server whose CA the
+  program did not trust, and `*` sent each connection, also of a
+  database, to a server that speaks only HTTP. A rule with no port now
+  gives ports 80 and 443. `specs/FetchPath.tla` models the rules.
+- The file watcher (`inotifywait` on the BSDs, `mac_listener`) finds the
+  entry of each file in an index of the paths. Before, a comparison of n
+  files cost O(n²): with 20,000 files, the comparison every half second
+  used half of one CPU or more, also when kqueue worked. Now it uses about
+  10%.
+- The file watcher (`inotifywait -r`, `mac_listener`) follows no symbolic
+  link below a watched directory, as `inotifywait -r` of inotify-tools.
+  Before, two links to a parent directory (`ln -s . a; ln -s . b`) made
+  a walk that did not end, so no event came, and the link
+  `_build/dev/lib/APP/priv` of Mix gave the changes of `priv/` under
+  `_build/`. The watcher also goes into each directory one time, also
+  through a bind mount. A link is an entry of its own: `mac_listener`
+  gives it `issymlink`.
+- A NIF library in WebAssembly can no longer give Erlang memory of the
+  VM, or stop the VM, with a bad call that ERTS checks only in a debug
+  build. Such a call now raises `error:{wasm_trap, Message}`: for
+  example `enif_make_sub_binary` out of its binary (before, 1 MiB of
+  memory of the VM for a 10-byte binary), a term of an other environment
+  in a new term or in a result, the result of `enif_make_badarg` in
+  `enif_term_type`, a second `enif_release_resource`, a map iterator of
+  an earlier call, `enif_consume_timeslice` with no process, and a NIF
+  or a callback of an other function type (before, a function with four
+  results wrote past the arguments of the call). `enif_port_command` of
+  a dirty NIF to a closed port gives 0 (ERTS 29.1.1 stops there). See
+  "Checks" in `docs/NIFS.md`.
+- A `load_nif/2` of a NIF library in WebAssembly that ERTS refuses (an
+  upgrade, or a bad library) no longer keeps the module and its linear
+  memory: before, each such call kept up to 4 GiB of address space.
+- A build with Hex packages checks each tarball with a checksum of the
+  lock or of the Hex API, also when the lock has no checksum for the
+  package: `rebar.lock` of the formats 1.0.0 and 1.1.0, or a `mix.lock`
+  entry of an older Hex. Before, such a lock took the tarball of the
+  cache or of `HEX_MIRROR` with no check against a trusted checksum.
+  The build then writes the lock again with the checksums, so the next
+  build needs no request. The older `mix.lock` entries are no longer
+  refused as "not a Hex package".
+- A Hex tarball has at most 32 MiB, and its `contents.tar.gz` at most
+  256 MiB without compression: two times the limits of hex.pm. A
+  download stops after its limit, and the build refuses larger contents
+  before it writes a file. Before, a download and an unpack had no
+  limit. An error response with no length stops only at the timeout of
+  60 s: see O25 in `docs/UPSTREAM.md`.
+- `beam.com app.erl` builds the program again when the data of an input
+  changes, also in the same second as the last run, or in the hour that
+  the end of daylight saving time repeats. Before, the run compared the
+  local times of change, with a resolution of 1 s, and could run the old
+  program. A file next to the program in the cache keeps the SHA-256 of
+  each input. A run with no change reads the data of no input.
+- `pages-app.yml` checks the provenance of `beam.com` against the commit
+  of the release tag, not the ref of the tag. A release from a run by
+  hand reuses the tested build of `main`, and its attestation names
+  `main`. So `pages-app.yml@v0.1.0-rc.4` and `@v0.1.0-rc.5` stop at
+  "Check the provenance of beam.com": use `@v0.1.0-rc.6` or later. CI
+  now runs this check on the newest release, and the release job runs it
+  before it publishes.
+- The release job waits for each test job of its run, also the tests of
+  the npm package and of the web page. It stops when the commit of the
+  tag is not on `main`, when a file has another version
+  (`scripts/version.sh`), or when `CHANGELOG.md` has no section of the
+  version. Each commit of `main` has its own CI group, so a merge does
+  not stop the waiting run of the merge before it.
 
 ## 0.1.0-rc.5
 

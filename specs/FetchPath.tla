@@ -3,11 +3,16 @@
 (* HTTP of the VM through fetch() of the host (worker.js, tcpConnect, and    *)
 (* wasm_host_fetch.erl).                                                     *)
 (*                                                                           *)
-(* An app (an Erlang process) connects to a host with plain HTTP (port 80),  *)
-(* TLS (port 443), or another protocol (another port, "tcp"). The host       *)
-(* chooses the route (Route). With fetch first (BEAM_FETCH, on by default),  *)
-(* plain HTTP goes through fetch(), and TLS too when the trust store of the  *)
-(* VM holds the CA of the VM (trusted: the build had --cacerts). The host    *)
+(* An app (an Erlang process) connects to a host on port 80 (plain HTTP),    *)
+(* port 443 (TLS), or another port (plain HTTP, TLS, or another protocol,    *)
+(* "tcp"). The host chooses the route from the port, the rule of BEAM_FETCH  *)
+(* for the host and the port, and the trust store (Route): it cannot see the *)
+(* protocol. With no BEAM_FETCH ("default"), port 80 goes through fetch(),   *)
+(* and port 443 too when the trust store of the VM holds the CA of the VM    *)
+(* (trusted: the build had --cacerts). A rule with no port ("host": host,    *)
+(* *.domain, or * ) gives the same ports. A rule that names the port         *)
+(* ("port": host:8080) also gives another port. A person names another port  *)
+(* only for HTTP, or for TLS in a build with --cacerts (Connect). The host   *)
 (* joins the socket of the app to a connection of the server of the VM: the  *)
 (* app sees an open connection. Each other connection uses connect().        *)
 (*                                                                           *)
@@ -33,21 +38,26 @@
 (* again first. An upgrade (WebSocket) does not go to fetch(): the server    *)
 (* opens a tunnel, a connect() of its own to the host of the connect. With   *)
 (* Direct, the host gives that connect() no route through fetch(). With      *)
-(* Guard, a snapshot waits for the sockets and the calls (busy() of          *)
-(* worker.js). The model checks both kinds of boot, fetch first on and off,  *)
-(* and both trust stores.                                                    *)
+(* Guard, a snapshot waits for the sockets and the calls (inFlight() of      *)
+(* worker.js). The model checks both kinds of boot, each kind of rule, and   *)
+(* both trust stores.                                                        *)
 (*                                                                           *)
 (* What TLC finds (FetchPath.cfg is the first line):                         *)
-(*   SyncReseed, UrlFrom = "connect", Retry = FALSE, CheckTrust, Direct,     *)
-(*     Guard: no error.                                                      *)
+(*   SyncReseed, UrlFrom = "connect", Retry = FALSE, CheckTrust, CheckPort,  *)
+(*     Direct, Guard: no error.                                              *)
 (*   SyncReseed = FALSE: StrongCAAtHandshake fails. The request came after   *)
 (*     "restored", and the handshake used the CA of the zero random bytes.   *)
 (*   UrlFrom = "claimed": FetchIsConnectedHost fails. The app connected to a *)
 (*     host of BEAM_CONNECT, and fetch() went to the name in its request.   *)
 (*   Retry = TRUE: AtMostOnce fails. fetch() ran, the reply came late, and  *)
 (*     the server called again: two requests to the host.                   *)
-(*   CheckTrust = FALSE: TlsOnlyWithTrust fails. TLS went to the server with *)
-(*     no CA in the store, and the app cannot trust its certificate.        *)
+(*   CheckTrust = FALSE: TlsOnlyWithTrust fails. A rule of BEAM_FETCH sent   *)
+(*     port 443 to the server with no CA in the store ("*:443" with no       *)
+(*     --cacerts), and the app cannot trust its certificate.                 *)
+(*   CheckPort = FALSE: TcpNeverFetch fails (TLC finds TlsOnlyWithTrust      *)
+(*     first). A rule with no port ("*") sent another port to the server: a  *)
+(*     connection of a database, which the server cannot speak, or TLS with  *)
+(*     no CA in the store.                                                   *)
 (*   Direct = FALSE: NoLoop fails. The connect() of the tunnel came back to *)
 (*     the server of the VM.                                                 *)
 (*   Guard = FALSE: NoSnapshotInFlight fails. The snapshot copied a VM with  *)
@@ -55,22 +65,28 @@
 (*****************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS SyncReseed, UrlFrom, Retry, CheckTrust, Direct, Guard
+CONSTANTS SyncReseed, UrlFrom, Retry, CheckTrust, CheckPort, Direct, Guard
 
 Kinds == {"cloudflare", "down", "up"}  \* the host that the app connects to
-Protos == {"plain", "tls", "tcp"}      \* port 80, port 443, another port
+Ports == {"http", "https", "other"}    \* port 80, port 443, another port
+Protos == {"plain", "tls", "tcp"}      \* plain HTTP, TLS, another protocol
+\* The rule of BEAM_FETCH for the host and the port of the connect: no
+\* BEAM_FETCH, no rule (or an empty BEAM_FETCH), a rule with no port, a rule
+\* that names the port.
+Rules == {"default", "none", "host", "port"}
 Names == {"connected", "other"}        \* the name in the request of the app
 
 VARIABLES
     boot,      \* the boot of the VM: "global" (a snapshot) or "request"
-    first,     \* fetch first (BEAM_FETCH): on or off
+    rule,      \* the rule of BEAM_FETCH for the connect (Rules)
     trusted,   \* the trust store of the VM holds the CA of the VM
     rng,       \* the random bytes of the VM: "zero" or "fresh"
     ca,        \* the CA of the server: made with "weak" or "strong" bytes
     regen,     \* a new CA waits in the mailbox of another process
     restored,  \* the pump took the event "restored"
     target,    \* the host of the connect of the app ("none" before it)
-    proto,     \* the protocol of the connect
+    port,      \* the port of the connect
+    proto,     \* the protocol of the app on the connection
     conn,      \* the connection of the app: none, connecting, refused, direct, fetch, closed
     handshake, \* the CA of the TLS handshake with the server ("none" before it, "plain" with no TLS)
     claimed,   \* the name in the request of the app
@@ -82,18 +98,19 @@ VARIABLES
     snapshot,  \* the host made a snapshot of the VM
     snapOpen   \* at the snapshot, a socket of the server, a tunnel or a call was open
 
-vars == <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, handshake, claimed,
-          upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
+vars == <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn, handshake,
+          claimed, upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
 TypeOK ==
     /\ boot \in {"global", "request"}
-    /\ first \in BOOLEAN
+    /\ rule \in Rules
     /\ trusted \in BOOLEAN
     /\ rng \in {"zero", "fresh"}
     /\ ca \in {"weak", "strong"}
     /\ regen \in BOOLEAN
     /\ restored \in BOOLEAN
     /\ target \in Kinds \cup {"none"}
+    /\ port \in Ports \cup {"none"}
     /\ proto \in Protos \cup {"none"}
     /\ conn \in {"none", "connecting", "refused", "direct", "fetch", "closed"}
     /\ handshake \in {"none", "plain", "weak", "strong"}
@@ -106,19 +123,29 @@ TypeOK ==
     /\ snapshot \in BOOLEAN
     /\ snapOpen \in BOOLEAN
 
-\* The route of a connect: through fetch() first, or connect().
-Route(p) == first /\ (p = "plain" \/ (p = "tls" /\ (trusted \/ ~CheckTrust)))
+\* The route of a connect to the port pt (fetchFirst of worker.js): through
+\* fetch() first, or connect(). Port 443 needs the trust store; with
+\* ~CheckTrust, a rule of BEAM_FETCH does not check it. Another port needs a
+\* rule that names it; with ~CheckPort, a rule with no port also gives it.
+RouteOf(pt) ==
+    /\ rule # "none"
+    /\ CASE pt = "http" -> TRUE
+         [] pt = "https" -> trusted \/ (~CheckTrust /\ rule # "default")
+         [] pt = "other" -> rule = "port" \/ (~CheckPort /\ rule = "host")
+         [] OTHER -> FALSE
+Route == RouteOf(port)
 
 \* The CA of init/1 of the server: from the random bytes at the boot.
 Init ==
     /\ boot \in {"global", "request"}
-    /\ first \in BOOLEAN
+    /\ rule \in Rules
     /\ trusted \in BOOLEAN
     /\ rng = IF boot = "global" THEN "zero" ELSE "fresh"
     /\ ca = IF boot = "global" THEN "weak" ELSE "strong"
     /\ regen = FALSE
     /\ restored = (boot # "global")
     /\ target = "none"
+    /\ port = "none"
     /\ proto = "none"
     /\ conn = "none"
     /\ handshake = "none"
@@ -139,7 +166,7 @@ Restore ==
     /\ rng' = "fresh"
     /\ IF SyncReseed THEN ca' = "strong" /\ UNCHANGED regen
                      ELSE regen' = TRUE /\ UNCHANGED ca
-    /\ UNCHANGED <<boot, first, trusted, target, proto, conn, handshake, claimed, upgrade, app,
+    /\ UNCHANGED <<boot, rule, trusted, target, port, proto, conn, handshake, claimed, upgrade, app,
                    calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* The other process makes the CA, at a moment of its own.
@@ -147,39 +174,46 @@ Regen ==
     /\ regen
     /\ regen' = FALSE
     /\ ca' = IF rng = "fresh" THEN "strong" ELSE "weak"
-    /\ UNCHANGED <<boot, first, trusted, rng, restored, target, proto, conn, handshake, claimed,
-                   upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, restored, target, port, proto, conn, handshake,
+                   claimed, upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* A request of a client runs the app, after the event "restored": the
 \* events of the request come after it. The app connects to a host, and the
-\* host chooses the route.
-Connect(k, p) ==
+\* host chooses the route. Port 80 is plain HTTP, and port 443 is TLS. A
+\* rule names another port only for plain HTTP, or for TLS with the trust
+\* store (docs/WORKERS.md asks this of the person who writes BEAM_FETCH).
+Connect(k, pt, p) ==
     /\ restored /\ conn = "none"
+    /\ pt = "http" => p = "plain"
+    /\ pt = "https" => p = "tls"
+    /\ (pt = "other" /\ rule = "port") => (p = "plain" \/ (p = "tls" /\ trusted))
     /\ target' = k
+    /\ port' = pt
     /\ proto' = p
-    /\ conn' = IF Route(p) THEN "fetch" ELSE "connecting"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, handshake, claimed, upgrade, app,
+    /\ conn' = IF RouteOf(pt) THEN "fetch" ELSE "connecting"
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, handshake, claimed, upgrade, app,
                    calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* connect() of the Worker: a host that is up opens; the others fail.
 Open ==
     /\ conn = "connecting" /\ target = "up"
     /\ conn' = "direct"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
-                   upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
+                   claimed, upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* The failure of connect(): the addresses of the name tell the two cases.
+\* The fallback is only for port 80 and port 443.
 Refuse ==
-    /\ conn = "connecting" /\ (target = "down" \/ (target = "cloudflare" /\ proto = "tcp"))
+    /\ conn = "connecting" /\ (target = "down" \/ (target = "cloudflare" /\ port = "other"))
     /\ conn' = "refused"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
-                   upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
+                   claimed, upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
 Fallback ==
-    /\ conn = "connecting" /\ target = "cloudflare" /\ proto # "tcp"
+    /\ conn = "connecting" /\ target = "cloudflare" /\ port # "other"
     /\ conn' = "fetch"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
-                   upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
+                   claimed, upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* The TLS handshake of the app with the server (none for plain HTTP), then
 \* the request.
@@ -187,24 +221,24 @@ Handshake ==
     /\ conn = "fetch" /\ handshake = "none"
     /\ handshake' = IF proto = "tls" THEN ca ELSE "plain"
     /\ app' = "sent"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, claimed,
-                   upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn,
+                   claimed, upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* The server gives the request to the host, and waits for the reply.
 Call ==
     /\ conn = "fetch" /\ app = "sent" /\ ~upgrade
     /\ app' = "wait"
     /\ calls' = calls + 1
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, handshake,
-                   claimed, upgrade, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn,
+                   handshake, claimed, upgrade, fetched, tunnel, snapshot, snapOpen>>
 
 \* The host calls fetch() with the URL of UrlFrom.
 Fetch ==
     /\ calls > 0
     /\ calls' = calls - 1
     /\ fetched' = fetched + 1
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, handshake,
-                   claimed, upgrade, app, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn,
+                   handshake, claimed, upgrade, app, tunnel, snapshot, snapOpen>>
 
 FetchedName == IF UrlFrom = "connect" THEN "connected" ELSE claimed
 
@@ -213,8 +247,8 @@ Reply ==
     /\ app = "wait" /\ tunnel = "none" /\ fetched > 0 /\ calls = 0
     /\ app' = "ok"
     /\ conn' = "closed"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
-                   upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
+                   claimed, upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* The timeout of the server: no head of a response yet (the call can still
 \* run). The app gets 504 (Gateway Timeout), and the connection closes: the
@@ -224,47 +258,49 @@ Timeout ==
     /\ IF Retry /\ fetched + calls < 2
          THEN app' = "sent" /\ UNCHANGED conn
          ELSE app' = "timeout" /\ conn' = "closed"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
-                   upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
+                   claimed, upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
 
 \* An upgrade: the server connects to the host of the connect itself. With
 \* Direct, the host uses connect() for it; else the route of Connect.
 Tunnel ==
     /\ conn = "fetch" /\ app = "sent" /\ upgrade /\ tunnel = "none"
     /\ app' = "wait"
-    /\ tunnel' = IF ~Direct /\ Route(proto) THEN "loop" ELSE "connecting"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, handshake,
-                   claimed, upgrade, calls, fetched, snapshot, snapOpen>>
+    /\ tunnel' = IF ~Direct /\ Route THEN "loop" ELSE "connecting"
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn,
+                   handshake, claimed, upgrade, calls, fetched, snapshot, snapOpen>>
 
 \* connect() of the tunnel: the bytes go both ways, or the app gets 502.
 TunnelEnd ==
     /\ tunnel = "connecting"
     /\ IF target = "up" THEN tunnel' = "open" /\ app' = "ok"
                         ELSE tunnel' = "failed" /\ app' = "error"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, handshake,
-                   claimed, upgrade, calls, fetched, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn,
+                   handshake, claimed, upgrade, calls, fetched, snapshot, snapOpen>>
 
 \* The tunnel or the app closes.
 TunnelClose ==
     /\ tunnel \in {"open", "failed"} /\ conn = "fetch"
     /\ conn' = "closed"
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
-                   upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
+                   claimed, upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
-\* busy() of worker.js: a snapshot waits while a socket is open (the sockets
-\* of the server and of a tunnel are in tcps) or a fetch() runs.
+\* inFlight() of worker.js: a snapshot waits while a socket is open (the
+\* sockets of the server and of a tunnel are in tcps) or a fetch() runs.
+\* inFlight() also counts the SQL calls and the operations, modules and
+\* instances of WasmHost, which this model does not have.
 Busy == conn \in {"connecting", "direct", "fetch"} \/ calls > 0 \/ tunnel \in {"connecting", "open"}
 Snapshot ==
     /\ ~snapshot
     /\ Guard => ~Busy
     /\ snapshot' = TRUE
     /\ snapOpen' = (conn = "fetch" \/ calls > 0 \/ tunnel \in {"connecting", "open"})
-    /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, conn, handshake,
-                   claimed, upgrade, app, calls, fetched, tunnel>>
+    /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, conn,
+                   handshake, claimed, upgrade, app, calls, fetched, tunnel>>
 
 Next ==
     \/ Restore \/ Regen
-    \/ \E k \in Kinds, p \in Protos : Connect(k, p)
+    \/ \E k \in Kinds, pt \in Ports, p \in Protos : Connect(k, pt, p)
     \/ Open \/ Refuse \/ Fallback
     \/ Handshake \/ Call \/ Fetch \/ Reply \/ Timeout
     \/ Tunnel \/ TunnelEnd \/ TunnelClose
@@ -278,8 +314,10 @@ Spec == Init /\ [][Next]_vars
 \* Another protocol than HTTP never goes to the server: only connect().
 TcpNeverFetch == proto = "tcp" => conn # "fetch"
 
-\* With fetch first, plain HTTP never uses connect().
-PlainFetchFirst == (first /\ proto = "plain") => conn \notin {"connecting", "direct", "refused"}
+\* With fetch first, port 80, and another port that a rule names, never use
+\* connect().
+FetchFirst == rule # "none" /\ (port = "http" \/ (port = "other" /\ rule = "port"))
+PlainFetchFirst == FetchFirst => conn \notin {"connecting", "direct", "refused"}
 
 \* TLS goes to the server only when the app can trust its CA, or when
 \* connect() cannot reach the host (a host of Cloudflare) anyway.
@@ -287,9 +325,9 @@ TlsOnlyWithTrust == (conn = "fetch" /\ proto = "tls") => (trusted \/ target = "c
 
 \* Off the route of fetch first, only a host of Cloudflare goes to the
 \* server, and a host that is down gets econnrefused, as before.
-FallbackOnlyForCloudflare == (conn = "fetch" /\ ~Route(proto)) => target = "cloudflare"
+FallbackOnlyForCloudflare == (conn = "fetch" /\ ~Route) => target = "cloudflare"
 DownIsRefused ==
-    (target = "down" /\ ~Route(proto) /\ conn \notin {"none", "connecting"}) => conn = "refused"
+    (target = "down" /\ ~Route /\ conn \notin {"none", "connecting"}) => conn = "refused"
 
 \* The handshake never uses a CA of the zero random bytes.
 StrongCAAtHandshake == handshake # "weak"

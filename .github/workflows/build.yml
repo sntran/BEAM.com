@@ -31,10 +31,13 @@ on:
         required: false
         default: ""
 
-# A new push to a pull request stops the run of its older commit. Runs
-# on main are not stopped, so that each merge is tested.
+# A new push to a pull request stops the run of its older commit. Each
+# commit of main has a group of its own: in one group, a new run replaces
+# a run that waits to start, so with the ref as the group a merge could
+# stop the run of the merge before it. Each merge is tested, and a
+# release of a commit can reuse the run of its push (the job reuse).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (inputs.release && format('release-{0}', inputs.release)) || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (inputs.release && format('release-{0}', inputs.release)) || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The token of a job can read the repository. Only the jobs that publish
@@ -110,8 +113,8 @@ jobs:
           - { name: Build the interpreter, jit: "0", out: beam-emu.com }
     env:
       JIT: ${{ matrix.jit || '1' }}
-      CC: ${{ matrix.cc || 'cosmocc' }}
-      AR: ${{ matrix.ar || 'cosmoar' }}
+      CC: cosmocc
+      AR: cosmoar
       OUT: ${{ github.workspace }}/build/${{ matrix.out }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -131,7 +134,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
-          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ matrix.cc || 'cosmocc' }}
+          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
 
       - name: Register the APE loader
         # Lets the kernel run APE files (the OTP build runs the tools it
@@ -826,7 +829,7 @@ jobs:
   # deploys it (Workers Builds, see wasm/livebook/build.sh).
   edge:
     name: Publish the edge binary
-    needs: [unit, test, test-bsd]
+    needs: [unit, models, one-file, page, test, test-bsd]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -937,6 +940,43 @@ jobs:
       deploy: false
       name: site-edge
 
+  # The places of the version (scripts/version.sh). Then the check of the
+  # provenance of pages-app.yml on the newest release, as an app
+  # repository runs it with the tag of that release (the job edge checks
+  # only edge). The same check must refuse a copy of that beam.com with
+  # one changed byte.
+  release-check:
+    name: Check the version and the newest release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check the version in each file
+        run: scripts/version.sh
+
+      - name: Check the newest release as pages-app.yml does
+        run: |
+          tag=$(gh api "repos/sntran/BEAM.com/releases?per_page=30" \
+            --jq '[.[] | select(.draft | not) | select(.tag_name | test("^v[0-9]"))][0].tag_name')
+          echo "the newest release: $tag"
+          yq -r '.jobs.build.steps[] | select(.name == "Check the provenance of beam.com") | .run' \
+            .github/workflows/pages-app.yml > "$RUNNER_TEMP/check.sh"
+          grep -q 'gh attestation verify' "$RUNNER_TEMP/check.sh"
+          mkdir -p "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release"
+          curl -fsSL -o beam.com "https://github.com/sntran/BEAM.com/releases/download/$tag/beam.com"
+          TAG=$tag bash -eo pipefail "$RUNNER_TEMP/check.sh"
+          python3 -c 'import sys; p = sys.argv[1]; b = bytearray(open(p, "rb").read()); b[4096] ^= 1; open(p, "wb").write(b)' beam.com
+          if TAG=$tag bash -eo pipefail "$RUNNER_TEMP/check.sh" > out.txt 2>&1; then
+            cat out.txt
+            echo "the check took a changed beam.com" >&2
+            exit 1
+          fi
+          cat out.txt
+          grep -q "^::error::Could not verify the provenance of beam.com $tag" out.txt
+
   # The release of a tag vX.Y.Z or vX.Y.Z-rc.N, or of a run by hand on
   # main with the input release (the job makes the tag), after all the
   # tests:
@@ -948,15 +988,22 @@ jobs:
   # is there, and does not publish a version that npm has. When npm has
   # the version, the re-run must have the same beam.com (the step "Check
   # the files of npm"), so the files of npm and of the release stay equal.
+  #
+  # With no tested run to reuse, this run builds and tests the commit, and
+  # each test job must pass. The page job needs pages-app, and test needs
+  # example-release, so their results count too.
   release:
     name: Publish the release
-    needs: [reuse, unit, test, test-bsd]
+    needs: [reuse, unit, models, example-release, one-file, pages-app, page, test, test-bsd]
     if: >-
       !cancelled() &&
       ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release != '')) &&
       (needs.reuse.outputs.run != '' || (needs.unit.result == 'success' &&
-        needs.test.result == 'success' && needs.test-bsd.result == 'success'))
+        needs.models.result == 'success' && needs.example-release.result == 'success' &&
+        needs.one-file.result == 'success' && needs.pages-app.result == 'success' &&
+        needs.page.result == 'success' && needs.test.result == 'success' &&
+        needs.test-bsd.result == 'success'))
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -971,13 +1018,17 @@ jobs:
       TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.release) || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The tag is the version of beam.com in each file that has it, and
+      # its commit is on main: a tag that a person pushes on another
+      # commit (a branch) publishes nothing.
       - name: Check the version
         run: |
-          vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' src/beam_com/beam_com.app.src)
-          if [ "v$vsn" != "$TAG" ]; then
-            echo "The tag $TAG is not the version of beam.com (v$vsn)" >&2
-            exit 1
-          fi
+          scripts/version.sh "$TAG"
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          case $status in
+            identical | ahead) echo "the commit $GITHUB_SHA is on main" ;;
+            *) echo "The commit $GITHUB_SHA of $TAG is not on main ($status)" >&2; exit 1 ;;
+          esac
 
       # A token gives the files of another run (the tested run of reuse);
       # with no token, the files of this run.
@@ -1071,6 +1122,17 @@ jobs:
             -f object="$GITHUB_SHA" -f type=commit --jq .sha)
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag" > /dev/null
           echo "made the tag $TAG on $GITHUB_SHA"
+
+      # The script of pages-app.yml that checks the provenance, on the
+      # beam.com of this release, before the publish: pages-app.yml at this
+      # tag takes the file. When the check fails, nothing is published.
+      - name: Check the provenance as pages-app.yml does
+        run: |
+          yq -r '.jobs.build.steps[] | select(.name == "Check the provenance of beam.com") | .run' \
+            .github/workflows/pages-app.yml > "$RUNNER_TEMP/check.sh"
+          grep -q 'gh attestation verify' "$RUNNER_TEMP/check.sh"
+          cd bin
+          bash -eo pipefail "$RUNNER_TEMP/check.sh"
 
       - name: Publish the release
         run: |
