@@ -6,7 +6,12 @@
 %%
 %% - Fetch first: plain HTTP (port 80) through fetch(), and HTTPS (port
 %%   443) too when the trust store of the VM holds the CA of this server.
-%%   BEAM_FETCH gives other hosts and ports.
+%% - BEAM_FETCH gives the hosts, with the rules of BEAM_CONNECT. A rule
+%%   with no port gives only the ports 80 and 443. Another port needs a
+%%   rule that names it. Port 443 goes through fetch() only when the trust
+%%   store of the VM holds the CA of this server, also when a rule names
+%%   it. The host does not see the protocol of a connection: HTTPS on
+%%   another port that a rule names also needs that CA (--cacerts).
 %% - The fallback: on Cloudflare, connect() cannot reach a host behind
 %%   Cloudflare. When connect() fails on port 443 or 80, worker.js checks
 %%   the addresses of the name, and a host of Cloudflare comes here.
@@ -34,14 +39,19 @@
 %%   Cloudflare, a tunnel to a host of Cloudflare fails (502).
 %% - HTTP/1.1 only (ALPN http/1.1): no HTTP/2. A request body is at most
 %%   32 MiB.
-%% - No retry: at the timeout of the host, the server closes the
-%%   connection, and the program does not know if the request ran.
+%% - No retry: when the host gives no head of a response in 5 minutes,
+%%   the server answers 504 (Gateway Timeout) and closes the connection.
+%%   The request may have run.
 -module(wasm_host_fetch).
 -behaviour(gen_server).
 
 -export([start_link/0, reseed/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, handle_continue/2]).
 -export([new_ca/0, leaf/2, store_with/2, serve/3, handshake_opts/1, client_opts/2]).
+
+-ifdef(TEST).
+-export([connection/1, call_host/2]).
+-endif.
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -85,6 +95,15 @@ handle_call(reseed, _From, S) ->
     {reply, setup_ca(), S}.
 
 handle_cast(_, S) -> {noreply, S}.
+
+%% A connection process that stops (also with a crash) leaves no id of a
+%% fetch in the table of the pump, and the host stops its fetch().
+handle_info({watch, Pid}, S) ->
+    _ = monitor(process, Pid),
+    {noreply, S};
+handle_info({'DOWN', _, process, Pid, _}, S) ->
+    [cancel(Id) || Id <- wasm_host_server:registered(Pid)],
+    {noreply, S};
 handle_info(_, S) -> {noreply, S}.
 
 accept(L) ->
@@ -92,10 +111,18 @@ accept(L) ->
         {ok, Sock} ->
             Pid = spawn(fun() -> receive go -> connection(Sock) end end),
             ok = wasm_tcp:controlling_process(Sock, Pid),
+            watch(Pid),
             Pid ! go,
             accept(L);
         {error, closed} ->
             ok
+    end.
+
+%% The server watches the process of a connection (see handle_info/2).
+watch(Pid) ->
+    case whereis(?MODULE) of
+        undefined -> ok;
+        Server -> Server ! {watch, Pid}
     end.
 
 %% A connection of the fetch path: TLS when the first byte is a TLS record
@@ -250,7 +277,7 @@ request(T, Call, #{method := Method, headers := Headers, version := Version} = H
                     Close = not wasm_host_http:keep_alive(Version, Headers),
                     Req = #{method => Method, path => maps:get(path, Head),
                             headers => wasm_host_http:request_headers(Headers), body => Body},
-                    case respond(T, Method, Call(Req), Close) of
+                    case respond(T, Method, Version, Call(Req), Close) of
                         ok when not Close -> serve(T, Call, Next);
                         _ -> close(T)
                     end;
@@ -261,14 +288,21 @@ request(T, Call, #{method := Method, headers := Headers, version := Version} = H
             end
     end.
 
-respond(T, Method, {ok, Status, Reason, Headers, Next}, Close) ->
+%% A response with a body: chunked for HTTP/1.1. HTTP/1.0 has no chunked
+%% coding (RFC 9112), so its body ends with the connection (keep_alive/2
+%% of HTTP/1.0 is false).
+respond(T, Method, Version, {ok, Status, Reason, Headers, Next}, Close) ->
     Body = wasm_host_http:body_allowed(Method, Status),
-    send(T, wasm_host_http:response(Status, Reason, Headers, #{chunked => Body, close => Close})),
+    Chunked = Body andalso Version >= {1, 1},
+    send(T, wasm_host_http:response(Status, Reason, Headers, #{chunked => Chunked, close => Close})),
     case Body of
-        true -> stream(T, Next);
+        true -> stream(T, Next, Chunked);
         false -> drain(Next)
     end;
-respond(T, _Method, {error, Reason}, _Close) ->
+respond(T, _Method, _Version, {error, timeout}, _Close) ->
+    final(T, 504, <<"beam.com: the host gave no response in 5 minutes. The request may have run.">>),
+    closed;
+respond(T, _Method, _Version, {error, Reason}, _Close) ->
     final(T, 502, iolist_to_binary(["beam.com: fetch() failed: ", text(Reason)])),
     closed.
 
@@ -302,17 +336,24 @@ pipe(From, To) ->
             close(To)
     end.
 
-%% The body of the response, chunk by chunk. A failure after the head can
-%% only close the connection: the program sees a body that ends early.
-stream(T, Next) ->
+%% The body of the response, part by part (chunks, or the bytes as they
+%% are). A failure after the head can only close the connection: the
+%% program sees a body that ends early.
+stream(T, Next, Chunked) ->
     case Next(more) of
         {data, Data, Next1} ->
-            case send(T, wasm_host_http:chunk(Data)) of
-                ok -> stream(T, Next1);
+            Part = case Chunked of
+                true -> wasm_host_http:chunk(Data);
+                false -> Data
+            end,
+            case send(T, Part) of
+                ok -> stream(T, Next1, Chunked);
                 _ -> Next1(stop), closed
             end;
-        done ->
+        done when Chunked ->
             send(T, wasm_host_http:last_chunk());
+        done ->
+            ok;
         {error, _} ->
             closed
     end.
@@ -324,10 +365,13 @@ drain(Next) ->
         {error, _} -> closed
     end.
 
+%% An answer of the server, with a content-length: an HTTP/1.0 client
+%% reads it too.
 final(T, Status, Text) ->
     send(T, [wasm_host_http:response(Status, <<>>, [{<<"content-type">>, <<"text/plain">>}],
-                                     #{chunked => true, close => true}),
-             wasm_host_http:chunk(Text), wasm_host_http:last_chunk()]),
+                                     #{chunked => false, close => true,
+                                       length => byte_size(Text)}),
+             Text]),
     close(T).
 
 %% The head, the bytes after it, and the bytes of the head (for a tunnel).
@@ -432,46 +476,73 @@ client_opts(Store, Name) ->
 %% stays registered until the end of the response, in this process. With
 %% ack, the host sends the body while less than a window is unread here:
 %% each Next(more) tells the host that the part before it is read
-%% (fetch_read).
-call_host(#{conn := Conn, tls := Tls, method := Method, path := Path, headers := Headers, body := Body}) ->
+%% (fetch_read). No head in ?HEAD_TIMEOUT ms: {error, timeout}. No data
+%% of the body in ?IDLE_TIMEOUT ms: the body ends with an error.
+call_host(Req) -> call_host(Req, #{head => ?HEAD_TIMEOUT, idle => ?IDLE_TIMEOUT}).
+
+-spec call_host(map(), #{head := timeout(), idle := timeout()}) -> term().
+call_host(#{conn := Conn, tls := Tls, method := Method, path := Path, headers := Headers, body := Body},
+          Timeouts) ->
     Id = iolist_to_binary(["f", integer_to_binary(erlang:unique_integer([positive]))]),
     wasm_host_server:register(Id),
-    wasm_host_server:send_host(#{t => fetch, id => Id, ack => true, conn => Conn, tls => Tls, method => Method,
-                                 path => Path, headers => [[K, V] || {K, V} <- Headers]}, Body),
+    wasm_host_server:send_host(#{t => fetch, id => Id, ack => true, conn => Conn, tls => Tls,
+                                 method => chars(Method), path => url_path(Path),
+                                 headers => [[chars(K), chars(V)] || {K, V} <- Headers]}, Body),
     receive
         {wasm_host, <<"fetch_head">>, #{<<"id">> := Id} = M, _} ->
-            {ok, maps:get(<<"status">>, M), maps:get(<<"reason">>, M, <<>>),
-             [{K, V} || [K, V] <- maps:get(<<"headers">>, M, [])], body(Id)};
+            {ok, maps:get(<<"status">>, M), bytes(maps:get(<<"reason">>, M, <<>>)),
+             [{bytes(K), bytes(V)} || [K, V] <- maps:get(<<"headers">>, M, [])], body(Id, Timeouts)};
         {wasm_host, <<"fetch_error">>, #{<<"id">> := Id} = M, _} ->
             done(Id),
             {error, maps:get(<<"message">>, M, <<"error">>)}
-    after ?HEAD_TIMEOUT ->
+    after maps:get(head, Timeouts) ->
         cancel(Id),
-        {error, <<"the host did not answer">>}
+        {error, timeout}
     end.
 
-next(Id) ->
+next(Id, Timeouts) ->
     receive
-        {wasm_host, <<"fetch_data">>, #{<<"id">> := Id}, Data} -> {data, Data, body(Id, byte_size(Data))};
+        {wasm_host, <<"fetch_data">>, #{<<"id">> := Id}, Data} ->
+            {data, Data, body(Id, byte_size(Data), Timeouts)};
         {wasm_host, <<"fetch_end">>, #{<<"id">> := Id}, _} -> done(Id), done;
         {wasm_host, <<"fetch_error">>, #{<<"id">> := Id} = M, _} ->
             done(Id),
             {error, maps:get(<<"message">>, M, <<"error">>)}
-    after ?IDLE_TIMEOUT ->
+    after maps:get(idle, Timeouts) ->
         cancel(Id),
         {error, <<"the host sent no data">>}
     end.
 
 %% The rest of the body of the fetch Id: more, or stop. Read: the bytes
 %% that the program took before this call.
-body(Id) -> body(Id, 0).
+body(Id, Timeouts) -> body(Id, 0, Timeouts).
 
-body(Id, Read) ->
+body(Id, Read, Timeouts) ->
     fun(more) ->
             Read > 0 andalso wasm_host_server:send_host(#{t => fetch_read, id => Id, n => Read}),
-            next(Id);
+            next(Id, Timeouts);
        (stop) -> cancel(Id)
     end.
+
+%% The bytes of a method, a name or a value of a header as the characters
+%% of the host: one character for each byte (latin1). The Headers class
+%% takes a ByteString, and JSON carries only UTF-8.
+chars(A) when is_atom(A) -> atom_to_binary(A);
+chars(B) -> unicode:characters_to_binary(B, latin1, utf8).
+
+%% A name or a value of a header of the host back to its bytes. A
+%% character above U+00FF (not a ByteString) keeps its UTF-8.
+bytes(Text) ->
+    case unicode:characters_to_binary(Text, utf8, latin1) of
+        Bin when is_binary(Bin) -> Bin;
+        _ -> Text
+    end.
+
+%% A path for the URL of fetch(): each byte above 0x7F as %XX.
+url_path(Path) -> << <<(url_byte(C))/binary>> || <<C>> <= Path >>.
+
+url_byte(C) when C > 16#7F -> list_to_binary(io_lib:format("%~2.16.0B", [C]));
+url_byte(C) -> <<C>>.
 
 done(Id) -> wasm_host_server:unregister(Id).
 

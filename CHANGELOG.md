@@ -18,6 +18,52 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- `gen_tcp` in the WebAssembly runtime (`wasm_tcp`) gives the results and
+  the messages of `gen_tcp` of the BEAM (`inet_drv`). A new test does the
+  same steps on a socket of `gen_tcp` on 127.0.0.1 and on a socket of
+  `wasm_tcp`, and compares them. See "The sockets of the host and
+  gen_tcp" in `docs/WORKERS.md` for the differences that stay.
+- After the end of the peer of a passive socket, an active mode gives the
+  rest of the data and then `{tcp_closed, S}`. Before, `{tcp_closed, S}`
+  never came, and the process of the socket stayed.
+- A listener that closes, or whose owner stops, closes the connections
+  that no accept took, and each accept that waits gets `{error, closed}`.
+  Before, these connections stayed open. An accept of a process that
+  stopped no longer takes a connection.
+- All the packet types of inet work: `http`, `http_bin`, `httph`,
+  `httph_bin`, `asn1`, `cdr`, `sunrm`, `fcgi`, `tpkt`, `line` (with
+  `line_delimiter`), with `packet_size` (`{error, emsgsize}`). Before, the
+  socket kept them only for `getopts/2`, and a packet above `packet_size`
+  made it ask the host for more bytes with no limit.
+- `{active, N}` adds N to the counter, as in `gen_tcp` (the distribution
+  over `wasm_tcp` expects it). Before, it replaced the counter.
+- A second `recv` at the same time gets `{error, ealready}`. Before, it
+  replaced the first one, which then got no answer.
+- `controlling_process/2` gives the `tcp` and `tcp_closed` messages in the
+  mailbox of the old owner to the new owner.
+- `gen_tcp:shutdown(S, write)` ends only the data to the peer (the new
+  message `tcp_shutdown` of the host), and the socket still reads.
+  `read` and `read_write` work too. Before, a shutdown closed the socket.
+- The bytes that `gen_tcp:unrecv/2` gives back no longer count two times
+  in the flow control of the host (`tcp_read`).
+- The options and the errors of `gen_tcp`: a wrong option gives `{error,
+  einval}` (`connect/4` and `listen/2` exit with `badarg`), and
+  `exit_on_close`, `show_econnreset`, `send_timeout`,
+  `send_timeout_close`, `deliver`, `header` and `mode` work. The calls on
+  a socket that closed give the errors of the BEAM, and `close/1` takes
+  the `tcp_closed` of the socket from the mailbox.
+- The fetch path: a header value or a path with bytes above 0x7F
+  (obs-text) no longer stops the connection. The bytes go to `fetch()` as
+  they are, and a path gets them as `%XX`. A connection that stops leaves
+  no fetch behind in the host.
+- The fetch path answers an HTTP/1.0 request with no chunked coding (RFC
+  9112): the end of the connection ends the body. The answers of the
+  server itself have a `content-length`.
+- The fetch path answers 504 (Gateway Timeout) when the host gives no
+  head of a response in 5 minutes. Before, it answered 502 "the host did
+  not answer". The request may have run.
+- `wasm:run/2` in the WebAssembly runtime leaves no process behind. Before,
+  each call left two processes, until the end of the caller.
 - The errors of the VM have the names of the BEAM. Before, 11 to 13
   POSIX errors, by host, had the name `errno_N`: for example, a loop of
   symbolic links gave `{error,errno_40}` in place of `{error,eloop}`,

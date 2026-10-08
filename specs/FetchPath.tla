@@ -32,13 +32,15 @@
 (* The app sends one request, with a host name of its own (the Host header,  *)
 (* or the SNI of TLS). The server gives it to the host (Call), and the host  *)
 (* calls fetch() (Fetch) with the URL of UrlFrom: the host of the connect    *)
-(* ("connect"), or the name of the request ("claimed"). At the timeout, the  *)
-(* server closes the connection; with Retry, it calls again first. An        *)
-(* upgrade (WebSocket) does not go to fetch(): the server opens a tunnel,    *)
-(* a connect() of its own to the host of the connect. With Direct, the host  *)
-(* gives that connect() no route through fetch(). With Guard, a snapshot     *)
-(* waits for the sockets and the calls (inFlight() of worker.js). The model  *)
-(* checks both kinds of boot, each kind of rule, and both trust stores.      *)
+(* ("connect"), or the name of the request ("claimed"). When no head of a    *)
+(* response comes in time, the server answers 504 (Gateway Timeout) and      *)
+(* closes the connection: the request may have run. With Retry, it calls     *)
+(* again first. An upgrade (WebSocket) does not go to fetch(): the server    *)
+(* opens a tunnel, a connect() of its own to the host of the connect. With   *)
+(* Direct, the host gives that connect() no route through fetch(). With      *)
+(* Guard, a snapshot waits for the sockets and the calls (inFlight() of      *)
+(* worker.js). The model checks both kinds of boot, each kind of rule, and   *)
+(* both trust stores.                                                        *)
 (*                                                                           *)
 (* What TLC finds (FetchPath.cfg is the first line):                         *)
 (*   SyncReseed, UrlFrom = "connect", Retry = FALSE, CheckTrust, CheckPort,  *)
@@ -89,7 +91,7 @@ VARIABLES
     handshake, \* the CA of the TLS handshake with the server ("none" before it, "plain" with no TLS)
     claimed,   \* the name in the request of the app
     upgrade,   \* the request of the app is an upgrade (WebSocket)
-    app,       \* the request: none, sent, wait, ok, error, unknown
+    app,       \* the request: none, sent, wait, ok, error, timeout (504)
     calls,     \* the calls of the server to the host, in flight
     fetched,   \* the fetch() calls that ran
     tunnel,    \* the tunnel of an upgrade: none, connecting, open, failed, loop
@@ -114,7 +116,7 @@ TypeOK ==
     /\ handshake \in {"none", "plain", "weak", "strong"}
     /\ claimed \in Names
     /\ upgrade \in BOOLEAN
-    /\ app \in {"none", "sent", "wait", "ok", "error", "unknown"}
+    /\ app \in {"none", "sent", "wait", "ok", "error", "timeout"}
     /\ calls \in 0..2
     /\ fetched \in 0..2
     /\ tunnel \in {"none", "connecting", "open", "failed", "loop"}
@@ -248,12 +250,14 @@ Reply ==
     /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
                    claimed, upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
 
-\* The timeout of the server: no reply yet (the call can still run).
+\* The timeout of the server: no head of a response yet (the call can still
+\* run). The app gets 504 (Gateway Timeout), and the connection closes: the
+\* request may have run.
 Timeout ==
     /\ app = "wait" /\ tunnel = "none"
     /\ IF Retry /\ fetched + calls < 2
          THEN app' = "sent" /\ UNCHANGED conn
-         ELSE app' = "unknown" /\ conn' = "closed"
+         ELSE app' = "timeout" /\ conn' = "closed"
     /\ UNCHANGED <<boot, rule, trusted, rng, ca, regen, restored, target, port, proto, handshake,
                    claimed, upgrade, calls, fetched, tunnel, snapshot, snapOpen>>
 

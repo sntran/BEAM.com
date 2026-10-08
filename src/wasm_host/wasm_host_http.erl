@@ -1,7 +1,9 @@
 %% HTTP/1.1 for the fetch path (wasm_host_fetch): the head of a request of
 %% the program, the framing of its body, and the response that the server
 %% writes back with chunked transfer coding. These functions only parse
-%% and build binaries.
+%% and build binaries. A value of a header can hold any byte above 0x7F
+%% (obs-text, not UTF-8): the names and the tokens of HTTP are ASCII, so
+%% the case and the white space change only for ASCII (lower/1, trim/1).
 -module(wasm_host_http).
 
 -export([head/1, framing/1, dechunk/2, request_headers/1, response/4,
@@ -54,8 +56,32 @@ path({abs_path, P}) -> {ok, P};
 path({absoluteURI, _, _, _, P}) -> {ok, P};
 path(_) -> error.
 
-name(N) when is_atom(N) -> string:lowercase(atom_to_binary(N));
-name(N) -> string:lowercase(N).
+name(N) when is_atom(N) -> lower(atom_to_binary(N));
+name(N) -> lower(N).
+
+%% The ASCII letters in lower case; the other bytes stay.
+lower(B) -> << <<(lower_char(C))>> || <<C>> <= B >>.
+
+lower_char(C) when C >= $A, C =< $Z -> C + 32;
+lower_char(C) -> C.
+
+%% A value with no white space (SP, HTAB) at its start and its end.
+trim(B) -> trim_end(trim_start(B)).
+
+trim_start(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t -> trim_start(Rest);
+trim_start(B) -> B.
+
+trim_end(B) ->
+    case byte_size(B) of
+        0 -> B;
+        N ->
+            case binary:last(B) of
+                C when C =:= $\s; C =:= $\t -> trim_end(binary:part(B, 0, N - 1));
+                _ -> B
+            end
+    end.
+
+token(B) -> lower(trim(B)).
 
 %% The framing of the body: {length, N}, chunked, none, or {error, Reason}.
 %% A request with both transfer-encoding and content-length, or with two
@@ -63,7 +89,7 @@ name(N) -> string:lowercase(N).
 -spec framing(headers()) -> {length, non_neg_integer()} | chunked | none | {error, atom()}.
 framing(Headers) ->
     TE = [V || {<<"transfer-encoding">>, V} <- Headers],
-    CL = lists:usort([string:trim(V) || {<<"content-length">>, V} <- Headers]),
+    CL = lists:usort([trim(V) || {<<"content-length">>, V} <- Headers]),
     case {TE, CL} of
         {[], []} -> none;
         {[], [L]} ->
@@ -73,7 +99,7 @@ framing(Headers) ->
             end;
         {[], _} -> {error, bad_length};
         {_, []} ->
-            case [string:lowercase(string:trim(C)) || V <- TE, C <- binary:split(V, <<",">>, [global])] of
+            case [token(C) || V <- TE, C <- binary:split(V, <<",">>, [global])] of
                 [<<"chunked">>] -> chunked;
                 _ -> {error, bad_encoding}
             end;
@@ -91,7 +117,7 @@ dechunk(Buffer, Acc) ->
         {Pos, 2} ->
             <<Line:Pos/binary, "\r\n", Rest/binary>> = Buffer,
             [Size | _] = binary:split(Line, <<";">>),
-            case number(string:trim(Size), 16) of
+            case number(trim(Size), 16) of
                 {ok, 0} -> trailers(Rest, Acc, Buffer);
                 {ok, N} ->
                     case Rest of
@@ -131,7 +157,7 @@ trailers(Rest, Acc, Buffer) ->
 %% framing, and not host and accept-encoding (fetch() sets them).
 -spec request_headers(headers()) -> headers().
 request_headers(Headers) ->
-    Named = [string:lowercase(string:trim(N)) || {<<"connection">>, V} <- Headers,
+    Named = [token(N) || {<<"connection">>, V} <- Headers,
                                                 N <- binary:split(V, <<",">>, [global])],
     Drop = Named ++ [<<"host">>, <<"content-length">>, <<"transfer-encoding">>, <<"expect">>,
                      <<"accept-encoding">> | hop_by_hop()],
@@ -144,15 +170,18 @@ hop_by_hop() ->
 %% The head of a response. fetch() gives the body decoded, but can keep
 %% content-encoding and the length of the encoded body: the response drops
 %% them and the framing of the host, and has chunked transfer coding (with
-%% a body) and connection.
--spec response(100..999, binary(), headers(), #{chunked := boolean(), close := boolean()}) -> iodata().
-response(Status, Reason, Headers, #{chunked := Chunked, close := Close}) ->
+%% chunked) or the content-length of length, and connection.
+-spec response(100..999, binary(), headers(),
+               #{chunked := boolean(), close := boolean(), length => non_neg_integer()}) -> iodata().
+response(Status, Reason, Headers, #{chunked := Chunked, close := Close} = Opts) ->
     Drop = [<<"content-encoding">>, <<"content-length">>, <<"transfer-encoding">> | hop_by_hop()],
-    Kept = [[K, <<": ">>, V, <<"\r\n">>] || {K0, V} <- Headers, K <- [string:lowercase(K0)],
+    Kept = [[K, <<": ">>, V, <<"\r\n">>] || {K0, V} <- Headers, K <- [lower(K0)],
                                            not lists:member(K, Drop), safe(K), safe(V)],
     [<<"HTTP/1.1 ">>, integer_to_binary(Status), $\s, reason(Status, Reason), <<"\r\n">>,
      Kept,
      [<<"transfer-encoding: chunked\r\n">> || Chunked],
+     [[<<"content-length: ">>, integer_to_binary(N), <<"\r\n">>] || N <- [maps:get(length, Opts, none)],
+                                                                   is_integer(N)],
      case Close of true -> <<"connection: close\r\n">>; false -> <<"connection: keep-alive\r\n">> end,
      <<"\r\n">>].
 
@@ -198,7 +227,7 @@ last_chunk() -> <<"0\r\n\r\n">>.
 -spec keep_alive({non_neg_integer(), non_neg_integer()}, headers()) -> boolean().
 keep_alive({1, 1}, Headers) ->
     not lists:any(fun({<<"connection">>, V}) ->
-                          lists:member(<<"close">>, [string:lowercase(string:trim(T))
+                          lists:member(<<"close">>, [token(T)
                                                      || T <- binary:split(V, <<",">>, [global])]);
                      (_) -> false
                   end, Headers);
@@ -213,6 +242,6 @@ body_allowed(_, _) -> true.
 %% "expect: 100-continue": the client waits for "100 Continue" before the body.
 -spec continue(headers()) -> boolean().
 continue(Headers) ->
-    lists:any(fun({<<"expect">>, V}) -> string:lowercase(string:trim(V)) =:= <<"100-continue">>;
+    lists:any(fun({<<"expect">>, V}) -> token(V) =:= <<"100-continue">>;
                  (_) -> false
               end, Headers).

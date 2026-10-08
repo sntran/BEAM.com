@@ -13,8 +13,8 @@
 %%   compile/1 gives {error, Reason}. A web page and Deno can.
 %% - The code of a module runs on the thread of the host: a function that
 %%   does not return stops the VM.
-%% - The host keeps a module or an instance until the process that made
-%%   it stops, and at most 1024 of them at one time.
+%% - The host keeps a module or an instance until release/1, or until the
+%%   process that made it stops, and at most 1024 of them at one time.
 %%
 %% A request is {"t":"wasm","id":ID,"op":OP} and a JSON body (with the
 %% bytes of a module in base64); the reply is {"t":"wasm_reply","id":ID}
@@ -29,6 +29,8 @@
 -export([wire/1, unwire/1]).
 
 -define(TIMEOUT, 60000).
+%% The key of the watcher of the handles of a process, in its dictionary.
+-define(WATCHER, {?MODULE, watcher}).
 
 -spec compile(binary()) -> {ok, {wasm_module, binary()}} | {error, binary()}.
 compile(Bytes) when is_binary(Bytes) ->
@@ -107,21 +109,68 @@ write_binary({wasm_instance, Id}, Offset, Data) when is_integer(Offset), Offset 
     end.
 
 %% The host forgets a module or an instance: the handle does not work
-%% after this.
+%% after this. The watcher of the caller forgets it too.
 -spec release({wasm_module, binary()} | {wasm_instance, binary()}) -> ok.
 release({_, Id}) when is_binary(Id) ->
+    release_host(Id),
+    forget(Id).
+
+release_host(Id) ->
     _ = request(release, #{id => Id}),
     ok.
 
 %% A handle belongs to the process that made it: the host forgets it when
-%% that process stops (a small process waits for the end of the owner).
+%% that process stops. One watcher for each owner keeps the handles of the
+%% owner, and waits for its end. The watcher stops when release/1 of the
+%% owner forgets the last handle, so a process that calls run/2 many times
+%% leaves no process behind.
 owned(Id) ->
-    Owner = self(),
-    _ = spawn(fun() ->
-                      Ref = erlang:monitor(process, Owner),
-                      receive {'DOWN', Ref, process, _, _} -> release({handle, Id}) end
-              end),
+    Watcher = case get(?WATCHER) of
+        undefined ->
+            Owner = self(),
+            W = spawn(fun() -> watch(erlang:monitor(process, Owner), []) end),
+            put(?WATCHER, W),
+            W;
+        W ->
+            W
+    end,
+    Watcher ! {own, Id},
     Id.
+
+watch(Ref, Ids) ->
+    receive
+        {own, Id} ->
+            watch(Ref, [Id | Ids]);
+        {forget, From, Tag, Id} ->
+            case lists:delete(Id, Ids) of
+                [] -> From ! {Tag, last};
+                Left -> From ! {Tag, more}, watch(Ref, Left)
+            end;
+        {'DOWN', Ref, process, _, _} ->
+            lists:foreach(fun release_host/1, Ids)
+    end.
+
+%% The watcher of the caller forgets Id. After the last handle, the caller
+%% waits for the end of its watcher.
+forget(Id) ->
+    case get(?WATCHER) of
+        undefined ->
+            ok;
+        W ->
+            Tag = erlang:monitor(process, W),
+            W ! {forget, self(), Tag, Id},
+            receive
+                {Tag, more} ->
+                    erlang:demonitor(Tag, [flush]),
+                    ok;
+                {Tag, last} ->
+                    erase(?WATCHER),
+                    receive {'DOWN', Tag, process, _, _} -> ok end;
+                {'DOWN', Tag, process, _, _} ->
+                    erase(?WATCHER),
+                    ok
+            end
+    end.
 
 %% --- the host ---------------------------------------------------------
 

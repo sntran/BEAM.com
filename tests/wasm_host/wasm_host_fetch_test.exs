@@ -1,15 +1,27 @@
 defmodule WasmHostFetchTest do
   @moduledoc """
   The tests of `:wasm_host_fetch`, the fetch path, natively: the CA and
-  its certificates, the TLS server, and the HTTP of `serve/3` with a
-  stand-in for the host (the function of the call).
+  its certificates, the TLS server, the HTTP of `serve/3` with a
+  stand-in for the host (the function of the call), and the messages of
+  `call_host/2` to the host and back, with the stand-in of
+  `BeamCom.HostStandIn`.
+
+  The module is not async: the stand-in replaces `:wasm_host` in the VM.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  alias BeamCom.HostStandIn
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:ssl)
     {:ok, _} = Application.ensure_all_started(:inets)
+    owner = HostStandIn.load()
+    on_exit(fn -> HostStandIn.unload(owner) end)
     %{ca: :wasm_host_fetch.new_ca()}
+  end
+
+  setup do
+    HostStandIn.take_host()
   end
 
   describe "the CA" do
@@ -266,6 +278,282 @@ defmodule WasmHostFetchTest do
 
       assert {"authorization", "Bearer t"} in req_headers
       refute List.keymember?(req_headers, "host", 0)
+    end
+  end
+
+  describe "serve/3 and HTTP/1.0" do
+    test "a response to HTTP/1.0 has no chunked coding, and ends with the connection" do
+      {socket, _} =
+        serve_plain(fn _req ->
+          {:ok, 200, "", [{"content-type", "text/plain"}], data(["hel", "lo"])}
+        end)
+
+      :ok = :gen_tcp.send(socket, "GET / HTTP/1.0\r\n\r\n")
+      assert {:ok, bytes} = recv_all(socket)
+      [head, body] = :binary.split(bytes, "\r\n\r\n")
+      refute head =~ "transfer-encoding"
+      assert head =~ "connection: close"
+      assert body == "hello"
+    end
+
+    test "an answer of the server has a content-length, also for HTTP/1.0" do
+      {socket, _} = serve_plain(fn _req -> {:error, "network down"} end)
+      :ok = :gen_tcp.send(socket, "GET / HTTP/1.0\r\n\r\n")
+      assert {:ok, bytes} = recv_all(socket)
+      [head, body] = :binary.split(bytes, "\r\n\r\n")
+      assert head =~ "HTTP/1.1 502 Bad Gateway"
+      assert head =~ "content-length: #{byte_size(body)}"
+      refute head =~ "transfer-encoding"
+      assert body == "beam.com: fetch() failed: network down"
+    end
+
+    test "no head from the host in time: 504, and the connection closes" do
+      {socket, _} = serve_plain(fn _req -> {:error, :timeout} end)
+      :ok = :gen_tcp.send(socket, "POST /pay HTTP/1.1\r\ncontent-length: 0\r\n\r\n")
+      assert {:ok, bytes} = recv_all(socket)
+      assert bytes =~ "HTTP/1.1 504 Gateway Timeout\r\n"
+      assert bytes =~ "The request may have run."
+    end
+  end
+
+  describe "call_host/2: the messages with the host" do
+    @req %{
+      conn: "x1",
+      tls: false,
+      method: "POST",
+      path: "/a?b=1",
+      headers: [{"x-k", "v"}],
+      body: "{}"
+    }
+    @times %{head: 5000, idle: 5000}
+
+    test "the request, the head, the body with fetch_read, and the end" do
+      call = call(@req, @times)
+      assert_receive {:host, %{"t" => "fetch", "id" => id} = m, "{}"}, 5000
+      assert %{"ack" => true, "conn" => "x1", "tls" => false, "method" => "POST"} = m
+      assert %{"path" => "/a?b=1", "headers" => [["x-k", "v"]]} = m
+      assert [{^id, _}] = :ets.lookup(:wasm_host_server, id)
+      head = %{"id" => id, "status" => 201, "reason" => "Created", "headers" => [["x-r", "1"]]}
+      event(id, "fetch_head", head)
+      assert_receive {:step, {:ok, 201, "Created", [{"x-r", "1"}]}}, 5000
+      send(call, :more)
+      event(id, "fetch_data", %{"id" => id}, "abc")
+      assert_receive {:step, {:data, "abc"}}, 5000
+      # The next part: the host learns that the program took 3 bytes.
+      send(call, :more)
+      assert_receive {:host, %{"t" => "fetch_read", "id" => ^id, "n" => 3}, _}, 5000
+      event(id, "fetch_end", %{"id" => id})
+      assert_receive {:step, :done}, 5000
+      assert [] == :ets.lookup(:wasm_host_server, id)
+    end
+
+    test "the bytes of the headers go as characters, and the bytes of the path as %XX" do
+      req = %{@req | path: <<"/caf", 0xE9, "?q=", 0xFF>>, headers: [{"x-n", <<"caf", 0xE9>>}]}
+      call = call(req, @times)
+      assert_receive {:host, %{"t" => "fetch", "id" => id} = m, _}, 5000
+      assert m["path"] == "/caf%E9?q=%FF"
+      assert m["headers"] == [["x-n", "café"]]
+
+      head = %{
+        "id" => id,
+        "status" => 200,
+        "reason" => "Fiñe",
+        "headers" => [["x-r", "é"], ["x-s", "€"]]
+      }
+
+      event(id, "fetch_head", head)
+
+      assert_receive {:step, {:ok, 200, <<"Fi", 0xF1, "e">>, [{"x-r", <<0xE9>>}, {"x-s", "€"}]}},
+                     5000
+
+      send(call, :stop)
+      assert_receive {:host, %{"t" => "fetch_cancel", "id" => ^id}, _}, 5000
+    end
+
+    test "fetch_error before the head: the error, and the id goes" do
+      call(@req, @times)
+      assert_receive {:host, %{"t" => "fetch", "id" => id}, _}, 5000
+      event(id, "fetch_error", %{"id" => id, "message" => "refused"})
+      assert_receive {:step, {:error, "refused"}}, 5000
+      assert [] == :ets.lookup(:wasm_host_server, id)
+    end
+
+    test "no head in time: {:error, :timeout}, fetch_cancel, and the id goes" do
+      call(@req, %{@times | head: 50})
+      assert_receive {:host, %{"t" => "fetch", "id" => id}, _}, 5000
+      assert_receive {:step, {:error, :timeout}}, 5000
+      assert_receive {:host, %{"t" => "fetch_cancel", "id" => ^id}, _}, 5000
+      assert [] == :ets.lookup(:wasm_host_server, id)
+    end
+
+    test "no data of the body in time: an error, and fetch_cancel" do
+      call = call(@req, %{@times | idle: 50})
+      assert_receive {:host, %{"t" => "fetch", "id" => id}, _}, 5000
+      event(id, "fetch_head", %{"id" => id, "status" => 200})
+      assert_receive {:step, {:ok, 200, "", []}}, 5000
+      send(call, :more)
+      assert_receive {:step, {:error, "the host sent no data"}}, 5000
+      assert_receive {:host, %{"t" => "fetch_cancel", "id" => ^id}, _}, 5000
+      assert [] == :ets.lookup(:wasm_host_server, id)
+    end
+
+    test "fetch_error in the body ends it" do
+      call = call(@req, @times)
+      assert_receive {:host, %{"t" => "fetch", "id" => id}, _}, 5000
+      event(id, "fetch_head", %{"id" => id, "status" => 200})
+      assert_receive {:step, {:ok, 200, "", []}}, 5000
+      send(call, :more)
+      event(id, "fetch_error", %{"id" => id, "message" => "reset"})
+      assert_receive {:step, {:error, "reset"}}, 5000
+      assert [] == :ets.lookup(:wasm_host_server, id)
+    end
+
+    test "a process that stops with a fetch: the server removes its id and stops the fetch" do
+      call = call(@req, @times)
+      assert_receive {:host, %{"t" => "fetch", "id" => id}, _}, 5000
+      {:noreply, _} = :wasm_host_fetch.handle_info({:watch, call}, %{})
+      Process.exit(call, :kill)
+      assert_receive {:DOWN, _, :process, ^call, :killed} = down, 5000
+      {:noreply, _} = :wasm_host_fetch.handle_info(down, %{})
+      assert_receive {:host, %{"t" => "fetch_cancel", "id" => ^id}, _}, 5000
+      assert [] == :ets.lookup(:wasm_host_server, id)
+    end
+  end
+
+  describe "connection/1: a socket of wasm_tcp" do
+    test "TLS, a request to the host, and its response", %{ca: ca} do
+      # The client of the program, with TLS, on a native socket; a bridge
+      # gives its bytes to a socket of wasm_tcp, as the host does.
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false])
+      {:ok, port} = :inet.port(listen)
+      test = self()
+
+      client =
+        Task.async(fn ->
+          opts = [
+            :binary,
+            active: false,
+            verify: :verify_peer,
+            cacerts: [ca.cert],
+            server_name_indication: ~c"example.com",
+            customize_hostname_check: [
+              match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+            ]
+          ]
+
+          {:ok, tls} = :ssl.connect(~c"127.0.0.1", port, opts, 10_000)
+          :ok = :ssl.send(tls, "GET /x HTTP/1.1\r\nHost: example.com\r\n\r\n")
+          response = tls_recv(tls, "")
+          :ssl.close(tls)
+          response
+        end)
+
+      {:ok, native} = :gen_tcp.accept(listen, 10_000)
+      # The table of the server of the fetch path, with its CA.
+      :ets.new(:wasm_host_fetch, [:named_table, :public])
+      :ets.insert(:wasm_host_fetch, {:ca, ca})
+
+      init =
+        {:accepted, "c9", {"example.com", 443}, [:binary, active: false],
+         %{ack: true, sack: false}, test}
+
+      {:ok, pid} = :gen_server.start(:wasm_tcp, init, [])
+
+      conn =
+        spawn(fn ->
+          receive do: (:go -> :wasm_host_fetch.connection({:"$inet", :wasm_tcp, pid}))
+        end)
+
+      :ok = :gen_server.call(pid, {:accepted, conn, false})
+      :ok = :inet.setopts(native, active: true)
+      send(conn, :go)
+      assert bridge(native, pid)
+      response = Task.await(client, 10_000)
+      assert response =~ "HTTP/1.1 200 OK\r\n"
+      assert response =~ "x-r: 1\r\n"
+      assert response =~ "5\r\nhello\r\n0\r\n\r\n"
+    end
+  end
+
+  # call_host/2 in a new process: each step goes to the test as {:step, _}:
+  # the result of the call, then each part of the body. The test sends
+  # :more for the next part, or :stop to stop the body.
+  defp call(req, times) do
+    test = self()
+
+    spawn(fn ->
+      case :wasm_host_fetch.call_host(req, times) do
+        {:ok, status, reason, headers, next} ->
+          send(test, {:step, {:ok, status, reason, headers}})
+          body(test, next)
+
+        error ->
+          send(test, {:step, error})
+      end
+    end)
+  end
+
+  defp body(test, next) do
+    receive do
+      :stop ->
+        next.(:stop)
+
+      :more ->
+        case next.(:more) do
+          {:data, part, next1} ->
+            send(test, {:step, {:data, part}})
+            body(test, next1)
+
+          result ->
+            send(test, {:step, result})
+        end
+    end
+  end
+
+  # An event of the host for the fetch id.
+  defp event(id, type, meta, body \\ "") do
+    [{^id, pid}] = :ets.lookup(:wasm_host_server, id)
+    send(pid, {:wasm_host, type, meta, body})
+  end
+
+  # The bytes between the native socket of the client and the socket of
+  # wasm_tcp, as the host gives them, and the answer of the host to the
+  # fetch of the request. It ends when the client closes, with true when
+  # the fetch came.
+  defp bridge(native, pid, called \\ false) do
+    receive do
+      {:tcp, ^native, data} ->
+        send(pid, {:wasm_host, "tcp_data", %{"id" => "c9"}, data})
+        bridge(native, pid, called)
+
+      {:host, %{"t" => "tcp_send", "id" => "c9"}, body} ->
+        :ok = :gen_tcp.send(native, body)
+        bridge(native, pid, called)
+
+      {:host, %{"t" => "fetch", "id" => id, "path" => "/x", "tls" => true}, _} ->
+        event(id, "fetch_head", %{"id" => id, "status" => 200, "headers" => [["x-r", "1"]]})
+        event(id, "fetch_data", %{"id" => id}, "hello")
+        event(id, "fetch_end", %{"id" => id})
+        bridge(native, pid, true)
+
+      {:tcp_closed, ^native} ->
+        send(pid, {:wasm_host, "tcp_closed", %{"id" => "c9"}, ""})
+        called
+
+      {:host, _, _} ->
+        bridge(native, pid, called)
+    after
+      10_000 -> flunk("the bridge got nothing")
+    end
+  end
+
+  # A chunked response of the TLS client, until its last chunk.
+  defp tls_recv(tls, acc) do
+    if String.ends_with?(acc, "0\r\n\r\n") do
+      acc
+    else
+      {:ok, data} = :ssl.recv(tls, 0, 10_000)
+      tls_recv(tls, acc <> data)
     end
   end
 
