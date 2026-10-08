@@ -3,6 +3,13 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+- On x86_64, the VM no longer stops with SIGSEGV in `memchr()` when an
+  empty binary ends exactly at the end of a mapping, for example in
+  `erlang:decode_packet/3`. The `memchr()` of Cosmopolitan 4.0.2 read 16
+  bytes also for a length of 0. See C33 in `docs/UPSTREAM.md`.
+
 ## 0.1.0-rc.5
 
 The fifth release candidate of 0.1.0. As 0.1.0-rc.4, it is a

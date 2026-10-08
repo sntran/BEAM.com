@@ -803,10 +803,11 @@ step_multicall() {
     # know it (neither for driver_tab.c nor for its object).
     rm -f "$t/opt/$FLAVOR/driver_tab.c" "$objdir/driver_tab.o"
     nifs=$(static_nifs)
-    # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
-    # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c.
+    # --wrap=close, --wrap=mkdir, --wrap=chown and --wrap=memchr: see
+    # __wrap_close(), __wrap_mkdir(), __wrap_chown() and __wrap_memchr()
+    # in c_src/cosmo/beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown -Wl,--wrap=memchr" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
