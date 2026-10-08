@@ -8,9 +8,9 @@
 #include "erl_nif.h"
 
 static ERL_NIF_TERM atom_ok, atom_error, atom_true, atom_false;
-static ErlNifResourceType *counter_type, *watcher_type;
+static ErlNifResourceType *counter_type, *watcher_type, *bad_dtor_type;
 static void watcher_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon);
-static int dtors;
+static int dtors, bad_dtors;
 
 typedef struct {
     long long value;
@@ -22,6 +22,18 @@ static void counter_dtor(ErlNifEnv *env, void *obj)
     (void)obj;
     dtors++;
 }
+
+/* A destructor of an other type (an i64 parameter): the bridge does not
+ * call it. */
+static void bad_dtor(long long x)
+{
+    (void)x;
+    bad_dtors++;
+}
+
+/* A function of the module as the function of a NIF (or of a resource
+ * type), whatever its type. */
+#define AS_NIF(f) ((ERL_NIF_TERM (*)(ErlNifEnv *, int, const ERL_NIF_TERM[]))(void (*)(void))(f))
 
 static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
 {
@@ -39,6 +51,11 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info)
         watcher_type = enif_init_resource_type(env, "watcher", &init, ERL_NIF_RT_CREATE, NULL);
     }
     if (!watcher_type)
+        return 1;
+    bad_dtor_type = enif_open_resource_type(env, NULL, "bad_dtor",
+                                            (ErlNifResourceDtor *)(void (*)(void))bad_dtor,
+                                            ERL_NIF_RT_CREATE, NULL);
+    if (!bad_dtor_type)
         return 1;
     if (!counter_type || !enif_get_int(env, info, &n))
         return 1;
@@ -425,6 +442,223 @@ static ERL_NIF_TERM ioq(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
     return enif_make_tuple4(env, enif_make_uint64(env, size), enif_make_uint64(env, total), all, first);
 }
 
+/* sub(Bin, Pos, Size): enif_make_sub_binary. The bridge refuses a term
+ * that is not a bitstring, and a range out of its whole bytes. */
+static ERL_NIF_TERM sub(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    unsigned pos, size;
+    if (!enif_get_uint(env, argv[1], &pos) || !enif_get_uint(env, argv[2], &size))
+        return enif_make_badarg(env);
+    return enif_make_sub_binary(env, argv[0], pos, size);
+}
+
+/* bad(Case, Arg): calls that ERTS checks only with ASSERT. The bridge
+ * stops each one with an exception {wasm_trap, Message}, but the valid
+ * cases (valid_*). An environment of enif_alloc_env stays after a trap. */
+static ERL_NIF_TERM bad(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    char name[32];
+    ErlNifEnv *o;
+    ERL_NIF_TERM t, x, nil = enif_make_list(env, 0);
+    ErlNifPid pid;
+    ErlNifPort port;
+    ErlNifMapIterator it;
+    counter *c;
+    if (!enif_get_atom(env, argv[0], name, sizeof(name), ERL_NIF_LATIN1))
+        return enif_make_badarg(env);
+    /* A term of an other environment in a new term, in a result, or in
+     * a message of an other environment. */
+    if (!strcmp(name, "env_tuple")) {
+        o = enif_alloc_env();
+        return enif_make_tuple1(env, enif_make_copy(o, argv[1]));
+    }
+    if (!strcmp(name, "env_list")) {
+        o = enif_alloc_env();
+        return enif_make_list_cell(env, enif_make_copy(o, argv[1]), nil);
+    }
+    if (!strcmp(name, "env_map")) {
+        o = enif_alloc_env();
+        t = enif_make_copy(o, argv[1]);
+        if (!enif_make_map_put(env, enif_make_new_map(env), atom_ok, t, &x))
+            return atom_error;
+        return x;
+    }
+    if (!strcmp(name, "env_sub")) {
+        o = enif_alloc_env();
+        return enif_make_sub_binary(env, enif_make_copy(o, argv[1]), 0, 1);
+    }
+    if (!strcmp(name, "env_result")) {
+        o = enif_alloc_env();
+        return enif_make_copy(o, argv[1]);
+    }
+    if (!strcmp(name, "env_send")) {
+        o = enif_alloc_env();
+        enif_self(env, &pid);
+        return enif_send(env, &pid, o, argv[1]) ? atom_ok : atom_error;
+    }
+    if (!strcmp(name, "valid_env")) {
+        o = enif_alloc_env();
+        t = enif_make_copy(env, enif_make_tuple1(o, enif_make_copy(o, argv[1])));
+        enif_free_env(o);
+        return t;
+    }
+    /* The result of an exception: in a new term it is the same result
+     * (the call raises badarg); else it is no term. */
+    if (!strcmp(name, "valid_exception"))
+        return enif_make_tuple2(env, atom_ok, enif_make_badarg(env));
+    if (!strcmp(name, "exception_type"))
+        return enif_make_int(env, (int)enif_term_type(env, enif_make_badarg(env)));
+    if (!strcmp(name, "exception_copy"))
+        return enif_make_copy(env, enif_make_badarg(env));
+    if (!strcmp(name, "exception_format")) {
+        char buf[64];
+        enif_snprintf(buf, sizeof(buf), "%T", enif_make_badarg(env));
+        return enif_make_string(env, buf, ERL_NIF_LATIN1);
+    }
+    if (!strcmp(name, "exception_send")) {
+        enif_self(env, &pid);
+        return enif_send(env, &pid, NULL, enif_make_badarg(env)) ? atom_ok : atom_error;
+    }
+    /* An ErlNifPid or an ErlNifPort with an other term. */
+    if (!strcmp(name, "pid")) {
+        pid.pid = argv[1];
+        return enif_send(env, &pid, NULL, atom_ok) ? atom_ok : atom_error;
+    }
+    if (!strcmp(name, "port")) {
+        port.port_id = argv[1];
+        return enif_is_port_alive(env, &port) ? atom_true : atom_false;
+    }
+    if (!strcmp(name, "monitor_pid")) {
+        void *w = enif_alloc_resource(watcher_type, sizeof(watcher));
+        pid.pid = argv[1];
+        return enif_make_int(env, enif_monitor_process(env, w, &pid, NULL));
+    }
+    /* A resource with no reference: two releases, and a keep or a term
+     * after the last release. A release of a resource of a term, which
+     * the module does not keep. */
+    if (!strcmp(name, "release_twice")) {
+        c = enif_alloc_resource(counter_type, sizeof(counter));
+        t = enif_make_resource(env, c);
+        enif_release_resource(c);
+        enif_release_resource(c);
+        return t;
+    }
+    if (!strcmp(name, "keep_released")) {
+        c = enif_alloc_resource(counter_type, sizeof(counter));
+        enif_release_resource(c);
+        enif_keep_resource(c);
+        return atom_ok;
+    }
+    if (!strcmp(name, "term_released")) {
+        c = enif_alloc_resource(counter_type, sizeof(counter));
+        enif_release_resource(c);
+        return enif_make_resource(env, c);
+    }
+    if (!strcmp(name, "release_of_term")) {
+        if (!enif_get_resource(env, argv[1], counter_type, (void **)&c))
+            return enif_make_badarg(env);
+        enif_release_resource(c);
+        return atom_ok;
+    }
+    if (!strcmp(name, "valid_keep")) {
+        if (!enif_get_resource(env, argv[1], counter_type, (void **)&c))
+            return enif_make_badarg(env);
+        enif_keep_resource(c);
+        t = enif_make_resource(env, c);
+        enif_release_resource(c);
+        return enif_make_tuple2(env, atom_ok, t);
+    }
+    /* The functions of a process, with an environment of no process. */
+    if (!strcmp(name, "alive")) {
+        o = enif_alloc_env();
+        return enif_is_current_process_alive(o) ? atom_true : atom_false;
+    }
+    if (!strcmp(name, "timeslice")) {
+        o = enif_alloc_env();
+        return enif_consume_timeslice(o, 10) ? atom_true : atom_false;
+    }
+    if (!strcmp(name, "schedule")) {
+        o = enif_alloc_env();
+        return enif_schedule_nif(o, "sum_step", 0, sum_step, 0, NULL);
+    }
+    /* A map iterator after the end of the environment of its map. */
+    if (!strcmp(name, "iter_clear")) {
+        o = enif_alloc_env();
+        if (!enif_map_iterator_create(o, enif_make_copy(o, argv[1]), &it, ERL_NIF_MAP_ITERATOR_FIRST))
+            return enif_make_badarg(env);
+        enif_clear_env(o);
+        return enif_map_iterator_is_tail(env, &it) ? atom_true : atom_false;
+    }
+    if (!strcmp(name, "iter_free")) {
+        o = enif_alloc_env();
+        if (!enif_map_iterator_create(o, enif_make_copy(o, argv[1]), &it, ERL_NIF_MAP_ITERATOR_FIRST))
+            return enif_make_badarg(env);
+        enif_free_env(o);
+        return enif_map_iterator_next(env, &it) ? atom_true : atom_false;
+    }
+    /* A scheduled function of an other type. */
+    if (!strcmp(name, "schedule_type"))
+        return enif_schedule_nif(env, "schedule_type", 0, AS_NIF(bad_dtor), 0, NULL);
+    return enif_make_badarg(env);
+}
+
+/* iter_keep(Map) keeps an iterator of its argument, and iter_use() uses
+ * it: the map of the call is gone. */
+static ErlNifMapIterator kept;
+
+static ERL_NIF_TERM iter_keep(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    if (!enif_map_iterator_create(env, argv[0], &kept, ERL_NIF_MAP_ITERATOR_FIRST))
+        return enif_make_badarg(env);
+    return atom_ok;
+}
+
+static ERL_NIF_TERM iter_use(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ERL_NIF_TERM k, v;
+    if (!enif_map_iterator_get_pair(env, &kept, &k, &v))
+        return atom_error;
+    return enif_make_tuple2(env, k, v);
+}
+
+/* NIFs of other types: four results (c_src/nif_check_mv.c), four
+ * parameters, an i64. A call of four results writes past the arguments
+ * of the call. */
+extern void (*const nif_check_four_results)(void);
+
+static ERL_NIF_TERM four_params(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[], int extra)
+{
+    return atom_ok;
+}
+
+static long long i64_nif(long long x)
+{
+    return x;
+}
+
+/* A resource of the type with a destructor of an other type. */
+static ERL_NIF_TERM bad_dtor_new(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    void *r = enif_alloc_resource(bad_dtor_type, 8);
+    ERL_NIF_TERM t = enif_make_resource(env, r);
+    enif_release_resource(r);
+    return t;
+}
+
+static ERL_NIF_TERM bad_dtor_count(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    return enif_make_int(env, bad_dtors);
+}
+
+/* enif_port_command(Port, Data) on a dirty scheduler. */
+static ERL_NIF_TERM dirty_port_command(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ErlNifPort port;
+    if (!enif_get_local_port(env, argv[0], &port))
+        return enif_make_badarg(env);
+    return enif_make_int(env, enif_port_command(env, &port, NULL, argv[1]));
+}
+
 static ErlNifFunc funcs[] = {
     { "add", 2, add, 0 },
     { "echo", 1, echo, 0 },
@@ -458,6 +692,26 @@ static ErlNifFunc funcs[] = {
     { "unwatch", 1, unwatch, 0 },
     { "fmt", 1, fmt, 0 },
     { "ioq", 1, ioq, 0 },
+    { "sub", 3, sub, 0 },
+    { "bad", 2, bad, 0 },
+    { "iter_keep", 1, iter_keep, 0 },
+    { "iter_use", 0, iter_use, 0 },
+    { "four_results", 0, NULL, 0 }, /* see set_four_results() */
+    { "four_params", 0, AS_NIF(four_params), 0 },
+    { "i64_nif", 0, AS_NIF(i64_nif), 0 },
+    { "bad_dtor_new", 0, bad_dtor_new, 0 },
+    { "bad_dtor_count", 0, bad_dtor_count, 0 },
+    { "dirty_port_command", 2, dirty_port_command, ERL_NIF_DIRTY_JOB_CPU_BOUND },
 };
+
+/* The function of four_results is a value of nif_check_mv.c: the table
+ * gets it before nif_init (a constructor runs in _initialize). */
+__attribute__((constructor)) static void set_four_results(void)
+{
+    size_t i;
+    for (i = 0; i < sizeof(funcs) / sizeof(funcs[0]); i++)
+        if (!strcmp(funcs[i].name, "four_results"))
+            funcs[i].fptr = AS_NIF(nif_check_four_results);
+}
 
 ERL_NIF_INIT(nif_check, funcs, load, NULL, NULL, NULL)

@@ -18,6 +18,38 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- The file watcher (`inotifywait` on the BSDs, `mac_listener`) finds the
+  entry of each file in an index of the paths. Before, a comparison of n
+  files cost O(n²): with 20,000 files, the comparison every half second
+  used half of one CPU or more, also when kqueue worked. Now it uses about
+  10%.
+- The file watcher (`inotifywait -r`, `mac_listener`) follows no symbolic
+  link below a watched directory, as `inotifywait -r` of inotify-tools.
+  Before, two links to a parent directory (`ln -s . a; ln -s . b`) made
+  a walk that did not end, so no event came, and the link
+  `_build/dev/lib/APP/priv` of Mix gave the changes of `priv/` under
+  `_build/`. The watcher also goes into each directory one time, also
+  through a bind mount. A link is an entry of its own: `mac_listener`
+  gives it `issymlink`.
+- The file watcher (`inotifywait` on the BSDs, `mac_listener`) gives
+  only "removed" for a file that a process removes during a comparison.
+  Before, a stat during the removal could see the link count 0 and a new
+  ctime, and the watcher also gave `inodemetamod` (`ATTRIB`).
+- A NIF library in WebAssembly can no longer give Erlang memory of the
+  VM, or stop the VM, with a bad call that ERTS checks only in a debug
+  build. Such a call now raises `error:{wasm_trap, Message}`: for
+  example `enif_make_sub_binary` out of its binary (before, 1 MiB of
+  memory of the VM for a 10-byte binary), a term of an other environment
+  in a new term or in a result, the result of `enif_make_badarg` in
+  `enif_term_type`, a second `enif_release_resource`, a map iterator of
+  an earlier call, `enif_consume_timeslice` with no process, and a NIF
+  or a callback of an other function type (before, a function with four
+  results wrote past the arguments of the call). `enif_port_command` of
+  a dirty NIF to a closed port gives 0 (ERTS 29.1.1 stops there). See
+  "Checks" in `docs/NIFS.md`.
+- A `load_nif/2` of a NIF library in WebAssembly that ERTS refuses (an
+  upgrade, or a bad library) no longer keeps the module and its linear
+  memory: before, each such call kept up to 4 GiB of address space.
 - A build with Hex packages checks each tarball with a checksum of the
   lock or of the Hex API, also when the lock has no checksum for the
   package: `rebar.lock` of the formats 1.0.0 and 1.1.0, or a `mix.lock`

@@ -224,6 +224,18 @@ beam.com inotifywait -m -r -e create -e modify -e delete --format '%w %e %f' lib
 - The options are those that `file_system` uses: `-m`, `-r`, `-q`, `-e`
   (`modify`, `close_write`, `moved_to`, `moved_from`, `create`,
   `delete`, `attrib`) and `--format` (`%w`, `%e`, `%f`).
+- Symbolic links: as `inotifywait -r`, the watcher follows a watched
+  directory that is a link, but no link below it. A link below it is an
+  entry of its own (`issymlink` for `mac_listener`, as FSEvents). So the
+  link `_build/dev/lib/APP/priv` of Mix gives the changes of `priv/` no
+  second path, and a link to a parent directory cannot make a walk that
+  does not end. The watcher goes into each directory (device and inode)
+  one time, also through a bind mount. When two watched directories
+  have a directory, its changes come one time, with the first one.
+- A comparison of n files costs O(n): an index of the paths finds the
+  entry of each file. With 20,000 files (a Phoenix project with its
+  `deps` and `_build`), the comparison every half second uses about 10%
+  of one CPU.
 
 ## Phoenix on Cloudflare Workers
 
