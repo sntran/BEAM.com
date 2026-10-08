@@ -9,6 +9,11 @@ notes of its release.
   empty binary ends exactly at the end of a mapping, for example in
   `erlang:decode_packet/3`. The `memchr()` of Cosmopolitan 4.0.2 read 16
   bytes also for a length of 0. See C33 in `docs/UPSTREAM.md`.
+- `strncpy()` in the VM reads at most `n` bytes of its source. The
+  `strncpy()` of Cosmopolitan read the source up to its NUL, so a source
+  with no NUL at the end of a mapping made a fault. A test of CI calls 20
+  functions of the libc at the edges of a mapping. See C34 in
+  `docs/UPSTREAM.md`.
 
 ## 0.1.0-rc.5
 
