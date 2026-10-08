@@ -156,18 +156,9 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
     return __real_chown(path, owner, group);
 }
 
-/* memchr() of 0 bytes (UPSTREAM.md C33). The emulator is linked with
- * -Wl,--wrap=memchr (scripts/steps.sh). On x86_64, the memchr() of
- * Cosmopolitan reads the aligned 16 bytes at s also when n is 0, so
- * memchr(end, c, 0) faults when end is the first byte after a mapping.
- * ERTS makes this call for an empty binary in decode_packet/3. The C
- * standard permits the call, and the result is NULL. */
-void *__real_memchr(const void *s, int c, size_t n);
-
-void *__wrap_memchr(const void *s, int c, size_t n)
-{
-    return n == 0 ? NULL : __real_memchr(s, c, n);
-}
+/* memchr() and strncpy() that read no byte past their buffer (UPSTREAM.md
+ * C33 and C34). tests/cosmo/libc_edges.c tests the same file. */
+#include "beam_com_libc.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);

@@ -876,12 +876,49 @@ at the end of a mapping stopped the VM. `memrchr()` reads nothing when
 `n` is 0. On aarch64, `memchr()` has another implementation.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=memchr`, and `__wrap_memchr()` in `c_src/cosmo/beam_com.c`
-gives `NULL` when `n` is 0. Else it calls the `memchr()` of
-Cosmopolitan.
+`-Wl,--wrap=memchr` (`LIBC_WRAPS` in `scripts/steps.sh`), and
+`__wrap_memchr()` in `c_src/cosmo/beam_com_libc.h` gives `NULL` when `n`
+is 0. Else it calls the `memchr()` of Cosmopolitan. `memccpy()` calls
+`memchr()`, so the wrap also covers it.
+
+**The other functions.** `tests/cosmo/libc_edges.c` calls 20 functions
+with buffers that end at the end of a mapping, and with buffers that
+start after a page that is not mapped, for each length from 0 to 80.
+With cosmocc 4.0.2 on x86_64, three functions fault: `memchr()` and
+`memccpy()` with a length of 0, and `strncpy()` (C34). The other 17 do
+not fault: `memrchr()`, `memcmp()`, `bcmp()`, `memmem()`, `memcpy()`,
+`memmove()`, `strnlen()`, `strncmp()`, `strncasecmp()`, `strndup()`,
+`wmemchr()`, `wcsnlen()`, `strlen()`, `strchr()`, `strrchr()`,
+`strstr()` and `strcmp()`. `step_test` runs the program without the
+wraps, for the log, and with them, where no function must fault.
 
 **Possible upstream fix.** A release after 4.0.2 that has the
-`memchr()` of `master`. Then remove the wrap.
+`memchr()` of `master`. Then remove the wrap, when the log of
+`step_test` shows no fault of `memchr()` and `memccpy()`.
+
+### C34. strncpy() reads the source past n bytes
+
+**Status:** 4.0.2 and `master` (`libc/str/strncpy.c`).
+
+**Symptom.** `tests/cosmo/libc_edges.c` (C33): `strncpy(dst, src, n)`
+faults for each `n` when the `n` bytes of `src` end at the end of a
+mapping and have no NUL.
+
+**Cause.** `strncpy()` calls `strlen(src)` first, so it reads the
+source up to its NUL, also past `n` bytes. The C standard lets the
+source be an array with no NUL in its first `n` bytes, and then the
+function reads only `n` bytes. The two calls of `strncpy()` in ERTS
+(`inet_drv.c` and `inet_gethost.c`) copy strings that end with a NUL,
+so ERTS does not get the fault today. C code that copies a field of a
+fixed size can get it.
+
+**Workaround in BEAM.com.** The emulator is linked with
+`-Wl,--wrap=strncpy`, and `__wrap_strncpy()` in
+`c_src/cosmo/beam_com_libc.h` reads at most `n` bytes: `strnlen()`,
+`memcpy()`, and `memset()` for the rest of `dst`.
+
+**Possible upstream fix.** `srclen = strnlen(src, dstlen)` in place of
+`strlen(src)` in `strncpy()`.
 
 ## WAMR (WebAssembly Micro Runtime)
 

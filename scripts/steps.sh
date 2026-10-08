@@ -127,6 +127,10 @@ AR=${AR:-cosmoar}
 CXX=${CXX:-${CC%cc}c++}
 JIT=${JIT:-1}
 if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
+# The functions of the libc that the emulator takes from
+# c_src/cosmo/beam_com_libc.h (docs/UPSTREAM.md C33 and C34). The link of
+# the emulator and the check of step_test use the same list.
+LIBC_WRAPS="-Wl,--wrap=memchr -Wl,--wrap=strncpy"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -247,7 +251,7 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_inet_gethost.c "$ROOT"/c_src/cosmo/beam_com_epmd.h \
        "$ROOT"/c_src/cosmo/beam_com_epmd.c "$ROOT"/c_src/cosmo/beam_com_epmd_srv.c \
        "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
-       "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_libc.h "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -803,11 +807,11 @@ step_multicall() {
     # know it (neither for driver_tab.c nor for its object).
     rm -f "$t/opt/$FLAVOR/driver_tab.c" "$objdir/driver_tab.o"
     nifs=$(static_nifs)
-    # --wrap=close, --wrap=mkdir, --wrap=chown and --wrap=memchr: see
-    # __wrap_close(), __wrap_mkdir(), __wrap_chown() and __wrap_memchr()
-    # in c_src/cosmo/beam_com.c.
+    # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
+    # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c. The
+    # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown -Wl,--wrap=memchr" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -1099,6 +1103,21 @@ step_test() {
         "$OUT" "$ROOT/tests/programs/sqlite_check.erl" -o "$BUILD/sqlite_check.com"
         "$BUILD/sqlite_check.com" | tee "$BUILD/test.out"
         grep -q '^sqlite: json \["alpha","beta","gamma"\]' "$BUILD/test.out"
+    fi
+    # The functions of the libc at the edges of a mapping
+    # (tests/cosmo/libc_edges.c): first as the libc has them, for the log
+    # (a new cosmocc can make a wrap unnecessary), then with the wraps of
+    # the emulator, which must not fault.
+    if [ "$CC" = cosmocc ]; then
+        log "Checking the functions of the libc at the edges of a mapping"
+        cosmocc -O2 -fno-builtin -o "$BUILD/libc_edges.com" "$ROOT/tests/cosmo/libc_edges.c"
+        "$BUILD/libc_edges.com"
+        # shellcheck disable=SC2086 # LIBC_WRAPS is a list of flags.
+        cosmocc -O2 -fno-builtin -DBEAM_COM_LIBC_WRAPS $LIBC_WRAPS \
+            -o "$BUILD/libc_edges_wrap.com" "$ROOT/tests/cosmo/libc_edges.c"
+        "$BUILD/libc_edges_wrap.com" | tee "$BUILD/test.out"
+        grep -q '^results: ok$' "$BUILD/test.out"
+        grep -q '^functions with a fault: 0$' "$BUILD/test.out"
     fi
 }
 

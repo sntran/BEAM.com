@@ -229,6 +229,14 @@ Each copy must fail with the correct message, so a change in the output
 of a tool cannot make a check pass with no notice. The test needs
 `BEAM_COM_FORMAT_FILE` and `COSMOCC`. `make unit` sets them.
 
+`tests/cosmo/libc_edges.c` calls 20 functions of the libc of
+Cosmopolitan with buffers at the edges of a mapping (C33 and C34 in
+[`UPSTREAM.md`](UPSTREAM.md)). `make test` builds it with cosmocc two
+times. Without the wraps of the emulator, it logs the functions that
+fault, so a new cosmocc shows which wraps are no longer necessary. With
+the wraps, no function must fault, and the wrapped functions must give
+the correct results.
+
 ## 5. Systems
 
 CI runs the behavior tests on Linux (x86_64, aarch64), macOS (arm64,

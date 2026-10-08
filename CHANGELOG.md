@@ -9,6 +9,11 @@ notes of its release.
   empty binary ends exactly at the end of a mapping, for example in
   `erlang:decode_packet/3`. The `memchr()` of Cosmopolitan 4.0.2 read 16
   bytes also for a length of 0. See C33 in `docs/UPSTREAM.md`.
+- `strncpy()` in the VM reads at most `n` bytes of its source. The
+  `strncpy()` of Cosmopolitan read the source up to its NUL, so a source
+  with no NUL at the end of a mapping made a fault. A test of CI calls 20
+  functions of the libc at the edges of a mapping. See C34 in
+  `docs/UPSTREAM.md`.
 - The reader of the `metadata.config` of a Hex package refuses a float,
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
