@@ -32,6 +32,13 @@ notes of its release.
   Now the app gets at most that number of bytes. A body with more bytes
   or with fewer bytes gets 400, and the app gets the end of the
   connection.
+- The 101 of a WebSocket has the headers of the 101 of the app, on
+  Workers, Deno and in a web page: the subprotocol that the app chose
+  and its cookies. Before, the host dropped them. So a browser that
+  offered a subprotocol (`new WebSocket(url, ['graphql-transport-ws'])`,
+  or a Phoenix 1.8 socket with `authToken`) failed the handshake, with
+  "Sent non-empty 'Sec-WebSocket-Protocol' header but no response was
+  received" in Chrome.
 
 ## 0.1.0-rc.5
 

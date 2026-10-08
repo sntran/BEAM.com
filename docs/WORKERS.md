@@ -375,6 +375,15 @@ Node.js 26 on Linux x86_64:
 - The Worker gives each request to the listener of the program on
   `PORT` (default 4000) as an HTTP/1.1 connection, and gives the answer
   back. WebSockets work (LiveView). HTTP stays in Bandit or Cowboy.
+- The 101 of a WebSocket has the headers of the 101 of the app: the
+  subprotocol that the app chose (`sec-websocket-protocol`, for example
+  for `new WebSocket(url, ['graphql-transport-ws'])`) and its cookies.
+  The host does not give the headers of the handshake and of the
+  connection of the app (`sec-websocket-accept`,
+  `sec-websocket-extensions`, `connection`, `upgrade`, `content-length`,
+  `transfer-encoding`): the runtime makes them, with its own compression.
+  On Deno, the subprotocol goes to `Deno.upgradeWebSocket`. In a web
+  page, the socket has the subprotocol, and the page keeps the cookies.
 - The connection to the app has no TLS. The Worker gives the scheme of
   the client in `x-forwarded-proto` (`https` on Cloudflare, `http` in
   `wrangler dev` on `http://localhost`), as Deno and the web page do. So

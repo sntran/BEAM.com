@@ -2219,7 +2219,7 @@ export class Vm {
       clearTimeout(c.timer);
       if (status === 101) {
         c.status = 101;
-        return this.bridgeUpgrade(c);
+        return this.bridgeUpgrade(c, headers);
       }
       if (c.upgrade && status === 403) {
         console.log(`beam: the app refused the WebSocket of ${c.path} (403) from the origin ${c.origin}. ` +
@@ -2400,8 +2400,13 @@ export class Vm {
     return new Response('The app did not answer in time.\n', { status: 504, headers: { 'content-type': 'text/plain' } });
   }
 
-  // A WebSocket: the client end to the browser, frames to the app.
-  bridgeUpgrade(c) {
+  // A WebSocket: the client end to the browser, frames to the app. The 101
+  // of the client has the headers of the 101 of the app (the subprotocol
+  // of sec-websocket-protocol, a set-cookie), without the headers of the
+  // handshake and of the connection: the runtime makes its own.
+  bridgeUpgrade(c, appHeaders = new Headers()) {
+    const headers = new Headers();
+    for (const [k, v] of appHeaders) if (!UPGRADE_OWN.has(k)) headers.append(k, v);
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     server.binaryType = 'arraybuffer';
@@ -2424,7 +2429,7 @@ export class Vm {
       const code = wireCode(e.code);
       c.inbound.push(frame(8, new Uint8Array([code >> 8, code & 255])), true);
     });
-    c.resolve(new Response(null, { status: 101, webSocket: client }));
+    c.resolve(new Response(null, { status: 101, webSocket: client, headers }));
     c.finished();
     this.bridgeFrames(c);
   }
@@ -2872,6 +2877,12 @@ export function staticResponse(statics, request) {
 
 // The result of a wait that passed its time limit.
 const LATE = Symbol('late');
+
+// The headers of the 101 of the app that the client does not get
+// (bridgeUpgrade): the runtime makes the handshake and the connection of
+// the WebSocket of the client, with its own compression.
+const UPGRADE_OWN = new Set(['connection', 'upgrade', 'sec-websocket-accept', 'sec-websocket-extensions',
+  'content-length', 'transfer-encoding']);
 
 // A request body (bridgeUpload): the bytes that can be unread in the VM,
 // the smallest part of an event (except the last one), and the size of a

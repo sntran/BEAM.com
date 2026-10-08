@@ -45,7 +45,9 @@
 // and only with the request. The VM can make the pair outside the call of
 // the request (a Durable Object runs the VM all the time). So the server
 // end is a socket with no connection yet. fetch() connects it when it
-// gets the response of the upgrade (upgrade).
+// gets the response of the upgrade (upgrade), with the headers of the 101
+// of the app: the subprotocol goes to Deno.upgradeWebSocket, and the other
+// headers (a set-cookie) go to its response, where Deno takes them.
 const UPGRADE = Symbol('upgrade');
 globalThis.WebSocketPair = class {
   constructor() {
@@ -61,8 +63,21 @@ globalThis.WebSocketPair = class {
         if (socket) { try { socket.close(code, reason); } catch {} } else closed = [code, reason];
       },
     };
-    const connect = (request) => {
-      const { socket: s, response } = Deno.upgradeWebSocket(request);
+    const connect = (request, headers = new Headers()) => {
+      const protocol = headers.get('sec-websocket-protocol');
+      let upgraded = null;
+      // Deno takes only a protocol of the list of the client, split at
+      // ", ". Else the header goes with the other headers.
+      if (protocol) {
+        try { upgraded = Deno.upgradeWebSocket(request, { protocol }); } catch {}
+      }
+      const given = !!upgraded;
+      upgraded ??= Deno.upgradeWebSocket(request);
+      const { socket: s, response } = upgraded;
+      for (const [k, v] of headers) {
+        if (given && k === 'sec-websocket-protocol') continue;
+        try { response.headers.append(k, v); } catch {}
+      }
       socket = s;
       s.binaryType = server.binaryType;
       for (const type of Object.keys(listeners)) {
@@ -79,15 +94,18 @@ globalThis.WebSocketPair = class {
   }
 };
 
-// new Response(null, { status: 101, webSocket }) of Workers: a response
-// that fetch() changes to the response of the upgrade (Deno refuses the
-// status 101 here).
+// new Response(null, { status: 101, webSocket, headers }) of Workers: a
+// response that fetch() changes to the response of the upgrade (Deno
+// refuses the status 101 here).
 const NativeResponse = Response;
 globalThis.Response = class extends NativeResponse {
   constructor(body, init) {
     const connect = init?.webSocket?.[UPGRADE];
     super(connect ? null : body, connect ? { status: 200 } : init);
-    if (connect) this[UPGRADE] = connect;
+    if (connect) {
+      const headers = new Headers(init.headers);
+      this[UPGRADE] = (request) => connect(request, headers);
+    }
   }
 };
 
