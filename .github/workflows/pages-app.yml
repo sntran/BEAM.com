@@ -167,21 +167,38 @@ jobs:
 
       # The SHA-256 finds a broken download, but a person who can change a
       # release can change both files. The attestation shows that build.yml
-      # of sntran/BEAM.com made the file, at the tag of the release, or at
-      # main for edge. The GITHUB_TOKEN of the caller can read the
-      # attestations of a public repository with no other permission.
-      # The CI of BEAM.com runs this script on a changed copy of beam.com.
+      # of sntran/BEAM.com made the file from the commit of the tag of the
+      # release, or at main for edge. A release from a run by hand uses the
+      # tested build of main at that commit, so its attestation names main,
+      # not the tag: the check compares the commit, not the ref. The
+      # GITHUB_TOKEN of the caller can read the attestations of a public
+      # repository with no other permission. The CI of BEAM.com runs this
+      # script on the newest release and on a changed copy of beam.com.
       - name: Check the provenance of beam.com
         if: inputs.artifact == ''
         working-directory: ${{ runner.temp }}/beam-com
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$TAG" = edge ]; then ref=refs/heads/main; else ref=refs/tags/$TAG; fi
+          if [ "$TAG" = edge ]; then
+            from=main
+            set -- --source-ref refs/heads/main
+          else
+            # The commit of the tag: the line with ^{} for an annotated tag.
+            refs=$(git ls-remote https://github.com/sntran/BEAM.com "refs/tags/$TAG" "refs/tags/$TAG^{}")
+            sha=$(printf '%s\n' "$refs" | awk -v r="refs/tags/$TAG^{}" '$2 == r { print $1 }')
+            [ -n "$sha" ] || sha=$(printf '%s\n' "$refs" | awk -v r="refs/tags/$TAG" '$2 == r { print $1 }')
+            if ! printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+              echo "::error::Could not verify the provenance of beam.com $TAG: sntran/BEAM.com has no tag $TAG, or the check could not reach GitHub."
+              exit 1
+            fi
+            from="the commit $sha of $TAG"
+            set -- --source-digest "$sha"
+          fi
           if ! gh attestation verify beam.com --repo sntran/BEAM.com \
                --signer-workflow sntran/BEAM.com/.github/workflows/build.yml \
-               --source-ref "$ref" --deny-self-hosted-runners; then
-            echo "::error::Could not verify the provenance of beam.com $TAG (see the error of gh above): the file is not the one that build.yml of sntran/BEAM.com made at $ref, or the check could not reach GitHub or Sigstore. Do not use this file until the check passes."
+               "$@" --deny-self-hosted-runners; then
+            echo "::error::Could not verify the provenance of beam.com $TAG (see the error of gh above): the file is not the one that build.yml of sntran/BEAM.com made from $from, or the check could not reach GitHub or Sigstore. Do not use this file until the check passes."
             exit 1
           fi
 

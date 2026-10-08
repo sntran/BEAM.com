@@ -18,6 +18,19 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- `pages-app.yml` checks the provenance of `beam.com` against the commit
+  of the release tag, not the ref of the tag. A release from a run by
+  hand reuses the tested build of `main`, and its attestation names
+  `main`. So `pages-app.yml@v0.1.0-rc.4` and `@v0.1.0-rc.5` stop at
+  "Check the provenance of beam.com": use `@v0.1.0-rc.6` or later. CI
+  now runs this check on the newest release, and the release job runs it
+  before it publishes.
+- The release job waits for each test job of its run, also the tests of
+  the npm package and of the web page. It stops when the commit of the
+  tag is not on `main`, when a file has another version
+  (`scripts/version.sh`), or when `CHANGELOG.md` has no section of the
+  version. Each commit of `main` has its own CI group, so a merge does
+  not stop the waiting run of the merge before it.
 
 ## 0.1.0-rc.5
 
