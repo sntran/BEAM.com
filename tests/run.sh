@@ -148,7 +148,8 @@ check_once() {
 # check NAME PATTERN ARGS...: run the program NAME of DIR with ARGS, and
 # check its exit status and its output (check_once). With net=1 (net_check),
 # the check uses the network (hex.pm, builds.hex.pm, a remote TLS host):
-# a failure gets one more try after 10 s, and the log shows both tries.
+# a failure gets two more tries, after 10 s and after 30 s, and the log
+# shows each try.
 net=0
 check() {
     try=1
@@ -157,9 +158,10 @@ check() {
         bad=0
         check_once "$@"
         [ "$bad" = 1 ] || return 0
-        if [ "$net" = 1 ] && [ "$try" -lt 2 ]; then
-            echo "RETRY: $1 uses the network: one more try in 10 s"
-            sleep 10
+        if [ "$net" = 1 ] && [ "$try" -lt 3 ]; then
+            wait=$((try * 20 - 10))
+            echo "RETRY: $1 uses the network: try $((try + 1)) of 3 in $wait s"
+            sleep "$wait"
             try=$((try + 1))
             continue
         fi
@@ -893,6 +895,206 @@ if [ -f "$dir/beam.com" ]; then
         fail=1
         failed="$failed
   beam.com mac_listener: missing events, or it did not exit ($exited)"
+    fi
+    rm -rf "$wdir"
+fi
+
+# Many files: the watcher finds the entry of each file in an index of the
+# paths, so a comparison of n files costs O(n). With its input closed,
+# mac_listener exits after its first comparison: of 80000 files, it must
+# end in 20 seconds. On Linux x86_64, it takes 0.3 s, and a linear search
+# for each file took 65 s (40000 files: 0.2 s and 14 s). This check runs
+# on Linux only: the code is the same on each system, and the BSDs run in
+# a slow VM. Then 1000 files, of which the watcher sees 500 removed and
+# 500 changed: each removal moves an entry in the table, and each change
+# must still come one time, with its path. The checks of the events wait
+# for their lines (watch_until), not for a fixed time.
+#
+# watch_until SECONDS TEST...: run TEST each second until it passes, at
+# most SECONDS times.
+watch_until() {
+    n=$1
+    shift
+    while [ "$n" -gt 0 ] && ! "$@"; do
+        sleep 1
+        n=$((n - 1))
+    done
+}
+# The input of a mac_listener of a test is the FIFO $tmp.in, open for
+# writes on the descriptor 3 (watch_start). watch_stop closes it, and
+# mac_listener exits at the end of its input: a kill is only for a
+# watcher that does not exit in 10 s.
+watch_start() {
+    exec 3> "$tmp.in"
+}
+watch_alive() {
+    kill -0 "$watcher" 2>/dev/null
+}
+watch_gone() {
+    ! watch_alive
+}
+watch_stop() {
+    exec 3>&-
+    watch_until 10 watch_gone
+    watch_alive && kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    rm -f "$tmp.in"
+}
+if [ -f "$dir/beam.com" ] && [ "$(uname -s)" = Linux ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    i=0
+    while [ $i -lt 200 ]; do
+        mkdir "$wdir/d$i"
+        (cd "$wdir/d$i" && awk 'BEGIN { for (j = 0; j < 400; j++) print "f" j }' | xargs touch)
+        i=$((i + 1))
+    done
+    echo "==> beam.com mac_listener (80000 files)"
+    $runner "$dir/beam.com" mac_listener "$wdir" < /dev/null > "$tmp.watch" 2>&1 &
+    watcher=$!
+    i=0
+    while [ $i -lt 20 ] && kill -0 "$watcher" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        exited=no
+    else
+        exited=yes
+    fi
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    if [ "$exited" = yes ] && [ ! -s "$tmp.watch" ]; then
+        echo "PASS: beam.com mac_listener (80000 files)"
+    else
+        echo "FAIL: beam.com mac_listener (80000 files)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (80000 files): no end of the comparison in 20 s ($exited), or output"
+    fi
+    rm -rf "$wdir"
+fi
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    mkdir "$wdir/m"
+    (cd "$wdir/m" && awk 'BEGIN { for (j = 0; j < 1000; j++) print "f" j }' | xargs touch)
+    echo "==> beam.com mac_listener (1000 files)"
+    mkfifo "$tmp.in"
+    $runner "$dir/beam.com" mac_listener --latency=0.2 "$wdir" \
+        < "$tmp.in" > "$tmp.watch" 2>&1 &
+    watcher=$!
+    watch_start
+    sleep 2
+    (cd "$wdir/m" && awk 'BEGIN { for (j = 0; j < 1000; j += 2) print "f" j }' | xargs rm)
+    for f in $(awk 'BEGIN { for (j = 1; j < 1000; j += 2) print "f" j }'); do
+        echo x >> "$wdir/m/$f"
+    done
+    tab=$(printf '\t')
+    watch_counts() {
+        removed=$(grep -c "^[0-9]*${tab}0x00010200=\[removed,isfile\]${tab}$wdir/m/f[0-9]*[02468]$" "$tmp.watch")
+        modified=$(grep -c "^[0-9]*${tab}0x00011000=\[modified,isfile\]${tab}$wdir/m/f[0-9]*[13579]$" "$tmp.watch")
+        [ "$removed" -ge 500 ] && [ "$modified" -ge 500 ]
+    }
+    watch_until 15 watch_counts
+    # One more second: a change that comes two times must show.
+    sleep 1
+    watch_stop
+    watch_counts
+    others=$(grep -v "${tab}0x00020400=\[inodemetamod,isdir\]${tab}$wdir/m$" "$tmp.watch" | grep -c -v -e "removed,isfile" -e "modified,isfile")
+    echo "removed $removed, modified $modified, other lines $others"
+    if [ "$removed" = 500 ] && [ "$modified" = 500 ] && [ "$others" = 0 ]; then
+        echo "PASS: beam.com mac_listener (1000 files)"
+    else
+        cat "$tmp.watch"
+        echo "FAIL: beam.com mac_listener (1000 files)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (1000 files): $removed removed and $modified changed of 500, $others other lines"
+    fi
+    rm -rf "$wdir"
+fi
+
+# Symbolic links in a watched tree, as inotifywait -r: the watcher follows
+# a PATH that is a link (root), but no link below it. Two links to the
+# root (a, b) make a walk that does not end when the watcher follows the
+# links, and the link of Mix (_build/dev/lib/app/priv -> ../../../../priv)
+# gives each change of priv/ a second path. A new link is an entry of its
+# own (issymlink for mac_listener). The same tree for both watchers.
+watch_links() {
+    mkdir -p "$1/real/priv/static" "$1/real/_build/dev/lib/app"
+    ln -s ../../../../priv "$1/real/_build/dev/lib/app/priv"
+    ln -s . "$1/real/a"
+    ln -s . "$1/real/b"
+    ln -s real "$1/root"
+}
+watch_link_changes() {
+    sleep 2
+    echo x > "$1/real/priv/static/app.css"
+    mkdir "$1/real/priv/new"
+    sleep 1
+    echo y > "$1/real/priv/new/b.txt"
+    ln -s .. "$1/real/priv/new/up"
+}
+watch_links_inotify() {
+    grep -q "^$wdir/root/priv/static/|CREATE|app.css$" "$tmp.watch" &&
+        grep -q "^$wdir/root/priv/|CREATE,ISDIR|new$" "$tmp.watch" &&
+        grep -q "^$wdir/root/priv/new/|CREATE|b.txt$" "$tmp.watch" &&
+        grep -q "^$wdir/root/priv/new/|CREATE|up$" "$tmp.watch"
+}
+watch_links_mac() {
+    grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/root/priv/static/app.css$" "$tmp.watch" &&
+        grep -q "^[0-9]*${tab}0x00020100=\[created,isdir\]${tab}$wdir/root/priv/new$" "$tmp.watch" &&
+        grep -q "^[0-9]*${tab}0x00010100=\[created,isfile\]${tab}$wdir/root/priv/new/b.txt$" "$tmp.watch" &&
+        grep -q "^[0-9]*${tab}0x00040100=\[created,issymlink\]${tab}$wdir/root/priv/new/up$" "$tmp.watch"
+}
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    watch_links "$wdir"
+    echo "==> beam.com inotifywait (links)"
+    $runner "$dir/beam.com" inotifywait -e modify -e close_write -e moved_to \
+        -e moved_from -e create -e delete -e attrib --format '%w|%e|%f' \
+        --quiet -m -r "$wdir/root" > "$tmp.watch" 2>&1 &
+    watcher=$!
+    watch_link_changes "$wdir"
+    watch_until 15 watch_links_inotify
+    sleep 1
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    cat "$tmp.watch"
+    if watch_links_inotify &&
+       ! grep -Eq "^$wdir/root/(a|b|_build|priv/new/up)/" "$tmp.watch"; then
+        echo "PASS: beam.com inotifywait (links)"
+    else
+        echo "FAIL: beam.com inotifywait (links)"
+        fail=1
+        failed="$failed
+  beam.com inotifywait (links): missing events, or events under a link"
+    fi
+    rm -rf "$wdir"
+fi
+if [ -f "$dir/beam.com" ]; then
+    wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
+    watch_links "$wdir"
+    echo "==> beam.com mac_listener (links)"
+    mkfifo "$tmp.in"
+    $runner "$dir/beam.com" mac_listener --latency=0.2 -F "$wdir/root" \
+        < "$tmp.in" > "$tmp.watch" 2>&1 &
+    watcher=$!
+    watch_start
+    tab=$(printf '\t')
+    watch_link_changes "$wdir"
+    watch_until 15 watch_links_mac
+    sleep 1
+    watch_stop
+    cat "$tmp.watch"
+    if watch_links_mac &&
+       ! grep -Eq "${tab}$wdir/root/(a|b|_build|priv/new/up)/" "$tmp.watch"; then
+        echo "PASS: beam.com mac_listener (links)"
+    else
+        echo "FAIL: beam.com mac_listener (links)"
+        fail=1
+        failed="$failed
+  beam.com mac_listener (links): missing events, or events under a link"
     fi
     rm -rf "$wdir"
 fi

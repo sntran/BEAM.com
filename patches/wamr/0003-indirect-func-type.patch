@@ -1,0 +1,100 @@
+BEAM.com: the type of the function in an element of table 0
+(docs/UPSTREAM.md, W11). wasm_runtime_call_indirect() checks no type: a
+call writes all the results of the function into its arguments, and AOT
+code reads all its parameters from them. wasm_table_get_func_inst() and
+wasm_func_get_*() give the type, but only for a table with an export,
+and the indirect function table of wasm-ld has none.
+wasm_runtime_get_indirect_func_type() gives the type of the function
+that wasm_runtime_call_indirect() calls, for the interpreter and AOT
+code, so that the caller can refuse a type that it does not expect.
+
+diff --git a/core/iwasm/common/wasm_runtime_common.c b/core/iwasm/common/wasm_runtime_common.c
+index 943b46f..62aa338 100644
+--- a/core/iwasm/common/wasm_runtime_common.c
++++ b/core/iwasm/common/wasm_runtime_common.c
+@@ -2305,6 +2305,59 @@ wasm_table_get_func_inst(struct WASMModuleInstanceCommon *const module_inst,
+     return NULL;
+ }
+ 
++WASMFuncType *
++wasm_runtime_get_indirect_func_type(WASMModuleInstanceCommon *const module_inst,
++                                    uint32 elem_idx)
++{
++    WASMModuleInstance *inst = (WASMModuleInstance *)module_inst;
++    WASMTableInstance *tbl_inst;
++    table_elem_type_t tbl_elem_val;
++    uint32 func_idx;
++
++    if (inst->table_count == 0 || !(tbl_inst = inst->tables[0])
++        || elem_idx >= tbl_inst->cur_size) {
++        return NULL;
++    }
++
++    tbl_elem_val = ((table_elem_type_t *)tbl_inst->elems)[elem_idx];
++    if (tbl_elem_val == NULL_REF) {
++        return NULL;
++    }
++
++#if WASM_ENABLE_GC == 0
++    func_idx = (uint32)tbl_elem_val;
++#else
++    func_idx =
++        wasm_func_obj_get_func_idx_bound((WASMFuncObjectRef)tbl_elem_val);
++#endif
++
++#if WASM_ENABLE_INTERP != 0
++    if (module_inst->module_type == Wasm_Module_Bytecode) {
++        WASMFunctionInstance *func_inst;
++
++        if (func_idx >= inst->e->function_count) {
++            return NULL;
++        }
++        func_inst = inst->e->functions + func_idx;
++        return func_inst->is_import_func ? func_inst->u.func_import->func_type
++                                         : func_inst->u.func->func_type;
++    }
++#endif
++#if WASM_ENABLE_AOT != 0
++    if (module_inst->module_type == Wasm_Module_AoT) {
++        AOTModule *aot_module = (AOTModule *)inst->module;
++
++        if (func_idx >= aot_module->import_func_count + aot_module->func_count) {
++            return NULL;
++        }
++        return (WASMFuncType *)
++            aot_module->types[inst->func_type_indexes[func_idx]];
++    }
++#endif
++
++    return NULL;
++}
++
+ void *
+ wasm_runtime_get_function_attachment(WASMExecEnv *exec_env)
+ {
+diff --git a/core/iwasm/include/wasm_export.h b/core/iwasm/include/wasm_export.h
+index 81efb8f..e17ceb6 100644
+--- a/core/iwasm/include/wasm_export.h
++++ b/core/iwasm/include/wasm_export.h
+@@ -1813,6 +1813,21 @@ WASM_RUNTIME_API_EXTERN wasm_function_inst_t
+ wasm_table_get_func_inst(const wasm_module_inst_t module_inst,
+                          const wasm_table_inst_t *table_inst, uint32_t idx);
+ 
++/**
++ * BEAM.com: get the type of the function in an element of table 0, the
++ * function that wasm_runtime_call_indirect() calls. The table does not
++ * need an export.
++ *
++ * @param module_inst the module instance
++ * @param elem_idx the index in table 0
++ *
++ * @return the function type, or NULL when there is no table 0, or when
++ * the element is outside of it or empty
++ */
++WASM_RUNTIME_API_EXTERN wasm_func_type_t
++wasm_runtime_get_indirect_func_type(const wasm_module_inst_t module_inst,
++                                    uint32_t elem_idx);
++
+ /**
+  * Get attachment of native function from execution environment
+  *

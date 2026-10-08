@@ -1,8 +1,8 @@
 diff --git a/erts/emulator/beam/erl_nif.c b/erts/emulator/beam/erl_nif.c
-index 70978c2..17079ad 100644
+index 70978c2..d6d60f7 100644
 --- a/erts/emulator/beam/erl_nif.c
 +++ b/erts/emulator/beam/erl_nif.c
-@@ -4705,6 +4705,11 @@ static int check_is_nifable(const BeamCodeHeader* mod_code,
+@@ -4705,6 +4705,15 @@ static int check_is_nifable(const BeamCodeHeader* mod_code,
  
  static void patch_call_nif_early(ErlNifEntry*, struct erl_module_instance*);
  
@@ -10,11 +10,23 @@ index 70978c2..17079ad 100644
 + * (c_src/wasm/nif_wasm.c sets it). It gives the entry of PATH.ARCH.aot
 + * or PATH.wasm, or NULL and an empty error when neither file exists. */
 +ErlNifEntry *(*erts_wasm_nif_open)(const char *path, char *error, size_t size) = NULL;
++/* BEAM.com: erts_load_nif() gives the loader back an entry of
++ * erts_wasm_nif_open that it refuses before the load callback (an
++ * upgrade, a bad library), so that the loader frees the library. */
++void (*erts_wasm_nif_close)(ErlNifEntry *entry) = NULL;
 +
  Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
  {
      static const char bad_lib[] = "bad_lib";
-@@ -4771,6 +4776,25 @@ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
+@@ -4726,6 +4735,7 @@ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
+     struct erl_module_nif* lib = NULL;
+     struct erl_module_instance* this_mi;
+     struct erl_module_instance* prev_mi;
++    ErlNifEntry* wasm_entry = NULL; /* BEAM.com */
+ 
+     encoding = erts_get_native_filename_encoding();
+     if (encoding == ERL_FILENAME_WIN_WCHAR) {
+@@ -4771,6 +4781,24 @@ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
  	this_mi = module_p->on_load;
      }
  
@@ -22,7 +34,6 @@ index 70978c2..17079ad 100644
 +     * a static NIF. */
 +    if (!is_static && this_mi->nif == NULL && erts_wasm_nif_open != NULL) {
 +        char wasm_error[512];
-+        ErlNifEntry *wasm_entry;
 +
 +        wasm_error[0] = '\0';
 +        wasm_entry = erts_wasm_nif_open(lib_name, wasm_error, sizeof(wasm_error));
@@ -40,6 +51,16 @@ index 70978c2..17079ad 100644
      if (this_mi->nif != NULL) {
          ret = load_nif_error(c_p,"reload","NIF library already loaded"
                               " (reload disallowed since OTP 20).");
+@@ -5020,6 +5048,9 @@ Eterm erts_load_nif(Process *c_p, ErtsCodePtr I, Eterm filename, Eterm args)
+     error:
+ 	rollback_opened_resource_types();
+ 	ASSERT(ret != am_ok);
++        /* BEAM.com: the loader frees a library that ERTS refused. */
++        if (wasm_entry != NULL && erts_wasm_nif_close != NULL)
++            erts_wasm_nif_close(wasm_entry);
+         if (lib != NULL) {
+             if (lib->finish != NULL) {
+                 erase_hashed_stubs(lib->finish);
 diff --git a/erts/emulator/beam/erl_nif.h b/erts/emulator/beam/erl_nif.h
 index 7c01e88..8193812 100644
 --- a/erts/emulator/beam/erl_nif.h
