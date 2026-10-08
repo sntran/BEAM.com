@@ -171,6 +171,9 @@ Node.
 the programs that it builds, on each system, and check the output and
 the exit status of each one, with a time limit. They also check the
 errors of `beam.com INPUT -o OUTPUT` (the exit status and the message).
+A check that uses the network gets one more try after 10 s when it
+fails, and the log shows both tries. Both runners do this for the HTTPS
+request of `tls_check`, and `tests/run.sh` also does it for Hex and Mix.
 
 ```sh
 tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)

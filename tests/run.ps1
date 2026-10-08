@@ -8,7 +8,29 @@ $Dir = (Resolve-Path $Dir).Path
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
-function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
+# Check NAME PATTERN ARGUMENTS [EXPECT] [-Net]: run the program NAME of
+# DIR with ARGUMENTS, and check its exit status and its output
+# (CheckOnce). With -Net (as net_check of tests/run.sh), the check uses
+# the network: a failure gets one more try after 10 s, and the log shows
+# both tries.
+function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0, [switch]$Net) {
+    for ($try = 1; ; $try++) {
+        $script:pending = [System.Collections.Generic.List[string]]::new()
+        CheckOnce $Name $Pattern $Arguments $Expect
+        if ($script:pending.Count -eq 0) { return }
+        if ($Net -and $try -lt 2) {
+            Write-Host "RETRY: $Name uses the network: one more try in 10 s"
+            Start-Sleep -Seconds 10
+            continue
+        }
+        $script:fail = 1
+        $script:pending | ForEach-Object { $script:failures.Add($_) }
+        return
+    }
+}
+
+# CheckOnce: one try of Check. It adds each failure to $script:pending.
+function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     Write-Host "==> $Name"
     # Windows runs an APE file as a PE executable. Use an .exe name.
     $exe = Join-Path $Dir ($Name -replace '\.com$', '.exe')
@@ -79,23 +101,23 @@ function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0) {
     # The end of the output of a failed check, for the summary.
     $tail = (($all | Select-Object -Last 15) | ForEach-Object { "      | $_" }) -join "`n"
     if ($rc -ne $Expect) {
-        Write-Host "FAIL: $Name exited with $rc (expected $Expect)"; $script:fail = 1
-        $script:failures.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)`n$tail")
+        Write-Host "FAIL: $Name exited with $rc (expected $Expect)"
+        $script:pending.Add("$Name $($Arguments -join ' '): exited with $rc (expected $Expect)`n$tail")
     } else {
         # The patterns are separated by "@@". Each one must be found.
         $ok = $true
         foreach ($pat in ($Pattern -split '@@')) {
             if ($out -notmatch $pat) {
                 Write-Host "FAIL: $Name did not print `"$pat`""
-                $script:failures.Add("$Name $($Arguments -join ' '): did not print `"$pat`"`n$tail")
-                $ok = $false; $script:fail = 1
+                $script:pending.Add("$Name $($Arguments -join ' '): did not print `"$pat`"`n$tail")
+                $ok = $false
             }
         }
         # Kernel must accept the inetrc that BEAM.com writes on Windows.
         if ($out -match 'inet_config: syntax error') {
             Write-Host "FAIL: ${Name}: kernel did not accept the inetrc"
-            $script:failures.Add("${Name}: kernel did not accept the inetrc")
-            $ok = $false; $script:fail = 1
+            $script:pending.Add("${Name}: kernel did not accept the inetrc")
+            $ok = $false
         }
         if ($ok) { Write-Host "PASS: $Name" }
     }
@@ -132,7 +154,7 @@ Check "beam.com" 'SYS @@Erlang/OTP  : ' @("--strace", "--version")
 # Releases made with rebar3 and added with zip (by CI).
 foreach ($app in $apps) {
     if (Test-Path (Join-Path $Dir "$app.com")) {
-        Check "$app.com" $patterns[$app] @()
+        Check "$app.com" $patterns[$app] @() -Net:($app -eq "tls_check")
     }
 }
 
@@ -148,7 +170,7 @@ if (Test-Path "examples") {
         $src = if ($app -eq "greeter") { "examples/$app" } else { "tests/programs/$app" }
         Check "beam.com" "wrote .*$app.b.com" @($src, "-o", "$Dir/$app.b.com")
         if (Test-Path (Join-Path $Dir "$app.b.com")) {
-            Check "$app.b.com" $patterns[$app] @()
+            Check "$app.b.com" $patterns[$app] @() -Net:($app -eq "tls_check")
         }
     }
 }
