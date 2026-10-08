@@ -14,6 +14,10 @@ notes of its release.
   with no NUL at the end of a mapping made a fault. A test of CI calls 20
   functions of the libc at the edges of a mapping. See C34 in
   `docs/UPSTREAM.md`.
+- The reader of the `metadata.config` of a Hex package refuses a float,
+  such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
+  dot now ends a term only before white space, a comment or the end of
+  the text, as in `erl_scan`.
 
 ## 0.1.0-rc.5
 

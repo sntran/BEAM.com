@@ -403,6 +403,16 @@ defmodule BeamComHexTest do
       assert @not_terms == catch_throw(:beam_com_hex.consult(text))
     end
 
+    # A dot ends a term only before white space, a comment or the end, as
+    # in erl_scan. Before, "1.5." gave the terms 1 and 5.
+    test "a dot in a number does not end the term" do
+      assert [1, 2, 3, :ok] == :beam_com_hex.consult("1.\n2.%c\n3. ok.")
+
+      for b <- ["0.0.", "1.5.", "{a, 1.0}.", "[1.5].", "1.0e3.", "1.2.3.", "ok.x."] do
+        assert @not_terms == catch_throw(:beam_com_hex.consult(b)), b
+      end
+    end
+
     for b <- ["{a", "fun() -> ok end.", "1 + 2.", "<<256>>.", "<<1:16>>.", "x"] do
       test "text that is not a term: #{inspect(b)}" do
         assert @not_terms == catch_throw(:beam_com_hex.consult(unquote(b)))
