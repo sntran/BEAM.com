@@ -17,8 +17,11 @@
 %%   "beam.com")), so a build with a lock file and a full cache does not
 %%   use the network.
 %% - Each tarball is checked: the outer checksum (SHA-256 of the file:
-%%   pkg_hash_ext in rebar.lock, or the checksum of the API) and the
-%%   inner checksum (the CHECKSUM file, and pkg_hash in rebar.lock).
+%%   pkg_hash_ext in rebar.lock, else the checksum of the API) and the
+%%   inner checksum (the CHECKSUM file, and pkg_hash in rebar.lock). When
+%%   the lock has no outer checksum for a package (rebar.lock of the
+%%   format 1.0.0, for example), the API gives it, and fetch/5 writes the
+%%   lock again with the checksums.
 -module(beam_com_hex).
 
 -export([fetch/2, fetch/4]).
@@ -26,7 +29,7 @@
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
          rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
-         unpack/3, resolve/3,
+         unpack/3, resolve/3, fetch/5,
          registry/0, consult/1, meta_requirements/1]).
 -endif.
 
@@ -61,7 +64,10 @@ fetch(Dir, LibDir, Deps, Format, Registry) ->
                              false -> {resolve(Deps, Lock, Registry), true}
                          end,
     Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
-    Resolved andalso write_lock(Format, LockFile, Chosen, Unpacked),
+    %% The lock gets the checksums that the API gave, so that the next
+    %% build checks the same tarballs with no request.
+    NoChecksum = [N || N := #{outer := undefined} <- Chosen],
+    (Resolved orelse NoChecksum =/= []) andalso write_lock(Format, LockFile, Chosen, Unpacked),
     order(Unpacked).
 
 rebar_config(Dir) ->
@@ -231,7 +237,9 @@ match_clause(V, {'<', W}) -> compare(V, W) =:= lt.
 pre_allowed({_, _, _, []}, _) -> true;
 pre_allowed(_, {_, _, _, ReqPre}) -> ReqPre =/= [].
 
-%%% rebar.lock: #{Name => #{pkg, vsn, inner, outer}}, Name an atom.
+%%% rebar.lock: #{Name => #{pkg, vsn, inner, outer}}, Name an atom. A
+%%% checksum that the lock does not have is undefined. An entry of
+%%% rebar.lock also has its level.
 
 read_lock(File) ->
     read_lock(rebar, File).
@@ -239,7 +247,10 @@ read_lock(File) ->
 %% mix.lock: %{"name": {:hex, :package, "vsn", "inner", managers, deps,
 %% "hexpm", "outer"}}, read with the Elixir parser as Mix reads it. Mix
 %% writes the keys as quoted atoms ("name": ...), and lock_text/2 writes
-%% them as strings ("name" => ...).
+%% them as strings ("name" => ...). Older versions of Hex wrote shorter
+%% entries, with no outer checksum or no checksum. Hex reads an element
+%% that is not there as nil (destructure in Hex.Utils.lock/1), and so
+%% does this function.
 read_lock(mix, File) ->
     case file:read_file(File) of
         {error, _} -> #{};
@@ -249,10 +260,10 @@ read_lock(mix, File) ->
             {Map, _} = 'Elixir.Code':eval_quoted(Quoted, [], Opts),
             maps:from_list(
               [case Entry of
-                   {hex, Pkg, Vsn, Inner, _Managers, _Deps, _Repo, Outer} ->
-                       {lock_name(Name),
-                        #{pkg => atom_to_binary(Pkg), vsn => binary_to_list(Vsn),
-                          inner => Inner, outer => Outer}};
+                   _ when is_tuple(Entry), tuple_size(Entry) >= 3,
+                          element(1, Entry) =:= hex, is_atom(element(2, Entry)),
+                          is_binary(element(3, Entry)) ->
+                       {lock_name(Name), mix_entry(Name, Entry)};
                    _ ->
                        throw({error, "mix.lock: ~ts is not a Hex package (only Hex "
                               "packages are supported)", [Name]})
@@ -271,6 +282,18 @@ read_lock(rebar, File) ->
 lock_name(Name) when is_atom(Name) -> Name;
 lock_name(Name) when is_binary(Name) -> binary_to_atom(Name).
 
+mix_entry(Name, Entry) ->
+    Get = fun(N) when N =< tuple_size(Entry) -> element(N, Entry);
+             (_) -> nil
+          end,
+    #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
+      inner => lock_hash(Name, Get(4)), outer => lock_hash(Name, Get(8))}.
+
+lock_hash(_Name, nil) -> undefined;
+lock_hash(_Name, Hash) when is_binary(Hash) -> Hash;
+lock_hash(Name, Hash) ->
+    throw({error, "mix.lock: ~ts has a bad checksum: ~tp", [Name, Hash]}).
+
 lock_map(Entries, Rest) ->
     Hashes = case Rest of
                  [H | _] when is_list(H) -> H;
@@ -282,18 +305,18 @@ lock_map(Entries, Rest) ->
       [case Source of
            {pkg, Pkg, Vsn} ->
                {binary_to_atom(Name),
-                #{pkg => Pkg, vsn => binary_to_list(Vsn),
+                #{pkg => Pkg, vsn => binary_to_list(Vsn), level => Level,
                   inner => proplists:get_value(Name, Inner),
                   outer => proplists:get_value(Name, Outer)}};
            {pkg, Pkg, Vsn, _Repo} ->
                {binary_to_atom(Name),
-                #{pkg => Pkg, vsn => binary_to_list(Vsn),
+                #{pkg => Pkg, vsn => binary_to_list(Vsn), level => Level,
                   inner => proplists:get_value(Name, Inner),
                   outer => proplists:get_value(Name, Outer)}};
            _ ->
                throw({error, "rebar.lock: ~ts is not a Hex package (only Hex "
                       "packages are supported)", [Name]})
-       end || {Name, Source, _Level} <- Entries]).
+       end || {Name, Source, Level} <- Entries]).
 
 from_lock(Lock) ->
     maps:map(fun(Name, P) -> P#{name => Name} end, Lock).
@@ -328,9 +351,11 @@ lock_text(mix, Packages) ->
 lock_text(rebar, Packages) ->
     lock_text(Packages).
 
+%% With no resolution, each package keeps the level of rebar.lock.
 write_lock(Format, File, Chosen, Unpacked) ->
     Levels = levels(Chosen, Unpacked),
-    Text = lock_text(Format, [P#{level => maps:get(N, Levels)} || #{name := N} = P <- Unpacked]),
+    Text = lock_text(Format, [P#{level => maps:get(N, Levels, maps:get(level, P, 0))}
+                              || #{name := N} = P <- Unpacked]),
     case file:write_file(File, Text) of
         ok -> io:format("~ts: wrote ~ts~n", [beam_com:name(), File]);
         {error, Reason} ->
@@ -410,7 +435,7 @@ highest(Name, Pkg, Req, Registry) ->
 %%% The tarballs.
 
 unpack_package(#{name := Name, pkg := Pkg, vsn := Vsn} = P, LibDir, Registry) ->
-    Tar = tarball(Pkg, Vsn, maps:get(outer, P, undefined), Registry),
+    Tar = tarball(Pkg, Vsn, outer_checksum(P, Registry), Registry),
     Dir = filename:join(LibDir, atom_to_list(Name) ++ "-" ++ Vsn),
     #{inner := Inner, metadata := Meta} = unpack(Tar, maps:get(inner, P, undefined), Dir),
     tools(Pkg, Meta),
@@ -419,13 +444,27 @@ unpack_package(#{name := Name, pkg := Pkg, vsn := Vsn} = P, LibDir, Registry) ->
        requires => [N || {N, _, _} <- Reqs], reqs => Reqs,
        tools => proplists:get_value(<<"build_tools">>, Meta, [])}.
 
+%% The outer checksum of a release: from the lock, else from the Hex API.
+%% The check of each tarball, also of a tarball of the cache or of
+%% HEX_MIRROR, uses a checksum from one of them. The CHECKSUM file of a
+%% tarball only checks the tarball itself.
+outer_checksum(#{pkg := Pkg, vsn := Vsn} = P, Registry) ->
+    case maps:get(outer, P, undefined) of
+        undefined ->
+            case (maps:get(release, Registry))(Pkg, Vsn) of
+                #{checksum := Sum} when Sum =/= undefined -> Sum;
+                _ -> throw({error, "~ts ~ts: the Hex API gives no checksum", [Pkg, Vsn]})
+            end;
+        Outer ->
+            Outer
+    end.
+
 %% The tarball of a release: from the cache, or downloaded. Expected is
-%% the outer checksum (hex), when it is known.
+%% the outer checksum (hex).
 tarball(Pkg, Vsn, Expected, Registry) ->
     Name = binary_to_list(Pkg) ++ "-" ++ Vsn ++ ".tar",
     Cache = filename:join([cache_dir(), "hex", "tarballs", Name]),
-    Checked = fun(Tar) -> Expected =:= undefined orelse
-                              string:uppercase(to_list(Expected)) =:= sha256(Tar) end,
+    Checked = fun(Tar) -> string:uppercase(to_list(Expected)) =:= sha256(Tar) end,
     case file:read_file(Cache) of
         {ok, Tar} ->
             case Checked(Tar) of
@@ -715,7 +754,10 @@ api_release(Pkg, Vsn) ->
     Reqs = maps:get(<<"requirements">>, Info, #{}),
     map_size(Reqs) =< ?MAX_REQUIREMENTS orelse
         throw({error, "a package has more than ~b requirements", [?MAX_REQUIREMENTS]}),
-    #{checksum => binary_to_list(maps:get(<<"checksum">>, Info)),
+    #{checksum => case Info of
+                      #{<<"checksum">> := Sum} when is_binary(Sum) -> binary_to_list(Sum);
+                      _ -> undefined
+                  end,
       requirements =>
           [{app_name(maps:get(<<"app">>, R, P)), P,
             binary_to_list(maps:get(<<"requirement">>, R))}

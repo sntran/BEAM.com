@@ -91,11 +91,20 @@ and compiled into the program, as rebar3 does, without rebar3:
   is an error that names both requirements; a version in `rebar.config`
   solves it. Pre-releases are used only when a requirement names one.
 - **Checks.** Each tarball is checked with the outer checksum (SHA-256
-  of the file: `pkg_hash_ext` of `rebar.lock`, or the checksum of the
+  of the file: `pkg_hash_ext` of `rebar.lock`, else the checksum of the
   Hex API) and the inner checksum (`pkg_hash`, and the `CHECKSUM` file).
+  The check also applies to a tarball of the cache and of `HEX_MIRROR`.
+  When `rebar.lock` has no `pkg_hash_ext` for a package (the formats
+  1.0.0 and 1.1.0 of rebar3), the builder gets the checksum from the Hex
+  API, as rebar3 checks such a lock with the registry. Then it writes
+  `rebar.lock` again, with both checksums and the same versions and
+  levels, so the next build needs no request. The same rules apply to
+  `mix.lock`, also to an entry that an older version of Hex wrote (with
+  no outer checksum, or with no checksum).
 - **Cache.** The tarballs are kept in the cache of the user
   (`~/.cache/beam.com` on Linux; `BEAM_COM_CACHE` changes it). With
-  `rebar.lock` and a full cache, a build does not use the network.
+  `rebar.lock` (with its checksums) and a full cache, a build does not
+  use the network.
 - **Network.** HTTPS with `httpc`, verified with the certificates of
   the OS. `HTTPS_PROXY` and `NO_PROXY` are used. `HEX_API_URL` (default
   `https://hex.pm/api`) and `HEX_MIRROR` (default `https://repo.hex.pm`)

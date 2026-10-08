@@ -18,6 +18,14 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- A build with Hex packages checks each tarball with a checksum of the
+  lock or of the Hex API, also when the lock has no checksum for the
+  package: `rebar.lock` of the formats 1.0.0 and 1.1.0, or a `mix.lock`
+  entry of an older Hex. Before, such a lock took the tarball of the
+  cache or of `HEX_MIRROR` with no check against a trusted checksum.
+  The build then writes the lock again with the checksums, so the next
+  build needs no request. The older `mix.lock` entries are no longer
+  refused as "not a Hex package".
 
 ## 0.1.0-rc.5
 
