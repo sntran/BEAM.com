@@ -38,6 +38,19 @@ notes of its release.
   local times of change, with a resolution of 1 s, and could run the old
   program. A file next to the program in the cache keeps the SHA-256 of
   each input. A run with no change reads the data of no input.
+- `pages-app.yml` checks the provenance of `beam.com` against the commit
+  of the release tag, not the ref of the tag. A release from a run by
+  hand reuses the tested build of `main`, and its attestation names
+  `main`. So `pages-app.yml@v0.1.0-rc.4` and `@v0.1.0-rc.5` stop at
+  "Check the provenance of beam.com": use `@v0.1.0-rc.6` or later. CI
+  now runs this check on the newest release, and the release job runs it
+  before it publishes.
+- The release job waits for each test job of its run, also the tests of
+  the npm package and of the web page. It stops when the commit of the
+  tag is not on `main`, when a file has another version
+  (`scripts/version.sh`), or when `CHANGELOG.md` has no section of the
+  version. Each commit of `main` has its own CI group, so a merge does
+  not stop the waiting run of the merge before it.
 
 ## 0.1.0-rc.5
 

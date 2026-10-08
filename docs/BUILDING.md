@@ -190,10 +190,14 @@ workflow by hand (Actions, "Run workflow") with no `release`.
 
 ## Make a release
 
-1. Set the version in `src/beam_com/beam_com.app.src` and
-   `package.json`, write its section (`## X.Y.Z`) in
-   [`CHANGELOG.md`](../CHANGELOG.md), and merge the change to `main`. The
-   section goes at the start of the notes of the release.
+1. Set the version in each file that has it, write its section
+   (`## X.Y.Z`) in [`CHANGELOG.md`](../CHANGELOG.md), and merge the
+   change to `main`. The section goes at the start of the notes of the
+   release. The files: `src/beam_com/beam_com.app.src`, `package.json`,
+   the `beam.com` dependency of `examples/*/package.json`, and the URL of
+   the npm package in `README.md`.
+   [`scripts/version.sh`](../scripts/version.sh) checks them, and CI runs
+   it for each change.
 2. Start the release in one of two ways:
    - Run the workflow by hand on `main` (Actions, "Build and test
      BEAM.com", "Run workflow"), with the version in the field
@@ -202,11 +206,17 @@ workflow by hand (Actions, "Run workflow") with no `release`.
      the version of `beam_com.app.src`, and when the tag is on another
      commit.
    - Or push a tag with the same version on the merge commit: `git tag -a
-     v0.1.0 -m "BEAM.com 0.1.0" && git push origin v0.1.0`.
+     v0.1.0 -m "BEAM.com 0.1.0" && git push origin v0.1.0`. The job
+     stops when the commit of the tag is not on `main`.
 3. The run takes the files of the run of `main` for that commit (it
    waits for that run when it has not ended), and then publishes the
-   release of the tag. The job stops when the tag and the version
-   differ. A re-run of a run by hand finds its tag, and goes on.
+   release of the tag. With no passed run of `main` for the commit (for
+   example a merge that changes only docs), the run builds and tests the
+   commit itself, and each test job must pass. The job stops when the
+   tag and the version differ, and when `CHANGELOG.md` has no section of
+   the version. Before the publish, it runs the provenance check of
+   `pages-app.yml` on its `beam.com`. A re-run of a run by hand finds its
+   tag, and goes on.
 4. npm publishes with trusted publishing: the trusted publisher of the
    package `beam.com` on npmjs.com is the workflow `build.yml` of
    `sntran/BEAM.com`, with no environment. The workflow needs no npm

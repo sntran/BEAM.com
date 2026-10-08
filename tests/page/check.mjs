@@ -290,9 +290,24 @@ async function check(page, origin) {
 
   // The login page is a LiveView with phx-submit: wait until it joins.
   await connected(frame);
+  // The email field of the first form (login_form_magic) has
+  // phx-mounted={JS.focus()}. LiveView focuses it at the mount, and again
+  // two animation frames later. A fill in the password form before that
+  // second focus can put its text in the other field: the email field of
+  // the password form stays empty, the browser refuses the submit
+  // (required), and no POST goes. So wait for three frames, and check
+  // the values before the click.
+  await frame.evaluate(() => new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
 
-  await frame.fill('#login_form_password input[type=email]', 'nobody@example.com');
-  await frame.fill('#login_form_password input[type=password]', 'not the password');
+  const email = '#login_form_password input[type=email]';
+  const password = '#login_form_password input[type=password]';
+  await frame.fill(email, 'nobody@example.com');
+  await frame.fill(password, 'not the password');
+  const values = [await frame.inputValue(email), await frame.inputValue(password)];
+  if (values[0] !== 'nobody@example.com' || values[1] !== 'not the password') {
+    throw new Error(`the login form has the values ${JSON.stringify(values)} after the fill`);
+  }
   await frame.click('#login_form_password button');
   await frame.waitForSelector('text=Invalid email or password', { timeout: 30000 }).catch(async (e) => {
     // The state of the form and of the LiveView, for the log: after the
