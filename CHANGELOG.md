@@ -55,6 +55,13 @@ notes of its release.
   copy a VM that waited for the reply of such an operation, and a VM that
   restored it waited forever, or used a handle that its host did not
   have.
+- `BEAM_FETCH` keeps the rules of the fetch path. Port 443 goes through
+  `fetch()` only with a trust store (`--cacerts`), also when a rule names
+  it, and another port only when a rule names that port. Before, `*:443`
+  with no `--cacerts` sent each HTTPS connection to a server whose CA the
+  program did not trust, and `*` sent each connection, also of a
+  database, to a server that speaks only HTTP. A rule with no port now
+  gives ports 80 and 443. `specs/FetchPath.tla` models the rules.
 
 ## 0.1.0-rc.5
 

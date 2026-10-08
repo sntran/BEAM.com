@@ -425,15 +425,16 @@ configuration of the program do not change:
 `Req.get!("https://api.cloudflare.com/...")` works.
 
 The host chooses the route of each connect of the program
-(`specs/FetchPath.tla`):
+(`specs/FetchPath.tla`). It sees the port of the connect, not the
+protocol:
 
 | Connect | Route |
 |---|---|
 | Port 80 | `fetch()`. |
 | Port 443, with a trust store (`--cacerts`) | `fetch()`. |
-| Port 443, with no trust store | `connect()`. The program cannot trust the CA of the VM. |
-| Another port | `connect()`. |
-| `BEAM_FETCH` is set | `fetch()` for its hosts and ports, `connect()` for the others. |
+| Port 443, with no trust store | `connect()`, also when `BEAM_FETCH` names the port. The program cannot trust the CA of the VM. |
+| Another port | `connect()`, except when a rule of `BEAM_FETCH` names the port. A protocol that is not HTTP (a database, SMTP) must not go to `fetch()`. |
+| `BEAM_FETCH` is set | Only its hosts and ports, with the two rules above. |
 
 For `fetch()`, the socket of the program goes to a server in the VM
 (`wasm_host_fetch`), and each HTTP request on it is one `fetch()` call.
@@ -473,9 +474,22 @@ For `fetch()`, the socket of the program goes to a server in the VM
   example another one on your workers.dev subdomain) gets the error
   1042 of Cloudflare. Use a service binding for that Worker.
 - `BEAM_FETCH` gives the hosts and ports of `fetch()`, with the rules of
-  `BEAM_CONNECT`. For example, `*:80,*:443,api.local:8080` adds a port to
-  the default. An empty `BEAM_FETCH` turns `fetch()` off: then only the
-  fallback uses it.
+  `BEAM_CONNECT`:
+  - A rule with no port (`host`, `*.domain`, `*`) gives ports 80 and 443
+    of its hosts. So `*` is the default, and a database on another port
+    still uses `connect()`.
+  - A rule with a port (`host:8080`, `*:8080`) gives that port. For
+    example, `*:80,*:443,api.local:8080` adds a port to the default.
+  - Port 443 goes through `fetch()` only with a trust store
+    (`--cacerts`), also when a rule names it.
+  - An empty `BEAM_FETCH` turns `fetch()` off: then only the fallback
+    uses it.
+
+  Caution: name another port only when the program speaks HTTP or HTTPS
+  on it. The server in the VM speaks only HTTP, and the host cannot see
+  the protocol before the route. For HTTPS on such a port, build with
+  `--cacerts`. Else the program does not trust the certificate of the
+  server in the VM.
 
 ## Ecto SQLite: D1, Durable Objects and Deno KV
 
@@ -837,7 +851,7 @@ Cloudflare stops the requests with "Durable Object is overloaded".
 | `BEAM_YIELD_REDS` | Durable Object | The reductions of work between two turns of the event loop (1000000). `"0"`: no turns. |
 | `DIST_NAME`, `DIST_COOKIE`, `DIST_PORT`, `DIST_LISTEN`, `DIST_CONNECT` | Worker, Durable Object | Distributed Erlang (see above). |
 | `BEAM_CONNECT` | all hosts | The hosts that the VM can connect to, separated by commas: `host`, `host:port`, `*.domain` (its subdomains), or `*` (all hosts, as in `*:443`). The host resolves the name, so the VM cannot reach another address. Other connections get `econnrefused`. With no `BEAM_CONNECT`, all hosts. The Node host of the tests (`wasm/erts/host/server.mjs`) does not check it. |
-| `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"). The others use `connect()`. Empty: no host. |
+| `BEAM_FETCH` | port 80, and port 443 with `--cacerts` | The hosts and ports whose connect goes through `fetch()`, with the rules of `BEAM_CONNECT` (see "HTTP through fetch()"): a rule with no port gives ports 80 and 443, port 443 needs `--cacerts`, and another port needs a rule that names it. The others use `connect()`. Empty: no host. |
 | `BEAM_SQLITE`, `BEAM_KV`, `BEAM_SQLITE_DEBUG` | Deno | The database of Ecto SQLite (see "Ecto SQLite on Deno KV"). |
 | `BEAM_HOST`, `BEAM_REGION` | all hosts | Set by the runtime (see "The host"). |
 

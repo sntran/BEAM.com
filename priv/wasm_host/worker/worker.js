@@ -300,14 +300,15 @@ export function allocFlags(flags) {
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
 // hosts, as "*:443"). The host resolves a name, so the VM cannot reach
 // another address through it. With no BEAM_CONNECT, the VM can connect to
-// all hosts. BEAM_FETCH has the same rules.
-export function connectAllowed(list, host, port) {
+// all hosts. BEAM_FETCH has the same rules. named: only a rule that names
+// the port counts (BEAM_FETCH for a port other than 80 and 443).
+export function connectAllowed(list, host, port, named = false) {
   if (list === undefined) return true;
   const name = String(host).toLowerCase().replace(/\.$/, '');
   return list.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean).some((rule) => {
     const i = rule.lastIndexOf(':');
     const [pattern, p] = i > 0 && !rule.includes(']') ? [rule.slice(0, i), rule.slice(i + 1)] : [rule, undefined];
-    if (p !== undefined && Number(p) !== port) return false;
+    if (p === undefined ? named : Number(p) !== port) return false;
     if (pattern === '*') return true;
     return pattern.startsWith('*.') ? name.endsWith(pattern.slice(1)) : name === pattern;
   });
@@ -2575,14 +2576,24 @@ export class Vm {
     if (h) { h.sockets--; h.wake?.(); }
   }
 
-  // BEAM_FETCH: the hosts and ports whose connect goes to fetch() with no
-  // connect(), with the rules of BEAM_CONNECT. An empty BEAM_FETCH: none.
-  // With no BEAM_FETCH: port 80, and port 443 when the trust store of the
-  // VM holds the CA of wasm_host_fetch (a build with --cacerts).
+  // The route of a connect (Route of specs/FetchPath.tla): true when it
+  // goes to fetch() with no connect(). The host sees the port, not the
+  // protocol:
+  // - Port 80 is HTTP.
+  // - Port 443 is HTTPS. It goes to fetch() only when the trust store of the
+  //   VM holds the CA of wasm_host_fetch (a build with --cacerts), so that
+  //   the program trusts the server of the VM (TlsOnlyWithTrust).
+  // - Another port goes to fetch() only when a rule of BEAM_FETCH names it
+  //   ("host:8080", "*:8080"): a protocol that is not HTTP (a database,
+  //   SMTP) must not go to the server of the VM (TcpNeverFetch).
+  // BEAM_FETCH has the rules of BEAM_CONNECT. A rule with no port ("host",
+  // "*.domain", "*") gives ports 80 and 443. With no BEAM_FETCH: ports 80
+  // and 443 of all hosts. An empty BEAM_FETCH: none.
   fetchFirst(host, port) {
     const list = this.env.BEAM_FETCH;
-    if (list !== undefined) return connectAllowed(list, host, port);
-    return port === 80 || (port === 443 && this.listeners.has('fetch-tls'));
+    if (port === 443 && !this.listeners.has('fetch-tls')) return false;
+    if (list === undefined) return port === 80 || port === 443;
+    return connectAllowed(list, host, port, port !== 80 && port !== 443);
   }
 
   // The name is a host of Cloudflare: one of its addresses is in the ranges
