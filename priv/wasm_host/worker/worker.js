@@ -1440,13 +1440,23 @@ export class Vm {
     this.waitUntil?.(put);
   }
 
+  // The VM has I/O of the host that a snapshot cannot hold
+  // (NoSnapshotInFlight of specs/FetchPath.tla): a SQL call, a socket, a
+  // fetch() of the fetch path, or an operation of WasmHost in flight. A
+  // module or an instance of WasmHost is in the host only, as a socket is:
+  // a restored VM would have its handle, and the new host would not.
+  inFlight() {
+    return this.sqlPending > 0 || this.tcps.size > 0 || this.fetchPending > 0 || this.wasmPending > 0
+      || (this.wasm?.modules.size ?? 0) + (this.wasm?.instances.size ?? 0) > 0;
+  }
+
   // All the threads return (erts_wasm_hibernate), the memory is copied, and
   // the threads go on: about 1 ms of the VM, and the time of the copy.
   // 'busy': not a quiet moment (I/O of the host); null: no snapshot.
   async snapshot(bootPoint) {
     const x = this.exports;
     const tick = () => new Promise((r) => setTimeout(r, 1));
-    const busy = () => this.sqlPending > 0 || this.tcps.size > 0 || this.fetchPending > 0;
+    const busy = () => this.inFlight();
     // Data in a pipe (an event of the host that Erlang did not take yet,
     // or a wake-up of ERTS) would not be in the snapshot either.
     const unread = () => this.beam.FS.streams.some((st) => st?.node?.pipe?.buckets.some((b) => b.offset > b.roffset));
@@ -1816,9 +1826,10 @@ export class Vm {
   }
 
   // One operation of wasm_host_wasm (WasmHost). It keeps the request h open
-  // until the answer, as a D1 call does.
+  // until the answer, as a D1 call does, and a snapshot waits for it.
   async wasmRequest(msg, body, h) {
     if (h) h.sockets++;
+    this.wasmPending = (this.wasmPending ?? 0) + 1;
     let reply;
     try {
       this.wasm ??= new WasmHost();
@@ -1826,6 +1837,7 @@ export class Vm {
     } catch (e) {
       reply = { error: String(e?.message ?? e) };
     } finally {
+      this.wasmPending--;
       if (h) { h.sockets--; h.wake?.(); }
     }
     this.event({ t: 'wasm_reply', id: msg.id }, new TextEncoder().encode(JSON.stringify(reply)));

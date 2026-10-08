@@ -520,6 +520,13 @@ is on by default; the var `BEAM_SNAPSHOT = "off"` turns it off.
   modules of the boot are loaded, before `runtime.exs` and the program.
   Each object then runs the program and its migrations on its own
   storage.
+- **A quiet moment.** A snapshot waits while the VM has I/O of the host,
+  which the snapshot cannot hold: a SQL call, a socket, a `fetch()` of
+  the fetch path, an operation of WebAssembly (the application `wasm`),
+  or a module or an instance of WebAssembly that the host keeps for the
+  VM. A restored VM would wait for a reply that does not come, or use a
+  handle that the new host does not have. After about 2 s, the VM makes
+  no snapshot, and the next new VM tries again.
 
 ### The snapshot of the build
 

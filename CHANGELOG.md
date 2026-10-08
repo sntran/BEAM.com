@@ -49,6 +49,12 @@ notes of its release.
   the header `x-beam-tenant` of the client. Before, the app got the
   header of the client, which it trusts, and with `BEAM_TENANTS = "path"`
   the object also took `BEAM_TENANT` from it.
+- A snapshot waits while an operation of WebAssembly of the application
+  `wasm` runs in the host, and while the host keeps a module or an
+  instance for the VM, as it waits for a socket. Before, a snapshot could
+  copy a VM that waited for the reply of such an operation, and a VM that
+  restored it waited forever, or used a handle that its host did not
+  have.
 
 ## 0.1.0-rc.5
 

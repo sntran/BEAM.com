@@ -32,7 +32,7 @@
 (* upgrade (WebSocket) does not go to fetch(): the server opens a tunnel,    *)
 (* a connect() of its own to the host of the connect. With Direct, the host  *)
 (* gives that connect() no route through fetch(). With Guard, a snapshot     *)
-(* waits for the sockets and the calls (busy() of worker.js). The model      *)
+(* waits for the sockets and the calls (inFlight() of worker.js). The model  *)
 (* checks both kinds of boot, fetch first on and off, and both trust stores. *)
 (*                                                                           *)
 (* What TLC finds (FetchPath.cfg is the first line):                         *)
@@ -247,8 +247,10 @@ TunnelClose ==
     /\ UNCHANGED <<boot, first, trusted, rng, ca, regen, restored, target, proto, handshake, claimed,
                    upgrade, app, calls, fetched, tunnel, snapshot, snapOpen>>
 
-\* busy() of worker.js: a snapshot waits while a socket is open (the sockets
-\* of the server and of a tunnel are in tcps) or a fetch() runs.
+\* inFlight() of worker.js: a snapshot waits while a socket is open (the
+\* sockets of the server and of a tunnel are in tcps) or a fetch() runs.
+\* inFlight() also counts the SQL calls and the operations, modules and
+\* instances of WasmHost, which this model does not have.
 Busy == conn \in {"connecting", "direct", "fetch"} \/ calls > 0 \/ tunnel \in {"connecting", "open"}
 Snapshot ==
     /\ ~snapshot
