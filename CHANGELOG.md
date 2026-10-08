@@ -18,6 +18,26 @@ notes of its release.
   such as `1.5`. Before, it read `1.5.` as the two terms `1` and `5`. A
   dot now ends a term only before white space, a comment or the end of
   the text, as in `erl_scan`.
+- A build with Hex packages checks each tarball with a checksum of the
+  lock or of the Hex API, also when the lock has no checksum for the
+  package: `rebar.lock` of the formats 1.0.0 and 1.1.0, or a `mix.lock`
+  entry of an older Hex. Before, such a lock took the tarball of the
+  cache or of `HEX_MIRROR` with no check against a trusted checksum.
+  The build then writes the lock again with the checksums, so the next
+  build needs no request. The older `mix.lock` entries are no longer
+  refused as "not a Hex package".
+- A Hex tarball has at most 32 MiB, and its `contents.tar.gz` at most
+  256 MiB without compression: two times the limits of hex.pm. A
+  download stops after its limit, and the build refuses larger contents
+  before it writes a file. Before, a download and an unpack had no
+  limit. An error response with no length stops only at the timeout of
+  60 s: see O25 in `docs/UPSTREAM.md`.
+- `beam.com app.erl` builds the program again when the data of an input
+  changes, also in the same second as the last run, or in the hour that
+  the end of daylight saving time repeats. Before, the run compared the
+  local times of change, with a resolution of 1 s, and could run the old
+  program. A file next to the program in the cache keeps the SHA-256 of
+  each input. A run with no change reads the data of no input.
 - `pages-app.yml` checks the provenance of `beam.com` against the commit
   of the release tag, not the ref of the tag. A release from a run by
   hand reuses the tested build of `main`, and its attestation names

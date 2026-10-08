@@ -1532,6 +1532,52 @@ itself is in WebAssembly there, and defines the `enif_*` functions.
 a documented hook for "a NIF entry from another loader", used by
 embedded or single-file runtimes.
 
+### O25. httpc does not limit a body with no length
+
+**Status:** OTP 29.1.1 (`lib/inets/src/http_client/httpc_handler.erl`,
+`handle_http_body/2`).
+
+**Symptom.** With the request option `{max_body_size, Max}`, httpc
+refuses a body whose `Content-Length` is more than `Max`, and a chunk
+that is larger than `Max`. A body with no `Content-Length` and no chunks
+(it ends when the server closes the connection) has no limit. httpc
+streams only the body of a 200 or a 206, so the client cannot stop the
+body of another status either.
+
+**Cause.** `handle_http_body/2` takes the length from `Content-Length`,
+and a body with no `Content-Length` has the length -1. The check
+`Length =< MaxBodySize` is true for -1, so httpc reads to the close.
+
+**Reproducer.** In the Erlang shell: a server that sends an endless body
+with the status 500. On Linux x86_64, the request gives
+`{error, timeout}` after 5 s, and the memory of the VM grows by about
+1 GB.
+
+```erlang
+{ok, L} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127,0,0,1}}]),
+{ok, Port} = inet:port(L),
+spawn(fun() ->
+          {ok, S} = gen_tcp:accept(L),
+          {ok, _} = gen_tcp:recv(S, 0),
+          ok = gen_tcp:send(S, "HTTP/1.1 500 Error\r\nConnection: close\r\n\r\n"),
+          Part = binary:copy(<<0>>, 65536),
+          Send = fun F() -> case gen_tcp:send(S, Part) of ok -> F(); _ -> ok end end,
+          Send()
+      end),
+ok = inets:start(),
+httpc:request(get, {"http://127.0.0.1:" ++ integer_to_list(Port) ++ "/", []},
+              [{timeout, 5000}], [{max_body_size, 1024}]).
+```
+
+**Workaround in BEAM.com.** Only a part. `beam_com_hex:http_get/2` (the
+Hex API and the tarballs) gets the body of a 200 in parts
+(`{stream, {self, once}}`), and stops after its limit. `max_body_size`
+stops the other bodies that have a length. A body with no length and
+another status stops at the timeout of the request (60 s).
+
+**Possible upstream fix.** Count the bytes of a body with no length when
+they come, and stop at `max_body_size` with `{error, body_too_big}`.
+
 ## Emscripten
 
 Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/history/WASM-LOG.md,
