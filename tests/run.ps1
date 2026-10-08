@@ -11,16 +11,17 @@ $failures = [System.Collections.Generic.List[string]]::new()
 # Check NAME PATTERN ARGUMENTS [EXPECT] [-Net]: run the program NAME of
 # DIR with ARGUMENTS, and check its exit status and its output
 # (CheckOnce). With -Net (as net_check of tests/run.sh), the check uses
-# the network: a failure gets one more try after 10 s, and the log shows
-# both tries.
+# the network: a failure gets two more tries, after 10 s and after 30 s,
+# and the log shows each try.
 function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0, [switch]$Net) {
     for ($try = 1; ; $try++) {
         $script:pending = [System.Collections.Generic.List[string]]::new()
         CheckOnce $Name $Pattern $Arguments $Expect
         if ($script:pending.Count -eq 0) { return }
-        if ($Net -and $try -lt 2) {
-            Write-Host "RETRY: $Name uses the network: one more try in 10 s"
-            Start-Sleep -Seconds 10
+        if ($Net -and $try -lt 3) {
+            $wait = $try * 20 - 10
+            Write-Host "RETRY: $Name uses the network: try $($try + 1) of 3 in $wait s"
+            Start-Sleep -Seconds $wait
             continue
         }
         $script:fail = 1
