@@ -22,10 +22,21 @@ or after `INPUT`, and the arguments of the program come after `--`.
 `beam.com app.erl -- one two` runs `app.erl` with the arguments `one`
 and `two`; `beam.com app.erl -o app.com` makes `app.com`. A run makes
 the same executable in the cache of BEAM.com (`BEAM_COM_CACHE`, else
-`~/.cache/beam.com/run`), again only when a file of `INPUT` is newer,
-and runs it: the program gets the terminal, and its exit status is the
-exit status of `beam.com`. In a directory with `mix.exs`,
-`rebar.config` or `src/`, `beam.com` alone runs that project.
+`~/.cache/beam.com/run`), again only when the data of a file of `INPUT`
+or of `beam.com` changes, and runs it: the program gets the terminal,
+and its exit status is the exit status of `beam.com`. In a directory
+with `mix.exs`, `rebar.config` or `src/`, `beam.com` alone runs that
+project.
+
+The SHA-256 of each file decides, not its time of change: a change in
+the same second as the last run, or in the hour that the end of daylight
+saving time repeats, makes a new build. A file next to the executable
+in the cache (its name and `.inputs`) keeps the SHA-256, the size and
+the time of each file. A run reads a file again only when its size or
+its time changed, or when its time is less than 2 s before the time of
+its last hash. So a run with no change reads the data of no input, as
+before. The directories `_build`, `deps`, `.git` and `.elixir_ls` are
+not inputs.
 
 `INPUT` is one of these:
 
@@ -91,11 +102,26 @@ and compiled into the program, as rebar3 does, without rebar3:
   is an error that names both requirements; a version in `rebar.config`
   solves it. Pre-releases are used only when a requirement names one.
 - **Checks.** Each tarball is checked with the outer checksum (SHA-256
-  of the file: `pkg_hash_ext` of `rebar.lock`, or the checksum of the
+  of the file: `pkg_hash_ext` of `rebar.lock`, else the checksum of the
   Hex API) and the inner checksum (`pkg_hash`, and the `CHECKSUM` file).
+  The check also applies to a tarball of the cache and of `HEX_MIRROR`.
+  When `rebar.lock` has no `pkg_hash_ext` for a package (the formats
+  1.0.0 and 1.1.0 of rebar3), the builder gets the checksum from the Hex
+  API, as rebar3 checks such a lock with the registry. Then it writes
+  `rebar.lock` again, with both checksums and the same versions and
+  levels, so the next build needs no request. The same rules apply to
+  `mix.lock`, also to an entry that an older version of Hex wrote (with
+  no outer checksum, or with no checksum).
+- **Limits.** A tarball has at most 32 MiB, and its `contents.tar.gz` at
+  most 256 MiB without compression: two times the limits of hex.pm (16
+  MiB and 128 MiB). A download stops when it gets more than the limit,
+  and the builder writes no file of a package whose contents are larger.
+  The builder does not read a tarball of the cache that is larger: it
+  downloads the tarball again.
 - **Cache.** The tarballs are kept in the cache of the user
   (`~/.cache/beam.com` on Linux; `BEAM_COM_CACHE` changes it). With
-  `rebar.lock` and a full cache, a build does not use the network.
+  `rebar.lock` (with its checksums) and a full cache, a build does not
+  use the network.
 - **Network.** HTTPS with `httpc`, verified with the certificates of
   the OS. `HTTPS_PROXY` and `NO_PROXY` are used. `HEX_API_URL` (default
   `https://hex.pm/api`) and `HEX_MIRROR` (default `https://repo.hex.pm`)

@@ -46,6 +46,39 @@ notes of its release.
 - A `load_nif/2` of a NIF library in WebAssembly that ERTS refuses (an
   upgrade, or a bad library) no longer keeps the module and its linear
   memory: before, each such call kept up to 4 GiB of address space.
+- A build with Hex packages checks each tarball with a checksum of the
+  lock or of the Hex API, also when the lock has no checksum for the
+  package: `rebar.lock` of the formats 1.0.0 and 1.1.0, or a `mix.lock`
+  entry of an older Hex. Before, such a lock took the tarball of the
+  cache or of `HEX_MIRROR` with no check against a trusted checksum.
+  The build then writes the lock again with the checksums, so the next
+  build needs no request. The older `mix.lock` entries are no longer
+  refused as "not a Hex package".
+- A Hex tarball has at most 32 MiB, and its `contents.tar.gz` at most
+  256 MiB without compression: two times the limits of hex.pm. A
+  download stops after its limit, and the build refuses larger contents
+  before it writes a file. Before, a download and an unpack had no
+  limit. An error response with no length stops only at the timeout of
+  60 s: see O25 in `docs/UPSTREAM.md`.
+- `beam.com app.erl` builds the program again when the data of an input
+  changes, also in the same second as the last run, or in the hour that
+  the end of daylight saving time repeats. Before, the run compared the
+  local times of change, with a resolution of 1 s, and could run the old
+  program. A file next to the program in the cache keeps the SHA-256 of
+  each input. A run with no change reads the data of no input.
+- `pages-app.yml` checks the provenance of `beam.com` against the commit
+  of the release tag, not the ref of the tag. A release from a run by
+  hand reuses the tested build of `main`, and its attestation names
+  `main`. So `pages-app.yml@v0.1.0-rc.4` and `@v0.1.0-rc.5` stop at
+  "Check the provenance of beam.com": use `@v0.1.0-rc.6` or later. CI
+  now runs this check on the newest release, and the release job runs it
+  before it publishes.
+- The release job waits for each test job of its run, also the tests of
+  the npm package and of the web page. It stops when the commit of the
+  tag is not on `main`, when a file has another version
+  (`scripts/version.sh`), or when `CHANGELOG.md` has no section of the
+  version. Each commit of `main` has its own CI group, so a merge does
+  not stop the waiting run of the merge before it.
 
 ## 0.1.0-rc.5
 

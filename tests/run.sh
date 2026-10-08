@@ -148,7 +148,8 @@ check_once() {
 # check NAME PATTERN ARGS...: run the program NAME of DIR with ARGS, and
 # check its exit status and its output (check_once). With net=1 (net_check),
 # the check uses the network (hex.pm, builds.hex.pm, a remote TLS host):
-# a failure gets one more try after 10 s, and the log shows both tries.
+# a failure gets two more tries, after 10 s and after 30 s, and the log
+# shows each try.
 net=0
 check() {
     try=1
@@ -157,9 +158,10 @@ check() {
         bad=0
         check_once "$@"
         [ "$bad" = 1 ] || return 0
-        if [ "$net" = 1 ] && [ "$try" -lt 2 ]; then
-            echo "RETRY: $1 uses the network: one more try in 10 s"
-            sleep 10
+        if [ "$net" = 1 ] && [ "$try" -lt 3 ]; then
+            wait=$((try * 20 - 10))
+            echo "RETRY: $1 uses the network: try $((try + 1)) of 3 in $wait s"
+            sleep "$wait"
             try=$((try + 1))
             continue
         fi
