@@ -73,8 +73,12 @@ defmodule BeamCom.TcpDiff do
   def pair(:native, listen_opts, fun) do
     {:ok, l} = :gen_tcp.listen(0, [{:ip, {127, 0, 0, 1}} | listen_opts])
     {:ok, port} = :inet.port(l)
-    {:ok, peer} = :socket.open(:inet, :stream, :tcp)
-    :ok = :socket.connect(peer, %{family: :inet, addr: {127, 0, 0, 1}, port: port})
+    # The peer is a passive gen_tcp socket: beam.com has no socket module
+    # (--disable-esock), and the tests also run there. With exit_on_close
+    # false, the peer stays open after it reads the end of the socket under
+    # test, so it can still send (a half close).
+    {:ok, peer} =
+      :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false, exit_on_close: false])
 
     try do
       run(fn ->
@@ -84,7 +88,7 @@ defmodule BeamCom.TcpDiff do
         normal(result, s)
       end)
     after
-      :socket.close(peer)
+      :gen_tcp.close(peer)
       :gen_tcp.close(l)
     end
   end
@@ -426,20 +430,21 @@ defmodule BeamCom.TcpDiff do
   # of its own socket of the OS (for example after a reset), not of the
   # socket under test: the steps give :ok, as the host does.
   defp act(%{kind: :native, peer: p}, {:peer_send, data}) do
-    _ = :socket.send(p, data)
+    _ = :gen_tcp.send(p, data)
     :ok
   end
 
   defp act(%{kind: :native, peer: p}, :peer_shutdown) do
-    _ = :socket.shutdown(p, :write)
+    _ = :gen_tcp.shutdown(p, :write)
     :ok
   end
 
-  defp act(%{kind: :native, peer: p}, :peer_close), do: :socket.close(p)
+  defp act(%{kind: :native, peer: p}, :peer_close), do: :gen_tcp.close(p)
 
+  # A linger of 0 s: the close sends a reset (RST).
   defp act(%{kind: :native, peer: p}, :peer_reset) do
-    :ok = :socket.setopt(p, {:socket, :linger}, %{onoff: true, linger: 0})
-    :socket.close(p)
+    :ok = :inet.setopts(p, linger: {true, 0})
+    :gen_tcp.close(p)
   end
 
   defp act(%{kind: :wasm} = w, {:peer_send, data}), do: event(w, "tcp_data", %{}, data)
@@ -494,7 +499,7 @@ defmodule BeamCom.TcpDiff do
         do: max(deadline - System.monotonic_time(:millisecond), 0),
         else: @settle
 
-    case :socket.recv(p, 0, t) do
+    case :gen_tcp.recv(p, 0, t) do
       {:ok, data} -> peer_recv(p, acc <> data, bytes, ended, deadline)
       {:error, :timeout} -> {acc, false}
       {:error, _} -> {acc, true}
