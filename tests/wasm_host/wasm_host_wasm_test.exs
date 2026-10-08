@@ -1,10 +1,15 @@
 defmodule WasmHostWasmTest do
   @moduledoc """
   The tests of `:wasm_host_wasm`, the application `wasm` in the WebAssembly
-  runtime: the parts that need no host.
+  runtime: the parts that need no host, and the handles of the host with
+  the stand-in of `BeamCom.HostStandIn`.
+
+  The module is not async: the stand-in replaces `:wasm_host` in the VM.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   use ExUnitProperties
+
+  alias BeamCom.HostStandIn
 
   @module {:wasm_module, "m1"}
   @instance {:wasm_instance, "i1"}
@@ -76,6 +81,109 @@ defmodule WasmHostWasmTest do
       test name do
         assert_raise FunctionClauseError, fn -> unquote(call) end
       end
+    end
+  end
+
+  describe "the handles of the host" do
+    setup do
+      owner = HostStandIn.load()
+      host = spawn(fn -> responder(%{}) end)
+      HostStandIn.take_host_for(host)
+
+      on_exit(fn ->
+        Process.exit(host, :kill)
+        HostStandIn.unload(owner)
+      end)
+
+      %{host: host}
+    end
+
+    test "many calls of run/2 leave no process behind", %{host: host} do
+      bytes = <<0, ?a, ?s, ?m, 1, 0, 0, 0>>
+      assert {:ok, 0} = :wasm_host_wasm.run(bytes, %{})
+      before = :erlang.system_info(:process_count)
+      for _ <- 1..100, do: assert({:ok, 0} = :wasm_host_wasm.run(bytes, %{}))
+      assert :erlang.system_info(:process_count) == before
+      assert nil == Process.get({:wasm_host_wasm, :watcher})
+      # Each module and each instance was released.
+      send(host, {:held, self()})
+      assert_receive {:held, held}, 5000
+      assert held == %{}
+    end
+
+    test "the end of the owner releases its handles, with one watcher", %{host: host} do
+      test = self()
+
+      owner =
+        spawn(fn ->
+          {:ok, m} = :wasm_host_wasm.compile(<<0, ?a, ?s, ?m>>)
+          {:ok, i} = :wasm_host_wasm.instantiate(m)
+          send(test, {:made, m, i, Process.get({:wasm_host_wasm, :watcher})})
+          receive do: (:stop -> :ok)
+        end)
+
+      assert_receive {:made, {:wasm_module, m}, {:wasm_instance, i}, watcher}, 5000
+      assert is_pid(watcher)
+      send(host, {:held, self()})
+      assert_receive {:held, held}, 5000
+      assert Map.keys(held) |> Enum.sort() == Enum.sort([m, i])
+      ref = Process.monitor(watcher)
+      send(owner, :stop)
+      assert_receive {:DOWN, ^ref, :process, ^watcher, :normal}, 5000
+      send(host, {:held, self()})
+      assert_receive {:held, %{}}, 5000
+    end
+
+    test "a release of one handle keeps the watcher for the other one", %{host: host} do
+      {:ok, m} = :wasm_host_wasm.compile(<<0, ?a, ?s, ?m>>)
+      {:ok, i} = :wasm_host_wasm.instantiate(m)
+      watcher = Process.get({:wasm_host_wasm, :watcher})
+      assert :ok == :wasm_host_wasm.release(m)
+      assert Process.alive?(watcher)
+      assert :ok == :wasm_host_wasm.release(i)
+      refute Process.alive?(watcher)
+      assert nil == Process.get({:wasm_host_wasm, :watcher})
+      send(host, {:held, self()})
+      assert_receive {:held, %{}}, 5000
+    end
+  end
+
+  # The host of the tests: it answers each request, and keeps the modules
+  # and the instances that it made until their release.
+  defp responder(held) do
+    receive do
+      {:host, %{"t" => "wasm", "id" => id, "op" => op}, body} ->
+        req = :json.decode(body)
+
+        {reply, held} =
+          case op do
+            "compile" ->
+              m = "m#{System.unique_integer([:positive])}"
+              {%{ok: m}, Map.put(held, m, true)}
+
+            "instantiate" ->
+              i = "i#{System.unique_integer([:positive])}"
+              {%{ok: i}, Map.put(held, i, true)}
+
+            "release" ->
+              {%{ok: true}, Map.delete(held, req["id"])}
+
+            "call" ->
+              {%{ok: []}, held}
+          end
+
+        [{^id, pid}] = :ets.lookup(:wasm_host_server, id)
+
+        send(
+          pid,
+          {:wasm_host, "wasm_reply", %{"id" => id}, IO.iodata_to_binary(:json.encode(reply))}
+        )
+
+        responder(held)
+
+      {:held, from} ->
+        send(from, {:held, held})
+        responder(held)
     end
   end
 

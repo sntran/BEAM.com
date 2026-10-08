@@ -62,6 +62,8 @@ notes of its release.
 - The fetch path answers 504 (Gateway Timeout) when the host gives no
   head of a response in 5 minutes. Before, it answered 502 "the host did
   not answer". The request may have run.
+- `wasm:run/2` in the WebAssembly runtime leaves no process behind. Before,
+  each call left two processes, until the end of the caller.
 
 ## 0.1.0-rc.5
 
