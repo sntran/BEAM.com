@@ -275,13 +275,18 @@ check_status 1 beam.com 'the arguments of the program come after "--"' x.erl y
 # The --strace flag of the Cosmopolitan runtime (README, "Debugging").
 check beam.com 'SYS @@Erlang/OTP  : ' --strace --version
 # A port program gets only the descriptors 0, 1 and 2 of the emulator, as
-# with the BEAM; ls lists its own descriptor 3 too. On macOS, the
-# closefrom() of erl_child_setup closed nothing (C37 of docs/UPSTREAM.md).
+# with the BEAM. On macOS, the closefrom() of erl_child_setup closed
+# nothing (C37 of docs/UPSTREAM.md). The list also has the descriptors of
+# ls: on Linux, 3 for /dev/fd. On macOS, fts_open() opens "." as 3, and
+# then /dev/fd as 4.
 fds_eval='P = open_port({spawn_executable, "/bin/ls"}, [binary, exit_status, {args, ["/dev/fd"]}]),
     F = fun F(A) -> receive {P, {data, D}} -> F(<<A/binary, D/binary>>); {P, {exit_status, _}} -> A end end,
     io:format("fds: ~s~n", [lists:join(" ", string:lexemes(F(<<>>), "\n"))]),
     halt().'
-case $os in linux|darwin) check beam.com '^fds: 0 1 2 3$' -noshell -eval "$fds_eval" ;; esac
+case $os in
+linux) check beam.com '^fds: 0 1 2 3$' -noshell -eval "$fds_eval" ;;
+darwin) check beam.com '^fds: 0 1 2 3 4$' -noshell -eval "$fds_eval" ;;
+esac
 # 200 port programs, one after the other: erl_child_setup forks for each
 # one (C36 of docs/UPSTREAM.md).
 ports_eval='N = length([ok || _ <- lists:seq(1, 200),
