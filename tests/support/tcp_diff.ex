@@ -173,9 +173,9 @@ defmodule BeamCom.TcpDiff do
 
   defp lstep(w, {:async_accept, t}) do
     owner = self()
-    spawn(fn -> send(owner, {:async, lcall(w, {:accept, t})}) end)
+    pid = spawn(fn -> send(owner, {:async, lcall(w, {:accept, t})}) end)
     # The accept waits in the listener before the next step.
-    Process.sleep(@settle)
+    poll(fn -> accepting?(w, pid) end, 500) or raise "the accept did not come"
     {{{:async_accept, t}, :ok}, w}
   end
 
@@ -280,6 +280,15 @@ defmodule BeamCom.TcpDiff do
       {:unrecv, data} ->
         :wasm_tcp.unrecv(l, data)
     end
+  end
+
+  # The process waits in the accept: in prim_inet (native), or in the
+  # queue of the acceptors of the listener (wasm). Or it ended at once.
+  defp accepting?(%{kind: :native}, pid), do: inet_waits?(pid, :accept0)
+
+  defp accepting?(%{kind: :wasm, lpid: lpid}, pid) do
+    acceptors = :queue.to_list(:sys.get_state(lpid).acceptors)
+    Enum.any?(acceptors, &match?({_, ^pid, _, _}, &1)) or not Process.alive?(pid)
   end
 
   # After a close: the port closed (native), or the process stopped.
@@ -394,8 +403,10 @@ defmodule BeamCom.TcpDiff do
 
   defp act(w, {:async_recv, n, t}) do
     owner = self()
-    spawn(fn -> send(owner, {:async, act(w, {:recv, n, t})}) end)
-    waiting(w, 500)
+    pid = spawn(fn -> send(owner, {:async, act(w, {:recv, n, t})}) end)
+    # The recv waits in the socket before the next step.
+    poll(fn -> receiving?(w, pid) end, 500) or raise "the recv did not come"
+    :ok
   end
 
   defp act(_w, :await) do
@@ -467,19 +478,23 @@ defmodule BeamCom.TcpDiff do
     end
   end
 
-  # The recv of :async_recv waits in the socket: a poll of 5000 ms at
-  # most, a step of 10 ms (native: the settle time).
-  defp waiting(%{kind: :native}, _left), do: Process.sleep(@settle)
-  defp waiting(_w, 0), do: raise("the recv did not come")
+  # The process waits in the recv: in prim_inet (native), or in the state
+  # of the socket (wasm). Or it ended at once.
+  defp receiving?(%{kind: :native}, pid), do: inet_waits?(pid, :recv0)
 
-  defp waiting(%{pid: pid} = w, left) do
-    case :sys.get_state(pid) do
-      %{recv: {_, _, _}} ->
-        :ok
+  defp receiving?(%{pid: socket}, pid) do
+    match?(%{recv: {_, _, _}}, :sys.get_state(socket)) or not Process.alive?(pid)
+  end
 
-      _ ->
-        Process.sleep(10)
-        waiting(w, left - 1)
+  # The process waits in the function fun of prim_inet (an accept or a
+  # recv of gen_tcp), or it stopped. The spawn of the step does not tell
+  # when the call starts: on a busy machine, it can start later than the
+  # next step.
+  defp inet_waits?(pid, fun) do
+    case Process.info(pid, [:current_function, :status]) do
+      nil -> true
+      [current_function: {:prim_inet, ^fun, _}, status: :waiting] -> true
+      _ -> false
     end
   end
 
