@@ -2023,6 +2023,36 @@ request then waits about 150 ms, and long work is about 6% slower. A
 plain Worker takes only tasks, so a process that computes still holds its
 isolate.
 
+### CF9. A body stream that fails ends its chunks normally
+
+**Seen with workerd 2026-09-26 (wrangler 4.142.0), and on Cloudflare
+with HTTP/1.1 and HTTP/2, 2026-10-10.**
+
+**Symptom.** A response body that fails after some bytes goes to an
+HTTP/1.1 client with a last chunk (`0\r\n\r\n`). curl exits with 0, so
+a part of a body looks like a whole body. This occurs for `abort()` of a
+`TransformStream` or an `IdentityTransformStream`, and for `error()` of a
+`ReadableStream`. A `content-length` header does not help: workerd
+ignores it for the body of a `TransformStream`, and sends chunks.
+
+**Cause.** workerd writes the end of the chunks also when the body fails,
+and then closes the connection. Deno gives no last chunk in this case
+(curl exits with 18).
+
+**Workaround.** `worker.js` puts the body of a response with a
+`content-length` in a `FixedLengthStream` of that length. Then workerd
+sends the `content-length`, and a body with fewer bytes is an error for
+the client, also through the front Worker of a Durable Object. On
+Cloudflare, curl exits with 18 for HTTP/1.1 and with 92 for HTTP/2
+(`INTERNAL_ERROR`). When Cloudflare compresses the body for the client
+(`Accept-Encoding: gzip`), the body goes in chunks, and a short body is
+still an error: the last chunk does not come. For a body in chunks,
+`worker.js` aborts the stream: this helps a client of Deno, but not a
+client of workerd or of Cloudflare.
+
+**Possible upstream fix.** When the body of a response fails, workerd
+closes the connection with no last chunk, as Deno does.
+
 ## websock_adapter
 
 Seen with websock_adapter 0.6.0.
