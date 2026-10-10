@@ -5,6 +5,11 @@ notes of its release.
 
 ## Unreleased
 
+- The default `beam.com` has the OTP application `ssh`: a program can
+  start an SSH daemon (`ssh:daemon/3`) or connect to one, with no custom
+  build. A program has `ssh` only when it uses it, as with the other
+  applications of the zip. A test of CI starts a daemon and connects to
+  it on each system.
 - On x86_64, the VM no longer stops with SIGSEGV in `memchr()` when an
   empty binary ends exactly at the end of a mapping, for example in
   `erlang:decode_packet/3`. The `memchr()` of Cosmopolitan 4.0.2 read 16

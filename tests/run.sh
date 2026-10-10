@@ -297,6 +297,25 @@ ports_eval='N = length([ok || _ <- lists:seq(1, 200),
     io:format("ports: ~p~n", [N]),
     halt().'
 check beam.com '^ports: 200$' -noshell -eval "$ports_eval"
+# The ssh application of the zip: a daemon on a free port of 127.0.0.1,
+# with a new host key, and a client that logs in to it with a password.
+rm -rf "$dir/ssh_check"
+ssh_eval='{ok, _} = application:ensure_all_started(ssh),
+    D = "'"$dir/ssh_check"'",
+    ok = filelib:ensure_path(D),
+    K = public_key:generate_key({namedCurve, secp256r1}),
+    ok = file:write_file(filename:join(D, "ssh_host_ecdsa_key"),
+                         public_key:pem_encode([public_key:pem_entry_encode(list_to_atom("ECPrivateKey"), K)])),
+    {ok, S} = ssh:daemon({127,0,0,1}, 0, [{system_dir, D}, {user_passwords, [{"u", "p"}]}, {auth_methods, "password"}]),
+    {port, P} = lists:keyfind(port, 1, case ssh:daemon_info(S, [port]) of {ok, I} -> I; I -> I end),
+    {ok, C} = ssh:connect({127,0,0,1}, P, [{user, "u"}, {password, "p"}, {user_dir, D}, {silently_accept_hosts, true},
+                                          {user_interaction, false}, {save_accepted_host, false}]),
+    ok = ssh:close(C),
+    ok = ssh:stop_daemon(S),
+    io:format("ssh: ok~n"),
+    halt().'
+check beam.com '^ssh: ok$' -noshell -eval "$ssh_eval"
+rm -rf "$dir/ssh_check"
 
 # Linux: when the APE loader runs beam.com (sh starts it), the helper
 # programs start with that loader, and the kernel never gets the APE file

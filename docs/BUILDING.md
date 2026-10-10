@@ -79,7 +79,7 @@ APE files directly, register the APE loader with `binfmt_misc` (see
 The default `beam.com` has a fixed set of OTP applications, and no Hex
 or rebar3. A custom build can have more:
 
-- `OTP_APPS="ssh mnesia"`: more OTP applications in the zip (their Erlang
+- `OTP_APPS="mnesia eldap"`: more OTP applications in the zip (their Erlang
   code; the C code of an application, as the port programs of `os_mon`,
   is not built).
 - `HEX=1`: Hex in the zip (the newest, from `mix local.hex`). The tools
