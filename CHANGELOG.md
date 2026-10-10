@@ -5,6 +5,11 @@ notes of its release.
 
 ## Unreleased
 
+- The default `beam.com` has the OTP application `ssh`: a program can
+  start an SSH daemon (`ssh:daemon/3`) or connect to one, with no custom
+  build. A program has `ssh` only when it uses it, as with the other
+  applications of the zip. A test of CI starts a daemon and connects to
+  it on each system.
 - A response of the app that ends before the end of its body is no
   longer a whole body for the client. When the app closes the connection,
   or ends its writes, before the last chunk or before the bytes of its
