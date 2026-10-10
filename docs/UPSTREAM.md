@@ -1869,6 +1869,44 @@ value profile of indirect calls.
 **Fix upstream.** Update the profile runtime of Emscripten to the
 compiler-rt of its LLVM.
 
+### EM6. `fsync()` and `select()` of libc suspend under JSPI
+
+**Seen with emsdk 6.0.10.**
+
+**Symptom.** The WebAssembly runtime stopped sometimes, often at the
+start of an app with SQLite:
+
+```
+../include/internal/ethr_mutex.h:667: Fatal error in ethr_mutex_unlock(): Operation not permitted (63)
+```
+
+Or `scheduler_wait(): Internal error: Executing aux work on a dirty
+scheduler.` In CI, about 1 boot of phoenix_demo in 10 stopped.
+
+**Cause.** With `-sJSPI`, the imports `fd_sync` (for `fsync()`) and
+`__syscall_poll` (for `select()`, in `musl/src/select/select.c`)
+suspend. Their JS gives a promise each time, also when the result is
+ready. A pthread library of its own (EM2) must put its state back after
+each suspend: the shadow stack pointer (`__stack_pointer`) and the
+current thread. The libc of Emscripten does not know this state. After
+the wait, the thread continued with the stack pointer and the identity
+of the thread that ran last. Then a mutex had an owner that was not the
+current thread, and a dirty scheduler read the data of a normal
+scheduler.
+
+SQLite calls `fsync()` at each commit, in the memory files of
+Emscripten (a host with no files). ERTS calls `select()` in
+`erts_milli_sleep()`.
+
+**Workaround.** `c_src/erts_wasm/jspi_pthread.c` has its own `fsync()`,
+and a `select()` on its `poll()`. Both put the state back.
+`wasm/erts/build.sh` stops when the JS of Emscripten has another import
+that suspends. `tests/wasm_diff/diff_waits.erl` failed in each run
+before the change.
+
+**Possible upstream change.** A hook of the libc around each import
+that suspends, or a list of these imports in the documentation of JSPI.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, and on Cloudflare

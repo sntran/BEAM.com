@@ -74,7 +74,7 @@ On NetBSD and OpenBSD, start the file with the APE loader
 
 ### A custom build
 
-Do you need more OTP applications (for example `ssh` or `mnesia`), Hex and
+Do you need more OTP applications (for example `mnesia` or `eldap`), Hex and
 rebar3 in the file, or a file without Elixir, SQLite or WebAssembly? Open
 an issue with the form
 [A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml).

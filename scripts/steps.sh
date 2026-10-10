@@ -62,7 +62,7 @@
 #   JIT              0: build the interpreter instead of the JIT (BeamAsm)
 #                    (default 1). With cosmocc, the JIT has both backends.
 #   OTP_APPS         More OTP applications in the zip, with spaces (for a
-#                    custom build: "ssh mnesia"); their Erlang code only
+#                    custom build: "mnesia eldap"); their Erlang code only
 #                    (the C code of an application, as the port programs of
 #                    os_mon, is not built)
 #   HEX              1: put Hex in the zip, for mix (a custom build;
@@ -136,14 +136,15 @@ JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
 # a program needs into the new executable.
 BUNDLE_APPS="kernel stdlib sasl compiler parsetools crypto asn1 public_key ssl inets
-             xmerl runtime_tools tools"
+             ssh xmerl runtime_tools tools"
 # The small build (OTP_SMALL_BUILD) does not make these.
 EXTRA_APPS="crypto asn1 public_key ssl"
 # Nor these, of which only the Erlang code is needed (src/): xmerl
 # (Phoenix apps have swoosh, which includes xmerl.hrl), runtime_tools
 # (in the extra_applications of a new Phoenix app; its C code is for
-# dtrace and trace drivers), and tools (cover, for "mix test --cover").
-SRC_APPS="xmerl runtime_tools tools"
+# dtrace and trace drivers), tools (cover, for "mix test --cover"), and
+# ssh (an SSH daemon or client; it has no C code).
+SRC_APPS="xmerl runtime_tools tools ssh"
 # The applications of OTP_APPS (a custom build) that are not in the zip
 # yet: their Erlang code too.
 for app in $OTP_APPS; do

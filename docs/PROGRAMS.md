@@ -72,7 +72,8 @@ application that the code only calls with `apply/3` or similar.
 The zip of `beam.com` has these applications:
 
 - OTP: `kernel`, `stdlib`, `sasl`, `compiler`, `parsetools`, `crypto`,
-  `asn1`, `public_key`, `ssl`, `inets`, `xmerl` and `runtime_tools`.
+  `asn1`, `public_key`, `ssl`, `inets`, `ssh`, `xmerl` and
+  `runtime_tools`.
 - Elixir: `elixir`, `eex`, `ex_unit`, `iex`, `logger` and `mix`.
 - BEAM.com: `wasm` (WebAssembly), `esqlite` (SQLite), `wasm_host` (for
   the WebAssembly runtime) and `beam_com_script` (for one-file programs).
