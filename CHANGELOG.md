@@ -27,6 +27,14 @@ notes of its release.
   `content-length` keeps it (a `FixedLengthStream`): before, workerd sent
   it in chunks, and a short body ended normally. A client of Workers still
   cannot see a short body in chunks: see CF9 in `docs/UPSTREAM.md`.
+- The fetch path keeps the `content-length` of a response when the body
+  is not encoded, also for HEAD, and writes the body with no chunks.
+  Before, each response came in chunks with no length, so a program
+  could not know the size of a file that it streamed from a different
+  site (for example a GET of a file of R2 with Req). A body that ends
+  before its length closes the connection, and the bytes past the length
+  do not go. An encoded body still comes decoded, in chunks, with no
+  length.
 - On x86_64, the VM no longer stops with SIGSEGV in `memchr()` when an
   empty binary ends exactly at the end of a mapping, for example in
   `erlang:decode_packet/3`. The `memchr()` of Cosmopolitan 4.0.2 read 16

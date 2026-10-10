@@ -31,8 +31,10 @@
 %% - Each request goes to the host ({"t":"fetch"}), and the host calls
 %%   fetch() with the host of the connect, never with the Host header or
 %%   the SNI. The response comes back as fetch_head, fetch_data and
-%%   fetch_end (or fetch_error), and the server writes it with chunked
-%%   transfer coding.
+%%   fetch_end (or fetch_error). The server writes it with the
+%%   content-length of fetch() when the body is not encoded (a body that
+%%   ends before it closes the connection), else with chunked transfer
+%%   coding.
 %% - An upgrade (WebSocket) does not go to fetch(): the server opens a
 %%   tunnel, a connect() of the host to the host of the connect (never the
 %%   fetch path), with TLS of its own and the trust store of the VM. On
@@ -288,16 +290,29 @@ request(T, Call, #{method := Method, headers := Headers, version := Version} = H
             end
     end.
 
-%% A response with a body: chunked for HTTP/1.1. HTTP/1.0 has no chunked
-%% coding (RFC 9112), so its body ends with the connection (keep_alive/2
-%% of HTTP/1.0 is false).
+%% A response with a body: with the content-length of fetch() when the
+%% body is not encoded (wasm_host_http:response_length/1), else chunked
+%% for HTTP/1.1. HTTP/1.0 has no chunked coding (RFC 9112), so a body with
+%% no length ends with the connection (keep_alive/2 of HTTP/1.0 is false).
+%% A response to HEAD keeps the content-length too: it has no body.
 respond(T, Method, Version, {ok, Status, Reason, Headers, Next}, Close) ->
     Body = wasm_host_http:body_allowed(Method, Status),
-    Chunked = Body andalso Version >= {1, 1},
-    send(T, wasm_host_http:response(Status, Reason, Headers, #{chunked => Chunked, close => Close})),
+    Length = wasm_host_http:response_length(Headers),
+    Head = fun(Opts) -> send(T, wasm_host_http:response(Status, Reason, Headers, Opts#{close => Close})) end,
     case Body of
-        true -> stream(T, Next, Chunked);
-        false -> drain(Next)
+        true when is_integer(Length) ->
+            Head(#{chunked => false, length => Length}),
+            stream_length(T, Next, Length);
+        true ->
+            Chunked = Version >= {1, 1},
+            Head(#{chunked => Chunked}),
+            stream(T, Next, Chunked);
+        false when Method =:= <<"HEAD">>, is_integer(Length) ->
+            Head(#{chunked => false, length => Length}),
+            drain(Next);
+        false ->
+            Head(#{chunked => false}),
+            drain(Next)
     end;
 respond(T, _Method, _Version, {error, timeout}, _Close) ->
     final(T, 504, <<"beam.com: the host gave no response in 5 minutes. The request may have run.">>),
@@ -354,6 +369,33 @@ stream(T, Next, Chunked) ->
             send(T, wasm_host_http:last_chunk());
         done ->
             ok;
+        {error, _} ->
+            closed
+    end.
+
+%% A body with a content-length: Left more bytes. A body that ends before
+%% its length, or fails, closes the connection, so the program sees that
+%% bytes are missing. The bytes past the length do not go, the fetch
+%% stops, and the connection closes.
+stream_length(T, Next, Left) ->
+    case Next(more) of
+        {data, Data, Next1} ->
+            Size = iolist_size(Data),
+            case Size =< Left of
+                true ->
+                    case send(T, Data) of
+                        ok -> stream_length(T, Next1, Left - Size);
+                        _ -> Next1(stop), closed
+                    end;
+                false ->
+                    _ = Left =:= 0 orelse send(T, binary:part(iolist_to_binary(Data), 0, Left)),
+                    Next1(stop),
+                    closed
+            end;
+        done when Left =:= 0 ->
+            ok;
+        done ->
+            closed;
         {error, _} ->
             closed
     end.

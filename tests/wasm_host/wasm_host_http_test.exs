@@ -146,6 +146,40 @@ defmodule WasmHostHttpTest do
     end
   end
 
+  describe "response_length/1" do
+    test "one valid content-length and no content-encoding" do
+      assert 5 == :wasm_host_http.response_length([{"Content-Length", "5"}])
+      assert 0 == :wasm_host_http.response_length([{"content-length", "0"}])
+
+      assert 3 ==
+               :wasm_host_http.response_length([{"content-length", "3"}, {"content-length", "3"}])
+    end
+
+    test "no length: none, an encoding, or a length that is not valid" do
+      for headers <- [
+            [],
+            [{"content-encoding", "gzip"}, {"content-length", "5"}],
+            [{"Content-Encoding", "br"}, {"content-length", "5"}],
+            [{"content-length", "5"}, {"content-length", "6"}],
+            [{"content-length", "five"}],
+            [{"transfer-encoding", "chunked"}, {"content-length", "5"}],
+            [{"transfer-encoding", "chunked"}]
+          ] do
+        assert :none == :wasm_host_http.response_length(headers), inspect(headers)
+      end
+    end
+
+    property "the length of a header, and none with an encoding" do
+      check all(n <- non_negative_integer(), encoding <- member_of(["gzip", "br", "deflate"])) do
+        headers = [{"content-type", "text/plain"}, {"content-length", Integer.to_string(n)}]
+        assert n == :wasm_host_http.response_length(headers)
+
+        assert :none ==
+                 :wasm_host_http.response_length([{"content-encoding", encoding} | headers])
+      end
+    end
+  end
+
   describe "response/4" do
     test "no encoding, no length and no framing of the host" do
       head =

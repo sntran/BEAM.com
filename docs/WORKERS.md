@@ -508,12 +508,16 @@ For `fetch()`, the socket of the program goes to a server in the VM
 - **The URL** of `fetch()` is the host and the port of the connect,
   never the `Host` header or the SNI of the request. So `BEAM_CONNECT`
   still applies.
-- **The body.** A request body is at most 32 MiB. The response comes in
-  chunks, with chunked transfer coding. An HTTP/1.0 request gets a body
-  with no chunked coding (RFC 9112), and the end of the connection ends
-  the body. `fetch()` gives the body decoded, so the response has no
-  `content-encoding`. A large HTTPS body costs CPU time: the TLS of each
-  byte runs in WebAssembly.
+- **The body.** A request body is at most 32 MiB. A response with a
+  `content-length` and no `content-encoding` keeps its length, also for
+  HEAD, and its body comes with no chunks. A body that ends before that
+  length closes the connection, so the program sees that bytes are
+  missing. `fetch()` gives an encoded body decoded, so that response has
+  no `content-encoding` and no `content-length`, and it comes with
+  chunked transfer coding. An HTTP/1.0 request gets no chunked coding
+  (RFC 9112): with no length, the end of the connection ends the body. A
+  large HTTPS body costs CPU time: the TLS of each byte runs in
+  WebAssembly.
 - **The headers.** A value of a header can hold bytes above 0x7F
   (obs-text). They go to `fetch()` as they are, and the bytes of the
   headers of the response come back as they are. A byte above 0x7F in a
