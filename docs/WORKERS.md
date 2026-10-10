@@ -515,9 +515,16 @@ For `fetch()`, the socket of the program goes to a server in the VM
   missing. `fetch()` gives an encoded body decoded, so that response has
   no `content-encoding` and no `content-length`, and it comes with
   chunked transfer coding. An HTTP/1.0 request gets no chunked coding
-  (RFC 9112): with no length, the end of the connection ends the body. A
-  large HTTPS body costs CPU time: the TLS of each byte runs in
-  WebAssembly.
+  (RFC 9112): with no length, the end of the connection ends the body.
+  The host reads the body of the response in parts of 64 KB, and each
+  part is one event of the VM.
+- **The CPU time of TLS.** A large HTTPS body costs CPU time: the TLS of
+  each byte runs in WebAssembly, at the two ends. WebAssembly has no
+  instructions for AES, so the server in the VM chooses
+  ChaCha20-Poly1305 when the program offers it (the defaults of `ssl`
+  and of Req offer it). In the VM, one encryption and one decryption of 1 MiB take
+  about 12 ms with ChaCha20-Poly1305, 27 ms with AES-128-GCM, and 33 ms
+  with AES-256-GCM.
 - **The headers.** A value of a header can hold bytes above 0x7F
   (obs-text). They go to `fetch()` as they are, and the bytes of the
   headers of the response come back as they are. A byte above 0x7F in a
@@ -817,7 +824,15 @@ above the memory that Erlang used: 16 clients that sent bodies of 2.7 MiB
 at one time grew the memory of the VM to more than 1 GB. With the new threshold, the peak
 was about 200 MB, and with `-Mea min` about 100 MB. Erlang itself used 14
 MB in each case. With `-Mea min` in `BEAM_ERL_FLAGS`, the host leaves out
-its flags.
+these flags.
+
+The host also starts the VM with `-sbwt none -sbwtdcpu none -sbwtdio
+none`: no busy wait of the schedulers. A scheduler with no work spins for
+a time before it sleeps, and in WebAssembly each yield of the spin is a
+JSPI suspend and a message of the host. In a body of 16 MiB through
+`fetch()` in `workerd`, the spins used about half of the CPU time. A
+snapshot of `npx beam.com --snapshot` or of `wasm/snapshot/snapshot.mjs`
+has the same flags.
 
 When the app answers before it reads the whole body (a 413 of its own, or
 a response that streams while the app reads the body), the response goes
@@ -907,7 +922,7 @@ Cloudflare stops the requests with "Durable Object is overloaded".
 |---|---|---|
 | `PORT` | Worker, Durable Object | The port of the HTTP listener of the program (4000). |
 | `PHX_HOST` | Worker, Durable Object | The host of a Phoenix app, also for the Origin of a WebSocket. |
-| `BEAM_ERL_FLAGS` | Worker, Durable Object | More emulator flags, after the flags of the host (`-MBsbct 8192 -MHsbct 8192`, see below), so a flag here wins. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
+| `BEAM_ERL_FLAGS` | Worker, Durable Object | More emulator flags, after the flags of the host (`-sbwt none -sbwtdcpu none -sbwtdio none -MBsbct 8192 -MHsbct 8192`, see below), so a flag here wins. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
 | `BEAM_SNAPSHOT` | Worker, Durable Object | `"off"`: no snapshot. |
 | `SNAPSHOTS` | Worker, Durable Object | An R2 bucket for the snapshots, in place of the Cache API. |
 | `BEAM_VERSION` | Worker, Durable Object | The version metadata of the deploy (set by the build). |
@@ -946,7 +961,9 @@ On Cloudflare (Free plan), with the times of `wrangler tail`:
 
 In `workerd` on a computer, a Phoenix app answers its first request in
 0.6 s with a boot, and in 0.2 s with a snapshot. The next requests take
-3 to 5 ms, and a LiveView click takes about 50 to 70 ms.
+3 to 5 ms, and a LiveView click takes about 50 to 70 ms. An app that
+sends a body of 16 MiB from `fetch()` (plain HTTP) to its client uses 12
+to 21 ms of CPU time for each MiB, at 49 to 78 MiB/s.
 
 - **Size:** `beam.wasm` is about 5 MB (2 MB with gzip). The release
   of a Phoenix app is 3.5 to 8.5 MB.

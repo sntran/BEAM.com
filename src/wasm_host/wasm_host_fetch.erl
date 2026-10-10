@@ -226,6 +226,10 @@ cached_leaf(CA, Name) ->
 
 %% The options of the TLS server: the leaf of the SNI name, and a leaf for
 %% an invalid name when the client sends no SNI (its host check fails).
+%% The client and the server of this TLS are both in the VM, and the VM
+%% has no instructions for AES in WebAssembly. So the server chooses a
+%% suite of ChaCha20-Poly1305 first, when the client offers one: in the
+%% VM, it costs less than half of the time of AES-GCM for each MiB.
 -spec handshake_opts(map()) -> [ssl:tls_server_option()].
 handshake_opts(CA) ->
     Leaf = fun(Name) -> case whereis(?MODULE) of
@@ -236,7 +240,17 @@ handshake_opts(CA) ->
     [{certs_keys, [Leaf("fetch.invalid")]},
      {sni_fun, fun(Name) -> [{certs_keys, [Leaf(Name)]}] end},
      {alpn_preferred_protocols, [<<"http/1.1">>]},
-     {versions, ['tlsv1.3', 'tlsv1.2']}].
+     {versions, ['tlsv1.3', 'tlsv1.2']},
+     {ciphers, chacha_first(ssl:cipher_suites(default, 'tlsv1.3') ++
+                            ssl:cipher_suites(default, 'tlsv1.2'))},
+     {honor_cipher_order, true}].
+
+%% The suites of ChaCha20-Poly1305 first, and then the others, each in its
+%% order.
+-spec chacha_first([ssl:erl_cipher_suite()]) -> [ssl:erl_cipher_suite()].
+chacha_first(Suites) ->
+    {ChaCha, Other} = lists:partition(fun(#{cipher := C}) -> C =:= chacha20_poly1305 end, Suites),
+    ChaCha ++ Other.
 
 %% --- HTTP ----------------------------------------------------------------------
 

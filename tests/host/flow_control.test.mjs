@@ -186,6 +186,26 @@ test('a fetch() with no ack sends all its body', async () => {
   }
 });
 
+test('a fetch() body that is a byte stream goes in reads of 64 KB, not in its small pieces', async () => {
+  const { v, sent } = vm();
+  v.fetchConns.set('x1', { host: 'api.example.com', port: 443 });
+  const old = globalThis.fetch;
+  const bytes = new Uint8Array(32 * 4096).map((_, i) => i & 255);
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    type: 'bytes',
+    start(c) { for (let i = 0; i < 32; i++) c.enqueue(bytes.slice(i * 4096, (i + 1) * 4096)); c.close(); },
+  }));
+  try {
+    await v.fetchRequest({ id: 'f1', conn: 'x1', tls: true, method: 'GET', path: '/' });
+    const data = sent.filter((s) => s.header.t === 'fetch_data').map((s) => s.body);
+    assert.deepEqual(data.map((b) => b.byteLength), [65536, 65536]);
+    assert.deepEqual(Buffer.concat(data), Buffer.from(bytes));
+    assert.equal(sent.at(-1).header.t, 'fetch_end');
+  } finally {
+    globalThis.fetch = old;
+  }
+});
+
 test('a VM that stops ends its fetch() calls', async () => {
   const { v } = vm();
   const ac = new AbortController();

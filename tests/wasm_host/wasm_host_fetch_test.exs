@@ -55,6 +55,31 @@ defmodule WasmHostFetchTest do
       :ssl.close(tls)
     end
 
+    # The default client of ssl offers AES-GCM before ChaCha20-Poly1305.
+    test "the server chooses ChaCha20-Poly1305 in TLS 1.3 and TLS 1.2", %{ca: ca} do
+      for version <- [:"tlsv1.3", :"tlsv1.2"] do
+        assert {:ok, tls} = tls_client(ca, ~c"api.cloudflare.com", ca, versions: [version])
+
+        assert {:ok, [protocol: ^version, selected_cipher_suite: %{cipher: :chacha20_poly1305}]} =
+                 :ssl.connection_information(tls, [:protocol, :selected_cipher_suite])
+
+        :ssl.close(tls)
+      end
+    end
+
+    test "a client with no ChaCha20-Poly1305 gets AES-GCM", %{ca: ca} do
+      aes =
+        for s <- :ssl.cipher_suites(:default, :"tlsv1.3"), s.cipher != :chacha20_poly1305, do: s
+
+      assert {:ok, tls} = tls_client(ca, ~c"api.cloudflare.com", ca, ciphers: aes)
+
+      assert {:ok, [selected_cipher_suite: %{cipher: cipher}]} =
+               :ssl.connection_information(tls, [:selected_cipher_suite])
+
+      assert cipher in [:aes_128_gcm, :aes_256_gcm]
+      :ssl.close(tls)
+    end
+
     @tag :capture_log
     test "client_opts/2 of a tunnel: the CA of the store and the name of the host", %{ca: ca} do
       for {store, result} <- [{[ca.cert], :ok}, {[:wasm_host_fetch.new_ca().cert], :error}] do
