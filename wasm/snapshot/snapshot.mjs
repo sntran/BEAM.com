@@ -165,9 +165,10 @@ if (!opts.check) {
       // -c false: no time correction. The monotonic time then follows the
       // system time, which goes on after a restore (the OS monotonic time
       // of a new instance starts again at 0: ERTS would stop).
-      // The allocator flags of worker.js (allocFlags): the VM that
+      // The flags of worker.js (WAIT_FLAGS and allocFlags): the VM that
       // restores this memory has them.
-      m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', '-MBsbct', '8192', '-MHsbct', '8192', '-c', 'false', '--',
+      m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', '-sbwt', 'none', '-sbwtdcpu', 'none', '-sbwtdio', 'none',
+        '-MBsbct', '8192', '-MHsbct', '8192', '-c', 'false', '--',
         '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--', '-home', '/', ...meta.args, '-noshell');
       env(m, meta);
       m.beamHost.onsend = onsend;

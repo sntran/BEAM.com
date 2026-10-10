@@ -296,6 +296,14 @@ export function allocFlags(flags) {
   return flags.includes('-Mea') ? [] : ['-MBsbct', '8192', '-MHsbct', '8192'];
 }
 
+// No busy wait of the schedulers of the VM, before BEAM_ERL_FLAGS (a
+// later flag wins). A scheduler with no work spins for a time before it
+// sleeps. In WebAssembly, each yield of the spin is a JSPI suspend and a
+// message of the host: in a body of 16 MiB through fetch() in workerd,
+// the spins used about half of the CPU time. With none, a scheduler with
+// no work sleeps at once.
+export const WAIT_FLAGS = ['-sbwt', 'none', '-sbwtdcpu', 'none', '-sbwtdio', 'none'];
+
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
 // hosts, as "*:443"). The host resolves a name, so the VM cannot reach
@@ -1352,7 +1360,7 @@ export class Vm {
           // Livebook starts with 40 MB, not 70 MB, but :erlang.memory/0 is
           // not supported).
           const flags = (env.BEAM_ERL_FLAGS ?? '').split(/\s+/).filter(Boolean);
-          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...allocFlags(flags), ...flags, ...(this.makeKey || this.bootKey || this.capture ? ['-c', 'false'] : []), '--',
+          m.arguments.push('-S', '1', '-SDcpu', '1', '-A', '0', ...WAIT_FLAGS, ...allocFlags(flags), ...flags, ...(this.makeKey || this.bootKey || this.capture ? ['-c', 'false'] : []), '--',
             '-root', '/app', '-bindir', '/app/bin', '-progname', 'erl', '--',
             '-home', '/', ...args, '-noshell');
           // Distributed Erlang over wasm_tcp, with no epmd (all nodes on
@@ -2711,9 +2719,14 @@ export class Vm {
       for (const v of res.headers.getSetCookie?.() ?? []) out.push(['set-cookie', v]);
       this.event({ t: 'fetch_head', id: msg.id, status: res.status, reason: res.statusText, headers: out });
       if (res.body) {
-        const reader = res.body.getReader();
+        // A BYOB read of FETCH_READ bytes: the default reader of workerd
+        // gives pieces of 4 KB, and each piece is an event of the VM. A
+        // body that is not a byte stream has only the default reader.
+        let byob = null;
+        try { byob = res.body.getReader({ mode: 'byob' }); } catch {}
+        const reader = byob ?? res.body.getReader();
         for (;;) {
-          const { done, value } = await reader.read();
+          const { done, value } = byob ? await byob.read(new Uint8Array(FETCH_READ)) : await reader.read();
           if (done) break;
           if (!value?.byteLength) continue;
           this.event({ t: 'fetch_data', id: msg.id }, value);
@@ -2983,6 +2996,8 @@ const UPLOAD_LARGE = 1024 * 1024;
 // body (bridgeUpload), in ms.
 const HEAD_WAIT = 20;
 const UPLOAD_READ = 64 * 1024;
+// The size of a BYOB read of the body of a fetch response (fetchRequest).
+const FETCH_READ = 64 * 1024;
 // The rest of a request body that the app did not read (drain): the
 // bytes that the host reads at most before the end of the response, the
 // ms with no new bytes, and the ms in all.

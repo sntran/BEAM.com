@@ -5,6 +5,26 @@ notes of its release.
 
 ## Unreleased
 
+- A body that the program gets from `fetch()` costs much less CPU time
+  at the edge. The test: in `workerd`, an app gets a body of 16 MiB from
+  `fetch()` and sends it to its client. Before, each MiB used 221 to 263
+  ms of CPU time. Now it uses 12 to 21 ms, and the rate went from about
+  4 MiB/s to 49 to 78 MiB/s. The two causes:
+  - The host read the response of `fetch()` in the pieces of `workerd`,
+    4 KB each, and each piece was an event of the VM. The host now reads
+    it in parts of 64 KB (a BYOB reader).
+  - A scheduler of ERTS with no work spins before it sleeps, and in
+    WebAssembly each yield of the spin is a JSPI suspend and a message of
+    the host. The host now starts the VM with `-sbwt none -sbwtdcpu none
+    -sbwtdio none`, before `BEAM_ERL_FLAGS`. The snapshot tools use the
+    same flags.
+- The TLS server of the fetch path in the VM chooses ChaCha20-Poly1305
+  when the program offers it (the defaults of `ssl` and of Req offer
+  it). WebAssembly has no instructions for AES: in the VM, one
+  encryption and one decryption of 1 MiB take about 12 ms with
+  ChaCha20-Poly1305, and 27 to 33 ms with AES-GCM. The TLS of an HTTPS
+  request runs in the VM at the two ends.
+
 - The WebAssembly runtime no longer stops sometimes with "Fatal error in
   ethr_mutex_unlock(): Operation not permitted" or "Executing aux work
   on a dirty scheduler". Under JSPI, `fsync()` and `select()` of the

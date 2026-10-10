@@ -5,6 +5,7 @@
 import { register } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 register(`data:text/javascript,${encodeURIComponent(`
   const stub = { './beam.mjs': 'export default () => {};', './beam.wasm': 'export default null;' };
@@ -12,7 +13,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { packSnapshot, parseSnapshot, inflateSnapshot, snapshotHeader, erlFlags, allocFlags } =
+const { packSnapshot, parseSnapshot, inflateSnapshot, snapshotHeader, erlFlags, allocFlags, WAIT_FLAGS } =
   await import('../../priv/wasm_host/worker/worker.js');
 
 const PAGE = 65536;
@@ -77,6 +78,19 @@ test('allocFlags: an 8 MB carrier threshold for binaries and heaps, except with 
   assert.deepEqual(allocFlags([]), ['-MBsbct', '8192', '-MHsbct', '8192']);
   assert.deepEqual(allocFlags(['-MBsbct', '4096']), ['-MBsbct', '8192', '-MHsbct', '8192']);
   assert.deepEqual(allocFlags(['-Mea', 'min']), []);
+});
+
+test('WAIT_FLAGS: no busy wait of the schedulers', () => {
+  assert.deepEqual(WAIT_FLAGS, ['-sbwt', 'none', '-sbwtdcpu', 'none', '-sbwtdio', 'none']);
+});
+
+// The VM that restores a snapshot keeps the flags of the VM that made it.
+test('snapshot.mjs starts its VM with WAIT_FLAGS and allocFlags of worker.js', () => {
+  const text = fs.readFileSync(new URL('../../wasm/snapshot/snapshot.mjs', import.meta.url), 'utf8');
+  const start = text.indexOf("m.arguments.push('-S'");
+  const push = text.slice(start, text.indexOf("'--'", start)).replace(/\s+/g, ' ');
+  const flags = [...WAIT_FLAGS, ...allocFlags([])].map((x) => `'${x}'`).join(', ');
+  assert.ok(start > 0 && push.includes(flags), push);
 });
 
 test('erlFlags: the flags as one text', () => {
