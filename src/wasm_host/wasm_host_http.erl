@@ -1,12 +1,12 @@
 %% HTTP/1.1 for the fetch path (wasm_host_fetch): the head of a request of
 %% the program, the framing of its body, and the response that the server
-%% writes back with chunked transfer coding. These functions only parse
-%% and build binaries. A value of a header can hold any byte above 0x7F
+%% writes back, with the content-length of fetch() or with chunked transfer
+%% coding. These functions only parse and build binaries. A value of a header can hold any byte above 0x7F
 %% (obs-text, not UTF-8): the names and the tokens of HTTP are ASCII, so
 %% the case and the white space change only for ASCII (lower/1, trim/1).
 -module(wasm_host_http).
 
--export([head/1, framing/1, dechunk/2, request_headers/1, response/4,
+-export([head/1, framing/1, dechunk/2, request_headers/1, response/4, response_length/1,
          chunk/1, last_chunk/0, keep_alive/2, body_allowed/2, continue/1]).
 
 -define(MAX_HEAD, 65536).
@@ -184,6 +184,22 @@ response(Status, Reason, Headers, #{chunked := Chunked, close := Close} = Opts) 
                                                                    is_integer(N)],
      case Close of true -> <<"connection: close\r\n">>; false -> <<"connection: keep-alive\r\n">> end,
      <<"\r\n">>].
+
+%% The length of the body of a response of fetch(): its content-length,
+%% when it has one valid content-length and no content-encoding. fetch()
+%% gives the body decoded, so with content-encoding the length is of the
+%% encoded bytes. none in each other case: then the body goes in chunks.
+-spec response_length(headers()) -> non_neg_integer() | none.
+response_length(Headers) ->
+    Lower = [{lower(K), V} || {K, V} <- Headers],
+    case lists:keymember(<<"content-encoding">>, 1, Lower) of
+        true -> none;
+        false ->
+            case framing(Lower) of
+                {length, N} -> N;
+                _ -> none
+            end
+    end.
 
 %% A value of the host must not end the line or the head.
 safe(B) -> binary:match(B, [<<"\r">>, <<"\n">>, <<0>>]) =:= nomatch.

@@ -124,15 +124,93 @@ defmodule WasmHostFetchTest do
       assert_receive {:call, %{method: "POST", body: "abcde"}}, 5000
     end
 
-    test "HEAD and 304 have no body" do
+    test "HEAD has no body, and keeps the content-length of fetch()" do
       {socket, _} =
         serve_plain(fn _req -> {:ok, 200, "", [{"content-length", "5"}], data(["hello"])} end)
 
       :ok = :gen_tcp.send(socket, "HEAD / HTTP/1.1\r\n\r\n")
-      {:ok, head} = :gen_tcp.recv(socket, 0, 5000)
-      assert String.ends_with?(head, "\r\n\r\n")
+      {:ok, head} = recv_until(socket, "\r\n\r\n")
       refute head =~ "transfer-encoding"
-      refute head =~ "content-length"
+      assert head =~ "content-length: 5\r\n"
+      # The connection goes on: no body bytes came after the head.
+      :ok = :gen_tcp.send(socket, "HEAD / HTTP/1.1\r\n\r\n")
+      assert {:ok, ^head} = recv_until(socket, "\r\n\r\n")
+    end
+
+    test "304 and a HEAD of an encoded body have no body and no content-length" do
+      for {method, status, headers} <- [
+            {"GET", 304, [{"content-length", "5"}]},
+            {"HEAD", 200, [{"content-encoding", "gzip"}, {"content-length", "5"}]}
+          ] do
+        {socket, _} = serve_plain(fn _req -> {:ok, status, "", headers, data(["hello"])} end)
+        :ok = :gen_tcp.send(socket, "#{method} / HTTP/1.1\r\n\r\n")
+        {:ok, head} = recv_until(socket, "\r\n\r\n")
+        refute head =~ "transfer-encoding"
+        refute head =~ "content-length"
+        refute head =~ "content-encoding"
+      end
+    end
+
+    test "a body with content-length and no content-encoding keeps its length, with no chunks" do
+      {socket, calls} =
+        serve_plain(fn _req ->
+          {:ok, 200, "", [{"content-type", "application/octet-stream"}, {"Content-Length", "5"}],
+           data(["hel", "lo"])}
+        end)
+
+      :ok = :gen_tcp.send(socket, "GET /file HTTP/1.1\r\n\r\n")
+      assert {200, headers, "hello"} = response(socket)
+      assert [{"content-length", "5"}] == Enum.filter(headers, &match?({"content-length", _}, &1))
+      refute List.keymember?(headers, "transfer-encoding", 0)
+      # The connection goes on after the body.
+      :ok = :gen_tcp.send(socket, "GET /file HTTP/1.1\r\nConnection: close\r\n\r\n")
+      assert {200, _, "hello"} = response(socket)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5000)
+      assert 2 == calls.()
+    end
+
+    test "an encoded body, or a bad length, goes in chunks with no length" do
+      for headers <- [
+            [{"content-encoding", "gzip"}, {"content-length", "3"}],
+            [{"content-length", "5"}, {"content-length", "6"}],
+            [{"content-length", "five"}]
+          ] do
+        {socket, _} = serve_plain(fn _req -> {:ok, 200, "", headers, data(["hel", "lo"])} end)
+        :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\n\r\n")
+        assert {200, out, "hello"} = response(socket)
+        assert {"transfer-encoding", "chunked"} in out
+        refute List.keymember?(out, "content-length", 0)
+        refute List.keymember?(out, "content-encoding", 0)
+      end
+    end
+
+    test "a body that ends before its content-length closes the connection" do
+      for next <- [
+            data(["hel", "lo"]),
+            fn :more -> {:data, "hello", fn :more -> {:error, "reset"} end} end
+          ] do
+        {socket, _} = serve_plain(fn _req -> {:ok, 200, "", [{"content-length", "10"}], next} end)
+        :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\n\r\n")
+        assert {:ok, bytes} = recv_all(socket)
+        [head, body] = :binary.split(bytes, "\r\n\r\n")
+        assert head =~ "content-length: 10\r\n"
+        assert body == "hello"
+      end
+    end
+
+    test "the bytes past the content-length do not go, and the fetch stops" do
+      test = self()
+
+      {socket, _} =
+        serve_plain(fn _req ->
+          {:ok, 200, "", [{"content-length", "3"}],
+           fn :more -> {:data, "hello", fn :stop -> send(test, :stopped) end} end}
+        end)
+
+      :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\n\r\n")
+      assert {:ok, bytes} = recv_all(socket)
+      assert [_, "hel"] = :binary.split(bytes, "\r\n\r\n")
+      assert_receive :stopped, 5000
     end
 
     test "a failure of fetch() gives 502 and closes" do
@@ -293,6 +371,19 @@ defmodule WasmHostFetchTest do
       [head, body] = :binary.split(bytes, "\r\n\r\n")
       refute head =~ "transfer-encoding"
       assert head =~ "connection: close"
+      assert body == "hello"
+    end
+
+    test "a response to HTTP/1.0 keeps the content-length of fetch()" do
+      {socket, _} =
+        serve_plain(fn _req -> {:ok, 200, "", [{"content-length", "5"}], data(["hel", "lo"])} end)
+
+      :ok = :gen_tcp.send(socket, "GET / HTTP/1.0\r\n\r\n")
+      assert {:ok, bytes} = recv_all(socket)
+      [head, body] = :binary.split(bytes, "\r\n\r\n")
+      assert head =~ "content-length: 5\r\n"
+      assert head =~ "connection: close"
+      refute head =~ "transfer-encoding"
       assert body == "hello"
     end
 
@@ -612,6 +703,19 @@ defmodule WasmHostFetchTest do
   end
 
   defp chunked(socket, buffer, headers) do
+    length = List.keyfind(headers, "content-length", 0)
+
+    cond do
+      length != nil and byte_size(buffer) < String.to_integer(elem(length, 1)) ->
+        {:ok, data} = :gen_tcp.recv(socket, 0, 5000)
+        chunked(socket, buffer <> data, headers)
+
+      true ->
+        dechunk(socket, buffer, headers)
+    end
+  end
+
+  defp dechunk(socket, buffer, headers) do
     if {"transfer-encoding", "chunked"} in headers do
       case :wasm_host_http.dechunk(buffer, []) do
         {:ok, body, ""} ->
