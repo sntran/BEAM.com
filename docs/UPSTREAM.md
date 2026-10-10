@@ -1907,6 +1907,54 @@ before the change.
 **Possible upstream change.** A hook of the libc around each import
 that suspends, or a list of these imports in the documentation of JSPI.
 
+### EM7. A call in a C function with `setjmp()` suspends under JSPI
+
+**Seen with emsdk 6.0.10.**
+
+**Symptom.** Each crash dump stopped the WebAssembly runtime:
+
+```
+Crash dump is being written to: erl_crash.dump...Failed to killing thread: Invalid argument (28)
+Aborted()
+```
+
+The exit status was 2, not 1, and `erl_crash.dump` had no bytes. A
+crash dump comes from `erlang:halt/1` with a string, from a boot that
+fails, and from "Kernel pid terminated".
+
+**Cause.** Two causes in `erl_crash_dump_v()` of ERTS:
+
+- The dump stops each other scheduler with `pthread_kill()`
+  (`sys_thr_suspend()`). The green threads (EM2) have no
+  `pthread_kill()`, so the stub of Emscripten runs. It gives `EINVAL`
+  for each thread that is not the caller, and `erts_thr_kill()` then
+  calls `abort()`.
+- The function calls `setjmp()` (`ERTS_SYS_TRY_CATCH`). So Emscripten
+  sends each call in the function through a JS import `invoke_*`. With
+  `-sJSPI`, Emscripten wraps each `invoke_*` import in
+  `WebAssembly.Suspending` (its `importPattern`), and V8 suspends at each
+  call, also when the import gives a value that is not a promise. Then
+  another green thread runs, and nothing puts the current thread and the
+  shadow stack pointer back after the call. With one scheduler, the dump
+  continued as the aux thread, and it tried to stop its own scheduler.
+
+The check of EM6 did not see these imports, because they have no
+`isAsync`.
+
+**Workaround.** `wasm/erts/otp.patch` gives `erl_crash_dump.c` the path
+of OTP for the platforms with no signal to stop a thread and no
+try/catch, as macOS: under `__EMSCRIPTEN__`, it removes
+`ERTS_SYS_SUSPEND_SIGNAL` and `ERTS_HAVE_TRY_CATCH`. The dump then waits
+for the other threads to block (`erts_thr_progress_fatal_error_wait()`),
+and the runtime has no `invoke_*` import. `wasm/erts/build.sh` stops when
+the JS of Emscripten has an `invoke_*` import. The dump has no sections
+of the dirty schedulers, as on macOS. `tests/wasm_diff/diff_halt.erl`
+failed before the change.
+
+**Possible upstream change.** Emscripten: say in the documentation of
+JSPI that an `invoke_*` import suspends. ERTS: a flag of the build that
+turns off the stop of the threads in a crash dump.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, and on Cloudflare

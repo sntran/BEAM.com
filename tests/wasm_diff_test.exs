@@ -85,6 +85,23 @@ defmodule BeamCom.WasmDiffTest do
     assert status == 0
   end
 
+  # A crash dump (EM7 in docs/UPSTREAM.md): the dump of the runtime is
+  # whole, as the native one. The native run of setup_all wrote its dump.
+  test "the crash dump of diff_halt is whole, in wasm and natively", ctx do
+    dump = Path.join([ctx.top, "wasm-dump", "erl_crash.dump"])
+    File.mkdir_p!(Path.dirname(dump))
+    {_, status} = wasm(ctx, "diff_halt", "node", %{out: %{"/work/erl_crash.dump" => dump}})
+    assert status == 1
+
+    for file <- [dump, Path.join([ctx.top, "native", "diff_halt", "erl_crash.dump"])] do
+      text = File.read!(file)
+      assert text =~ ~r/\A=erl_crash_dump:/
+      assert text =~ "\nSlogan: diff_halt: a crash dump\n"
+      assert text =~ ~r/\nCalling Thread: scheduler:\d+\n/
+      assert String.ends_with?(String.trim_trailing(text), "\n=end")
+    end
+  end
+
   defp nif_check(ctx, name, compiled, job \\ %{}) do
     src = Path.join([__DIR__, "programs", "nif_check"])
     app = Path.join([ctx.top, name, "nif_check"])

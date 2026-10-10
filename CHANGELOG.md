@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- A crash dump no longer stops the WebAssembly runtime with "Failed to
+  killing thread" and `Aborted()`. Before, each crash dump gave the exit
+  status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,
+  a boot that fails, and "Kernel pid terminated". Now the runtime writes
+  the whole dump and exits with 1, as natively. The dump has no sections
+  of the dirty schedulers, as on macOS. See EM7 in `docs/UPSTREAM.md`.
 - A body that the program gets from `fetch()` costs much less CPU time
   at the edge. The test: in `workerd`, an app gets a body of 16 MiB from
   `fetch()` and sends it to its client. Before, each MiB used 221 to 263

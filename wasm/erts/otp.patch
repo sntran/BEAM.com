@@ -123,6 +123,38 @@ index b1115e8..2d39c21 100644
  	if (is_nil(a->port))
  	    break; /* Time to die */
  
+diff --git a/erts/emulator/beam/erl_crash_dump.c b/erts/emulator/beam/erl_crash_dump.c
+index 8b45bbd..13e40d4 100644
+--- a/erts/emulator/beam/erl_crash_dump.c
++++ b/erts/emulator/beam/erl_crash_dump.c
+@@ -30,6 +30,27 @@
+ #include "erl_db.h"
+ #include "bif.h"
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * WebAssembly (Emscripten): the threads of ERTS are green threads on one
++ * host thread. So use the path of the platforms with no signal to stop a
++ * thread and no try/catch (as macOS):
++ *
++ * - pthread_kill() of Emscripten gives EINVAL for a thread that is not
++ *   the caller, and erts_thr_kill() then stops the VM. The other threads
++ *   run only when this thread waits, so they do not have to stop.
++ *
++ * - A memory fault is a trap of the engine, not SIGSEGV, so
++ *   ERTS_SYS_TRY_CATCH cannot catch it. Its setjmp() also sends each call
++ *   of erl_crash_dump_v() through an invoke_* import of Emscripten. Under
++ *   JSPI, each call of such an import suspends, so other threads run, and
++ *   nothing puts the current thread (pthread_self()) and the shadow stack
++ *   pointer back after it.
++ */
++#  undef ERTS_SYS_SUSPEND_SIGNAL
++#  undef ERTS_HAVE_TRY_CATCH
++#endif
++
+ typedef struct {
+     fmtfn_t to;
+     void *to_arg;
 diff --git a/erts/emulator/beam/erl_process.c b/erts/emulator/beam/erl_process.c
 index 0201ea3..15c2d86 100644
 --- a/erts/emulator/beam/erl_process.c

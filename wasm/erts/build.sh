@@ -131,6 +131,15 @@ check_waits() {
             *) echo "$1: the import $w suspends, and no caller puts the current thread back after it" >&2; exit 1 ;;
         esac
     done
+    # An import invoke_* (the trampoline of a C function with setjmp())
+    # also suspends under JSPI, with no isAsync, and no caller puts the
+    # current thread back after it (EM7 in docs/UPSTREAM.md).
+    grep -q 'var wasmImports={' "$1" ||
+        { echo "$1: no wasmImports: the JS of Emscripten changed" >&2; exit 1; }
+    if grep -q 'var wasmImports={[^}]*[{,]invoke_' "$1"; then
+        echo "$1: an import invoke_* (setjmp) suspends, and no caller puts the current thread back after it" >&2
+        exit 1
+    fi
 }
 # The table of static NIFs comes from NIFS: make does not know that it
 # changed.
