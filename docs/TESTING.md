@@ -99,9 +99,8 @@ coverage.
 
 The programs of `tests/wasm_diff/` print the results of integers and
 floats, the external term format, hashes, Unicode, regular expressions,
-JSON, processes, timers, ETS, files, the waits of libc (`fsync()` and
-`select()`), and crypto. They print no pid, no time, and no path. The
-test runs each program three times:
+JSON, processes, timers, ETS, files, and crypto. They print no pid, no
+time, and no path. The test runs each program three times:
 
 1. In the native OTP of the test, with `LC_ALL=C.UTF-8`.
 2. In the Worker build of `beam.wasm`, in Node.js.

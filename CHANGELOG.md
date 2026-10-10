@@ -5,15 +5,6 @@ notes of its release.
 
 ## Unreleased
 
-- The WebAssembly runtime no longer stops sometimes with "Fatal error in
-  ethr_mutex_unlock(): Operation not permitted" or "Executing aux work
-  on a dirty scheduler". Under JSPI, `fsync()` and `select()` of the
-  libc of Emscripten suspend the green thread. After the wait, the thread
-  continued with the stack pointer and the identity of another thread.
-  SQLite calls `fsync()` at each commit, so an app with SQLite stopped at
-  its start in about 1 boot in 10. The runtime has its own `fsync()` and
-  `select()` now, and its build stops at a new import that suspends. See
-  EM6 in `docs/UPSTREAM.md`.
 - A response of the app that ends before the end of its body is no
   longer a whole body for the client. When the app closes the connection,
   or ends its writes, before the last chunk or before the bytes of its

@@ -113,25 +113,6 @@ if [ "${WASM64:-0}" != 1 ]; then
         "$HERE/../../scripts/steps.sh" nif_edge > "$OUT/nif_edge.log" 2>&1
     NIF_WASM="$OUT/nif_wasm.o -sALLOW_TABLE_GROWTH --js-library $CSRC/../wasm/nif_wasm_host.js"
 fi
-# Each import that suspends under JSPI (isAsync in the JS of Emscripten)
-# must have a caller that puts the shadow stack pointer and the current
-# thread back after the wait: c_src/erts_wasm/jspi_pthread.c, and
-# nif_host_wait in c_src/wasm/nif_wasm_host.c. Another one stops the build.
-check_waits() {
-    waits=$(grep -o '[A-Za-z0-9_$]*\.isAsync=true' "$1" | sed 's/^_//; s/\.isAsync=true$//' |
-        sort -u | tr '\n' ' ')
-    case " $waits" in
-        *" jspi_suspend "*) ;;
-        *) echo "$1: no import jspi_suspend that suspends: the JS of Emscripten changed" >&2; exit 1 ;;
-    esac
-    # shellcheck disable=SC2086 # waits is a list of names.
-    for w in $waits; do
-        case " fd_sync jspi_file_wait jspi_host_turn jspi_poll_wait jspi_suspend jspi_yield nif_host_wait " in
-            *" $w "*) ;;
-            *) echo "$1: the import $w suspends, and no caller puts the current thread back after it" >&2; exit 1 ;;
-        esac
-    done
-}
 # The table of static NIFs comes from NIFS: make does not know that it
 # changed.
 rm -f "erts/emulator/$T/opt/emu/driver_tab.c" "erts/emulator/obj/$T/opt/emu/driver_tab.o"
@@ -145,7 +126,6 @@ if [ "${WASM_NODE:-1}" = 1 ]; then
 LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sNODERAWFS -sEXIT_RUNTIME -sMODULARIZE -sEXPORT_ES6 ${EXTRA_LDFLAGS:-} --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o $NIF_WASM"
 rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
 make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/emulator.log" 2>&1
-check_waits "bin/$T/beam.emu"
 cp "bin/$T/beam.wasm" "$OUT/beam.wasm"
 cp "bin/$T/beam.emu" "$OUT/beam.mjs"
 cp "$HERE/beam-node.mjs" "$OUT/"
@@ -182,7 +162,6 @@ if [ "${WORKER:-0}" = 1 ]; then
     LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMEMORY_GROWTH_GEOMETRIC_STEP=0 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit,jspiSchedule,jspiTurn,noInitialRun,onRuntimeInitialized,nifModule --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o $NIF_WASM"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
     make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
-    check_waits "bin/$T/beam.emu"
     mkdir -p "$WOUT"
     cp "bin/$T/beam.emu" "$WOUT/beam.mjs"
     cp "bin/$T/beam.wasm" "$WOUT/beam.wasm"

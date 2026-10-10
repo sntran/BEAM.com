@@ -13,9 +13,8 @@
  * back after each wait.
  *
  * Threads switch only when one waits (a mutex, a condition variable, a
- * join, sched_yield, a sleep, poll, select, fsync, a file of the host).
- * There is no shared memory and no atomic operation: one host thread runs
- * all of them.
+ * join, sched_yield, a sleep). There is no shared memory and no atomic
+ * operation: one host thread runs all of them.
  */
 #include <errno.h>
 #include <pthread.h>
@@ -463,97 +462,6 @@ int poll(struct pollfd *fds, nfds_t n, int timeout)
         return -1;
     }
     return r;
-}
-
-/* Under JSPI, Emscripten makes some imports of its libc suspend: fd_sync
- * (fsync) and __syscall_poll (select). Its libc does not put the shadow
- * stack pointer and the current thread back after them. A thread that
- * waits there then continues with the values of the thread that ran last.
- * Then a mutex can have an owner that is not the current thread. These
- * two functions replace the ones of its libc. wasm/erts/build.sh stops
- * when the JS of Emscripten has another import that suspends. */
-#include <limits.h>
-#include <sys/select.h>
-#include <wasi/api.h>
-
-/* SQLite calls it at each commit, on a dirty I/O scheduler. */
-int fsync(int fd)
-{
-    struct __pthread *self = cur;
-    uintptr_t sp = jspi_get_sp();
-    __wasi_errno_t e = __wasi_fd_sync(fd);
-
-    jspi_set_sp(sp);
-    cur = self;
-    if (e) {
-        errno = e;
-        return -1;
-    }
-    return 0;
-}
-
-/* select() with the poll() above. ERTS calls it in erts_milli_sleep(),
- * and the main thread of ERTS waits in it in Node.js. */
-int select(int n, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv)
-{
-    struct pollfd *fds;
-    long long ms;
-    int i, k = 0, r, count = 0;
-
-    if (n < 0 || n > FD_SETSIZE || (tv && (tv->tv_sec < 0 || tv->tv_usec < 0))) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (!(fds = calloc(n ? n : 1, sizeof(*fds)))) {
-        errno = ENOMEM;
-        return -1;
-    }
-    for (i = 0; i < n; i++) {
-        short events = (rfds && FD_ISSET(i, rfds) ? POLLIN : 0) |
-                       (wfds && FD_ISSET(i, wfds) ? POLLOUT : 0) |
-                       (efds && FD_ISSET(i, efds) ? POLLPRI : 0);
-        if (events) {
-            fds[k].fd = i;
-            fds[k].events = events;
-            k++;
-        }
-    }
-    ms = tv ? tv->tv_sec * 1000LL + tv->tv_usec / 1000 : -1;
-    r = poll(fds, k, ms > INT_MAX ? INT_MAX : (int)ms);
-    for (i = 0; r > 0 && i < k; i++) {
-        if (fds[i].revents & POLLNVAL) {
-            errno = EBADF;
-            r = -1;
-            break;
-        }
-    }
-    if (r < 0) {
-        free(fds);
-        return -1;
-    }
-    if (rfds)
-        FD_ZERO(rfds);
-    if (wfds)
-        FD_ZERO(wfds);
-    if (efds)
-        FD_ZERO(efds);
-    for (i = 0; i < k; i++) {
-        short ev = fds[i].revents;
-        if (rfds && (ev & (POLLIN | POLLHUP | POLLERR))) {
-            FD_SET(fds[i].fd, rfds);
-            count++;
-        }
-        if (wfds && (ev & (POLLOUT | POLLERR))) {
-            FD_SET(fds[i].fd, wfds);
-            count++;
-        }
-        if (efds && (ev & POLLPRI)) {
-            FD_SET(fds[i].fd, efds);
-            count++;
-        }
-    }
-    free(fds);
-    return count;
 }
 
 /* A sleep suspends the thread on a timer (no busy wait). */
