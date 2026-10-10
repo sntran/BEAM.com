@@ -203,3 +203,102 @@ test('a request to an app that listens leaves no wait behind', async () => {
   assert.equal(v.stopWaits?.size ?? 0, 0);
   assert.equal(v.conns.size, 0);
 });
+
+// The app ends the connection (tcp_close) or its writes (tcp_shutdown)
+// before the end of the body: Bandit does this when a plug raises after
+// send_chunked/2. The stream of the client fails, so a part of a body is
+// not a whole body for the client.
+async function response(head, method = 'GET') {
+  const r = await request(method);
+  const id = r.sent.find((s) => s.header.t === 'tcp_accept').header.conn;
+  const t = r.v.tcps.get(id);
+  r.send(head);
+  return { ...r, close: () => t.close(), shutdown: () => r.v.tcpShutdown(id, t) };
+}
+
+test('a close before the end of a body with content-length: the body fails', async () => {
+  const { pending, send, close, sent, v } = await response('HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n');
+  send(new Uint8Array(50).fill(65));
+  close();
+  await assert.rejects((await pending).arrayBuffer());
+  await settle();
+  assert.ok(closed(sent));
+  assert.equal(v.conns.size, 0);
+});
+
+test('a close before the last chunk: the body fails', async () => {
+  const { pending, send, close, v } = await response('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n');
+  send('5\r\nhello\r\n');
+  close();
+  await assert.rejects((await pending).text());
+  await settle();
+  assert.equal(v.conns.size, 0);
+});
+
+test('a close in a chunk: the body fails', async () => {
+  const { pending, send, close } = await response('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n');
+  send('a\r\nhello');
+  close();
+  await assert.rejects((await pending).text());
+});
+
+test('a close ends a body with no content-length and no chunks', async () => {
+  const { pending, send, close, v } = await response('HTTP/1.1 200 OK\r\n\r\n');
+  send('all of it');
+  close();
+  assert.equal(await (await pending).text(), 'all of it');
+  await settle();
+  assert.equal(v.conns.size, 0);
+});
+
+test('a close after the whole body: the body ends normally', async () => {
+  for (const [head, body] of [['content-length: 5', 'hello'], ['transfer-encoding: chunked', '5\r\nhello\r\n0\r\n\r\n']]) {
+    const { pending, send, close } = await response(`HTTP/1.1 200 OK\r\n${head}\r\n\r\n`);
+    send(body);
+    close();
+    assert.equal(await (await pending).text(), 'hello');
+  }
+});
+
+test('a shutdown before the end of a body with content-length or chunks: the body fails', async () => {
+  for (const head of ['content-length: 100', 'transfer-encoding: chunked']) {
+    const { pending, send, shutdown, sent, v } = await response(`HTTP/1.1 200 OK\r\n${head}\r\n\r\n`);
+    send(head.startsWith('content') ? 'part' : '4\r\npart\r\n');
+    shutdown();
+    await assert.rejects((await pending).text());
+    await settle();
+    assert.ok(closed(sent));
+    assert.equal(v.conns.size, 0);
+  }
+});
+
+test('a shutdown ends a body with no content-length and no chunks', async () => {
+  const { pending, send, shutdown } = await response('HTTP/1.1 200 OK\r\n\r\n');
+  send('all');
+  shutdown();
+  assert.equal(await (await pending).text(), 'all');
+});
+
+// workerd: the body of a response with content-length goes through a
+// FixedLengthStream of that length (a stand-in here: Node.js has none).
+test('a body with content-length goes through a FixedLengthStream, a body in chunks does not', async () => {
+  const lengths = [];
+  globalThis.FixedLengthStream = class extends TransformStream {
+    constructor(n) { super(); lengths.push(n); }
+  };
+  try {
+    let { pending, send } = await response('HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n');
+    send('hello');
+    assert.equal(await (await pending).text(), 'hello');
+    ({ pending, send } = await response('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ncontent-length: 5\r\n\r\n'));
+    send('5\r\nhello\r\n0\r\n\r\n');
+    assert.equal(await (await pending).text(), 'hello');
+    ({ pending } = await response('HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n', 'HEAD'));
+    assert.equal((await pending).status, 200);
+    ({ pending } = await response('HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n'));
+    assert.equal(await (await pending).text(), '');
+    assert.deepEqual(lengths, [5]);
+  } finally {
+    delete globalThis.FixedLengthStream;
+  }
+});

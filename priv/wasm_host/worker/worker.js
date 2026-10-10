@@ -2244,7 +2244,14 @@ export class Vm {
       headers.delete('connection');
       if (c.head || status === 204 || status === 304) { c.length = 0; c.chunked = false; }
       c.left = 0;
-      const { readable, writable } = new TransformStream();
+      // workerd sends the body of a TransformStream in chunks, also with a
+      // content-length, and it ends the chunks normally when the stream
+      // fails. A FixedLengthStream keeps the content-length: then a body
+      // with fewer bytes is an error for the client (docs/UPSTREAM.md, CF9).
+      // With content-encoding, the length is of the bytes of the app.
+      const fixed = !c.chunked && Number.isSafeInteger(c.length) && c.length > 0 &&
+        typeof FixedLengthStream === 'function';
+      const { readable, writable } = fixed ? new FixedLengthStream(c.length) : new TransformStream();
       // The app compressed the body (Bandit: gzip, deflate): the runtime
       // must send it as it is, not compress it again.
       const encodeBody = headers.has('content-encoding') ? 'manual' : 'automatic';
@@ -2394,7 +2401,23 @@ export class Vm {
       this.socketGone(c);
       this.conns.delete(c);
       this.bridgeRelease(c);
-    } else this.bridgeDone(c);
+    } else {
+      this.bridgeCut(c);
+      this.bridgeDone(c);
+    }
+  }
+
+  // The app ended the connection, or its writes, before the end of the
+  // body of c: chunks with no last chunk, or fewer bytes than the
+  // content-length (Bandit, when a plug raises after send_chunked/2). The
+  // stream of the client fails, and it does not end normally. With no
+  // content-length and no chunks, the end of the connection is the end of
+  // the body. True when the stream fails.
+  bridgeCut(c) {
+    if (!c.writer || !(c.chunked || c.length > 0)) return false;
+    this.log(`beam: the app ended the connection before the end of the body of ${c.path}: the response stops`);
+    this.bridgeFinish(c, (w) => w.abort(new Error('the app ended the connection before the end of the body')));
+    return true;
   }
 
   // No head of a response in BEAM_REQUEST_TIMEOUT seconds: 504 for the
@@ -2765,11 +2788,12 @@ export class Vm {
   // ends, as with the end of a body that has no length. The request body
   // still goes to the app; then the connection ends, as a client ends it
   // after the response. With no head of a response, or for a WebSocket,
-  // it is the end of the connection (bridgeEnd).
+  // it is the end of the connection (bridgeEnd). Before the end of a body
+  // with chunks or a content-length, the response fails (bridgeCut).
   bridgeHalf(c) {
     if (!c.status || c.ws) return this.bridgeEnd(c);
     clearTimeout(c.timer);
-    c.writer?.close().catch(() => {});
+    if (!this.bridgeCut(c)) c.writer?.close().catch(() => {});
     c.writer = null;
     const done = () => this.bridgeDone(c);
     if (c.upload) c.upload.then(done, done);

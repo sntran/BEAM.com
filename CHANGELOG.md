@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- A response of the app that ends before the end of its body is no
+  longer a whole body for the client. When the app closes the connection,
+  or ends its writes, before the last chunk or before the bytes of its
+  `content-length`, the stream of the response fails. Bandit does this
+  when a plug raises after `send_chunked/2`. In Workers, a response with a
+  `content-length` keeps it (a `FixedLengthStream`): before, workerd sent
+  it in chunks, and a short body ended normally. A client of Workers still
+  cannot see a short body in chunks: see CF9 in `docs/UPSTREAM.md`.
 - On x86_64, the VM no longer stops with SIGSEGV in `memchr()` when an
   empty binary ends exactly at the end of a mapping, for example in
   `erlang:decode_packet/3`. The `memchr()` of Cosmopolitan 4.0.2 read 16
