@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- The WebAssembly runtime can start a peer node (the `peer` module of
+  OTP), on a host that gives a spawn: a port of the program of the VM
+  starts a second VM, and `peer:start/1` with `connection =>
+  standard_io` works with no change. The test runner of Node.js has
+  such a spawn (`tests/wasm_diff/diff_peer.erl`). The Workers, Deno and
+  web page hosts have none yet: there, port programs fail as before. See
+  "Peer nodes" in `docs/WORKERS.md`, and EM8 in `docs/UPSTREAM.md`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,

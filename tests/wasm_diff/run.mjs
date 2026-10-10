@@ -15,6 +15,11 @@
 // The schedule "plain" runs the timers of the threads as a plain Worker
 // does: all the timers that are due run in one task, one after the other.
 //
+// A port of the program of the VM (BINDIR/erl, a mark file in the memory
+// file system) starts a second VM: an instance of the same module in
+// this process (Module.beamHost.spawn), with pipes on its fd 0 and fd 1.
+// So the peer module works.
+//
 // "snapshot": after the first line of the program, the driver asks all
 // the threads of ERTS to return (erts_wasm_hibernate), keeps the memory,
 // the open files and the NIF libraries in WebAssembly (Module.nifHost),
@@ -84,13 +89,58 @@ function plainSchedule() {
 const PAGE = 65536;
 // The module of the last instance (a snapshot makes a second one).
 let vm = null;
-const args = ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0',
+const bindir = path.join(job.root, 'bin');
+const program = path.join(bindir, 'erl');
+const vmArgs = (extra) => ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0',
   // No time correction for a snapshot: the monotonic time of a new
   // instance starts again at 0.
   ...(job.snapshot ? ['-c', 'false'] : []), '--',
-  '-root', job.root, '-bindir', path.join(job.root, 'bin'), '-progname', 'erl', '--',
-  '-home', '/', '-boot', job.boot.replace(/\.boot$/, ''), '-noshell',
-  '-pa', job.pa, '-eval', job.eval];
+  '-root', job.root, '-bindir', bindir, '-progname', 'erl', '--',
+  '-home', '/', '-boot', job.boot.replace(/\.boot$/, ''), ...extra];
+const args = vmArgs(['-noshell', '-pa', job.pa, '-eval', job.eval]);
+
+// The files and the environment of a VM, and the mark file of the
+// program of the VM, for os:find_executable/1 and open_port/2.
+function prepare(m, env = {}) {
+  Object.assign(m.ENV, { BINDIR: bindir, ROOTDIR: job.root, EMU: 'beam', PROGNAME: 'erl', HOME: '/', PATH: bindir }, env);
+  m.FS.mkdirTree(path.dirname(job.boot));
+  m.FS.writeFile(job.boot, fs.readFileSync(job.boot));
+  for (const dir of job.libs) copyTree(m.FS, dir);
+  copyTree(m.FS, job.pa);
+  if (job.work) m.FS.mkdirTree(job.work);
+  m.FS.writeFile(program, '');
+  m.FS.chmod(program, 0o755);
+}
+
+// The host spawn: only the program of the VM. The bytes of the port go
+// to fd 0 of the new VM, and its fd 1 goes to the port. Its output on
+// stderr goes to stderr. Its exit code ends the port.
+function spawn({ path: file, argv, env }, events) {
+  if (file !== program) throw Object.assign(new Error(`not the program of the VM: ${file}`), { errno: 44 });
+  const vars = Object.fromEntries(env.map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]));
+  let stdio = null, ended = false;
+  const queue = [];
+  createBeam({
+    arguments: vmArgs(argv.slice(1)),
+    preRun: [(m) => {
+      prepare(m, vars);
+      m.beamKeepProcess = true;
+      stdio = m.beamStdioPipes((bytes) => events.data(bytes));
+      for (const bytes of queue.splice(0)) stdio.write(bytes);
+      if (ended) stdio.end();
+    }],
+    print: (s) => process.stderr.write(s + '\n'),
+    printErr: (s) => process.stderr.write(s + '\n'),
+    instantiateWasm: (imports, done) => { WebAssembly.instantiate(wasm, imports).then(done); return {}; },
+    jspiSchedule: job.schedule === 'plain' ? plainSchedule() : undefined,
+    nifModule: (f) => nifs[f] ?? null,
+    onExit: (code) => events.exit(code),
+  }).catch((e) => { process.stderr.write(`run.mjs: spawn: ${e}\n`); events.exit(2); });
+  return {
+    write: (bytes) => (stdio ? stdio.write(bytes) : queue.push(bytes)),
+    end: () => { if (ended) return; ended = true; stdio?.end(); },
+  };
+}
 
 // The options of one instance of the runtime. on.exports: the exports of
 // beam.wasm; on.line: each line of the standard output.
@@ -98,12 +148,8 @@ function options(on, resolve) {
   return {
     arguments: args,
     preRun: [(m) => {
-      Object.assign(m.ENV, { BINDIR: path.join(job.root, 'bin'), ROOTDIR: job.root, EMU: 'beam', PROGNAME: 'erl', HOME: '/' });
-      m.FS.mkdirTree(path.dirname(job.boot));
-      m.FS.writeFile(job.boot, fs.readFileSync(job.boot));
-      for (const dir of job.libs) copyTree(m.FS, dir);
-      copyTree(m.FS, job.pa);
-      if (job.work) m.FS.mkdirTree(job.work);
+      prepare(m);
+      m.beamHost.spawn = spawn;
       on.module = m;
       vm = m;
     }],

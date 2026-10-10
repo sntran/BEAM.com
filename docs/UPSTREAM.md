@@ -1955,6 +1955,26 @@ failed before the change.
 JSPI that an `invoke_*` import suspends. ERTS: a flag of the build that
 turns off the stop of the threads in a crash dump.
 
+### EM8. The read of a pipe at its end gives `EAGAIN`, not 0
+
+**Seen with emsdk 6.0.10.**
+
+**Symptom.** A port whose program stopped did not close. Its exit status
+did not come.
+
+**Cause.** `PIPEFS.stream_ops.read` (`src/lib/libpipefs.js`) throws
+`EAGAIN` when the pipe has no data, also when no write end is open. Its
+`poll` gives `POLLHUP` there, but the read never gives 0. The spawn
+driver of ERTS reads until a read gives 0, and only then it reports the
+end of the port.
+
+**Workaround.** `wasm/erts/jspi_lib.js` puts a read in front of the read
+of PIPEFS: with no data and no write end, it gives 0.
+`tests/wasm_diff/diff_peer.erl` stops two peers, and their ports close.
+
+**Possible upstream change.** Give 0 in `read` when `pipe.writeClosed`
+is true and the pipe has no data, as POSIX does.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, and on Cloudflare

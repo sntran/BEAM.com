@@ -1353,6 +1353,33 @@ visits restored the VM from the snapshot in 0.25 s and showed Livebook
 in 1.0 s. Livebook evaluated a cell in about 0.2 s, and 10,000 processes
 started in 80 ms.
 
+## Peer nodes
+
+A host can start a second VM for the `peer` module of OTP. A port of the
+program of the VM itself (`open_port({spawn_executable, Program}, ...)`)
+then works: the host gets the command, starts a new VM with its
+arguments, and moves the bytes between the port and fd 0 and fd 1 of the
+new VM. So `peer:start/1` with `connection => standard_io` works, and the
+app knows nothing about the host.
+
+- The host gives `Module.beamHost.spawn({path, argv, env, cwd}, {data,
+  exit})` before the boot, and it gives back `{write(bytes), end()}`.
+  `data(bytes)` goes to the port, and `exit(code)` ends the port with
+  its exit status. The new VM calls `Module.beamStdioPipes(onData)` in
+  its `preRun`, for pipes on its fd 0 and fd 1.
+- The host refuses each other program: `open_port/2` then gives
+  `enoent`. With no spawn, port programs fail with `ENOSYS`, as before.
+- Today only the test runner `tests/wasm_diff/run.mjs` has a spawn: the
+  new VM is a second instance of the module in the same Node.js
+  process. `tests/wasm_diff/diff_peer.erl` runs two peers there. A peer
+  started in about 110 ms and used about 14 MB.
+- Not yet: a spawn in `worker.js` (Cloudflare, Deno) and in the web
+  page, a new VM in a worker thread or in another Durable Object, and the
+  distribution between the two VMs (FLAME needs it).
+- A snapshot does not keep a peer that runs: the host moves its bytes,
+  and the host is not in the snapshot. A spawn after a restore is not
+  tested.
+
 ## The host
 
 The runtime gives the app the variable `BEAM_HOST`: `cloudflare`,
@@ -1365,7 +1392,8 @@ not in the key of the snapshot.
 - Threads switch only when one waits: a long NIF or BIF stops the other
   threads. Erlang processes are still preempted by reductions.
 - The CPU time of a request counts all the threads of the VM.
-- No port programs (no `fork()` or `exec()`), and only the NIFs of the
+- No port programs (no `fork()` or `exec()`), except the program of the
+  VM on a host with a spawn (see "Peer nodes"), and only the NIFs of the
   runtime or NIF libraries in WebAssembly.
 - No UDP. Incoming TCP only through a WebSocket (see above).
 - An isolate can close at any time, and a deploy resets the Durable

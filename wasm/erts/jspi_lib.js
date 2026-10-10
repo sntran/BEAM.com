@@ -10,7 +10,7 @@ addToLibrary({
   $jspiExit: (e) => {
     if (!(e instanceof ExitStatus)) { err(e); e = new ExitStatus(2); }
     Module['onExit']?.(e.status);
-    if (ENVIRONMENT_IS_NODE) {
+    if (ENVIRONMENT_IS_NODE && !Module['beamKeepProcess']) {
       if (process.env.JSPI_STATS) err(`jspi: memory ${wasmMemory.buffer.byteLength >> 20} MB`);
       process.exit(e.status);
     }
@@ -165,6 +165,126 @@ addToLibrary({
     else if (ENVIRONMENT_IS_NODE) setImmediate(r);
     else jspiLater(r);
   }),
+
+  // The spawn of a program by the host (sys_drivers.c, in place of
+  // erl_child_setup): Module.beamHost.spawn({path, argv, env, cwd}, {data,
+  // exit}) starts a VM, and gives {write(bytes), end()}. The host refuses
+  // a path that is not the program of the VM (it throws an Error with an
+  // errno). The bytes that the port writes go to write(); data(bytes)
+  // goes to the port; exit(code) ends the port and gives its exit status.
+  $jspiSpawn__deps: ['$FS', '$PIPEFS'],
+  $jspiSpawn: { pid: 1000 },
+  // Caution: Emscripten gives EAGAIN, not 0, for the read of a pipe with no
+  // data and no write end. A port then waits for an end of file forever.
+  // This read gives 0 there, as POSIX does.
+  $jspiSpawn__postset: `{
+    const read = PIPEFS.stream_ops.read;
+    PIPEFS.stream_ops.read = function (stream, buffer, offset, length, position) {
+      const pipe = stream.node.pipe;
+      if (pipe.writeClosed && length > 0 && !(pipe.buckets ?? []).some((b) => b.offset > b.roffset)) return 0;
+      return read.call(this, stream, buffer, offset, length, position);
+    };
+  }`,
+  jspi_spawn_host__deps: ['$jspiSpawn', '$jspiStdio'],
+  jspi_spawn_host__sig: 'i',
+  jspi_spawn_host: () => Module['beamHost']?.spawn ? 1 : 0,
+  jspi_spawn_start__deps: ['$jspiSpawn', '$FS', '$UTF8ArrayToString'],
+  jspi_spawn_start__sig: 'iiiiiiiiiiii',
+  jspi_spawn_start: (inFd, outFd, errFd, sigchldFd, protoSize, hasPort, portId, actionAt, action, portAt, statusAt) => {
+    const input = FS.getStream(inFd), output = FS.getStream(outFd);
+    // The command, as spawn_start of sys_drivers.c writes it: the size
+    // (native order), the flags, the command, the directory, an optional
+    // directory, an empty string, the environment, and the arguments
+    // (network order for each count).
+    let body;
+    try {
+      const head = new Uint8Array(4);
+      if (FS.read(input, head, 0, 4) !== 4) return -{{{ cDefs.EIO }}};
+      const size = new DataView(head.buffer).getInt32(0, true);
+      body = new Uint8Array(size);
+      for (let got = 0; got < size;) got += FS.read(input, body, got, size - got);
+    } catch (e) {
+      return -{{{ cDefs.EIO }}};
+    }
+    const view = new DataView(body.buffer);
+    let at = 4;
+    const str = () => { const end = body.indexOf(0, at); const v = UTF8ArrayToString(body, at, end - at); at = end + 1; return v; };
+    const count = () => { const n = view.getInt32(at, false); at += 4; return n; };
+    const path = str(), cwd = str();
+    const wd = body[at] ? str() : null;
+    at++;
+    const env = Array.from({ length: count() }, str);
+    const argv = at < body.length ? Array.from({ length: count() }, str) : [path];
+    let child, done = false, skip = protoSize;
+    const exit = (code) => {
+      if (done) return;
+      done = true;
+      for (const s of [input, output]) try { FS.close(s); } catch (e) {}
+      if (!hasPort) return;
+      const msg = new Uint8Array(protoSize), dv = new DataView(msg.buffer);
+      dv.setInt32(actionAt, action, true);
+      dv.setInt32(portAt, portId, true);
+      // A status of waitpid(): the exit code in the second byte.
+      dv.setInt32(statusAt, (code & 255) << 8, true);
+      FS.write(FS.getStream(sigchldFd), msg, 0, protoSize);
+    };
+    try {
+      child = Module['beamHost'].spawn({ path, argv, env, cwd: wd ?? cwd }, {
+        data: (bytes) => { if (!done) try { FS.write(output, bytes, 0, bytes.length); } catch (e) { child.end(); } },
+        exit,
+      });
+    } catch (e) {
+      return -(e.errno ?? {{{ cDefs.ENOENT }}});
+    }
+    // The standard error of the program goes to the host (printErr).
+    if (errFd !== outFd) FS.close(FS.getStream(errFd));
+    // The bytes of the port: first the Ack of the port (protoSize bytes,
+    // for erl_child_setup), then the input of the program.
+    const buf = new Uint8Array(65536);
+    const drain = () => {
+      while (!done) {
+        let n;
+        try { n = FS.read(input, buf, 0, buf.length); } catch (e) { if (e.errno === {{{ cDefs.EAGAIN }}}) return; n = 0; }
+        if (n === 0) { child.end(); return; }
+        let part = buf.subarray(0, n);
+        if (skip) { const k = Math.min(skip, n); skip -= k; part = part.subarray(k); }
+        if (part.length) child.write(part.slice());
+      }
+    };
+    input.node.addListener(() => queueMicrotask(drain));
+    queueMicrotask(drain);
+    return ++jspiSpawn.pid;
+  },
+  // The standard input and output of a VM that a host spawn started: two
+  // pipes on fd 0 and fd 1, so the port {fd, 0, 1} of the program (for
+  // example the peer module) can poll them. Call it in preRun. It gives
+  // {write(bytes), end()}; onData(bytes) gets each output.
+  $jspiStdio__deps: ['$FS', '$PIPEFS'],
+  $jspiStdio__postset: `Module['beamStdioPipes'] = (onData) => jspiStdio(onData);`,
+  $jspiStdio: (onData) => {
+    if (!FS.initialized) FS.init();
+    const to = PIPEFS.createPipe(), from = PIPEFS.createPipe();
+    for (const [fd, end] of [[0, to.readable_fd], [1, from.writable_fd]]) {
+      FS.close(FS.getStream(fd));
+      FS.dupStream(FS.getStream(end), fd);
+      FS.close(FS.getStream(end));
+    }
+    const input = FS.getStream(to.writable_fd), output = FS.getStream(from.readable_fd);
+    const buf = new Uint8Array(65536);
+    const drain = () => {
+      for (;;) {
+        let n;
+        try { n = FS.read(output, buf, 0, buf.length); } catch (e) { return; }
+        if (n === 0) return;
+        onData(buf.slice(0, n));
+      }
+    };
+    output.node.addListener(() => queueMicrotask(drain));
+    return {
+      write: (bytes) => FS.write(input, bytes, 0, bytes.length),
+      end: () => { try { FS.close(input); } catch (e) {} },
+    };
+  },
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
   jspi_yield__sig: 'v',

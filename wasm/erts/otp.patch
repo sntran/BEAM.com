@@ -635,21 +635,33 @@ index 218da54..a050910 100644
  #ifdef DEBUG
  	int res =
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index bdd6528..dfc3a7d 100644
+index bdd6528..f2ace92 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
-@@ -197,6 +197,10 @@ erl_sys_late_init(void)
+@@ -197,6 +197,22 @@ erl_sys_late_init(void)
  
  /* II.I Spawn prototypes */
  static ErlDrvData spawn_start(ErlDrvPort, char*, SysDriverOpts*);
 +#ifdef __EMSCRIPTEN__
-+/* WebAssembly: no fork(), so no erl_child_setup: port programs fail. */
++/* WebAssembly: no fork(), so no erl_child_setup. A host with a spawn
++   (Module.beamHost.spawn, jspi_lib.js) takes its place: it starts a new
++   VM for the program of the VM. With no such host, port programs fail
++   with ENOSYS. */
 +static int no_forker;
++/* The write end of the pipe of forker_fd: the host writes the SigChld
++   messages into it. It is in the memory of the VM, so a snapshot keeps
++   it. */
++static int jspi_sigchld_fd = -1;
++extern int jspi_spawn_host(void);
++extern int jspi_spawn_start(int in_fd, int out_fd, int err_fd, int sigchld_fd,
++                            int proto_size, int has_port, int port_id,
++                            int action_at, int action, int port_at,
++                            int status_at);
 +#endif
  static ErlDrvSSizeT spawn_control(ErlDrvData, unsigned int, char *,
                                    ErlDrvSizeT, char **, ErlDrvSizeT);
  
-@@ -481,6 +485,12 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -481,6 +497,12 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
      char *wd, *cwd;
      int ifd[2], ofd[2], stderrfd;
  
@@ -662,18 +674,89 @@ index bdd6528..dfc3a7d 100644
      if (pipe(ifd) < 0) return ERL_DRV_ERROR_ERRNO;
      errno = EMFILE;		/* default for next three conditions */
      if (ifd[0] >= sys_max_files() || pipe(ofd) < 0) {
-@@ -1599,6 +1609,11 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1599,6 +1621,22 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
      char *child_setup_prog;
  
      forker_port = erts_drvport2id(port_num);
 +#ifdef __EMSCRIPTEN__
-+    forker_fd = -1;
-+    no_forker = ENOSYS;
++    if (!jspi_spawn_host()) {
++        forker_fd = -1;
++        no_forker = ENOSYS;
++        return (ErlDrvData)port_num;
++    }
++    /* The host writes each SigChld message into this pipe, as
++       erl_child_setup writes it into its socket. */
++    if (pipe(fds) < 0)
++        erts_exit(ERTS_ABORT_EXIT,
++                  "Could not open the pipe of the host spawn: %d\n", errno);
++    SET_NONBLOCKING(fds[0]);
++    forker_fd = fds[0];
++    jspi_sigchld_fd = fds[1];
 +    return (ErlDrvData)port_num;
 +#endif
  
      res = erts_sys_explicit_8bit_getenv("BINDIR", bindir, &bindirsz);
      if (res == 0) {
+@@ -1799,6 +1837,49 @@ static void forker_ready_output(ErlDrvData e, ErlDrvEvent fd)
+ #endif
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/* The host takes the place of erl_child_setup: it reads the command from
++   the stdin pipe of the child (fds[0]), starts the VM, and moves the
++   bytes of the pipes. The port gets the Go message here, as
++   erl_child_setup writes it. When the port asks for the exit status, the
++   host writes a SigChld message with this layout into the pipe of
++   forker_fd. */
++static ErlDrvSSizeT jspi_forker_start(ErtsSysForkerProto *proto)
++{
++    ErtsSysForkerProto go;
++    int *fds = proto->u.start.fds;
++    int has_port = proto->u.start.port_id != THE_NON_VALUE;
++    int pid;
++
++    pid = jspi_spawn_start(fds[0], fds[1], fds[2], jspi_sigchld_fd,
++                           (int) sizeof(*proto),
++                           has_port, (int) proto->u.start.port_id,
++                           (int) offsetof(ErtsSysForkerProto, action),
++                           (int) ErtsSysForkerProtoAction_SigChld,
++                           (int) offsetof(ErtsSysForkerProto, u.sigchld.port_id),
++                           (int) offsetof(ErtsSysForkerProto,
++                                          u.sigchld.error_number));
++    memset(&go, 0, sizeof(go));
++    go.action = ErtsSysForkerProtoAction_Go;
++    if (pid > 0) {
++        go.u.go.os_pid = pid;
++    } else {
++        go.u.go.os_pid = -1;
++        go.u.go.error_number = pid < 0 ? -pid : EIO;
++    }
++    /* A pipe has room for this message: the port did not read yet. */
++    if (write(fds[1], &go, sizeof(go)) != sizeof(go))
++        erts_exit(ERTS_ABORT_EXIT, "Could not start the port: %d\n", errno);
++    if (pid <= 0) {
++        close(fds[0]);
++        close(fds[1]);
++        if (fds[1] != fds[2])
++            close(fds[2]);
++    }
++    return 0;
++}
++#endif
++
+ static ErlDrvSSizeT forker_control(ErlDrvData e, unsigned int cmd, char *buf,
+                                    ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen)
+ {
+@@ -1817,6 +1898,9 @@ static ErlDrvSSizeT forker_control(ErlDrvData e, unsigned int cmd, char *buf,
+         driver_select(port_num, forker_fd, ERL_DRV_READ|ERL_DRV_USE, 1);
+         first_call = 0;
+     }
++#ifdef __EMSCRIPTEN__
++    return jspi_forker_start(proto);
++#endif
+ 
+     driver_enq(port_num, buf, len);
+     if (driver_sizeq(port_num) > sizeof(*proto)) {
 diff --git a/erts/lib_src/pthread/ethread.c b/erts/lib_src/pthread/ethread.c
 index 7a1baea..92177b2 100644
 --- a/erts/lib_src/pthread/ethread.c
