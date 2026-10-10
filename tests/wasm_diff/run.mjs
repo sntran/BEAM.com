@@ -4,7 +4,8 @@
 //
 // JOB.json: {"runtime": DIR, "root": OTP_ROOT, "libs": [EBIN...],
 //   "boot": BOOT_FILE, "pa": DIR, "eval": EXPR, "schedule": "node" | "plain",
-//   "nifs": {FILE: MODULE_FILE} (optional), "snapshot": true (optional)}
+//   "nifs": {FILE: MODULE_FILE} (optional), "snapshot": true (optional),
+//   "out": {VM_FILE: FILE} (optional)}
 //
 // The driver copies the boot file, each EBIN directory, and the files of
 // "pa" into the memory file system, below the same names as on the disk.
@@ -19,6 +20,9 @@
 // the open files and the NIF libraries in WebAssembly (Module.nifHost),
 // and restores them in a new instance, where the program goes on. This is
 // what worker.js does with a snapshot (capture() and restore()).
+//
+// "out": after the exit of the VM, the driver writes each VM_FILE of the
+// memory file system to FILE on the disk (for example a crash dump).
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -78,6 +82,8 @@ function plainSchedule() {
 }
 
 const PAGE = 65536;
+// The module of the last instance (a snapshot makes a second one).
+let vm = null;
 const args = ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0',
   // No time correction for a snapshot: the monotonic time of a new
   // instance starts again at 0.
@@ -99,6 +105,7 @@ function options(on, resolve) {
       copyTree(m.FS, job.pa);
       if (job.work) m.FS.mkdirTree(job.work);
       on.module = m;
+      vm = m;
     }],
     print: (s) => { process.stdout.write(s + '\n'); on.line?.(); },
     printErr: (s) => process.stderr.write(s + '\n'),
@@ -187,4 +194,11 @@ const exit = new Promise((resolve) => {
   createBeam(options(on, resolve)).catch(fail);
 });
 process.exitCode = await exit;
+for (const [from, to] of Object.entries(job.out ?? {})) {
+  try {
+    fs.writeFileSync(to, vm.FS.readFile(from));
+  } catch (e) {
+    process.stderr.write(`run.mjs: ${from}: ${e}\n`);
+  }
+}
 process.exit();
