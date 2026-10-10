@@ -2025,8 +2025,8 @@ isolate.
 
 ### CF9. A body stream that fails ends its chunks normally
 
-**Seen with workerd 2026-09-26 (wrangler 4.142.0), 2026-10-10. Not
-tested on Cloudflare yet.**
+**Seen with workerd 2026-09-26 (wrangler 4.142.0), and on Cloudflare
+with HTTP/1.1 and HTTP/2, 2026-10-10.**
 
 **Symptom.** A response body that fails after some bytes goes to an
 HTTP/1.1 client with a last chunk (`0\r\n\r\n`). curl exits with 0, so
@@ -2042,9 +2042,13 @@ and then closes the connection. Deno gives no last chunk in this case
 **Workaround.** `worker.js` puts the body of a response with a
 `content-length` in a `FixedLengthStream` of that length. Then workerd
 sends the `content-length`, and a body with fewer bytes is an error for
-the client (curl exits with 18), also through the front Worker of a
-Durable Object. For a body in chunks, `worker.js` aborts the stream:
-this helps a client of Deno, but not a client of workerd.
+the client, also through the front Worker of a Durable Object. On
+Cloudflare, curl exits with 18 for HTTP/1.1 and with 92 for HTTP/2
+(`INTERNAL_ERROR`). When Cloudflare compresses the body for the client
+(`Accept-Encoding: gzip`), the body goes in chunks, and a short body is
+still an error: the last chunk does not come. For a body in chunks,
+`worker.js` aborts the stream: this helps a client of Deno, but not a
+client of workerd or of Cloudflare.
 
 **Possible upstream fix.** When the body of a response fails, workerd
 closes the connection with no last chunk, as Deno does.
