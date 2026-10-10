@@ -797,6 +797,14 @@ sees the request. A client of Workers or Deno cannot send such a body,
 but a `Request` of the code of a host can (`boot()` of Node.js, or an
 entry that makes its own `Request`).
 
+A response body of the app must also end correctly. The app can end the
+connection, or its writes, before the last chunk or before the bytes of
+its `content-length`. Then the stream of the response fails, and the host
+writes one line to the log. With a `content-length`, the response keeps
+it (a `FixedLengthStream` in workerd), so a short body is an error for
+the client. A short body in chunks is an error for a client of Deno, but
+workerd ends its chunks normally ([`UPSTREAM.md`](UPSTREAM.md) CF9).
+
 The host starts the VM with `-MBsbct 8192 -MHsbct 8192`: a binary or a
 process heap goes into a carrier of its own only above 8 MB, in place of
 512 KB. In WebAssembly, these carriers made the memory of the VM grow far
