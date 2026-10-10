@@ -1353,6 +1353,67 @@ visits restored the VM from the snapshot in 0.25 s and showed Livebook
 in 1.0 s. Livebook evaluated a cell in about 0.2 s, and 10,000 processes
 started in 80 ms.
 
+## Ports to bindings
+
+A binding of the Worker can be a port of the VM. The port
+`{spawn_executable, "/env/NAME"}` runs the binding `NAME` of `env`, and
+its bytes go both ways. The port program is JavaScript, in another
+Durable Object or in another Worker, or a WebAssembly module that it
+calls. It boots no VM, and it has its own CPU time and memory.
+
+```elixir
+port = Port.open({:spawn_executable, "/env/RESIZE"}, [:binary, :exit_status, args: ["photo-1"]])
+Port.command(port, image)
+receive do
+  {^port, {:data, data}} -> data
+end
+```
+
+The entry of the Worker exports the class of the binding, and
+`wrangler.jsonc` gives the binding `RESIZE` of the class `Resize` in
+`durable_objects` and in the migrations:
+
+```js
+import { DurableObject } from 'cloudflare:workers';
+
+export class Resize extends DurableObject {
+  // stdin: the bytes of the VM. The result: the bytes for the VM.
+  port(stdin, { argv }) {
+    return stdin.pipeThrough(new TransformStream({ transform: (chunk, c) => c.enqueue(chunk) }));
+  }
+}
+```
+
+- A binding is a port when it has a method `port(stdin, { argv })`: a
+  service binding to a `WorkerEntrypoint`, or another object with that
+  method. A Durable Object namespace is a port too. Then the port is one
+  object: the object of the name of the first argument (`idFromName`),
+  or a new object (`newUniqueId`) with no argument.
+- `port()` gets the bytes of the VM as a `ReadableStream` of bytes. It
+  gives a `ReadableStream` of the bytes for the VM, or a promise of one.
+  The end of that stream ends the port with the exit status 0. An error,
+  or an object with no method `port`, ends the port with 1, and the host
+  writes one line to the log.
+- The VM sees each such binding as a file `/env/NAME`. Another name
+  gives `enoent`.
+- `Port.close/1` ends the input of `port()`. Erlang cannot end the input
+  of a port with no close, so a program that reads all its input must
+  know its length: from an argument, or with `{packet, 4}`.
+- The bytes of a port cost about as much CPU time as the bytes of an
+  HTTP response. In `workerd`, an app sent 16 MiB to an object: 12 to 16
+  ms of CPU time for each MiB, with a SHA-256 of the bytes at the two
+  ends. There and back took 18 to 23 ms for each MiB, and a response of
+  16 MiB to the client took 9 to 10 ms. So a port helps for work that
+  costs more than its bytes, not for a stream of bytes only.
+- A VM that a snapshot restores keeps its ports, when the tools of the
+  same package made the snapshot.
+- Caution: there is no flow control yet. The bytes wait in a queue on
+  each side, so a large transfer uses memory in the isolate of the VM.
+  16 MiB there and back raised the peak of the VM from 54 MB to 89 MB.
+- Only a Durable Object (stateful) is tested. In a plain Worker, the I/O
+  of a port belongs to the request that opened it.
+- Deno and the web page have no ports yet.
+
 ## Peer nodes
 
 A host can start a second VM for the `peer` module of OTP. A port of the
@@ -1373,12 +1434,13 @@ app knows nothing about the host.
   new VM is a second instance of the module in the same Node.js
   process. `tests/wasm_diff/diff_peer.erl` runs two peers there. A peer
   started in about 110 ms and used about 14 MB.
-- Not yet: a spawn in `worker.js` (Cloudflare, Deno) and in the web
+- Not yet: a peer in `worker.js` (Cloudflare, Deno) and in the web
   page, a new VM in a worker thread or in another Durable Object, and the
-  distribution between the two VMs (FLAME needs it).
+  distribution between the two VMs (FLAME needs it). `worker.js` has a
+  spawn only for the bindings of `env` (see "Ports to bindings").
 - A snapshot does not keep a peer that runs: the host moves its bytes,
-  and the host is not in the snapshot. A spawn after a restore is not
-  tested.
+  and the host is not in the snapshot. A spawn after a restore works
+  for the ports to bindings.
 
 ## The host
 
@@ -1392,8 +1454,9 @@ not in the key of the snapshot.
 - Threads switch only when one waits: a long NIF or BIF stops the other
   threads. Erlang processes are still preempted by reductions.
 - The CPU time of a request counts all the threads of the VM.
-- No port programs (no `fork()` or `exec()`), except the program of the
-  VM on a host with a spawn (see "Peer nodes"), and only the NIFs of the
+- No port programs (no `fork()` or `exec()`), except the bindings of
+  `env` (see "Ports to bindings") and the program of the VM on a host
+  with a spawn (see "Peer nodes"), and only the NIFs of the
   runtime or NIF libraries in WebAssembly.
 - No UDP. Incoming TCP only through a WebSocket (see above).
 - An isolate can close at any time, and a deploy resets the Durable

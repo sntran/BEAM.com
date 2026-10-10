@@ -168,8 +168,9 @@ addToLibrary({
 
   // The spawn of a program by the host (sys_drivers.c, in place of
   // erl_child_setup): Module.beamHost.spawn({path, argv, env, cwd}, {data,
-  // exit}) starts a VM, and gives {write(bytes), end()}. The host refuses
-  // a path that is not the program of the VM (it throws an Error with an
+  // exit}) starts the program of the path (a second VM in the test runner,
+  // a binding of env in worker.js), and gives {write(bytes), end()}. The
+  // host refuses a path that it does not know (it throws an Error with an
   // errno). The bytes that the port writes go to write(); data(bytes)
   // goes to the port; exit(code) ends the port and gives its exit status.
   $jspiSpawn__deps: ['$FS', '$PIPEFS'],

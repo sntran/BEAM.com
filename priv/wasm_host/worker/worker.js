@@ -304,6 +304,20 @@ export function allocFlags(flags) {
 // no work sleeps at once.
 export const WAIT_FLAGS = ['-sbwt', 'none', '-sbwtdcpu', 'none', '-sbwtdio', 'none'];
 
+// Ports to the bindings of env (docs/WORKERS.md, "Ports to bindings"): the
+// port {spawn_executable, "/env/NAME"} of the VM runs the binding NAME. A
+// binding is a port when it has a method port(stdin, {argv}), as a
+// service binding to a WorkerEntrypoint or a JS object, or when it is a
+// Durable Object namespace: then the port is one object, of the name of
+// the first argument (idFromName), or a new object with no argument. port()
+// gets the bytes of the VM as a ReadableStream, and gives a ReadableStream
+// of the bytes for the VM. The end of that stream gives the exit status 0,
+// and an error gives 1.
+export const PORT_DIR = '/env';
+const isNamespace = (b) => typeof b?.idFromName === 'function' && typeof b?.get === 'function';
+const isPort = (b) => b !== null && typeof b === 'object' && (isNamespace(b) || typeof b.port === 'function');
+export const portNames = (env) => Object.keys(env ?? {}).filter((k) => /^[A-Za-z0-9_-]+$/.test(k) && isPort(env[k]));
+
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
 // hosts, as "*:443"). The host resolves a name, so the VM cannot reach
@@ -1159,6 +1173,7 @@ export class Vm {
     this.fetches = new Map();  // id -> the AbortController of a fetch() of the fetch path
     this.dns = new Map();      // host -> {at, addresses}: the names of the fetch path
     this.fetchPending = 0;
+    this.ports = new Set();    // the open ports to bindings (spawnPort)
     this.nextId = 1;
     this.plain = plain;
     this.handlers = [];        // the open requests (plain)
@@ -1384,6 +1399,14 @@ export class Vm {
           }, relEnv, vars, { WASM_HOST_SQL: this.hostSql() }, this.bootKey ? { WASM_HOST_BOOT_POINT: 'wait' } : {});
           m.beamHost.onsend = (bytes) => this.onsend(bytes);
           if (this.hostFiles) m.beamHost.files = this.hostFiles;
+          // A mark file for each binding that is a port, for open_port/2 and
+          // os:find_executable/1.
+          m.FS.mkdirTree(PORT_DIR);
+          for (const name of portNames(env)) {
+            m.FS.writeFile(`${PORT_DIR}/${name}`, '');
+            m.FS.chmod(`${PORT_DIR}/${name}`, 0o755);
+          }
+          m.beamHost.spawn = (spec, events) => this.spawnPort(spec, events);
         }],
         print: (s) => this.log(s),
         printErr: (s) => this.log(s),
@@ -1617,6 +1640,7 @@ export class Vm {
     try { this.persist?.saveDirty(); } catch (e) { this.log(`beam: persist: the save at the stop failed (${e.message})`); }
     const open = [...this.conns].filter((c) => !c.status).length;
     this.log(`beam: the VM stopped (${reason}), ${this.memory()}: ${open} open requests get 503`);
+    for (const p of this.ports ?? []) p.stop();
     // Each connection in its own request (run): in a plain Worker, its
     // response, its socket and its timer belong to that request.
     for (const c of this.conns) {
@@ -2690,6 +2714,52 @@ export class Vm {
     this.event({ t: 'tcp_accept', id: this.listeners.get('fetch'), conn, host, port, ack: true, sent: true });
     await ended;
     if (h) { h.sockets--; h.wake?.(); }
+  }
+
+  // A port of the VM (Module.beamHost.spawn of jspi_lib.js): the binding
+  // NAME of PORT_DIR/NAME. The bytes that the port writes go to the stdin
+  // of port(), and the bytes of its result go to the port. A path that is
+  // not a binding that is a port gives ENOENT (44 in Emscripten).
+  // Caution: no flow control yet. The bytes wait in a queue on each side.
+  spawnPort({ path, argv }, events) {
+    const name = path.startsWith(`${PORT_DIR}/`) ? path.slice(PORT_DIR.length + 1) : '';
+    const binding = portNames(this.env).includes(name) ? this.env[name] : null;
+    if (!binding || this.dead) throw Object.assign(new Error(`no port ${path}`), { errno: 44 });
+    const args = argv.slice(1);
+    let input = null;
+    let reader = null;
+    let open = true;
+    const stdin = new ReadableStream({ type: 'bytes', start(c) { input = c; } });
+    const end = () => {
+      if (!open) return;
+      open = false;
+      try { input.close(); } catch {}
+    };
+    const port = { stop: () => { end(); reader?.cancel().catch(() => {}); } };
+    this.ports.add(port);
+    (async () => {
+      let status = 0;
+      try {
+        const target = isNamespace(binding)
+          ? binding.get(args.length ? binding.idFromName(args[0]) : binding.newUniqueId())
+          : binding;
+        const out = await target.port(stdin, { argv: args });
+        reader = out.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || this.dead) break;
+          if (value?.byteLength) events.data(value instanceof Uint8Array ? value : new Uint8Array(value));
+        }
+      } catch (e) {
+        status = 1;
+        if (!this.dead) this.log(`beam: the port ${path}: ${e?.message ?? e}`);
+      } finally {
+        this.ports.delete(port);
+        end();
+      }
+      events.exit(status);
+    })();
+    return { write: (bytes) => { if (open) input.enqueue(bytes); }, end };
   }
 
   // A request of wasm_host_fetch: fetch() of the URL of the host and the

@@ -10,8 +10,16 @@ notes of its release.
   starts a second VM, and `peer:start/1` with `connection =>
   standard_io` works with no change. The test runner of Node.js has
   such a spawn (`tests/wasm_diff/diff_peer.erl`). The Workers, Deno and
-  web page hosts have none yet: there, port programs fail as before. See
-  "Peer nodes" in `docs/WORKERS.md`, and EM8 in `docs/UPSTREAM.md`.
+  web page hosts have no peers yet. See "Peer nodes" in
+  `docs/WORKERS.md`, and EM8 in `docs/UPSTREAM.md`.
+- A binding of a Worker can be a port of the VM (a spike):
+  `open_port({spawn_executable, "/env/NAME"}, ...)` runs the binding
+  `NAME` of `env`. The binding is a Durable Object namespace, a service
+  binding, or an object with a method `port(stdin, { argv })`, which
+  gets the bytes of the VM as a stream and gives a stream of bytes back.
+  The port program runs in JavaScript, in its own object, with no second
+  VM. There is no flow control yet, and only a Durable Object is tested.
+  See "Ports to bindings" in `docs/WORKERS.md`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,
