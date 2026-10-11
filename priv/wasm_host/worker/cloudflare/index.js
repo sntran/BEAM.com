@@ -25,7 +25,7 @@
 // wrangler.jsonc gives app.com to the Worker as a Data module:
 //   "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }]
 import { env as globalEnv } from 'cloudflare:workers';
-import { release, use } from './release.js';
+import { release, staticFiles, use } from './release.js';
 import { useSnapshot } from './snapshot.js';
 import plain, { parseSnapshot, staticResponse, Vm } from './worker.js';
 import front, { forward } from './durable.js';
@@ -101,8 +101,8 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
   // the static files of app.com (the front serves them, with no request
   // to the object).
   const statics = async (request) => {
-    const files = (await release()).statics;
-    return files ? staticResponse(files, request) : null;
+    const files = await staticFiles();
+    return files.size ? staticResponse(files, request) : null;
   };
   const frontEnv = (env) => ({
     ...env, BEAM: env[binding], BEAM_OBJECT: name ?? env.BEAM_OBJECT, BEAM_STATICS: statics,

@@ -1296,6 +1296,20 @@ function fromWasm(v) {
 // The key of SECRET_KEY_BASE in the store of secrets (autoVars).
 const SECRET = 'beam:SECRET_KEY_BASE';
 
+// The VMs that run in this isolate. Cloudflare can run several Durable
+// Objects of one class in one isolate, and they share its 128 MB: a VM in
+// each object of the class. So the lines of the memory of a VM also give
+// the count of the VMs of the isolate and the sum of their memories, when
+// there is more than one.
+const LIVE = new Set();
+
+function isolateMemory() {
+  if (LIVE.size < 2) return null;
+  let mb = 0;
+  for (const v of LIVE) mb += v.megabytes();
+  return `${LIVE.size} VMs in this isolate: ${mb} MB`;
+}
+
 export class Vm {
   // release and snapshot: the bytes of release.bin and snapshot.bin, for a
   // VM that the global scope of a Worker restores (global.js).
@@ -1455,7 +1469,7 @@ export class Vm {
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
       const snapKB = snapBytes ? snapBytes.byteLength >> 10 : 0;
-      this.onready = () => { this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
+      this.onready = () => { this.live(); this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
       createBeam({
         noInitialRun: !!snap,
         onRuntimeInitialized: snap ? () => {
@@ -1781,7 +1795,13 @@ export class Vm {
   }
 
   memory() {
-    return `memory ${this.megabytes()} MB`;
+    const all = isolateMemory();
+    return `memory ${this.megabytes()} MB${all ? ` (${all})` : ''}`;
+  }
+
+  // This VM runs in the isolate (ready), until it stops (die).
+  live() {
+    LIVE.add(this);
   }
 
   // A log line each time the memory of the VM grew by 8 MB or more since
@@ -1790,7 +1810,8 @@ export class Vm {
     const mb = this.megabytes();
     if (mb < this.peak + 8) return;
     this.peak = mb;
-    this.log(`beam: memory ${mb} MB (a new peak of this VM)`);
+    const all = isolateMemory();
+    this.log(`beam: memory ${mb} MB (a new peak of this VM${all ? `; ${all}` : ''})`);
   }
 
   // The VM stopped: each open request gets 503, each WebSocket closes with
@@ -1803,6 +1824,7 @@ export class Vm {
     try { this.persist?.saveDirty(); } catch (e) { this.log(`beam: persist: the save at the stop failed (${e.message})`); }
     const open = [...this.conns].filter((c) => !c.status).length;
     this.log(`beam: the VM stopped (${reason}), ${this.memory()}: ${open} open requests get 503`);
+    LIVE.delete(this);
     for (const p of this.ports ?? []) p.stop();
     // Each connection in its own request (run): in a plain Worker, its
     // response, its socket and its timer belong to that request.

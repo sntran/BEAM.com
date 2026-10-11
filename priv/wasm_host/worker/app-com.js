@@ -31,6 +31,12 @@
 //   the host serves before the VM (worker.js). They are not in files,
 //   except cache_manifest.json, which Phoenix reads at its start.
 //
+// appStatics(read, size, { runtime }) gives only that Map, with no read and
+// no check of the other files: the front of a Worker (cloudflare/index.js)
+// serves the static files with no VM. The check of the CRC-32 of each file
+// of the release cost 80 to 180 ms of CPU time for a release of 16 MB, and
+// the front pays it in each new isolate.
+//
 // The zip of beam.com stores each .beam file as a gzip file (the loader of
 // ERTS reads it so, beam_com_zip), so it is a view too. A deflated .beam
 // entry (an older app.com) becomes a gzip file with the same data, with
@@ -139,32 +145,13 @@ export async function appRelease(read, size, options = {}) {
 // default uses DecompressionStream, which the global scope of a Worker
 // cannot use (cloudflare/release.js gives inflateRawSync of node:zlib).
 export async function appFiles(read, size, { runtime, statics: split = true, inflate: unzip = inflate } = {}) {
-  const { entries, cdAt } = await zipEntries(read, size);
-  const want = entries.filter((e) => inRelease(e.name) && !e.name.endsWith('/'));
-  const json = want.find((e) => e.name === `${EDGE}.release.json`);
-  if (!json) fail('no edge part (.wasm/.release.json): build it with a beam.com that has the WebAssembly runtime, and without --no-edge');
-  // One read: the entries of the release, up to the central directory.
-  const lo = Math.min(...want.map((e) => e.offset));
-  const span = await read(lo, cdAt - lo);
-  if (span.length !== cdAt - lo) fail('a short read of the release');
-  const meta = await entryData(span, lo, json, unzip);
-  const release = JSON.parse(text.decode(meta));
-  if (runtime && release.runtime !== runtime) {
-    fail(`it was built for the runtime ${String(release.runtime).slice(0, 12)}, and this runtime is ${runtime.slice(0, 12)}: `
-         + 'use the runtime of the beam.com that built it');
-  }
-  // The static files of a Phoenix app (PHX_SERVER in the environment of
-  // the release): lib/NAME-VSN/priv/static/, for the application with the
-  // name of the release. Plug.Static serves them at the root of the site.
-  const app = split && release.env?.PHX_SERVER === 'true' && typeof release.name === 'string'
-    && `lib/${release.name}-`;
-  const prefix = app && want.map((e) => /^lib\/[^/]+\/priv\/static\//.exec(e.name)?.[0])
-    .find((p) => p?.startsWith(app) && /^[0-9]/.test(p.slice(app.length)));
+  const { want, json, lo, span, meta, release } = await releaseHead(read, size, runtime, unzip);
+  const prefix = split && staticPrefix(release, want);
   const statics = new Map();
   const files = new Map();
   for (const e of want) {
     if (e.name.startsWith(EDGE)) continue;
-    if (prefix && e.name.startsWith(prefix) && e.name !== `${prefix}cache_manifest.json`) {
+    if (prefix && isStatic(e, prefix)) {
       statics.set(e.name.slice(prefix.length - 1), staticEntry(span, lo, e));
       continue;
     }
@@ -178,6 +165,46 @@ export async function appFiles(read, size, { runtime, statics: split = true, inf
     buffers: new Set([meta.buffer, ...list.map(([, d]) => d.buffer)]),
   };
 }
+
+export async function appStatics(read, size, { runtime, inflate: unzip = inflate } = {}) {
+  const { want, lo, span, release } = await releaseHead(read, size, runtime, unzip);
+  const prefix = staticPrefix(release, want);
+  const statics = new Map();
+  if (prefix) for (const e of want) if (isStatic(e, prefix)) statics.set(e.name.slice(prefix.length - 1), staticEntry(span, lo, e));
+  return statics;
+}
+
+// The entries of the release, the span of their bytes (one read, up to the
+// central directory), and .release.json, which must be of the runtime.
+async function releaseHead(read, size, runtime, unzip) {
+  const { entries, cdAt } = await zipEntries(read, size);
+  const want = entries.filter((e) => inRelease(e.name) && !e.name.endsWith('/'));
+  const json = want.find((e) => e.name === `${EDGE}.release.json`);
+  if (!json) fail('no edge part (.wasm/.release.json): build it with a beam.com that has the WebAssembly runtime, and without --no-edge');
+  const lo = Math.min(...want.map((e) => e.offset));
+  const span = await read(lo, cdAt - lo);
+  if (span.length !== cdAt - lo) fail('a short read of the release');
+  const meta = await entryData(span, lo, json, unzip);
+  const release = JSON.parse(text.decode(meta));
+  if (runtime && release.runtime !== runtime) {
+    fail(`it was built for the runtime ${String(release.runtime).slice(0, 12)}, and this runtime is ${runtime.slice(0, 12)}: `
+         + 'use the runtime of the beam.com that built it');
+  }
+  return { want, json, lo, span, meta, release };
+}
+
+// The static files of a Phoenix app (PHX_SERVER in the environment of the
+// release): lib/NAME-VSN/priv/static/, for the application with the name
+// of the release, or null. Plug.Static serves them at the root of the site.
+function staticPrefix(release, want) {
+  const app = release.env?.PHX_SERVER === 'true' && typeof release.name === 'string' && `lib/${release.name}-`;
+  return (app && want.map((e) => /^lib\/[^/]+\/priv\/static\//.exec(e.name)?.[0])
+    .find((p) => p?.startsWith(app) && /^[0-9]/.test(p.slice(app.length)))) || null;
+}
+
+// A static file of the prefix. cache_manifest.json stays in the release:
+// Phoenix reads it at its start.
+const isStatic = (e, prefix) => e.name.startsWith(prefix) && e.name !== `${prefix}cache_manifest.json`;
 
 // A static file: its bytes in the zip (stored or deflated), not checked
 // here (the host checks the CRC-32 when it inflates them).

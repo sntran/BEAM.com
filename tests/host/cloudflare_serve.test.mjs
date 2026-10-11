@@ -51,3 +51,19 @@ test('a name function with BEAM_TENANTS = "path": still no x-beam-tenant of the 
   const r = await beam.fetch(request, { BEAM: object([]), BEAM_TENANTS: 'path' }, {});
   assert.equal((await r.json()).tenant, null);
 });
+
+test('a static file from the front, with no read of the other files of the release', async () => {
+  const { zip } = await import('./zip.mjs');
+  // A Phoenix app whose .beam file has a bad CRC-32: only a full read of
+  // the release (a VM) checks it.
+  const app = await zip([
+    { name: 'lib/web-1.0/ebin/web.beam', data: 'not checked by the front', crc: 1234 },
+    { name: 'lib/web-1.0/priv/static/app.js', data: 'console.log(1)', method: 8 },
+    { name: '.wasm/.release.json', data: JSON.stringify({ name: 'web', vsn: '1.0', runtime: 'test', env: { PHX_SERVER: 'true' } }) },
+  ]);
+  const beam = serve(app);
+  const objects = { get() { throw new Error('no request to the object'); }, idFromName: () => 'main' };
+  const r = await beam.fetch(new Request('https://app.example.com/app.js'), { BEAM: objects }, { waitUntil() {} });
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), 'console.log(1)');
+});
