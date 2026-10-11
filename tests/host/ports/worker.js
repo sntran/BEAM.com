@@ -1,8 +1,10 @@
 // The host of tests/programs/ports_check.erl in workerd (wrangler dev):
 // the bindings ECHO, SINK and SOURCE are Durable Objects, and each one
-// runs a port program of programs.js. With wrangler.jsonc, the VM runs in
-// the Durable Object Beam; with wrangler.plain.jsonc, in the Worker.
-import { DurableObject } from 'cloudflare:workers';
+// runs a port program of programs.js. ECHO_ENTRY is a service binding to
+// the WorkerEntrypoint EchoEntry of this Worker. With wrangler.jsonc, the
+// VM runs in the Durable Object Beam; with wrangler.plain.jsonc, in the
+// Worker.
+import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import app from './app.com' with { type: 'bytes' };
 import { serve } from 'beam.com';
 import { echo, sink, source } from './programs.js';
@@ -19,6 +21,10 @@ export class Sink extends DurableObject {
 
 export class Source extends DurableObject {
   port(stdin, opts) { return source(stdin, opts); }
+}
+
+export class EchoEntry extends WorkerEntrypoint {
+  port(stdin, opts) { return echo(stdin, opts); }
 }
 
 const beam = serve(app);

@@ -11,5 +11,8 @@
     { "name": "SINK", "class_name": "Sink" },
     { "name": "SOURCE", "class_name": "Source" }
   ] },
+  // A service binding to an entrypoint of this Worker: a port with no
+  // class of a Durable Object, so with no migration.
+  "services": [{ "binding": "ECHO_ENTRY", "service": "ports-check-plain", "entrypoint": "EchoEntry" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Beam", "Echo", "Sink", "Source"] }]
 }

@@ -2,12 +2,13 @@
 # The ports to bindings of the hosts of the npm package, with app.com of
 # tests/programs/ports_check.erl and the hosts of tests/host/ports/:
 # workerd (wrangler dev) with the VM in a Durable Object and in a plain
-# Worker, where the ports are Durable Objects, and Deno (deno serve), where
-# the ports are the objects of serve(app, { env }). On each host: 4 MiB to
-# a port and back, the sends to a port that reads slowly wait for it, a
-# path that is no binding gives enoent, the bytes of a port through the
-# VM, and the result of a port as the response (x-beam-port), with the
-# response before and after the input of the port.
+# Worker, where the ports are Durable Objects and a service binding to a
+# WorkerEntrypoint, and Deno (deno serve), where the ports are the objects
+# of serve(app, { env }). On each host: 4 MiB to a port and back, the
+# sends to a port that reads slowly wait for it, a path that is no
+# binding gives enoent, the bytes of a port through the VM, and the result
+# of a port as the response (x-beam-port), with the response before and
+# after the input of the port.
 #
 #   sh tests/host/app_ports.sh DIR
 #
@@ -39,12 +40,13 @@ same() {
 # NAME PORT LOG: the checks on the host on PORT.
 check() {
     for i in $(seq 1 300); do [ "$(code "$2" /)" = 200 ] && break; sleep 0.5; done
-    for p in "/echo|echo 4194304 true" "/sink|sink 4194304 true" "/missing|missing enoent"; do
+    for p in "/echo|echo 4194304 true" "/echo-entry|echo 4194304 true" "/sink|sink 4194304 true" \
+             "/missing|missing enoent"; do
         path=${p%%|*} want=${p#*|}
         out=$(body "$2" "$path")
         [ "$out" = "$want" ] || { echo "$1: $path gave \"$out\", not \"$want\""; tail -n 40 "$3"; return 1; }
     done
-    echo "$1: 4 MiB to a port and back, the sends wait for a slow port, and enoent"
+    echo "$1: 4 MiB to two ports and back, the sends wait for a slow port, and enoent"
     for p in "/through|4194304" "/splice|4194304" "/splice-after|1048576" "/splice-before|65536"; do
         path=${p%%|*} size=${p#*|}
         same "$2" "$path" "$size" || { echo "$1: $path did not give the $size bytes of the port"; tail -n 40 "$3"; return 1; }

@@ -1359,7 +1359,10 @@ A binding of the Worker can be a port of the VM. The port
 `{spawn_executable, "/env/NAME"}` runs the binding `NAME` of `env`, and
 its bytes go both ways. The port program is JavaScript, in another
 Durable Object or in another Worker, or a WebAssembly module that it
-calls. It boots no VM, and it has its own CPU time and memory.
+calls. It boots no VM, and it has its own CPU time. Its memory can be in
+the isolate of the VM: the Durable Objects and the entrypoints of one
+Worker can share an isolate and its 128 MB. A port program in another
+Worker has its own isolate.
 
 ```elixir
 port = Port.open({:spawn_executable, "/env/RESIZE"}, [:binary, :exit_status, args: ["photo-1"]])
@@ -1384,11 +1387,32 @@ export class Resize extends DurableObject {
 }
 ```
 
+A service binding to a `WorkerEntrypoint` is a port with no new class
+of a Durable Object, so it needs no migration. The binding can go to an
+entrypoint of the same Worker (`NAME` is the name of the Worker):
+
+```js
+import { WorkerEntrypoint } from 'cloudflare:workers';
+
+export class Resize extends WorkerEntrypoint {
+  port(stdin, { argv }) {
+    return stdin.pipeThrough(new TransformStream({ transform: (chunk, c) => c.enqueue(chunk) }));
+  }
+}
+```
+
+```jsonc
+"services": [{ "binding": "RESIZE", "service": "NAME", "entrypoint": "Resize" }]
+```
+
 - A binding is a port when it has a method `port(stdin, { argv })`: a
   service binding to a `WorkerEntrypoint`, or another object with that
   method. A Durable Object namespace is a port too. Then the port is one
   object: the object of the name of the first argument (`idFromName`),
   or a new object (`newUniqueId`) with no argument.
+- Each call of a service binding gets a new instance of the entrypoint,
+  so an entrypoint keeps no state from one port to the next. A Durable
+  Object of a name keeps its state.
 - `port()` gets the bytes of the VM as a `ReadableStream` of bytes. It
   gives a `ReadableStream` of the bytes for the VM, or a promise of one.
   The end of that stream ends the port with the exit status 0. An error,
@@ -1418,8 +1442,11 @@ export class Resize extends DurableObject {
   request. The port keeps that request open until the end of the port,
   also after the response.
 - `tests/host/app_ports.sh` tests the ports in CI: a VM in a Durable
-  Object, a VM in a plain Worker, and Deno. The same checks passed on
-  Cloudflare, with the VM in a Durable Object and in a plain Worker.
+  Object, a VM in a plain Worker, and Deno. In workerd, the ports are
+  Durable Object namespaces and a service binding to a
+  `WorkerEntrypoint` of the same Worker. The checks of the Durable
+  Objects passed on Cloudflare, with the VM in a Durable Object and in a
+  plain Worker.
 
 ### Ports in Deno
 

@@ -5,5 +5,6 @@
 import { echo, sink, source } from './programs.js';
 
 export const ECHO = { port: echo };
+export const ECHO_ENTRY = { port: echo };
 export const SINK = { port: sink };
 export const SOURCE = { port: source };
