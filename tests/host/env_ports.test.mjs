@@ -88,6 +88,36 @@ test('a Durable Object namespace: the object of the first argument, or a new one
   assert.deepEqual(calls, ['name:x1', 'unique']);
 });
 
+// A stand-in of the stub of an RPC binding of workerd (a service binding to
+// a WorkerEntrypoint): each name gives a function, and the call of a
+// method that the entrypoint does not have fails.
+function rpcStub(entrypoint) {
+  return new Proxy({}, {
+    get: (_, name) => async (...args) => {
+      if (typeof entrypoint[name] !== 'function') throw new Error(`The RPC receiver does not implement "${String(name)}".`);
+      return entrypoint[name](...args);
+    },
+  });
+}
+
+test('a service binding to a WorkerEntrypoint: a port, not a Durable Object namespace', async () => {
+  const env = { ENTRY: rpcStub(upper), NO_PORT: rpcStub({}) };
+  assert.deepEqual(portNames(env), ['ENTRY', 'NO_PORT']);
+  const { v, logs } = vm(env);
+  const e = events();
+  const p = v.spawnPort({ path: '/env/ENTRY', argv: ['/env/ENTRY', 'x1'] }, e.events);
+  p.write(enc('rpc'));
+  p.end();
+  assert.equal(await e.exit, 0);
+  assert.equal(dec(e.data), 'x1:RPC');
+  // An entrypoint with no port(): exit 1 and a line in the log, as for an
+  // object with no port().
+  const f = events();
+  v.spawnPort({ path: '/env/NO_PORT', argv: ['/env/NO_PORT'] }, f.events).end();
+  assert.equal(await f.exit, 1);
+  assert.match(logs.at(-1), /\/env\/NO_PORT: The RPC receiver does not implement "port"/);
+});
+
 test('a path that is not a port: ENOENT, and nothing starts', () => {
   const { v } = vm({ UPPER: upper, PHX_HOST: 'example.com' });
   for (const path of ['/env/NONE', '/env/PHX_HOST', '/usr/bin/sh', '/env/UPPER/x', '/env/']) {

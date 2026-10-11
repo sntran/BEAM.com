@@ -314,7 +314,11 @@ export const WAIT_FLAGS = ['-sbwt', 'none', '-sbwtdcpu', 'none', '-sbwtdio', 'no
 // of the bytes for the VM. The end of that stream gives the exit status 0,
 // and an error gives 1.
 export const PORT_DIR = '/env';
-const isNamespace = (b) => typeof b?.idFromName === 'function' && typeof b?.get === 'function';
+// A namespace has idFromName() and get(), and no port(). The stub of an RPC
+// binding (a service binding to a WorkerEntrypoint) gives a function for
+// each name, also idFromName and get: it has port(), so it is a port.
+const isNamespace = (b) => typeof b?.port !== 'function'
+  && typeof b?.idFromName === 'function' && typeof b?.get === 'function';
 const isPort = (b) => b !== null && typeof b === 'object' && (isNamespace(b) || typeof b.port === 'function');
 export const portNames = (env) => Object.keys(env ?? {}).filter((k) => /^[A-Za-z0-9_-]+$/.test(k) && isPort(env[k]));
 // The bytes of a port that wait in the host, on each side, at most.

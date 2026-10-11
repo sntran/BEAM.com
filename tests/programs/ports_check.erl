@@ -1,9 +1,12 @@
 %% A one-file program for "beam.com INPUT -o app.com" that tests the ports
 %% to bindings of the hosts of the npm package (tests/host/app_ports.sh).
-%% The host gives the bindings ECHO, SINK and SOURCE (tests/host/ports/).
+%% The host gives the bindings ECHO, ECHO_ENTRY, SINK and SOURCE
+%% (tests/host/ports/).
 %% It is an HTTP server on port 4000 (the port of the bridge of worker.js):
 %%
 %%   GET /echo           4 MiB to ECHO and back: "echo 4194304 true"
+%%   GET /echo-entry     the same with ECHO_ENTRY (in workerd, a service
+%%                       binding to a WorkerEntrypoint)
 %%   GET /sink           4 MiB to SINK, which reads 2 MiB for each second:
 %%                       "sink 4194304 true" when the sends waited for it
 %%   GET /missing        the port /env/MISSING: "missing enoent"
@@ -39,7 +42,8 @@ serve(S) ->
     {ok, Data} = gen_tcp:recv(S, 0),
     [_, Path | _] = binary:split(Data, <<" ">>, [global]),
     case Path of
-        <<"/echo">> -> echo(S);
+        <<"/echo">> -> echo(S, "/env/ECHO");
+        <<"/echo-entry">> -> echo(S, "/env/ECHO_ENTRY");
         <<"/sink">> -> sink(S);
         <<"/missing">> -> missing(S);
         <<"/through">> -> through(S);
@@ -51,8 +55,8 @@ serve(S) ->
         _ -> reply(S, "ports\n")
     end.
 
-echo(S) ->
-    P = open_port({spawn_executable, "/env/ECHO"}, [binary, exit_status]),
+echo(S, Path) ->
+    P = open_port({spawn_executable, Path}, [binary, exit_status]),
     send(P, 4 * ?MIB),
     Back = read(P, 4 * ?MIB, []),
     port_close(P),
