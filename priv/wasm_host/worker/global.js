@@ -24,6 +24,6 @@ vm.onDead = () => { vm = null; };
 
 export default {
   fetch(request, env, ctx) {
-    return vm ? vm.fetch(request, ctx) : plain.fetch(request, env, ctx);
+    return vm ? vm.fetch(request, ctx, env) : plain.fetch(request, env, ctx);
   },
 };

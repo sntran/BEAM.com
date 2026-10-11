@@ -1413,9 +1413,42 @@ export class Resize extends DurableObject {
   for.
 - A VM that a snapshot restores keeps its ports, when the tools of the
   same package made the snapshot.
-- Only a Durable Object (stateful) is tested. In a plain Worker, the I/O
-  of a port belongs to the request that opened it.
-- Deno and the web page have no ports yet.
+- In a plain Worker (stateless), the VM serves many requests. A port
+  uses the bindings of the last request, and its I/O starts in that
+  request. The port keeps that request open until the end of the port,
+  also after the response.
+- `tests/host/app_ports.sh` tests the ports in CI: a VM in a Durable
+  Object, a VM in a plain Worker, and Deno.
+
+### Ports in Deno
+
+Deno has no bindings, so the option `env` of `serve()` gives them. An
+object with a method `port(stdin, { argv })` is the port `/env/NAME`.
+The port program runs in the isolate of the VM.
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+
+const UPPER = {
+  port: (stdin) => stdin.pipeThrough(new TransformStream({
+    transform: (chunk, c) => c.enqueue(new TextEncoder().encode(new TextDecoder().decode(chunk).toUpperCase())),
+  })),
+};
+const beam = serve(app, { env: { UPPER } });
+
+export default {
+  fetch(request, info) {
+    return beam.fetch(request, info);
+  },
+};
+```
+
+- A name of the option `env` replaces a variable of the process with
+  that name.
+- On Workers, `serve()` has no option `env`. Give a port as a binding in
+  `wrangler.jsonc`.
+- The web page has no ports yet.
 
 ### The result of a port as the response
 

@@ -24,8 +24,10 @@ notes of its release.
   its result to the HTTP response of the app (`BEAM_PORT_OUTPUT=response`
   and the header `x-beam-port`), and the bytes do not go into the VM:
   16 MiB took 60 to 110 ms of CPU time in `workerd`, and 220 to 430 ms
-  through the VM. Only a Durable Object is tested. See "Ports to
-  bindings" in `docs/WORKERS.md`.
+  through the VM. The ports work for a VM in a Durable Object and in a
+  plain Worker. In Deno, `serve(app, { env })` gives the port objects.
+  CI tests the three hosts (`tests/host/app_ports.sh`). The web page has
+  no ports yet. See "Ports to bindings" in `docs/WORKERS.md`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,

@@ -602,6 +602,17 @@ jobs:
           sh tests/host/app_hosts.sh "$RUNNER_TEMP/statics-phoenix_demo" /robots.txt \
             'vary: accept-encoding' 'vary: accept-encoding'
 
+      # The ports to bindings (tests/host/app_ports.sh): Durable Objects as
+      # ports, for a VM in a Durable Object and in a plain Worker, and the
+      # objects of serve(app, { env }) in Deno. The flow control, and the
+      # result of a port as the response (x-beam-port).
+      - name: The ports to bindings on Workers and Deno
+        run: |
+          sh bin/beam.com tests/programs/ports_check.erl -o "$RUNNER_TEMP/ports_check.com"
+          cp -R "$RUNNER_TEMP/hosts-phoenix_demo" "$RUNNER_TEMP/ports"
+          cp "$RUNNER_TEMP/ports_check.com" "$RUNNER_TEMP/ports/app.com"
+          sh tests/host/app_ports.sh "$RUNNER_TEMP/ports"
+
       # The snapshot of the build (npx beam.com --snapshot): at the boot
       # point for examples/phoenix_demo (the first Durable Object restores
       # it, as the store has no snapshot yet), and a full one for

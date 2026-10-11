@@ -343,7 +343,7 @@ export const PORT_CLAIM_MS = 10000;
 // drops it.
 export function openPort(env, { path, argv, env: vars = [], pid = null }, events,
                          { log = () => {}, dead = () => false, ports = null, keep = () => {},
-                           claimMs = PORT_CLAIM_MS } = {}) {
+                           claimMs = PORT_CLAIM_MS, run = (f) => f() } = {}) {
   const name = path.startsWith(`${PORT_DIR}/`) ? path.slice(PORT_DIR.length + 1) : '';
   const binding = portNames(env).includes(name) ? env[name] : null;
   if (!binding || dead()) throw Object.assign(new Error(`no port ${path}`), { errno: 44 });
@@ -389,7 +389,7 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
     },
   };
   ports?.add(port);
-  port.done = (async () => {
+  port.done = run(async () => {
     let status = 0;
     try {
       const target = isNamespace(binding)
@@ -432,9 +432,25 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
       end();
     }
     events.exit(status);
-  })();
+  });
   keep(port.done);
   return port;
+}
+
+// A runner of jobs in the async context of the request that makes it: a
+// job runs in a reaction of a promise of that request. In a plain Worker,
+// the code of the VM runs in the async context of the request that booted
+// the VM, and workerd ties the trace span of that context to that request.
+// So the I/O of a port starts in a job of the runner of a later request.
+function requestRunner() {
+  const jobs = [];
+  let wake = null;
+  const next = () => new Promise((r) => { wake = r; }).then(() => {
+    for (const job of jobs.splice(0)) job();
+    return next();
+  });
+  next();
+  return (job) => { jobs.push(job); wake?.(); };
 }
 
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
@@ -754,7 +770,7 @@ export default {
       // A VM that stopped: the next request starts a new one.
       v.onDead = () => { if (vm === v) vm = undefined; };
     }
-    return vm.fetch(request, ctx);
+    return vm.fetch(request, ctx, env);
   },
 };
 
@@ -1293,6 +1309,7 @@ export class Vm {
     this.dns = new Map();      // host -> {at, addresses}: the names of the fetch path
     this.fetchPending = 0;
     this.ports = new Set();    // the open ports to bindings (spawnPort)
+    this.bindings = null;      // the env of the last request of a plain Worker
     this.nextId = 1;
     this.plain = plain;
     this.handlers = [];        // the open requests (plain)
@@ -1832,9 +1849,15 @@ export class Vm {
     this.beam.beamHost.push(b);
   }
 
-  // ctx: the context of a request to a plain Worker (none in a Durable Object).
-  async fetch(request, ctx) {
-    if (ctx) this.waitUntil = (p) => ctx.waitUntil(p);
+  // ctx: the context of a request to a plain Worker (none in a Durable
+  // Object). env: the bindings of that request, for the ports: workerd ties
+  // a stub of the bindings of a request to that request.
+  async fetch(request, ctx, env = null) {
+    if (ctx) {
+      this.waitUntil = (p) => ctx.waitUntil(p);
+      this.inRequest = requestRunner();
+    }
+    if (env) this.bindings = env;
     let finished = () => {};
     const h = this.plain ? this.serve(ctx, new Promise((r) => { finished = r; })) : undefined;
     let response;
@@ -2861,14 +2884,23 @@ export class Vm {
   }
 
   // A port of the VM (Module.beamHost.spawn of jspi_lib.js): see openPort.
-  // A plain Worker keeps the request of the last fetch open while the port
-  // runs (waitUntil).
+  // A plain Worker uses the bindings of the last request, and its I/O
+  // starts in that request. The port counts as a socket of that request
+  // (serve): so the request, and the jobs of the VM in it, stay until the
+  // end of the port, also after the response.
   spawnPort(spec, events) {
-    return openPort(this.env, spec, events, {
+    const enter = this.plain ? this.inRequest : null;
+    return openPort(this.bindings ?? this.env, spec, events, {
       log: (s) => this.log(s),
       dead: () => !!this.dead,
       ports: this.ports,
-      keep: (p) => { if (this.plain) this.waitUntil?.(p); },
+      keep: (p) => {
+        const h = this.plain ? this.handlers.at(-1) : null;
+        if (!h) return;
+        h.sockets++;
+        p.finally(() => { h.sockets--; h.wake?.(); });
+      },
+      run: enter ? (f) => new Promise((resolve) => enter(() => resolve(f()))) : (f) => f(),
     });
   }
 

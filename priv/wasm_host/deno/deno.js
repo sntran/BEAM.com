@@ -360,8 +360,13 @@ export class Beam {}
 // The engine for the app.com of the entry (the bytes of the file): the
 // fetch handler of its VM. The options of Workers (binding, name) do not
 // apply: one VM runs in each isolate. statics: false keeps the static
-// files of a Phoenix app in the VM, as on Workers.
-export function serve(app, { statics = true } = {}) {
+// files of a Phoenix app in the VM, as on Workers. env: more bindings of
+// the env of the VM, as the bindings of a Worker, for example the ports
+// of docs/WORKERS.md ("Ports to bindings"): an object with a method
+// port(stdin, { argv }) is the port /env/NAME. A name of env replaces a
+// variable of the process with that name.
+export function serve(app, { statics = true, env: bindings = {} } = {}) {
   use(app, statics);
+  Object.assign(env, bindings);
   return { fetch: (request, info) => handler.fetch(request, info) };
 }

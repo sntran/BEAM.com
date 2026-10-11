@@ -338,3 +338,29 @@ test('x-beam-port in a response with no body (HEAD): no body, and the port still
   assert.equal(port.claim(writable.getWriter()), true);
   assert.equal((await all(readable)).toString(), 'x:HELLO');
 });
+
+// A plain Worker: its VM serves many requests. The port uses the bindings
+// of the last request, starts in a job of the runner of that request, and
+// counts as a socket of that request until its end.
+test('a plain Worker: the port uses the last request, and holds it until the end of the port', async () => {
+  const { v } = vm({});
+  const h = { sockets: 0, wake: null };
+  let jobs = 0;
+  Object.assign(v, {
+    plain: true,
+    handlers: [{ sockets: 0 }, h],
+    bindings: { UPPER: upper },
+    inRequest: (job) => { jobs++; queueMicrotask(job); },
+  });
+  const e = events();
+  const p = v.spawnPort({ path: '/env/UPPER', argv: ['/env/UPPER', 'y'] }, e.events);
+  assert.equal(h.sockets, 1);
+  assert.equal(v.handlers[0].sockets, 0);
+  assert.equal(jobs, 1);
+  p.write(enc('ok'));
+  p.end();
+  assert.equal(await e.exit, 0);
+  await settle();
+  assert.equal(dec(e.data), 'y:OK');
+  assert.equal(h.sockets, 0);
+});
