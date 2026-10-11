@@ -353,6 +353,7 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
   let open = true;
   let claim = null;
   let sink = null;  // the writer of claim()
+  let length = null;  // the length of the body of claim(), or null
   let timer = null;
   const claimed = vars.includes('BEAM_PORT_OUTPUT=response') ? new Promise((r) => { claim = r; }) : null;
   const stdin = new ReadableStream({ type: 'bytes', start(c) { input = c; }, pull: () => events.pull?.() },
@@ -383,11 +384,13 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
     },
     end,
     stop: () => { unclaim(); end(); reader?.cancel().catch(() => {}); },
-    // The writer of the body of a response: true when the port waited for one.
-    claim: (writer) => {
+    // The writer of the body of a response, and its length (or null): true
+    // when the port waited for one.
+    claim: (writer, size = null) => {
       if (!claim) return false;
       clearTimeout(timer);
       sink = writer;
+      length = size;
       claim(writer);
       claim = null;
       return true;
@@ -412,13 +415,25 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
       if (byob && !byob.readAtLeast) { byob.releaseLock(); byob = null; }
       reader = byob ?? out.getReader();
       if (claimed && !await claimed) await reader.cancel();
+      let sent = 0;
       while (!claimed || sink) {
         const { done, value } = byob ? await byob.read(new Uint8Array(PORT_READ)) : await reader.read();
         if (done || dead()) break;
         if (!value?.byteLength) continue;
-        const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+        let bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
         if (sink) {
+          if (length !== null && sent + bytes.length > length) bytes = bytes.subarray(0, length - sent);
           await sink.write(bytes);
+          sent += bytes.length;
+          // The whole length: the body ends now, not at the end of the
+          // result. Else a client that has all the bytes can close first,
+          // and the runtime then cancels the request and the port.
+          if (length !== null && sent >= length) {
+            const done = sink;
+            sink = null;
+            await done.close();
+            await reader.cancel().catch(() => {});
+          }
         } else if (events.data(bytes) === false) {
           await events.room?.();
           // The VM closed the port: the result stops, as a write to a
@@ -2474,7 +2489,7 @@ export class Vm {
     const fixed = Number.isSafeInteger(size) && size > 0 && typeof FixedLengthStream === 'function';
     const { readable, writable } = fixed ? new FixedLengthStream(size) : new TransformStream();
     const port = [...this.ports].find((p) => p.pid === pid);
-    if (!port?.claim(writable.getWriter())) throw new Error(`no port ${value} that waits for a response`);
+    if (!port?.claim(writable.getWriter(), fixed ? size : null)) throw new Error(`no port ${value} that waits for a response`);
     if (fixed) headers.set('content-length', String(size));
     return readable;
   }

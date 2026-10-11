@@ -1418,7 +1418,8 @@ export class Resize extends DurableObject {
   request. The port keeps that request open until the end of the port,
   also after the response.
 - `tests/host/app_ports.sh` tests the ports in CI: a VM in a Durable
-  Object, a VM in a plain Worker, and Deno.
+  Object, a VM in a plain Worker, and Deno. The same checks passed on
+  Cloudflare, with the VM in a Durable Object and in a plain Worker.
 
 ### Ports in Deno
 
@@ -1505,7 +1506,9 @@ conn
   body of the response. The body that the app sends goes nowhere.
 - `x-beam-port-length` (optional) is the length of the result. Then the
   response has a `content-length`, and a shorter result is an error for
-  the client. With no length, the body goes in chunks.
+  the client. The body ends at that length, also when the result of the
+  port does not end yet: the host then stops the result. With no length,
+  the body goes in chunks.
 - The VM gets none of the bytes of the result. It gets the exit status
   of the port at the end of the result, while the port is open.
 - A response to `HEAD`, and a 204 or 304, do not take the result: the
@@ -1520,8 +1523,18 @@ conn
   waits for ever. So send the response first, and then the input of the
   port.
 
-In `workerd`, 16 MiB took this CPU time (all the processes of
-`workerd`, with the object of the port):
+On Cloudflare, with the VM in a Durable Object, 4 MiB took this CPU
+time in that object (the tail events of `tests/programs/ports_check.erl`).
+The object of the port took 6 to 9 ms more for each call:
+
+| Path of the bytes | CPU time | Median |
+|---|---|---|
+| The VM to the client, with no port | 5 to 23 ms | 13 ms |
+| A port to the response | 12 to 30 ms | 18 ms |
+| A port to the VM, and the VM to the client | 45 to 73 ms | 54 ms |
+
+In `workerd` (`wrangler dev`), 16 MiB took this CPU time, for all the
+processes of `workerd`, with the object of the port:
 
 | Path of the bytes | CPU time |
 |---|---|
@@ -1531,8 +1544,8 @@ In `workerd`, 16 MiB took this CPU time (all the processes of
 | A port to the VM, and the VM to the client | 220 to 430 ms |
 | The VM to a port, and back to the VM | 230 to 300 ms |
 
-So a port that gives the response costs less than the VM for the same
-bytes.
+So a result that a port gives to the response costs about one third of
+the same bytes through the VM.
 
 ## Peer nodes
 

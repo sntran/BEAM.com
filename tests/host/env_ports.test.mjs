@@ -407,3 +407,25 @@ test('a byte stream of JavaScript ends the port, and the end of stdin ends a BYO
   assert.equal(await b.exit, 0);
   assert.equal(got, 'xyz');
 });
+
+// A response with x-beam-port-length: the body ends at that length, also
+// when the result of the port does not end yet. Else the client closes
+// first, and Cloudflare cancels the request and the port.
+test('BEAM_PORT_OUTPUT=response: the body ends at its length, before the end of the result', async () => {
+  let cancelled = false;
+  const { v } = vm({
+    SLOW: {
+      port: () => new ReadableStream({
+        start(c) { c.enqueue(enc('abcdef')); },
+        cancel() { cancelled = true; },
+      }),
+    },
+  });
+  const e = events();
+  const p = v.spawnPort({ path: '/env/SLOW', argv: ['/env/SLOW'], env: ['BEAM_PORT_OUTPUT=response'], pid: 12 }, e.events);
+  const { readable, writable } = new TransformStream();
+  assert.equal(p.claim(writable.getWriter(), 4), true);
+  assert.equal((await all(readable)).toString(), 'abcd');
+  assert.equal(await e.exit, 0);
+  assert.equal(cancelled, true);
+});
