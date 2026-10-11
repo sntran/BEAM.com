@@ -12,7 +12,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { Vm, portNames, PORT_DIR } = await import('../../priv/wasm_host/worker/worker.js');
+const { Vm, openPort, portNames, PORT_DIR, PORT_CLAIM_MS } = await import('../../priv/wasm_host/worker/worker.js');
 
 const enc = (t) => new TextEncoder().encode(t);
 const dec = (parts) => new TextDecoder().decode(Buffer.concat(parts));
@@ -131,4 +131,210 @@ test('a VM that stops ends its ports: the stdin of port() ends', async () => {
   await e.exit;
   // A VM that stopped starts no port.
   assert.throws(() => v.spawnPort({ path: '/env/WAIT', argv: ['/env/WAIT'] }, events().events), (err) => err.errno === 44);
+});
+
+const WINDOW = 256 * 1024;
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+
+// All the bytes of a stream.
+async function all(stream) {
+  const parts = [];
+  for await (const p of stream) parts.push(Buffer.from(p));
+  return Buffer.concat(parts);
+}
+
+test('flow control from the VM: write() gives false at a full window, and a read of port() asks for more', async () => {
+  let stdin;
+  const { v } = vm({ HOLD: { port(s) { stdin = s.getReader(); return new ReadableStream({}); } } });
+  const e = events();
+  let pulls = 0;
+  e.events.pull = () => { pulls++; };
+  const p = v.spawnPort({ path: '/env/HOLD', argv: ['/env/HOLD'] }, e.events);
+  await settle();
+  assert.equal(p.write(new Uint8Array(WINDOW / 2)), true);
+  assert.equal(p.write(new Uint8Array(WINDOW / 2)), false);
+  const before = pulls;
+  const { value } = await stdin.read();
+  await settle();
+  assert.equal(value.byteLength, WINDOW / 2);
+  assert.ok(pulls > before, 'a read of port() calls pull()');
+  p.stop();
+  assert.equal(p.write(enc('x')), false, 'a port that ended takes no bytes');
+  assert.equal(await e.exit, 0);
+});
+
+test('flow control to the VM: a false of data() stops the reads of port() until room()', async () => {
+  let reads = 0;
+  let cancelled = false;
+  const source = {
+    port: () => new ReadableStream({
+      pull(c) { reads++; c.enqueue(new Uint8Array(1024)); },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 }),
+  };
+  const { v } = vm({ SOURCE: source });
+  const e = events();
+  let free;
+  let closed = false;
+  e.events.data = (b) => { e.data.push(Buffer.from(b)); return false; };
+  e.events.room = () => new Promise((r) => { free = r; });
+  e.events.closed = () => closed;
+  v.spawnPort({ path: '/env/SOURCE', argv: ['/env/SOURCE'] }, e.events);
+  await settle();
+  assert.equal(reads, 1);
+  assert.equal(e.data.length, 1);
+  free();
+  await settle();
+  assert.equal(reads, 2, 'room() gives one more read');
+  // The VM closed the port: the result of port() stops.
+  closed = true;
+  free();
+  assert.equal(await e.exit, 0);
+  assert.equal(cancelled, true);
+  assert.equal(reads, 2);
+});
+
+test('BEAM_PORT_OUTPUT=response: the result waits for claim(), and goes to the writer, not to the VM', async () => {
+  const { v } = vm({ UPPER: upper });
+  const e = events();
+  const p = v.spawnPort({ path: '/env/UPPER', argv: ['/env/UPPER', 'x'], env: ['BEAM_PORT_OUTPUT=response'], pid: 7 }, e.events);
+  assert.equal(p.pid, 7);
+  p.write(enc('abc'));
+  p.end();
+  await settle();
+  assert.equal(e.data.length, 0);
+  const { readable, writable } = new TransformStream();
+  assert.equal(p.claim(writable.getWriter()), true);
+  assert.equal(p.claim(new WritableStream().getWriter()), false, 'one claim only');
+  assert.equal((await all(readable)).toString(), 'x:ABC');
+  assert.equal(await e.exit, 0);
+  assert.equal(e.data.length, 0);
+});
+
+test('BEAM_PORT_OUTPUT=response: a port that ended drops its result after claimMs with no claim', async () => {
+  assert.equal(PORT_CLAIM_MS, 10000);
+  let cancelled = false;
+  const env = { GIVE: { port: () => new ReadableStream({ pull(c) { c.enqueue(enc('x')); }, cancel() { cancelled = true; } }) } };
+  const e = events();
+  const p = openPort(env, { path: '/env/GIVE', argv: ['/env/GIVE'], env: ['BEAM_PORT_OUTPUT=response'], pid: 8 }, e.events, { claimMs: 0 });
+  await settle();
+  p.end();
+  assert.equal(await e.exit, 0);
+  assert.equal(cancelled, true);
+  assert.equal(e.data.length, 0);
+  assert.equal(p.claim(new WritableStream().getWriter()), false);
+});
+
+test('BEAM_PORT_OUTPUT=response: a result that fails after the claim aborts the writer, then exit 1', async () => {
+  const { v, logs } = vm({
+    BROKEN: {
+      port: () => new ReadableStream({
+        start(c) { c.enqueue(enc('part')); },
+        pull(c) { c.error(new Error('the object stopped')); },
+      }),
+    },
+  });
+  const e = events();
+  const p = v.spawnPort({ path: '/env/BROKEN', argv: ['/env/BROKEN'], env: ['BEAM_PORT_OUTPUT=response'], pid: 9 }, e.events);
+  const { readable, writable } = new TransformStream();
+  assert.equal(p.claim(writable.getWriter()), true);
+  await assert.rejects(all(readable), /the object stopped/);
+  assert.equal(await e.exit, 1);
+  assert.match(logs[0], /\/env\/BROKEN: the object stopped/);
+});
+
+// A Vm with the state of a VM that is ready, the ports of env, and the
+// events that it gives to the app in sent (as in vm_response.test.mjs).
+function bridgeVm(env) {
+  const v = Object.create(Vm.prototype);
+  const sent = [];
+  Object.assign(v, {
+    env: { BEAM_REQUEST_TIMEOUT: '0', ...env }, vars: {}, scheme: true, nextId: 0, tcps: new Map(),
+    listeners: new Map([[4000, 'l0']]), conns: new Set(), sockets: 0, peak: 0, dead: null, onDead: null,
+    died: new Promise(() => {}), markDead: () => {}, handlers: [], jobs: [], ports: new Set(), log: () => {},
+    beam: { HEAPU8: new Uint8Array(1 << 20) },
+    listening: async () => {},
+    event: (header, body) => { if (!v.dead) sent.push({ header, body }); },
+  });
+  return { v, sent };
+}
+
+// A port of the VM that waits for a response (pid), and a request to the
+// VM: send(text) gives the bytes of the app for it.
+async function splice(method = 'GET') {
+  const { v, sent } = bridgeVm({ UPPER: upper });
+  const e = events();
+  const port = v.spawnPort({ path: '/env/UPPER', argv: ['/env/UPPER', 'x'], env: ['BEAM_PORT_OUTPUT=response'], pid: 1001 }, e.events);
+  port.write(enc('hello'));
+  port.end();
+  const pending = v.bridge(new Request('https://app.example.com/x', { method }), new URL('https://app.example.com/x'), false, undefined, () => {});
+  await settle();
+  const id = sent.find((s) => s.header.t === 'tcp_accept').header.conn;
+  return { v, e, port, pending, send: (t) => v.tcps.get(id).send(enc(t)) };
+}
+
+test('x-beam-port: the result of the port is the body of the response, and the bytes of the app after the head go nowhere', async () => {
+  const { e, pending, send } = await splice();
+  send('HTTP/1.1 200 OK\r\nx-beam-port: 1001\r\ncontent-type: text/plain\r\ncontent-length: 3\r\n\r\nabc');
+  const r = await pending;
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-beam-port'), null);
+  assert.equal(r.headers.get('content-length'), null, 'the length of the app is not the length of the port');
+  assert.equal(r.headers.get('content-type'), 'text/plain');
+  assert.equal(await r.text(), 'x:HELLO');
+  assert.equal(await e.exit, 0);
+  assert.equal(e.data.length, 0);
+});
+
+// workerd has FixedLengthStream (a stand-in here: Node.js has none).
+test('x-beam-port-length: the body goes through a FixedLengthStream of that length', async () => {
+  const lengths = [];
+  globalThis.FixedLengthStream = class extends TransformStream {
+    constructor(n) { super(); lengths.push(n); }
+  };
+  try {
+    const { pending, send } = await splice();
+    send('HTTP/1.1 200 OK\r\nx-beam-port: 1001\r\nx-beam-port-length: 7\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n');
+    const r = await pending;
+    assert.equal(r.headers.get('x-beam-port-length'), null);
+    assert.equal(r.headers.get('content-length'), '7');
+    assert.equal(await r.text(), 'x:HELLO');
+    assert.deepEqual(lengths, [7]);
+  } finally {
+    delete globalThis.FixedLengthStream;
+  }
+});
+
+test('x-beam-port of no port that waits: 502', async () => {
+  for (const pid of ['999', 'abc']) {
+    const { port, e, pending, send } = await splice();
+    send(`HTTP/1.1 200 OK\r\nx-beam-port: ${pid}\r\ncontent-length: 0\r\n\r\n`);
+    const r = await pending;
+    assert.equal(r.status, 502);
+    port.stop();
+    assert.equal(await e.exit, 0);
+  }
+});
+
+test('a VM that stops ends a port that waits for a claim', async () => {
+  const { v } = vm({ UPPER: upper });
+  const e = events();
+  const p = v.spawnPort({ path: '/env/UPPER', argv: ['/env/UPPER'], env: ['BEAM_PORT_OUTPUT=response'], pid: 3 }, e.events);
+  await settle();
+  p.stop();
+  assert.equal(await e.exit, 0);
+  assert.equal(p.claim(new WritableStream().getWriter()), false);
+  assert.equal(v.ports.size, 0);
+});
+
+test('x-beam-port in a response with no body (HEAD): no body, and the port still waits', async () => {
+  const { port, pending, send } = await splice('HEAD');
+  send('HTTP/1.1 200 OK\r\nx-beam-port: 1001\r\ncontent-length: 7\r\n\r\n');
+  const r = await pending;
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-beam-port'), null);
+  assert.equal(r.body, null);
+  const { readable, writable } = new TransformStream();
+  assert.equal(port.claim(writable.getWriter()), true);
+  assert.equal((await all(readable)).toString(), 'x:HELLO');
 });

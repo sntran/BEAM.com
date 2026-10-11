@@ -317,6 +317,125 @@ export const PORT_DIR = '/env';
 const isNamespace = (b) => typeof b?.idFromName === 'function' && typeof b?.get === 'function';
 const isPort = (b) => b !== null && typeof b === 'object' && (isNamespace(b) || typeof b.port === 'function');
 export const portNames = (env) => Object.keys(env ?? {}).filter((k) => /^[A-Za-z0-9_-]+$/.test(k) && isPort(env[k]));
+// The bytes of a port that wait in the host, on each side, at most.
+const PORT_WINDOW = 256 * 1024;
+// The size of a read of the result of a port.
+const PORT_READ = 64 * 1024;
+// The time that the result of a port that ended waits for a claim.
+export const PORT_CLAIM_MS = 10000;
+
+// A port to the binding NAME of PORT_DIR/NAME, for the spawn of the host
+// (Module.beamHost.spawn of jspi_lib.js). The bytes that the port writes go
+// to the stdin of port(), and the bytes of its result go to the port. A
+// path that is not a binding that is a port gives ENOENT (44 in
+// Emscripten). opts: log(text), dead() (the VM stopped), ports (a Set of
+// the open ports), keep(promise) (the request that must stay open while
+// the port runs), and claimMs. It gives {pid, write, end, stop, claim,
+// done}.
+// Flow control: stdin holds at most PORT_WINDOW bytes, and write() then
+// gives false; the pull of stdin asks for more (events.pull). A false of
+// events.data() stops the read of the result until events.room().
+// BEAM_PORT_OUTPUT=response in the environment of the port: the result
+// waits for claim(writer) (a response of the app that names the port, see
+// claimPort), and goes to that writer, not to the VM. The close of the
+// port is the end of its stdin, so the app can close the port before its
+// response: the result then waits claimMs for a claim, and then the port
+// drops it.
+export function openPort(env, { path, argv, env: vars = [], pid = null }, events,
+                         { log = () => {}, dead = () => false, ports = null, keep = () => {},
+                           claimMs = PORT_CLAIM_MS } = {}) {
+  const name = path.startsWith(`${PORT_DIR}/`) ? path.slice(PORT_DIR.length + 1) : '';
+  const binding = portNames(env).includes(name) ? env[name] : null;
+  if (!binding || dead()) throw Object.assign(new Error(`no port ${path}`), { errno: 44 });
+  const args = argv.slice(1);
+  let input = null;
+  let reader = null;
+  let open = true;
+  let claim = null;
+  let sink = null;  // the writer of claim()
+  let timer = null;
+  const claimed = vars.includes('BEAM_PORT_OUTPUT=response') ? new Promise((r) => { claim = r; }) : null;
+  const stdin = new ReadableStream({ type: 'bytes', start(c) { input = c; }, pull: () => events.pull?.() },
+                                   { highWaterMark: PORT_WINDOW });
+  // No claim now: the port drops its result.
+  const unclaim = () => {
+    clearTimeout(timer);
+    claim?.(null);
+    claim = null;
+  };
+  const end = () => {
+    if (claim && timer === null) timer = setTimeout(unclaim, claimMs);
+    if (!open) return;
+    open = false;
+    try { input.close(); } catch {}
+  };
+  const port = {
+    pid,
+    write: (bytes) => {
+      if (!open) return false;
+      input.enqueue(bytes);
+      return input.desiredSize > 0;
+    },
+    end,
+    stop: () => { unclaim(); end(); reader?.cancel().catch(() => {}); },
+    // The writer of the body of a response: true when the port waited for one.
+    claim: (writer) => {
+      if (!claim) return false;
+      clearTimeout(timer);
+      sink = writer;
+      claim(writer);
+      claim = null;
+      return true;
+    },
+  };
+  ports?.add(port);
+  port.done = (async () => {
+    let status = 0;
+    try {
+      const target = isNamespace(binding)
+        ? binding.get(args.length ? binding.idFromName(args[0]) : binding.newUniqueId())
+        : binding;
+      const out = await target.port(stdin, { argv: args });
+      // A BYOB read of PORT_READ bytes: the default reader of workerd
+      // gives parts of 4 KB (the stream of an RPC call), and each part is
+      // a read of the VM. A stream that is not a byte stream has only the
+      // default reader.
+      let byob = null;
+      try { byob = out.getReader({ mode: 'byob' }); } catch {}
+      reader = byob ?? out.getReader();
+      if (claimed && !await claimed) await reader.cancel();
+      while (!claimed || sink) {
+        const { done, value } = byob ? await byob.read(new Uint8Array(PORT_READ)) : await reader.read();
+        if (done || dead()) break;
+        if (!value?.byteLength) continue;
+        const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+        if (sink) {
+          await sink.write(bytes);
+        } else if (events.data(bytes) === false) {
+          await events.room?.();
+          // The VM closed the port: the result stops, as a write to a
+          // closed pipe.
+          if (events.closed?.()) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
+        }
+      }
+      if (sink) await (dead() ? sink.abort(new Error('the app stopped')) : sink.close());
+    } catch (e) {
+      status = 1;
+      sink?.abort(e).catch(() => {});
+      if (!dead()) log(`beam: the port ${path}: ${e?.message ?? e}`);
+    } finally {
+      ports?.delete(port);
+      unclaim();
+      end();
+    }
+    events.exit(status);
+  })();
+  keep(port.done);
+  return port;
+}
 
 // BEAM_CONNECT: the hosts that the VM can connect to, separated by commas:
 // "host", "host:port", "*.domain" (the subdomains of domain), or "*" (all
@@ -2275,6 +2394,9 @@ export class Vm {
       headers.delete('transfer-encoding');
       headers.delete('connection');
       if (c.head || status === 204 || status === 304) { c.length = 0; c.chunked = false; }
+      // A body from a port (x-beam-port): the bytes of the app after the
+      // head go nowhere.
+      const portBody = headers.has('x-beam-port') ? this.claimPort(headers, c.length === 0 && (c.head || status === 204 || status === 304)) : null;
       c.left = 0;
       // workerd sends the body of a TransformStream in chunks, also with a
       // content-length, and it ends the chunks normally when the stream
@@ -2290,18 +2412,40 @@ export class Vm {
       // The Response first: a status that it refuses ends the connection
       // with 502 (bridgeGuard), and the client gets an answer.
       const stream = c.length !== 0;
-      const response = new Response(stream ? readable : null, { status, headers, encodeBody });
+      const response = new Response(portBody ?? (stream ? readable : null), { status, headers, encodeBody });
       c.stream = stream;
       c.status = status;
-      c.writer = writable.getWriter();
+      c.writer = portBody ? null : writable.getWriter();
       // The client went away (or the stream failed): the app gets the end
       // of the connection.
-      c.writer.closed.catch(() => this.bridgeDone(c));
+      c.writer?.closed.catch(() => this.bridgeDone(c));
       c.resolve(response);
       c.finished();
     }
     if (c.ws) return this.bridgeFrames(c);
     this.bridgeBody(c);
+  }
+
+  // The body of a response from a port (docs/WORKERS.md, "Ports to
+  // bindings"): x-beam-port is the os_pid of a port of this VM, opened with
+  // BEAM_PORT_OUTPUT=response, and the result of the port is the body.
+  // x-beam-port-length (optional) is its length. none: a response with no
+  // body (HEAD, 204, 304), which leaves the port as it is. An unknown port
+  // throws (502, see bridgeGuard).
+  claimPort(headers, none) {
+    const value = headers.get('x-beam-port');
+    const pid = Number(value);
+    const size = Number(headers.get('x-beam-port-length') ?? NaN);
+    headers.delete('x-beam-port');
+    headers.delete('x-beam-port-length');
+    if (none) return null;
+    headers.delete('content-length');
+    const fixed = Number.isSafeInteger(size) && size > 0 && typeof FixedLengthStream === 'function';
+    const { readable, writable } = fixed ? new FixedLengthStream(size) : new TransformStream();
+    const port = [...this.ports].find((p) => p.pid === pid);
+    if (!port?.claim(writable.getWriter())) throw new Error(`no port ${value} that waits for a response`);
+    if (fixed) headers.set('content-length', String(size));
+    return readable;
   }
 
   // The body of a response: by content-length, chunked, or until the end.
@@ -2716,50 +2860,16 @@ export class Vm {
     if (h) { h.sockets--; h.wake?.(); }
   }
 
-  // A port of the VM (Module.beamHost.spawn of jspi_lib.js): the binding
-  // NAME of PORT_DIR/NAME. The bytes that the port writes go to the stdin
-  // of port(), and the bytes of its result go to the port. A path that is
-  // not a binding that is a port gives ENOENT (44 in Emscripten).
-  // Caution: no flow control yet. The bytes wait in a queue on each side.
-  spawnPort({ path, argv }, events) {
-    const name = path.startsWith(`${PORT_DIR}/`) ? path.slice(PORT_DIR.length + 1) : '';
-    const binding = portNames(this.env).includes(name) ? this.env[name] : null;
-    if (!binding || this.dead) throw Object.assign(new Error(`no port ${path}`), { errno: 44 });
-    const args = argv.slice(1);
-    let input = null;
-    let reader = null;
-    let open = true;
-    const stdin = new ReadableStream({ type: 'bytes', start(c) { input = c; } });
-    const end = () => {
-      if (!open) return;
-      open = false;
-      try { input.close(); } catch {}
-    };
-    const port = { stop: () => { end(); reader?.cancel().catch(() => {}); } };
-    this.ports.add(port);
-    (async () => {
-      let status = 0;
-      try {
-        const target = isNamespace(binding)
-          ? binding.get(args.length ? binding.idFromName(args[0]) : binding.newUniqueId())
-          : binding;
-        const out = await target.port(stdin, { argv: args });
-        reader = out.getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done || this.dead) break;
-          if (value?.byteLength) events.data(value instanceof Uint8Array ? value : new Uint8Array(value));
-        }
-      } catch (e) {
-        status = 1;
-        if (!this.dead) this.log(`beam: the port ${path}: ${e?.message ?? e}`);
-      } finally {
-        this.ports.delete(port);
-        end();
-      }
-      events.exit(status);
-    })();
-    return { write: (bytes) => { if (open) input.enqueue(bytes); }, end };
+  // A port of the VM (Module.beamHost.spawn of jspi_lib.js): see openPort.
+  // A plain Worker keeps the request of the last fetch open while the port
+  // runs (waitUntil).
+  spawnPort(spec, events) {
+    return openPort(this.env, spec, events, {
+      log: (s) => this.log(s),
+      dead: () => !!this.dead,
+      ports: this.ports,
+      keep: (p) => { if (this.plain) this.waitUntil?.(p); },
+    });
   }
 
   // A request of wasm_host_fetch: fetch() of the URL of the host and the

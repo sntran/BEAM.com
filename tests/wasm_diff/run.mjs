@@ -5,7 +5,7 @@
 // JOB.json: {"runtime": DIR, "root": OTP_ROOT, "libs": [EBIN...],
 //   "boot": BOOT_FILE, "pa": DIR, "eval": EXPR, "schedule": "node" | "plain",
 //   "nifs": {FILE: MODULE_FILE} (optional), "snapshot": true (optional),
-//   "out": {VM_FILE: FILE} (optional)}
+//   "out": {VM_FILE: FILE} (optional), "ports": {NAME: PROGRAM} (optional)}
 //
 // The driver copies the boot file, each EBIN directory, and the files of
 // "pa" into the memory file system, below the same names as on the disk.
@@ -28,11 +28,28 @@
 //
 // "out": after the exit of the VM, the driver writes each VM_FILE of the
 // memory file system to FILE on the disk (for example a crash dump).
+//
+// "ports": the ports to bindings of worker.js (openPort): the port
+// /env/NAME runs the JavaScript program PROGRAM of portPrograms below, as
+// a binding of env with a method port().
 import fs from 'node:fs';
+import { register } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+// worker.js imports the runtime of its build directory: stand-ins here,
+// because only openPort runs.
+let openPort = null;
+if (job.ports) {
+  register(`data:text/javascript,${encodeURIComponent(`
+    const stub = { './beam.mjs': 'export default () => {};', './beam.wasm': 'export default null;' };
+    export async function resolve(spec, ctx, next) {
+      return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
+                          : next(spec, ctx);
+    }`)}`);
+  ({ openPort } = await import(new URL('../../priv/wasm_host/worker/worker.js', import.meta.url).href));
+}
 if (typeof WebAssembly.Suspending !== 'function') {
   console.error('run.mjs: this Node.js has no JSPI (WebAssembly.Suspending)');
   process.exit(3);
@@ -110,12 +127,82 @@ function prepare(m, env = {}) {
   if (job.work) m.FS.mkdirTree(job.work);
   m.FS.writeFile(program, '');
   m.FS.chmod(program, 0o755);
+  for (const name of Object.keys(job.ports ?? {})) {
+    m.FS.mkdirTree('/env');
+    m.FS.writeFile(`/env/${name}`, '');
+    m.FS.chmod(`/env/${name}`, 0o755);
+  }
 }
 
 // The host spawn: only the program of the VM. The bytes of the port go
 // to fd 0 of the new VM, and its fd 1 goes to the port. Its output on
 // stderr goes to stderr. Its exit code ends the port.
+// The programs of "ports". Each one gets the bytes of the VM (stdin) and
+// its arguments, and gives a stream of bytes for the VM.
+// - echo: the bytes back.
+// - sink RATE COUNT: reads COUNT bytes at RATE bytes for each second, and
+//   gives one line: the count and the SHA-256.
+// - source COUNT: gives COUNT bytes (0, 1, ..., 255, 0, ...) as fast as
+//   the VM takes them, then one line: the ms that it took, and the count
+//   of the times that the window of the VM was full (data() gave false).
+const portPrograms = {
+  echo: (stdin) => stdin,
+  sink: (stdin, [rate, count]) => new ReadableStream({
+    async start(c) {
+      const { createHash } = await import('node:crypto');
+      const hash = createHash('sha256');
+      const t0 = performance.now();
+      let n = 0;
+      for await (const chunk of stdin) {
+        hash.update(chunk);
+        n += chunk.byteLength;
+        const wait = t0 + (n / Number(rate)) * 1000 - performance.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        if (n >= Number(count)) break;
+      }
+      c.enqueue(new TextEncoder().encode(`${n} ${hash.digest('hex')}\n`));
+      c.close();
+    },
+  }),
+  source: (stdin, [count], stats) => {
+    const t0 = performance.now();
+    let n = 0;
+    return new ReadableStream({
+      pull(c) {
+        if (n >= Number(count)) {
+          c.enqueue(new TextEncoder().encode(`${Math.round(performance.now() - t0)} ms ${stats.full}\n`));
+          c.close();
+          return;
+        }
+        const part = new Uint8Array(Math.min(65536, Number(count) - n)).map((_, i) => (n + i) & 255);
+        n += part.length;
+        c.enqueue(part);
+      },
+    });
+  },
+};
+// The stats of the port that starts: openPort calls port() before its
+// first wait.
+let starting = null;
+const portEnv = Object.fromEntries(Object.entries(job.ports ?? {}).map(([name, prog]) =>
+  [name, { port: (stdin, { argv }) => portPrograms[prog](stdin, argv, starting) }]));
+
 function spawn({ path: file, argv, env }, events) {
+  if (openPort && file.startsWith('/env/')) {
+    const stats = { full: 0 };
+    const data = (bytes) => {
+      const free = events.data(bytes);
+      if (free === false) stats.full++;
+      return free;
+    };
+    starting = stats;
+    try {
+      return openPort(portEnv, { path: file, argv, env }, { ...events, data },
+                      { log: (t) => process.stderr.write(t + '\n') });
+    } finally {
+      starting = null;
+    }
+  }
   if (file !== program) throw Object.assign(new Error(`not the program of the VM: ${file}`), { errno: 44 });
   const vars = Object.fromEntries(env.map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]));
   let stdio = null, ended = false;

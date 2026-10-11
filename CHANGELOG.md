@@ -18,8 +18,14 @@ notes of its release.
   binding, or an object with a method `port(stdin, { argv })`, which
   gets the bytes of the VM as a stream and gives a stream of bytes back.
   The port program runs in JavaScript, in its own object, with no second
-  VM. There is no flow control yet, and only a Durable Object is tested.
-  See "Ports to bindings" in `docs/WORKERS.md`.
+  VM. The flow control works in the two directions: the host holds at
+  most 256 KiB of the bytes of a port on each side, and
+  `Port.command/2` waits for a port that reads slowly. A port can give
+  its result to the HTTP response of the app (`BEAM_PORT_OUTPUT=response`
+  and the header `x-beam-port`), and the bytes do not go into the VM:
+  16 MiB took 60 to 110 ms of CPU time in `workerd`, and 220 to 430 ms
+  through the VM. Only a Durable Object is tested. See "Ports to
+  bindings" in `docs/WORKERS.md`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,

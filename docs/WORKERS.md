@@ -1399,20 +1399,74 @@ export class Resize extends DurableObject {
 - `Port.close/1` ends the input of `port()`. Erlang cannot end the input
   of a port with no close, so a program that reads all its input must
   know its length: from an argument, or with `{packet, 4}`.
-- The bytes of a port cost about as much CPU time as the bytes of an
-  HTTP response. In `workerd`, an app sent 16 MiB to an object: 12 to 16
-  ms of CPU time for each MiB, with a SHA-256 of the bytes at the two
-  ends. There and back took 18 to 23 ms for each MiB, and a response of
-  16 MiB to the client took 9 to 10 ms. So a port helps for work that
-  costs more than its bytes, not for a stream of bytes only.
+- The flow control works in the two directions. The host holds at most
+  256 KiB of the bytes of a port on each side:
+  - When the VM sends faster than `port()` reads, `Port.command/2`
+    waits, as for a busy port.
+  - When `port()` gives bytes faster than the VM reads them, the host
+    reads the next part of its stream only after the VM read the bytes
+    before it.
+- ERTS reads a port at each poll, also while the process sleeps or
+  computes, and puts the bytes in the mailbox, as natively. So the
+  bound is in the host, not in the mailbox. For a large result, give it
+  to the response (see below), or read it in parts that the app asks
+  for.
 - A VM that a snapshot restores keeps its ports, when the tools of the
   same package made the snapshot.
-- Caution: there is no flow control yet. The bytes wait in a queue on
-  each side, so a large transfer uses memory in the isolate of the VM.
-  16 MiB there and back raised the peak of the VM from 54 MB to 89 MB.
 - Only a Durable Object (stateful) is tested. In a plain Worker, the I/O
   of a port belongs to the request that opened it.
 - Deno and the web page have no ports yet.
+
+### The result of a port as the response
+
+A port can give its result to the HTTP response of the app, and the
+bytes do not go into the VM. The app opens the port with the variable
+`BEAM_PORT_OUTPUT=response`. Its response gives the OS process id of
+the port in the header `x-beam-port`:
+
+```elixir
+opts = [:binary, :exit_status, args: [key], env: [{~c"BEAM_PORT_OUTPUT", ~c"response"}]]
+port = Port.open({:spawn_executable, "/env/DECRYPT"}, opts)
+{:os_pid, pid} = Port.info(port, :os_pid)
+
+conn
+|> put_resp_header("x-beam-port", Integer.to_string(pid))
+|> put_resp_header("x-beam-port-length", Integer.to_string(size))
+|> send_resp(200, "")
+```
+
+- The host removes the two headers, and the result of `port()` is the
+  body of the response. The body that the app sends goes nowhere.
+- `x-beam-port-length` (optional) is the length of the result. Then the
+  response has a `content-length`, and a shorter result is an error for
+  the client. With no length, the body goes in chunks.
+- The VM gets none of the bytes of the result. It gets the exit status
+  of the port at the end of the result, while the port is open.
+- A response to `HEAD`, and a 204 or 304, do not take the result: the
+  port keeps it for a later response. A response that names no port
+  that waits for a response gives 502.
+- The close of a port is the end of its input. So the app can close the
+  port before its response. The port then keeps its result for 10 s,
+  and after that time with no response, the result goes away.
+- Caution: the port keeps its result until the response, and the host
+  holds at most 256 KiB of the input of the port. A port that gives its
+  result while it reads its input then stops, and `Port.command/2`
+  waits for ever. So send the response first, and then the input of the
+  port.
+
+In `workerd`, 16 MiB took this CPU time (all the processes of
+`workerd`, with the object of the port):
+
+| Path of the bytes | CPU time |
+|---|---|
+| The VM to the client, with no port | 170 to 230 ms |
+| A port to the response | 60 to 110 ms |
+| The VM to a port, and the port to the response | 120 to 140 ms |
+| A port to the VM, and the VM to the client | 220 to 430 ms |
+| The VM to a port, and back to the VM | 230 to 300 ms |
+
+So a port that gives the response costs less than the VM for the same
+bytes.
 
 ## Peer nodes
 
