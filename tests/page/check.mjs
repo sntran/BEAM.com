@@ -35,7 +35,7 @@
 //   message.
 //
 // --ports: the checks of tests/programs/ports_check.erl, with the
-// bindings of tests/host/ports/page.js (app-site.mjs PORTS): from the
+// bindings of tests/host/ports/env.js (app-site.mjs ENV): from the
 // frame, 4 MiB to a port and back, the sends to a slow port wait, enoent,
 // the bytes of a port through the VM, and the result of a port as the
 // response (x-beam-port).

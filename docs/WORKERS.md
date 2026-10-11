@@ -1452,13 +1452,15 @@ export default {
 
 ### Ports in the web page
 
-The page has no bindings either. The option `ports` of `start()` of
+The page has no bindings either. The option `env` of `start()` of
 `main.js` is the URL of a module of the site. The VM imports it in its
 worker, and each export is a binding of `env`, as on Workers. An export
-with a method `port(stdin, { argv })` is the port `/env/NAME`.
+with a method `port(stdin, { argv })` is the port `/env/NAME`. The
+option is a URL, not an object, because a function cannot go to the
+worker in a message.
 
 ```js
-// ports.js on the site
+// env.js on the site
 export const UPPER = {
   port: (stdin) => stdin.pipeThrough(new TransformStream({
     transform: (chunk, c) => c.enqueue(new TextEncoder().encode(new TextDecoder().decode(chunk).toUpperCase())),
@@ -1469,7 +1471,7 @@ export const UPPER = {
 ```html
 <script type="module">
   import { start } from 'https://cdn.jsdelivr.net/npm/beam.com@VERSION/runtime/page/main.js';
-  start({ app: './app.com', ports: './ports.js' });
+  start({ app: './app.com', env: './env.js' });
 </script>
 ```
 
@@ -1478,6 +1480,14 @@ export const UPPER = {
 - `start()` of `browser.js` takes the bindings in its option `env`, as
   `serve()` of Deno.
 - CI checks the ports in Chrome (`tests/page/check.mjs --ports`).
+
+On each host, the bindings are in `env`:
+
+| Host | Where the bindings come from |
+|---|---|
+| Workers | The `env` of the Worker (`wrangler.jsonc`), through `beam.fetch(request, env, ctx)`. |
+| Deno | `serve(app, { env })`: an object. |
+| The web page | `start({ app, env })` of `main.js`: the URL of a module. `start({ app, env })` of `browser.js`: an object. |
 - Caution: on the hosts other than workerd, the host reads the result of
   `port()` with the default reader. A byte stream of JavaScript that
   closes while a BYOB read waits does not end that read (the Streams

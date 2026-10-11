@@ -23,13 +23,14 @@ notes of its release.
   `Port.command/2` waits for a port that reads slowly. A port can give
   its result to the HTTP response of the app (`BEAM_PORT_OUTPUT=response`
   and the header `x-beam-port`), and the bytes do not go into the VM:
-  on Cloudflare, 4 MiB took 13 to 33 ms of CPU time in the object of the
-  VM (median 16 ms), and 47 to 71 ms through the VM (median 59 ms). The ports work for a VM in a Durable Object and in a
-  plain Worker. In Deno, `serve(app, { env })` gives the port objects,
-  and in the web page, the option `ports` of `main.js` gives a module of
-  the site. CI tests the four hosts (`tests/host/app_ports.sh` and
-  `tests/page/check.mjs --ports`). See "Ports to bindings" in
-  `docs/WORKERS.md`.
+  on Cloudflare, 4 MiB took 13 to 33 ms of CPU time in the object of
+  the VM (median 16 ms), and 47 to 71 ms through the VM (median 59 ms).
+  The ports work for a VM in a Durable Object and in a plain Worker. The
+  bindings are in `env` on each host: the `env` of the Worker,
+  `serve(app, { env })` in Deno, and in the web page, the option `env`
+  of `main.js`, the URL of a module of the site. CI tests the four hosts
+  (`tests/host/app_ports.sh` and `tests/page/check.mjs --ports`). See
+  "Ports to bindings" in `docs/WORKERS.md`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,
