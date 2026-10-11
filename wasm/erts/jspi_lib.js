@@ -10,7 +10,7 @@ addToLibrary({
   $jspiExit: (e) => {
     if (!(e instanceof ExitStatus)) { err(e); e = new ExitStatus(2); }
     Module['onExit']?.(e.status);
-    if (ENVIRONMENT_IS_NODE) {
+    if (ENVIRONMENT_IS_NODE && !Module['beamKeepProcess']) {
       if (process.env.JSPI_STATS) err(`jspi: memory ${wasmMemory.buffer.byteLength >> 20} MB`);
       process.exit(e.status);
     }
@@ -165,6 +165,185 @@ addToLibrary({
     else if (ENVIRONMENT_IS_NODE) setImmediate(r);
     else jspiLater(r);
   }),
+
+  // The spawn of a program by the host (sys_drivers.c, in place of
+  // erl_child_setup): Module.beamHost.spawn({path, argv, env, cwd, pid},
+  // {data, exit, room, closed, pull}) starts the program of the path (a
+  // second VM in the test runner, a binding of env in worker.js), and
+  // gives {write(bytes), end()}. pid is the os_pid of the port. The host
+  // refuses a path that it does not know (it throws an Error with an
+  // errno). The bytes that the port writes go to write(); data(bytes) goes
+  // to the port; exit(code) ends the port and gives its exit status.
+  // Flow control: data() gives false when the VM has jspiSpawn.window
+  // unread bytes, and room() gives a promise of the time when it read
+  // them; closed() is true when the VM closed the port. write() gives
+  // false when the program takes no more bytes now; then the host reads no
+  // more of the port until pull(). The pipe of the port holds at most
+  // jspiSpawn.window bytes, so ERTS marks the port busy and Port.command
+  // waits.
+  $jspiSpawn__deps: ['$FS', '$PIPEFS'],
+  $jspiSpawn: { pid: 1000, window: 262144 },
+  // Caution: Emscripten gives EAGAIN, not 0, for the read of a pipe with no
+  // data and no write end. A port then waits for an end of file forever.
+  // This read gives 0 there, as POSIX does.
+  // A pipe with a limit (the input of a program of a spawn): a write past
+  // the limit writes a part, or gives EAGAIN, and poll() gives POLLOUT only
+  // below the limit. A read wakes the poll of the writer. A read or a close
+  // calls pipe.onRead.
+  $jspiSpawn__postset: `{
+    const unread = (pipe) => (pipe.buckets ?? []).reduce((n, b) => n + b.offset - b.roffset, 0);
+    jspiSpawn.unread = unread;
+    const { read, write, poll, close } = PIPEFS.stream_ops;
+    PIPEFS.stream_ops.read = function (stream, buffer, offset, length, position) {
+      const pipe = stream.node.pipe;
+      if (pipe.writeClosed && length > 0 && unread(pipe) === 0) return 0;
+      const n = read.call(this, stream, buffer, offset, length, position);
+      if (pipe.limit) pipe.writeNode?.notifyListeners({{{ cDefs.POLLWRNORM }}} | {{{ cDefs.POLLOUT }}});
+      pipe.onRead?.();
+      return n;
+    };
+    PIPEFS.stream_ops.write = function (stream, buffer, offset, length, position) {
+      const pipe = stream.node.pipe;
+      if (pipe.limit && length > 0 && !pipe.readClosed) {
+        const room = pipe.limit - unread(pipe);
+        if (room <= 0) throw new FS.ErrnoError({{{ cDefs.EAGAIN }}});
+        length = Math.min(length, room);
+      }
+      return write.call(this, stream, buffer, offset, length, position);
+    };
+    PIPEFS.stream_ops.poll = function (stream, ...rest) {
+      let mask = poll.call(this, stream, ...rest);
+      const pipe = stream.node.pipe;
+      if (pipe.limit && (stream.flags & {{{ cDefs.O_ACCMODE }}}) === {{{ cDefs.O_WRONLY }}} &&
+          !pipe.readClosed && unread(pipe) >= pipe.limit) {
+        mask &= ~({{{ cDefs.POLLWRNORM }}} | {{{ cDefs.POLLOUT }}});
+      }
+      return mask;
+    };
+    PIPEFS.stream_ops.close = function (stream, ...rest) {
+      const r = close.call(this, stream, ...rest);
+      stream.node.pipe?.onRead?.();
+      return r;
+    };
+  }`,
+  jspi_spawn_host__deps: ['$jspiSpawn', '$jspiStdio'],
+  jspi_spawn_host__sig: 'i',
+  jspi_spawn_host: () => Module['beamHost']?.spawn ? 1 : 0,
+  jspi_spawn_start__deps: ['$jspiSpawn', '$FS', '$UTF8ArrayToString'],
+  jspi_spawn_start__sig: 'iiiiiiiiiiii',
+  jspi_spawn_start: (inFd, outFd, errFd, sigchldFd, protoSize, hasPort, portId, actionAt, action, portAt, statusAt) => {
+    const input = FS.getStream(inFd), output = FS.getStream(outFd);
+    // The command, as spawn_start of sys_drivers.c writes it: the size
+    // (native order), the flags, the command, the directory, an optional
+    // directory, an empty string, the environment, and the arguments
+    // (network order for each count).
+    let body;
+    try {
+      const head = new Uint8Array(4);
+      if (FS.read(input, head, 0, 4) !== 4) return -{{{ cDefs.EIO }}};
+      const size = new DataView(head.buffer).getInt32(0, true);
+      body = new Uint8Array(size);
+      for (let got = 0; got < size;) got += FS.read(input, body, got, size - got);
+    } catch (e) {
+      return -{{{ cDefs.EIO }}};
+    }
+    const view = new DataView(body.buffer);
+    let at = 4;
+    const str = () => { const end = body.indexOf(0, at); const v = UTF8ArrayToString(body, at, end - at); at = end + 1; return v; };
+    const count = () => { const n = view.getInt32(at, false); at += 4; return n; };
+    const path = str(), cwd = str();
+    const wd = body[at] ? str() : null;
+    at++;
+    const env = Array.from({ length: count() }, str);
+    const argv = at < body.length ? Array.from({ length: count() }, str) : [path];
+    let child, done = false, paused = false, skip = protoSize;
+    // The pipe of the output of the program, to the VM: room() waits for
+    // a read of the VM (or its close) below the window.
+    const out = output.node.pipe;
+    const waiters = [];
+    const free = () => done || out.readClosed || jspiSpawn.unread(out) < jspiSpawn.window;
+    out.onRead = () => { if (free()) for (const w of waiters.splice(0)) w(); };
+    // The pipe of the input of the program, from the VM: at most the
+    // window, after the command of the port (read above).
+    input.node.pipe.limit = jspiSpawn.window;
+    const exit = (code) => {
+      if (done) return;
+      done = true;
+      for (const w of waiters.splice(0)) w();
+      for (const s of [input, output]) try { FS.close(s); } catch (e) {}
+      if (!hasPort) return;
+      const msg = new Uint8Array(protoSize), dv = new DataView(msg.buffer);
+      dv.setInt32(actionAt, action, true);
+      dv.setInt32(portAt, portId, true);
+      // A status of waitpid(): the exit code in the second byte.
+      dv.setInt32(statusAt, (code & 255) << 8, true);
+      FS.write(FS.getStream(sigchldFd), msg, 0, protoSize);
+    };
+    const pid = ++jspiSpawn.pid;
+    try {
+      child = Module['beamHost'].spawn({ path, argv, env, cwd: wd ?? cwd, pid }, {
+        data: (bytes) => {
+          if (done) return false;
+          try { FS.write(output, bytes, 0, bytes.length); } catch (e) { child.end(); return false; }
+          return free();
+        },
+        room: () => free() ? Promise.resolve() : new Promise((r) => waiters.push(r)),
+        closed: () => done || out.readClosed,
+        pull: () => { if (paused) { paused = false; queueMicrotask(drain); } },
+        exit,
+      });
+    } catch (e) {
+      return -(e.errno ?? {{{ cDefs.ENOENT }}});
+    }
+    // The standard error of the program goes to the host (printErr).
+    if (errFd !== outFd) FS.close(FS.getStream(errFd));
+    // The bytes of the port: first the Ack of the port (protoSize bytes,
+    // for erl_child_setup), then the input of the program.
+    const buf = new Uint8Array(65536);
+    const drain = () => {
+      while (!done && !paused) {
+        let n;
+        try { n = FS.read(input, buf, 0, buf.length); } catch (e) { if (e.errno === {{{ cDefs.EAGAIN }}}) return; n = 0; }
+        if (n === 0) { child.end(); return; }
+        let part = buf.subarray(0, n);
+        if (skip) { const k = Math.min(skip, n); skip -= k; part = part.subarray(k); }
+        if (part.length && child.write(part.slice()) === false) paused = true;
+      }
+    };
+    input.node.addListener(() => queueMicrotask(drain));
+    queueMicrotask(drain);
+    return pid;
+  },
+  // The standard input and output of a VM that a host spawn started: two
+  // pipes on fd 0 and fd 1, so the port {fd, 0, 1} of the program (for
+  // example the peer module) can poll them. Call it in preRun. It gives
+  // {write(bytes), end()}; onData(bytes) gets each output.
+  $jspiStdio__deps: ['$FS', '$PIPEFS'],
+  $jspiStdio__postset: `Module['beamStdioPipes'] = (onData) => jspiStdio(onData);`,
+  $jspiStdio: (onData) => {
+    if (!FS.initialized) FS.init();
+    const to = PIPEFS.createPipe(), from = PIPEFS.createPipe();
+    for (const [fd, end] of [[0, to.readable_fd], [1, from.writable_fd]]) {
+      FS.close(FS.getStream(fd));
+      FS.dupStream(FS.getStream(end), fd);
+      FS.close(FS.getStream(end));
+    }
+    const input = FS.getStream(to.writable_fd), output = FS.getStream(from.readable_fd);
+    const buf = new Uint8Array(65536);
+    const drain = () => {
+      for (;;) {
+        let n;
+        try { n = FS.read(output, buf, 0, buf.length); } catch (e) { return; }
+        if (n === 0) return;
+        onData(buf.slice(0, n));
+      }
+    };
+    output.node.addListener(() => queueMicrotask(drain));
+    return {
+      write: (bytes) => FS.write(input, bytes, 0, bytes.length),
+      end: () => { try { FS.close(input); } catch (e) {} },
+    };
+  },
   jspi_yield__deps: ['$jspiLater'],
   jspi_yield__async: true,
   jspi_yield__sig: 'v',

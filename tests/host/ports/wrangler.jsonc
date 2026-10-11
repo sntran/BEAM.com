@@ -1,0 +1,15 @@
+// The VM in the Durable Object Beam, and the ports in their own objects.
+{
+  "name": "ports-check",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["no_handle_cross_request_promise_resolution"],
+  "rules": [{ "type": "Data", "globs": ["**/*.com"], "fallthrough": true }],
+  "durable_objects": { "bindings": [
+    { "name": "BEAM", "class_name": "Beam" },
+    { "name": "ECHO", "class_name": "Echo" },
+    { "name": "SINK", "class_name": "Sink" },
+    { "name": "SOURCE", "class_name": "Source" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Beam", "Echo", "Sink", "Source"] }]
+}

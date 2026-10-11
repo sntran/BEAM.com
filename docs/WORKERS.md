@@ -1353,6 +1353,241 @@ visits restored the VM from the snapshot in 0.25 s and showed Livebook
 in 1.0 s. Livebook evaluated a cell in about 0.2 s, and 10,000 processes
 started in 80 ms.
 
+## Ports to bindings
+
+A binding of the Worker can be a port of the VM. The port
+`{spawn_executable, "/env/NAME"}` runs the binding `NAME` of `env`, and
+its bytes go both ways. The port program is JavaScript, in another
+Durable Object or in another Worker, or a WebAssembly module that it
+calls. It boots no VM, and it has its own CPU time and memory.
+
+```elixir
+port = Port.open({:spawn_executable, "/env/RESIZE"}, [:binary, :exit_status, args: ["photo-1"]])
+Port.command(port, image)
+receive do
+  {^port, {:data, data}} -> data
+end
+```
+
+The entry of the Worker exports the class of the binding, and
+`wrangler.jsonc` gives the binding `RESIZE` of the class `Resize` in
+`durable_objects` and in the migrations:
+
+```js
+import { DurableObject } from 'cloudflare:workers';
+
+export class Resize extends DurableObject {
+  // stdin: the bytes of the VM. The result: the bytes for the VM.
+  port(stdin, { argv }) {
+    return stdin.pipeThrough(new TransformStream({ transform: (chunk, c) => c.enqueue(chunk) }));
+  }
+}
+```
+
+- A binding is a port when it has a method `port(stdin, { argv })`: a
+  service binding to a `WorkerEntrypoint`, or another object with that
+  method. A Durable Object namespace is a port too. Then the port is one
+  object: the object of the name of the first argument (`idFromName`),
+  or a new object (`newUniqueId`) with no argument.
+- `port()` gets the bytes of the VM as a `ReadableStream` of bytes. It
+  gives a `ReadableStream` of the bytes for the VM, or a promise of one.
+  The end of that stream ends the port with the exit status 0. An error,
+  or an object with no method `port`, ends the port with 1, and the host
+  writes one line to the log.
+- The VM sees each such binding as a file `/env/NAME`. Another name
+  gives `enoent`.
+- `Port.close/1` ends the input of `port()`. Erlang cannot end the input
+  of a port with no close, so a program that reads all its input must
+  know its length: from an argument, or with `{packet, 4}`.
+- The flow control works in the two directions. The host holds at most
+  256 KiB of the bytes of a port on each side:
+  - When the VM sends faster than `port()` reads, `Port.command/2`
+    waits, as for a busy port.
+  - When `port()` gives bytes faster than the VM reads them, the host
+    reads the next part of its stream only after the VM read the bytes
+    before it.
+- ERTS reads a port at each poll, also while the process sleeps or
+  computes, and puts the bytes in the mailbox, as natively. So the
+  bound is in the host, not in the mailbox. For a large result, give it
+  to the response (see below), or read it in parts that the app asks
+  for.
+- A VM that a snapshot restores keeps its ports, when the tools of the
+  same package made the snapshot.
+- In a plain Worker (stateless), the VM serves many requests. A port
+  uses the bindings of the last request, and its I/O starts in that
+  request. The port keeps that request open until the end of the port,
+  also after the response.
+- `tests/host/app_ports.sh` tests the ports in CI: a VM in a Durable
+  Object, a VM in a plain Worker, and Deno. The same checks passed on
+  Cloudflare, with the VM in a Durable Object and in a plain Worker.
+
+### Ports in Deno
+
+Deno has no bindings, so the option `env` of `serve()` gives them. An
+object with a method `port(stdin, { argv })` is the port `/env/NAME`.
+The port program runs in the isolate of the VM.
+
+```js
+import app from './app.com' with { type: 'bytes' };
+import { serve } from 'beam.com';
+
+const UPPER = {
+  port: (stdin) => stdin.pipeThrough(new TransformStream({
+    transform: (chunk, c) => c.enqueue(new TextEncoder().encode(new TextDecoder().decode(chunk).toUpperCase())),
+  })),
+};
+const beam = serve(app, { env: { UPPER } });
+
+export default {
+  fetch(request, info) {
+    return beam.fetch(request, info);
+  },
+};
+```
+
+- A name of the option `env` replaces a variable of the process with
+  that name.
+- On Workers, `serve()` has no option `env`. Give a port as a binding in
+  `wrangler.jsonc`.
+
+### Ports in the web page
+
+The page has no bindings either. The option `env` of `start()` of
+`main.js` is the URL of a module of the site. The VM imports it in its
+worker, and each export is a binding of `env`, as on Workers. An export
+with a method `port(stdin, { argv })` is the port `/env/NAME`. The
+option is a URL, not an object, because a function cannot go to the
+worker in a message.
+
+```js
+// env.js on the site
+export const UPPER = {
+  port: (stdin) => stdin.pipeThrough(new TransformStream({
+    transform: (chunk, c) => c.enqueue(new TextEncoder().encode(new TextDecoder().decode(chunk).toUpperCase())),
+  })),
+};
+```
+
+```html
+<script type="module">
+  import { start } from 'https://cdn.jsdelivr.net/npm/beam.com@VERSION/runtime/page/main.js';
+  start({ app: './app.com', env: './env.js' });
+</script>
+```
+
+- The port program runs in the worker of the VM: a SharedWorker for all
+  the tabs of the site, or a Web Worker of one tab.
+- `start()` of `browser.js` takes the bindings in its option `env`, as
+  `serve()` of Deno.
+- CI checks the ports in Chrome (`tests/page/check.mjs --ports`).
+
+On each host, the bindings are in `env`:
+
+| Host | Where the bindings come from |
+|---|---|
+| Workers | The `env` of the Worker (`wrangler.jsonc`), through `beam.fetch(request, env, ctx)`. |
+| Deno | `serve(app, { env })`: an object. |
+| The web page | `start({ app, env })` of `main.js`: the URL of a module. `start({ app, env })` of `browser.js`: an object. |
+- Caution: on the hosts other than workerd, the host reads the result of
+  `port()` with the default reader. A byte stream of JavaScript that
+  closes while a BYOB read waits does not end that read (the Streams
+  standard asks for `byobRequest.respond(0)`). The end of the stdin of
+  `port()` calls it, so a port program can read stdin with a BYOB reader.
+
+### The result of a port as the response
+
+A port can give its result to the HTTP response of the app, and the
+bytes do not go into the VM. The app opens the port with the variable
+`BEAM_PORT_OUTPUT=response`. Its response gives the OS process id of
+the port in the header `x-beam-port`:
+
+```elixir
+opts = [:binary, :exit_status, args: [key], env: [{~c"BEAM_PORT_OUTPUT", ~c"response"}]]
+port = Port.open({:spawn_executable, "/env/DECRYPT"}, opts)
+{:os_pid, pid} = Port.info(port, :os_pid)
+
+conn
+|> put_resp_header("x-beam-port", Integer.to_string(pid))
+|> put_resp_header("x-beam-port-length", Integer.to_string(size))
+|> send_resp(200, "")
+```
+
+- The host removes the two headers, and the result of `port()` is the
+  body of the response. The body that the app sends goes nowhere.
+- `x-beam-port-length` (optional) is the length of the result. Then the
+  response has a `content-length`, and a shorter result is an error for
+  the client. The body ends at that length, also when the result of the
+  port does not end yet: the host then stops the result. With no length,
+  the body goes in chunks.
+- The VM gets none of the bytes of the result. It gets the exit status
+  of the port at the end of the result, while the port is open.
+- A response to `HEAD`, and a 204 or 304, do not take the result: the
+  port keeps it for a later response. A response that names no port
+  that waits for a response gives 502.
+- The close of a port is the end of its input. So the app can close the
+  port before its response. The port then keeps its result for 10 s,
+  and after that time with no response, the result goes away.
+- Caution: the port keeps its result until the response, and the host
+  holds at most 256 KiB of the input of the port. A port that gives its
+  result while it reads its input then stops, and `Port.command/2`
+  waits for ever. So send the response first, and then the input of the
+  port.
+
+On Cloudflare, 4 MiB took this CPU time in the isolate of the VM: the
+Durable Object Beam, or the plain Worker. The numbers come from the tail
+events of `tests/programs/ports_check.erl`, 10 requests for each path,
+with no boot of a VM in them. The object of the port took 5 to 27 ms
+more for each call (median 8 ms):
+
+| Path of the bytes | Durable Object | Median | Plain Worker | Median |
+|---|---|---|---|---|
+| The VM to the client, with no port | 9 to 29 ms | 10 ms | 8 to 27 ms | 21 ms |
+| A port to the response | 13 to 33 ms | 16 ms | 15 to 25 ms | 16 ms |
+| A port to the VM, and the VM to the client | 47 to 71 ms | 59 ms | 45 to 77 ms | 53 ms |
+
+In `workerd` (`wrangler dev`), 16 MiB took this CPU time, for all the
+processes of `workerd`, with the object of the port:
+
+| Path of the bytes | CPU time |
+|---|---|
+| The VM to the client, with no port | 170 to 230 ms |
+| A port to the response | 60 to 110 ms |
+| The VM to a port, and the port to the response | 120 to 140 ms |
+| A port to the VM, and the VM to the client | 220 to 430 ms |
+| The VM to a port, and back to the VM | 230 to 300 ms |
+
+So a result that a port gives to the response costs about one quarter
+to one third of the same bytes through the VM, and about as much as
+bytes that the VM has in its memory.
+
+## Peer nodes
+
+A host can start a second VM for the `peer` module of OTP. A port of the
+program of the VM itself (`open_port({spawn_executable, Program}, ...)`)
+then works: the host gets the command, starts a new VM with its
+arguments, and moves the bytes between the port and fd 0 and fd 1 of the
+new VM. So `peer:start/1` with `connection => standard_io` works, and the
+app knows nothing about the host.
+
+- The host gives `Module.beamHost.spawn({path, argv, env, cwd}, {data,
+  exit})` before the boot, and it gives back `{write(bytes), end()}`.
+  `data(bytes)` goes to the port, and `exit(code)` ends the port with
+  its exit status. The new VM calls `Module.beamStdioPipes(onData)` in
+  its `preRun`, for pipes on its fd 0 and fd 1.
+- The host refuses each other program: `open_port/2` then gives
+  `enoent`. With no spawn, port programs fail with `ENOSYS`, as before.
+- Today only the test runner `tests/wasm_diff/run.mjs` has a spawn: the
+  new VM is a second instance of the module in the same Node.js
+  process. `tests/wasm_diff/diff_peer.erl` runs two peers there. A peer
+  started in about 110 ms and used about 14 MB.
+- Not yet: a peer in `worker.js` (Cloudflare, Deno) and in the web
+  page, a new VM in a worker thread or in another Durable Object, and the
+  distribution between the two VMs (FLAME needs it). `worker.js` has a
+  spawn only for the bindings of `env` (see "Ports to bindings").
+- A snapshot does not keep a peer that runs: the host moves its bytes,
+  and the host is not in the snapshot. A spawn after a restore works
+  for the ports to bindings.
+
 ## The host
 
 The runtime gives the app the variable `BEAM_HOST`: `cloudflare`,
@@ -1365,7 +1600,9 @@ not in the key of the snapshot.
 - Threads switch only when one waits: a long NIF or BIF stops the other
   threads. Erlang processes are still preempted by reductions.
 - The CPU time of a request counts all the threads of the VM.
-- No port programs (no `fork()` or `exec()`), and only the NIFs of the
+- No port programs (no `fork()` or `exec()`), except the bindings of
+  `env` (see "Ports to bindings") and the program of the VM on a host
+  with a spawn (see "Peer nodes"), and only the NIFs of the
   runtime or NIF libraries in WebAssembly.
 - No UDP. Incoming TCP only through a WebSocket (see above).
 - An isolate can close at any time, and a deploy resets the Durable

@@ -27,7 +27,7 @@ defmodule BeamCom.WasmDiffTest do
     ebin = Path.join(top, "ebin")
     File.mkdir_p!(ebin)
 
-    for file <- Path.wildcard(Path.join(@dir, "diff_*.erl")) do
+    for file <- Path.wildcard(Path.join(@dir, "*.erl")) do
       {:ok, _} =
         :compile.file(String.to_charlist(file), [
           :report,
@@ -100,6 +100,27 @@ defmodule BeamCom.WasmDiffTest do
       assert text =~ ~r/\nCalling Thread: scheduler:\d+\n/
       assert String.ends_with?(String.trim_trailing(text), "\n=end")
     end
+  end
+
+  # The ports to bindings of worker.js (docs/WORKERS.md, "Ports to
+  # bindings"), with the port programs of run.mjs, and their flow control
+  # in the two directions (tests/wasm_diff/port_check.erl).
+  test "port_check: ports to bindings, with flow control", ctx do
+    ports = %{"ECHO" => "echo", "SINK" => "sink", "SOURCE" => "source"}
+    {out, status} = wasm(ctx, "port_check", "node", %{ports: ports})
+
+    assert out ==
+             """
+             echo: the same bytes true
+             sink: the same bytes true
+             sink: the sends waited for the port true
+             sink: exit 0
+             source: the same bytes true
+             source: the port waited for the reads of the VM true
+             source: exit 0
+             """
+
+    assert status == 0
   end
 
   defp nif_check(ctx, name, compiled, job \\ %{}) do

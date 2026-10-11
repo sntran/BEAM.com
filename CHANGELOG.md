@@ -5,6 +5,32 @@ notes of its release.
 
 ## Unreleased
 
+- The WebAssembly runtime can start a peer node (the `peer` module of
+  OTP), on a host that gives a spawn: a port of the program of the VM
+  starts a second VM, and `peer:start/1` with `connection =>
+  standard_io` works with no change. The test runner of Node.js has
+  such a spawn (`tests/wasm_diff/diff_peer.erl`). The Workers, Deno and
+  web page hosts have no peers yet. See "Peer nodes" in
+  `docs/WORKERS.md`, and EM8 in `docs/UPSTREAM.md`.
+- A binding of a Worker can be a port of the VM (a spike):
+  `open_port({spawn_executable, "/env/NAME"}, ...)` runs the binding
+  `NAME` of `env`. The binding is a Durable Object namespace, a service
+  binding, or an object with a method `port(stdin, { argv })`, which
+  gets the bytes of the VM as a stream and gives a stream of bytes back.
+  The port program runs in JavaScript, in its own object, with no second
+  VM. The flow control works in the two directions: the host holds at
+  most 256 KiB of the bytes of a port on each side, and
+  `Port.command/2` waits for a port that reads slowly. A port can give
+  its result to the HTTP response of the app (`BEAM_PORT_OUTPUT=response`
+  and the header `x-beam-port`), and the bytes do not go into the VM:
+  on Cloudflare, 4 MiB took 13 to 33 ms of CPU time in the object of
+  the VM (median 16 ms), and 47 to 71 ms through the VM (median 59 ms).
+  The ports work for a VM in a Durable Object and in a plain Worker. The
+  bindings are in `env` on each host: the `env` of the Worker,
+  `serve(app, { env })` in Deno, and in the web page, the option `env`
+  of `main.js`, the URL of a module of the site. CI tests the four hosts
+  (`tests/host/app_ports.sh` and `tests/page/check.mjs --ports`). See
+  "Ports to bindings" in `docs/WORKERS.md`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,

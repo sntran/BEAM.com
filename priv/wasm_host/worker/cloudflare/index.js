@@ -111,7 +111,7 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
     ready,
     fetch(request, env, ctx) {
       const objects = env[binding];
-      if (!objects && vm) return vm.fetch(request, ctx);
+      if (!objects && vm) return vm.fetch(request, ctx, env);
       if (!objects) return plain.fetch(request, env, ctx);
       if (typeof name === 'function') {
         // No front: the object gets no x-beam-tenant of the client, because
