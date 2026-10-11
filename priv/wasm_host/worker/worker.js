@@ -363,11 +363,16 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
     claim?.(null);
     claim = null;
   };
+  // The end of stdin. A BYOB read that waits ends only with respond(0)
+  // after the close.
   const end = () => {
     if (claim && timer === null) timer = setTimeout(unclaim, claimMs);
     if (!open) return;
     open = false;
-    try { input.close(); } catch {}
+    try {
+      input.close();
+      input.byobRequest?.respond(0);
+    } catch {}
   };
   const port = {
     pid,
@@ -396,12 +401,15 @@ export function openPort(env, { path, argv, env: vars = [], pid = null }, events
         ? binding.get(args.length ? binding.idFromName(args[0]) : binding.newUniqueId())
         : binding;
       const out = await target.port(stdin, { argv: args });
-      // A BYOB read of PORT_READ bytes: the default reader of workerd
-      // gives parts of 4 KB (the stream of an RPC call), and each part is
-      // a read of the VM. A stream that is not a byte stream has only the
-      // default reader.
+      // A BYOB read of PORT_READ bytes in workerd (it has readAtLeast):
+      // its default reader gives parts of 4 KB (the stream of an RPC call),
+      // and each part is a read of the VM. Not on the other hosts: there,
+      // the result can be a byte stream of JavaScript, and its close() does
+      // not end a BYOB read that waits (the Streams standard asks for
+      // byobRequest.respond(0)), so the port waits for ever (Chrome).
       let byob = null;
       try { byob = out.getReader({ mode: 'byob' }); } catch {}
+      if (byob && !byob.readAtLeast) { byob.releaseLock(); byob = null; }
       reader = byob ?? out.getReader();
       if (claimed && !await claimed) await reader.cancel();
       while (!claimed || sink) {

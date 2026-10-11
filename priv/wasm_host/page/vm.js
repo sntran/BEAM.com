@@ -1,11 +1,12 @@
 // The VM of the page, in a module SharedWorker: one VM for all the tabs of
 // the site. Without SharedWorker, it is a module Web Worker of one tab
 // (index.html). So its work does not stop the page. A tab sends it:
-// - {type: 'start', base, env, app}: boot the release (release.bin, or the
-//   app.com of the URL app) with the variables env (env.json, or those of
-//   a page), and the base path of the frame in BEAM_BASE_PATH. The
-//   first start boots the VM. A later start (another tab) gets the reply
-//   of the same boot;
+// - {type: 'start', base, env, app, ports}: boot the release (release.bin,
+//   or the app.com of the URL app) with the variables env (env.json, or
+//   those of a page), and the base path of the frame in BEAM_BASE_PATH.
+//   ports: the URL of a module of the site, whose exports are bindings of
+//   env (the ports to bindings, as on Workers). The first start boots the
+//   VM. A later start (another tab) gets the reply of the same boot;
 // - {type: 'fetch', req} with a port: an HTTP request of a frame (sw.js);
 // - {type: 'ws', path, protocols} with a port: a WebSocket of a frame
 //   (ws-shim.js).
@@ -90,11 +91,12 @@ function handle(e) {
 }
 
 // app: the URL of a native app.com, in place of release.bin of the site.
-function boot({ base: path, env, app }) {
+// ports: the URL of the module of the bindings (the page of the site gives it).
+function boot({ base: path, env, app, ports }) {
   booting ??= (async () => {
     base = path;
-    const { start } = await import('./browser.js');
-    beam = await start({ release: './release.bin', app, env: { ...env, BEAM_BASE_PATH: base } });
+    const [{ start }, bindings] = await Promise.all([import('./browser.js'), ports ? import(ports) : {}]);
+    beam = await start({ release: './release.bin', app, env: { ...env, ...bindings, BEAM_BASE_PATH: base } });
     for (const p of pending.splice(0)) handle(p);
     return { type: 'ready', restored: !!beam.vm.restored, name: beam.name };
   })().catch((err) => {

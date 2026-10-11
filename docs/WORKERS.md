@@ -1448,7 +1448,40 @@ export default {
   that name.
 - On Workers, `serve()` has no option `env`. Give a port as a binding in
   `wrangler.jsonc`.
-- The web page has no ports yet.
+
+### Ports in the web page
+
+The page has no bindings either. The option `ports` of `start()` of
+`main.js` is the URL of a module of the site. The VM imports it in its
+worker, and each export is a binding of `env`, as on Workers. An export
+with a method `port(stdin, { argv })` is the port `/env/NAME`.
+
+```js
+// ports.js on the site
+export const UPPER = {
+  port: (stdin) => stdin.pipeThrough(new TransformStream({
+    transform: (chunk, c) => c.enqueue(new TextEncoder().encode(new TextDecoder().decode(chunk).toUpperCase())),
+  })),
+};
+```
+
+```html
+<script type="module">
+  import { start } from 'https://cdn.jsdelivr.net/npm/beam.com@VERSION/runtime/page/main.js';
+  start({ app: './app.com', ports: './ports.js' });
+</script>
+```
+
+- The port program runs in the worker of the VM: a SharedWorker for all
+  the tabs of the site, or a Web Worker of one tab.
+- `start()` of `browser.js` takes the bindings in its option `env`, as
+  `serve()` of Deno.
+- CI checks the ports in Chrome (`tests/page/check.mjs --ports`).
+- Caution: on the hosts other than workerd, the host reads the result of
+  `port()` with the default reader. A byte stream of JavaScript that
+  closes while a BYOB read waits does not end that read (the Streams
+  standard asks for `byobRequest.respond(0)`). The end of the stdin of
+  `port()` calls it, so a port program can read stdin with a BYOB reader.
 
 ### The result of a port as the response
 

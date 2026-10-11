@@ -364,3 +364,46 @@ test('a plain Worker: the port uses the last request, and holds it until the end
   assert.equal(dec(e.data), 'y:OK');
   assert.equal(h.sockets, 0);
 });
+
+// A byte stream of JavaScript that closes while a BYOB read waits: the
+// read ends only with respond(0). So the host reads the result of port()
+// with the default reader (not in workerd), and the end of stdin ends a
+// BYOB read of port().
+test('a byte stream of JavaScript ends the port, and the end of stdin ends a BYOB read of port()', async () => {
+  const source = {
+    port: () => {
+      let n = 0;
+      return new ReadableStream({ type: 'bytes', pull(c) { if (n++ < 2) c.enqueue(enc('ab')); else c.close(); } });
+    },
+  };
+  let got = null;
+  const reader = {
+    port(stdin) {
+      const r = stdin.getReader({ mode: 'byob' });
+      return new ReadableStream({
+        async start(c) {
+          const parts = [];
+          for (;;) {
+            const { done, value } = await r.read(new Uint8Array(64));
+            if (done) break;
+            parts.push(Buffer.from(value));
+          }
+          got = Buffer.concat(parts).toString();
+          c.close();
+        },
+      });
+    },
+  };
+  const { v } = vm({ SOURCE: source, READER: reader });
+  const a = events();
+  v.spawnPort({ path: '/env/SOURCE', argv: ['/env/SOURCE'] }, a.events).end();
+  assert.equal(await a.exit, 0);
+  assert.equal(dec(a.data), 'abab');
+  const b = events();
+  const p = v.spawnPort({ path: '/env/READER', argv: ['/env/READER'] }, b.events);
+  p.write(enc('xyz'));
+  await settle();
+  p.end();
+  assert.equal(await b.exit, 0);
+  assert.equal(got, 'xyz');
+});

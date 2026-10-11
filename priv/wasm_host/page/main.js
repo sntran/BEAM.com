@@ -6,7 +6,11 @@
 // - app: the URL of app.com, relative to the page;
 // - vm: the URL of the script of the VM on the site (default ./vm.js). A
 //   SharedWorker and a service worker must come from the origin of the
-//   site, so its vm.js and sw.js import the ones of the package.
+//   site, so its vm.js and sw.js import the ones of the package;
+// - ports: the URL of a module of the site, relative to the page. The VM
+//   imports it, and each export is a binding of env, as on Workers: an
+//   object with a method port(stdin, { argv }) is the port /env/NAME
+//   (docs/WORKERS.md, "Ports to bindings").
 const status = document.getElementById('status'), bar = document.getElementById('bar');
 const say = (text, error = false) => { status.textContent = text; status.className = error ? 'err' : ''; };
 const fail = (text) => { bar.remove(); say(text, true); };
@@ -47,7 +51,7 @@ function named(name) {
   document.getElementById('app').title = name;
 }
 
-async function main({ app = null, vm: vmScript = './vm.js' } = {}) {
+async function main({ app = null, vm: vmScript = './vm.js', ports = null } = {}) {
   // A native app.com: its release has the name and the environment of the
   // app, so the page gives only the variables of a page. Else env.json of
   // the build (beam.com INPUT -o DIR --target wasm32).
@@ -63,7 +67,8 @@ async function main({ app = null, vm: vmScript = './vm.js' } = {}) {
   }
   const env = { ...config.env };
   for (const name of config.secrets ?? []) env[name] = secret(name);
-  const start = { type: 'start', base: APP.pathname.replace(/\/$/, ''), env, app: app && new URL(app, SITE).href };
+  const start = { type: 'start', base: APP.pathname.replace(/\/$/, ''), env, app: app && new URL(app, SITE).href,
+                  ports: ports && new URL(ports, SITE).href };
   const t0 = performance.now();
   say('Loading the runtime and the release…');
   // vm: the port of the SharedWorker of the VM, or the Worker of the VM in

@@ -1,7 +1,7 @@
 // The browser check of the static site of beam.com INPUT -o DIR
 // --target wasm32 (DIR/page/):
 //
-//   node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo] [--tabs]
+//   node tests/page/check.mjs DIR/page [--base /repo/] [--phoenix-demo] [--tabs] [--ports]
 //
 // It serves DIR/page/ at the path --base (default /), as GitHub Pages does:
 // a project site is at /REPO/, a custom domain at /. Then it opens the site
@@ -34,6 +34,12 @@
 // - with no SharedWorker, the VM runs in one tab, and another tab shows a
 //   message.
 //
+// --ports: the checks of tests/programs/ports_check.erl, with the
+// bindings of tests/host/ports/page.js (app-site.mjs PORTS): from the
+// frame, 4 MiB to a port and back, the sends to a slow port wait, enoent,
+// the bytes of a port through the VM, and the result of a port as the
+// response (x-beam-port).
+//
 // --cdn RUNTIME: the site of a native app.com (tests/page/app-site.mjs):
 // RUNTIME (runtime/ of the npm package) is on a second origin, as on a CDN
 // (with CORS), and @BEAM_COM@ in the HTML and JavaScript files of the site
@@ -56,7 +62,7 @@ const flag = (name) => args.includes(name);
 const option = (name, value) => (args.includes(name) ? args[args.indexOf(name) + 1] : value);
 const dir = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--base' && args[i - 1] !== '--cdn');
 if (!dir) {
-  console.error('usage: node tests/page/check.mjs DIR/page [--base /repo/] [--cdn RUNTIME] [--phoenix-demo] [--tabs]');
+  console.error('usage: node tests/page/check.mjs DIR/page [--base /repo/] [--cdn RUNTIME] [--phoenix-demo] [--tabs] [--ports]');
   process.exit(2);
 }
 const cdnDir = option('--cdn', null);
@@ -326,6 +332,35 @@ async function check(page, origin) {
   step('the login form (a POST) works: the app answers "Invalid email or password"');
 }
 
+// The routes of ports_check.erl, from the frame of the app: each request
+// goes through the service worker to the VM of the page.
+async function ports(page) {
+  const frame = page.frames().find((f) => f.parentFrame() === page.mainFrame());
+  const got = await frame.evaluate(async () => {
+    const get = async (path) => {
+      const r = await fetch(path);
+      return { status: r.status, body: new Uint8Array(await r.arrayBuffer()) };
+    };
+    const hash = async (bytes) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+    const out = {};
+    for (const path of ['echo', 'sink', 'missing']) out[path] = new TextDecoder().decode((await get(path)).body).trim();
+    for (const [path, size] of [['through', 4194304], ['splice', 4194304], ['splice-after', 1048576], ['splice-before', 65536]]) {
+      const [a, b] = [await get(path), await get(`bytes/${size}`)];
+      out[path] = a.body.length === size && b.body.length === size && await hash(a.body) === await hash(b.body);
+    }
+    out['splice-none'] = (await get('splice-none')).status;
+    return out;
+  });
+  const want = { echo: 'echo 4194304 true', sink: 'sink 4194304 true', missing: 'missing enoent', through: true,
+                 splice: true, 'splice-after': true, 'splice-before': true, 'splice-none': 502 };
+  for (const [path, value] of Object.entries(want)) {
+    if (got[path] !== value) throw new Error(`the port route /${path} gave ${JSON.stringify(got[path])}, not ${JSON.stringify(value)}`);
+  }
+  step('4 MiB to a port and back, the sends wait for a slow port, and enoent');
+  step('the bytes of a port through the VM, and as the response (x-beam-port)');
+}
+
 async function tabs(browser, origin) {
   const context = await browser.newContext();
   const [one, two] = [await context.newPage(), await context.newPage()];
@@ -451,6 +486,7 @@ server.listen(0, '127.0.0.1', async () => {
     });
     page.on('requestfailed', (r) => log.push(`request failed ${r.method()} ${r.url()}: ${r.failure()?.errorText}`));
     await check(page, origin);
+    if (flag('--ports')) await ports(page);
     if (flag('--phoenix-demo')) await links(browser, origin);
     if (flag('--tabs')) await tabs(browser, origin);
     step('ok');
