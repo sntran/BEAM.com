@@ -9,7 +9,7 @@
 // app-com.js refuses a file for another runtime. worker.js reads the
 // release at the first request of an isolate, not in the global scope.
 import { inflateRawSync } from 'node:zlib';
-import { appFiles, bytesReader } from '../app-com.js';
+import { appFiles, appStatics, bytesReader } from '../app-com.js';
 import runtime from '../runtime-id.js';
 
 // The global scope of a Worker cannot use DecompressionStream (a VM that
@@ -25,6 +25,10 @@ let split = true;
 // keeps the static files of a Phoenix app in the release of the VM (see
 // serve(app) of index.js).
 export function use(bytes, nifModules = null, statics = true) {
+  if (bytes !== app || statics !== split) {
+    files = null;
+    staticsRead = null;
+  }
   app = bytes;
   modules = nifModules;
   split = statics;
@@ -48,4 +52,21 @@ export function release() {
     files = appFiles(read, size, { runtime, inflate, statics: split });
   }
   return files;
+}
+
+// For the front of the Worker (index.js): the static files of app.com (a
+// Map of path to file), with no read of the other files of the release.
+// An isolate that only runs the front does not pay the checks of release().
+let staticsRead = null;
+
+export function staticFiles() {
+  if (files) return files.then((f) => f.statics);
+  if (!app) {
+    throw new Error("beam.com: no app.com: call serve(app) in the entry of the Worker");
+  }
+  if (!staticsRead) {
+    const { read, size } = bytesReader(app);
+    staticsRead = split ? appStatics(read, size, { runtime, inflate }) : Promise.resolve(new Map());
+  }
+  return staticsRead;
 }

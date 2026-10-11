@@ -92,9 +92,22 @@
 %% result, as the driver gives them.
 -define(NO_VALUE, [read_packets, ipv6_v6only, netns, recvtclass]).
 
+%% A socket process with no message for this time hibernates: a full
+%% collection of its heap. An open WebSocket waits for most of its life,
+%% and the memory of the VM in WebAssembly does not shrink, so the garbage
+%% on the heaps of the sockets that wait is a large cost of open sockets.
+%% The env hibernate_after of the application wasm_host replaces it (ms).
+-define(HIBERNATE_AFTER, 15000).
+
 %% The counters of getstat/2.
 -define(STATS, [recv_cnt, recv_max, recv_avg, recv_dvi, recv_oct,
                 send_cnt, send_max, send_avg, send_pend, send_oct]).
+
+%% The process of a socket: a connect, a listener, or a connection that a
+%% listener accepted.
+start(Init) ->
+    After = application:get_env(wasm_host, hibernate_after, ?HIBERNATE_AFTER),
+    gen_server:start(?MODULE, Init, [{hibernate_after, After}]).
 
 %% The host resolves the names.
 getaddrs(Address, _Timer) -> {ok, [Address]}.
@@ -106,7 +119,7 @@ getserv(_) -> {error, einval}.
 connect(Address, Port, Opts, Timeout) ->
     case options(Opts, connect) of
         {ok, O} ->
-            {ok, Pid} = gen_server:start(?MODULE, {self(), O}, []),
+            {ok, Pid} = start({self(), O}),
             case gen_server:call(Pid, {connect, host(Address), Port, Timeout}, infinity) of
                 ok -> {ok, ?SOCKET(Pid)};
                 Error -> Error
@@ -121,7 +134,7 @@ listen(Port0, Opts) ->
     case options(Opts, listen) of
         {ok, O} ->
             Port = proplists:get_value(port, O, Port0),
-            {ok, Pid} = gen_server:start(?MODULE, {listen, self(), Port, O}, []),
+            {ok, Pid} = start({listen, self(), Port, O}),
             case gen_server:call(Pid, listen, infinity) of
                 ok -> {ok, ?SOCKET(Pid)};
                 Error -> Error
@@ -670,7 +683,7 @@ info({wasm_host, <<"tcp_error">>, Meta, _}, #{kind := listen, listen := From} = 
 info({wasm_host, <<"tcp_accept">>, Meta, _}, #{kind := listen} = S) ->
     #{<<"conn">> := Id} = Meta,
     Peer = {maps:get(<<"host">>, Meta, <<"0.0.0.0">>), maps:get(<<"port">>, Meta, 0)},
-    {ok, Pid} = gen_server:start(?MODULE, {accepted, Id, Peer, own(S), flags(Meta), self()}, []),
+    {ok, Pid} = start({accepted, Id, Peer, own(S), flags(Meta), self()}),
     case queue:out(maps:get(acceptors, S)) of
         {{value, A}, Rest} -> {noreply, hand({Id, Pid}, A, S#{acceptors := Rest})};
         {empty, _} -> {noreply, S#{conns := queue:in({Id, Pid}, maps:get(conns, S))}}

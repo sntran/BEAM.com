@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
-import { appFiles, appRelease, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
+import { appFiles, appRelease, appStatics, bytesReader, crc32, zipEntries } from '../../priv/wasm_host/worker/app-com.js';
 import { zip } from './zip.mjs';
 
 const enc = new TextEncoder();
@@ -198,6 +198,40 @@ test('appFiles: no static files for an app that is not a Phoenix app', async () 
   const r = await appFiles(read, size);
   assert.equal(r.statics.size, 0);
   assert.deepEqual(r.files.map(([p]) => p), ['lib/app-1.0/priv/static/app.js']);
+});
+
+test('appStatics: the static files of appFiles, with no read and no check of the other files', async () => {
+  const file = await phoenix();
+  const { read, size } = bytesReader(file);
+  const all = (await appFiles(read, size)).statics;
+  const seen = [];
+  const inflate = async (raw) => { seen.push(raw.length); return new Uint8Array(inflateRawSync(raw)); };
+  const statics = await appStatics(read, size, { inflate });
+  assert.deepEqual([...statics.keys()].sort(), [...all.keys()].sort());
+  for (const [path, s] of statics) assert.deepEqual(s, all.get(path));
+  // Only .release.json is read: app.js stays deflated, as appFiles gives it.
+  assert.equal(seen.length, 0);
+  assert.equal(statics.get('/app.js').deflated, true);
+  // A bad CRC-32 of a file of the release: appFiles stops, appStatics does not.
+  const bad = await zip([
+    { name: 'lib/web-1.0/ebin/web.beam', data: GZ_BEAM, crc: 1234 },
+    { name: 'lib/web-1.0/priv/static/app.js', data: 'x' },
+    { name: '.wasm/.release.json', data: JSON.stringify(PHX) },
+  ]);
+  const b = bytesReader(bad);
+  await assert.rejects(appFiles(b.read, b.size), /web.beam: the CRC-32 does not match/);
+  assert.deepEqual([...(await appStatics(b.read, b.size)).keys()], ['/app.js']);
+});
+
+test('appStatics: the runtime of the file, and no static files for an app that is not a Phoenix app', async () => {
+  const { read, size } = bytesReader(await phoenix());
+  await assert.rejects(appStatics(read, size, { runtime: 'bb22' }),
+                       /app.com: it was built for the runtime aa11, and this runtime is bb22/);
+  const other = bytesReader(await zip([
+    { name: 'lib/app-1.0/priv/static/app.js', data: 'x' },
+    { name: '.wasm/.release.json', data: JSON.stringify({ ...META, name: 'app' }) },
+  ]));
+  assert.equal((await appStatics(other.read, other.size)).size, 0);
 });
 
 test('crc32: the check value of CRC-32', () => {

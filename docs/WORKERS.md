@@ -200,8 +200,10 @@ before the VM, as Plug.Static does: at the root of the site, with an
 ETag, a cache of one year for a request with `vsn`, and `PATH.gz` for a
 missing `PATH`. On Workers, the front Worker serves them, also for a
 path tenant after its prefix, so they need no request to the Durable
-Object. `cache_manifest.json` stays in the VM, because Phoenix reads it
-at its start.
+Object. The front reads only the central directory of `app.com` and the
+entries of the static files: about 2 ms of CPU time in a new isolate for
+a release of 16 MB, with no check of the other files. `cache_manifest.json`
+stays in the VM, because Phoenix reads it at its start.
 
 An app that serves these files at another path (`Plug.Static` with
 `at:`) gives `serve(app, { statics: false })`. Then the VM keeps the
@@ -899,7 +901,22 @@ and JavaScript. Plan for these costs:
   `-o FILE.com` is about 25 MB smaller, and a snapshot in gzip about 13
   MB smaller.
 - Each open WebSocket and each process that waits keeps its heap. A
-  Phoenix app with 75 LiveViews went over the 128 MB on Cloudflare.
+  Phoenix app with 75 LiveViews went over the 128 MB on Cloudflare. The
+  process of a socket of the VM (`wasm_tcp`) hibernates after 15 s with
+  no message: natively, the heaps of 100 sockets after some traffic went
+  from 2.5 MB to 0.19 MB. The processes of the app that wait (Bandit,
+  LiveView) need their own hibernation or collection.
+- Cloudflare can run several Durable Objects of one class in one
+  isolate, and they share its 128 MB. Each object of the class `Beam`
+  has its own VM, so two or three VMs can fill an isolate. When an
+  isolate has more than one VM, the lines of the memory give their count
+  and the sum of their memories: `beam: memory 47 MB (a new peak of this
+  VM; 3 VMs in this isolate: 130 MB)`.
+
+Caution: an app that sends heavy requests to more objects of its own
+class (for example a VM for each worker of a pool) can reset its main
+object, because these objects can share its isolate. Put such objects in
+another Worker: each Worker has its own isolates.
 
 Caution: `wrangler dev` does not apply the limit of 128 MB. A test that
 passes in `wrangler dev` can reset the object on Cloudflare. Test the
@@ -915,6 +932,22 @@ One Durable Object served about 120 to 190 small requests each second on
 Cloudflare (mkfifo.com, October 2026), and fewer for requests that use
 the CPU. Use `BEAM_MAX_REQUESTS` so that the host answers 503 before
 Cloudflare stops the requests with "Durable Object is overloaded".
+
+### The CPU time of the VM
+
+The tail of the Worker gives the CPU time of each request of the object
+of the VM. `npx wrangler tail --format json` gives one event for each
+request, with `executionModel: "durableObject"`, `cpuTime` and
+`wallTime` in milliseconds, and the lines of the log of the VM. A Tail
+Worker gets the same events. The tables of this file come from them.
+
+- The event of a request comes at its end. A WebSocket is one request,
+  until its socket closes.
+- The CPU time of a request counts all the threads of the VM (see
+  "Limits").
+- A project found no CPU time of the object of the VM in Workers Logs,
+  and no rows for its namespace in the GraphQL dataset
+  `durableObjectsPeriodicGroups` (October 2026). Use the tail.
 
 ## Variables and bindings
 

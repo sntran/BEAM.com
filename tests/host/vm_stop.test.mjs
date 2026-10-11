@@ -209,6 +209,33 @@ test('the memory log: one line for each 8 MB of growth', () => {
   assert.equal(v.peak, 9);
 });
 
+// Several Durable Objects of one class can share an isolate and its 128 MB:
+// the lines of the memory give the VMs of the isolate when there are two
+// or more, until one of them stops.
+test('the memory lines give the count and the sum of the VMs of the isolate', () => {
+  const a = vm().v, b = vm().v;
+  const lines = [];
+  const log = console.log;
+  console.log = (line) => lines.push(line);
+  try {
+    a.live();
+    assert.equal(a.memory(), 'memory 1 MB');
+    b.live();
+    b.beam.HEAPU8 = new Uint8Array(40 << 20);
+    assert.equal(a.memory(), 'memory 1 MB (2 VMs in this isolate: 41 MB)');
+    b.notePeak();
+    b.die('exit status 1');
+    assert.equal(a.memory(), 'memory 1 MB');
+    a.die('exit status 1');
+  } finally {
+    console.log = log;
+  }
+  assert.deepEqual(lines.slice(0, 2), [
+    'beam: memory 40 MB (a new peak of this VM; 2 VMs in this isolate: 41 MB)',
+    'beam: the VM stopped (exit status 1), memory 40 MB (2 VMs in this isolate: 41 MB): 0 open requests get 503',
+  ]);
+});
+
 // The turns of a scheduler that computes (jspiSchedule.turn): in a Durable
 // Object, each turnEvery-th turn is a timer, so that the I/O of the object
 // runs; the others are tasks. A plain Worker gives only tasks.

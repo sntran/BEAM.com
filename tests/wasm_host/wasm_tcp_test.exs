@@ -884,6 +884,32 @@ defmodule WasmTcpTest do
       assert {:error, :eaddrinuse} == Task.await(task, 5000)
     end
 
+    test "a connection with no message hibernates, and works when a message wakes it" do
+      Application.put_env(:wasm_host, :hibernate_after, 50)
+      on_exit(fn -> Application.delete_env(:wasm_host, :hibernate_after) end)
+      {:ok, {_, _, lpid} = l} = listen()
+      id = :sys.get_state(lpid).id
+      send(lpid, {:wasm_host, "tcp_accept", %{"id" => id, "conn" => "q5"}, ""})
+      assert {:ok, {_, _, pid} = socket} = :wasm_tcp.accept(l, 5000)
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "q5"}, :binary.copy("h", 100_000)})
+      assert {:ok, data} = :wasm_tcp.recv(socket, 100_000, 5000)
+      assert byte_size(data) == 100_000
+      # Process.info does not wake the process, as :sys.get_state would.
+      # OTP 29 hibernates a gen_server in gen_server:loop_hibernate/4.
+      wait_until(fn ->
+        case Process.info(pid, :current_function) do
+          {:current_function, {:gen_server, :loop_hibernate, _}} -> true
+          {:current_function, {:erlang, :hibernate, 3}} -> true
+          _ -> false
+        end
+      end)
+
+      send(pid, {:wasm_host, "tcp_data", %{"id" => "q5"}, "after"})
+      assert {:ok, "after"} == :wasm_tcp.recv(socket, 0, 5000)
+      :wasm_tcp.close(socket)
+      :wasm_tcp.close(l)
+    end
+
     test "wrong options: listen/2 exits with badarg, and connect/4 gives einval" do
       assert catch_exit(:wasm_tcp.listen(0, [{:bogus, 1}])) == :badarg
       assert catch_exit(:wasm_tcp.listen(0, [{:line_delimiter, ?;}])) == :badarg

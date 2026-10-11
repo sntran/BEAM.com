@@ -33,6 +33,25 @@ notes of its release.
   (`tests/host/app_ports.sh` and `tests/page/check.mjs --ports`), and in
   workerd both a Durable Object namespace and a service binding as ports.
   See "Ports to bindings" in `docs/WORKERS.md`.
+- The front Worker serves the static files of a Phoenix app with a read
+  of only their entries in `app.com`. Before, the first GET of each new
+  isolate read and checked all the files of the release: for a release of
+  16 MB, 100 to 180 ms of CPU time in Node.js, and 75 to 135 ms on
+  Cloudflare (a report of a project). Now the read takes 2 to 3 ms. The
+  VM still reads and checks all the files (`appStatics` in
+  `app-com.js`).
+- The lines of the memory of a VM give the count of the VMs of the
+  isolate and the sum of their memories, when the isolate has more than
+  one VM: `beam: memory 47 MB (a new peak of this VM; 3 VMs in this
+  isolate: 130 MB)`. Cloudflare can run several Durable Objects of one
+  class in one isolate, and they share its 128 MB. See "Memory and
+  capacity" in `docs/WORKERS.md`.
+- The process of a socket of the VM (`wasm_tcp`) hibernates after 15 s
+  with no message, so an open WebSocket that waits keeps no garbage on its
+  heap. Natively, the heaps of 100 sockets after some traffic went from
+  2.5 MB to 0.19 MB.
+- `docs/WORKERS.md` tells how to get the CPU time of the object of the VM:
+  the events of `wrangler tail`.
 - A crash dump no longer stops the WebAssembly runtime with "Failed to
   killing thread" and `Aborted()`. Before, each crash dump gave the exit
   status 2 and an empty `erl_crash.dump`: `erlang:halt/1` with a string,
