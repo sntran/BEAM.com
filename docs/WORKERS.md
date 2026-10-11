@@ -1523,15 +1523,17 @@ conn
   waits for ever. So send the response first, and then the input of the
   port.
 
-On Cloudflare, with the VM in a Durable Object, 4 MiB took this CPU
-time in that object (the tail events of `tests/programs/ports_check.erl`).
-The object of the port took 6 to 9 ms more for each call:
+On Cloudflare, 4 MiB took this CPU time in the isolate of the VM: the
+Durable Object Beam, or the plain Worker. The numbers come from the tail
+events of `tests/programs/ports_check.erl`, 10 requests for each path,
+with no boot of a VM in them. The object of the port took 5 to 27 ms
+more for each call (median 8 ms):
 
-| Path of the bytes | CPU time | Median |
-|---|---|---|
-| The VM to the client, with no port | 5 to 23 ms | 13 ms |
-| A port to the response | 12 to 30 ms | 18 ms |
-| A port to the VM, and the VM to the client | 45 to 73 ms | 54 ms |
+| Path of the bytes | Durable Object | Median | Plain Worker | Median |
+|---|---|---|---|---|
+| The VM to the client, with no port | 9 to 29 ms | 10 ms | 8 to 27 ms | 21 ms |
+| A port to the response | 13 to 33 ms | 16 ms | 15 to 25 ms | 16 ms |
+| A port to the VM, and the VM to the client | 47 to 71 ms | 59 ms | 45 to 77 ms | 53 ms |
 
 In `workerd` (`wrangler dev`), 16 MiB took this CPU time, for all the
 processes of `workerd`, with the object of the port:
@@ -1544,8 +1546,9 @@ processes of `workerd`, with the object of the port:
 | A port to the VM, and the VM to the client | 220 to 430 ms |
 | The VM to a port, and back to the VM | 230 to 300 ms |
 
-So a result that a port gives to the response costs about one third of
-the same bytes through the VM.
+So a result that a port gives to the response costs about one quarter
+to one third of the same bytes through the VM, and about as much as
+bytes that the VM has in its memory.
 
 ## Peer nodes
 

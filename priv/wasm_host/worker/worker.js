@@ -1876,6 +1876,9 @@ export class Vm {
   // Object). env: the bindings of that request, for the ports: workerd ties
   // a stub of the bindings of a request to that request.
   async fetch(request, ctx, env = null) {
+    // Caution: only a plain Worker gets a runner (see spawnPort). In a
+    // Durable Object, the runner keeps each request open: on Cloudflare,
+    // the tail then gives no event of the end of any request of the object.
     if (ctx) {
       this.waitUntil = (p) => ctx.waitUntil(p);
       this.inRequest = requestRunner();

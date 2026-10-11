@@ -23,8 +23,8 @@ notes of its release.
   `Port.command/2` waits for a port that reads slowly. A port can give
   its result to the HTTP response of the app (`BEAM_PORT_OUTPUT=response`
   and the header `x-beam-port`), and the bytes do not go into the VM:
-  on Cloudflare, 4 MiB took 12 to 30 ms of CPU time in the object of the
-  VM, and 45 to 73 ms through the VM. The ports work for a VM in a Durable Object and in a
+  on Cloudflare, 4 MiB took 13 to 33 ms of CPU time in the object of the
+  VM (median 16 ms), and 47 to 71 ms through the VM (median 59 ms). The ports work for a VM in a Durable Object and in a
   plain Worker. In Deno, `serve(app, { env })` gives the port objects,
   and in the web page, the option `ports` of `main.js` gives a module of
   the site. CI tests the four hosts (`tests/host/app_ports.sh` and
