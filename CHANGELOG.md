@@ -3,7 +3,13 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.6
+
+The sixth release candidate of 0.1.0. As 0.1.0-rc.5, it is a
+pre-release on GitHub, and on npm it has the dist-tag `next`. It has the
+ports to the bindings of `env`, a faster fetch path, fixes of the
+WebAssembly runtime, of `gen_tcp` in the VM and of the hosts, and the
+fixes from the check of 0.1.0-rc.5:
 
 - The WebAssembly runtime can start a peer node (the `peer` module of
   OTP), on a host that gives a spawn: a port of the program of the VM
