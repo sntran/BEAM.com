@@ -12,6 +12,10 @@ notes of its release.
   `-public_key` argument wins, and the sandbox of `--allow-net` lets the
   program read the file. See "Crypto and TLS" in `docs/INTERNALS.md` and
   "In a sandbox that terminates TLS" in `docs/PLATFORMS.md`.
+- `pages-app.yml` downloads the program of Tailwind with `curl` before
+  `assets.deploy`. GitHub now sends more than 10240 bytes of headers for
+  the download of a release, and `httpc`, which `mix tailwind.install`
+  uses, stopped with `header_too_long`.
 
 ## 0.1.0-rc.6
 
