@@ -578,8 +578,7 @@ static void apply_allow(int helper, struct allow *a)
         for (k = 0; k < sizeof(net_files) / sizeof(net_files[0]); k++)
             sandbox_unveil_optional(helper, net_files[k], "r");
         /* The file of SSL_CERT_FILE (see cert_file()). */
-        if (cert_file())
-            sandbox_unveil_optional(helper, getenv("SSL_CERT_FILE"), "r");
+        sandbox_unveil_optional(helper, cert_file(), "r");
     }
     if (a->run_all)
         sandbox_unveil(helper, "/", "rx");
@@ -1388,26 +1387,34 @@ static int has_arg(const struct arglist *l, const char *arg)
  * Windows. That file replaces the certificates of the OS, as it does for
  * OpenSSL. The user's own -public_key wins.
  *
- * The result: the path, in the form of an Erlang string, or NULL.
+ * The result: the path, in the form of an Erlang string, or NULL. Outside
+ * Windows, it is the real path (absolute), which unveil() gets. The first
+ * call finds it, and the next calls give the same result. With
+ * --allow-net, the first call is in apply_allow(), before the commit of
+ * unveil(): on OpenBSD, a stat() of the file after the commit failed in
+ * CI when the path was relative.
  */
 static char *cert_file(void)
 {
+    static int done;
+    static char *path;
     const char *env = getenv("SSL_CERT_FILE");
     struct stat st;
-    char *path;
 
+    if (done)
+        return path;
+    done = 1;
     if (!env || !*env || stat(env, &st) == -1 || !S_ISREG(st.st_mode) ||
         access(env, R_OK) == -1)
         return NULL;
-    path = strdup(env);
-    if (!path)
-        die("strdup");
     if (beam_com_is_windows()) {
+        if (!(path = strdup(env)))
+            die("strdup");
         erlang_path(path);
-    } else if (strpbrk(path, "\\\"")) {
+    } else if (!(path = realpath(env, NULL)) || strpbrk(path, "\\\"")) {
         /* No escape for a backslash or a quote in the Erlang string. */
         free(path);
-        return NULL;
+        path = NULL;
     }
     return path;
 }
