@@ -317,6 +317,33 @@ ssh_eval='{ok, _} = application:ensure_all_started(ssh),
 check beam.com '^ssh: ok$' -noshell -eval "$ssh_eval"
 rm -rf "$dir/ssh_check"
 
+# SSL_CERT_FILE: public_key:cacerts_get/0 reads the certificates of that
+# file in place of the certificates of the OS, as OpenSSL does (a proxy
+# that terminates TLS gives its CA in it). The file holds the first
+# certificate of the OS.
+os_ca=
+for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+    /etc/ssl/cert.pem; do
+    [ -f "$f" ] && os_ca=$f && break
+done
+if [ -n "$os_ca" ]; then
+    awk '/BEGIN CERTIFICATE/ {p = 1} p {print} /END CERTIFICATE/ {exit}' "$os_ca" > "$dir/ca-one.pem"
+    cacerts_eval='io:format("cacerts: ~p~n", [length(public_key:cacerts_get())]), halt().'
+    SSL_CERT_FILE=$dir/ca-one.pem
+    export SSL_CERT_FILE
+    check beam.com '^cacerts: 1$' -noshell -eval "$cacerts_eval"
+    # The user's own -public_key wins.
+    check beam.com '^cacerts: [0-9][0-9]' -public_key cacerts_path "\"$os_ca\"" \
+        -noshell -eval "$cacerts_eval"
+    # A file that does not exist, and a directory: the certificates of
+    # the OS.
+    SSL_CERT_FILE=$dir/ca-none.pem
+    check beam.com '^cacerts: [0-9][0-9]' -noshell -eval "$cacerts_eval"
+    SSL_CERT_FILE=$dir
+    check beam.com '^cacerts: [0-9][0-9]' -noshell -eval "$cacerts_eval"
+    unset SSL_CERT_FILE
+fi
+
 # Linux: when the APE loader runs beam.com (sh starts it), the helper
 # programs start with that loader, and the kernel never gets the APE file
 # (on WSL, the binfmt_misc entry WSLInterop gives it to Windows). The
@@ -592,6 +619,13 @@ if [ -d examples ]; then
     BEAM_COM_ALLOW=read
     check sandbox_net.com "$env" read /etc/hosts read "$dir/beam.com"
     unset BEAM_COM_ALLOW
+    # -N: the file of SSL_CERT_FILE also, for public_key.
+    if [ -f "$dir/ca-one.pem" ]; then
+        SSL_CERT_FILE=$dir/ca-one.pem
+        export SSL_CERT_FILE
+        check sandbox_net.com "$env" read "$dir/ca-one.pem" read "$dir/beam.com"
+        unset SSL_CERT_FILE
+    fi
 fi
 
 # Hex packages (from hex.pm, so this needs the network): hexweb needs

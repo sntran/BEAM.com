@@ -43,9 +43,25 @@ and the hosts file of Windows, so that names are resolved with Erlang's
 own DNS client (`ERL_INETRC` points at it; set `ERL_INETRC` yourself to
 use your own file), and it exports the trusted root certificates of
 Windows to a PEM file that `public_key:cacerts_get/0` reads
-(`-public_key cacerts_path File`; give that parameter yourself to use
-your own file). Both files are in the temp directory of the user and
+(`-public_key cacerts_path File`; give that parameter yourself, or set
+`SSL_CERT_FILE`, to use your own file). Both files are in the temp directory of the user and
 are removed when the node stops.
+
+## In a sandbox that terminates TLS (OpenShell)
+
+Some sandboxes for agents, such as
+[OpenShell](https://github.com/NVIDIA/OpenShell), send each connection
+through a proxy. The proxy terminates TLS with its own CA, and it names
+that CA only in `SSL_CERT_FILE`. BEAM.com gives that file to
+`public_key`, so `public_key:cacerts_get/0` holds the CA. Req, Finch,
+Mint, `httpc`, and the Hex download of `beam.com` then work with no
+change.
+
+The network rules of OpenShell name a program by the file of its
+process (`/proc/PID/exe`). When `sh` starts an APE file, that file is
+the APE loader in `$TMPDIR` or `$HOME`, which all APE programs share. To
+give the rule the file of your app, build a native file with `--target`
+(for example `--target x86_64-linux`), and name its path in the rule.
 
 ## Known limits
 

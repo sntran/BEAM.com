@@ -81,6 +81,14 @@ for `os:type()` `{win32, _}`, so BEAM.com exports the trusted roots of
 Windows (with `crypt32`) to a PEM file at start and gives it to
 `public_key` with `-public_key cacerts_path File`.
 
+`public_key` does not read `SSL_CERT_FILE`, but OpenSSL, curl, Python
+and Go do. A sandbox or a proxy that terminates TLS often gives its CA
+only in that file. So when `SSL_CERT_FILE` names a regular file that
+BEAM.com can read, BEAM.com gives that file to `public_key` in the same
+way, on each system. The file replaces the certificates of the OS, as it
+does for OpenSSL. Your own `-public_key` argument wins. With `--allow-net`
+(`-N`), the sandbox of BEAM.com also lets the program read the file.
+
 ## The zip of the default beam.com
 
 ```

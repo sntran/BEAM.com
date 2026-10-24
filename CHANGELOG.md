@@ -3,6 +3,16 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+- `public_key:cacerts_get/0` reads the file of `SSL_CERT_FILE` when that
+  variable names a regular file, on each system. A sandbox or a proxy
+  that terminates TLS (such as OpenShell) gives its CA in that file, and
+  before this change Erlang clients got "unknown CA" there. Your own
+  `-public_key` argument wins, and the sandbox of `--allow-net` lets the
+  program read the file. See "Crypto and TLS" in `docs/INTERNALS.md` and
+  "In a sandbox that terminates TLS" in `docs/PLATFORMS.md`.
+
 ## 0.1.0-rc.6
 
 The sixth release candidate of 0.1.0. As 0.1.0-rc.5, it is a
