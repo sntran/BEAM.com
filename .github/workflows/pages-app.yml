@@ -257,6 +257,25 @@ jobs:
           mix.com local.hex --force --if-missing
           mix.com deps.get --only prod
           mix.com compile
+          # GitHub sends more than 10240 bytes of headers for the download of a
+          # release (a long Content-Security-Policy). httpc, which
+          # "mix tailwind.install" uses, stops there with header_too_long. So curl
+          # downloads the program of Tailwind first, to the path where the tailwind
+          # package looks for it. As for that task, config/runtime.exs is not read.
+          if [ -d deps/tailwind ]; then
+            tailwind='Mix.start(); Code.compile_file("mix.exs"); Mix.Task.run("loadconfig")
+              Mix.Task.run("loadpaths", ["--no-compile", "--no-deps-check"])
+              v = Tailwind.configured_version()
+              url = Tailwind.default_base_url() |> String.replace("$version", v)
+              url = String.replace(url, "$target", Tailwind.configured_target())
+              IO.puts("tailwind " <> url <> " " <> Tailwind.bin_path(v))'
+            set -- $(beam.com elixir -e "$tailwind" | awk '$1 == "tailwind" { print $2, $3 }') || true
+            if [ $# = 2 ] && [ ! -x "$2" ]; then
+              mkdir -p "$(dirname "$2")"
+              curl -fsSL --retry 3 -o "$2" "$1"
+              chmod +x "$2"
+            fi
+          fi
           if [ "$ASSETS" = true ]; then mix.com assets.deploy; fi
           # mix release keeps the directories of old versions in lib/.
           rm -rf _build/prod/rel

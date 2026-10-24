@@ -418,6 +418,7 @@ int beam_com_execve(const char *path, char *const argv[], char *const envp[])
  * more than its parent has.
  */
 static char *join(const char *a, const char *b, const char *c);
+static char *cert_file(void);
 
 struct allow {
     int all, net, run;
@@ -547,6 +548,9 @@ static void apply_allow(int helper, struct allow *a)
         /* The certificates of the OS, for public_key:cacerts_get(). */
         "/etc/ssl", "/etc/pki", "/usr/local/share/certs", "/usr/share/ca-certificates"};
     char promises[256];
+    /* Before the first unveil(): on OpenBSD, that call already hides the
+     * other paths (Landlock hides them only at the commit). */
+    char *certs = a->net ? cert_file() : NULL;
     size_t k;
     int i;
 
@@ -573,9 +577,12 @@ static void apply_allow(int helper, struct allow *a)
         sandbox_unveil(helper, "/", "rwc");
     for (i = 0; i < a->write.n; i++)
         sandbox_unveil_optional(helper, a->write.v[i], "rwc");
-    if (a->net)
+    if (a->net) {
         for (k = 0; k < sizeof(net_files) / sizeof(net_files[0]); k++)
             sandbox_unveil_optional(helper, net_files[k], "r");
+        /* The file of SSL_CERT_FILE (see cert_file()). */
+        sandbox_unveil_optional(helper, certs, "r");
+    }
     if (a->run_all)
         sandbox_unveil(helper, "/", "rx");
     if (a->programs.n) {
@@ -1369,9 +1376,71 @@ static int has_arg(const struct arglist *l, const char *arg)
 }
 
 /*
+ * --- SSL_CERT_FILE ----------------------------------------------------
+ *
+ * OpenSSL, curl, Python and Go read the trusted root certificates from
+ * the file of SSL_CERT_FILE. public_key:cacerts_get/0 does not: it reads
+ * only the fixed paths of each OS (pubkey_os_cacerts.erl of OTP). A
+ * sandbox or a proxy that terminates TLS (such as OpenShell, or the
+ * proxy of a company) gives its CA only in that file, so an Erlang
+ * client gets "unknown CA" there.
+ *
+ * When SSL_CERT_FILE names a regular file that BEAM.com can read,
+ * BEAM.com gives it to public_key with -public_key cacerts_path, as on
+ * Windows. That file replaces the certificates of the OS, as it does for
+ * OpenSSL. The user's own -public_key wins.
+ *
+ * The result: the path, in the form of an Erlang string, or NULL. Outside
+ * Windows, it is the real path (absolute), which unveil() gets. The first
+ * call finds it, and the next calls give the same result. With
+ * --allow-net, the first call is in apply_allow(), before the first
+ * unveil(): on OpenBSD, the first unveil() hides the file from stat().
+ */
+static char *cert_file(void)
+{
+    static int done;
+    static char *path;
+    const char *env = getenv("SSL_CERT_FILE");
+    struct stat st;
+
+    if (done)
+        return path;
+    done = 1;
+    if (!env || !*env || stat(env, &st) == -1 || !S_ISREG(st.st_mode) ||
+        access(env, R_OK) == -1)
+        return NULL;
+    if (beam_com_is_windows()) {
+        if (!(path = strdup(env)))
+            die("strdup");
+        erlang_path(path);
+    } else if (!(path = realpath(env, NULL)) || strpbrk(path, "\\\"")) {
+        /* No escape for a backslash or a quote in the Erlang string. */
+        free(path);
+        path = NULL;
+    }
+    return path;
+}
+
+/* -public_key cacerts_path "SSL_CERT_FILE" to *out, when cert_file()
+ * gives a file and *init has no -public_key of the user. 1 if it adds
+ * the arguments. */
+static int cert_file_setup(const struct arglist *init, struct arglist *out)
+{
+    char *path;
+
+    if (has_arg(init, "-public_key") || !(path = cert_file()))
+        return 0;
+    push(out, "-public_key");
+    push(out, "cacerts_path");
+    push(out, join("\"", path, "\""));
+    return 1;
+}
+
+/*
  * The arguments go to *out, which comes before the arguments of the user
  * (after "-extra", every argument is a plain argument). *init holds the
  * arguments of the user, to see if they give -public_key themselves.
+ * The file of SSL_CERT_FILE also wins (see cert_file_setup()).
  */
 static void windows_setup(const struct arglist *init, struct arglist *out)
 {
@@ -1381,7 +1450,8 @@ static void windows_setup(const struct arglist *init, struct arglist *out)
         path = windows_write_inetrc();
         setenv("ERL_INETRC", path ? path : BEAM_COM_BINDIR "/windows.inetrc", 1);
     }
-    if (!has_arg(init, "-public_key") && (path = windows_write_cacerts())) {
+    if (!has_arg(init, "-public_key") && !has_arg(out, "-public_key") &&
+        (path = windows_write_cacerts())) {
         push(out, "-public_key");
         push(out, "cacerts_path");
         push(out, join("\"", path, "\""));
@@ -1602,7 +1672,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char **argv = *argvp;
     const char *name = beam_com_basename(argv[0]);
     char *program = getenv("BEAM_COM_PROGRAM");
-    struct arglist file = {0}, emu = {0}, init = {0}, windows = {0}, all = {0};
+    struct arglist file = {0}, emu = {0}, init = {0}, certs = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode, make_mode;
     const char *tool;
 
@@ -1893,12 +1963,14 @@ void beam_com_main(int *argcp, char ***argvp)
             push(&init, argv[i]);
     }
 
+    /* The file of SSL_CERT_FILE for public_key (see cert_file()). */
+    cert_file_setup(&init, &certs);
     /* On Windows there are no port programs, and the native resolver
      * (inet_gethost) is one: kernel halts the node when it cannot start
      * it. Give kernel the name servers of Windows and public_key the
      * certificates of Windows (see windows_setup()). */
     if (beam_com_is_windows())
-        windows_setup(&init, &windows);
+        windows_setup(&init, &certs);
 
     setenv("ROOTDIR", BEAM_COM_ROOT, 1);
     setenv("BINDIR", BEAM_COM_BINDIR, 1);
@@ -1923,8 +1995,8 @@ void beam_com_main(int *argcp, char ***argvp)
     push(&all, "-beam_com_exe");
     push(&all, GetProgramExecutableName());
     push(&all, "--");
-    for (i = 0; i < windows.n; i++)
-        push(&all, windows.v[i]);
+    for (i = 0; i < certs.n; i++)
+        push(&all, certs.v[i]);
     for (i = 0; i < init.n; i++)
         push(&all, init.v[i]);
 
