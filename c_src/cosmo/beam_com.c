@@ -548,6 +548,9 @@ static void apply_allow(int helper, struct allow *a)
         /* The certificates of the OS, for public_key:cacerts_get(). */
         "/etc/ssl", "/etc/pki", "/usr/local/share/certs", "/usr/share/ca-certificates"};
     char promises[256];
+    /* Before the first unveil(): on OpenBSD, that call already hides the
+     * other paths (Landlock hides them only at the commit). */
+    char *certs = a->net ? cert_file() : NULL;
     size_t k;
     int i;
 
@@ -578,7 +581,7 @@ static void apply_allow(int helper, struct allow *a)
         for (k = 0; k < sizeof(net_files) / sizeof(net_files[0]); k++)
             sandbox_unveil_optional(helper, net_files[k], "r");
         /* The file of SSL_CERT_FILE (see cert_file()). */
-        sandbox_unveil_optional(helper, cert_file(), "r");
+        sandbox_unveil_optional(helper, certs, "r");
     }
     if (a->run_all)
         sandbox_unveil(helper, "/", "rx");
@@ -1390,9 +1393,8 @@ static int has_arg(const struct arglist *l, const char *arg)
  * The result: the path, in the form of an Erlang string, or NULL. Outside
  * Windows, it is the real path (absolute), which unveil() gets. The first
  * call finds it, and the next calls give the same result. With
- * --allow-net, the first call is in apply_allow(), before the commit of
- * unveil(): on OpenBSD, a stat() of the file after the commit failed in
- * CI when the path was relative.
+ * --allow-net, the first call is in apply_allow(), before the first
+ * unveil(): on OpenBSD, the first unveil() hides the file from stat().
  */
 static char *cert_file(void)
 {
