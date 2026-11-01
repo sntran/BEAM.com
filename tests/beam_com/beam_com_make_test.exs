@@ -181,6 +181,29 @@ defmodule BeamComMakeTest do
         :application.unset_env(:elixir_make, :force_build)
       end
     end
+
+    # A package with a linked NIF and a precompiled NIF (vix) gets a
+    # download of that NIF without force_build.
+    test "force_build/0 adds the linked NIFs too" do
+      :application.load(:beam_com)
+      old = :application.get_env(:beam_com, :nifs)
+      :application.unset_env(:elixir_make, :force_build)
+
+      try do
+        :application.set_env(:beam_com, :nifs, [{:vix, ~c"0.42.0"}])
+        :ok = :beam_com_make.force_build()
+        {:ok, list} = :application.get_env(:elixir_make, :force_build)
+        assert list[:vix] == true
+        assert list[:lazy_html] == true
+      after
+        :application.unset_env(:elixir_make, :force_build)
+
+        case old do
+          {:ok, nifs} -> :application.set_env(:beam_com, :nifs, nifs)
+          :undefined -> :application.unset_env(:beam_com, :nifs)
+        end
+      end
+    end
   end
 
   defp wasm_run(args, cwd, app_path, priv) do

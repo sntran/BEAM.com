@@ -45,6 +45,7 @@ body:
       description: NIFs of hex.pm packages, linked into beam.com (needs Elixir). The default beam.com has those of exqlite, bcrypt_elixir and argon2_elixir.
       options:
         - label: picosat_elixir (for Ash)
+        - label: vix (libvips, for the image package; about 13 MB more; not in the WebAssembly runtime)
   - type: dropdown
     id: elixir
     attributes:

@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- A custom build can link the NIF of `vix` 0.42.0 (libvips 8.18.7), for
+  the `image` package: `EXTRA_NIFS=vix`, or the option in the issue form
+  of the custom builder. `scripts/libvips.sh` builds libvips and its
+  libraries (glib, libffi, expat, zlib-ng, libjpeg-turbo, libpng and
+  libwebp) with cosmocc for x86_64 and aarch64. The NIF is native only.
+  See "The steps" in `docs/BUILDING.md`, and C38 to C40, E5, E6 and G1 in
+  `docs/UPSTREAM.md`.
 - `public_key:cacerts_get/0` reads the file of `SSL_CERT_FILE` when that
   variable names a regular file, on each system. A sandbox or a proxy
   that terminates TLS (such as OpenShell) gives its CA in that file, and

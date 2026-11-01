@@ -1044,6 +1044,69 @@ Linux and macOS.
 **Possible upstream fix.** On XNU, a loop over the descriptors of
 `/dev/fd`, or over `getdtablesize()`, in `closefrom()`.
 
+### C38. O_NONBLOCK and FD_CLOEXEC are not constants
+
+**Status:** 4.0.2.
+
+**Symptom.** glib 2.90.0 does not compile: "expression in static
+assertion is not constant" for `G_STATIC_ASSERT (O_NONBLOCK !=
+FD_CLOEXEC)` in `glib/glib-unix.c`.
+
+**Cause.** Cosmopolitan finds the values of `O_NONBLOCK` and of some
+other flags at run time, for the OS that runs the file. So they are
+variables, not constants.
+
+**Workaround in BEAM.com.** `patches/libvips/glib-cosmopolitan.patch`
+removes the assertion when `__COSMOPOLITAN__` is defined.
+
+**Possible upstream fix.** None in Cosmopolitan: this is its design. In
+glib, a check at run time, or no check for Cosmopolitan.
+
+### C39. MCAST_JOIN_SOURCE_GROUP with no struct group_source_req
+
+**Status:** 4.0.2.
+
+**Symptom.** glib 2.90.0 does not compile: "storage size of
+'mc_req_src' isn't known" in `gio/gsocket.c`.
+
+**Cause.** The headers of Cosmopolitan define `MCAST_JOIN_SOURCE_GROUP`
+but not `struct group_source_req`. glib uses the struct when the macro
+is defined.
+
+**Workaround in BEAM.com.** `patches/libvips/glib-cosmopolitan.patch`:
+no source-specific multicast for IPv6 with Cosmopolitan. libvips does
+not use it.
+
+**Possible upstream fix.** Add `struct group_source_req` (and `struct
+group_req`) to the headers of Cosmopolitan, or remove the macro.
+
+### C40. A program with target_clones never ends
+
+**Status:** 4.0.2, x86_64.
+
+**Symptom.** The `meson setup` of libvips 8.18.7 stops at the check "Has
+target_clones attribute". Its test program uses 100% of a CPU, and
+never ends.
+
+**Reproducer.** Compile and run with `x86_64-unknown-cosmo-cc`:
+
+```c
+static int __attribute__((target_clones("default,avx")))
+has_target_clones(void) { return 0; }
+int main(void) { int (*func)(void) = has_target_clones; return func(); }
+```
+
+**Cause.** Not known. GCC makes an ifunc resolver for a function with
+`target_clones`, and the static programs of Cosmopolitan have no
+dynamic loader to run it.
+
+**Workaround in BEAM.com.** `scripts/libvips.sh` runs each test program
+of meson with a limit of 20 s, so the check fails, and libvips uses no
+`target_clones`.
+
+**Possible upstream fix.** A compile error for `target_clones` and
+`ifunc` in cosmocc, so that the check fails at once.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2413,6 +2476,64 @@ linked, and runs the real `make` for the other ones. They also set
 application or environment setting with a list of applications) that
 skips the native build, for runtimes that have the NIFs built in
 (static NIFs).
+
+### E5. vix: global functions with common names, and a precompiled libvips
+
+**Status:** vix 0.42.0.
+
+**Symptom.** The emulator does not link with the NIF of vix:
+`raise_exception` is defined two times (in the NIFs of vix and crypto).
+Without `force_build`, `mix deps.compile` downloads a precompiled NIF
+and a shared libvips, which beam.com cannot load.
+
+**Cause.** The C files of vix give their helper functions global names.
+vix uses `cc_precompiler`, and elixir_make runs `make` for it only when
+the package is in its env `force_build`.
+
+**Workaround in BEAM.com.** `build_vix_nif` in `scripts/steps.sh` joins
+the objects of the NIF with `ld -r`, and keeps one global name,
+`vix_nif_init` (`objcopy --keep-global-symbol`). `beam_com_make:
+force_build/0` names each package with a linked NIF.
+
+**Possible upstream fix.** `static` helper functions in vix, or one
+prefix for their names.
+
+### E6. libvips: -DHAVE_CONFIG_H in vips.pc
+
+**Status:** libvips 8.18.7.
+
+**Symptom.** The NIF of vix does not compile with the flags of
+`pkg-config --cflags vips`: `erl_nif.h` reads a `config.h` that does not
+exist.
+
+**Cause.** `vips.pc` gives `-DHAVE_CONFIG_H`, a flag for the build of
+libvips itself. `erl_nif.h` includes `config.h` when that macro is
+defined.
+
+**Workaround in BEAM.com.** `build_vix_nif` removes the flag.
+
+**Possible upstream fix.** No `-DHAVE_CONFIG_H` in the `Cflags` of
+`vips.pc`.
+
+## glib
+
+Seen with glib 2.90.0 and cosmocc 4.0.2, for the NIF of vix
+(`scripts/libvips.sh`).
+
+### G1. g_unix_fd_query_path() has no implementation for Cosmopolitan
+
+**Symptom.** glib does not compile: `#error "g_unix_fd_query_path() not
+supported on this platform"` in `glib/glib-unix.c`.
+
+**Cause.** The function has a branch for each OS, and Cosmopolitan
+defines none of their macros (`__linux__` and others).
+
+**Workaround in BEAM.com.** `patches/libvips/glib-cosmopolitan.patch`:
+with Cosmopolitan, the function gives `G_FILE_ERROR_NOSYS`, as on Hurd.
+libvips does not call it.
+
+**Possible upstream fix.** A branch for `__COSMOPOLITAN__` that reads
+`/proc/self/fd` on Linux and uses `F_GETPATH` on the BSDs and macOS.
 
 ## Blink (the x86-64 emulator)
 

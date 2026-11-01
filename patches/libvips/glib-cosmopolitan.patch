@@ -1,0 +1,43 @@
+glib 2.90.0 with Cosmopolitan (scripts/libvips.sh, for the NIF of vix):
+
+- O_NONBLOCK and FD_CLOEXEC are not constants in Cosmopolitan: no static
+  assertion on them (C38 of docs/UPSTREAM.md).
+- g_unix_fd_query_path() has no implementation for Cosmopolitan: it
+  gives G_FILE_ERROR_NOSYS, as on Hurd (G1).
+- Cosmopolitan defines MCAST_JOIN_SOURCE_GROUP, but not struct
+  group_source_req: no source-specific multicast for IPv6 (C39).
+
+--- a/glib/glib-unix.c
++++ b/glib/glib-unix.c
+@@ -86,7 +86,9 @@
+  * ambiguous on this platform.
+  * On Linux, usually O_NONBLOCK == 04000 and FD_CLOEXEC == 1, but the same
+  * might not be true everywhere. */
++#ifndef __COSMOPOLITAN__
+ G_STATIC_ASSERT (O_NONBLOCK != FD_CLOEXEC);
++#endif
+ 
+ G_DEFINE_QUARK (g-unix-error-quark, g_unix_error)
+ 
+@@ -996,6 +998,10 @@
+     }
+ 
+   return g_strdup (file_path);
++#elif defined (__COSMOPOLITAN__)
++  g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_NOSYS,
++               "g_unix_fd_query_path() not supported on Cosmopolitan");
++  return NULL;
+ #elif defined (__GNU__)
+   /*
+    * Hurd allows to open("/dev/fd/%u") to open the very same fd, but it's not
+--- a/gio/gsocket.c
++++ b/gio/gsocket.c
+@@ -2767,7 +2767,7 @@
+ 
+     case G_SOCKET_FAMILY_IPV6:
+       {
+-#ifdef MCAST_JOIN_SOURCE_GROUP
++#if defined (MCAST_JOIN_SOURCE_GROUP) && !defined (__COSMOPOLITAN__)
+         gboolean res;
+         gint optname;
+         struct group_source_req mc_req_src;

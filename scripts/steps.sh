@@ -36,7 +36,11 @@
 #                    (default 4.1.3), whose NIF is linked into beam.com (for
 #                    phx.gen.auth --hashing-lib argon2). Only with ELIXIR=1.
 #   EXTRA_NIFS       More hex.pm packages whose NIFs are linked (a custom
-#                    build), separated by spaces: picosat_elixir (for Ash).
+#                    build), separated by spaces: picosat_elixir (for Ash),
+#                    vix (libvips, for the image package; native only).
+#   LIBVIPS          For vix: a directory with x86_64/ and aarch64/, the
+#                    static libvips of each CPU. Default: $BUILD/libvips,
+#                    made by scripts/libvips.sh when it is not there.
 #                    Only with ELIXIR=1.
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
@@ -104,6 +108,8 @@ ARGON2_ELIXIR_VERSION=${ARGON2_ELIXIR_VERSION:-4.1.3}
 ARGON2_ELIXIR_SHA256=${ARGON2_ELIXIR_SHA256:-7c295b8d8e0eaf6f43641698f962526cdf87c6feb7d14bd21e599271b510608c}
 PICOSAT_ELIXIR_VERSION=${PICOSAT_ELIXIR_VERSION:-0.2.3}
 PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d53e984e8cd99c832383b7ab78c16c66}
+VIX_VERSION=${VIX_VERSION:-0.42.0}
+VIX_SHA256=${VIX_SHA256:-c4c92051653859dc5219f553a93fa777d63525ee961c48e16e9f61fed02472ee}
 # More packages whose NIFs are linked (custom builds), from the list of
 # hex_nif_recipe(): for example "picosat_elixir". Only with ELIXIR=1.
 EXTRA_NIFS=${EXTRA_NIFS:-}
@@ -383,6 +389,64 @@ hex_nif_packages() {
     echo bcrypt_elixir argon2_elixir $EXTRA_NIFS
 }
 
+# The packages of hex_nif_packages() for the WebAssembly runtime: not
+# vix (libvips uses threads, and the runtime has none).
+edge_hex_nif_packages() {
+    for p in $(hex_nif_packages); do
+        [ "$p" = vix ] || printf '%s ' "$p"
+    done
+}
+
+# build_vix_nif SRC OUT CFLAGS: the NIF of vix (in SRC) for each CPU, with
+# the compiler and the static libvips of that CPU (LIBVIPS/x86_64 and
+# LIBVIPS/aarch64: their headers differ). OUT/vix.a and OUT/.aarch64/vix.a
+# have the objects of the NIF and of all the libraries of libvips, so the
+# link needs only this archive (STATIC_NIFS has one archive for each NIF).
+build_vix_nif() {
+    src=$1 out=$2 cflags=$3
+    bin=$COSMOCC/bin
+    libvips=${LIBVIPS:-$BUILD/libvips}
+    # The static libvips of scripts/libvips.sh, once (about 5 minutes for
+    # the two CPUs). LIBVIPS names a build that exists.
+    if [ -z "${LIBVIPS:-}" ] && [ ! -f "$libvips/aarch64/lib/libvips.a" ]; then
+        COSMOCC=$COSMOCC BUILD=$BUILD sh "$ROOT/scripts/libvips.sh" "$libvips"
+    fi
+    for cpu in x86_64 aarch64; do
+        p=$libvips/$cpu
+        if [ ! -f "$p/lib/libvips.a" ]; then
+            echo "Missing $p/lib/libvips.a (LIBVIPS)" >&2
+            exit 1
+        fi
+        case $cpu in x86_64) a=$out/vix.a ;; *) mkdir -p "$out/.aarch64"; a=$out/.aarch64/vix.a ;; esac
+        obj=$out/vix-$cpu
+        rm -rf "$obj" "$a"
+        mkdir -p "$obj"
+        # Not the -DHAVE_CONFIG_H of vips.pc: erl_nif.h then reads a
+        # config.h.
+        vips=$(PKG_CONFIG_LIBDIR=$p/lib/pkgconfig pkg-config --cflags vips |
+            sed 's/-DHAVE_CONFIG_H//g')
+        for c in "$src"/c_src/*.c "$src"/c_src/g_object/*.c; do
+            # shellcheck disable=SC2086
+            "$bin/$cpu-unknown-cosmo-cc" -O2 -std=c11 -D_POSIX_C_SOURCE=200809L                 -DSTATIC_ERLANG_NIF_LIBNAME=vix $cflags $vips                 -c "$c" -o "$obj/$(basename "$c" .c).o"
+        done
+        # One object with one global name, vix_nif_init: the other
+        # names of the NIF (such as raise_exception) are also in other
+        # static NIFs (crypto).
+        "$bin/$cpu-linux-cosmo-ld" -r -o "$obj/vix_nif.r" "$obj"/*.o
+        "$bin/$cpu-unknown-cosmo-objcopy" --keep-global-symbol=vix_nif_init \
+            "$obj/vix_nif.r" "$obj/vix_nif.o.all"
+        {
+            echo "CREATE $a"
+            echo "ADDMOD $obj/vix_nif.o.all"
+            for l in vips webpmux webpdemux webp sharpyuv png16 jpeg expat                      gio-2.0 gmodule-2.0 gobject-2.0 glib-2.0 intl ffi z; do
+                echo "ADDLIB $p/lib/lib$l.a"
+            done
+            echo SAVE
+            echo END
+        } | "$bin/$cpu-unknown-cosmo-ar" -M
+    done
+}
+
 # hex_nif_recipe NAME: the version, the SHA-256 of the tarball and the
 # name of the NIF (STATIC_ERLANG_NIF_LIBNAME, and the name of its archive)
 # of a package, or an error for a package that is not in the list.
@@ -391,6 +455,7 @@ hex_nif_recipe() {
         bcrypt_elixir) echo "$BCRYPT_ELIXIR_VERSION $BCRYPT_ELIXIR_SHA256 bcrypt_nif" ;;
         argon2_elixir) echo "$ARGON2_ELIXIR_VERSION $ARGON2_ELIXIR_SHA256 argon2_nif" ;;
         picosat_elixir) echo "$PICOSAT_ELIXIR_VERSION $PICOSAT_ELIXIR_SHA256 picosat_nif" ;;
+        vix) echo "$VIX_VERSION $VIX_SHA256 vix" ;;
         # Only for the WebAssembly runtime (step_wasm_runtime): the native
         # beam.com links exqlite in step_nifs.
         exqlite) echo "$EXQLITE_VERSION $EXQLITE_SHA256 sqlite3_nif" ;;
@@ -410,6 +475,10 @@ build_hex_nif() {
     fetch_hex "$name" "$vsn" "$sha"
     log "Building the $name NIF as a static NIF ($cc)"
     src=$HEXNIFS/$name-$vsn
+    if [ "$name" = vix ]; then
+        build_vix_nif "$src" "$out" "$cflags"
+        return 0
+    fi
     obj=$out/$name
     rm -rf "$obj" "$out/$lib.a" "$out/.aarch64/$lib.a"
     mkdir -p "$obj"
@@ -721,7 +790,7 @@ wasm_runtime_inputs() {
     {
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "EMSDK $EMSDK_VERSION $EMSDK_COMMIT WAMR $WAMR_VERSION $WAMR_COMMIT"
-        echo "HEX_NIFS $(hex_nif_packages)$(use_exqlite && echo " exqlite")"
+        echo "HEX_NIFS $(edge_hex_nif_packages)$(use_exqlite && echo " exqlite")"
         echo "WASM_CFLAGS ${WASM_CFLAGS:-} EXTRA_LDFLAGS ${EXTRA_LDFLAGS:-} WASM64 ${WASM64:-0}"
         git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr \
                 scripts/steps.sh |
@@ -755,7 +824,7 @@ step_wasm_runtime() {
         OTP_COMMIT=$OTP_COMMIT OPENSSL_VERSION=$OPENSSL_VERSION OPENSSL_COMMIT=$OPENSSL_COMMIT \
         WASM_NODE=0 WORKER=1 WORKER_ROOTFS=none \
         WORKER_OUT=$BUILD/wasm-runtime BUILD=$BUILD \
-        HEX_NIFS="$(hex_nif_packages)$(use_exqlite && echo " exqlite")" \
+        HEX_NIFS="$(edge_hex_nif_packages)$(use_exqlite && echo " exqlite")" \
         "$ROOT/wasm/erts/build.sh"
     echo "$inputs" > "$out/inputs"
 }

@@ -144,11 +144,12 @@ wasm_nif_files(App, Vsn, Priv) ->
             []
     end.
 
-%% The env force_build of elixir_make, with each package of ?WASM_NIFS,
-%% before Mix loads the configuration of the project. persistent: a later
+%% The env force_build of elixir_make, with each package of ?WASM_NIFS
+%% and each linked NIF (a package such as vix gets a precompiled NIF
+%% without it), before Mix loads the configuration of the project. persistent: a later
 %% load of elixir_make keeps it.
 force_build() ->
-    force_build(?WASM_NIFS).
+    force_build(?WASM_NIFS ++ nifs()).
 
 force_build(WasmNifs) ->
     Old = case application:get_env(elixir_make, force_build) of
