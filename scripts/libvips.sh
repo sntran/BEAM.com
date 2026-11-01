@@ -5,10 +5,12 @@
 #   OUT: the directory of the result (default $BUILD/libvips): OUT/x86_64
 #   and OUT/aarch64, each with include/, lib/ and lib/pkgconfig/.
 # Needs: cosmocc ($COSMOCC, default build/cosmocc), meson, ninja, cmake,
-# pkg-config, curl, git and python3.
+# nasm (the SIMD code of libjpeg-turbo on x86_64), pkg-config, curl, git
+# and python3.
 #
 # The versions are those of sharp-libvips (the libvips of vix 0.42.0),
-# with JPEG from libjpeg-turbo (no SIMD), and only the formats JPEG, PNG,
+# with the SIMD code of libjpeg-turbo, libwebp and Highway, JPEG from
+# libjpeg-turbo, and only the formats JPEG, PNG,
 # WebP, GIF and PPM. Each CPU is built alone, because the headers of
 # glib and libffi differ. aarch64 is a cross build: no test program runs.
 set -eu
@@ -37,6 +39,7 @@ CLONES="
 zlib-ng 2.3.3 12731092979c6d07f42da27da673a9f6c7b13586 https://github.com/zlib-ng/zlib-ng
 proxy-libintl 0.5 33934de09af6a6627eb44e310a8079df009abdbb https://github.com/frida/proxy-libintl
 libpng v1.6.58 3061454d980de7d53608f594194cfac722721d2a https://github.com/pnggroup/libpng
+highway 1.4.0 2607d3b5b0113992fe84d3848859eae13b3b52c1 https://github.com/google/highway
 "
 
 fetch() {
@@ -120,6 +123,7 @@ EOF
     cmake_build() {
         # shellcheck disable=SC2086
         CFLAGS="-O2 -I$P/include" cmake -S . -B b -G Ninja $cmake_sys -DCMAKE_C_COMPILER="$cc" \
+            -DCMAKE_CXX_COMPILER="$COSMOCC/bin/$cpu-unknown-cosmo-c++" \
             -DCMAKE_AR="$ar" -DCMAKE_RANLIB="$ranlib" -DCMAKE_INSTALL_PREFIX="$P" \
             -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release "$@" > ../log 2>&1
         ninja -C b -j"$JOBS" install >> ../log 2>&1
@@ -140,7 +144,7 @@ EOF
     unpack() {
         cd "$W"
         case $1 in
-            zlib-ng|proxy-libintl|libpng) cp -r "$SRC/git/$1" "$W/$1" ;;
+            zlib-ng|proxy-libintl|libpng|highway) cp -r "$SRC/git/$1" "$W/$1" ;;
             *) tar xf "$SRC/dl/$(cd "$SRC/dl" && ls "$1".tar.*)" -C "$W" ;;
         esac
         cd "$W/$1"
@@ -174,7 +178,8 @@ EOF
         -Dglib_debug=disabled
 
     unpack libjpeg-turbo-3.2.1
-    cmake_build -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=OFF \
+    # SIMD: NASM on x86_64, NEON on aarch64; a check of the CPU at run time.
+    cmake_build -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=ON \
         -DWITH_TURBOJPEG=OFF -DWITH_TOOLS=OFF -DWITH_TESTS=OFF
 
     unpack libpng
@@ -182,9 +187,17 @@ EOF
     make -j"$JOBS" install dist_man_MANS= >> ../log 2>&1
 
     unpack libwebp-1.6.0
-    conf_build --enable-libwebpmux --enable-libwebpdemux --disable-sse2 \
-        --disable-sse4.1 --disable-neon
+    # SSE2 and SSE4.1 on x86_64, NEON on aarch64: libwebp checks the CPU
+    # at run time.
+    conf_build --enable-libwebpmux --enable-libwebpdemux
     make -j"$JOBS" install bin_PROGRAMS= noinst_PROGRAMS= man_MANS= >> ../log 2>&1
+
+    # Highway: the SIMD code of libvips (resize, convolution and others),
+    # in C++. It selects the code for the CPU at run time.
+    unpack highway
+    cmake_build -DBUILD_SHARED_LIBS=OFF -DHWY_FORCE_STATIC_LIBS=ON \
+        -DHWY_ENABLE_TESTS=OFF -DHWY_ENABLE_EXAMPLES=OFF -DHWY_ENABLE_CONTRIB=OFF \
+        -DBUILD_TESTING=OFF
 
     # libvips: the C library only (vix uses no C++), no man pages, tools,
     # tests or fuzz programs.
@@ -192,7 +205,7 @@ EOF
     sed -i "/^subdir('man')$/,/^subdir('fuzz')$/d" meson.build
     meson_build -Dauto_features=disabled -Ddeprecated=false -Dexamples=false \
         -Dcplusplus=false -Dmodules=disabled -Dintrospection=disabled \
-        -Djpeg=enabled -Dpng=enabled -Dwebp=enabled -Dzlib=enabled \
+        -Djpeg=enabled -Dpng=enabled -Dwebp=enabled -Dzlib=enabled -Dhighway=enabled \
         -Dnsgif=true -Dppm=true -Danalyze=false -Dradiance=false
     cd "$ROOT"
 }

@@ -63,12 +63,12 @@ jobs:
           sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
-      # scripts/libvips.sh: meson (the version of the test of the recipe)
-      # and ninja.
+      # scripts/libvips.sh: meson (the version of the test of the recipe),
+      # ninja, and nasm (the SIMD code of libjpeg-turbo).
       - name: Install meson
         run: |
           python3 -m pip install --user meson==1.12.1
-          command -v ninja || sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build nasm
 
       # No SQLite, WAMR or WebAssembly runtime: only what vix_check needs.
       - name: Build

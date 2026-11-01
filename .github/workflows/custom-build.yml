@@ -141,12 +141,13 @@ jobs:
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
 
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
-      # (the version of the test of the recipe) and ninja.
+      # (the version of the test of the recipe), ninja, and nasm (the SIMD
+      # code of libjpeg-turbo).
       - name: Install meson
         if: contains(env.EXTRA_NIFS, 'vix')
         run: |
           python3 -m pip install --user meson==1.12.1
-          command -v ninja || sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build nasm
 
       - name: Build
         env:

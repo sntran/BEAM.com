@@ -95,10 +95,12 @@ or rebar3. A custom build can have more:
   `hex_nif_recipe()` of `scripts/steps.sh`: `picosat_elixir` (the SAT solver of
   Ash) and `vix` (libvips, for the `image` package). Only with `ELIXIR=1`.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
-    builds it in `build/libvips` (meson, ninja, cmake and pkg-config;
+    builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
     about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists. It has
-    the formats JPEG, PNG, WebP, GIF and PPM. The file is about 13 MB
-    larger (about 6 MB with gzip).
+    the formats JPEG, PNG, WebP, GIF and PPM, and the SIMD code of
+    libjpeg-turbo, libwebp and Highway: the times of
+    `tests/programs/vix_check` are near those of the precompiled vix.
+    The file is about 13 MB larger (about 6 MB with gzip).
   - The NIF of `vix` is native only: the WebAssembly runtime has no
     threads, and libvips needs them.
 

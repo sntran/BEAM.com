@@ -438,7 +438,8 @@ build_vix_nif() {
         {
             echo "CREATE $a"
             echo "ADDMOD $obj/vix_nif.o.all"
-            for l in vips webpmux webpdemux webp sharpyuv png16 jpeg expat                      gio-2.0 gmodule-2.0 gobject-2.0 glib-2.0 intl ffi z; do
+            for l in vips hwy webpmux webpdemux webp sharpyuv png16 jpeg expat \
+                     gio-2.0 gmodule-2.0 gobject-2.0 glib-2.0 intl ffi z; do
                 echo "ADDLIB $p/lib/lib$l.a"
             done
             echo SAVE
