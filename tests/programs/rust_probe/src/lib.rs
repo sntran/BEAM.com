@@ -10,7 +10,10 @@ static ONCE: OnceLock<u64> = OnceLock::new();
 /// A check of the parts of std that a NIF uses. Gives 0 when each part works.
 #[no_mangle]
 pub extern "C" fn rs_probe() -> i32 {
+    // Each step prints its name first, so a crash shows its step.
+    let step = |name: &str| eprintln!("rs_probe: {name}");
     let start = Instant::now();
+    step("threads and a Mutex");
     // Threads on one Mutex: the contention needs the futex.
     let counter = Arc::new(Mutex::new(0u64));
     let handles: Vec<_> = (0..8)
@@ -29,6 +32,7 @@ pub extern "C" fn rs_probe() -> i32 {
     if *counter.lock().unwrap() != 800_000 || locals != 800_000 { return 1; }
     // Thread-locals stay per thread: the main thread has 0.
     if LOCAL.with(|l| l.get()) != 0 { return 2; }
+    step("a Condvar");
     // A Condvar between two threads.
     let pair = Arc::new((Mutex::new(false), Condvar::new()));
     let p2 = Arc::clone(&pair);
@@ -37,16 +41,17 @@ pub extern "C" fn rs_probe() -> i32 {
     while !*ready { ready = pair.1.wait(ready).unwrap(); }
     drop(ready);
     t.join().unwrap();
+    step("OnceLock");
     // OnceLock from 4 threads at once.
     let hs: Vec<_> = (0..4).map(|i| thread::spawn(move || *ONCE.get_or_init(|| 40 + i as u64 * 0 + 2))).collect();
     if hs.into_iter().any(|h| h.join().unwrap() != 42) { return 3; }
+    step("random bytes");
     // HashMap: its RandomState reads random bytes.
     let mut m = HashMap::new();
     for i in 0..1000 { m.insert(i, i * 2); }
     if m[&500] != 1000 { return 4; }
-    // A panic that unwinds and stops at catch_unwind.
-    if std::panic::catch_unwind(|| { if m.len() > 0 { panic!("probe") } }).is_ok() { return 5; }
     if start.elapsed().as_secs() > 60 { return 6; }
+    step("the clocks");
     // The clocks: a sleep, and a wait with a timeout that ends.
     let t0 = Instant::now();
     thread::sleep(std::time::Duration::from_millis(50));
@@ -54,7 +59,14 @@ pub extern "C" fn rs_probe() -> i32 {
     let (m, cv) = (Mutex::new(()), Condvar::new());
     let (_g, timeout) = cv.wait_timeout(m.lock().unwrap(), std::time::Duration::from_millis(30)).unwrap();
     if !timeout.timed_out() { return 8; }
+    step("the number of CPUs");
     // The number of CPUs: rayon uses it.
     match thread::available_parallelism() { Ok(n) if n.get() >= 1 => {}, _ => return 9 }
+    step("unwinding");
+    // A panic that unwinds and stops at catch_unwind (Rustler catches the
+    // panics of a NIF so). The hook prints nothing.
+    std::panic::set_hook(Box::new(|_| {}));
+    let one = std::hint::black_box(1);
+    if std::panic::catch_unwind(|| { if one > 0 { panic!("probe") } }).is_ok() { return 5; }
     0
 }

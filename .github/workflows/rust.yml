@@ -43,8 +43,12 @@ jobs:
       - name: Download cosmocc
         run: make toolchain
 
-      - name: The Rust targets of musl
-        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+      # x86_64: the std of stable Rust. aarch64: a std built again with x18
+      # and x28 reserved, with a nightly Rust (tests/programs/rust_probe/build.sh).
+      - name: The Rust toolchains
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src
 
       - name: Build
         run: |
