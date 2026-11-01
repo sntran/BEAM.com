@@ -10,7 +10,7 @@ notes of its release.
   of the custom builder. `scripts/libvips.sh` builds libvips and its
   libraries (glib, libffi, expat, zlib-ng, libjpeg-turbo, libpng, libwebp
   and Highway) with cosmocc for x86_64 and aarch64, with the SIMD code of
-  libjpeg-turbo, libwebp and Highway. The NIF is native only.
+  zlib-ng, libjpeg-turbo, libwebp and Highway. The NIF is native only.
   See "The steps" in `docs/BUILDING.md`, and C38 to C40, E5, E6 and G1 in
   `docs/UPSTREAM.md`. `tests/programs/vix_check` checks it on each
   system (`.github/workflows/vix.yml`), with the times of some image

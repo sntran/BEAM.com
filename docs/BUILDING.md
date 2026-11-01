@@ -98,7 +98,7 @@ or rebar3. A custom build can have more:
     builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
     about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists. It has
     the formats JPEG, PNG, WebP, GIF and PPM, and the SIMD code of
-    libjpeg-turbo, libwebp and Highway: the times of
+    zlib-ng, libjpeg-turbo, libwebp and Highway: the times of
     `tests/programs/vix_check` are near those of the precompiled vix.
     The file is about 13 MB larger (about 6 MB with gzip).
   - The NIF of `vix` is native only: the WebAssembly runtime has no
