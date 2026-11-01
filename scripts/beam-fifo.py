@@ -125,7 +125,10 @@ def request(method, body=b"", headers=None, sleep=time.sleep):
     url = value("BASE").rstrip("/") + "/" + value("HOLDER")
     waited = 0
     while True:
-        req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+        # Cloudflare refuses the User-Agent of urllib (error 1010).
+        all_headers = {"User-Agent": "beam-fifo (https://github.com/sntran/BEAM.com)"}
+        all_headers.update(headers or {})
+        req = urllib.request.Request(url, data=body, method=method, headers=all_headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 return response.status, response.read().decode()
