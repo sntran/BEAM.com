@@ -9,7 +9,7 @@
 # and python3.
 #
 # The versions are those of sharp-libvips (the libvips of vix 0.42.0),
-# with the SIMD code of libjpeg-turbo, libwebp and Highway, JPEG from
+# with the SIMD code of zlib-ng, libjpeg-turbo, libwebp and Highway, JPEG from
 # libjpeg-turbo, and only the formats JPEG, PNG,
 # WebP, GIF and PPM. Each CPU is built alone, because the headers of
 # glib and libffi differ. aarch64 is a cross build: no test program runs.
@@ -151,9 +151,13 @@ EOF
         log "Building $1 ($cpu)"
     }
 
+    # zlib-ng with its SIMD code (SSE2 to AVX-512 and VPCLMULQDQ on
+    # x86_64, NEON and the CRC32 instructions on aarch64). It selects the
+    # code for the CPU at run time: cpuid on x86_64, and getauxval() for
+    # CRC32 on aarch64 (else the generic code). No -march=native.
     unpack zlib-ng
     cmake_build -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DZLIB_COMPAT=ON \
-        -DWITH_OPTIM=OFF -DWITH_NATIVE_INSTRUCTIONS=OFF
+        -DWITH_OPTIM=ON -DWITH_RUNTIME_CPU_DETECTION=ON -DWITH_NATIVE_INSTRUCTIONS=OFF
 
     unpack libffi-3.8.0
     conf_build --disable-builddir --disable-multi-os-directory --disable-raw-api \
