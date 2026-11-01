@@ -33,7 +33,7 @@
 -export([main/0, force_build/0, wasm_nif_files/2]).
 
 -ifdef(TEST).
--export([run/2, dep_version/1, force_build/1, wasm_nif_files/3]).
+-export([run/2, dep_version/1, force_build/1, wasm_nif_files/3, app_file_nifs/1]).
 -endif.
 
 %% The packages whose NIF library in WebAssembly is in priv/nifs.
@@ -144,11 +144,37 @@ wasm_nif_files(App, Vsn, Priv) ->
             []
     end.
 
-%% The env force_build of elixir_make, with each package of ?WASM_NIFS,
-%% before Mix loads the configuration of the project. persistent: a later
-%% load of elixir_make keeps it.
+%% The env force_build of elixir_make, with each package of ?WASM_NIFS
+%% and each linked NIF (a package such as vix gets a precompiled NIF
+%% without it), before Mix loads the configuration of the project.
+%% persistent: a later load of elixir_make keeps it.
 force_build() ->
-    force_build(?WASM_NIFS).
+    force_build(?WASM_NIFS ++ start_nifs()).
+
+%% The linked NIFs at the start of a tool of Elixir. When beam_com is not
+%% loaded, they come from its .app file, and beam_com stays not loaded:
+%% Mix loads the application of the project, and keeps an application
+%% that is already loaded (the beam_com of the runtime, in the tests of
+%% beam_com).
+start_nifs() ->
+    case lists:keymember(beam_com, 1, application:loaded_applications()) of
+        true -> nifs();
+        false -> app_file_nifs(code:where_is_file("beam_com.app"))
+    end.
+
+%% The env nifs of the .app file File. [] when the file cannot be read.
+app_file_nifs(File) when is_list(File) ->
+    case file:consult(File) of
+        {ok, [{application, _, Props}]} when is_list(Props) ->
+            case proplists:get_value(nifs, proplists:get_value(env, Props, [])) of
+                Nifs when is_list(Nifs) -> Nifs;
+                _ -> []
+            end;
+        _ ->
+            []
+    end;
+app_file_nifs(non_existing) ->
+    [].
 
 force_build(WasmNifs) ->
     Old = case application:get_env(elixir_make, force_build) of

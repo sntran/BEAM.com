@@ -77,6 +77,15 @@ order, with `git apply`.
 | `0002-reserve-linear-memory.patch` | `core/iwasm/common/wasm_memory.c` | A linear memory of wasm32 has its maximum size in virtual memory from the start, so a growth copies nothing. On Windows and OpenBSD, its mapping has room for twice its pages, so the copies take linear time. | W10 |
 | `0003-indirect-func-type.patch` | `core/iwasm/common/wasm_runtime_common.c`, `core/iwasm/include/wasm_export.h` | `wasm_runtime_get_indirect_func_type()`: the type of the function of an element of table 0, also for a table with no export, so that a caller can check it before `wasm_runtime_call_indirect()`. | W11 |
 
+## libvips (`patches/libvips/`)
+
+`scripts/libvips.sh` applies them, with `patch -p1`, for the NIF of vix
+(`EXTRA_NIFS=vix`).
+
+| Patch | File | What it does | Items |
+|---|---|---|---|
+| `glib-cosmopolitan.patch` | `glib/glib-unix.c`, `gio/gsocket.c` of glib 2.90.0 | No static assertion on `O_NONBLOCK`, `G_FILE_ERROR_NOSYS` from `g_unix_fd_query_path()`, and no source-specific multicast for IPv6, with Cosmopolitan. | C38, C39, G1 |
+
 ## Changes that are not patch files
 
 Some changes are compiler flags or small edits in `scripts/steps.sh`.
@@ -87,6 +96,8 @@ Their items are in `docs/UPSTREAM.md` too:
   `wamrc` in `docs/NIFS.md` (W7, W9).
 - exqlite and elixir_make: the flags and the `sed` edit of
   `build_hex_nif` (E1 to E4).
+- vix and libvips: `build_vix_nif` and `beam_com_make:force_build/0`
+  (E5, E6), and the test limit of `scripts/libvips.sh` (C40).
 - The builder and the tools of beam.com (`src/beam_com/`): O17 to O19.
 - Emscripten and the WebAssembly runtime of `--target wasm32`:
   `wasm/erts/build.sh` (the EM items).

@@ -919,7 +919,10 @@ mix_dir(Dir, Options) ->
       erlc_paths := ErlPaths, erlc_options := ErlcOpts, application := AppConf}
         = beam_com_elixir:mix_project(Dir),
     Vsn = maps:get(vsn, Options, Vsn0),
-    Out = temp_dir("mix"),
+    %% NAME-VSN/ebin, as in Mix: code:priv_dir/1 then finds the
+    %% application while its code compiles (vix loads its NIF then).
+    Top = temp_dir("mix"),
+    Out = filename:join([Top, lists:flatten(io_lib:format("~ts-~ts", [Name, Vsn])), "ebin"]),
     ok = filelib:ensure_path(Out),
     true = code:add_patha(Out),
     Beams = try
@@ -939,7 +942,7 @@ mix_dir(Dir, Options) ->
                 ErlBeams ++ beam_com_elixir:compile(ExFiles, Out, Dir)
             after
                 code:del_path(Out),
-                file:del_dir_r(Out)
+                file:del_dir_r(Top)
             end,
     Get = fun(K, D) -> proplists:get_value(K, AppConf, D) end,
     Apps = case Get(applications, undefined) of
