@@ -1,0 +1,5 @@
+To: https://api.cloudflare.com/client/v4/accounts/{{CF_ACCOUNT_ID}}/email/sending/send
+Authorization: <seal:Bearer {{CF_EMAIL_TOKEN}}>
+Content-Type: application/json
+
+{"from": {"address": "{{FROM}}", "name": "Build a BEAM"}, "to": ["$email"], "subject": "Start your custom build of beam.com", "text": "Open this link to start your custom build of beam.com:\n\n{{BASE}}/beam.com/confirm?email=$(printf '\"%s\"' $email | jq -r @uri)&apps=$(printf '\"%s\"' $apps | jq -r @uri)&hex=$hex&rebar3=$rebar3&elixir=$elixir&jit=$jit&sqlite=$sqlite&wasm=$wasm&nifs=$(printf '\"%s\"' $nifs | jq -r @uri)&code=$(totp $email)\n\nThe link works one time, for 15 minutes. If you did not ask for a build, you can ignore this email.\n"}

@@ -1,5 +1,0 @@
-To: https://api.cloudflare.com/client/v4/accounts/{{CF_ACCOUNT_ID}}/email/sending/send
-Authorization: <seal:Bearer {{CF_EMAIL_TOKEN}}>
-Content-Type: application/json
-
-{"from": {"address": "{{FROM}}", "name": "Build a BEAM"}, "to": ["$($reply | base64 -d | secretbox -d -K <seal:{{BOX_KEY}}>)"], "subject": "Your custom build of beam.com did not run", "text": "Your custom build of beam.com did not complete ($status $reason).\n\n- queue_full: 3 builds wait already. Try again later.\n- daily_limit: we made 10 new builds today. Try again tomorrow (UTC).\n- failed or timeout: the log of the run tells the cause: $run\n\nAsk again at {{BASE}}/build-a-beam\n"}

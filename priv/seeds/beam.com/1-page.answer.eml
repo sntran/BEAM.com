@@ -32,7 +32,7 @@ code { font-size: .9em; }
 <p>Get a custom <a href="https://github.com/sntran/BEAM.com">beam.com</a>: Erlang/OTP and Elixir in one file that runs on Linux, macOS, Windows and the BSDs, with the parts that you choose.</p>
 <p class="muted">You need no GitHub account. We send a link to your email address. The link starts the build, and a second email gives you the file when it is ready (about 30 to 60 minutes). Each file stays available for 30 days. At most 10 new builds each day.</p>
 
-<form method="post" action="/build-a-beam">
+<form method="post" action="/beam.com">
 <fieldset>
 <legend>Erlang/OTP</legend>
 <p class="muted">The default beam.com has kernel, stdlib, sasl, compiler, parsetools, crypto, asn1, public_key, ssl, inets, ssh, xmerl and runtime_tools.</p>

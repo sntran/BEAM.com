@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Saves the envelopes of the FIFO build-a-beam of mkfifo.com.
+"""Saves the envelopes of the FIFO beam.com of mkfifo.com.
 
-build-a-beam is a held FIFO: a form of a custom build of beam.com for a
+beam.com is a held FIFO: a form of a custom build of beam.com for a
 person with no GitHub account (docs/BUILDING.md, "A custom build"). Its
-envelopes are in priv/seeds/build-a-beam/, with the names of the seeds of
+envelopes are in priv/seeds/beam.com/, with the names of the seeds of
 mkfifo.com:
 
   N-LABEL.eml        an ingress envelope
@@ -12,38 +12,38 @@ mkfifo.com:
 
 The holder is a FIFO with a secret name: each person who knows the name
 can change the envelopes. The envelopes have {{NAME}} for the values of
-the variables BUILD_A_BEAM_NAME of the environment. A value in <seal:...>
+the variables BEAM_FIFO_NAME of the environment. A value in <seal:...>
 is a secret: mkfifo.com seals it at the save, and nobody reads it again.
 The repository has no value.
 
-Usage: build-a-beam.py [--print]
+Usage: beam-fifo.py [--print]
 
   --print  Show the envelopes with the values, and the secrets as ****.
            Save nothing.
 
 The variables:
 
-  BUILD_A_BEAM_HOLDER          The secret name of the holder (26 characters
+  BEAM_FIFO_HOLDER             The secret name of the holder (26 characters
                                or more).
-  BUILD_A_BEAM_BASE            https://mkfifo.com (the default).
-  BUILD_A_BEAM_STATE           The file of the Message-IDs of the last save
-                               (default ~/.config/build-a-beam/HOLDER.ids).
+  BEAM_FIFO_BASE               https://mkfifo.com (the default).
+  BEAM_FIFO_STATE              The file of the Message-IDs of the last save
+                               (default ~/.config/beam-fifo/HOLDER.ids).
                                The next save deletes these envelopes first.
-  BUILD_A_BEAM_GITHUB_REPO     sntran/BEAM.com (the default).
-  BUILD_A_BEAM_GITHUB_REF      main (the default).
-  BUILD_A_BEAM_GITHUB_TOKEN    A fine-grained token: Actions, read and write,
+  BEAM_FIFO_GITHUB_REPO        sntran/BEAM.com (the default).
+  BEAM_FIFO_GITHUB_REF         main (the default).
+  BEAM_FIFO_GITHUB_TOKEN       A fine-grained token: Actions, read and write,
                                on the repository only.
-  BUILD_A_BEAM_CF_ACCOUNT_ID   The Cloudflare account of the email sender.
-  BUILD_A_BEAM_CF_EMAIL_TOKEN  A token of Cloudflare Email Service (send).
-  BUILD_A_BEAM_FROM            The sender, for example build-a-beam@mkfifo.com.
-  BUILD_A_BEAM_BOX_KEY         32 bytes in hexadecimal: the key of the boxes
+  BEAM_FIFO_CF_ACCOUNT_ID      The Cloudflare account of the email sender.
+  BEAM_FIFO_CF_EMAIL_TOKEN     A token of Cloudflare Email Service (send).
+  BEAM_FIFO_FROM               The sender, for example beam@mkfifo.com.
+  BEAM_FIFO_BOX_KEY            32 bytes in hexadecimal: the key of the boxes
                                of the addresses.
-  BUILD_A_BEAM_DONE_SECRET     The secret of the answers of the workflow: the
-                               secret BUILD_A_BEAM_SECRET of the repository.
-  BUILD_A_BEAM_R2_BUCKET       The bucket of the builds.
-  BUILD_A_BEAM_R2_ENDPOINT     https://ACCOUNT_ID.r2.cloudflarestorage.com
-  BUILD_A_BEAM_R2_READ_KEY_ID  An R2 key that can only read the bucket.
-  BUILD_A_BEAM_R2_READ_SECRET  Its secret.
+  BEAM_FIFO_DONE_SECRET        The secret of the answers of the workflow: the
+                               secret BEAM_FIFO_SECRET of the repository.
+  BEAM_FIFO_R2_BUCKET          The bucket of the builds.
+  BEAM_FIFO_R2_ENDPOINT        https://ACCOUNT_ID.r2.cloudflarestorage.com
+  BEAM_FIFO_R2_READ_KEY_ID     An R2 key that can only read the bucket.
+  BEAM_FIFO_R2_READ_SECRET     Its secret.
 """
 
 import os
@@ -54,7 +54,7 @@ import time
 import urllib.error
 import urllib.request
 
-SEEDS = pathlib.Path(__file__).resolve().parent.parent / "priv" / "seeds" / "build-a-beam"
+SEEDS = pathlib.Path(__file__).resolve().parent.parent / "priv" / "seeds" / "beam.com"
 DEFAULTS = {
     "BASE": "https://mkfifo.com",
     "GITHUB_REPO": "sntran/BEAM.com",
@@ -66,26 +66,26 @@ INGRESS = re.compile(r"^(\d+)-([a-z0-9-]+)\.eml$")
 
 
 def fail(message):
-    raise SystemExit(f"build-a-beam: {message}")
+    raise SystemExit(f"beam-fifo: {message}")
 
 
 def value(name):
-    text = os.environ.get("BUILD_A_BEAM_" + name, DEFAULTS.get(name, ""))
+    text = os.environ.get("BEAM_FIFO_" + name, DEFAULTS.get(name, ""))
     if not text:
-        fail(f"BUILD_A_BEAM_{name} is not set")
+        fail(f"BEAM_FIFO_{name} is not set")
     if "\n" in text or "\r" in text or ">" in text:
-        fail(f"BUILD_A_BEAM_{name} has a line break or a '>'")
+        fail(f"BEAM_FIFO_{name} has a line break or a '>'")
     return text
 
 
 def check():
     if not re.fullmatch(r"[0-9a-f]{64}", value("BOX_KEY")):
-        fail("BUILD_A_BEAM_BOX_KEY must be 32 bytes in hexadecimal (64 characters)")
+        fail("BEAM_FIFO_BOX_KEY must be 32 bytes in hexadecimal (64 characters)")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{25,63}", value("HOLDER")):
-        fail("BUILD_A_BEAM_HOLDER must be a name of 26 to 64 characters: a-z, 0-9, -, _ and .")
+        fail("BEAM_FIFO_HOLDER must be a name of 26 to 64 characters: a-z, 0-9, -, _ and .")
     if not re.fullmatch(r"https://[a-z0-9.-]+(:[0-9]+)?", value("BASE").rstrip("/")):
         if not re.fullmatch(r"http://localhost(:[0-9]+)?", value("BASE").rstrip("/")):
-            fail("BUILD_A_BEAM_BASE must be an https URL with no path")
+            fail("BEAM_FIFO_BASE must be an https URL with no path")
 
 
 def render(text):
@@ -145,14 +145,14 @@ def save(file, text, headers=None):
 
 
 def state_file():
-    default = pathlib.Path.home() / ".config" / "build-a-beam" / (value("HOLDER") + ".ids")
-    return pathlib.Path(os.environ.get("BUILD_A_BEAM_STATE") or default)
+    default = pathlib.Path.home() / ".config" / "beam-fifo" / (value("HOLDER") + ".ids")
+    return pathlib.Path(os.environ.get("BEAM_FIFO_STATE") or default)
 
 
 def main(argv):
     show = argv[1:] == ["--print"]
     if argv[1:] and not show:
-        fail("usage: build-a-beam.py [--print]")
+        fail("usage: beam-fifo.py [--print]")
     check()
     all_envelopes = envelopes()
     if show:

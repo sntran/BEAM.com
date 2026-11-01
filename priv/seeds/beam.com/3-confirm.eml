@@ -1,5 +1,5 @@
-To: build-a-beam
-X-HTTP-Method-Override: ^POST$
+To: beam.com/confirm
+X-HTTP-Method-Override: ^GET$
 Content-Type: form
 
 email: ^(?<email>[^@\s;,<>"\\]{1,64}@[^@\s;,<>"\\]{1,253}\.[^@\s;,<>"\\]{2,63})$
@@ -11,5 +11,4 @@ jit: ^(?<jit>[01])$
 sqlite: ^(?<sqlite>[01])$
 wasm: ^(?<wasm>[01])$
 nifs: ^(?<nifs>|picosat_elixir|vix|picosat_elixir vix)$
-step: ^start$
-code: ^$(totp $email)$
+code: ^(?<code>[0-9]{8})$

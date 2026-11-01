@@ -1,3 +1,0 @@
-To: build-a-beam/b/:key([0-9a-f]{64})/:file(beam\.com|beam-emu\.com)
-X-HTTP-Method-Override: ^GET$
-Range: ^(?<range>[^\r\n]{0,256})$

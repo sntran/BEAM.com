@@ -6,13 +6,13 @@ notes of its release.
 ## Unreleased
 
 - A custom build without a GitHub account: the form of
-  [mkfifo.com/build-a-beam](https://mkfifo.com/build-a-beam) sends a link
+  [mkfifo.com/beam.com](https://mkfifo.com/beam.com) sends a link
   with a one-time code to an email address, and the link starts the
   workflow of custom builds. The workflow keeps one build at a time and a
   queue of 3, makes at most 10 new builds each day, gives the file of an
   identical request at once, puts the file in R2 for 30 days, and tells
   the FIFO, which emails the link. The envelopes are in
-  `priv/seeds/build-a-beam/`, and `scripts/build-a-beam.py` saves them.
+  `priv/seeds/beam.com/`, and `scripts/beam-fifo.py` saves them.
   The choices of an issue and of the form share
   `scripts/custom_build.py`.
 - A custom build can link the NIF of `vix` 0.42.0 (libvips 8.18.7), for

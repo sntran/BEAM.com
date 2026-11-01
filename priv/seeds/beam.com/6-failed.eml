@@ -1,4 +1,4 @@
-To: build-a-beam
+To: beam.com
 X-HTTP-Method-Override: ^POST$
 Authorization: <seal:^Bearer {{DONE_SECRET}}$>
 $.status: ^(?<status>failed|refused)$

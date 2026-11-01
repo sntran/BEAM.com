@@ -6,8 +6,8 @@ name: Custom build
 # - An issue of the form "A custom build of beam.com" (label
 #   custom-build): the file as an artifact of the run, a comment with its
 #   link, and the issue closed.
-# - workflow_dispatch from the FIFO build-a-beam of mkfifo.com
-#   (priv/seeds/build-a-beam/), for a person with no GitHub account: a
+# - workflow_dispatch from the FIFO beam.com of mkfifo.com
+#   (priv/seeds/beam.com/), for a person with no GitHub account: a
 #   queue of one build at a time, the file in R2, and the answer to the
 #   FIFO, which emails the link. The inputs have the same rules as the
 #   issue (scripts/custom_build.py).
@@ -49,21 +49,21 @@ on:
         type: string
         default: ""
       reply:
-        description: The encrypted address of the requester (from build-a-beam)
+        description: The encrypted address of the requester (from the FIFO beam.com of mkfifo.com)
         type: string
         default: ""
 
 run-name: >-
-  ${{ github.event_name == 'workflow_dispatch' && 'Custom build from build-a-beam'
+  ${{ github.event_name == 'workflow_dispatch' && 'Custom build from mkfifo.com/beam.com'
   || format('Custom build for issue {0}', github.event.issue.number) }}
 
 permissions:
   contents: read
   issues: write
-  # The queue of build-a-beam reads the runs of this workflow.
+  # The queue of beam.com reads the runs of this workflow.
   actions: read
 
-# One build for each issue. Each run of build-a-beam has its own group:
+# One build for each issue. Each run of beam.com has its own group:
 # the queue of scripts/custom_build.py keeps all the requests, where a
 # group keeps only one that waits.
 concurrency:
@@ -82,7 +82,7 @@ jobs:
     # minutes of a runner, and it writes the caches of main. A member
     # opens the issue, or adds the label to the issue of another user
     # (only a user who can triage can label the issue of another user).
-    # workflow_dispatch needs write access: the token of build-a-beam.
+    # workflow_dispatch needs write access: the token of beam.com.
     if: >-
       github.event_name == 'workflow_dispatch' || (
       contains(github.event.issue.labels.*.name, 'custom-build') &&
@@ -92,7 +92,7 @@ jobs:
           github.event.label.name == 'custom-build' &&
           github.event.sender.login != github.event.issue.user.login)))
     runs-on: ubuntu-26.04
-    # A run of build-a-beam can wait for 3 builds first.
+    # A run of beam.com can wait for 3 builds first.
     timeout-minutes: 240
     env:
       R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
@@ -125,7 +125,7 @@ jobs:
             [ -d "build/otp/lib/$app/src" ] || { echo "No OTP application: $app" >&2; exit 1; }
           done
 
-      # build-a-beam: a file with the same choices of the same commit is
+      # The FIFO beam.com: a file with the same choices of the same commit is
       # in R2 already.
       - name: Find a build with the same choices
         if: github.event_name == 'workflow_dispatch'
@@ -135,7 +135,7 @@ jobs:
         run: |
           if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
 
-      # build-a-beam: one build at a time, in the sequence of the
+      # The FIFO beam.com: one build at a time, in the sequence of the
       # requests, at most 3 that wait, and at most 10 new builds each day.
       # A request that waited can find the file of an identical request.
       - name: Wait for the turn
@@ -236,7 +236,7 @@ jobs:
             "$f" -noshell -eval "ok = application:load($app), halt()."
           done
 
-      # build-a-beam: the file goes to R2, where the FIFO reads it. A rule
+      # The FIFO beam.com: the file goes to R2, where the FIFO reads it. A rule
       # of the bucket deletes it after 30 days.
       - name: Put the file in R2
         if: github.event_name == 'workflow_dispatch' && env.REUSE != '1' && env.REFUSED == ''
@@ -284,14 +284,14 @@ jobs:
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
             --body "The build failed: $RUN (the log has the reason). The issue stays open."
 
-      # build-a-beam: the result goes to the FIFO, with the encrypted
+      # The FIFO beam.com: the result goes to the FIFO, with the encrypted
       # address. The FIFO emails the link of the file, or the reason.
-      - name: Answer build-a-beam
+      - name: Answer the FIFO beam.com
         if: always() && github.event_name == 'workflow_dispatch'
         env:
           JOB_STATUS: ${{ job.status }}
-          BUILD_A_BEAM_URL: ${{ vars.BUILD_A_BEAM_URL || 'https://mkfifo.com/build-a-beam' }}
-          BUILD_A_BEAM_SECRET: ${{ secrets.BUILD_A_BEAM_SECRET }}
+          BEAM_FIFO_URL: ${{ vars.BEAM_FIFO_URL || 'https://mkfifo.com/beam.com' }}
+          BEAM_FIFO_SECRET: ${{ secrets.BEAM_FIFO_SECRET }}
         run: |
           if [ -n "$REFUSED" ]; then
             python3 -I scripts/custom_build.py notify refused "$REFUSED"

@@ -3,7 +3,7 @@
 
 The choices come from the text of an issue of the form "A custom build of
 beam.com" (the variable BODY), or from the inputs of workflow_dispatch
-(the variables INPUT_*), which the FIFO build-a-beam of mkfifo.com sends.
+(the variables INPUT_*), which the FIFO beam.com of mkfifo.com sends.
 Both are input of a user: they only select known values, and the names of
 applications must be names of OTP.
 
@@ -20,11 +20,11 @@ Usage:
   custom_build.py put FILE   Writes FILE to builds/KEY/OUT_NAME in R2.
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
-    Sends the result to the FIFO build-a-beam: ready, failed or refused.
+    Sends the result to the FIFO beam.com: ready, failed or refused.
 
 R2: R2_ENDPOINT (https://ACCOUNT_ID.r2.cloudflarestorage.com), R2_BUCKET,
-R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY. The FIFO: BUILD_A_BEAM_URL and
-BUILD_A_BEAM_SECRET.
+R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY. The FIFO: BEAM_FIFO_URL and
+BEAM_FIFO_SECRET.
 """
 
 import datetime
@@ -39,7 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# The limits of the builds of build-a-beam: one build at a time, at most
+# The limits of the builds of beam.com: one build at a time, at most
 # QUEUE runs that wait, and at most DAILY new builds each day (UTC).
 QUEUE = 3
 DAILY = 10
@@ -242,12 +242,12 @@ def github(path):
 
 
 def ahead(runs, number):
-    """The runs of build-a-beam before the run NUMBER that did not end."""
+    """The runs of beam.com before the run NUMBER that did not end."""
     return [r for r in runs if r["run_number"] < number and r["status"] != "completed"]
 
 
 def queue(sleep=time.sleep, clock=time.monotonic):
-    """Waits until each older run of build-a-beam ends: a FIFO of the
+    """Waits until each older run of beam.com ends: a FIFO of the
     run numbers, with one build at a time. Gives None at the turn of this
     run, or the reason of a refusal: queue_full (QUEUE runs wait before
     it, after the build that runs), daily_limit or timeout."""
@@ -272,9 +272,9 @@ def queue(sleep=time.sleep, clock=time.monotonic):
 
 
 def notify(status, reason=""):
-    """Sends the result to the FIFO build-a-beam, which emails the
+    """Sends the result to the FIFO beam.com, which emails the
     requester at the address of REPLY."""
-    url, secret = os.environ.get("BUILD_A_BEAM_URL"), os.environ.get("BUILD_A_BEAM_SECRET")
+    url, secret = os.environ.get("BEAM_FIFO_URL"), os.environ.get("BEAM_FIFO_SECRET")
     if not (url and secret and os.environ.get("REPLY")):
         print("No FIFO to notify")
         return
@@ -296,15 +296,15 @@ def notify(status, reason=""):
         headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
     )
     # 200: an envelope agreed, and the email went. 204: no envelope agreed
-    # (for example a wrong BUILD_A_BEAM_SECRET). 502: the email failed.
+    # (for example a wrong BEAM_FIFO_SECRET). 502: the email failed.
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             status = response.status
     except urllib.error.HTTPError as error:
         status = error.code
     if status != 200:
-        fail(f"build-a-beam answered {status}")
-    print("build-a-beam answered 200")
+        fail(f"The FIFO beam.com answered {status}")
+    print("The FIFO beam.com answered 200")
 
 
 def main(argv):

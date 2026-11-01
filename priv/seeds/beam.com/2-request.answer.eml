@@ -8,6 +8,6 @@ Content-Type: text/html; charset=utf-8
 <body><main>
 <h1>Check your email</h1>
 <p>We sent a link to <strong>$email</strong>. Open it within 15 minutes to start the build.</p>
-<p><a href="/build-a-beam">Back to the form</a></p>
+<p><a href="/beam.com">Back to the form</a></p>
 </main></body>
 </html>

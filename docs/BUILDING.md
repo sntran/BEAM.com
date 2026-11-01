@@ -116,14 +116,14 @@ closes the issue. A custom build has the WebAssembly runtime too
 answer. It is built from `main`, and the answer names the commit.
 
 Without a GitHub account, use the form of
-[mkfifo.com/build-a-beam](https://mkfifo.com/build-a-beam). It sends a
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com). It sends a
 link with a one-time code to your email address, and the link starts the
 same workflow. A second email gives the link of the file, or the reason
 when the build did not run. The file stays in R2 for 30 days.
 
 - The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
-  envelopes are in [`priv/seeds/build-a-beam/`](../priv/seeds/build-a-beam).
-  [`scripts/build-a-beam.py`](../scripts/build-a-beam.py) saves them in
+  envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
+  [`scripts/beam-fifo.py`](../scripts/beam-fifo.py) saves them in
   the holder, with the secrets of the environment (see its help).
 - The FIFO and the workflow accept only the values of the issue form
   ([`scripts/custom_build.py`](../scripts/custom_build.py)).
@@ -135,8 +135,8 @@ when the build did not run. The file stays in R2 for 30 days.
   `secretbox`, which only the FIFO opens.
 - The workflow needs the secrets `R2_ACCESS_KEY_ID`,
   `R2_SECRET_ACCESS_KEY` (a key that can write the bucket) and
-  `BUILD_A_BEAM_SECRET`, and the variables `R2_ENDPOINT` and `R2_BUCKET`
-  of the repository. `BUILD_A_BEAM_URL` changes the address of the FIFO.
+  `BEAM_FIFO_SECRET`, and the variables `R2_ENDPOINT` and `R2_BUCKET`
+  of the repository. `BEAM_FIFO_URL` changes the address of the FIFO.
 
 ## The runtime directory (internal)
 

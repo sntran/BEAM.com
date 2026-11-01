@@ -20,7 +20,7 @@ Cache-Control: no-store
 <tr><th>WebAssembly</th><td>$wasm</td></tr>
 </table>
 <p>1 means yes, and 0 means no.</p>
-<form method="post" action="/build-a-beam">
+<form method="post" action="/beam.com">
 <input type="hidden" name="step" value="start">
 <input type="hidden" name="email" value="$email">
 <input type="hidden" name="apps" value="$apps">

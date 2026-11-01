@@ -80,7 +80,7 @@ an issue with the form
 [A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml).
 CI builds and tests the file with your choices, and puts it on the issue.
 Without a GitHub account, use the form of
-[mkfifo.com/build-a-beam](https://mkfifo.com/build-a-beam): it sends the
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com): it sends the
 link of the file to your email address. You need no toolchain. See "A
 custom build" in [`docs/BUILDING.md`](docs/BUILDING.md).
 
