@@ -10,7 +10,12 @@ defmodule VixCheck do
   alias Vix.Vips.{Image, Operation}
 
   def main(["bench" | rest]) do
-    runs = case rest do [n] -> String.to_integer(n); [] -> 5 end
+    runs =
+      case rest do
+        [n] -> String.to_integer(n)
+        [] -> 5
+      end
+
     bench(runs)
   end
 
@@ -63,7 +68,11 @@ defmodule VixCheck do
     # No cache of operations: else a run after the first gets the result
     # of the first.
     :ok = Vix.Vips.cache_set_max(0)
-    IO.puts("vix_check bench: libvips #{Vix.Vips.version()}, #{System.schedulers_online()} schedulers, #{runs} runs")
+
+    IO.puts(
+      "vix_check bench: libvips #{Vix.Vips.version()}, #{System.schedulers_online()} schedulers, #{runs} runs"
+    )
+
     img = noise(4000, 3000)
     {:ok, jpg} = Image.write_to_buffer(img, ".jpg[Q=80]")
     {:ok, mp1} = Operation.resize(img, 0.288)
@@ -71,10 +80,26 @@ defmodule VixCheck do
 
     [
       {"jpeg encode 12 MP", fn -> {:ok, _} = Image.write_to_buffer(img, ".jpg[Q=80]") end},
-      {"jpeg decode 12 MP", fn -> {:ok, i} = Image.new_from_buffer(jpg); avg(i) end},
-      {"thumbnail 12 MP to 400", fn -> {:ok, t} = Operation.thumbnail_buffer(jpg, 400); avg(t) end},
-      {"resize 12 MP by 0.5", fn -> {:ok, r} = Operation.resize(img, 0.5); avg(r) end},
-      {"gaussblur 12 MP sigma 5", fn -> {:ok, b} = Operation.gaussblur(img, 5.0); avg(b) end},
+      {"jpeg decode 12 MP",
+       fn ->
+         {:ok, i} = Image.new_from_buffer(jpg)
+         avg(i)
+       end},
+      {"thumbnail 12 MP to 400",
+       fn ->
+         {:ok, t} = Operation.thumbnail_buffer(jpg, 400)
+         avg(t)
+       end},
+      {"resize 12 MP by 0.5",
+       fn ->
+         {:ok, r} = Operation.resize(img, 0.5)
+         avg(r)
+       end},
+      {"gaussblur 12 MP sigma 5",
+       fn ->
+         {:ok, b} = Operation.gaussblur(img, 5.0)
+         avg(b)
+       end},
       {"webp encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".webp[Q=80]") end},
       {"png encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".png") end}
     ]
@@ -82,7 +107,10 @@ defmodule VixCheck do
       f.()
       times = for _ <- 1..runs, do: elem(:timer.tc(f), 0) / 1000
       median = Enum.at(Enum.sort(times), div(runs, 2))
-      IO.puts(String.pad_trailing(name, 26) <> :erlang.float_to_binary(median, decimals: 1) <> " ms")
+
+      IO.puts(
+        String.pad_trailing(name, 26) <> :erlang.float_to_binary(median, decimals: 1) <> " ms"
+      )
     end)
   end
 end

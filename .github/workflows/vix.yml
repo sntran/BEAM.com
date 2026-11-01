@@ -112,10 +112,13 @@ jobs:
         with:
           name: vix_check
 
-      # sh starts the APE file where the kernel cannot.
+      # An artifact loses the execute bit, and beam.com starts its helper
+      # programs (inet_gethost) with its own file. sh starts the APE file
+      # where the kernel cannot.
       - name: Check and times (Unix)
         if: runner.os != 'Windows'
         run: |
+          chmod +x vix_check.com
           sh ./vix_check.com | tee check.txt
           grep -q '^vix_check: ok$' check.txt
           sh ./vix_check.com bench 5 | tee bench.txt
