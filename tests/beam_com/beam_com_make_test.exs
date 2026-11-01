@@ -183,9 +183,10 @@ defmodule BeamComMakeTest do
     end
 
     # A package with a linked NIF and a precompiled NIF (vix) gets a
-    # download of that NIF without force_build.
+    # download of that NIF without force_build. Mix loaded beam_com, so
+    # force_build/0 reads the env of the application.
     test "force_build/0 adds the linked NIFs too" do
-      :application.load(:beam_com)
+      true = List.keymember?(:application.loaded_applications(), :beam_com, 0)
       old = :application.get_env(:beam_com, :nifs)
       :application.unset_env(:elixir_make, :force_build)
 
@@ -203,6 +204,31 @@ defmodule BeamComMakeTest do
           :undefined -> :application.unset_env(:beam_com, :nifs)
         end
       end
+    end
+  end
+
+  # At the start of a tool of Elixir, beam_com is not loaded: the linked
+  # NIFs come from the .app file, with no load of the application.
+  describe "app_file_nifs/1" do
+    test "the env nifs of the .app file", %{tmp_dir: dir} do
+      file = Path.join(dir, "beam_com.app")
+
+      File.write!(file, """
+      {application, beam_com, [{vsn, "1.0.0"}, {env, [{nifs, [{vix, "0.42.0"}]}]}]}.
+      """)
+
+      assert [{:vix, ~c"0.42.0"}] == :beam_com_make.app_file_nifs(String.to_charlist(file))
+    end
+
+    test "no env nifs, a bad file, no file", %{tmp_dir: dir} do
+      file = Path.join(dir, "beam_com.app")
+      File.write!(file, "{application, beam_com, [{vsn, \"1.0.0\"}]}.\n")
+      assert [] == :beam_com_make.app_file_nifs(String.to_charlist(file))
+      File.write!(file, "{application, beam_com, [{env, [{nifs, none}]}]}.\n")
+      assert [] == :beam_com_make.app_file_nifs(String.to_charlist(file))
+      File.write!(file, "not a term")
+      assert [] == :beam_com_make.app_file_nifs(String.to_charlist(file))
+      assert [] == :beam_com_make.app_file_nifs(:non_existing)
     end
   end
 
