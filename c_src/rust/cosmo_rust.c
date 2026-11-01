@@ -21,11 +21,11 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/random.h>
 #include <time.h>
 #include <unistd.h>
 
-long syscall(long, ...); /* Linux only: Cosmopolitan has no header for it */
 
 /* errno: the value of Cosmopolitan for this system, as a number of Linux. */
 static int linux_errno(int e) {
@@ -121,7 +121,10 @@ long beam_rs_syscall(long n, long a, long b, long c, long d, long e, long f) {
     ssize_t r = getrandom((void *)a, (size_t)b, 0);
     return r < 0 ? (set_linux_errno(linux_errno(errno)), -1) : r;
   }
-  if (IsLinux()) return syscall(n, a, b, c, d, e, f);
+  /* Each other system call fails with ENOSYS, also on Linux: the syscall()
+   * of Cosmopolitan does not take the numbers of Linux aarch64. std then
+   * takes its fallback, for example fstat() for statx. */
+  (void)e, (void)f;
   return set_linux_errno(38), -1;
 }
 
@@ -243,4 +246,73 @@ unsigned long beam_rs_getauxval(unsigned long key) {
 int beam_rs_sched_getaffinity(int pid, size_t size, void *set) {
   (void)pid, (void)size, (void)set;
   return set_linux_errno(38), -1;
+}
+
+/* struct stat: on x86_64, the layout of musl is the layout of Cosmopolitan
+ * (144 bytes, the same fields up to st_ctim). On aarch64, musl has the
+ * generic layout of Linux (128 bytes). */
+#ifdef __aarch64__
+struct musl_stat {
+  uint64_t st_dev, st_ino;
+  uint32_t st_mode, st_nlink, st_uid, st_gid;
+  uint64_t st_rdev, pad1;
+  int64_t st_size;
+  int32_t st_blksize, pad2;
+  int64_t st_blocks;
+  struct timespec st_atim, st_mtim, st_ctim;
+  uint32_t unused[2];
+};
+_Static_assert(sizeof(struct musl_stat) == 128, "the struct stat of musl aarch64");
+#else
+struct musl_stat {
+  uint64_t st_dev, st_ino, st_nlink;
+  uint32_t st_mode, st_uid, st_gid, pad0;
+  uint64_t st_rdev;
+  int64_t st_size, st_blksize, st_blocks;
+  struct timespec st_atim, st_mtim, st_ctim;
+  int64_t unused[3];
+};
+_Static_assert(sizeof(struct musl_stat) == 144, "the struct stat of musl x86_64");
+#endif
+
+static int musl_stat(int r, const struct stat *h, struct musl_stat *m) {
+  if (r) return set_linux_errno(linux_errno(errno)), -1;
+  memset(m, 0, sizeof(*m));
+  m->st_dev = h->st_dev;
+  m->st_ino = h->st_ino;
+  m->st_nlink = h->st_nlink;
+  m->st_mode = h->st_mode; /* the S_IF* bits are the same everywhere */
+  m->st_uid = h->st_uid;
+  m->st_gid = h->st_gid;
+  m->st_rdev = h->st_rdev;
+  m->st_size = h->st_size;
+  m->st_blksize = h->st_blksize;
+  m->st_blocks = h->st_blocks;
+  m->st_atim = h->st_atim;
+  m->st_mtim = h->st_mtim;
+  m->st_ctim = h->st_ctim;
+  return 0;
+}
+
+int beam_rs_fstat(int fd, struct musl_stat *m) {
+  struct stat h;
+  return musl_stat(fstat(fd, &h), &h, m);
+}
+
+int beam_rs_stat(const char *path, struct musl_stat *m) {
+  struct stat h;
+  return musl_stat(stat(path, &h), &h, m);
+}
+
+int beam_rs_lstat(const char *path, struct musl_stat *m) {
+  struct stat h;
+  return musl_stat(lstat(path, &h), &h, m);
+}
+
+int beam_rs_fstatat(int dir, const char *path, struct musl_stat *m, int flags) {
+  struct stat h;
+  int f = 0;
+  if (flags & 0x100) f |= AT_SYMLINK_NOFOLLOW;
+  if ((flags & 0x1000) && !*path) return beam_rs_fstat(dir, m); /* AT_EMPTY_PATH */
+  return musl_stat(fstatat(dir == -100 ? AT_FDCWD : dir, path, &h, f), &h, m);
 }

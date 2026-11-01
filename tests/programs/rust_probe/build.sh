@@ -16,7 +16,7 @@ shim=$here/../../../c_src/rust/cosmo_rust.c
 SYMS="syscall clock_gettime clock_nanosleep __errno_location pthread_attr_init
 pthread_attr_destroy pthread_attr_setstacksize pthread_attr_getstack
 pthread_attr_getguardsize pthread_getattr_np pthread_create open openat mmap
-getauxval sched_getaffinity"
+getauxval sched_getaffinity fstat stat lstat fstatat"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$here"

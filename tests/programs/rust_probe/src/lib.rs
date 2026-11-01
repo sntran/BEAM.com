@@ -62,6 +62,14 @@ pub extern "C" fn rs_probe() -> i32 {
     step("the number of CPUs");
     // The number of CPUs: rayon uses it.
     match thread::available_parallelism() { Ok(n) if n.get() >= 1 => {}, _ => return 9 }
+    step("files");
+    // A file in the temporary directory: open() with O_CREAT, O_TRUNC and
+    // O_CLOEXEC, write, then read with its metadata (fstat or statx).
+    let path = std::env::temp_dir().join(format!("rust_probe_{}.txt", std::process::id()));
+    if std::fs::write(&path, b"rust on cosmopolitan").is_err() { return 10; }
+    match std::fs::read_to_string(&path) { Ok(t) if t == "rust on cosmopolitan" => {}, _ => return 11 }
+    match std::fs::metadata(&path) { Ok(m) if m.is_file() && m.len() == 20 => {}, _ => return 12 }
+    if std::fs::remove_file(&path).is_err() || path.exists() { return 13; }
     step("unwinding");
     // A panic that unwinds and stops at catch_unwind (Rustler catches the
     // panics of a NIF so). The hook prints nothing.
