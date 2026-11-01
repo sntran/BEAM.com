@@ -8,8 +8,8 @@ name: Custom build
 #   link, and the issue closed.
 # - workflow_dispatch from the FIFO beam.com of mkfifo.com
 #   (priv/seeds/beam.com/), for a person with no GitHub account: a
-#   queue of one build at a time, the file in R2, and the answer to the
-#   FIFO, which emails the link. The inputs have the same rules as the
+#   queue of one build at a time, the file in the prerelease
+#   custom-builds, and the answer to the FIFO, which emails the link. The inputs have the same rules as the
 #   issue (scripts/custom_build.py).
 on:
   issues:
@@ -58,7 +58,9 @@ run-name: >-
   || format('Custom build for issue {0}', github.event.issue.number) }}
 
 permissions:
-  contents: read
+  # The files of the FIFO beam.com go to the prerelease custom-builds.
+  # The checkout keeps no token, so the steps of the build cannot use it.
+  contents: write
   issues: write
   # The queue of beam.com reads the runs of this workflow.
   actions: read
@@ -94,11 +96,10 @@ jobs:
     runs-on: ubuntu-26.04
     # A run of beam.com can wait for 3 builds first.
     timeout-minutes: 240
-    env:
-      R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
-      R2_BUCKET: ${{ vars.R2_BUCKET }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Read the choices
         env:
           EVENT: ${{ github.event_name }}
@@ -126,13 +127,13 @@ jobs:
           done
 
       # The FIFO beam.com: a file with the same choices of the same commit is
-      # in R2 already.
+      # in the release already. The files of more than 30 days go away.
       - name: Find a build with the same choices
         if: github.event_name == 'workflow_dispatch'
         env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          python3 -I scripts/custom_build.py cleanup
           if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
 
       # The FIFO beam.com: one build at a time, in the sequence of the
@@ -143,8 +144,6 @@ jobs:
         timeout-minutes: 185
         env:
           GH_TOKEN: ${{ github.token }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           python3 -I scripts/custom_build.py queue
           if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
@@ -236,13 +235,12 @@ jobs:
             "$f" -noshell -eval "ok = application:load($app), halt()."
           done
 
-      # The FIFO beam.com: the file goes to R2, where the FIFO reads it. A rule
-      # of the bucket deletes it after 30 days.
-      - name: Put the file in R2
+      # The FIFO beam.com: the file goes to the prerelease custom-builds,
+      # where the FIFO reads it. The cleanup deletes it after 30 days.
+      - name: Put the file in the release
         if: github.event_name == 'workflow_dispatch' && env.REUSE != '1' && env.REFUSED == ''
         env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 -I scripts/custom_build.py put "build/$OUT_NAME"
 
       - name: Upload

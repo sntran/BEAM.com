@@ -10,8 +10,9 @@ notes of its release.
   with a one-time code to an email address, and the link starts the
   workflow of custom builds. The workflow keeps one build at a time and a
   queue of 3, makes at most 10 new builds each day, gives the file of an
-  identical request at once, puts the file in R2 for 30 days, and tells
-  the FIFO, which emails the link. The envelopes are in
+  identical request at once, puts the file in the prerelease
+  `custom-builds` for 30 days, and tells the FIFO, which emails the link
+  and streams the file. The envelopes are in
   `priv/seeds/beam.com/`, and `scripts/beam-fifo.py` saves them.
   The choices of an issue and of the form share
   `scripts/custom_build.py`.

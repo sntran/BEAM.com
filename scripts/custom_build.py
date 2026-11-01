@@ -15,21 +15,22 @@ Usage:
     these variables are set). KEY is the SHA-256 of the settings and of
     the commit: two requests with the same choices on the same commit
     have the same KEY, and the same file.
-  custom_build.py exists     Status 0 when R2 has builds/KEY/OUT_NAME.
-  custom_build.py today      The number of builds that R2 got today (UTC).
-  custom_build.py put FILE   Writes FILE to builds/KEY/OUT_NAME in R2.
+  custom_build.py exists     Status 0 when the release has the file of KEY.
+  custom_build.py today      The number of files of the release of today (UTC).
+  custom_build.py put FILE   Puts FILE in the release, as asset_name().
+  custom_build.py cleanup    Deletes the files that are older than 30 days.
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
     Sends the result to the FIFO beam.com: ready, failed or refused.
 
-R2: R2_ENDPOINT (https://ACCOUNT_ID.r2.cloudflarestorage.com), R2_BUCKET,
-R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY. The FIFO: BEAM_FIFO_URL and
+The files are the assets of the prerelease RELEASE of the repository: a
+person with no GitHub account can download them. The requests to GitHub
+use GH_TOKEN (the token of the workflow). The FIFO: BEAM_FIFO_URL and
 BEAM_FIFO_SECRET.
 """
 
 import datetime
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -44,6 +45,9 @@ import urllib.request
 QUEUE = 3
 DAILY = 10
 WAIT_SECONDS = 180 * 60
+# The prerelease of the files. The check of the newest release of BEAM.com
+# takes only the tags v0.1.0 and later, as the prerelease edge.
+RELEASE = "custom-builds"
 
 NIFS = ("picosat_elixir", "vix")
 APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -138,107 +142,105 @@ def key(env, commit):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def r2_request(method, path, params=None, data=None, now=None):
-    """A request to R2 with AWS Signature Version 4 (region auto)."""
-    query = "&".join(
-        f"{urllib.parse.quote(k, safe='-_.~')}={urllib.parse.quote(v, safe='-_.~')}"
-        for k, v in sorted((params or {}).items())
-    )
-    endpoint = os.environ["R2_ENDPOINT"].rstrip("/")
-    host = urllib.parse.urlsplit(endpoint).netloc
-    now = now or datetime.datetime.now(datetime.timezone.utc)
-    stamp = now.strftime("%Y%m%dT%H%M%SZ")
-    day = stamp[:8]
-    payload = "UNSIGNED-PAYLOAD"
-    headers = {"host": host, "x-amz-content-sha256": payload, "x-amz-date": stamp}
-    signed = ";".join(sorted(headers))
-    canonical = "\n".join(
-        [
-            method,
-            urllib.parse.quote(path),
-            query,
-            "".join(f"{k}:{headers[k]}\n" for k in sorted(headers)),
-            signed,
-            payload,
-        ]
-    )
-    scope = f"{day}/auto/s3/aws4_request"
-    to_sign = "\n".join(
-        ["AWS4-HMAC-SHA256", stamp, scope, hashlib.sha256(canonical.encode()).hexdigest()]
-    )
-    k = ("AWS4" + os.environ["R2_SECRET_ACCESS_KEY"]).encode()
-    for part in (day, "auto", "s3", "aws4_request"):
-        k = hmac.new(k, part.encode(), hashlib.sha256).digest()
-    signature = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
-    headers["authorization"] = (
-        f"AWS4-HMAC-SHA256 Credential={os.environ['R2_ACCESS_KEY_ID']}/{scope}, "
-        f"SignedHeaders={signed}, Signature={signature}"
-    )
-    del headers["host"]
-    url = endpoint + urllib.parse.quote(path) + ("?" + query if query else "")
+def github(path, method="GET", data=None, content_type=None, base=None):
+    """A request to the API of GitHub with GH_TOKEN (the token of the
+    workflow). Gives the decoded JSON, or None for an empty answer."""
+    url = (base or os.environ.get("GITHUB_API_URL", "https://api.github.com")) + path
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read()
+    with urllib.request.urlopen(request, timeout=600) as response:
+        body = response.read()
+        return json.loads(body) if body else None
 
 
-def object_path():
+def asset_name():
+    """The name of the file in the release: beam-KEY16.com or
+    beam-emu-KEY16.com, with the first 16 characters of KEY."""
     if not re.fullmatch(r"[0-9a-f]{64}", os.environ.get("KEY", "")):
         fail("No KEY")
-    if os.environ.get("OUT_NAME") not in ("beam.com", "beam-emu.com"):
+    stem = {"beam.com": "beam", "beam-emu.com": "beam-emu"}.get(os.environ.get("OUT_NAME"))
+    if not stem:
         fail("No OUT_NAME")
-    return f"/{os.environ['R2_BUCKET']}/builds/{os.environ['KEY']}/{os.environ['OUT_NAME']}"
+    return f"{stem}-{os.environ['KEY'][:16]}.com"
+
+
+def release(create=False):
+    """The prerelease RELEASE of the custom builds, or None. With create,
+    a new one when it is not there."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    try:
+        return github(f"/repos/{repo}/releases/tags/{RELEASE}")
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+    if not create:
+        return None
+    body = {
+        "tag_name": RELEASE,
+        "target_commitish": os.environ.get("GITHUB_SHA", "main"),
+        "name": "Custom builds",
+        "prerelease": True,
+        "body": (
+            "The files of the custom builds of the FIFO beam.com of mkfifo.com "
+            "(docs/BUILDING.md). Each file is beam-KEY.com or beam-emu-KEY.com, "
+            "and goes away after 30 days. This is not a release of BEAM.com."
+        ),
+    }
+    return github(
+        f"/repos/{repo}/releases", "POST", json.dumps(body).encode(), "application/json"
+    )
+
+
+def assets():
+    found = release()
+    return found["assets"] if found else []
 
 
 def exists():
-    status, _body = r2_request("HEAD", object_path())
-    if status not in (200, 404):
-        fail(f"R2 answered {status} to HEAD")
-    return status == 200
+    return any(a["name"] == asset_name() for a in assets())
 
 
 def today(now=None):
-    """The objects under builds/ that R2 got today (UTC): the new builds."""
+    """The files that the release got today (UTC): the new builds."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     day = now.strftime("%Y-%m-%d")
-    count, token = 0, None
-    while True:
-        params = {"list-type": "2", "prefix": "builds/"}
-        if token:
-            params["continuation-token"] = token
-        status, body = r2_request("GET", f"/{os.environ['R2_BUCKET']}", params)
-        if status != 200:
-            fail(f"R2 answered {status} to the list")
-        text = body.decode()
-        count += len(re.findall(rf"<LastModified>{day}T", text))
-        match = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", text)
-        if not match:
-            return count
-        token = match.group(1)
+    return sum(1 for a in assets() if a["created_at"].startswith(day))
+
+
+def cleanup(now=None, days=30):
+    """Deletes the files of the release that are older than DAYS days."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    repo = os.environ["GITHUB_REPOSITORY"]
+    for a in assets():
+        made = datetime.datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+        if now - made > datetime.timedelta(days=days):
+            github(f"/repos/{repo}/releases/assets/{a['id']}", "DELETE")
+            print(f"deleted {a['name']}")
 
 
 def put(file):
+    """Puts FILE in the release with the name of asset_name()."""
+    found = release(create=True)
+    name = asset_name()
+    for a in found["assets"]:
+        if a["name"] == name:
+            return
     with open(file, "rb") as f:
         data = f.read()
-    status, body = r2_request("PUT", object_path(), data=data)
-    if status != 200:
-        fail(f"R2 answered {status} to PUT: {body[:200]!r}")
-
-
-def github(path):
-    url = f"{os.environ.get('GITHUB_API_URL', 'https://api.github.com')}{path}"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+    upload = found["upload_url"].split("{", 1)[0]
+    github(
+        "?name=" + urllib.parse.quote(name),
+        "POST",
+        data,
+        "application/octet-stream",
+        base=upload,
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.load(response)
 
 
 def ahead(runs, number):
@@ -283,8 +285,7 @@ def notify(status, reason=""):
     body = {
         "status": status,
         "reason": reason,
-        "key": os.environ.get("KEY", ""),
-        "file": os.environ.get("OUT_NAME", ""),
+        "file": asset_name() if status == "ready" else "",
         "reply": os.environ["REPLY"],
         "run": run,
         "settings": ", ".join(f"{n}={os.environ.get(n) or '(none)'}" for n in names),
@@ -316,6 +317,9 @@ def main(argv):
         return
     if command == "put" and len(argv) == 3:
         put(argv[2])
+        return
+    if command == "cleanup" and len(argv) == 2:
+        cleanup()
         return
     if command == "queue" and len(argv) == 2:
         reason = queue()

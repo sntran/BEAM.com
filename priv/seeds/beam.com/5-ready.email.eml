@@ -1,5 +1,5 @@
-To: https://api.cloudflare.com/client/v4/accounts/{{CF_ACCOUNT_ID}}/email/sending/send
-Authorization: <seal:Bearer {{CF_EMAIL_TOKEN}}>
+To: beam.com.mail
+X-Mail-Key: <seal:{{MAIL_KEY}}>
 Content-Type: application/json
 
-{"from": {"address": "{{FROM}}", "name": "Build a BEAM"}, "to": ["$($reply | base64 -d | secretbox -d -K <seal:{{BOX_KEY}}>)"], "subject": "Your custom build of beam.com is ready", "text": "Your custom build of beam.com is ready:\n\n{{BASE}}/beam.com/b/$key/$file\n\nThe file stays available for 30 days. Make it executable (chmod +x $file) and run it, or see https://github.com/sntran/BEAM.com#readme.\n\nThe settings: $settings\n"}
+{"to": "$($reply | base64 -d | secretbox -d -K <seal:{{BOX_KEY}}>)", "subject": "Your custom build of beam.com is ready", "text": "Your custom build of beam.com is ready:\n\n{{BASE}}/beam.com/b/$file\n\nThe file stays available for 30 days. Make it executable (chmod +x $file) and run it, or see https://github.com/sntran/BEAM.com#readme.\n\nThe settings: $settings\n"}

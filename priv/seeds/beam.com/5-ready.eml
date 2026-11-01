@@ -2,7 +2,6 @@ To: beam.com
 X-HTTP-Method-Override: ^POST$
 Authorization: <seal:^Bearer {{DONE_SECRET}}$>
 $.status: ^ready$
-$.key: ^(?<key>[0-9a-f]{64})$
-$.file: ^(?<file>beam\.com|beam-emu\.com)$
+$.file: ^(?<file>beam-[0-9a-f]{16}\.com|beam-emu-[0-9a-f]{16}\.com)$
 $.reply: ^(?<reply>[A-Za-z0-9+/]{4,684}={0,2})$
 $.settings: ^(?<settings>[A-Za-z0-9_=(), .-]{0,1000})$

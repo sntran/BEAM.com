@@ -1,0 +1,5 @@
+To: https://api.cloudflare.com/client/v4/accounts/{{CF_ACCOUNT_ID}}/email/sending/send
+Authorization: <seal:Bearer {{CF_EMAIL_TOKEN}}>
+Content-Type: application/json
+
+{"from": {"address": "{{FROM}}", "name": "Build a BEAM"}, "to": ["$to"], "subject": "$subject", "text": "$text"}

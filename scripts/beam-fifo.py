@@ -40,10 +40,11 @@ The variables:
                                of the addresses.
   BEAM_FIFO_DONE_SECRET        The secret of the answers of the workflow: the
                                secret BEAM_FIFO_SECRET of the repository.
-  BEAM_FIFO_R2_BUCKET          The bucket of the builds.
-  BEAM_FIFO_R2_ENDPOINT        https://ACCOUNT_ID.r2.cloudflarestorage.com
-  BEAM_FIFO_R2_READ_KEY_ID     An R2 key that can only read the bucket.
-  BEAM_FIFO_R2_READ_SECRET     Its secret.
+  BEAM_FIFO_MAIL_KEY           32 bytes in hexadecimal: the key between
+                               beam.com and beam.com.mail.
+
+A value can be CHANGE-ME: then change it later in the editor of the
+holder. The editor seals a value when its lock is closed.
 """
 
 import os
@@ -79,8 +80,11 @@ def value(name):
 
 
 def check():
-    if not re.fullmatch(r"[0-9a-f]{64}", value("BOX_KEY")):
-        fail("BEAM_FIFO_BOX_KEY must be 32 bytes in hexadecimal (64 characters)")
+    for name in ("BOX_KEY", "MAIL_KEY"):
+        if not re.fullmatch(r"[0-9a-f]{64}", value(name)):
+            fail(f"BEAM_FIFO_{name} must be 32 bytes in hexadecimal (64 characters)")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{16,256}", value("DONE_SECRET")):
+        fail("BEAM_FIFO_DONE_SECRET must have 16 to 256 characters: A-Z, a-z, 0-9, _, . and -")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{25,63}", value("HOLDER")):
         fail("BEAM_FIFO_HOLDER must be a name of 26 to 64 characters: a-z, 0-9, -, _ and .")
     if not re.fullmatch(r"https://[a-z0-9.-]+(:[0-9]+)?", value("BASE").rstrip("/")):

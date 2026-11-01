@@ -119,7 +119,8 @@ Without a GitHub account, use the form of
 [mkfifo.com/beam.com](https://mkfifo.com/beam.com). It sends a
 link with a one-time code to your email address, and the link starts the
 same workflow. A second email gives the link of the file, or the reason
-when the build did not run. The file stays in R2 for 30 days.
+when the build did not run. The file stays in the prerelease
+`custom-builds` for 30 days, and the FIFO streams it.
 
 - The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
   envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
@@ -133,10 +134,10 @@ when the build did not run. The file stays in R2 for 30 days.
   file: the second one gets the link at once, with no build.
 - GitHub never sees the email address: the FIFO sends it in a box of
   `secretbox`, which only the FIFO opens.
-- The workflow needs the secrets `R2_ACCESS_KEY_ID`,
-  `R2_SECRET_ACCESS_KEY` (a key that can write the bucket) and
-  `BEAM_FIFO_SECRET`, and the variables `R2_ENDPOINT` and `R2_BUCKET`
-  of the repository. `BEAM_FIFO_URL` changes the address of the FIFO.
+- The workflow needs the secret `BEAM_FIFO_SECRET` of the repository:
+  the FIFO accepts an answer only with it. The variable `BEAM_FIFO_URL`
+  changes the address of the FIFO. The token of the workflow puts the
+  files in the release, so no other key is necessary.
 
 ## The runtime directory (internal)
 
