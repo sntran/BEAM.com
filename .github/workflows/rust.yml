@@ -1,0 +1,92 @@
+name: Rust on Cosmopolitan
+
+# The probe of tests/programs/rust_probe: a staticlib of Rust (std of
+# *-unknown-linux-musl) with the calls of c_src/rust/cosmo_rust.c, in one
+# APE file for x86_64 and aarch64. It checks threads, a Mutex with
+# contention, a Condvar, thread-locals, OnceLock, random bytes, unwinding,
+# the clocks and the number of CPUs, on each system. The static NIFs of
+# Rust (Rustler) need these parts.
+on:
+  push:
+    branches: [feat/rustler-nifs]
+  pull_request:
+    paths:
+      - c_src/rust/**
+      - tests/programs/rust_probe/**
+      - .github/workflows/rust.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COSMOCC_VERSION: "4.0.2"
+
+jobs:
+  build:
+    name: Build the probe
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Cache cosmocc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
+
+      - name: Download cosmocc
+        run: make toolchain
+
+      - name: The Rust targets of musl
+        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+      - name: Build
+        run: |
+          sh tests/programs/rust_probe/build.sh "$PWD/build/cosmocc" "$PWD/build/rust_probe.com"
+          ls -l build/rust_probe.com
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust_probe
+          path: build/rust_probe.com
+          if-no-files-found: error
+
+  run:
+    name: Run on ${{ matrix.name }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-26.04 }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm }
+          - { name: macOS arm64, os: macos-latest }
+          - { name: macOS x86_64, os: macos-15-intel }
+          - { name: Windows x86_64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rust_probe
+
+      # An artifact loses the execute bit. sh starts the APE file where the
+      # kernel cannot.
+      - name: Run (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x rust_probe.com
+          for i in 1 2 3; do sh ./rust_probe.com; done
+
+      - name: Run (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item rust_probe.com rust_probe.exe
+          foreach ($i in 1..3) { ./rust_probe.exe; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
