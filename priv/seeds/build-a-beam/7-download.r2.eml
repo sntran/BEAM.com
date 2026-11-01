@@ -1,0 +1,7 @@
+To: https://rfetch.pages.dev/:s3:{{R2_BUCKET}}/builds/$key/$file
+X-HTTP-Method-Override: GET
+RFETCH_S3_ACCESS_KEY_ID: <seal:{{R2_READ_KEY_ID}}>
+RFETCH_S3_SECRET_ACCESS_KEY: <seal:{{R2_READ_SECRET}}>
+RFETCH_S3_ENDPOINT: {{R2_ENDPOINT}}
+Range: $range
+Reply-To: -

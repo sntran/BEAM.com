@@ -1,20 +1,73 @@
 name: Custom build
 
-# The builder for the issues of the form "A custom build of beam.com"
-# (label custom-build): the Makefile with the choices of the issue, the file
-# as an artifact of the run, a comment with its link, and the issue
-# closed. A one-off build for the user who asks: no release.
+# The builder of custom builds: a one-off build for the user who asks, no
+# release. Two sources start it:
+#
+# - An issue of the form "A custom build of beam.com" (label
+#   custom-build): the file as an artifact of the run, a comment with its
+#   link, and the issue closed.
+# - workflow_dispatch from the FIFO build-a-beam of mkfifo.com
+#   (priv/seeds/build-a-beam/), for a person with no GitHub account: a
+#   queue of one build at a time, the file in R2, and the answer to the
+#   FIFO, which emails the link. The inputs have the same rules as the
+#   issue (scripts/custom_build.py).
 on:
   issues:
     types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: More OTP applications, with spaces or commas
+        type: string
+        default: ""
+      hex:
+        description: Hex (0 or 1)
+        type: string
+        default: "0"
+      rebar3:
+        description: rebar3 (0 or 1)
+        type: string
+        default: "0"
+      elixir:
+        description: Elixir (0 or 1)
+        type: string
+        default: "1"
+      jit:
+        description: The JIT (1), or the interpreter (0)
+        type: string
+        default: "1"
+      sqlite:
+        description: SQLite (0 or 1)
+        type: string
+        default: "1"
+      wasm:
+        description: WebAssembly, WAMR (0 or 1)
+        type: string
+        default: "1"
+      nifs:
+        description: More NIFs (picosat_elixir, vix), with spaces or commas
+        type: string
+        default: ""
+      reply:
+        description: The encrypted address of the requester (from build-a-beam)
+        type: string
+        default: ""
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && 'Custom build from build-a-beam'
+  || format('Custom build for issue {0}', github.event.issue.number) }}
 
 permissions:
   contents: read
   issues: write
+  # The queue of build-a-beam reads the runs of this workflow.
+  actions: read
 
-# One build for each issue.
+# One build for each issue. Each run of build-a-beam has its own group:
+# the queue of scripts/custom_build.py keeps all the requests, where a
+# group keeps only one that waits.
 concurrency:
-  group: custom-build-${{ github.event.issue.number }}
+  group: custom-build-${{ github.event.issue.number || format('run-{0}', github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -29,70 +82,41 @@ jobs:
     # minutes of a runner, and it writes the caches of main. A member
     # opens the issue, or adds the label to the issue of another user
     # (only a user who can triage can label the issue of another user).
+    # workflow_dispatch needs write access: the token of build-a-beam.
     if: >-
+      github.event_name == 'workflow_dispatch' || (
       contains(github.event.issue.labels.*.name, 'custom-build') &&
       github.event.issue.state == 'open' && (
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) || (
           github.event.action == 'labeled' &&
           github.event.label.name == 'custom-build' &&
-          github.event.sender.login != github.event.issue.user.login))
+          github.event.sender.login != github.event.issue.user.login)))
     runs-on: ubuntu-26.04
-    timeout-minutes: 90
+    # A run of build-a-beam can wait for 3 builds first.
+    timeout-minutes: 240
+    env:
+      R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Read the choices of the issue
-        id: choices
+      - name: Read the choices
         env:
+          EVENT: ${{ github.event_name }}
           BODY: ${{ github.event.issue.body }}
-        # The text of the issue is input of a user: it only selects known
-        # values, and the names of applications must be names of OTP.
+          INPUT_APPS: ${{ inputs.apps }}
+          INPUT_HEX: ${{ inputs.hex }}
+          INPUT_REBAR3: ${{ inputs.rebar3 }}
+          INPUT_ELIXIR: ${{ inputs.elixir }}
+          INPUT_JIT: ${{ inputs.jit }}
+          INPUT_SQLITE: ${{ inputs.sqlite }}
+          INPUT_WASM: ${{ inputs.wasm }}
+          INPUT_NIFS: ${{ inputs.nifs }}
+          INPUT_REPLY: ${{ inputs.reply }}
+        # The text of the issue and the inputs are input of a user: they
+        # only select known values (scripts/custom_build.py).
         run: |
-          python3 - <<'PY'
-          import os, re
-          body = os.environ.get("BODY") or ""
-          sections = {}
-          for part in re.split(r"^### ", body, flags=re.M)[1:]:
-              title, _, text = part.partition("\n")
-              sections[title.strip()] = text.strip()
-          def checked(title):
-              return re.findall(r"^- \[[xX]\] (.+)$", sections.get(title, ""), flags=re.M)
-          def choice(title, default):
-              text = sections.get(title, "").strip()
-              return default if text in ("", "_No response_") else text
-          apps = [a.strip() for a in checked("More OTP applications")]
-          other = choice("Other OTP applications", "")
-          apps += other.split()
-          bad = [a for a in apps if not re.fullmatch(r"[a-z][a-z0-9_]*", a)]
-          if bad:
-              raise SystemExit(f"Not names of applications: {bad}")
-          tools = checked("Tools")
-          nifs = [n.split()[0] for n in checked("More NIFs")]
-          bad = [n for n in nifs if n not in ("picosat_elixir", "vix")]
-          if bad:
-              raise SystemExit(f"Not NIFs of the list: {bad}")
-          env = {
-              "OTP_APPS": " ".join(dict.fromkeys(apps)),
-              "HEX": "1" if any(t.startswith("Hex") for t in tools) else "0",
-              "REBAR3": "1" if any(t.startswith("rebar3") for t in tools) else "0",
-              "ELIXIR": "0" if choice("Elixir", "Yes") == "No" else "1",
-              "JIT": "0" if choice("Emulator", "").startswith("Interpreter") else "1",
-              "SQLITE": "0" if choice("SQLite", "Yes") == "No" else "1",
-              "WASM": "0" if choice("WebAssembly (WAMR)", "Yes") == "No" else "1",
-              "EXTRA_NIFS": " ".join(nifs),
-          }
-          if env["HEX"] == "1" and env["ELIXIR"] == "0":
-              raise SystemExit("Hex needs Elixir")
-          if nifs and env["ELIXIR"] == "0":
-              raise SystemExit("The NIFs of hex.pm packages need Elixir")
-          env["OUT_NAME"] = "beam.com" if env["JIT"] == "1" else "beam-emu.com"
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              for k, v in env.items():
-                  f.write(f"{k}={v}\n")
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write("| Setting | Value |\n|---|---|\n")
-              for k, v in env.items():
-                  f.write(f"| {k} | {v or '(none)'} |\n")
-          PY
+          if [ "$EVENT" = workflow_dispatch ]; then source=dispatch; else source=issue; fi
+          python3 -I scripts/custom_build.py "$source" "$GITHUB_SHA"
 
       - name: Check the names of the applications
         run: |
@@ -101,24 +125,52 @@ jobs:
             [ -d "build/otp/lib/$app/src" ] || { echo "No OTP application: $app" >&2; exit 1; }
           done
 
+      # build-a-beam: a file with the same choices of the same commit is
+      # in R2 already.
+      - name: Find a build with the same choices
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
+
+      # build-a-beam: one build at a time, in the sequence of the
+      # requests, at most 3 that wait, and at most 10 new builds each day.
+      # A request that waited can find the file of an identical request.
+      - name: Wait for the turn
+        if: github.event_name == 'workflow_dispatch' && env.REUSE != '1'
+        timeout-minutes: 185
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          python3 -I scripts/custom_build.py queue
+          if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
+
       - name: Cache cosmocc
+        if: env.REUSE != '1' && env.REFUSED == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
 
       - name: Download cosmocc
+        if: env.REUSE != '1' && env.REFUSED == ''
         # The GNU make of the host gets cosmocc. Then the make of cosmocc
         # runs the build.
         run: make toolchain
 
       - name: Cache OpenSSL
+        if: env.REUSE != '1' && env.REFUSED == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
 
       - name: Register the APE loader
+        if: env.REUSE != '1' && env.REFUSED == ''
         run: |
           sudo cp build/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
           sudo sh -c 'echo -1 > /proc/sys/fs/binfmt_misc/status' || true
@@ -129,12 +181,14 @@ jobs:
       # The WebAssembly runtime of --target wasm32, as in build.yml (the
       # caches of main are shared).
       - name: Cache emsdk
+        if: env.REUSE != '1' && env.REFUSED == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/emsdk
           key: emsdk-${{ env.EMSDK_VERSION }}-checked
 
       - name: Cache OpenSSL for WebAssembly
+        if: env.REUSE != '1' && env.REFUSED == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm/openssl
@@ -144,12 +198,13 @@ jobs:
       # (the version of the test of the recipe), ninja, and nasm (the SIMD
       # code of libjpeg-turbo).
       - name: Install meson
-        if: contains(env.EXTRA_NIFS, 'vix')
+        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
         run: |
           python3 -m pip install --user meson==1.12.1
           sudo apt-get install -y ninja-build nasm
 
       - name: Build
+        if: env.REUSE != '1' && env.REFUSED == ''
         env:
           CC: cosmocc
           AR: cosmoar
@@ -160,10 +215,12 @@ jobs:
       # The step test of the Makefile: the file runs a program, and builds one
       # that runs (with SQLite and WebAssembly, when they are in it).
       - name: Test
+        if: env.REUSE != '1' && env.REFUSED == ''
         timeout-minutes: 5
         run: OUT="$GITHUB_WORKSPACE/build/$OUT_NAME" timeout 120 build/cosmocc/bin/make test
 
       - name: Check the file
+        if: env.REUSE != '1' && env.REFUSED == ''
         run: |
           f="build/$OUT_NAME"
           "$f" --version
@@ -179,8 +236,18 @@ jobs:
             "$f" -noshell -eval "ok = application:load($app), halt()."
           done
 
+      # build-a-beam: the file goes to R2, where the FIFO reads it. A rule
+      # of the bucket deletes it after 30 days.
+      - name: Put the file in R2
+        if: github.event_name == 'workflow_dispatch' && env.REUSE != '1' && env.REFUSED == ''
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python3 -I scripts/custom_build.py put "build/$OUT_NAME"
+
       - name: Upload
         id: upload
+        if: github.event_name == 'issues'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.OUT_NAME }}-issue-${{ github.event.issue.number }}
@@ -188,6 +255,7 @@ jobs:
           if-no-files-found: error
 
       - name: Answer the issue
+        if: github.event_name == 'issues'
         env:
           GH_TOKEN: ${{ github.token }}
           URL: ${{ steps.upload.outputs.artifact-url }}
@@ -207,7 +275,7 @@ jobs:
           gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed
 
       - name: Report a failure
-        if: failure()
+        if: failure() && github.event_name == 'issues'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -215,3 +283,20 @@ jobs:
         run: |
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
             --body "The build failed: $RUN (the log has the reason). The issue stays open."
+
+      # build-a-beam: the result goes to the FIFO, with the encrypted
+      # address. The FIFO emails the link of the file, or the reason.
+      - name: Answer build-a-beam
+        if: always() && github.event_name == 'workflow_dispatch'
+        env:
+          JOB_STATUS: ${{ job.status }}
+          BUILD_A_BEAM_URL: ${{ vars.BUILD_A_BEAM_URL || 'https://mkfifo.com/build-a-beam' }}
+          BUILD_A_BEAM_SECRET: ${{ secrets.BUILD_A_BEAM_SECRET }}
+        run: |
+          if [ -n "$REFUSED" ]; then
+            python3 -I scripts/custom_build.py notify refused "$REFUSED"
+          elif [ "$JOB_STATUS" = success ]; then
+            python3 -I scripts/custom_build.py notify ready
+          else
+            python3 -I scripts/custom_build.py notify failed
+          fi

@@ -1,0 +1,14 @@
+To: -
+Content-Type: text/html; charset=utf-8
+Cache-Control: no-store
+
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>The build is in the queue</title>
+<style>:root { color-scheme: light dark; } body { margin: 0; font: 16px/1.5 system-ui, sans-serif; } main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem; }</style></head>
+<body><main>
+<h1>The build is in the queue</h1>
+<p>We send an email to <strong>$email</strong> when the file is ready, or when the build cannot run. A build takes about 30 to 60 minutes, and one build runs at a time.</p>
+<p><a href="/build-a-beam">Ask for a different build</a></p>
+</main></body>
+</html>
