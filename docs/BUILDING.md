@@ -115,6 +115,30 @@ closes the issue. A custom build has the WebAssembly runtime too
 (`--target wasm32`), and CI builds and runs a program with it before the
 answer. It is built from `main`, and the answer names the commit.
 
+Without a GitHub account, use the form of
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com). It sends a
+link with a one-time code to your email address, and the link starts the
+same workflow. A second email gives the link of the file, or the reason
+when the build did not run. The file stays in the prerelease
+`custom-builds` for 30 days, and the FIFO streams it.
+
+- The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
+  envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
+  [`scripts/beam-fifo.py`](../scripts/beam-fifo.py) saves them in
+  the holder, with the secrets of the environment (see its help).
+- The FIFO and the workflow accept only the values of the issue form
+  ([`scripts/custom_build.py`](../scripts/custom_build.py)).
+- One build runs at a time, in the sequence of the requests. At most 3
+  requests wait, and at most 10 new builds are made each day (UTC).
+- Two requests with the same choices on the same commit get the same
+  file: the second one gets the link at once, with no build.
+- GitHub never sees the email address: the FIFO sends it in a box of
+  `secretbox`, which only the FIFO opens.
+- The workflow needs the secret `BEAM_FIFO_SECRET` of the repository:
+  the FIFO accepts an answer only with it. The variable `BEAM_FIFO_URL`
+  changes the address of the FIFO. The token of the workflow puts the
+  files in the release, so no other key is necessary.
+
 ## The runtime directory (internal)
 
 `beam.com INPUT -o DIR --target wasm32` (an output that does not end

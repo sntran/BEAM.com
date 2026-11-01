@@ -1,0 +1,13 @@
+To: -
+Content-Type: text/html; charset=utf-8
+
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Check your email</title>
+<style>:root { color-scheme: light dark; } body { margin: 0; font: 16px/1.5 system-ui, sans-serif; } main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem; }</style></head>
+<body><main>
+<h1>Check your email</h1>
+<p>We sent a link to <strong>$email</strong>. Open it within 15 minutes to start the build.</p>
+<p><a href="/beam.com">Back to the form</a></p>
+</main></body>
+</html>

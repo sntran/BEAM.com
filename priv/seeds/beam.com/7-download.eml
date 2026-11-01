@@ -1,0 +1,3 @@
+To: beam.com/b/:file(beam-[0-9a-f]{16}\.com|beam-emu-[0-9a-f]{16}\.com)
+X-HTTP-Method-Override: ^GET$
+Range: ^(?<range>[^\r\n]{0,256})$

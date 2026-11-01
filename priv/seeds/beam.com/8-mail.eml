@@ -1,0 +1,6 @@
+To: beam.com.mail
+X-HTTP-Method-Override: ^POST$
+X-Mail-Key: <seal:^{{MAIL_KEY}}$>
+$.to: ^(?<to>[^@\s;,<>"\\]{1,64}@[^@\s;,<>"\\]{1,253}\.[^@\s;,<>"\\]{2,63})$
+$.subject: ^(?<subject>[^\r\n]{1,200})$
+$.text: (?s)^(?<text>.{1,8000})$

@@ -1,0 +1,82 @@
+To: -
+Content-Type: text/html; charset=utf-8
+Cache-Control: public, max-age=300
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build a BEAM</title>
+<style>
+:root { color-scheme: light dark; --fg: #1d1d1f; --bg: #fbfbfd; --muted: #6e6e73; --line: #d2d2d7; --accent: #7b2ff7; }
+@media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --bg: #111114; --muted: #a1a1a6; --line: #3a3a3f; --accent: #b388ff; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+h1 { margin: 0 0 .25rem; font-size: 1.75rem; }
+p { margin: .5rem 0; }
+.muted { color: var(--muted); font-size: .9rem; }
+fieldset { border: 1px solid var(--line); border-radius: .5rem; margin: 1.25rem 0; padding: .75rem 1rem 1rem; }
+legend { font-weight: 600; padding: 0 .25rem; }
+label { display: block; margin: .75rem 0 .25rem; }
+.check { display: flex; gap: .5rem; align-items: baseline; margin: .25rem 0; }
+.check input { width: auto; }
+input, select { box-sizing: border-box; width: 100%; padding: .5rem; font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: .375rem; }
+.row { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0 1rem; }
+button { margin-top: 1rem; padding: .625rem 1.25rem; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: .375rem; cursor: pointer; }
+.trap { position: absolute; left: -10000px; }
+code { font-size: .9em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Build a BEAM</h1>
+<p>Get a custom <a href="https://github.com/sntran/BEAM.com">beam.com</a>: Erlang/OTP and Elixir in one file that runs on Linux, macOS, Windows and the BSDs, with the parts that you choose.</p>
+<p class="muted">You need no GitHub account. We send a link to your email address. The link starts the build, and a second email gives you the file when it is ready (about 30 to 60 minutes). Each file stays available for 30 days. At most 10 new builds each day.</p>
+
+<form method="post" action="/beam.com">
+<fieldset>
+<legend>Erlang/OTP</legend>
+<p class="muted">The default beam.com has kernel, stdlib, sasl, compiler, parsetools, crypto, asn1, public_key, ssl, inets, ssh, xmerl and runtime_tools.</p>
+<label for="apps">More OTP applications, with spaces</label>
+<input id="apps" name="apps" placeholder="mnesia os_mon eunit" maxlength="1000" pattern="([a-z][a-z0-9_]{0,63}( [a-z][a-z0-9_]{0,63}){0,39})?" autocomplete="off">
+<p class="muted">For example: mnesia, os_mon, eldap, ftp, tftp, diameter, eunit, common_test, tools, syntax_tools, edoc. Only their Erlang code goes in.</p>
+<div class="row">
+<div><label for="jit">Emulator</label>
+<select id="jit" name="jit"><option value="1">JIT (beam.com)</option><option value="0">Interpreter (beam-emu.com)</option></select></div>
+<div><label for="sqlite">SQLite</label>
+<select id="sqlite" name="sqlite"><option value="1">Yes</option><option value="0">No</option></select></div>
+<div><label for="wasm">WebAssembly (WAMR)</label>
+<select id="wasm" name="wasm"><option value="1">Yes</option><option value="0">No</option></select></div>
+</div>
+</fieldset>
+
+<fieldset>
+<legend>Elixir and tools</legend>
+<div class="row">
+<div><label for="elixir">Elixir</label>
+<select id="elixir" name="elixir"><option value="1">Yes</option><option value="0">No</option></select></div>
+<div><label for="hex">Hex (needs Elixir)</label>
+<select id="hex" name="hex"><option value="0">No</option><option value="1">Yes</option></select></div>
+<div><label for="rebar3">rebar3</label>
+<select id="rebar3" name="rebar3"><option value="0">No</option><option value="1">Yes</option></select></div>
+</div>
+<p>More NIFs of hex.pm packages (need Elixir)</p>
+<label class="check"><input type="checkbox" name="nif1" value="picosat_elixir"> picosat_elixir (for Ash)</label>
+<label class="check"><input type="checkbox" name="nif2" value="vix"> vix (libvips, for the image package; about 13 MB more)</label>
+<p class="muted">The default beam.com has the NIFs of exqlite, bcrypt_elixir and argon2_elixir.</p>
+</fieldset>
+
+<fieldset>
+<legend>Your email address</legend>
+<label for="email">We send the link and the file only to this address.</label>
+<input id="email" name="email" type="email" required maxlength="254" autocomplete="email">
+<div class="trap" aria-hidden="true"><label for="website">Leave this field empty</label><input id="website" name="website" tabindex="-1" autocomplete="off"></div>
+</fieldset>
+
+<button>Send me the link</button>
+</form>
+<p class="muted">This page is a FIFO of <a href="https://mkfifo.com/">mkfifo.com</a>. The build runs on GitHub Actions from the main branch of BEAM.com. A member of the repository can also ask for a build with <a href="https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml">an issue</a>.</p>
+</main>
+</body>
+</html>

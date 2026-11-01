@@ -1,0 +1,7 @@
+To: beam.com
+X-HTTP-Method-Override: ^POST$
+Authorization: <seal:^Bearer {{DONE_SECRET}}$>
+$.status: ^(?<status>failed|refused)$
+$.reason: ^(?<reason>|queue_full|daily_limit|timeout)$
+$.reply: ^(?<reply>[A-Za-z0-9+/]{4,684}={0,2})$
+$.run: ^(?<run>https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+)$

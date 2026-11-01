@@ -1,0 +1,5 @@
+To: beam.com.mail
+X-Mail-Key: <seal:{{MAIL_KEY}}>
+Content-Type: application/json
+
+{"to": "$($reply | base64 -d | secretbox -d -K <seal:{{BOX_KEY}}>)", "subject": "Your custom build of beam.com did not run", "text": "Your custom build of beam.com did not complete ($status $reason).\n\n- queue_full: 3 builds wait already. Try again later.\n- daily_limit: we made 10 new builds today. Try again tomorrow (UTC).\n- failed or timeout: the log of the run tells the cause: $run\n\nAsk again at {{BASE}}/beam.com\n"}
