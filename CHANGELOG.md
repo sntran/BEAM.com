@@ -11,7 +11,12 @@ notes of its release.
   libraries (glib, libffi, expat, zlib-ng, libjpeg-turbo, libpng and
   libwebp) with cosmocc for x86_64 and aarch64. The NIF is native only.
   See "The steps" in `docs/BUILDING.md`, and C38 to C40, E5, E6 and G1 in
-  `docs/UPSTREAM.md`.
+  `docs/UPSTREAM.md`. `tests/programs/vix_check` checks it on each
+  system (`.github/workflows/vix.yml`), with the times of some image
+  operations.
+- The builder compiles a Mix dependency into `NAME-VSN/ebin`, as Mix
+  does, so `:code.priv_dir/1` finds the application while its code
+  compiles. vix loads its NIF then.
 - `public_key:cacerts_get/0` reads the file of `SSL_CERT_FILE` when that
   variable names a regular file, on each system. A sandbox or a proxy
   that terminates TLS (such as OpenShell) gives its CA in that file, and

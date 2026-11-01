@@ -1,0 +1,132 @@
+name: The NIF of vix
+
+# A beam.com with EXTRA_NIFS=vix (libvips, scripts/libvips.sh), and
+# tests/programs/vix_check made with it: its check and its times on each
+# system. It runs only for a change of the files of libvips, because its
+# build takes the time of a build of beam.com.
+on:
+  pull_request:
+    paths:
+      - scripts/libvips.sh
+      - patches/libvips/**
+      - tests/programs/vix_check/**
+      - .github/workflows/vix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OTP_VERSION: "29.1.1"
+  COSMOCC_VERSION: "4.0.2"
+  OPENSSL_VERSION: "4.0.3"
+
+jobs:
+  build:
+    name: Build with vix
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Cache cosmocc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
+
+      - name: Download cosmocc
+        run: make toolchain
+
+      - name: Cache OpenSSL
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
+
+      # The static libvips of the two CPUs, for the same recipe.
+      - name: Cache libvips
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/libvips
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}
+
+      - name: Register the APE loader
+        run: |
+          sudo cp build/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
+          sudo sh -c 'echo -1 > /proc/sys/fs/binfmt_misc/status' || true
+          sudo sh -c 'echo 1 > /proc/sys/fs/binfmt_misc/status' || true
+          sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
+          sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
+
+      # scripts/libvips.sh: meson (the version of the test of the recipe)
+      # and ninja.
+      - name: Install meson
+        run: |
+          python3 -m pip install --user meson==1.12.1
+          command -v ninja || sudo apt-get install -y ninja-build
+
+      # No SQLite, WAMR or WebAssembly runtime: only what vix_check needs.
+      - name: Build
+        env:
+          CC: cosmocc
+          AR: cosmoar
+        run: |
+          build/cosmocc/bin/make ELIXIR=1 SQLITE=0 WASM=0 WASM_RUNTIME=none \
+            EXTRA_NIFS=vix bundle
+          build/beam.com --version | tee version.txt
+          grep -q 'Linked NIFs.* vix-' version.txt
+
+      - name: Make vix_check.com
+        run: |
+          build/beam.com tests/programs/vix_check -o build/vix_check.com
+          build/vix_check.com
+          ls -l build/beam.com build/vix_check.com
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: vix_check
+          path: build/vix_check.com
+          if-no-files-found: error
+
+  run:
+    name: Run on ${{ matrix.name }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-26.04 }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm }
+          - { name: macOS arm64, os: macos-latest }
+          - { name: macOS x86_64, os: macos-15-intel }
+          - { name: Windows x86_64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: vix_check
+
+      # sh starts the APE file where the kernel cannot.
+      - name: Check and times (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          sh ./vix_check.com | tee check.txt
+          grep -q '^vix_check: ok$' check.txt
+          sh ./vix_check.com bench 5 | tee bench.txt
+          { echo "### vix: ${{ matrix.name }}"; echo; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check and times (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item vix_check.com vix_check.exe
+          ./vix_check.exe | Tee-Object check.txt
+          if (-not (Select-String -Path check.txt -Pattern '^vix_check: ok$' -Quiet)) { exit 1 }
+          ./vix_check.exe bench 5 | Tee-Object bench.txt
+          "### vix: ${{ matrix.name }}`n`n``````n$(Get-Content bench.txt -Raw)``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
