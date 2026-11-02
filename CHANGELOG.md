@@ -9,6 +9,10 @@ notes of its release.
   has its first `PT_LOAD` segment at the file offset 0. Rosetta of Apple,
   for example in a Linux container of `container --arch amd64`, refused
   the file before: `first load segment not at file offset 0` (#149).
+- Each thread stack on Linux is a plain map with a guard page. Before,
+  Cosmopolitan made thread stacks with `MAP_GROWSDOWN`, and under
+  Rosetta the program then stopped with SIGSEGV at the start (C45 in
+  `docs/UPSTREAM.md`, #149).
 - A custom build can link the NIF of `ex_pdfium` 0.6.0 (PDF documents
   with PDFium, a NIF of Rust): `EXTRA_NIFS=ex_pdfium`, or the option in
   the issue form and the form of mkfifo.com.
