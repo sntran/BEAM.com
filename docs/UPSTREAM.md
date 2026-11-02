@@ -2197,6 +2197,52 @@ of PIPEFS: with no data and no write end, it gives 0.
 **Possible upstream change.** Give 0 in `read` when `pipe.writeClosed`
 is true and the pipe has no data, as POSIX does.
 
+### EM9. `munmap()` frees only a whole mapping
+
+**Seen with emsdk 6.0.10.**
+
+**Symptom.** The memory of the VM grew with each process that made a big
+heap and then ended, and it never stopped growing. `erlang:memory(total)`
+stayed the same. With `-Mea min` (no carriers), the memory stayed flat.
+See the issue 141 of BEAM.com.
+
+**Cause.** An anonymous `mmap()` of Emscripten is `memalign()` of 64 KiB
+(`system/lib/libc/emscripten_mmap.c`). Its `munmap()` frees a mapping only
+with the start and the length of the whole mapping, and gives `EINVAL`
+for another unmap. ERTS aligns a carrier to 256 KiB with a larger
+mapping and the unmap of its head and its tail (`os_mmap_aligned()` of
+`erl_mmap.c`), and a shrink of `erts_mremap()` unmaps a tail. These
+unmaps failed, and ERTS does not check the result. The later unmap of
+the carrier failed too. So most carriers never went back to `malloc()`.
+
+**Workaround.** `wasm/erts/otp.patch` gives `erl_mmap.c` its own
+`os_mmap()`, `os_mmap_aligned()` and `os_munmap()` for `__EMSCRIPTEN__`:
+a mapping is a block of `posix_memalign()` with the alignment that ERTS
+asks for. An unmap can be any part of a block, so each block counts its
+mapped bytes, and it goes back to `malloc()` only when no byte of it is
+mapped.
+
+Caution: an unmap at the start of a block does not mean the end of the
+block. The cache of `erl_mseg.c` splits a cached segment in two segments
+(the best fit of `cache_get_segment()`), and it unmaps the head and the
+tail at different times. An earlier version of the patch freed the whole
+block at the unmap of its start, while ERTS used the tail. Then a write
+into the tail broke the memory that `malloc()` gave to another part of
+the VM: `memory access out of bounds` or a wrong size of a heap, in
+about 5 of 6 runs of `mem_check` in CI. A comparison that poisons each
+unmapped block and scans it at the exit found the writes: 30 blocks of
+8,323,072 bytes, each written from the offset 4,063,232 (the size of the
+head).
+
+`tests/wasm_diff/mem_check.erl` checks the memory of
+the VM over renders in new processes, binaries of 16 MB, a heap that
+shrinks, a binary that grows, and 16 processes at one time, also after
+a snapshot and with `-Mea min`, and that 8 MB of data that a process
+keeps do not change.
+
+**Possible upstream change.** A partial `munmap()` of an anonymous
+mapping in Emscripten, or an `EINVAL` that ERTS checks.
+
 ## workerd (Cloudflare Workers)
 
 Seen with workerd from the `workerd` npm package, and on Cloudflare

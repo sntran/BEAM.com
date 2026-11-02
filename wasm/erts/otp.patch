@@ -789,3 +789,125 @@ index 7a1baea..92177b2 100644
      thr_exit_cleanup();
      return res;
  }
+diff --git a/erts/emulator/sys/common/erl_mmap.c b/erts/emulator/sys/common/erl_mmap.c
+index e07a162..190ccc4 100644
+--- a/erts/emulator/sys/common/erl_mmap.c
++++ b/erts/emulator/sys/common/erl_mmap.c
+@@ -1300,10 +1300,94 @@ Eterm build_free_seg_list(Process* p, ErtsFreeSegMap* map)
+ #  endif
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * Emscripten: mmap() is memalign() of 64 KiB, and munmap() frees only a
++ * whole mapping, with its start and its length (else EINVAL). But
++ * os_mmap_aligned() unmaps the head and the tail of a larger mapping, and
++ * a shrink of erts_mremap() unmaps a tail. These unmaps failed, and the
++ * later unmap of the carrier failed too: the memory of most carriers
++ * never went back to malloc, and the memory of the VM grew with each
++ * carrier. Here a mapping is a block of posix_memalign() with the
++ * alignment that ERTS asks for, as zeros (as mmap() gives).
++ *
++ * An unmap can be any part of a block: a shrink of erts_mremap() unmaps
++ * the tail of a carrier, and the cache of erl_mseg.c splits a cached
++ * segment in two segments (cache_get_segment()), which it unmaps at
++ * different times. So each block counts its mapped bytes, and it goes
++ * back to malloc only when no byte of it is mapped. (A free of the whole
++ * block at the unmap of its start freed the second segment of a split
++ * while ERTS used it.) The threads of the VM do not run at the same time
++ * (JSPI), as for malloc() of Emscripten.
++ */
++#include <stdlib.h>
++
++typedef struct ErtsWasmMapping_ {
++    struct ErtsWasmMapping_ *next;
++    char *ptr;
++    UWord size;
++    UWord mapped;
++} ErtsWasmMapping;
++
++static ErtsWasmMapping *erts_wasm_mappings;
++
++static void *
++erts_wasm_mmap(UWord size, UWord alignment)
++{
++    ErtsWasmMapping *m = malloc(sizeof(ErtsWasmMapping));
++    void *ptr;
++
++    if (!m)
++        return NULL;
++    if (alignment < sizeof(void *))
++        alignment = sizeof(void *);
++    if (posix_memalign(&ptr, (size_t) alignment, (size_t) size) != 0) {
++        free(m);
++        return NULL;
++    }
++    memset(ptr, 0, (size_t) size);
++    m->ptr = ptr;
++    m->size = size;
++    m->mapped = size;
++    m->next = erts_wasm_mappings;
++    erts_wasm_mappings = m;
++    return ptr;
++}
++
++/* The unmap of size bytes at ptr: the part of the block that has ptr. */
++static void
++erts_wasm_munmap(void *ptr, UWord size)
++{
++    char *p = ptr;
++    ErtsWasmMapping **pp;
++
++    for (pp = &erts_wasm_mappings; *pp; pp = &(*pp)->next) {
++        ErtsWasmMapping *m = *pp;
++
++        if (p >= m->ptr && p < m->ptr + m->size) {
++            UWord n = (UWord) (m->ptr + m->size - p);
++
++            if (size < n)
++                n = size;
++            m->mapped = n < m->mapped ? m->mapped - n : 0;
++            if (m->mapped == 0) {
++                *pp = m->next;
++                free(m->ptr);
++                free(m);
++            }
++            return;
++        }
++    }
++}
++#endif
++
+ static ERTS_INLINE void *
+ os_mmap(void *hint_ptr, UWord size)
+ {
+-#if HAVE_MMAP
++#ifdef __EMSCRIPTEN__
++    (void) hint_ptr;
++    return erts_wasm_mmap(size, sys_page_size);
++#elif HAVE_MMAP
+     void *res;
+ 
+     res = mmap((void *) hint_ptr, size, ERTS_MMAP_PROT,
+@@ -1322,7 +1406,9 @@ os_mmap(void *hint_ptr, UWord size)
+ static ERTS_INLINE void
+ os_munmap(void *ptr, UWord size)
+ {
+-#if HAVE_MMAP
++#ifdef __EMSCRIPTEN__
++    erts_wasm_munmap(ptr, size);
++#elif HAVE_MMAP
+ #ifdef ERTS_MMAP_DEBUG
+     int res =
+ #endif
+@@ -1351,7 +1437,9 @@ static ERTS_INLINE void *
+ os_mmap_aligned(UWord size, UWord alignment)
+ {
+     char *result;
+-#ifdef MAP_ALIGN
++#ifdef __EMSCRIPTEN__
++    result = erts_wasm_mmap(size, alignment);
++#elif defined(MAP_ALIGN)
+ 
+     /*
+      * On an operating systems that support MAP_ALIGN (SunOS >=5.9) we

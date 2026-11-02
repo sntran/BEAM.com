@@ -39,7 +39,11 @@ The other changes to the generated app:
 - `bcrypt_elixir` is 3.3.2, the version of the NIF in beam.com, and the cost
   is 10 in production, not 12. A Worker has little CPU time.
 - The default poller of `telemetry_poller` is off in production:
-  `erlang:memory/0` is not supported with `-Mea min`.
+  `erlang:memory/0` is not supported with `-Mea min`. The demo does not set
+  `BEAM_ERL_FLAGS`, so it runs with the allocators of ERTS (the default of
+  the host). The poller stays off, so the demo also works with
+  `BEAM_ERL_FLAGS="-Mea min"`. `wasm_host:memory/0` gives the memory of the
+  VM with both settings.
 
 ## Deploy at each git push
 

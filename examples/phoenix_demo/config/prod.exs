@@ -33,9 +33,10 @@ config :bcrypt_elixir, log_rounds: 10
 # Do not print debug messages in production
 config :logger, level: :info
 
-# On Cloudflare Workers, beam.com runs the VM with -Mea min (no allocators of
-# ERTS), and erlang:memory/0 is not supported there. The default poller of
-# telemetry_poller calls it, so it is off.
+# On Cloudflare Workers, BEAM_ERL_FLAGS="-Mea min" turns off the allocators of
+# ERTS, and erlang:memory/0 is not supported then. The default poller of
+# telemetry_poller calls it, so it is off: the app works with both settings.
+# The host uses the allocators of ERTS by default (docs/WORKERS.md).
 config :telemetry_poller, :default, false
 
 # Runtime production configuration, including reading

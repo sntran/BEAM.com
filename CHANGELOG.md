@@ -41,6 +41,17 @@ notes of its release.
 - A thread that does not set its stack size gets 1 MB, in place of the
   80 KB of Cosmopolitan. The AVIF save of libvips stopped with SIGSEGV in
   such a thread (C46 in `docs/UPSTREAM.md`).
+- The WebAssembly runtime: the memory of the VM no longer grows with each
+  process that makes a big heap and then ends (issue 141). The `munmap()`
+  of Emscripten frees only a whole mapping, and ERTS unmaps parts of a
+  mapping to align a carrier, so most carriers never went back to
+  `malloc()`. `wasm/erts/otp.patch` gives ERTS its own `mmap()` for
+  Emscripten (EM9 in `docs/UPSTREAM.md`).
+- `wasm_host:memory/0` gives the memory of the VM in the WebAssembly
+  runtime: the size of the memory of WebAssembly, also with `-Mea min`.
+- The comment and the README of `examples/phoenix_demo` said that the host
+  uses `-Mea min`. The host uses the allocators of ERTS unless
+  `BEAM_ERL_FLAGS` has `-Mea`.
 - An x86_64 ELF file of `--target` (`x86_64-linux`, `x86_64-freebsd`)
   has its first `PT_LOAD` segment at the file offset 0. Rosetta of Apple,
   for example in a Linux container of `container --arch amd64`, refused

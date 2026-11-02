@@ -123,6 +123,101 @@ defmodule BeamCom.WasmDiffTest do
     assert status == 0
   end
 
+  # Issue 141: the memory of the VM over the cases of
+  # tests/wasm_diff/mem_check.erl (renders, binaries of 16 MB, a heap that
+  # shrinks, a binary that grows, 16 processes at one time). After the
+  # first run of a case, the memory of the VM (wasm_host:memory/0) must
+  # stay near the same when the case runs again. Before the mmap() of ERTS
+  # for Emscripten (wasm/erts/otp.patch), the unmap of most carriers
+  # failed, and the memory grew with each run. A process keeps 8 MB of data
+  # during all the cases, and it must be the same at the end. The run with
+  # a snapshot restores the VM after the first case, so carriers of before
+  # the snapshot end after it. The program waits after that case, so the
+  # threads of ERTS return for the snapshot. The run with -Mea min has no
+  # carriers.
+  # Three runs with the default flags: when the unmap of the start of a
+  # block freed the whole block, the split segments of the cache of
+  # erl_mseg.c broke the memory in about 5 runs of 6 (EM9 in
+  # docs/UPSTREAM.md).
+  for run <- 1..3 do
+    @tag timeout: 900_000
+    @tag run: run
+    test "the memory of the VM stays flat over the cases of mem_check (run #{run})", ctx do
+      out = mem_check(ctx, "mem_check_#{ctx.run}", %{})
+      assert out =~ ~r/^mem_check: erlang_memory \d+$/m
+    end
+  end
+
+  @tag timeout: 900_000
+  test "the memory of the VM stays flat over the cases of mem_check, after a snapshot", ctx do
+    mem_check(ctx, "mem_check_snapshot", %{snapshot: true, args: "[pause]"})
+  end
+
+  @tag timeout: 900_000
+  test "the memory of the VM stays flat over the cases of mem_check, with -Mea min", ctx do
+    out = mem_check(ctx, "mem_check_mea_min", %{flags: ["-Mea", "min"]})
+    assert out =~ ~r/^mem_check: erlang_memory none$/m
+  end
+
+  # The limits of the growth: a binary of 16 MB, or a heap of about 8 MB
+  # of heap_shrink, can leave blocks of free memory that the next one does
+  # not fit in. In CI, heap_shrink grew by 0, 8 or 16 MB in its 30 runs,
+  # and then stayed flat. Without the fix, it grew by about 15 MB in each
+  # run (453 MB).
+  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 32 * 1024 * 1024}
+  @mem_cases ~w(renders big_binaries heap_shrink binary_growth parallel)
+
+  defp mem_check(ctx, name, job) do
+    ebin = Path.join([ctx.top, name, "ebin"])
+    File.mkdir_p!(ebin)
+    File.cp!(Path.join(ctx.ebin, "mem_check.beam"), Path.join(ebin, "mem_check.beam"))
+    src = Path.join([__DIR__, "..", "src", "wasm_host", "wasm_host.erl"])
+    {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
+    {args, job} = Map.pop(job, :args, "[]")
+    job = Map.put(job, :eval, "mem_check:main(#{args}), halt().")
+    # The crash dump of the VM, when it stops with one (mem_check sets
+    # ERL_CRASH_DUMP).
+    dump = Path.join([ctx.top, "wasm-node", name, "erl_crash.dump"])
+    job = Map.put(job, :out, %{"/work/erl_crash.dump" => dump})
+    {out, status} = wasm(%{ctx | ebin: ebin}, name, "node", job)
+    # The stderr of the VM (wasm/4 writes it to a file), for the messages.
+    err = File.read!(Path.join([ctx.top, "wasm-node", name, "stderr"]))
+    out = out <> "stderr:\n" <> String.slice(err, -4000, 4000) <> crash_summary(dump)
+    assert status == 0, out
+
+    for c <- @mem_cases do
+      [_, first, last] =
+        Regex.run(~r/^mem_check: #{c} (\d+) (\d+)$/m, out) || flunk("no #{c}: #{out}")
+
+      growth = String.to_integer(last) - String.to_integer(first)
+      limit = Map.get(@mem_limits, c, 8 * 1024 * 1024)
+      assert growth < limit, "#{c}: the memory of the VM grew #{div(growth, 1024)} KB: #{out}"
+    end
+
+    assert out =~ ~r/^mem_check: keeper ok$/m
+    out
+  end
+
+  # The slogan and the current process of a crash dump, for the message
+  # of a failed test.
+  defp crash_summary(dump) do
+    case File.read(dump) do
+      {:ok, text} ->
+        lines = String.split(text, "\n")
+        head = Enum.take(lines, 12)
+
+        stack =
+          lines
+          |> Enum.drop_while(&(not String.starts_with?(&1, "Current Process")))
+          |> Enum.take(40)
+
+        Enum.join(["crash dump:" | head ++ ["..." | stack]], "\n")
+
+      {:error, _} ->
+        ""
+    end
+  end
+
   defp nif_check(ctx, name, compiled, job \\ %{}) do
     src = Path.join([__DIR__, "programs", "nif_check"])
     app = Path.join([ctx.top, name, "nif_check"])
