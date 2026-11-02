@@ -237,8 +237,14 @@ Windows. The rows come from two runs of 2 November 2026 (run 10 and run
 On Linux aarch64, the times of the two NIFs are near. On Linux x86_64,
 `beam.com` was faster in these runs, but the two jobs ran on different
 machines, so this does not show that the NIF of `beam.com` is faster.
-On macOS arm64, the text of 20 pages took about 8 times longer than on
-the other systems. We do not know the cause yet.
+On macOS arm64 (a virtual Apple M1 with 3 CPUs), the time of the text
+changes from process to process. The 8.1 ms of the table came from one
+process. A later check started the same program 5 times, with 25 runs in
+each: the text of 20 pages took 10.0, 1.5, 1.5, 1.1 and 0.9 ms. The
+render times of the slow process were normal. In the same check, Linux
+aarch64 gave 1.1 ms in each process, and macOS x86_64 gave 1.7 to 2.1 ms.
+So the usual time on macOS arm64 is near that of the other systems. We
+do not know why one process in some runs is slow.
 
 ## The WebAssembly runtime
 
