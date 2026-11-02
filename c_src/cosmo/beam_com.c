@@ -59,6 +59,21 @@
 #define BEAM_COM_BINDIR "/zip/bin"
 #define BEAM_COM_ARGS "/zip/.args"
 #define BEAM_COM_RELEASES "/zip/releases"
+
+/*
+ * The stacks of new threads (C45 of docs/UPSTREAM.md). On Linux,
+ * Cosmopolitan makes each thread stack with MAP_GROWSDOWN, at addresses
+ * that it selects below the other maps (slackmap() in
+ * libc/intrin/stack.c). It does not do this under QEMU, which IsQemuUser()
+ * tells. Rosetta of Apple does not handle these maps as Linux does: the
+ * program then faults in memory near the stacks. This IsQemuUser() takes
+ * the place of the one of Cosmopolitan, so each thread stack is a plain
+ * mmap() with a guard page, on each system. Cosmopolitan calls
+ * IsQemuUser() only there and in its check of memory leaks.
+ */
+int IsQemuUser(void) {
+    return 1;
+}
 #define BEAM_COM_TOOL "/zip/lib/beam_com/ebin/beam_com.app"
 #define BEAM_COM_ALLOW "/zip/.allow"
 

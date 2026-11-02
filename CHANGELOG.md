@@ -12,6 +12,14 @@ notes of its release.
 - A thread that does not set its stack size gets 1 MB, in place of the
   80 KB of Cosmopolitan. The AVIF save of libvips stopped with SIGSEGV in
   such a thread (C46 in `docs/UPSTREAM.md`).
+- An x86_64 ELF file of `--target` (`x86_64-linux`, `x86_64-freebsd`)
+  has its first `PT_LOAD` segment at the file offset 0. Rosetta of Apple,
+  for example in a Linux container of `container --arch amd64`, refused
+  the file before: `first load segment not at file offset 0` (#149).
+- Each thread stack on Linux is a plain map with a guard page. Before,
+  Cosmopolitan made thread stacks with `MAP_GROWSDOWN`, and under
+  Rosetta the program then stopped with SIGSEGV at the start (C45 in
+  `docs/UPSTREAM.md`, #149).
 - A Mix release of a project with a NIF of Rust (rusty_csv, ex_pdfium)
   now boots (issue 147). `beam_com_rustler:force_build/1` set
   `force_build_all` of rustler_precompiled in the application env, and

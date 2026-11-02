@@ -297,6 +297,21 @@ ports_eval='N = length([ok || _ <- lists:seq(1, 200),
     io:format("ports: ~p~n", [N]),
     halt().'
 check beam.com '^ports: 200$' -noshell -eval "$ports_eval"
+# The thread stacks on Linux are plain maps, with no MAP_GROWSDOWN (C45
+# of docs/UPSTREAM.md): Rosetta does not handle MAP_GROWSDOWN as Linux
+# does. --strace of Cosmopolitan shows each mmap() of the start.
+if [ "$os" = linux ]; then
+    echo "==> beam.com --strace: the thread stacks"
+    $runner "$dir/beam.com" --strace -noshell -eval 'halt().' > "$tmp" 2>&1
+    growsdown=$(grep -c MAP_GROWSDOWN "$tmp")
+    threads=$(grep -c pthread_create "$tmp")
+    if [ "$growsdown" != 0 ] || [ "$threads" = 0 ]; then
+        echo "FAIL: beam.com: $growsdown maps with MAP_GROWSDOWN, $threads threads"
+        fail=1
+        failed="$failed
+  beam.com --strace: $growsdown maps with MAP_GROWSDOWN, $threads threads"
+    fi
+fi
 # The ssh application of the zip: a daemon on a free port of 127.0.0.1,
 # with a new host key, and a client that logs in to it with a password.
 rm -rf "$dir/ssh_check"
