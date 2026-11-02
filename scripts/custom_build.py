@@ -136,7 +136,7 @@ def omitted(keep):
         fail("The input keep must start with the word keep")
     bad = [w for w in words[1:] if w not in OMITTABLE]
     if bad:
-        fail(f"Not default applications that a build can leave out: {bad}")
+        fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
     return [a for a in OMITTABLE if a not in words[1:]]
 
 
@@ -159,13 +159,13 @@ def settings(choices):
     apps = sorted(needed(choices["apps"]) - set(OMITTABLE))
     bad = [a for a in apps if not APP.fullmatch(a)]
     if bad:
-        fail(f"Not names of applications: {bad}")
+        fail(f"Not names of applications: {', '.join(bad)}")
     if len(apps) > 40:
         fail("More than 40 applications")
     nifs = sorted(set(choices["nifs"]))
     bad = [n for n in nifs if n not in NIFS]
     if bad:
-        fail(f"Not NIFs of the list: {bad}")
+        fail(f"Not NIFs of the list: {', '.join(bad)}")
     if choices["hex"] and not choices["elixir"]:
         fail("Hex needs Elixir")
     if nifs and not choices["elixir"]:
@@ -173,17 +173,18 @@ def settings(choices):
     omit = sorted(set(choices.get("omit", [])))
     bad = [a for a in omit if a not in OMITTABLE]
     if bad:
-        fail(f"Not default applications that a build can leave out: {bad}")
+        fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
     both = [a for a in omit if a in choices["apps"]]
     if both:
-        fail(f"Applications to add and to leave out: {both}")
+        fail(f"Applications to add and to leave out: {', '.join(both)}")
     users = [a for a in OMITTABLE if a not in omit] + apps
     users += [t for t in ("hex", "rebar3") if choices[t]]
     for user in users:
         missing = sorted((needed([user]) - {user}) & set(omit))
         if missing:
             names = ", ".join(missing)
-            fail(f"{user} needs {names}. Keep {names}, or leave out {user}.")
+            other = {"hex": "choose No for Hex", "rebar3": "choose No for rebar3"}
+            fail(f"{user} needs {names}. Keep {names}, or {other.get(user, 'leave out ' + user)}.")
     one = lambda b: "1" if b else "0"
     env = {
         "OTP_APPS": " ".join(apps),
@@ -353,12 +354,19 @@ def notify(status, reason=""):
         "reply": os.environ["REPLY"],
         "run": run,
         "settings": ", ".join(f"{n}={os.environ.get(n) or '(none)'}" for n in names),
+        "detail": os.environ.get("REFUSED_DETAIL", ""),
     }
+    # Cloudflare in front of mkfifo.com refuses the User-Agent of urllib
+    # (error 1010, status 403).
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
         method="POST",
-        headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {secret}",
+            "Content-Type": "application/json",
+            "User-Agent": "beam.com-custom-build",
+        },
     )
     # 200: an envelope agreed, and the email went. 204: no envelope agreed
     # (for example a wrong BEAM_FIFO_SECRET). 502: the email failed.
@@ -411,8 +419,21 @@ def main(argv):
         if "GITHUB_ENV" in os.environ and REPLY.fullmatch(reply):
             with open(os.environ["GITHUB_ENV"], "a") as f:
                 f.write(f"REPLY={reply}\n")
-        choices = dispatch(os.environ)
-    env = settings(choices)
+        # A choice that is not possible: the requester gets the reason
+        # (REFUSED=choice, and REFUSED_DETAIL with only safe characters).
+        try:
+            choices = dispatch(os.environ)
+            env = settings(choices)
+        except SystemExit as error:
+            if "GITHUB_ENV" not in os.environ:
+                raise
+            detail = re.sub(r"[^A-Za-z0-9_ ,.:()-]", "?", str(error))[:300]
+            print(f"Refused: {detail}")
+            with open(os.environ["GITHUB_ENV"], "a") as f:
+                f.write(f"REFUSED=choice\nREFUSED_DETAIL={detail}\n")
+            return
+    if argv[1] == "issue":
+        env = settings(choices)
     out = dict(env, KEY=key(env, commit))
     if choices["reply"]:
         out["REPLY"] = choices["reply"]

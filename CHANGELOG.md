@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- Fixes of the custom builds of mkfifo.com/beam.com:
+  - The step "Test" of the workflow now has the `CC` and `AR` of the
+    build. Before, `make test` saw other settings, built again from the
+    first step, and stopped at its limit of 120 s.
+  - The answer of the workflow to the FIFO has its own User-Agent.
+    Cloudflare refused the User-Agent of urllib (status 403), so no
+    email went to the requester.
+  - A request with a choice that is not possible gets the reason by
+    email (the reason `choice`), and no build.
+
 - A custom build can leave out default OTP applications, for a smaller
   file: `OTP_OMIT="ssh xmerl"`, or the boxes of the issue form and of the
   form of mkfifo.com. The form of mkfifo.com has a checked box for each
