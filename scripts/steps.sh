@@ -559,7 +559,11 @@ build_rust_nif() {
     # shellcheck disable=SC2046 # the directory and the features
     set -- $(rust_nif_crate "$name")
     crate=$src/$1 features=${2:-}
-    tc=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$crate/rust-toolchain.toml" 2>/dev/null)
+    # A crate with no rust-toolchain.toml (ex_pdfium) uses RUST_NIGHTLY.
+    tc=
+    if [ -f "$crate/rust-toolchain.toml" ]; then
+        tc=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$crate/rust-toolchain.toml")
+    fi
     tc=${tc:-${RUST_NIGHTLY:-nightly-2026-11-01}}
     if ! command -v rustup > /dev/null; then
         echo "The NIF of $name needs Rust: install rustup" >&2
