@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- The builder: the default NIFs (exqlite, bcrypt_elixir and argon2_elixir)
+  are checked boxes with the tag "default", as the default OTP
+  applications are. A box that you clear leaves out that NIF, for a
+  smaller file (`NIFS_OMIT` of `scripts/steps.sh`). In an issue, the list
+  is "Leave out default NIFs".
+- The builder: one list for Elixir, with "None" for a file with no
+  Elixir, and the versions. The workflow still takes the input `elixir`
+  of an older form.
 - The static libvips of `vix` can have three more parts, with
   `VIX_PARTS`, or the choices `vix-icc`, `vix-gif` and `vix-avif` of the
   builder (#148):

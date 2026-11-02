@@ -37,7 +37,7 @@ The steps, in order. The code of each step is in
 | `otp` | | Clones OTP and applies `patches/otp/*.patch`. |
 | `configure` | `otp`, `openssl` | Configures OTP for Cosmopolitan. |
 | `sqlite` | `configure` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
-| `nifs` | `sqlite` | Builds the NIFs of exqlite, bcrypt_elixir and argon2_elixir (nothing with `ELIXIR=0`). |
+| `nifs` | `sqlite` | Builds the NIFs of exqlite, bcrypt_elixir and argon2_elixir, except those of `NIFS_OMIT` (nothing with `ELIXIR=0`). |
 | `wasm` | `configure` | Builds WAMR (the interpreter and the AOT loader), the wasm NIF and the loader of NIF libraries in WebAssembly ([`NIFS.md`](NIFS.md)) (nothing with `WASM=0`). |
 | `make` | `nifs`, `wasm` | Builds a small OTP: the emulator and the OTP applications. |
 | `elixir` | `make` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
@@ -96,6 +96,13 @@ or rebar3. A custom build can have more, or less:
   named `rebar3.com` (or `beam.com rebar3`) runs it, and `mix.com` uses
   it for the dependencies that are rebar3 projects (`MIX_REBAR3`), so
   `mix local.rebar` is not needed either.
+- `NIFS_OMIT="bcrypt_elixir argon2_elixir"`: default NIFs to leave out,
+  for a smaller file: `exqlite` (with `SQLITE=1`), `bcrypt_elixir` and
+  `argon2_elixir`. `beam.com --version` names only the NIFs that the file
+  links. A project that uses a package of a NIF that the file does not
+  link must build that NIF itself (`make` and a C compiler). In the
+  builder, the default NIFs are checked boxes, as the default OTP
+  applications are.
 - `EXTRA_NIFS="picosat_elixir"`: the NIFs of more hex.pm packages,
   linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
   "Phoenix from source" in [`ELIXIR.md`](ELIXIR.md)). The list is in

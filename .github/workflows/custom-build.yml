@@ -35,7 +35,7 @@ on:
         type: string
         default: "0"
       elixir:
-        description: Elixir (0 or 1)
+        description: Elixir (0 or 1), or empty for Elixir only with an elixir_version (the form of mkfifo.com)
         type: string
         default: "1"
       jit:
@@ -51,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, rusty_csv, ex_pdfium), with spaces or commas
+        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, rusty_csv, ex_pdfium), with spaces or commas. With the word default, the default NIFs to keep (exqlite, bcrypt_elixir, argon2_elixir); without it, all of them
         type: string
         default: ""
       otp_version:
@@ -59,7 +59,7 @@ on:
         type: string
         default: ""
       elixir_version:
-        description: The version of Elixir (ELIXIR_VERSIONS of scripts/custom_build.py). Empty for the default.
+        description: The version of Elixir (ELIXIR_VERSIONS of scripts/custom_build.py). Empty for the default, or for no Elixir when the input elixir is empty.
         type: string
         default: ""
       reply:
