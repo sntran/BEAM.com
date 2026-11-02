@@ -104,6 +104,12 @@ Limits of the list:
   connect to each host, on the ports of Landlock only.
 - A name of the list can send data to its name servers in the names of
   its queries, for example `secret.example.com` with `*.example.com`.
+- Caution: `*.DOMAIN` allows the names of each owner under `DOMAIN`.
+  With `*.s3.amazonaws.com` or `*.github.io`, the program can send data
+  to a bucket or a site of another person. The build gives a warning
+  when `DOMAIN` is in the [Public Suffix List](https://publicsuffix.org),
+  or has a name of the list under it. Give the names of your hosts
+  instead.
 - Native code that makes the system calls itself does not go through
   the check. The NIFs of beam.com use the C library.
 - An address stays allowed for one hour after the TTL of its answer,

@@ -5,6 +5,11 @@ notes of its release.
 
 ## Unreleased
 
+- The build gives a warning for `--allow-net=*.DOMAIN` when other owners
+  can have names under `DOMAIN`: `DOMAIN` is in the Public Suffix List
+  (`*.github.io`, `*.co.uk`), or a name of the list is under it
+  (`*.amazonaws.com`). beam.com has a copy of the list
+  (`priv/public_suffix_list.dat`, Mozilla Public License 2.0).
 - The sandbox: `--allow-net=HOST,...` allows the network only for a list
   of hosts: names, `*.DOMAIN`, and addresses, each with an optional port
   (docs/SANDBOX.md, "A list of hosts"). beam.com has its own resolver of
