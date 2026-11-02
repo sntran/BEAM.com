@@ -49,7 +49,7 @@ WAIT_SECONDS = 180 * 60
 # takes only the tags v0.1.0 and later, as the prerelease edge.
 RELEASE = "custom-builds"
 
-NIFS = ("picosat_elixir", "vix")
+NIFS = ("picosat_elixir", "vix", "rusty_csv")
 APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
 FLAGS = ("hex", "rebar3", "elixir", "jit", "sqlite", "wasm")
 # The encrypted address of the requester: Base64 of a secretbox of

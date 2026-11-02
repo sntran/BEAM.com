@@ -10,6 +10,6 @@ elixir: ^(?<elixir>[01])$
 jit: ^(?<jit>[01])$
 sqlite: ^(?<sqlite>[01])$
 wasm: ^(?<wasm>[01])$
-nifs: ^(?<nifs>(?:picosat_elixir)? ?(?:vix)?)$
+nifs: ^(?<nifs>(?:picosat_elixir)? ?(?:vix)? ?(?:rusty_csv)?)$
 step: ^start$
 code: ^$(totp $email)$

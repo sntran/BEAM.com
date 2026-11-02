@@ -93,7 +93,8 @@ or rebar3. A custom build can have more:
   linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
   "Phoenix from source" in [`ELIXIR.md`](ELIXIR.md)). The list is in
   `hex_nif_recipe()` of `scripts/steps.sh`: `picosat_elixir` (the SAT solver of
-  Ash) and `vix` (libvips, for the `image` package). Only with `ELIXIR=1`.
+  Ash), `vix` (libvips, for the `image` package) and `rusty_csv` (CSV, a
+  NIF of Rust). Only with `ELIXIR=1`.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
     builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
     about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists. It has
@@ -103,6 +104,17 @@ or rebar3. A custom build can have more:
     The file is about 13 MB larger (about 6 MB with gzip).
   - The NIF of `vix` is native only: the WebAssembly runtime has no
     threads, and libvips needs them.
+  - `rusty_csv` is a NIF of Rust (Rustler). `build_rust_nif` builds the
+    crate as a staticlib for each CPU, with the Rust toolchain of its
+    `rust-toolchain.toml`, which `rustup` installs (with rust-src, for the
+    aarch64 std: see C41 to C43 in [`UPSTREAM.md`](UPSTREAM.md)), and with
+    LTO. cargo downloads the crates of its `Cargo.lock`. The file is about
+    1.3 MB larger (about 0.7 MB with gzip). `mix.com` and `beam.com DIR -o
+    OUT` compile the package with no cargo and no download (R2 to R4 in
+    `UPSTREAM.md`). On Linux x86_64, the times of
+    `tests/programs/rusty_csv_check` are about 1.15 times those of the
+    precompiled NIF. Its parse of 10 MB takes about 1/19 of the time of
+    NimbleCSV. The NIF is native only.
 
 With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and
 `iex.com -S mix phx.server` work as with a normal Elixir installation.

@@ -14,7 +14,7 @@ Cache-Control: no-store
 <tr><th>Elixir</th><td>$elixir</td></tr>
 <tr><th>Hex</th><td>$hex</td></tr>
 <tr><th>rebar3</th><td>$rebar3</td></tr>
-<tr><th>More NIFs</th><td>$nif1 $nif2</td></tr>
+<tr><th>More NIFs</th><td>$nif1 $nif2 $nif3</td></tr>
 <tr><th>JIT</th><td>$jit</td></tr>
 <tr><th>SQLite</th><td>$sqlite</td></tr>
 <tr><th>WebAssembly</th><td>$wasm</td></tr>
@@ -30,7 +30,7 @@ Cache-Control: no-store
 <input type="hidden" name="jit" value="$jit">
 <input type="hidden" name="sqlite" value="$sqlite">
 <input type="hidden" name="wasm" value="$wasm">
-<input type="hidden" name="nifs" value="$nif1 $nif2">
+<input type="hidden" name="nifs" value="$nif1 $nif2 $nif3">
 <input type="hidden" name="code" value="$code">
 <button>Start the build</button>
 </form>

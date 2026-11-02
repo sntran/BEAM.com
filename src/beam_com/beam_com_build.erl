@@ -939,7 +939,8 @@ mix_dir(Dir, Options) ->
                  || {M, B} <- ErlBeams],
                 ExFiles = lists:append([filelib:wildcard(filename:join([Dir, P, "**", "*.ex"]))
                                         || P <- ExPaths]),
-                ErlBeams ++ beam_com_elixir:compile(ExFiles, Out, Dir)
+                ErlBeams ++ beam_com_elixir:in_project(
+                              Dir, fun() -> beam_com_elixir:compile(ExFiles, Out, Dir) end)
             after
                 code:del_path(Out),
                 file:del_dir_r(Top)

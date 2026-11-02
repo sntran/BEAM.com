@@ -45,7 +45,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix), with spaces or commas
+        description: More NIFs (picosat_elixir, vix, rusty_csv), with spaces or commas
         type: string
         default: ""
       reply:

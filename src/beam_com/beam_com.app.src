@@ -2,7 +2,7 @@
  [{description, "The commands of beam.com"},
   {vsn, "0.1.0-rc.6"},
   {modules, [beam_com, beam_com_build, beam_com_elixir, beam_com_hex, beam_com_make,
-             beam_com_zip]},
+             beam_com_rustler, beam_com_zip, 'Elixir.Rustler']},
   {registered, []},
   {applications, [kernel, stdlib, compiler, sasl]},
   %% build.sh sets the full version of Erlang/OTP (29.1.1), and the

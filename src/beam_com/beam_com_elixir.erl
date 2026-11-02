@@ -10,7 +10,7 @@
 %%   sys.config (Config.Reader).
 -module(beam_com_elixir).
 
--export([available/0, script/1, is_mix/1, mix_project/1, compile/3,
+-export([available/0, script/1, is_mix/1, mix_project/1, in_project/2, compile/3,
          sys_config/1]).
 
 -ifdef(TEST).
@@ -35,6 +35,9 @@ compile([], _Out, _Label) ->
     [];
 compile(Files, Out, Label) ->
     start([elixir]),
+    %% A package with a NIF of Rust that is linked (rustler_precompiled,
+    %% Rustler) loads it, and downloads nothing.
+    beam_com_rustler:force_build(beam_com_make:linked_nifs()),
     ok = filelib:ensure_path(Out),
     Bins = [unicode:characters_to_binary(filename:absname(F)) || F <- Files],
     OutBin = unicode:characters_to_binary(filename:absname(Out)),
@@ -90,6 +93,15 @@ is_mix(Dir) ->
 %% erlc_paths, application}. deps are for beam_com_hex:
 %% [{Name, Package, Requirement}].
 mix_project(Dir) ->
+    with_project(Dir, fun mix_project/2).
+
+%% Fun() with the Mix project of Dir on the project stack of Mix, as Mix
+%% compiles a package: the code of a package can read
+%% Mix.Project.config() when it compiles (rusty_csv).
+in_project(Dir, Fun) ->
+    with_project(Dir, fun(_File, _Project) -> Fun() end).
+
+with_project(Dir, Fun) ->
     start([mix]),
     'Elixir.Mix':'env'(prod),
     File = unicode:characters_to_binary(filename:absname(filename:join(Dir, "mix.exs"))),
@@ -103,28 +115,7 @@ mix_project(Dir) ->
                   [] -> throw({error, "~ts: no Mix project", [File]})
               end,
     try
-        {Config, App} =
-            try {Project:project(),
-                 case erlang:function_exported(Project, application, 0) of
-                     true -> Project:application();
-                     false -> []
-                 end}
-            catch C:R:S ->
-                    throw({error, "~ts: ~ts", [File, 'Elixir.Exception':format(C, R, S)]})
-            end,
-        Get = fun(K, D) -> proplists:get_value(K, Config, D) end,
-        Name = Get(app, undefined),
-        is_atom(Name) andalso Name =/= undefined orelse
-            throw({error, "~ts: no :app in project/0", [File]}),
-        #{app => Name,
-          version => unicode:characters_to_list(Get(version, <<"0.1.0">>)),
-          deps => [{N, P, R} || {N, P, R, _} <- mix_deps(Get(deps, []))],
-          runtime_deps => [N || {N, _, _, true} <- mix_deps(Get(deps, []))],
-          elixirc_paths => [unicode:characters_to_list(P) || P <- Get(elixirc_paths, [<<"lib">>])],
-          erlc_paths => [unicode:characters_to_list(P) || P <- Get(erlc_paths, [<<"src">>])],
-          erlc_options => Get(erlc_options, []),
-          escript => Get(escript, []),
-          application => App}
+        Fun(File, Project)
     after
         %% The project module of mix.exs, and the project stack of Mix.
         %% "use Mix.Project" pushes the project. A module with project/0
@@ -137,6 +128,30 @@ mix_project(Dir) ->
         [begin code:purge(M), code:delete(M) end
          || {M, _} <- Mods, not lists:keymember(M, 1, Old)]
     end.
+
+mix_project(File, Project) ->
+    {Config, App} =
+        try {Project:project(),
+             case erlang:function_exported(Project, application, 0) of
+                 true -> Project:application();
+                 false -> []
+             end}
+        catch C:R:S ->
+                throw({error, "~ts: ~ts", [File, 'Elixir.Exception':format(C, R, S)]})
+        end,
+    Get = fun(K, D) -> proplists:get_value(K, Config, D) end,
+    Name = Get(app, undefined),
+    is_atom(Name) andalso Name =/= undefined orelse
+        throw({error, "~ts: no :app in project/0", [File]}),
+    #{app => Name,
+      version => unicode:characters_to_list(Get(version, <<"0.1.0">>)),
+      deps => [{N, P, R} || {N, P, R, _} <- mix_deps(Get(deps, []))],
+      runtime_deps => [N || {N, _, _, true} <- mix_deps(Get(deps, []))],
+      elixirc_paths => [unicode:characters_to_list(P) || P <- Get(elixirc_paths, [<<"lib">>])],
+      erlc_paths => [unicode:characters_to_list(P) || P <- Get(erlc_paths, [<<"src">>])],
+      erlc_options => Get(erlc_options, []),
+      escript => Get(escript, []),
+      application => App}.
 
 %% The deps of mix.exs: {:name, "~> 1.0"}, {:name, "~> 1.0", opts} and
 %% {:name, opts}, as [{Name, Package, Requirement, Runtime}]. Deps only
