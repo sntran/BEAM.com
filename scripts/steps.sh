@@ -1212,7 +1212,15 @@ step_bundle() {
     # the software in the file (NOTICE). The programs that beam.com makes
     # keep them too (beam_com_build:keep/2 keeps the top-level entries).
     mkdir -p "$STAGE/licenses/otp"
-    cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT"/licenses/*.txt "$STAGE/licenses/"
+    cp "$ROOT/LICENSE" "$ROOT"/licenses/*.txt "$STAGE/licenses/"
+    # NOTICE names the default versions of Erlang/OTP, OpenSSL and
+    # Elixir. A build of other versions (OTP_VERSION, OPENSSL_VERSION,
+    # ELIXIR_VERSION) names its versions.
+    sed -e "s|^Erlang/OTP [0-9][0-9.]* (|Erlang/OTP $OTP_VERSION (|" \
+        -e "s|^OpenSSL [0-9][0-9.]* (|OpenSSL $OPENSSL_VERSION (|" \
+        -e "s|^  Erlang/OTP [0-9][0-9.]* and OpenSSL [0-9][0-9.]*,|  Erlang/OTP $OTP_VERSION and OpenSSL $OPENSSL_VERSION,|" \
+        -e "s|^Elixir [0-9][0-9.]* (|Elixir $ELIXIR_VERSION (|" \
+        "$ROOT/NOTICE" > "$STAGE/licenses/NOTICE"
     cp "$ERL_TOP"/LICENSES/*.txt "$STAGE/licenses/otp/"
     # The license texts of the Elixir source (LICENSES/), when Elixir is
     # in the zip.
