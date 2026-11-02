@@ -16,7 +16,9 @@ static struct { unsigned char *p; size_t n; } erts_wasm_check[ERTS_WASM_CHECK_MA
 static int erts_wasm_check_count;
 static unsigned long erts_wasm_mmaps;
 
-static void
+/* An export of the module: run.mjs calls it at the exit of the VM (the
+ * worker build has no EXIT_RUNTIME, so atexit() does not run). */
+__attribute__((used, export_name("erts_wasm_check_all"))) void
 erts_wasm_check_all(void)
 {
     int i, written = 0;

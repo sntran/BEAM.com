@@ -249,7 +249,8 @@ function options(on, resolve) {
     },
     jspiSchedule: job.schedule === 'plain' ? plainSchedule() : undefined,
     nifModule: (file) => nifs[file] ?? null,
-    onExit: (code) => resolve(code),
+    // A comparison, not for main: the scan of BEAM_WASM_MUNMAP=check.
+    onExit: (code) => { try { on.exports?.erts_wasm_check_all?.(); } catch (e) { process.stderr.write(`run.mjs: check: ${e}\n`); } resolve(code); },
   };
 }
 
