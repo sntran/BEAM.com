@@ -189,3 +189,34 @@ jobs:
           if (-not (Select-String -Path check.txt -Pattern '^ex_pdfium_check: ok$' -Quiet)) { exit 1 }
           ./ex_pdfium_check.exe bench 5 | Tee-Object bench.txt
           "### ex_pdfium: ${{ matrix.name }}`n`n``````n$(Get-Content bench.txt -Raw)``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+  # The same check and times with the precompiled NIF of ex_pdfium (its
+  # GitHub release, with the dynamic libpdfium of bblanchon/pdfium-binaries)
+  # on a normal Erlang/OTP and Elixir, for docs/BENCHMARKS.md. There is no
+  # precompiled NIF for Windows, and setup-beam has no macOS.
+  precompiled:
+    name: Precompiled ex_pdfium on ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-26.04 }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.20.4"
+      - name: Check and times
+        working-directory: tests/programs/ex_pdfium_check
+        run: |
+          mix deps.get
+          mix run -e 'ExPdfiumCheck.main([])' | tee check.txt
+          grep -q '^ex_pdfium_check: ok$' check.txt
+          mix run -e 'ExPdfiumCheck.main(["bench", "5"])' | tee bench.txt
+          { echo "### Precompiled ex_pdfium: ${{ matrix.name }}"; echo; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
