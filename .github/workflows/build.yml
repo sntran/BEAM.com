@@ -259,7 +259,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [free, keep, poison]
+        group: [free, check]
     env:
       OUT: ${{ github.workspace }}/build/beam.com
     steps:

@@ -137,9 +137,10 @@ defmodule BeamCom.WasmDiffTest do
   # carriers.
   # A comparison, not for main: 6 runs of each group, each group on its
   # own runner (the matrix of build.yml), with the mode of the unmap of
-  # erl_mmap.c (BEAM_WASM_MUNMAP): free (the fix), keep (no free), and
-  # poison (0xA5 in the block, no free). A run that hangs fails after 400 s.
-  for i <- 1..6, label <- ["free", "keep", "poison"] do
+  # erl_mmap.c (BEAM_WASM_MUNMAP): free (the fix), and check (0xA5 in the
+  # block, no free, and a scan of the blocks at the exit, which prints each
+  # write into them). A run that hangs fails after 400 s.
+  for i <- 1..6, label <- ["free", "check"] do
     @tag timeout: 400_000
     @tag run: i, label: label, pool: label
     test "pool comparison #{label} #{i}", ctx do
