@@ -32,7 +32,10 @@ if [ ! -d "$SRC/depot_tools/.git" ]; then
     git clone -q https://chromium.googlesource.com/chromium/tools/depot_tools.git "$SRC/depot_tools"
 fi
 git -C "$SRC/depot_tools" checkout -q "$DEPOT_TOOLS_COMMIT"
+# No update of depot_tools (the commit stays), but its bootstrap (the
+# Python of depot_tools), which DEPOT_TOOLS_UPDATE=0 skips too.
 export PATH="$SRC/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0
+"$SRC/depot_tools/ensure_bootstrap"
 
 cd "$SRC"
 if [ ! -f .gclient ]; then

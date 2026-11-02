@@ -38,7 +38,12 @@
 #   EXTRA_NIFS       More hex.pm packages whose NIFs are linked (a custom
 #                    build), separated by spaces: picosat_elixir (for Ash),
 #                    vix (libvips, for the image package; native only),
-#                    rusty_csv (a NIF of Rust; native only, needs rustup).
+#                    rusty_csv (a NIF of Rust; native only, needs rustup),
+#                    ex_pdfium (PDFium, a NIF of Rust; native only, needs
+#                    rustup).
+#   PDFIUM           For ex_pdfium: a directory with x64/ and arm64/, the
+#                    static libpdfium.a of each CPU. Default: $BUILD/pdfium,
+#                    made by scripts/pdfium.sh when it is not there.
 #   RUST_NIGHTLY     For a NIF of Rust whose crate has no rust-toolchain.toml:
 #                    the nightly Rust (default nightly-2026-11-01)
 #   LIBVIPS          For vix: a directory with x86_64/ and aarch64/, the
@@ -120,6 +125,8 @@ VIX_VERSION=${VIX_VERSION:-0.42.0}
 VIX_SHA256=${VIX_SHA256:-c4c92051653859dc5219f553a93fa777d63525ee961c48e16e9f61fed02472ee}
 RUSTY_CSV_VERSION=${RUSTY_CSV_VERSION:-0.4.6}
 RUSTY_CSV_SHA256=${RUSTY_CSV_SHA256:-db9967f0889b9b967a9a1d084fcfbac56c1b0f09cb1faa84b6405e9450f6e059}
+EX_PDFIUM_VERSION=${EX_PDFIUM_VERSION:-0.6.0}
+EX_PDFIUM_SHA256=${EX_PDFIUM_SHA256:-a4f57f4074050e0062b1e80dc39db1fe8a5d9c5eb15928b0211939813c3b3f63}
 # More packages whose NIFs are linked (custom builds), from the list of
 # hex_nif_recipe(): for example "picosat_elixir". Only with ELIXIR=1.
 EXTRA_NIFS=${EXTRA_NIFS:-}
@@ -499,6 +506,38 @@ rust_nif_crate() {
         # nif_version_2_17: the NIF version of the precompiled NIFs of
         # rusty_csv for OTP 27 to 29.
         rusty_csv) echo "native/rustycsv nif_version_2_17" ;;
+        # static: pdfium-render links libpdfium.a (rust_nif_env), and
+        # loads no library.
+        ex_pdfium) echo "native/ex_pdfium static" ;;
+    esac
+}
+
+# rust_nif_env NAME CPU: more variables of the environment of cargo for
+# the crate of NAME, for CPU (x86_64 or aarch64).
+rust_nif_env() {
+    case $1 in
+        ex_pdfium)
+            case $2 in x86_64) c=x64 ;; *) c=arm64 ;; esac
+            echo "PDFIUM_STATIC_LIB_PATH=${PDFIUM:-$BUILD/pdfium}/$c" ;;
+    esac
+}
+
+# rust_nif_prepare NAME: the libraries that the crate of NAME links.
+rust_nif_prepare() {
+    case $1 in
+        ex_pdfium)
+            # The static libpdfium of scripts/pdfium.sh, once (about 30
+            # minutes for each CPU). PDFIUM names a build that exists.
+            p=${PDFIUM:-$BUILD/pdfium}
+            for c in x64 arm64; do
+                if [ -z "${PDFIUM:-}" ] && [ ! -f "$p/$c/libpdfium.a" ]; then
+                    COSMOCC=$COSMOCC BUILD=$BUILD sh "$ROOT/scripts/pdfium.sh" "$c" "$p/$c"
+                fi
+                if [ ! -f "$p/$c/libpdfium.a" ]; then
+                    echo "Missing $p/$c/libpdfium.a (PDFIUM)" >&2
+                    exit 1
+                fi
+            done ;;
     esac
 }
 
@@ -528,6 +567,7 @@ build_rust_nif() {
     fi
     rustup toolchain install "$tc" --profile minimal --component rust-src \
         --target x86_64-unknown-linux-musl > /dev/null
+    rust_nif_prepare "$name"
     # The names of the NIF functions of ERTS, for the table of dlsym().
     # The build of cargo stays in OUT/cargo-LIB for the next build.
     gen=$out/rust-$lib
@@ -553,8 +593,8 @@ build_rust_nif() {
         fi
         # LTO: the object has only the code that the crate uses (see
         # scripts/rust_link.sh).
-        # shellcheck disable=SC2086
-        (cd "$crate" && RUSTFLAGS=$rf CARGO_PROFILE_RELEASE_LTO=fat \
+        # shellcheck disable=SC2046,SC2086
+        (cd "$crate" && env $(rust_nif_env "$name" "$cpu") RUSTFLAGS=$rf CARGO_PROFILE_RELEASE_LTO=fat \
             cargo "+$tc" rustc --release --locked --lib \
             --crate-type staticlib --target "$t" --target-dir "$out/cargo-$lib" \
             ${features:+--features "$features"} "$@")
@@ -584,6 +624,7 @@ hex_nif_recipe() {
         picosat_elixir) echo "$PICOSAT_ELIXIR_VERSION $PICOSAT_ELIXIR_SHA256 picosat_nif" ;;
         vix) echo "$VIX_VERSION $VIX_SHA256 vix" ;;
         rusty_csv) echo "$RUSTY_CSV_VERSION $RUSTY_CSV_SHA256 rustycsv" ;;
+        ex_pdfium) echo "$EX_PDFIUM_VERSION $EX_PDFIUM_SHA256 ex_pdfium" ;;
         # Only for the WebAssembly runtime (step_wasm_runtime): the native
         # beam.com links exqlite in step_nifs.
         exqlite) echo "$EXQLITE_VERSION $EXQLITE_SHA256 sqlite3_nif" ;;
