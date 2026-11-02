@@ -5,6 +5,17 @@ notes of its release.
 
 ## Unreleased
 
+- Faster custom builds (`custom-build.yml`), with three caches:
+  - The cache key of the WebAssembly runtime is the SHA-256 of its
+    inputs (`scripts/steps.sh wasm_runtime_key`). Only the functions of
+    `scripts/steps.sh` that its build runs are in it, so a change of
+    another step no longer builds the runtime again (about 3 minutes).
+  - `scripts/libvips.sh` builds the libraries of libvips, with those of
+    each part, in `build/libvips-deps`, with their own cache. A new set
+    of parts of `vix` builds only libvips (about 1.5 minutes, in place of
+    5 to 12).
+  - `CCACHE=1` of `scripts/steps.sh` puts the compiles of cosmocc through
+    ccache, with one cache for each OTP version.
 - The static libvips of `vix` can have the part `svg`, with `VIX_PARTS`
   or the choice `vix-svg` of the builder (#153). It loads SVG and SVGZ
   with resvg 0.48.1, a library of Rust, in place of librsvg, so it needs

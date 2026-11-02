@@ -59,7 +59,9 @@ writes a stamp in `build/stamps/`. A step runs again only when:
 `test` and `unit` run each time. `make redo-STEP` runs a step again with
 no change of its inputs, for example after a change of
 `scripts/steps.sh`. The steps run one at a time, because they share the
-OTP tree. Each step uses `JOBS` processes.
+OTP tree. Each step uses `JOBS` processes. With `CCACHE=1`, the
+compiles of cosmocc and cosmoc++ go through ccache, in `build/ccache`
+(`CCACHE_DIR`). It is not a setting: the file is the same.
 
 The settings are environment variables or variables of the make command
 line. See the top of [`scripts/steps.sh`](../scripts/steps.sh): the
@@ -111,8 +113,14 @@ or rebar3. A custom build can have more, or less:
   NIF of Rust) and `ex_pdfium` (PDF documents with PDFium, a NIF of
   Rust). Only with `ELIXIR=1`.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
-    builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
-    about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists.
+    builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config),
+    or `LIBVIPS` names a build that exists. It builds in two stages:
+    1. The libraries that libvips needs, with those of each part, in
+       `build/libvips-deps` (`DEPS`): about 10 minutes with 4 CPUs, one
+       time. The script keeps them while the SHA-256 of their recipe
+       (`scripts/libvips.sh --deps-key`) is the same.
+    2. libvips with the parts of `VIX_PARTS`, on a copy of these
+       libraries: about 1.5 minutes.
     It has the libraries of sharp-libvips, with the formats JPEG, PNG,
     WebP, GIF load and PPM, and the SIMD code of zlib-ng, libjpeg-turbo,
     libwebp and Highway. The times of `tests/programs/vix_check` are near
@@ -129,10 +137,11 @@ or rebar3. A custom build can have more, or less:
     | `avif` | AVIF read and write | libheif with aom, `MinSizeRel` as in sharp-libvips | about 12 MB (5 MB with gzip) |
     | `svg` | SVG and SVGZ load | resvg (Rust, `native/vips_resvg`), not librsvg | about 5.5 MB (2.7 MB with gzip) |
 
-    `avif` adds about 12 minutes to the build of libvips. An AVIF encode
-    of 1 megapixel takes about 1.7 s on 4 CPUs. `scripts/libvips.sh`
-    writes the parts in `build/libvips/parts`, and a build with other
-    parts builds libvips again. There is no text operation (pango).
+    aom and libheif of `avif` are about 6 of the 10 minutes of the
+    libraries. An AVIF encode of 1 megapixel takes about 1.7 s on 4
+    CPUs. `scripts/libvips.sh` writes the parts in `build/libvips/parts`,
+    and a build with other parts builds only libvips again. There is no
+    text operation (pango).
   - `svg` puts `c_src/vips/resvgload.c` in the place of the loader of
     librsvg. It has the same names (`svgload`, `svgload_buffer` and
     `svgload_source`) and the same arguments. resvg draws the text of an
@@ -240,10 +249,19 @@ when the build did not run. The file stays in the prerelease
   SHA-256 of the choices and of the source of the build (`source()` of
   `custom_build.py`). A commit that changes only the documents, the
   tests, the workflows or the envelopes of the FIFO keeps the key.
-- A new build takes the WebAssembly runtime (about 3 minutes) and the
-  libvips of `vix` (about 5 minutes, and 12 more with `avif`) from the
-  cache of GitHub Actions when their inputs did not change. The runtime has the cache key of
-  `build.yml`, so the builds of `main` fill it.
+- A new build takes these parts from the cache of GitHub Actions when
+  their inputs did not change:
+  - The WebAssembly runtime (about 3 minutes). Its key is the SHA-256 of
+    its inputs (`scripts/steps.sh wasm_runtime_key`): only the functions
+    of `scripts/steps.sh` that its build runs, so a change of another
+    step keeps it. It has the key of `build.yml`, so the builds of
+    `main` fill it.
+  - The libraries of libvips (about 10 minutes), and libvips for each
+    set of parts (about 1.5 minutes).
+  - The objects of ccache (`CCACHE=1`) for each OTP version: about 4 of
+    the 7 minutes of the build of OTP are C and C++ compiles. A new OTP
+    version starts from the cache of an earlier version.
+    `custom-build-versions.yml` fills it for each pair of versions.
 - GitHub never sees the email address: the FIFO sends it in a box of
   `secretbox`, which only the FIFO opens.
 - The workflow needs the secret `BEAM_FIFO_SECRET` of the repository:
