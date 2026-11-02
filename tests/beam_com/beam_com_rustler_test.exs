@@ -12,10 +12,14 @@ defmodule BeamComRustlerTest do
 
   setup do
     old = :persistent_term.get(:beam_com_rustler, :none)
+    old_force = System.get_env("RUSTLER_PRECOMPILED_FORCE_BUILD_ALL")
+    old_unlinked = System.get_env("BEAM_COM_UNLINKED_NIFS")
+    System.delete_env("BEAM_COM_UNLINKED_NIFS")
 
     on_exit(fn ->
-      :application.unset_env(:rustler_precompiled, :force_build_all)
       :application.unset_env(:rusty_csv, RustyCSV.Native)
+      restore_env("RUSTLER_PRECOMPILED_FORCE_BUILD_ALL", old_force)
+      restore_env("BEAM_COM_UNLINKED_NIFS", old_unlinked)
 
       case old do
         :none -> :persistent_term.erase(:beam_com_rustler)
@@ -28,11 +32,23 @@ defmodule BeamComRustlerTest do
     test "each crate of rustler_precompiled builds, a linked crate with no cargo" do
       :application.set_env(:rusty_csv, RustyCSV.Native, mode: :release)
       :ok = :beam_com_rustler.force_build(@linked ++ [{:vix, ~c"0.42.0"}])
-      assert {:ok, true} == :application.get_env(:rustler_precompiled, :force_build_all)
+      assert "true" == System.get_env("RUSTLER_PRECOMPILED_FORCE_BUILD_ALL")
       {:ok, env} = :application.get_env(:rusty_csv, RustyCSV.Native)
       assert env[:skip_compilation?] == true
       assert env[:mode] == :release
       assert @linked ++ [{:vix, ~c"0.42.0"}] == :persistent_term.get(:beam_com_rustler)
+    end
+
+    # Issue 147: use RustlerPrecompiled reads force_build_all with
+    # Application.compile_env/3. A value in the application env is recorded,
+    # and a release whose sys.config does not set it stops at boot. A value
+    # from the environment variable (the default of compile_env/3) is not.
+    test "force_build_all is the environment variable, not the application env" do
+      # An older beam.com that runs the test set the key at its start.
+      :application.unset_env(:rustler_precompiled, :force_build_all, persistent: true)
+      :ok = :beam_com_rustler.force_build(@linked)
+      assert :undefined == :application.get_env(:rustler_precompiled, :force_build_all)
+      assert "true" == System.get_env("RUSTLER_PRECOMPILED_FORCE_BUILD_ALL")
     end
 
     test "a crate that is not linked gets no env" do
@@ -103,6 +119,38 @@ defmodule BeamComRustlerTest do
                )
     end
 
+    # Issue 146: BEAM_COM_UNLINKED_NIFS=stub. The module compiles with no
+    # on_load function, and a function of the NIF fails at its first call.
+    test "a crate that is not linked, with BEAM_COM_UNLINKED_NIFS=stub" do
+      System.put_env("BEAM_COM_UNLINKED_NIFS", "stub")
+      assert :stub == :beam_com_rustler.unlinked()
+
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Code.compile_string("""
+          defmodule BeamComRustlerTest.Unlinked do
+            use Rustler, otp_app: :beam_com_unlinked, crate: "unlinked_crate"
+            def add(_a, _b), do: :erlang.nif_error(:nif_not_loaded)
+          end
+          """)
+        end)
+
+      assert warning =~ "BeamComRustlerTest.Unlinked: the Rust crate unlinked_crate is not in"
+      assert warning =~ "BEAM_COM_UNLINKED_NIFS=stub"
+      refute function_exported?(BeamComRustlerTest.Unlinked, :rustler_init, 0)
+      # The module comes from the compile above, so the call is an apply.
+      module = BeamComRustlerTest.Unlinked
+      assert_raise ErlangError, ~r/nif_not_loaded/, fn -> apply(module, :add, [1, 2]) end
+    end
+
+    test "a crate that is not linked, without the switch: the error names it" do
+      assert :error == :beam_com_rustler.unlinked()
+
+      assert_raise RuntimeError, ~r/set BEAM_COM_UNLINKED_NIFS=stub$/, fn ->
+        :beam_com_rustler.config(Unlinked.Native, otp_app: :beam_com_unlinked, crate: "x")
+      end
+    end
+
     test "the crate is the name of the application by default" do
       assert_raise RuntimeError, ~r/^RustyCSV.Native: the Rust crate rusty_csv is not in/, fn ->
         :beam_com_rustler.config(RustyCSV.Native, otp_app: :rusty_csv)
@@ -121,11 +169,12 @@ defmodule BeamComRustlerTest do
 
       code = Macro.to_string({:__block__, [], body})
       assert code =~ ":beam_com_rustler.config(__MODULE__, beam_com_rustler_opts)"
+      assert code =~ "if beam_com_rustler_config != :stub do"
       assert code =~ "@on_load :rustler_init"
       assert code =~ "def rustler_init do"
       assert code =~ ":erlang.load_nif("
       # The function of the module calls no module of beam.com.
-      refute Macro.to_string(Enum.at(body, 3)) =~ "beam_com_rustler."
+      refute Macro.to_string(Enum.at(body, 1)) =~ ":beam_com_rustler."
     end
 
     test "Rustler has only the macro __using__/1" do
@@ -145,4 +194,7 @@ defmodule BeamComRustlerTest do
       assert nil == Rustler.__info__(:struct)
     end
   end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
 end
