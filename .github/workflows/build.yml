@@ -250,10 +250,16 @@ jobs:
   # The unit tests (the step unit) on the beam.com of the job build, in
   # their own job: the jobs that need the build do not wait for them.
   unit:
-    name: Unit tests
+    name: Unit tests ${{ matrix.group }}
     needs: build
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 60
+    # A comparison, not for main: the pool tests of tests/wasm_diff_test.exs,
+    # one group on each runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [default, acul0, mea_min]
     env:
       OUT: ${{ github.workspace }}/build/beam.com
     steps:
@@ -305,9 +311,10 @@ jobs:
 
       # scripts/steps.sh, not make: this job has no stamps of the build.
       - name: Unit tests
-        timeout-minutes: 10
+        timeout-minutes: 50
         env:
           BEAM_COM_NETNS: "1"
+          UNIT_TEST_ARGS: --only pool:${{ matrix.group }} --max-cases 1 --slowest 10
         run: scripts/steps.sh unit
 
   # The models of the protocols (specs/ and lib/beam_com/protocol) with

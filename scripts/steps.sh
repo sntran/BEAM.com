@@ -1342,7 +1342,10 @@ step_unit() {
         "$OUT" mix deps.get
         "$OUT" mix compile --warnings-as-errors
         "$OUT" mix format --check-formatted
-        "$OUT" mix test --cover
+        # A comparison, not for main: UNIT_TEST_ARGS selects the tests.
+        # shellcheck disable=SC2086
+        "$OUT" mix test ${UNIT_TEST_ARGS:---cover}
+        [ -z "${UNIT_TEST_ARGS:-}" ] || exit 0
         # The tests of the studio (examples/studio): the import rewrite.
         cd examples/studio
         MIX_BUILD_ROOT="$BUILD/mix-studio" MIX_DEPS_PATH="$BUILD/deps-studio" "$OUT" mix deps.get
