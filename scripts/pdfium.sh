@@ -53,6 +53,14 @@ if [ "$got" != "$PDFIUM_COMMIT" ]; then
 fi
 
 cd pdfium
+# The patches of patches/pdfium, once: the cached checkout keeps them.
+apply() {
+    if ! patch -s -f -R --dry-run -p1 -d "$1" < "$ROOT/patches/pdfium/$2" > /dev/null 2>&1; then
+        patch -s -p1 -d "$1" < "$ROOT/patches/pdfium/$2"
+    fi
+}
+apply build build-cosmopolitan.patch
+apply third_party/abseil-cpp abseil-cosmopolitan.patch
 mkdir -p build/toolchain/cosmo
 cp "$ROOT/patches/pdfium/toolchain.gn" build/toolchain/cosmo/BUILD.gn
 dir=out/cosmo-$cpu
