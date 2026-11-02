@@ -168,9 +168,9 @@ defmodule BeamCom.WasmDiffTest do
     {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
     {args, job} = Map.pop(job, :args, "[]")
     job = Map.put(job, :eval, "mem_check:main(#{args}), halt().")
-    # The crash dump of the VM, when it stops with one.
+    # The crash dump of the VM, when it stops with one (the VM runs in /).
     dump = Path.join([ctx.top, "wasm-node", name, "erl_crash.dump"])
-    job = Map.put(job, :out, %{"/work/erl_crash.dump" => dump})
+    job = Map.put(job, :out, %{"/erl_crash.dump" => dump})
     {out, status} = wasm(%{ctx | ebin: ebin}, name, "node", job)
     # The stderr of the VM (wasm/4 writes it to a file), for the messages.
     err = File.read!(Path.join([ctx.top, "wasm-node", name, "stderr"]))
