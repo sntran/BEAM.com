@@ -71,7 +71,10 @@ body:
       description: NIFs of hex.pm packages, linked into beam.com (needs Elixir). The default beam.com has those of exqlite, bcrypt_elixir and argon2_elixir.
       options:
         - label: picosat_elixir (for Ash)
-        - label: vix (libvips, for the image package; about 13 MB more; not in the WebAssembly runtime)
+        - label: vix (libvips, for the image package; JPEG, PNG, WebP, GIF load and PPM; about 13 MB more; not in the WebAssembly runtime)
+        - label: vix-icc (vix with ICC transforms, lcms2; under 1 MB more than vix)
+        - label: vix-gif (vix with GIF save, cgif and libimagequant; under 1 MB more than vix)
+        - label: vix-avif (vix with AVIF read and write, libheif and aom; about 12 MB more than vix)
         - label: rusty_csv (CSV, a NIF of Rust; about 1.3 MB more; not in the WebAssembly runtime)
         - label: ex_pdfium (PDF documents with PDFium, a NIF of Rust; about 19 MB more; not in the WebAssembly runtime)
   - type: dropdown

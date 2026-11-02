@@ -1,19 +1,24 @@
 #!/bin/sh
 # libvips and the libraries that it needs, as static libraries of cosmocc,
 # for the NIF of vix (EXTRA_NIFS=vix, see build_vix_nif in steps.sh).
-# Usage: scripts/libvips.sh [OUT]
+# Usage: [VIX_PARTS="icc gif avif"] scripts/libvips.sh [OUT]
 #   OUT: the directory of the result (default $BUILD/libvips): OUT/x86_64
-#   and OUT/aarch64, each with include/, lib/ and lib/pkgconfig/.
+#   and OUT/aarch64, each with include/, lib/ and lib/pkgconfig/, and
+#   OUT/parts with the parts of the build.
+#   VIX_PARTS: the parts to add to the formats JPEG, PNG, WebP, GIF load
+#   and PPM (default none):
+#     icc   ICC transforms (lcms2)
+#     gif   GIF save (cgif, and libimagequant for the palette)
+#     avif  AVIF read and write (libheif with aom; about 12 MB of the file)
 # Needs: cosmocc ($COSMOCC, default build/cosmocc), meson, ninja, cmake,
-# nasm (the SIMD code of libjpeg-turbo on x86_64), pkg-config, curl, git
-# and python3.
+# nasm (the SIMD code of libjpeg-turbo and aom on x86_64), pkg-config,
+# curl, git and python3.
 #
 # The versions are those of sharp-libvips (the libvips of vix 0.42.0),
 # with the SIMD code of zlib-ng, libjpeg-turbo, libwebp, Highway and aom,
-# JPEG from libjpeg-turbo, and only the formats JPEG, PNG, WebP, GIF, PPM
-# and AVIF (HEIF with AV1), and ICC transforms (lcms2). Each CPU is built
-# alone, because the headers of glib and libffi differ. aarch64 is a cross
-# build: no test program runs.
+# and JPEG from libjpeg-turbo. Each CPU is built alone, because the
+# headers of glib and libffi differ. aarch64 is a cross build: no test
+# program runs.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,6 +27,18 @@ COSMOCC=${COSMOCC:-$BUILD/cosmocc}
 OUT=${1:-$BUILD/libvips}
 SRC=$BUILD/libvips-src
 JOBS=${JOBS:-4}
+
+# The parts, sorted, each one time.
+for p in ${VIX_PARTS:-}; do
+    case $p in
+        icc|gif|avif) ;;
+        *) echo "Unknown part of VIX_PARTS: $p (icc, gif or avif)" >&2; exit 1 ;;
+    esac
+done
+PARTS=$(printf '%s\n' ${VIX_PARTS:-} | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//')
+has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
+# The options of libvips for a part: enabled or disabled.
+feature() { if has "$1"; then echo enabled; else echo disabled; fi; }
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -202,21 +219,27 @@ EOF
     conf_build --enable-libwebpmux --enable-libwebpdemux
     make -j"$JOBS" install bin_PROGRAMS= noinst_PROGRAMS= man_MANS= >> ../log 2>&1
 
-    # lcms2: the ICC transforms of libvips (icc_transform and the others).
+    # icc. lcms2: the ICC transforms of libvips (icc_transform and the
+    # others).
+    if has icc; then
     unpack lcms2-2.20
     meson_build -Dtests=disabled -Djpeg=disabled -Dtiff=disabled -Dutils=false
+    fi
 
-    # The GIF save of libvips: cgif writes the file, and libimagequant (the
-    # fork of sharp-libvips with the BSD license) makes the palette.
+    # gif. The GIF save of libvips: cgif writes the file, and libimagequant
+    # (the fork of sharp-libvips with the BSD license) makes the palette.
+    if has gif; then
     unpack libimagequant
     meson_build
     unpack cgif
     meson_build -Dexamples=false -Dtests=false
+    fi
 
-    # aom: the AV1 encoder and decoder of AVIF, with its SIMD code (NASM on
+    # avif. aom: the AV1 encoder and decoder of AVIF, with its SIMD code (NASM on
     # x86_64, NEON on aarch64). It selects the code for the CPU at run
     # time: cpuid on x86_64, and getauxval() on aarch64. MinSizeRel, as
     # sharp-libvips does: half the size of Release (about 4 MB of code).
+    if has avif; then
     unpack libaom-3.15.3
     patch -p1 < "$ROOT/patches/libvips/aom-cosmopolitan.patch" > /dev/null
     case $cpu in x86_64) aom_cpu=x86_64 ;; *) aom_cpu=arm64 ;; esac
@@ -236,6 +259,7 @@ EOF
         -DWITH_JPEG_DECODER=OFF -DWITH_JPEG_ENCODER=OFF -DWITH_OpenJPEG_DECODER=OFF \
         -DWITH_OpenJPEG_ENCODER=OFF -DWITH_OPENJPH_ENCODER=OFF -DWITH_FFMPEG_DECODER=OFF \
         -DWITH_UNCOMPRESSED_CODEC=OFF -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON
+    fi
 
     # Highway: the SIMD code of libvips (resize, convolution and others),
     # in C++. It selects the code for the CPU at run time.
@@ -251,13 +275,17 @@ EOF
     meson_build -Dauto_features=disabled -Ddeprecated=false -Dexamples=false \
         -Dcplusplus=false -Dmodules=disabled -Dintrospection=disabled \
         -Djpeg=enabled -Dpng=enabled -Dwebp=enabled -Dzlib=enabled -Dhighway=enabled \
-        -Dlcms=enabled -Dcgif=enabled -Dimagequant=enabled -Dheif=enabled \
+        -Dlcms="$(feature icc)" -Dcgif="$(feature gif)" -Dimagequant="$(feature gif)" \
+        -Dheif="$(feature avif)" \
         -Dnsgif=true -Dppm=true -Danalyze=false -Dradiance=false
     cd "$ROOT"
 }
 
 fetch
+rm -f "$OUT/parts"
 for cpu in x86_64 aarch64; do
     build_cpu "$cpu"
 done
-log "libvips in $OUT"
+# The parts of this build: steps.sh builds again for other parts.
+echo "$PARTS" > "$OUT/parts"
+log "libvips in $OUT (parts: ${PARTS:-none})"

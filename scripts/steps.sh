@@ -48,8 +48,12 @@
 #                    the nightly Rust (default nightly-2026-11-01)
 #   LIBVIPS          For vix: a directory with x86_64/ and aarch64/, the
 #                    static libvips of each CPU. Default: $BUILD/libvips,
-#                    made by scripts/libvips.sh when it is not there.
-#                    Only with ELIXIR=1.
+#                    made by scripts/libvips.sh when it is not there, or
+#                    when it has other VIX_PARTS. Only with ELIXIR=1.
+#   VIX_PARTS        For vix: the parts of libvips to add to its formats,
+#                    separated by spaces (default none): icc (ICC
+#                    transforms), gif (GIF save), avif (AVIF read and
+#                    write; about 12 MB). See scripts/libvips.sh.
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
@@ -123,6 +127,7 @@ PICOSAT_ELIXIR_VERSION=${PICOSAT_ELIXIR_VERSION:-0.2.3}
 PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d53e984e8cd99c832383b7ab78c16c66}
 VIX_VERSION=${VIX_VERSION:-0.42.0}
 VIX_SHA256=${VIX_SHA256:-c4c92051653859dc5219f553a93fa777d63525ee961c48e16e9f61fed02472ee}
+VIX_PARTS=${VIX_PARTS:-}
 RUSTY_CSV_VERSION=${RUSTY_CSV_VERSION:-0.4.6}
 RUSTY_CSV_SHA256=${RUSTY_CSV_SHA256:-db9967f0889b9b967a9a1d084fcfbac56c1b0f09cb1faa84b6405e9450f6e059}
 EX_PDFIUM_VERSION=${EX_PDFIUM_VERSION:-0.6.0}
@@ -448,11 +453,28 @@ build_vix_nif() {
     src=$1 out=$2 cflags=$3
     bin=$COSMOCC/bin
     libvips=${LIBVIPS:-$BUILD/libvips}
-    # The static libvips of scripts/libvips.sh, once (about 17 minutes for
-    # the two CPUs). LIBVIPS names a build that exists.
-    if [ -z "${LIBVIPS:-}" ] && [ ! -f "$libvips/aarch64/lib/libvips.a" ]; then
-        COSMOCC=$COSMOCC BUILD=$BUILD sh "$ROOT/scripts/libvips.sh" "$libvips"
+    # The parts of VIX_PARTS, sorted, as scripts/libvips.sh writes them in
+    # LIBVIPS/parts.
+    parts=$(printf '%s\n' $VIX_PARTS | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//')
+    # The static libvips of scripts/libvips.sh, once for each set of
+    # parts (about 5 minutes for the two CPUs, and about 12 more for
+    # avif). LIBVIPS names a build that exists.
+    if [ -z "${LIBVIPS:-}" ] && { [ ! -f "$libvips/aarch64/lib/libvips.a" ] ||
+            [ "$(cat "$libvips/parts" 2>/dev/null)" != "$parts" ]; }; then
+        COSMOCC=$COSMOCC BUILD=$BUILD VIX_PARTS="$parts" sh "$ROOT/scripts/libvips.sh" "$libvips"
     fi
+    if [ "$(cat "$libvips/parts" 2>/dev/null)" != "$parts" ]; then
+        echo "$libvips has the parts \"$(cat "$libvips/parts" 2>/dev/null)\", not \"$parts\" (VIX_PARTS)" >&2
+        exit 1
+    fi
+    # The libraries of the archive: those of each part, and then those of
+    # the formats of each build.
+    libs=vips
+    case " $parts " in *" avif "*) libs="$libs heif aom" ;; esac
+    case " $parts " in *" icc "*) libs="$libs lcms2" ;; esac
+    case " $parts " in *" gif "*) libs="$libs cgif imagequant" ;; esac
+    libs="$libs hwy webpmux webpdemux webp sharpyuv png16 jpeg expat gio-2.0 gmodule-2.0"
+    libs="$libs gobject-2.0 glib-2.0 intl ffi z"
     for cpu in x86_64 aarch64; do
         p=$libvips/$cpu
         if [ ! -f "$p/lib/libvips.a" ]; then
@@ -480,8 +502,7 @@ build_vix_nif() {
         {
             echo "CREATE $a"
             echo "ADDMOD $obj/vix_nif.o.all"
-            for l in vips heif aom lcms2 cgif imagequant hwy webpmux webpdemux webp sharpyuv png16 jpeg expat \
-                     gio-2.0 gmodule-2.0 gobject-2.0 glib-2.0 intl ffi z; do
+            for l in $libs; do
                 echo "ADDLIB $p/lib/lib$l.a"
             done
             echo SAVE

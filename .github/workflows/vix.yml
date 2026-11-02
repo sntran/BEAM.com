@@ -24,6 +24,8 @@ env:
   OTP_VERSION: "29.1.1"
   COSMOCC_VERSION: "4.0.2"
   OPENSSL_VERSION: "4.0.3"
+  # All the parts of the libvips of vix (VIX_PARTS of scripts/steps.sh).
+  VIX_PARTS: "avif gif icc"
 
 jobs:
   build:
@@ -48,12 +50,13 @@ jobs:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
 
-      # The static libvips of the two CPUs, for the same recipe.
+      # The static libvips of the two CPUs, for the same recipe and parts
+      # (the key of custom-build.yml).
       - name: Cache libvips
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}-parts-${{ env.VIX_PARTS }}
 
       - name: Register the APE loader
         run: |
@@ -64,7 +67,7 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       # scripts/libvips.sh: meson (the version of the test of the recipe),
-      # ninja, and nasm (the SIMD code of libjpeg-turbo).
+      # ninja, and nasm (the SIMD code of libjpeg-turbo and aom).
       - name: Install meson
         run: |
           python3 -m pip install --user meson==1.12.1
@@ -77,7 +80,7 @@ jobs:
           AR: cosmoar
         run: |
           build/cosmocc/bin/make ELIXIR=1 SQLITE=0 WASM=0 WASM_RUNTIME=none \
-            EXTRA_NIFS=vix bundle
+            EXTRA_NIFS=vix VIX_PARTS="$VIX_PARTS" bundle
           build/beam.com --version | tee version.txt
           grep -q 'Linked NIFs.* vix-' version.txt
 
@@ -121,6 +124,9 @@ jobs:
           chmod +x vix_check.com
           sh ./vix_check.com | tee check.txt
           grep -q '^vix_check: ok$' check.txt
+          grep -q '^vix_check: avif 160x120$' check.txt
+          grep -q '^vix_check: gif 160x120$' check.txt
+          grep -q '^vix_check: icc 4 bands, then 3 bands$' check.txt
           sh ./vix_check.com bench 5 | tee bench.txt
           { echo "### vix: ${{ matrix.name }}"; echo; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
@@ -130,6 +136,8 @@ jobs:
         run: |
           Copy-Item vix_check.com vix_check.exe
           ./vix_check.exe | Tee-Object check.txt
-          if (-not (Select-String -Path check.txt -Pattern '^vix_check: ok$' -Quiet)) { exit 1 }
+          foreach ($line in '^vix_check: ok$', '^vix_check: avif 160x120$', '^vix_check: gif 160x120$', '^vix_check: icc 4 bands, then 3 bands$') {
+            if (-not (Select-String -Path check.txt -Pattern $line -Quiet)) { exit 1 }
+          }
           ./vix_check.exe bench 5 | Tee-Object bench.txt
           "### vix: ${{ matrix.name }}`n`n``````n$(Get-Content bench.txt -Raw)``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY

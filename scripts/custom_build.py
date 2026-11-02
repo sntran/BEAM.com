@@ -57,6 +57,9 @@ WAIT_SECONDS = 180 * 60
 RELEASE = "custom-builds"
 
 NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
+# The parts of the libvips of vix (VIX_PARTS of scripts/steps.sh), as
+# words of the NIFs. Each one also selects vix.
+VIX_PARTS = {"vix-icc": "icc", "vix-gif": "gif", "vix-avif": "avif"}
 # The versions of Erlang/OTP and Elixir that a build can use, with the
 # commit of each tag (a tag can move). The patches of patches/otp and
 # patches/elixir apply to each. The workflow custom-build-versions.yml
@@ -161,6 +164,10 @@ def dispatch(env):
     if not choices["elixir"]:
         choices["hex"] = False
         choices["nifs"] = []
+    # In the same way, the form hides the parts of vix without vix. In an
+    # issue, a part also selects vix (settings()).
+    if "vix" not in choices["nifs"]:
+        choices["nifs"] = [n for n in choices["nifs"] if n not in VIX_PARTS]
     return choices
 
 
@@ -231,10 +238,12 @@ def settings(choices, default=None):
         fail(f"Not names of applications: {', '.join(bad)}")
     if len(apps) > 40:
         fail("More than 40 applications")
-    nifs = sorted(set(choices["nifs"]))
-    bad = [n for n in nifs if n not in NIFS]
+    words = set(choices["nifs"])
+    bad = sorted(n for n in words if n not in NIFS and n not in VIX_PARTS)
     if bad:
         fail(f"Not NIFs of the list: {', '.join(bad)}")
+    parts = sorted(VIX_PARTS[n] for n in words if n in VIX_PARTS)
+    nifs = sorted({n for n in words if n in NIFS} | ({"vix"} if parts else set()))
     if choices["hex"] and not choices["elixir"]:
         fail("Hex needs Elixir")
     if nifs and not choices["elixir"]:
@@ -278,6 +287,9 @@ def settings(choices, default=None):
         "WASM": one(choices["wasm"]),
         "EXTRA_NIFS": " ".join(nifs),
     }
+    # Only with a part: the KEY of a build with no part stays the same.
+    if parts:
+        env["VIX_PARTS"] = " ".join(parts)
     env["OUT_NAME"] = "beam.com" if env["JIT"] == "1" else "beam-emu.com"
     return env
 
@@ -468,7 +480,7 @@ def notify(status, reason=""):
         return
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     names = ("OTP_VERSION", "OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR",
-             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "EXTRA_NIFS")
+             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "EXTRA_NIFS", "VIX_PARTS")
     body = {
         "status": status,
         "reason": reason,

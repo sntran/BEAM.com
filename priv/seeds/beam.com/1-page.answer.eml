@@ -35,6 +35,10 @@ code { font-size: .9em; }
    Elixir go away, and a choice that the build refuses shows a warning
    and turns off the button. The workflow checks each rule again. */
 form:has(#elixir option[value="0"]:checked) .needs-elixir { display: none; }
+/* The parts of vix show only with vix. A hidden part still sends its
+   value, and the workflow ignores a part without vix. */
+.vix-parts { margin-left: 1.5rem; }
+form:has([name=nif2]:not(:checked)) .vix-parts { display: none; }
 .no-elixir, .warn { display: none; }
 form:has(#elixir option[value="0"]:checked) .no-elixir { display: block; }
 .warn { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid #d97706; border-radius: .375rem; color: inherit; background: rgba(217, 119, 6, .12); }
@@ -116,7 +120,12 @@ form:has(#elixir option[value="1"]:checked):has(#hex option[value="1"]:checked):
 <p class="sub">More NIFs of hex.pm packages (need Elixir)</p>
 <p class="muted">The default beam.com has the NIFs of exqlite, bcrypt_elixir and argon2_elixir. A NIF that you do not choose adds nothing to the file.</p>
 <label class="check"><input type="checkbox" name="nif1" value="picosat_elixir"> <span>picosat_elixir <span class="muted">for Ash</span></span></label>
-<label class="check"><input type="checkbox" name="nif2" value="vix"> <span>vix <span class="muted">libvips, for the image package; about 13 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif2" value="vix"> <span>vix <span class="muted">libvips, for the image package: JPEG, PNG, WebP, GIF load and PPM; about 13 MB more</span></span></label>
+<div class="vix-parts">
+<label class="check"><input type="checkbox" name="nif5" value="vix-icc"> <span>ICC transforms <span class="muted">lcms2; under 1 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif6" value="vix-gif"> <span>GIF save <span class="muted">cgif and libimagequant; under 1 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif7" value="vix-avif"> <span>AVIF read and write <span class="muted">libheif and aom; about 12 MB more</span></span></label>
+</div>
 <p class="sub">NIFs of Rust (Rustler)</p>
 <p class="muted">Without one of these, the file has no Rust code.</p>
 <label class="check"><input type="checkbox" name="nif3" value="rusty_csv"> <span>rusty_csv <span class="muted">CSV; about 1.3 MB more</span></span></label>
