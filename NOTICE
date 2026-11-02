@@ -94,4 +94,22 @@ Custom builds (build.sh) can also contain:
   - picosat_elixir (EXTRA_NIFS): Apache License 2.0, with PicoSAT (MIT
     License, Copyright 2006-2015 Armin Biere, Johannes Kepler University;
     licenses/picosat.txt).
+  - vix (EXTRA_NIFS): MIT License, with libvips and glib (GNU LGPL 2.1 or
+    later) and the other libraries of scripts/libvips.sh, each with its
+    own license (see their sources).
+  - rusty_csv (EXTRA_NIFS): MIT License. The Rust crates of its NIF
+    (rustler and others) have the MIT License or the Apache License 2.0;
+    see its Cargo.lock.
+  - ex_pdfium (EXTRA_NIFS): MIT License. Its NIF has PDFium (BSD 3-Clause
+    License, Copyright 2014 The PDFium Authors,
+    https://pdfium.googlesource.com/pdfium) and the third-party code of
+    PDFium: FreeType (the FreeType License: portions of this software are
+    copyright The FreeType Project, https://freetype.org, all rights
+    reserved), Abseil (Apache License 2.0), ICU (Unicode License v3),
+    zlib (zlib License), libjpeg-turbo (IJG License and BSD 3-Clause
+    License), OpenJPEG (BSD 2-Clause License), Little CMS (MIT License),
+    Anti-Grain Geometry 2.3, fast_float and BigInteger. Their license
+    texts are in licenses/pdfium of such a build. The Rust crates of the
+    NIF (pdfium-render, rustler and others) have the MIT License or the
+    Apache License 2.0; see the Cargo.lock of ex_pdfium.
   - More OTP applications (OTP_APPS): as Erlang/OTP above.

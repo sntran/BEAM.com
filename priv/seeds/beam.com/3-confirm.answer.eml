@@ -17,7 +17,7 @@ Cache-Control: no-store
 <tr class="needs-elixir"><th>Elixir version</th><td>$elixir_version</td></tr>
 <tr class="needs-elixir"><th>Hex</th><td>$hex</td></tr>
 <tr><th>rebar3</th><td>$rebar3</td></tr>
-<tr class="needs-elixir"><th>More NIFs</th><td>$nif1 $nif2 $nif3</td></tr>
+<tr class="needs-elixir"><th>More NIFs</th><td>$nif1 $nif2 $nif3 $nif4</td></tr>
 <tr><th>JIT</th><td>$jit</td></tr>
 <tr><th>SQLite</th><td>$sqlite</td></tr>
 <tr><th>WebAssembly</th><td>$wasm</td></tr>
@@ -36,7 +36,7 @@ Cache-Control: no-store
 <input type="hidden" name="wasm" value="$wasm">
 <input type="hidden" name="otp_version" value="$otp_version">
 <input type="hidden" name="elixir_version" value="$elixir_version">
-<input type="hidden" name="nifs" value="$nif1 $nif2 $nif3">
+<input type="hidden" name="nifs" value="$nif1 $nif2 $nif3 $nif4">
 <input type="hidden" name="code" value="$code">
 <button>Start the build</button>
 </form>

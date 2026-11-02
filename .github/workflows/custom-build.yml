@@ -51,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix, rusty_csv), with spaces or commas
+        description: More NIFs (picosat_elixir, vix, rusty_csv, ex_pdfium), with spaces or commas
         type: string
         default: ""
       otp_version:
@@ -241,6 +241,23 @@ jobs:
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
       # (the version of the test of the recipe), ninja, and nasm (the SIMD
       # code of libjpeg-turbo).
+      # The static libpdfium.a of each CPU for the NIF of ex_pdfium, with the
+      # key of pdfium.yml. Without it, scripts/pdfium.sh checks out PDFium
+      # (about 2 GB) and builds it (about 10 minutes for each CPU).
+      - name: Cache libpdfium.a (x64)
+        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'ex_pdfium')
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/pdfium/x64
+          key: libpdfium-x64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+
+      - name: Cache libpdfium.a (arm64)
+        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'ex_pdfium')
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/pdfium/arm64
+          key: libpdfium-arm64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+
       - name: Install meson
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
         run: |

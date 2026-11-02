@@ -100,8 +100,9 @@ or rebar3. A custom build can have more, or less:
   linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
   "Phoenix from source" in [`ELIXIR.md`](ELIXIR.md)). The list is in
   `hex_nif_recipe()` of `scripts/steps.sh`: `picosat_elixir` (the SAT solver of
-  Ash), `vix` (libvips, for the `image` package) and `rusty_csv` (CSV, a
-  NIF of Rust). Only with `ELIXIR=1`.
+  Ash), `vix` (libvips, for the `image` package), `rusty_csv` (CSV, a
+  NIF of Rust) and `ex_pdfium` (PDF documents with PDFium, a NIF of
+  Rust). Only with `ELIXIR=1`.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
     builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
     about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists. It has
@@ -122,6 +123,21 @@ or rebar3. A custom build can have more, or less:
     `tests/programs/rusty_csv_check` are about 1.15 times those of the
     precompiled NIF. Its parse of 10 MB takes about 1/19 of the time of
     NimbleCSV. The NIF is native only.
+  - `ex_pdfium` is a NIF of Rust with PDFium (pdfium-render with its
+    feature `static`). `scripts/pdfium.sh` builds a static `libpdfium.a`
+    for each CPU with cosmocc. It checks out PDFium `chromium/7881` (the
+    version of pdfium-render 0.9.3) with depot_tools (about 2 GB), applies
+    `patches/pdfium` (P1 to P4 in [`UPSTREAM.md`](UPSTREAM.md)), and builds
+    it with GCC and the C++ library of cosmocc. It has no V8, no XFA and
+    no stack protector. The build takes about 5 to 10 minutes for each
+    CPU, and `PDFIUM` names a build that exists. The crate has no
+    `rust-toolchain.toml`, so it builds with `RUST_NIGHTLY`. The file is
+    about 18.7 MB larger. It has the license texts of PDFium and of its
+    third-party code in `licenses/pdfium`.
+    `tests/programs/ex_pdfium_check` checks the NIF on each system
+    ([`pdfium.yml`](../.github/workflows/pdfium.yml)). Its times are near
+    those of the precompiled NIF (see "ex_pdfium" in
+    [`BENCHMARKS.md`](BENCHMARKS.md)). The NIF is native only.
 
 - `OTP_VERSION=29.1.2 OTP_COMMIT=...` and `ELIXIR_VERSION=1.20.5
   ELIXIR_COMMIT=...`: other versions of Erlang/OTP and Elixir. The commit

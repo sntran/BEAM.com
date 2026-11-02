@@ -5,6 +5,24 @@ notes of its release.
 
 ## Unreleased
 
+- A custom build can link the NIF of `ex_pdfium` 0.6.0 (PDF documents
+  with PDFium, a NIF of Rust): `EXTRA_NIFS=ex_pdfium`, or the option in
+  the issue form and the form of mkfifo.com.
+  - `scripts/pdfium.sh` builds a static `libpdfium.a` for each CPU with
+    cosmocc, with the patches of `patches/pdfium` and no stack protector
+    (P1 to P4, C8 and C44 in `docs/UPSTREAM.md`).
+  - The file is about 18.7 MB larger. It has the license texts of PDFium
+    and of its third-party code in `licenses/pdfium`.
+  - `tests/programs/ex_pdfium_check` passes on Linux, macOS and Windows,
+    and its times are near those of the precompiled NIF
+    (`docs/BENCHMARKS.md`).
+  - `custom-build.yml` takes `libpdfium.a` from the cache, which
+    `pdfium.yml` fills on `main`.
+- `NOTICE` names the NIFs of `vix`, `rusty_csv` and `ex_pdfium`, with the
+  licenses of the code that they contain.
+- `build_rust_nif` builds a crate with no `rust-toolchain.toml` with
+  `RUST_NIGHTLY`. Before, the step stopped with no message.
+
 - The custom builds of mkfifo.com/beam.com and of the issue form:
   - A request can choose the version of Erlang/OTP (29.1.1, the
     default, 29.1.2 or 29.0.6) and of Elixir (1.20.4, the default, or

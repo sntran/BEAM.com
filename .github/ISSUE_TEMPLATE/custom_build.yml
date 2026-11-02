@@ -73,6 +73,7 @@ body:
         - label: picosat_elixir (for Ash)
         - label: vix (libvips, for the image package; about 13 MB more; not in the WebAssembly runtime)
         - label: rusty_csv (CSV, a NIF of Rust; about 1.3 MB more; not in the WebAssembly runtime)
+        - label: ex_pdfium (PDF documents with PDFium, a NIF of Rust; about 19 MB more; not in the WebAssembly runtime)
   - type: dropdown
     id: elixir
     attributes:

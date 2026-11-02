@@ -1,0 +1,22 @@
+--- a/cpu_features.c
++++ b/cpu_features.c
+@@ -46,7 +46,19 @@
+ #if defined(ARMV8_OS_ANDROID)
+ #include <cpu-features.h>
+ #elif defined(ARMV8_OS_LINUX)
++#if defined(__COSMOPOLITAN__)
++/* BEAM.com: Cosmopolitan has no asm/hwcap.h. These are the bits of
++ * AT_HWCAP of Linux aarch64. On another system, getauxval() gives 0, and
++ * zlib uses no CRC32 and no PMULL code. */
++#ifndef HWCAP_CRC32
++#define HWCAP_CRC32 (1 << 7)
++#endif
++#ifndef HWCAP_PMULL
++#define HWCAP_PMULL (1 << 4)
++#endif
++#else
+ #include <asm/hwcap.h>
++#endif
+ #include <sys/auxv.h>
+ #elif defined(ARMV8_OS_FUCHSIA)
+ #include <zircon/features.h>

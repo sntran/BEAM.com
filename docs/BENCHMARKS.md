@@ -197,6 +197,9 @@ parts in the emulator (C code), which are in every program.
 | `kernel` and `stdlib` stored | +1.9 MB | +1.8 MB | zip; start about 50 ms faster |
 | Code without docs and debug information | | −7.7 MB | zip of the program (as `mix release` strips it); start the same |
 | Elixir (`elixir`, `eex`, `ex_unit`, `iex`, `logger`, `mix`, with docs) | +2.8 MB | 0 for Erlang programs | zip (`ELIXIR=0` leaves it out) |
+| The NIF of `rusty_csv` (`EXTRA_NIFS`) | +1.3 MB | +1.3 MB | emulator (custom builds) |
+| The NIF of `vix`, with libvips | +13 MB | +13 MB | emulator (custom builds) |
+| The NIF of `ex_pdfium`, with PDFium | +18.7 MB | +18.7 MB | emulator (custom builds) |
 | An Elixir program (`elixir` and `compiler`) | | +1.9 MB, start about 40 ms slower | zip of the program |
 
 The last two rows were measured locally (Linux x86_64, the fat JIT): a
@@ -204,6 +207,44 @@ one-file program that prints one line, in Erlang (27.2 MB, 182 ms) and
 in Elixir (29.1 MB, 223 ms), the median of 7 starts. Before the code of
 the programs was stripped, the same programs were 34.9 MB (188 ms) and
 39.0 MB (225 ms).
+
+The rows of the NIFs compare the builds of `rust.yml`, `vix.yml` and
+`pdfium.yml` (`SQLITE=0 WASM=0`, with Elixir). With `ex_pdfium`, that
+`beam.com` is 68.3 MB, and `ex_pdfium_check.com` is 48.6 MB.
+
+## ex_pdfium (PDFium)
+
+[`tests/programs/ex_pdfium_check`](../tests/programs/ex_pdfium_check)
+with the argument `bench 5`: the median of 5 runs, in milliseconds.
+[`pdfium.yml`](../.github/workflows/pdfium.yml) runs it on each system
+with `beam.com` (`EXTRA_NIFS=ex_pdfium`, PDFium of `scripts/pdfium.sh`).
+It also runs it on Linux with the precompiled NIF of ex_pdfium 0.6.0 (its
+GitHub release, with the dynamic PDFium of bblanchon/pdfium-binaries),
+on Erlang/OTP 29.1.1 and Elixir 1.20.4. There is no precompiled NIF for
+Windows. The rows come from two runs of 2 November 2026 (run 10 and run
+11), on shared machines.
+
+| NIF, system | make 20 pages | render a page, 150 dpi | render a page, 300 dpi | text of 20 pages |
+|---|---:|---:|---:|---:|
+| beam.com, Linux x86_64 | 25.1 | 7.7 | 30.5 | 0.7 |
+| precompiled, Linux x86_64 | 40.9 | 10.2 | 46.5 | 1.0 |
+| beam.com, Linux aarch64 | 29.7 | 7.1 | 28.6 | 1.1 |
+| precompiled, Linux aarch64 | 32.4 | 7.0 | 28.9 | 0.9 |
+| beam.com, macOS arm64 (3 schedulers) | 41.6 | 16.1 | 40.3 | 8.1 |
+| beam.com, macOS x86_64 | 48.9 | 14.2 | 48.1 | 1.5 |
+| beam.com, Windows x86_64 | 21.7 | 3.1 | 13.1 | 0.6 |
+
+On Linux aarch64, the times of the two NIFs are near. On Linux x86_64,
+`beam.com` was faster in these runs, but the two jobs ran on different
+machines, so this does not show that the NIF of `beam.com` is faster.
+On macOS arm64 (a virtual Apple M1 with 3 CPUs), the time of the text
+changes from process to process. The 8.1 ms of the table came from one
+process. A later check started the same program 5 times, with 25 runs in
+each: the text of 20 pages took 10.0, 1.5, 1.5, 1.1 and 0.9 ms. The
+render times of the slow process were normal. In the same check, Linux
+aarch64 gave 1.1 ms in each process, and macOS x86_64 gave 1.7 to 2.1 ms.
+So the usual time on macOS arm64 is near that of the other systems. We
+do not know why one process in some runs is slow.
 
 ## The WebAssembly runtime
 

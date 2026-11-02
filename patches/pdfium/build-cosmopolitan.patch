@@ -1,0 +1,14 @@
+--- a/build_config.h
++++ b/build_config.h
+@@ -88,6 +88,11 @@
+ #else
+ #define OS_MAC 1
+ #endif  // defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
++#elif defined(__COSMOPOLITAN__)
++// BEAM.com: Cosmopolitan (cosmocc) builds one file for each system. Its
++// compiler does not define __linux__, and its libc is not glibc. The
++// build is a Linux build of GN (target_os = "linux").
++#define OS_LINUX 1
+ #elif defined(__linux__)
+ #if !defined(OS_CHROMEOS)
+ // Do not define OS_LINUX on Chrome OS build.

@@ -1,0 +1,16 @@
+--- a/absl/debugging/failure_signal_handler.cc
++++ b/absl/debugging/failure_signal_handler.cc
+@@ -109,7 +109,13 @@
+ #endif
+ };
+
++#ifdef __COSMOPOLITAN__
++// BEAM.com: the signal numbers of Cosmopolitan are variables, which it
++// sets at run time for each system. So no constant initializer.
++static FailureSignalData failure_signal_data[] = {
++#else
+ ABSL_CONST_INIT static FailureSignalData failure_signal_data[] = {
++#endif
+     {SIGSEGV, "SIGSEGV", FSD_PREVIOUS_INIT},
+     {SIGILL, "SIGILL", FSD_PREVIOUS_INIT},
+     {SIGFPE, "SIGFPE", FSD_PREVIOUS_INIT},
