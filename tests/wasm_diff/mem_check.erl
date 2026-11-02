@@ -38,12 +38,28 @@ main(_) ->
 run(Name, First, Again) ->
     First(),
     A = wasm_host:memory(),
+    put(steps, [A]),
     Again(),
     B = wasm_host:memory(),
-    io:format("mem_check: ~s ~b ~b~n", [Name, A, B]).
+    Steps = changes(lists:reverse(erase(steps))),
+    io:format("mem_check: ~s ~b ~b~n", [Name, A, B]),
+    io:format("mem_check: ~s steps~s~n", [Name, [[$\s, integer_to_list(S)] || S <- Steps]]).
+
+%% The memory after each repetition of the second time, with no two
+%% values the same one after the other: a leak gives many steps, and the
+%% free memory of malloc that does not fit a block gives one.
+changes([X, X | T]) -> changes([X | T]);
+changes([X | T]) -> [X | changes(T)];
+changes([]) -> [].
 
 repeat(0, _) -> ok;
-repeat(N, F) -> in_process(F), repeat(N - 1, F).
+repeat(N, F) -> in_process(F), step(), repeat(N - 1, F).
+
+step() ->
+    case get(steps) of
+        undefined -> ok;
+        Steps -> put(steps, [wasm_host:memory() | Steps])
+    end.
 
 %% F in a new process, which then ends.
 in_process(F) ->
