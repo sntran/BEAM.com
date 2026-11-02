@@ -163,6 +163,9 @@ defmodule BeamCom.WasmDiffTest do
     {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
     job = Map.put(job, :eval, "mem_check:main([]), halt().")
     {out, status} = wasm(%{ctx | ebin: ebin}, name, "node", job)
+    # The stderr of the VM (wasm/4 writes it to a file), for the messages.
+    err = File.read!(Path.join([ctx.top, "wasm-node", name, "stderr"]))
+    out = out <> "stderr:\n" <> String.slice(err, -4000, 4000)
     assert status == 0, out
 
     for c <- @mem_cases do
