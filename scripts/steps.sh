@@ -598,7 +598,8 @@ build_rust_nif() {
         # LTO: the object has only the code that the crate uses (see
         # scripts/rust_link.sh).
         # shellcheck disable=SC2046,SC2086
-        (cd "$crate" && env $(rust_nif_env "$name" "$cpu") RUSTFLAGS=$rf CARGO_PROFILE_RELEASE_LTO=fat \
+        # RUSTFLAGS is an assignment of the shell (no split of its words).
+        (cd "$crate" && RUSTFLAGS=$rf CARGO_PROFILE_RELEASE_LTO=fat env $(rust_nif_env "$name" "$cpu") \
             cargo "+$tc" rustc --release --locked --lib \
             --crate-type staticlib --target "$t" --target-dir "$out/cargo-$lib" \
             ${features:+--features "$features"} "$@")
