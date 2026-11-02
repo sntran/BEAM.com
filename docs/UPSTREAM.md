@@ -2757,13 +2757,22 @@ optional dependency of these packages.
 when the module `Rustler` is loaded. Without `skip_compilation?`,
 rustler runs `cargo`.
 
-**Workaround in BEAM.com.** `beam_com_rustler:force_build/1` sets
-`force_build_all` of rustler_precompiled, and `skip_compilation?` for
-each linked crate. beam.com has a module `Rustler` with only
-`__using__/1` (`src/beam_com/Elixir.Rustler.erl`): it gives the module
-of the NIF an `on_load` function that loads the static NIF, and stops
-the compilation for a crate that is not linked. The package rustler,
-when a project has it, comes first in the code path.
+**Workaround in BEAM.com.** `beam_com_rustler:force_build/1` sets the
+environment variable `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL`, and
+`skip_compilation?` for each linked crate. beam.com has a module
+`Rustler` with only `__using__/1` (`src/beam_com/Elixir.Rustler.erl`): it
+gives the module of the NIF an `on_load` function that loads the static
+NIF, and stops the compilation for a crate that is not linked (or, with
+`BEAM_COM_UNLINKED_NIFS=stub`, compiles the module with no NIF). The
+package rustler, when a project has it, comes first in the code path.
+
+Caution: `use RustlerPrecompiled` reads `force_build_all` with
+`Application.compile_env/3`. When `force_build/1` set it in the
+application env, Elixir recorded the value, and a release whose
+`sys.config` does not set it stopped at boot (issue 147). A value from the
+environment variable, the default of `compile_env/3`, is not recorded.
+`use Rustler` of the package rustler reads `skip_compilation?` in the
+same way, so a project with that package must also set it in its config.
 
 **Possible upstream fix.** An option of rustler_precompiled (or an env)
 for runtimes that have the NIFs built in, as for E4.
