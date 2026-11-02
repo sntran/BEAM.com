@@ -77,11 +77,18 @@ APE files directly, register the APE loader with `binfmt_misc` (see
 ## A custom build
 
 The default `beam.com` has a fixed set of OTP applications, and no Hex
-or rebar3. A custom build can have more:
+or rebar3. A custom build can have more, or less:
 
 - `OTP_APPS="mnesia eldap"`: more OTP applications in the zip (their Erlang
   code; the C code of an application, as the port programs of `os_mon`,
   is not built).
+- `OTP_OMIT="ssh xmerl"`: default OTP applications to leave out of the
+  zip, for a smaller file. Only `parsetools`, `asn1`, `public_key`,
+  `ssl`, `inets`, `ssh`, `xmerl`, `runtime_tools` and `tools`: beam.com
+  itself needs `kernel`, `stdlib`, `sasl`, `compiler` and `crypto`. The
+  build stops when an application of the zip needs an application of
+  `OTP_OMIT` (`ssl` needs `public_key`, which needs `asn1`). Hex, rebar3
+  and the downloads of packages need `inets` and `ssl`.
 - `HEX=1`: Hex in the zip (the newest, from `mix local.hex`). The tools
   of Elixir have it in their code path, so `mix.com deps.get` needs no
   `mix local.hex`. Only with `ELIXIR=1`.
@@ -93,7 +100,8 @@ or rebar3. A custom build can have more:
   linked as those of `bcrypt_elixir` and `argon2_elixir` are (see
   "Phoenix from source" in [`ELIXIR.md`](ELIXIR.md)). The list is in
   `hex_nif_recipe()` of `scripts/steps.sh`: `picosat_elixir` (the SAT solver of
-  Ash) and `vix` (libvips, for the `image` package). Only with `ELIXIR=1`.
+  Ash), `vix` (libvips, for the `image` package) and `rusty_csv` (CSV, a
+  NIF of Rust). Only with `ELIXIR=1`.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
     builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
     about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists. It has
@@ -103,6 +111,17 @@ or rebar3. A custom build can have more:
     The file is about 13 MB larger (about 6 MB with gzip).
   - The NIF of `vix` is native only: the WebAssembly runtime has no
     threads, and libvips needs them.
+  - `rusty_csv` is a NIF of Rust (Rustler). `build_rust_nif` builds the
+    crate as a staticlib for each CPU, with the Rust toolchain of its
+    `rust-toolchain.toml`, which `rustup` installs (with rust-src, for the
+    aarch64 std: see C41 to C43 in [`UPSTREAM.md`](UPSTREAM.md)), and with
+    LTO. cargo downloads the crates of its `Cargo.lock`. The file is about
+    1.3 MB larger (about 0.7 MB with gzip). `mix.com` and `beam.com DIR -o
+    OUT` compile the package with no cargo and no download (R2 to R4 in
+    `UPSTREAM.md`). On Linux x86_64, the times of
+    `tests/programs/rusty_csv_check` are about 1.15 times those of the
+    precompiled NIF. Its parse of 10 MB takes about 1/19 of the time of
+    NimbleCSV. The NIF is native only.
 
 With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and
 `iex.com -S mix phx.server` work as with a normal Elixir installation.
@@ -127,7 +146,11 @@ when the build did not run. The file stays in the prerelease
   [`scripts/beam-fifo.py`](../scripts/beam-fifo.py) saves them in
   the holder, with the secrets of the environment (see its help).
 - The FIFO and the workflow accept only the values of the issue form
-  ([`scripts/custom_build.py`](../scripts/custom_build.py)).
+  ([`scripts/custom_build.py`](../scripts/custom_build.py)). The form
+  has a box for each default OTP application that a build can leave out,
+  checked, and a box for each known OTP application to add. The workflow
+  refuses a request that leaves out an application that another one
+  needs, before the build, and the email gives the reason.
 - One build runs at a time, in the sequence of the requests. At most 3
   requests wait, and at most 10 new builds are made each day (UTC).
 - Two requests with the same choices on the same commit get the same

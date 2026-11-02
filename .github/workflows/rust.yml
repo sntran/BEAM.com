@@ -1,0 +1,201 @@
+name: Rust on Cosmopolitan
+
+# The probe of tests/programs/rust_probe: a staticlib of Rust (std of
+# *-unknown-linux-musl) with the calls of c_src/rust/cosmo_rust.c, in one
+# APE file for x86_64 and aarch64. It checks threads, a Mutex with
+# contention, a Condvar, thread-locals, OnceLock, random bytes, unwinding,
+# the clocks and the number of CPUs, on each system. The static NIFs of
+# Rust (Rustler) need these parts.
+#
+# Then a beam.com with EXTRA_NIFS=rusty_csv (build_rust_nif in
+# scripts/steps.sh), and tests/programs/rusty_csv_check made with it: its
+# check and its times on each system.
+on:
+  push:
+    branches: [feat/rustler-nifs]
+  pull_request:
+    paths:
+      - c_src/rust/**
+      - scripts/rust_link.sh
+      - src/beam_com/beam_com_rustler.erl
+      - src/beam_com/Elixir.Rustler.erl
+      - tests/programs/rust_probe/**
+      - tests/programs/rusty_csv_check/**
+      - .github/workflows/rust.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OTP_VERSION: "29.1.1"
+  COSMOCC_VERSION: "4.0.2"
+  OPENSSL_VERSION: "4.0.3"
+
+jobs:
+  build:
+    name: Build the probe
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Cache cosmocc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
+
+      - name: Download cosmocc
+        run: make toolchain
+
+      # x86_64: the std of stable Rust. aarch64: a std built again with x18
+      # and x28 reserved, with a nightly Rust (tests/programs/rust_probe/build.sh).
+      - name: The Rust toolchains
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src
+
+      - name: Build
+        run: |
+          sh tests/programs/rust_probe/build.sh "$PWD/build/cosmocc" "$PWD/build/rust_probe.com"
+          ls -l build/rust_probe.com
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust_probe
+          path: build/rust_probe.com
+          if-no-files-found: error
+
+  run:
+    name: Run on ${{ matrix.name }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-26.04 }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm }
+          - { name: macOS arm64, os: macos-latest }
+          - { name: macOS x86_64, os: macos-15-intel }
+          - { name: Windows x86_64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rust_probe
+
+      # An artifact loses the execute bit. sh starts the APE file where the
+      # kernel cannot.
+      - name: Run (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x rust_probe.com
+          for i in 1 2 3; do sh ./rust_probe.com; done
+
+      - name: Run (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item rust_probe.com rust_probe.exe
+          foreach ($i in 1..3) { ./rust_probe.exe; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+
+  nif:
+    name: Build with rusty_csv
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Cache cosmocc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
+
+      - name: Download cosmocc
+        run: make toolchain
+
+      - name: Cache OpenSSL
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
+
+      - name: Register the APE loader
+        run: |
+          sudo cp build/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
+          sudo sh -c 'echo -1 > /proc/sys/fs/binfmt_misc/status' || true
+          sudo sh -c 'echo 1 > /proc/sys/fs/binfmt_misc/status' || true
+          sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
+          sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
+
+      # No SQLite, WAMR or WebAssembly runtime: only what rusty_csv_check
+      # needs. build_rust_nif installs the Rust toolchain of the crate.
+      - name: Build
+        env:
+          CC: cosmocc
+          AR: cosmoar
+        run: |
+          build/cosmocc/bin/make ELIXIR=1 SQLITE=0 WASM=0 WASM_RUNTIME=none \
+            EXTRA_NIFS=rusty_csv bundle
+          build/beam.com --version | tee version.txt
+          grep -q 'Linked NIFs.* rusty_csv-' version.txt
+
+      - name: Make rusty_csv_check.com
+        run: |
+          build/beam.com tests/programs/rusty_csv_check -o build/rusty_csv_check.com
+          build/rusty_csv_check.com
+          ls -l build/beam.com build/rusty_csv_check.com
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rusty_csv_check
+          path: build/rusty_csv_check.com
+          if-no-files-found: error
+
+  nif-run:
+    name: rusty_csv on ${{ matrix.name }}
+    needs: nif
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-26.04 }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm }
+          - { name: macOS arm64, os: macos-latest }
+          - { name: macOS x86_64, os: macos-15-intel }
+          - { name: Windows x86_64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rusty_csv_check
+
+      # An artifact loses the execute bit, and beam.com starts its helper
+      # programs (inet_gethost) with its own file. sh starts the APE file
+      # where the kernel cannot.
+      - name: Check and times (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x rusty_csv_check.com
+          sh ./rusty_csv_check.com | tee check.txt
+          grep -q '^rusty_csv_check: ok$' check.txt
+          sh ./rusty_csv_check.com bench 5 | tee bench.txt
+          { echo "### rusty_csv: ${{ matrix.name }}"; echo; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check and times (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item rusty_csv_check.com rusty_csv_check.exe
+          ./rusty_csv_check.exe | Tee-Object check.txt
+          if (-not (Select-String -Path check.txt -Pattern '^rusty_csv_check: ok$' -Quiet)) { exit 1 }
+          ./rusty_csv_check.exe bench 5 | Tee-Object bench.txt
+          "### rusty_csv: ${{ matrix.name }}`n`n``````n$(Get-Content bench.txt -Raw)``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY

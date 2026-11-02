@@ -49,7 +49,23 @@ WAIT_SECONDS = 180 * 60
 # takes only the tags v0.1.0 and later, as the prerelease edge.
 RELEASE = "custom-builds"
 
-NIFS = ("picosat_elixir", "vix")
+NIFS = ("picosat_elixir", "vix", "rusty_csv")
+# The default OTP applications that a build can leave out (OTP_OMIT of
+# scripts/steps.sh), and the applications that need them. The other
+# default applications (kernel, stdlib, sasl, compiler and crypto) are
+# for beam.com itself.
+OMITTABLE = ("parsetools", "asn1", "public_key", "ssl", "inets", "ssh", "xmerl",
+             "runtime_tools", "tools")
+NEEDS = {
+    "public_key": ("asn1",),
+    "ssl": ("public_key",),
+    "ssh": ("public_key",),
+    "eldap": ("asn1",),
+    "edoc": ("syntax_tools",),
+    # Hex and rebar3 download packages with httpc and TLS.
+    "hex": ("inets", "ssl"),
+    "rebar3": ("inets", "ssl"),
+}
 APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
 FLAGS = ("hex", "rebar3", "elixir", "jit", "sqlite", "wasm")
 # The encrypted address of the requester: Base64 of a secretbox of
@@ -79,6 +95,7 @@ def issue(body):
     tools = checked("Tools")
     return {
         "apps": apps,
+        "omit": [a.split()[0] for a in checked("Leave out default OTP applications")],
         "nifs": [n.split()[0] for n in checked("More NIFs")],
         "hex": any(t.startswith("Hex") for t in tools),
         "rebar3": any(t.startswith("rebar3") for t in tools),
@@ -102,29 +119,76 @@ def dispatch(env):
         fail("The input reply is not an encrypted address")
     choices = {name: flag(name) for name in FLAGS}
     choices["apps"] = env.get("INPUT_APPS", "").replace(",", " ").split()
+    choices["omit"] = omitted(env.get("INPUT_KEEP", ""))
     choices["nifs"] = env.get("INPUT_NIFS", "").replace(",", " ").split()
     choices["reply"] = reply
     return choices
 
 
+def omitted(keep):
+    """The default applications to leave out, from the input keep of the
+    form: "keep" and the names of the default applications to keep. An
+    empty input keeps each one (an older form)."""
+    words = keep.replace(",", " ").split()
+    if not words:
+        return []
+    if words[0] != "keep":
+        fail("The input keep must start with the word keep")
+    bad = [w for w in words[1:] if w not in OMITTABLE]
+    if bad:
+        fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
+    return [a for a in OMITTABLE if a not in words[1:]]
+
+
+def needed(names):
+    """The names, with the applications that they need (NEEDS), again
+    and again."""
+    out = set(names)
+    todo = list(names)
+    while todo:
+        for need in NEEDS.get(todo.pop(), ()):
+            if need not in out:
+                out.add(need)
+                todo.append(need)
+    return out
+
+
 def settings(choices):
-    apps = sorted(set(choices["apps"]))
+    # An application that a chosen application needs, and that is not a
+    # default application, goes in too (syntax_tools for edoc).
+    apps = sorted(needed(choices["apps"]) - set(OMITTABLE))
     bad = [a for a in apps if not APP.fullmatch(a)]
     if bad:
-        fail(f"Not names of applications: {bad}")
+        fail(f"Not names of applications: {', '.join(bad)}")
     if len(apps) > 40:
         fail("More than 40 applications")
     nifs = sorted(set(choices["nifs"]))
     bad = [n for n in nifs if n not in NIFS]
     if bad:
-        fail(f"Not NIFs of the list: {bad}")
+        fail(f"Not NIFs of the list: {', '.join(bad)}")
     if choices["hex"] and not choices["elixir"]:
         fail("Hex needs Elixir")
     if nifs and not choices["elixir"]:
         fail("The NIFs of hex.pm packages need Elixir")
+    omit = sorted(set(choices.get("omit", [])))
+    bad = [a for a in omit if a not in OMITTABLE]
+    if bad:
+        fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
+    both = [a for a in omit if a in choices["apps"]]
+    if both:
+        fail(f"Applications to add and to leave out: {', '.join(both)}")
+    users = [a for a in OMITTABLE if a not in omit] + apps
+    users += [t for t in ("hex", "rebar3") if choices[t]]
+    for user in users:
+        missing = sorted((needed([user]) - {user}) & set(omit))
+        if missing:
+            names = ", ".join(missing)
+            other = {"hex": "choose No for Hex", "rebar3": "choose No for rebar3"}
+            fail(f"{user} needs {names}. Keep {names}, or {other.get(user, 'leave out ' + user)}.")
     one = lambda b: "1" if b else "0"
     env = {
         "OTP_APPS": " ".join(apps),
+        "OTP_OMIT": " ".join(omit),
         "HEX": one(choices["hex"]),
         "REBAR3": one(choices["rebar3"]),
         "ELIXIR": one(choices["elixir"]),
@@ -281,7 +345,8 @@ def notify(status, reason=""):
         print("No FIFO to notify")
         return
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    names = ("OTP_APPS", "HEX", "REBAR3", "ELIXIR", "JIT", "SQLITE", "WASM", "EXTRA_NIFS")
+    names = ("OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR", "JIT", "SQLITE", "WASM",
+             "EXTRA_NIFS")
     body = {
         "status": status,
         "reason": reason,
@@ -289,12 +354,19 @@ def notify(status, reason=""):
         "reply": os.environ["REPLY"],
         "run": run,
         "settings": ", ".join(f"{n}={os.environ.get(n) or '(none)'}" for n in names),
+        "detail": os.environ.get("REFUSED_DETAIL", ""),
     }
+    # Cloudflare in front of mkfifo.com refuses the User-Agent of urllib
+    # (error 1010, status 403).
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
         method="POST",
-        headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {secret}",
+            "Content-Type": "application/json",
+            "User-Agent": "beam.com-custom-build",
+        },
     )
     # 200: an envelope agreed, and the email went. 204: no envelope agreed
     # (for example a wrong BEAM_FIFO_SECRET). 502: the email failed.
@@ -347,8 +419,21 @@ def main(argv):
         if "GITHUB_ENV" in os.environ and REPLY.fullmatch(reply):
             with open(os.environ["GITHUB_ENV"], "a") as f:
                 f.write(f"REPLY={reply}\n")
-        choices = dispatch(os.environ)
-    env = settings(choices)
+        # A choice that is not possible: the requester gets the reason
+        # (REFUSED=choice, and REFUSED_DETAIL with only safe characters).
+        try:
+            choices = dispatch(os.environ)
+            env = settings(choices)
+        except SystemExit as error:
+            if "GITHUB_ENV" not in os.environ:
+                raise
+            detail = re.sub(r"[^A-Za-z0-9_ ,.:()-]", "?", str(error))[:300]
+            print(f"Refused: {detail}")
+            with open(os.environ["GITHUB_ENV"], "a") as f:
+                f.write(f"REFUSED=choice\nREFUSED_DETAIL={detail}\n")
+            return
+    if argv[1] == "issue":
+        env = settings(choices)
     out = dict(env, KEY=key(env, commit))
     if choices["reply"]:
         out["REPLY"] = choices["reply"]

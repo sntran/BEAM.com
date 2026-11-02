@@ -37,7 +37,10 @@
 #                    phx.gen.auth --hashing-lib argon2). Only with ELIXIR=1.
 #   EXTRA_NIFS       More hex.pm packages whose NIFs are linked (a custom
 #                    build), separated by spaces: picosat_elixir (for Ash),
-#                    vix (libvips, for the image package; native only).
+#                    vix (libvips, for the image package; native only),
+#                    rusty_csv (a NIF of Rust; native only, needs rustup).
+#   RUST_NIGHTLY     For a NIF of Rust whose crate has no rust-toolchain.toml:
+#                    the nightly Rust (default nightly-2026-11-01)
 #   LIBVIPS          For vix: a directory with x86_64/ and aarch64/, the
 #                    static libvips of each CPU. Default: $BUILD/libvips,
 #                    made by scripts/libvips.sh when it is not there.
@@ -69,6 +72,11 @@
 #                    custom build: "mnesia eldap"); their Erlang code only
 #                    (the C code of an application, as the port programs of
 #                    os_mon, is not built)
+#   OTP_OMIT         Default OTP applications to leave out of the zip, with
+#                    spaces (for a custom build: "ssh xmerl"). Only these:
+#                    parsetools asn1 public_key ssl inets ssh xmerl
+#                    runtime_tools tools. An application in the zip that
+#                    needs one of them stops the build.
 #   HEX              1: put Hex in the zip, for mix (a custom build;
 #                    default 0). Only with ELIXIR=1.
 #   REBAR3           1: put rebar3 in the zip, as the tool rebar3 (and for
@@ -110,6 +118,8 @@ PICOSAT_ELIXIR_VERSION=${PICOSAT_ELIXIR_VERSION:-0.2.3}
 PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d53e984e8cd99c832383b7ab78c16c66}
 VIX_VERSION=${VIX_VERSION:-0.42.0}
 VIX_SHA256=${VIX_SHA256:-c4c92051653859dc5219f553a93fa777d63525ee961c48e16e9f61fed02472ee}
+RUSTY_CSV_VERSION=${RUSTY_CSV_VERSION:-0.4.6}
+RUSTY_CSV_SHA256=${RUSTY_CSV_SHA256:-db9967f0889b9b967a9a1d084fcfbac56c1b0f09cb1faa84b6405e9450f6e059}
 # More packages whose NIFs are linked (custom builds), from the list of
 # hex_nif_recipe(): for example "picosat_elixir". Only with ELIXIR=1.
 EXTRA_NIFS=${EXTRA_NIFS:-}
@@ -124,6 +134,7 @@ REBAR3_VERSION=${REBAR3_VERSION:-3.27.1}
 REBAR3_SHA256=${REBAR3_SHA256:-708407032479514dd68b581a0b09a68b5a781fb6f53dcf4ad81ce4ef6b92940f}
 ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 OTP_APPS=${OTP_APPS:-}
+OTP_OMIT=${OTP_OMIT:-}
 HEX=${HEX:-0}
 REBAR3=${REBAR3:-0}
 BUILD=${BUILD:-$ROOT/build}
@@ -159,6 +170,29 @@ for app in $OTP_APPS; do
         *) BUNDLE_APPS="$BUNDLE_APPS $app" SRC_APPS="$SRC_APPS $app" ;;
     esac
 done
+# The default applications that a custom build can leave out (OTP_OMIT).
+# The others (kernel, stdlib, sasl, compiler and crypto) are for beam.com
+# itself. The build still makes them: only the zip leaves them out.
+OMITTABLE_APPS="parsetools asn1 public_key ssl inets ssh xmerl runtime_tools tools"
+for app in $OTP_OMIT; do
+    case " $OMITTABLE_APPS " in
+        *" $app "*) ;;
+        *) echo "OTP_OMIT: $app cannot be left out (only: $OMITTABLE_APPS)" >&2
+           exit 1 ;;
+    esac
+    case " $OTP_APPS " in
+        *" $app "*) echo "OTP_OMIT: $app is also in OTP_APPS" >&2
+                    exit 1 ;;
+    esac
+done
+apps=
+for app in $BUNDLE_APPS; do
+    case " $OTP_OMIT " in
+        *" $app "*) ;;
+        *) apps="$apps $app" ;;
+    esac
+done
+BUNDLE_APPS=${apps# }
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
@@ -390,10 +424,11 @@ hex_nif_packages() {
 }
 
 # The packages of hex_nif_packages() for the WebAssembly runtime: not
-# vix (libvips uses threads, and the runtime has none).
+# vix (libvips uses threads, and the runtime has none), and no NIF of
+# Rust (its std has the system calls of Linux).
 edge_hex_nif_packages() {
     for p in $(hex_nif_packages); do
-        [ "$p" = vix ] || printf '%s ' "$p"
+        [ "$p" = vix ] || [ -n "$(rust_nif_crate "$p")" ] || printf '%s ' "$p"
     done
 }
 
@@ -448,6 +483,97 @@ build_vix_nif() {
     done
 }
 
+# The calls of the C library that a Rust NIF makes with the numbers of
+# Linux (c_src/rust/cosmo_rust.c), and dlopen() and dlsym(), with which
+# Rustler finds the NIF functions of ERTS (c_src/rust/enif_table.c).
+RUST_SHIM_SYMS="syscall clock_gettime clock_nanosleep __errno_location
+    pthread_attr_init pthread_attr_destroy pthread_attr_setstacksize
+    pthread_attr_getstack pthread_attr_getguardsize pthread_getattr_np
+    pthread_create open openat mmap getauxval sched_getaffinity fstat stat
+    lstat fstatat dlopen dlsym dlerror dlclose"
+
+# rust_nif_crate NAME: the directory of the Rust crate of a package with a
+# NIF of Rustler, and its Cargo features. Empty for another package.
+rust_nif_crate() {
+    case $1 in
+        # nif_version_2_17: the NIF version of the precompiled NIFs of
+        # rusty_csv for OTP 27 to 29.
+        rusty_csv) echo "native/rustycsv nif_version_2_17" ;;
+    esac
+}
+
+# build_rust_nif NAME SRC OUT LIB CFLAGS: the NIF of Rustler of the
+# package NAME, in SRC (rust_nif_crate), as OUT/LIB.a and
+# OUT/.aarch64/LIB.a. LIB is the name of the crate: Rustler exports
+# LIB_nif_init, the init function of a static NIF of that name.
+#
+# The crate builds as a staticlib with the std of *-unknown-linux-musl,
+# with the Rust toolchain of its rust-toolchain.toml (else RUST_NIGHTLY).
+# objcopy gives the calls of RUST_SHIM_SYMS the beam_rs_ names of the
+# shims. On aarch64, Cosmopolitan reserves x18 and x28, so the crate and
+# its std build again with these registers reserved (-Zbuild-std, with
+# rust-src). One object keeps one global name, LIB_nif_init
+# (scripts/rust_link.sh): two NIFs of Rust each have their own std.
+build_rust_nif() {
+    name=$1 src=$2 out=$3 lib=$4 cflags=$5
+    bin=$COSMOCC/bin
+    # shellcheck disable=SC2046 # the directory and the features
+    set -- $(rust_nif_crate "$name")
+    crate=$src/$1 features=${2:-}
+    tc=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$crate/rust-toolchain.toml" 2>/dev/null)
+    tc=${tc:-${RUST_NIGHTLY:-nightly-2026-11-01}}
+    if ! command -v rustup > /dev/null; then
+        echo "The NIF of $name needs Rust: install rustup" >&2
+        exit 1
+    fi
+    rustup toolchain install "$tc" --profile minimal --component rust-src \
+        --target x86_64-unknown-linux-musl > /dev/null
+    # The names of the NIF functions of ERTS, for the table of dlsym().
+    # The build of cargo stays in OUT/cargo-LIB for the next build.
+    gen=$out/rust-$lib
+    rm -rf "$gen" "$out/$lib.a" "$out/.aarch64/$lib.a"
+    mkdir -p "$gen" "$out/.aarch64"
+    sed -n '/^#ifdef ERL_NIF_API_FUNC_DECL$/,/^#endif \/\* ERL_NIF_API_FUNC_DECL \*\//p' \
+        "$ERL_TOP/erts/emulator/beam/erl_nif_api_funcs.h" | sed '1d;$d' |
+        sed -n 's/^ERL_NIF_API_FUNC_DECL([^,]*,[ ]*\(enif_[A-Za-z0-9_]*\).*/X(\1)/p; /^#/p' \
+        > "$gen/enif_names.h"
+    grep -q '^X(enif_make_atom)$' "$gen/enif_names.h"
+    redefine=
+    for s in $RUST_SHIM_SYMS; do redefine="$redefine --redefine-sym $s=beam_rs_$s"; done
+    for cpu in x86_64 aarch64; do
+        t=$cpu-unknown-linux-musl
+        obj=$gen/$cpu
+        mkdir -p "$obj"
+        if [ $cpu = aarch64 ]; then
+            set -- -Zbuild-std=std,panic_unwind
+            rf="-C target-feature=+reserve-x18,+reserve-x28"
+        else
+            set --
+            rf=
+        fi
+        # LTO: the object has only the code that the crate uses (see
+        # scripts/rust_link.sh).
+        # shellcheck disable=SC2086
+        (cd "$crate" && RUSTFLAGS=$rf CARGO_PROFILE_RELEASE_LTO=fat \
+            cargo "+$tc" rustc --release --locked --lib \
+            --crate-type staticlib --target "$t" --target-dir "$out/cargo-$lib" \
+            ${features:+--features "$features"} "$@")
+        cp "$out/cargo-$lib/$t/release/lib$lib.a" "$obj/lib$lib.a"
+        # shellcheck disable=SC2086
+        "$bin/$cpu-unknown-cosmo-objcopy" $redefine "$obj/lib$lib.a"
+        # shellcheck disable=SC2086
+        for c in cosmo_rust enif_table; do
+            "$bin/$cpu-unknown-cosmo-cc" -O2 -I"$gen" $cflags \
+                -c "$ROOT/c_src/rust/$c.c" -o "$obj/$c.o"
+        done
+        # One object with one global name, LIB_nif_init.
+        sh "$ROOT/scripts/rust_link.sh" "$COSMOCC" "$cpu" "${lib}_nif_init" \
+            "$obj/$lib.o" "$obj/cosmo_rust.o" "$obj/enif_table.o" "$obj/lib$lib.a"
+        case $cpu in x86_64) a=$out/$lib.a ;; *) a=$out/.aarch64/$lib.a ;; esac
+        "$bin/$cpu-unknown-cosmo-ar" rcs "$a" "$obj/$lib.o"
+    done
+}
+
 # hex_nif_recipe NAME: the version, the SHA-256 of the tarball and the
 # name of the NIF (STATIC_ERLANG_NIF_LIBNAME, and the name of its archive)
 # of a package, or an error for a package that is not in the list.
@@ -457,6 +583,7 @@ hex_nif_recipe() {
         argon2_elixir) echo "$ARGON2_ELIXIR_VERSION $ARGON2_ELIXIR_SHA256 argon2_nif" ;;
         picosat_elixir) echo "$PICOSAT_ELIXIR_VERSION $PICOSAT_ELIXIR_SHA256 picosat_nif" ;;
         vix) echo "$VIX_VERSION $VIX_SHA256 vix" ;;
+        rusty_csv) echo "$RUSTY_CSV_VERSION $RUSTY_CSV_SHA256 rustycsv" ;;
         # Only for the WebAssembly runtime (step_wasm_runtime): the native
         # beam.com links exqlite in step_nifs.
         exqlite) echo "$EXQLITE_VERSION $EXQLITE_SHA256 sqlite3_nif" ;;
@@ -478,6 +605,10 @@ build_hex_nif() {
     src=$HEXNIFS/$name-$vsn
     if [ "$name" = vix ]; then
         build_vix_nif "$src" "$out" "$cflags"
+        return 0
+    fi
+    if [ -n "$(rust_nif_crate "$name")" ]; then
+        build_rust_nif "$name" "$src" "$out" "$lib" "$cflags"
         return 0
     fi
     obj=$out/$name
@@ -917,6 +1048,22 @@ step_release() {
     (cd "$RELEASE" && ./Install -minimal "$RELEASE" >/dev/null)
 }
 
+# Stop when an application of the zip needs (in the applications of its
+# .app file) an application of OTP_OMIT.
+check_omitted_apps() {
+    [ -n "$OTP_OMIT" ] || return 0
+    for app in $BUNDLE_APPS; do
+        needs=$(tr -d '\n' < "$ERL_TOP/lib/$app/ebin/$app.app" |
+            sed -n 's/.*{applications, *\[\([^]]*\)\].*/\1/p' | tr -d ' \t' | tr , ' ')
+        for need in $needs; do
+            case " $OTP_OMIT " in
+                *" $need "*) echo "OTP_OMIT: $app needs $need" >&2
+                             exit 1 ;;
+            esac
+        done
+    done
+}
+
 step_bundle() {
     log "Bundling $OUT"
     t=$(target)
@@ -928,6 +1075,7 @@ step_bundle() {
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
     cp "$ROOT/c_src/cosmo/windows.inetrc" "$ROOT/c_src/cosmo/sandbox.inetrc" "$STAGE/bin/"
+    check_omitted_apps
     for app in $BUNDLE_APPS; do
         src=$ERL_TOP/lib/$app
         vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/ebin/$app.app")

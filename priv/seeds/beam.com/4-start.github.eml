@@ -5,4 +5,4 @@ X-GitHub-Api-Version: 2022-11-28
 User-Agent: beam.com
 Content-Type: application/json
 
-{"ref": "{{GITHUB_REF}}", "inputs": {"apps": "$apps", "hex": "$hex", "rebar3": "$rebar3", "elixir": "$elixir", "jit": "$jit", "sqlite": "$sqlite", "wasm": "$wasm", "nifs": "$nifs", "reply": "$($email | secretbox -K <seal:{{BOX_KEY}}> | base64 -w 0)"}}
+{"ref": "{{GITHUB_REF}}", "inputs": {"apps": "$apps", "keep": "$keep", "hex": "$hex", "rebar3": "$rebar3", "elixir": "$elixir", "jit": "$jit", "sqlite": "$sqlite", "wasm": "$wasm", "nifs": "$nifs", "reply": "$($email | secretbox -K <seal:{{BOX_KEY}}> | base64 -w 0)"}}

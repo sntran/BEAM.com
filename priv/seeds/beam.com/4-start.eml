@@ -3,13 +3,14 @@ X-HTTP-Method-Override: ^POST$
 Content-Type: form
 
 email: ^(?<email>[^@\s;,<>"\\]{1,64}@[^@\s;,<>"\\]{1,253}\.[^@\s;,<>"\\]{2,63})$
-apps: ^(?<apps>(?:[a-z][a-z0-9_]{0,63}(?: [a-z][a-z0-9_]{0,63}){0,39})?)$
+apps: ^(?<apps>[a-z0-9_ ]{0,1200})$
+keep: ^(?<keep>[a-z0-9_ ]{0,200})$
 hex: ^(?<hex>[01])$
 rebar3: ^(?<rebar3>[01])$
 elixir: ^(?<elixir>[01])$
 jit: ^(?<jit>[01])$
 sqlite: ^(?<sqlite>[01])$
 wasm: ^(?<wasm>[01])$
-nifs: ^(?<nifs>(?:picosat_elixir)? ?(?:vix)?)$
+nifs: ^(?<nifs>(?:picosat_elixir)? ?(?:vix)? ?(?:rusty_csv)?)$
 step: ^start$
 code: ^$(totp $email)$

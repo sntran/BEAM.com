@@ -5,6 +5,43 @@ notes of its release.
 
 ## Unreleased
 
+- Fixes of the custom builds of mkfifo.com/beam.com:
+  - The step "Test" of the workflow now has the `CC` and `AR` of the
+    build. Before, `make test` saw other settings, built again from the
+    first step, and stopped at its limit of 120 s.
+  - The answer of the workflow to the FIFO has its own User-Agent.
+    Cloudflare refused the User-Agent of urllib (status 403), so no
+    email went to the requester.
+  - A request with a choice that is not possible gets the reason by
+    email (the reason `choice`), and no build.
+
+- A custom build can leave out default OTP applications, for a smaller
+  file: `OTP_OMIT="ssh xmerl"`, or the boxes of the issue form and of the
+  form of mkfifo.com. The form of mkfifo.com has a checked box for each
+  default application that a build can leave out, and a box for each
+  known OTP application to add. The workflow refuses a request that
+  leaves out an application that another one needs (`ssl` needs
+  `public_key`), before the build. The NIFs of Rust have their own group
+  in the form. The default OTP applications of the texts now name
+  `tools`, which was in the file but not in the list.
+
+- A custom build can link the NIF of `rusty_csv` 0.4.6, the first NIF
+  of Rust (Rustler) in beam.com: `EXTRA_NIFS=rusty_csv`, or the option
+  in the issue form and the form of mkfifo.com. `build_rust_nif` in
+  `scripts/steps.sh` builds the crate as a staticlib with the std of
+  `*-unknown-linux-musl` for x86_64 and aarch64, and
+  `c_src/rust/cosmo_rust.c` translates the calls of that std for
+  Cosmopolitan. `mix.com` and the builder compile the package with no
+  cargo and no download: beam.com has a small module `Rustler` that
+  loads the linked NIF (`src/beam_com/beam_com_rustler.erl`). The NIF is
+  native only. See "The steps" in `docs/BUILDING.md`, and C41 to C43 and
+  R2 to R4 in `docs/UPSTREAM.md`. `tests/programs/rust_probe` and
+  `tests/programs/rusty_csv_check` check it on each system
+  (`.github/workflows/rust.yml`).
+- The builder compiles a Mix dependency with its project on the stack of
+  Mix, as Mix does: a package can read `Mix.Project.config()` when it
+  compiles.
+
 - A custom build without a GitHub account: the form of
   [mkfifo.com/beam.com](https://mkfifo.com/beam.com) sends a link
   with a one-time code to an email address, and the link starts the

@@ -20,6 +20,12 @@ on:
         description: More OTP applications, with spaces or commas
         type: string
         default: ""
+      keep:
+        description: >-
+          The word keep, and the default OTP applications to keep (the others
+          that a build can leave out go out). Empty keeps each one.
+        type: string
+        default: ""
       hex:
         description: Hex (0 or 1)
         type: string
@@ -45,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix), with spaces or commas
+        description: More NIFs (picosat_elixir, vix, rusty_csv), with spaces or commas
         type: string
         default: ""
       reply:
@@ -105,6 +111,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BODY: ${{ github.event.issue.body }}
           INPUT_APPS: ${{ inputs.apps }}
+          INPUT_KEEP: ${{ inputs.keep }}
           INPUT_HEX: ${{ inputs.hex }}
           INPUT_REBAR3: ${{ inputs.rebar3 }}
           INPUT_ELIXIR: ${{ inputs.elixir }}
@@ -122,8 +129,14 @@ jobs:
       - name: Check the names of the applications
         run: |
           git clone -q --depth 1 --branch "OTP-$OTP_VERSION" https://github.com/erlang/otp.git build/otp
+          # A request of the FIFO gets the name in its answer (the names
+          # have only the characters of custom_build.py).
           for app in $OTP_APPS; do
-            [ -d "build/otp/lib/$app/src" ] || { echo "No OTP application: $app" >&2; exit 1; }
+            [ -d "build/otp/lib/$app/src" ] && continue
+            echo "No OTP application: $app" >&2
+            [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || exit 1
+            printf 'REFUSED=choice\nREFUSED_DETAIL=No OTP application: %s\n' "$app" >> "$GITHUB_ENV"
+            break
           done
 
       # The FIFO beam.com: a file with the same choices of the same commit is
@@ -140,7 +153,7 @@ jobs:
       # requests, at most 3 that wait, and at most 10 new builds each day.
       # A request that waited can find the file of an identical request.
       - name: Wait for the turn
-        if: github.event_name == 'workflow_dispatch' && env.REUSE != '1'
+        if: github.event_name == 'workflow_dispatch' && env.REUSE != '1' && env.REFUSED == ''
         timeout-minutes: 185
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,9 +226,14 @@ jobs:
 
       # The step test of the Makefile: the file runs a program, and builds one
       # that runs (with SQLite and WebAssembly, when they are in it).
+      # The same CC and AR as the build: else the settings of the Makefile
+      # change, and make builds again from the first step.
       - name: Test
         if: env.REUSE != '1' && env.REFUSED == ''
         timeout-minutes: 5
+        env:
+          CC: cosmocc
+          AR: cosmoar
         run: OUT="$GITHUB_WORKSPACE/build/$OUT_NAME" timeout 120 build/cosmocc/bin/make test
 
       - name: Check the file
@@ -233,6 +251,11 @@ jobs:
           if [ "$HEX" = 1 ]; then "$f" mix hex; fi
           for app in $OTP_APPS; do
             "$f" -noshell -eval "ok = application:load($app), halt()."
+          done
+          for app in $OTP_OMIT; do
+            if "$f" -noshell -eval "ok = application:load($app), halt()." 2> /dev/null; then
+              echo "The file has $app, which the request leaves out" >&2; exit 1
+            fi
           done
 
       # The FIFO beam.com: the file goes to the prerelease custom-builds,

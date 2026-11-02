@@ -1107,6 +1107,83 @@ of meson with a limit of 20 s, so the check fails, and libvips uses no
 **Possible upstream fix.** A compile error for `target_clones` and
 `ifunc` in cosmocc, so that the check fails at once.
 
+
+### C41. aarch64: the Rust code of Linux uses x18 and x28
+
+**Status:** 4.0.2, aarch64. Rust nightly-2026-07-27 and nightly-2026-11-01.
+
+**Symptom.** A staticlib of Rust (std of `aarch64-unknown-linux-musl`)
+links with cosmocc, and crashes on Linux and macOS in the unwinding of
+a panic.
+
+**Cause.** cosmocc compiles the aarch64 code with `-ffixed-x18
+-ffixed-x28`: x28 holds the thread data of Cosmopolitan. The std of Rust
+for Linux uses both registers (2830 instructions in a small probe).
+
+**Workaround in BEAM.com.** The aarch64 crate and its std build again
+with `RUSTFLAGS="-C target-feature=+reserve-x18,+reserve-x28"` and
+`-Zbuild-std=std,panic_unwind`, with a nightly Rust and rust-src
+(`build_rust_nif` in `scripts/steps.sh`, `tests/programs/rust_probe`).
+Only the C shims of BEAM.com then use x28. Rust warns that this feature
+of `-Ctarget-feature` will be removed (rust-lang/rust#116344).
+
+**Possible upstream fix.** A Rust target for Cosmopolitan, or a stable
+flag of rustc that reserves a register.
+
+### C42. The std of Rust for musl has the numbers of Linux
+
+**Status:** 4.0.2.
+
+**Symptom.** A staticlib of Rust (std of `*-unknown-linux-musl`) runs on
+Linux x86_64, and fails on the other systems: the clocks, errno, the
+flags of `open()` and `mmap()`, and the futex. On Linux aarch64,
+`available_parallelism()` crashes.
+
+**Cause.** The std of Rust has the values of Linux in its code.
+Cosmopolitan sets these values for each system at run time, and its
+`syscall()` takes only the numbers of Linux x86_64. Also, the
+`pthread_attr_t` of musl has 56 bytes (64 in Cosmopolitan), and the
+`struct stat` of musl aarch64 has 128 bytes (144 in Cosmopolitan).
+
+**Workaround in BEAM.com.** `c_src/rust/cosmo_rust.c` translates the
+calls: errno, the clocks, the futex (to `cosmo_futex_wait()` and
+`cosmo_futex_wake()`), `getrandom`, `pthread_attr_*` (a box with a
+pointer), `open`, `openat`, `mmap`, `getauxval`, and the `stat` family.
+Each other system call gives `ENOSYS`, and the std then takes its
+fallback. `objcopy --redefine-sym` gives these calls their `beam_rs_`
+names in the archive of the crate.
+
+**Possible upstream fix.** A Rust target for Cosmopolitan, with the
+constants of its libc.
+
+### C43. The unwinder stops at 4 bytes of zero in `.eh_frame`
+
+**Status:** 4.0.2.
+
+**Symptom.** A panic of Rust in the object of `ld -r` of a crate stops
+the program: "failed to initiate panic, error 5" (`_URC_END_OF_STACK`).
+The same archive, linked into the program with no `ld -r`, unwinds.
+
+**Cause.** The unwinder of Cosmopolitan reads `.eh_frame` from
+`__eh_frame_start` to `__eh_frame_end`, one entry after the other, and
+stops at an entry of length 0. The program has no `.eh_frame_hdr`. The
+`.eh_frame` of the object from LLVM can have a size of 4 modulo 8. The
+link of the program then puts 4 bytes of zero before the next `.eh_frame`
+(alignment 8), and the unwinder finds no entry after them.
+
+Also, `ld -r --gc-sections` makes `.eh_frame` smaller and keeps all the
+relocations of `.rela.eh_frame`, so the FDEs that stay are wrong (GNU ld
+of cosmocc 4.0.2). rust-lld gives the same result for the panic.
+
+**Workaround in BEAM.com.** `scripts/rust_link.sh` uses `ld -r` with
+no `--gc-sections`, and the crate builds with LTO, which removes the code
+that it does not use. When the size of `.eh_frame` is 4 modulo 8, the
+link script `c_src/rust/eh_frame_pad.ld` adds an unused CIE of 20 bytes
+at its end. (ld removes an unused CIE of an input file, so the script
+writes the CIE as data.) `tests/programs/rust_probe` checks a panic.
+
+**Possible upstream fix.** An unwinder that skips an entry of length 0
+before `__eh_frame_end`, or an `.eh_frame_hdr` in the program.
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2598,7 +2675,8 @@ affected.
 ## rustler
 
 Seen with rustler 0.38.0, for a NIF library in WebAssembly
-([`NIFS.md`](NIFS.md)).
+([`NIFS.md`](NIFS.md)), and for a static NIF of beam.com
+(`build_rust_nif` in `scripts/steps.sh`).
 
 ### R1. rustler cannot build for `wasm32-wasip1`
 
@@ -2621,6 +2699,67 @@ resource passed with it.
 
 **Possible upstream fix.** The same change. It does not change the
 other targets.
+
+### R2. rustler finds the NIF functions with dlsym()
+
+**Status:** rustler 0.38.0, as a static NIF of beam.com (rusty_csv 0.4.6).
+
+**Symptom.** A NIF of rustler links into the emulator as a static NIF
+(it exports `CRATE_nif_init`), but its init function calls `dlopen()`
+and `dlsym()`. A static beam.com has no dynamic loader.
+
+**Cause.** The same as R1: rustler fills its table of `enif_*`
+functions at run time (`src/sys/nif_filler.rs`).
+
+**Workaround in BEAM.com.** `c_src/rust/enif_table.c` has a table of
+the functions of `erl_nif_api_funcs.h` (the build makes `enif_names.h`),
+and `beam_rs_dlopen()` and `beam_rs_dlsym()` find them in it.
+`build_rust_nif` redirects the calls of the crate to these functions.
+
+**Possible upstream fix.** An option of rustler for a static NIF: direct
+calls to the `enif_*` functions, as a NIF in C makes.
+
+### R3. rustler_precompiled downloads a native library, or needs rustler
+
+**Status:** rustler_precompiled 0.10.1, rusty_csv 0.4.6.
+
+**Symptom.** Mix downloads the precompiled NIF of a package, which
+beam.com cannot load. With `force_build`, the compilation stops:
+"Rustler dependency is needed to force the build". rustler is an
+optional dependency of these packages.
+
+**Cause.** rustler_precompiled downloads a NIF, or calls `use Rustler`
+when the module `Rustler` is loaded. Without `skip_compilation?`,
+rustler runs `cargo`.
+
+**Workaround in BEAM.com.** `beam_com_rustler:force_build/1` sets
+`force_build_all` of rustler_precompiled, and `skip_compilation?` for
+each linked crate. beam.com has a module `Rustler` with only
+`__using__/1` (`src/beam_com/Elixir.Rustler.erl`): it gives the module
+of the NIF an `on_load` function that loads the static NIF, and stops
+the compilation for a crate that is not linked. The package rustler,
+when a project has it, comes first in the code path.
+
+**Possible upstream fix.** An option of rustler_precompiled (or an env)
+for runtimes that have the NIFs built in, as for E4.
+
+### R4. rusty_csv reads Mix.Project.config() when it compiles
+
+**Status:** rusty_csv 0.4.6.
+
+**Symptom.** `beam.com DIR -o OUT` cannot compile rusty_csv:
+`Mix.ProjectStack` is not alive.
+
+**Cause.** `RustyCSV.Native` reads its version from
+`Mix.Project.config()` at compile time. The builder of beam.com compiled
+a dependency with no Mix project on the stack.
+
+**Workaround in BEAM.com.** The builder compiles each Mix dependency
+with its project on the stack of Mix (`beam_com_elixir:in_project/2`),
+as Mix does.
+
+**Possible upstream fix.** None needed: Mix compiles a package in this
+way.
 
 ## fine (C++ NIFs)
 

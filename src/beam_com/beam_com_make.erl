@@ -30,7 +30,7 @@
 %% tools of Elixir run force_build/0 at their start (beam_com.c).
 -module(beam_com_make).
 
--export([main/0, force_build/0, wasm_nif_files/2]).
+-export([main/0, force_build/0, wasm_nif_files/2, linked_nifs/0]).
 
 -ifdef(TEST).
 -export([run/2, dep_version/1, force_build/1, wasm_nif_files/3, app_file_nifs/1]).
@@ -147,9 +147,16 @@ wasm_nif_files(App, Vsn, Priv) ->
 %% The env force_build of elixir_make, with each package of ?WASM_NIFS
 %% and each linked NIF (a package such as vix gets a precompiled NIF
 %% without it), before Mix loads the configuration of the project.
-%% persistent: a later load of elixir_make keeps it.
+%% persistent: a later load of elixir_make keeps it. The same for the
+%% NIFs of Rust (beam_com_rustler).
 force_build() ->
-    force_build(?WASM_NIFS ++ start_nifs()).
+    Nifs = start_nifs(),
+    beam_com_rustler:force_build(Nifs),
+    force_build(?WASM_NIFS ++ Nifs).
+
+%% The linked NIFs ([{App, Vsn}]), also when beam_com is not loaded.
+linked_nifs() ->
+    start_nifs().
 
 %% The linked NIFs at the start of a tool of Elixir. When beam_com is not
 %% loaded, they come from its .app file, and beam_com stays not loaded:
