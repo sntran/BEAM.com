@@ -5,6 +5,18 @@ notes of its release.
 
 ## Unreleased
 
+- The WebAssembly runtime: the memory of the VM no longer grows with each
+  process that makes a big heap and then ends (issue 141). The `munmap()`
+  of Emscripten frees only a whole mapping, and ERTS unmaps parts of a
+  mapping to align a carrier, so most carriers never went back to
+  `malloc()`. `wasm/erts/otp.patch` gives ERTS its own `mmap()` for
+  Emscripten (EM9 in `docs/UPSTREAM.md`).
+- `wasm_host:memory/0` gives the memory of the VM in the WebAssembly
+  runtime: the size of the memory of WebAssembly, also with `-Mea min`.
+- The comment and the README of `examples/phoenix_demo` said that the host
+  uses `-Mea min`. The host uses the allocators of ERTS unless
+  `BEAM_ERL_FLAGS` has `-Mea`.
+
 - The custom builds of mkfifo.com/beam.com and of the issue form:
   - A request can choose the version of Erlang/OTP (29.1.1, the
     default, 29.1.2 or 29.0.6) and of Elixir (1.20.4, the default, or

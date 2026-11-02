@@ -123,6 +123,24 @@ defmodule BeamCom.WasmDiffTest do
     assert status == 0
   end
 
+  # Issue 141: renders in new processes, each of about 2 MB of terms
+  # (tests/wasm_diff/mem_check.erl). After the first renders, the memory of
+  # the VM (wasm_host:memory/0) must stay near the same. Before the mmap()
+  # of ERTS for Emscripten (wasm/erts/otp.patch), the unmap of most
+  # carriers failed, and the memory grew with each render.
+  test "the memory of the VM stays flat over renders in new processes", ctx do
+    ebin = Path.join([ctx.top, "mem_check", "ebin"])
+    File.mkdir_p!(ebin)
+    File.cp!(Path.join(ctx.ebin, "mem_check.beam"), Path.join(ebin, "mem_check.beam"))
+    src = Path.join([__DIR__, "..", "src", "wasm_host", "wasm_host.erl"])
+    {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
+    {out, status} = wasm(%{ctx | ebin: ebin}, "mem_check", "node")
+    assert status == 0, out
+    [_, first, last] = Regex.run(~r/^mem_check: (\d+) (\d+)$/m, out)
+    growth = String.to_integer(last) - String.to_integer(first)
+    assert growth < 8 * 1024 * 1024, "the memory of the VM grew #{div(growth, 1024)} KB: #{out}"
+  end
+
   defp nif_check(ctx, name, compiled, job \\ %{}) do
     src = Path.join([__DIR__, "programs", "nif_check"])
     app = Path.join([ctx.top, name, "nif_check"])

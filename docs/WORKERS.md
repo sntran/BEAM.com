@@ -828,6 +828,17 @@ was about 200 MB, and with `-Mea min` about 100 MB. Erlang itself used 14
 MB in each case. With `-Mea min` in `BEAM_ERL_FLAGS`, the host leaves out
 these flags.
 
+The main cause of that growth was a leak of carriers: the `munmap()` of
+Emscripten frees only a whole mapping, and ERTS unmaps parts of a mapping
+to align a carrier. So most carriers never went back to `malloc()`
+(EM9 in [`UPSTREAM.md`](UPSTREAM.md)). The runtime now has its own
+`mmap()` for ERTS, and freed carriers go back to `malloc()`. An app reads
+the memory of the VM with `wasm_host:memory/0`: the size of the memory of
+WebAssembly in bytes, which the host counts against the 128 MB. It
+never shrinks, so it is also the peak. It works also with `-Mea min`, where
+`erlang:memory/0` is not supported. An app can use it to refuse new work
+before the isolate goes over its limit.
+
 The host also starts the VM with `-sbwt none -sbwtdcpu none -sbwtdio
 none`: no busy wait of the schedulers. A scheduler with no work spins for
 a time before it sleeps, and in WebAssembly each yield of the spin is a

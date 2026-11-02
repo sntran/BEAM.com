@@ -88,10 +88,20 @@ static ERL_NIF_TERM send_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
     return enif_make_atom(env, "ok");
 }
 
+/* The size of the memory of WebAssembly, in bytes: all the memory of the
+ * VM. It never shrinks, so it is also the peak. It works also with
+ * -Mea min, where erlang:memory/0 is not supported. */
+static ERL_NIF_TERM memory_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    (void)argc; (void)argv;
+    return enif_make_uint64(env, (ErlNifUInt64)__builtin_wasm_memory_size(0) * 65536);
+}
+
 static ErlNifFunc funcs[] = {
     {"select", 0, select_nif, 0},
     {"take", 0, take_nif, 0},
     {"send", 1, send_nif, 0},
+    {"memory", 0, memory_nif, 0},
 };
 
 ERL_NIF_INIT(wasm_host, funcs, load, NULL, NULL, NULL)
