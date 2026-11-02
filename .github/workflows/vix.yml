@@ -52,6 +52,20 @@ jobs:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
 
+      # The libraries of libvips, with those of each part (about 10
+      # minutes). Their key is the SHA-256 of their recipe, so a new set
+      # of parts builds only libvips (scripts/libvips.sh --deps-key).
+      - name: The recipe of the libraries of libvips
+        run: |
+          k=$(sh scripts/libvips.sh --deps-key)
+          echo "LIBVIPS_DEPS_KEY=$k" >> "$GITHUB_ENV"
+
+      - name: Cache the libraries of libvips
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/libvips-deps
+          key: libvips-deps-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.LIBVIPS_DEPS_KEY }}
+
       # The static libvips of the two CPUs, for the same recipe and parts
       # (the key of custom-build.yml).
       - name: Cache libvips

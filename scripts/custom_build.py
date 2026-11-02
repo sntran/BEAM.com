@@ -10,7 +10,7 @@ applications must be names of OTP.
 Usage:
 
   custom_build.py issue|dispatch COMMIT
-    The settings of the Makefile, OUT_NAME, KEY, RUNTIME_KEY and REPLY go
+    The settings of the Makefile, OUT_NAME, KEY and REPLY go
     to the file of GITHUB_ENV, and a table to the file of
     GITHUB_STEP_SUMMARY (when these variables are set). KEY is the SHA-256
     of the settings and of the source of the build at COMMIT (source()).
@@ -360,23 +360,6 @@ def key(env, source_text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def runtime_key(env):
-    """The part of the cache key of the WebAssembly runtime that comes
-    from the choices: the hex.pm NIFs of the runtime (see
-    wasm_runtime_inputs of scripts/steps.sh). Empty for the NIFs of the
-    default build, so a custom build can use the cache of build.yml."""
-    nifs = []
-    omit = env.get("NIFS_OMIT", "").split()
-    if env["ELIXIR"] == "1":
-        nifs = [n for n in ("bcrypt_elixir", "argon2_elixir") if n not in omit]
-        nifs += [n for n in env["EXTRA_NIFS"].split() if n == "picosat_elixir"]
-        if env["SQLITE"] == "1" and "exqlite" not in omit:
-            nifs.append("exqlite")
-    if nifs == ["bcrypt_elixir", "argon2_elixir", "exqlite"]:
-        return ""
-    return "-" + "-".join(nifs or ["none"])
-
-
 def github(path, method="GET", data=None, content_type=None, base=None):
     """A request to the API of GitHub with GH_TOKEN (the token of the
     workflow). Gives the decoded JSON, or None for an empty answer."""
@@ -614,7 +597,7 @@ def main(argv):
             return
     if argv[1] == "issue":
         env = settings(choices)
-    out = dict(env, KEY=key(env, source(commit)), RUNTIME_KEY=runtime_key(env))
+    out = dict(env, KEY=key(env, source(commit)))
     if choices["reply"]:
         out["REPLY"] = choices["reply"]
     if "GITHUB_ENV" in os.environ:

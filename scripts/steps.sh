@@ -96,6 +96,10 @@
 #                    default 0)
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
+#   CCACHE           1: the compiles of cosmocc and cosmoc++ go through
+#                    ccache (CI), in CCACHE_DIR (default build/ccache). It
+#                    is not a setting of the Makefile: the result is the
+#                    same file.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -227,6 +231,51 @@ OUT=${OUT:-$BUILD/beam.com}
 
 export ERL_TOP
 PATH=$COSMOCC/bin:$PATH
+
+# CCACHE=1: copies of cosmocc and cosmoc++ in BUILD/ccache-bin, first on
+# the PATH. Each copy runs the compilers of COSMOCC/bin, and each of its
+# four compilers (gcc and g++ for x86_64 and aarch64) goes through
+# ccache. cosmocc makes one object with each compiler, so each compile is
+# a plain compile for ccache.
+# The compilers are APE files, which only a shell or an APE loader starts,
+# and ccache starts a compiler with execv(). So ccache runs real/NAME,
+# which starts the compiler with sh, and it hashes the SHA-256 of the
+# compiler (compiler_check=string:SHA), not real/NAME.
+if [ "${CCACHE:-0}" = 1 ]; then
+    if ! command -v ccache > /dev/null; then
+        echo "CCACHE=1 needs ccache" >&2
+        exit 1
+    fi
+    d=$BUILD/ccache-bin
+    mkdir -p "$d/real"
+    for t in x86_64 aarch64; do
+        for c in gcc g++; do
+            n=$t-linux-cosmo-$c
+            sha=$(sha256sum "$COSMOCC/bin/$n" | cut -d' ' -f1)
+            printf '#!/bin/sh\nexec sh %s "$@"\n' "$COSMOCC/bin/$n" > "$d/real/$n"
+            printf '#!/bin/sh\nCCACHE_COMPILERCHECK=string:%s exec ccache %s "$@"\n' \
+                "$sha" "$d/real/$n" > "$d/$n"
+            chmod +x "$d/real/$n" "$d/$n"
+        done
+    done
+    for p in cosmocc cosmoc++; do
+        sed -e "s#^BIN=\${0%/\*}\$#BIN=$COSMOCC/bin#" \
+            -e "s#=\"\$BIN/\(x86_64\|aarch64\)-linux-cosmo-\(gcc\|g++\)\"#=\"$d/\1-linux-cosmo-\2\"#" \
+            "$COSMOCC/bin/$p" > "$d/$p.new"
+        # The copy must use the wrappers: else ccache does nothing.
+        if [ "$(grep -c "^BIN=$COSMOCC/bin\$" "$d/$p.new")" != 1 ] ||
+            [ "$(grep -c "=\"$d/" "$d/$p.new")" != 4 ]; then
+            echo "CCACHE=1: $COSMOCC/bin/$p is not the expected cosmocc" >&2
+            exit 1
+        fi
+        chmod +x "$d/$p.new"
+        mv "$d/$p.new" "$d/$p"
+    done
+    CCACHE_DIR=${CCACHE_DIR:-$BUILD/ccache}
+    CCACHE_BASEDIR=$ROOT CCACHE_NOHASHDIR=1 CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-2G}
+    export CCACHE_DIR CCACHE_BASEDIR CCACHE_NOHASHDIR CCACHE_MAXSIZE
+    PATH=$d:$PATH
+fi
 export PATH
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -1013,16 +1062,55 @@ check_static_nifs() {
 # The inputs of the WebAssembly runtime, as one SHA-256: the pinned
 # versions, the settings that change it, and the files of this repository
 # that the build reads (git ls-files: the versions in the work tree).
+#
+# Of scripts/steps.sh, only the functions of WASM_RUNTIME_FUNCS: the steps
+# hex_nifs and nif_edge, which wasm/erts/build.sh runs, and the functions
+# that they call. So a change of another step does not build the runtime
+# again (about 3 minutes in CI).
+# Caution: a function that these steps start to call must be in this list.
+WASM_RUNTIME_FUNCS="log check_commit wamr_clone step_hex_nifs build_hex_nif
+    hex_nif_recipe fetch_hex step_nif_edge hex_nif_packages edge_hex_nif_packages
+    omit_nif use_exqlite rust_nif_crate step_wasm_runtime wasm_runtime_inputs
+    steps_function"
+
+# steps_function NAME: the text of the function NAME of scripts/steps.sh,
+# on one line or from "NAME() {" to the next line "}".
+steps_function() {
+    awk -v f="$1" '
+        !on && index($0, f "() {") == 1 {
+            print
+            if ($0 !~ /[{][[:space:]]*$/) exit
+            on = 1
+            next
+        }
+        on { print; if ($0 == "}") exit }' "$ROOT/scripts/steps.sh"
+}
+
 wasm_runtime_inputs() {
+    for f in $WASM_RUNTIME_FUNCS; do
+        if [ -z "$(steps_function "$f")" ]; then
+            echo "wasm_runtime_inputs: no function $f in scripts/steps.sh" >&2
+            exit 1
+        fi
+    done
     {
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "EMSDK $EMSDK_VERSION $EMSDK_COMMIT WAMR $WAMR_VERSION $WAMR_COMMIT"
         echo "HEX_NIFS $(edge_hex_nif_packages)$(use_exqlite && echo " exqlite")"
         echo "WASM_CFLAGS ${WASM_CFLAGS:-} EXTRA_LDFLAGS ${EXTRA_LDFLAGS:-} WASM64 ${WASM64:-0}"
-        git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr \
-                scripts/steps.sh |
+        # The version and the SHA-256 of each package of HEX_NIFS.
+        for p in $(edge_hex_nif_packages); do echo "$p $(hex_nif_recipe "$p")"; done
+        if use_exqlite; then echo "exqlite $(hex_nif_recipe exqlite)"; fi
+        for f in $WASM_RUNTIME_FUNCS; do steps_function "$f"; done
+        git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr |
             while read -r f; do echo "$f $(sha256sum "$ROOT/$f" | cut -d' ' -f1)"; done
     } | sha256sum | cut -d' ' -f1
+}
+
+# The SHA-256 of wasm_runtime_inputs, for the cache key of the runtime in
+# CI (the workflows). It needs no build.
+step_wasm_runtime_key() {
+    wasm_runtime_inputs
 }
 
 step_wasm_runtime() {
