@@ -4,6 +4,7 @@
 //
 // JOB.json: {"runtime": DIR, "root": OTP_ROOT, "libs": [EBIN...],
 //   "boot": BOOT_FILE, "pa": DIR, "eval": EXPR, "schedule": "node" | "plain",
+//   "flags": [EMULATOR FLAG...] (optional, for example ["-Mea", "min"]),
 //   "nifs": {FILE: MODULE_FILE} (optional), "snapshot": true (optional),
 //   "out": {VM_FILE: FILE} (optional), "ports": {NAME: PROGRAM} (optional)}
 //
@@ -108,7 +109,7 @@ const PAGE = 65536;
 let vm = null;
 const bindir = path.join(job.root, 'bin');
 const program = path.join(bindir, 'erl');
-const vmArgs = (extra) => ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0',
+const vmArgs = (extra) => ['-S', '1', '-SDcpu', '1', '-SDio', '1', '-A', '0', ...(job.flags ?? []),
   // No time correction for a snapshot: the monotonic time of a new
   // instance starts again at 0.
   ...(job.snapshot ? ['-c', 'false'] : []), '--',

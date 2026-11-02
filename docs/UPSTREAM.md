@@ -2139,7 +2139,10 @@ a mapping is a block of `posix_memalign()` with the alignment that ERTS
 asks for. An unmap at the start of a block frees the block. An unmap of
 a part after the start does nothing: that part stays in its block until
 the block is freed. `tests/wasm_diff/mem_check.erl` checks the memory of
-the VM over 250 renders in new processes.
+the VM over renders in new processes, binaries of 16 MB, a heap that
+shrinks, a binary that grows, and 16 processes at one time, also after
+a snapshot and with `-Mea min`, and that 8 MB of data that a process
+keeps do not change.
 
 **Possible upstream change.** A partial `munmap()` of an anonymous
 mapping in Emscripten, or an `EINVAL` that ERTS checks.
