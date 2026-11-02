@@ -1,0 +1,35 @@
+name: Diagnosis of the text times of ex_pdfium
+
+# A temporary check, not for main: the program of pdfium.yml run 10, its
+# bench 5 times with 25 runs each, on three systems.
+on:
+  push:
+    branches: [diag/pdfium-text]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bench:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS arm64, os: macos-latest }
+          - { name: macOS x86_64, os: macos-15-intel }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ex_pdfium_check
+          run-id: 41391827430
+          github-token: ${{ github.token }}
+      - name: Bench
+        run: |
+          chmod +x ex_pdfium_check.com
+          sysctl -n hw.ncpu machdep.cpu.brand_string 2>/dev/null || nproc
+          for i in 1 2 3 4 5; do sh ./ex_pdfium_check.com bench 25 | grep -E 'text|render page 150'; done
