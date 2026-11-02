@@ -95,8 +95,11 @@ Custom builds (build.sh) can also contain:
     License, Copyright 2006-2015 Armin Biere, Johannes Kepler University;
     licenses/picosat.txt).
   - vix (EXTRA_NIFS): MIT License, with libvips and glib (GNU LGPL 2.1 or
-    later) and the other libraries of scripts/libvips.sh, each with its
-    own license (see their sources).
+    later), libheif (GNU LGPL 3.0), aom (BSD 2-Clause License, with the
+    Alliance for Open Media Patent License 1.0), Little CMS (MIT
+    License), cgif (MIT License), libimagequant (the BSD 2-Clause License
+    of its fork by sharp-libvips) and the other libraries of
+    scripts/libvips.sh, each with its own license (see their sources).
   - rusty_csv (EXTRA_NIFS): MIT License. The Rust crates of its NIF
     (rustler and others) have the MIT License or the Apache License 2.0;
     see its Cargo.lock.

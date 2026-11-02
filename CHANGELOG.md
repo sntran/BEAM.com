@@ -5,6 +5,17 @@ notes of its release.
 
 ## Unreleased
 
+- The static libvips of `vix` can have three more parts, with
+  `VIX_PARTS`, or the choices `vix-icc`, `vix-gif` and `vix-avif` of the
+  builder (#148):
+  - `icc`: ICC transforms (lcms2 2.20).
+  - `gif`: GIF save (cgif 0.5.4 with libimagequant 2.4.1).
+  - `avif`: AVIF read and write (libheif 1.23.7 with aom 3.15.3), about
+    12 MB more.
+  These are libraries of sharp-libvips. SVG and text are not in it.
+- A thread that does not set its stack size gets 1 MB, in place of the
+  80 KB of Cosmopolitan. The AVIF save of libvips stopped with SIGSEGV in
+  such a thread (C46 in `docs/UPSTREAM.md`).
 - An x86_64 ELF file of `--target` (`x86_64-linux`, `x86_64-freebsd`)
   has its first `PT_LOAD` segment at the file offset 0. Rosetta of Apple,
   for example in a Linux container of `container --arch amd64`, refused

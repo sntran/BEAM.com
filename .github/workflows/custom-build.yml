@@ -51,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix, rusty_csv, ex_pdfium), with spaces or commas
+        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, rusty_csv, ex_pdfium), with spaces or commas
         type: string
         default: ""
       otp_version:
@@ -229,14 +229,14 @@ jobs:
           path: build/wasm-runtime
           key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}${{ env.RUNTIME_KEY }}
 
-      # The static libvips of the NIF of vix (about 5 minutes), with the key
-      # of vix.yml.
+      # The static libvips of the NIF of vix (about 5 minutes, and about 12
+      # more for avif), with the key of vix.yml and the parts of VIX_PARTS.
       - name: Cache libvips
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}-parts-${{ env.VIX_PARTS }}
 
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
       # (the version of the test of the recipe), ninja, and nasm (the SIMD

@@ -3,7 +3,9 @@ defmodule VixCheck do
   `vix_check.com`: image operations with the NIF of vix.
 
   - No argument: each operation once, with a result that the output
-    checks, and "vix_check: ok" at the end.
+    checks, and "vix_check: ok" at the end. The formats: JPEG, PNG and
+    WebP, and the parts of VIX_PARTS when the build has them (AVIF, GIF
+    save, ICC transforms; else "not in this build").
   - `bench [RUNS]`: the median time of each operation, in milliseconds,
     on an image of 4000x3000 (12 megapixels). RUNS: default 5.
   """
@@ -56,6 +58,26 @@ defmodule VixCheck do
     {:ok, webp} = Image.write_to_buffer(small, ".webp")
     {:ok, webp_back} = Image.new_from_buffer(webp)
     IO.puts("vix_check: webp #{Image.width(webp_back)}x#{Image.height(webp_back)}")
+    # The parts of VIX_PARTS: AVIF (libheif with aom), GIF save (cgif),
+    # and ICC transforms (lcms2) with the built-in profiles of libvips.
+    part("avif", fn ->
+      {:ok, avif} = Image.write_to_buffer(small, ".avif[Q=60]")
+      {:ok, back} = Image.new_from_buffer(avif)
+      "#{Image.width(back)}x#{Image.height(back)}"
+    end)
+
+    part("gif", fn ->
+      {:ok, gif} = Image.write_to_buffer(small, ".gif")
+      {:ok, back} = Image.new_from_buffer(gif)
+      "#{Image.width(back)}x#{Image.height(back)}"
+    end)
+
+    part("icc", fn ->
+      {:ok, cmyk} = icc(small, "cmyk")
+      {:ok, srgb} = icc(cmyk, "srgb")
+      "#{Image.bands(cmyk)} bands, then #{Image.bands(srgb)} bands"
+    end)
+
     {:ok, thumb} = Operation.thumbnail_buffer(jpg, 100)
     IO.puts("vix_check: thumbnail #{Image.width(thumb)}x#{Image.height(thumb)}")
     {:ok, black} = Operation.black(64, 64)
@@ -63,6 +85,18 @@ defmodule VixCheck do
     IO.puts("vix_check: average #{avg(gray)}")
     IO.puts("vix_check: ok")
   end
+
+  # A part of VIX_PARTS: its line, or "not in this build" when the libvips
+  # of the build does not have it.
+  defp part(name, fun) do
+    IO.puts("vix_check: #{name} #{fun.()}")
+  rescue
+    _ -> IO.puts("vix_check: #{name} not in this build")
+  end
+
+  # vix makes the functions of Operation from the operations of its
+  # libvips: icc_transform exists only with lcms2.
+  defp icc(img, profile), do: apply(Operation, :icc_transform, [img, profile])
 
   defp bench(runs) do
     # No cache of operations: else a run after the first gets the result
@@ -101,8 +135,23 @@ defmodule VixCheck do
          avg(b)
        end},
       {"webp encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".webp[Q=80]") end},
-      {"png encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".png") end}
+      {"png encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".png") end},
+      {"avif encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".avif[Q=60]") end},
+      {"icc transform 1 MP",
+       fn ->
+         {:ok, c} = icc(mp1, "cmyk")
+         avg(c)
+       end}
     ]
+    # Only the operations of the parts of this build.
+    |> Enum.filter(fn {_, f} ->
+      try do
+        f.()
+        true
+      rescue
+        _ -> false
+      end
+    end)
     |> Enum.each(fn {name, f} ->
       f.()
       times = for _ <- 1..runs, do: elem(:timer.tc(f), 0) / 1000
