@@ -56,7 +56,7 @@ WAIT_SECONDS = 180 * 60
 # takes only the tags v0.1.0 and later, as the prerelease edge.
 RELEASE = "custom-builds"
 
-NIFS = ("picosat_elixir", "vix", "rusty_csv")
+NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
 # The versions of Erlang/OTP and Elixir that a build can use, with the
 # commit of each tag (a tag can move). The patches of patches/otp and
 # patches/elixir apply to each. The workflow custom-build-versions.yml

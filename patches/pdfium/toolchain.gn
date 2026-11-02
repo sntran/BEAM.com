@@ -1,0 +1,48 @@
+# The toolchains of cosmocc for PDFium (scripts/pdfium.sh copies this file
+# to build/toolchain/cosmo/BUILD.gn of the checkout). The model is the musl
+# toolchain of bblanchon/pdfium-binaries: GCC, not clang, and the C++
+# library of the compiler (use_custom_libcxx = false).
+import("//build/toolchain/gcc_toolchain.gni")
+
+declare_args() {
+  # The bin directory of an unpacked cosmocc (an absolute path).
+  cosmocc_bin = ""
+}
+
+template("cosmo_toolchain") {
+  gcc_toolchain(target_name) {
+    prefix = "$cosmocc_bin/${invoker.triple}-"
+    cc = "${prefix}cc"
+    cxx = "${prefix}c++"
+    ar = "${prefix}ar"
+    nm = "${prefix}nm"
+    readelf = "${prefix}readelf"
+    ld = cxx
+    # gcc_toolchain puts these flags after the flags of Chromium.
+    extra_cflags = invoker.extra_flags
+    extra_cxxflags = invoker.extra_flags
+    toolchain_args = {
+      current_cpu = invoker.cpu
+      current_os = "linux"
+      is_clang = false
+      use_remoteexec = false
+    }
+  }
+}
+
+# Chromium compiles with -fstack-protector on Linux. On x86_64, GCC then
+# reads the guard at %fs:0x28. Cosmopolitan has its TLS in %fs only on
+# Linux: on macOS and Windows, FT_Init_FreeType stopped with SIGSEGV at
+# this read. On aarch64, GCC reads the global __stack_chk_guard, which
+# Cosmopolitan does not have. So both toolchains turn it off.
+cosmo_toolchain("x64") {
+  triple = "x86_64-unknown-cosmo"
+  cpu = "x64"
+  extra_flags = "-fno-stack-protector"
+}
+
+cosmo_toolchain("arm64") {
+  triple = "aarch64-unknown-cosmo"
+  cpu = "arm64"
+  extra_flags = "-fno-stack-protector"
+}

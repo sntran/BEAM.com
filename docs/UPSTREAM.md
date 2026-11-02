@@ -230,6 +230,9 @@ tests fail in a way that looks like a compiler bug ("This gcc
 miscompiles the Erlang runtime system").
 
 **Workaround in BEAM.com.** `--disable-security-hardening-flags`.
+PDFium (for the NIF of ex_pdfium) compiles with `-fstack-protector` on
+Linux, and its link failed in the same way. `patches/pdfium/toolchain.gn`
+adds `-fno-stack-protector` after the flags of Chromium (see also C44).
 
 **Possible upstream fix.** Define `__stack_chk_guard` for aarch64 (and
 set it at startup, as x86_64 does with the TLS canary), or make
@@ -1184,6 +1187,28 @@ writes the CIE as data.) `tests/programs/rust_probe` checks a panic.
 
 **Possible upstream fix.** An unwinder that skips an entry of length 0
 before `__eh_frame_end`, or an `.eh_frame_hdr` in the program.
+
+### C44. x86_64: code with `-fstack-protector` crashes on macOS and Windows
+
+**Status:** 4.0.2.
+
+**Symptom.** `libpdfium.a`, compiled by `x86_64-unknown-cosmo-c++` with
+`-fstack-protector` and linked into beam.com, works on Linux. On macOS
+x86_64 and on Windows, the program stops with SIGSEGV at the start of the
+first protected function (`FT_Set_Default_Properties+18`, from
+`FPDF_InitLibrary`).
+
+**Probable cause.** GCC reads the guard at `%fs:0x28`. Cosmopolitan keeps
+its TLS in `%gs` on these systems (see W1), so the read of `%fs` is not
+valid there. We did not check which reads of `%fs` the start code of
+Cosmopolitan rewrites.
+
+**Workaround in BEAM.com.** `-fno-stack-protector` for both CPUs in
+`patches/pdfium/toolchain.gn`. `tests/programs/ex_pdfium_check` passes on
+the five systems of CI.
+
+**Possible upstream fix.** A canary that cosmocc gives in the same place
+on each system, or a warning from cosmocc for `-fstack-protector*`.
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2792,6 +2817,48 @@ as Mix does.
 
 **Possible upstream fix.** None needed: Mix compiles a package in this
 way.
+
+## PDFium (the NIF of ex_pdfium)
+
+Seen with PDFium `chromium/7881` (the version of pdfium-render 0.9.3),
+built by `scripts/pdfium.sh` with GCC of cosmocc 4.0.2 and the settings
+of the musl builds of bblanchon/pdfium-binaries. The patches are in
+`patches/pdfium`.
+
+### P1. `build/build_config.h` finds no platform
+
+**Symptom.** 390 of 1121 steps of the first build stopped in
+`build/build_config.h`: "Please add support for your platform".
+
+**Cause.** The compiler of cosmocc defines `__COSMOPOLITAN__`, and not
+`__linux__`.
+
+**Workaround in BEAM.com.** `build-cosmopolitan.patch` gives `OS_LINUX`
+for `__COSMOPOLITAN__`, before the check of `__linux__`.
+
+### P2. Abseil puts the signal numbers in a `constinit` table
+
+**Symptom.** `absl/debugging/failure_signal_handler.cc` does not compile.
+
+**Cause.** The signal numbers of Cosmopolitan are variables (as the
+`POLL*` values of C3), and `ABSL_CONST_INIT` needs constants.
+
+**Workaround in BEAM.com.** `abseil-cosmopolitan.patch` takes out
+`ABSL_CONST_INIT` of this table for `__COSMOPOLITAN__`.
+
+### P3. The zlib of Chromium includes `asm/hwcap.h` on aarch64
+
+**Symptom.** `cpu_features.c` does not compile for arm64: cosmocc has no
+`asm/hwcap.h`.
+
+**Workaround in BEAM.com.** `zlib-cosmopolitan.patch` gives the bits
+`HWCAP_CRC32` and `HWCAP_PMULL` of Linux aarch64. On another system,
+`getauxval()` gives 0, and zlib uses its plain code.
+
+### P4. The stack protector
+
+See C8 (aarch64: no `__stack_chk_guard`) and C44 (x86_64: a crash on
+macOS and Windows).
 
 ## fine (C++ NIFs)
 

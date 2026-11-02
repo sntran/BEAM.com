@@ -28,7 +28,8 @@
 
 %% The packages with a NIF of Rust that beam.com can link: the package,
 %% the module of the NIF and the name of the crate.
--define(CRATES, [{rusty_csv, 'Elixir.RustyCSV.Native', <<"rustycsv">>}]).
+-define(CRATES, [{rusty_csv, 'Elixir.RustyCSV.Native', <<"rustycsv">>},
+                 {ex_pdfium, 'Elixir.ExPdfium.Native', <<"ex_pdfium">>}]).
 
 %% Nifs: the linked NIFs ([{App, Vsn}], the env nifs of beam_com). The
 %% env is persistent: a later load of an application keeps it. Mix
