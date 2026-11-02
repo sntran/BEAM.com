@@ -56,28 +56,30 @@ pairs = [
      "static ErtsWasmMapping *erts_wasm_mappings;\n" + CHECK),
     ("    ErtsWasmMapping *m = malloc(sizeof(ErtsWasmMapping));\n",
      "    ErtsWasmMapping *m = malloc(sizeof(ErtsWasmMapping));\n    erts_wasm_mmaps++;\n"),
-    ("    void *ptr;\n} ErtsWasmMapping;", "    void *ptr;\n    size_t size;\n} ErtsWasmMapping;"),
-    ("    m->ptr = ptr;\n", "    m->ptr = ptr;\n    m->size = (size_t) size;\n"),
-    ("            *pp = m->next;\n            free(m->ptr);\n            free(m);\n            return;\n",
-     "            static int mode = -1;\n"
-     "            *pp = m->next;\n"
-     "            if (mode < 0) {\n"
-     "                const char *e = getenv(\"BEAM_WASM_MUNMAP\");\n"
-     "                mode = !e ? 0 : e[0] == 'k' ? 1 : e[0] == 'p' ? 2 : e[0] == 'c' ? 3 : 0;\n"
-     "                if (mode == 3)\n"
-     "                    atexit(erts_wasm_check_all);\n"
-     "            }\n"
-     "            if (mode >= 2)\n"
-     "                memset(m->ptr, 0xA5, m->size);\n"
-     "            if (mode == 3 && erts_wasm_check_count < ERTS_WASM_CHECK_MAX) {\n"
-     "                erts_wasm_check[erts_wasm_check_count].p = m->ptr;\n"
-     "                erts_wasm_check[erts_wasm_check_count].n = m->size;\n"
-     "                erts_wasm_check_count++;\n"
-     "            }\n"
-     "            if (mode == 0)\n"
+    # The free of a block with no mapped byte (the fix of #145).
+    ("            if (m->mapped == 0) {\n"
+     "                *pp = m->next;\n"
      "                free(m->ptr);\n"
-     "            free(m);\n"
-     "            return;\n"),
+     "                free(m);\n"
+     "            }\n",
+     "            if (m->mapped == 0) {\n"
+     "                static int mode = -1;\n"
+     "                *pp = m->next;\n"
+     "                if (mode < 0) {\n"
+     "                    const char *e = getenv(\"BEAM_WASM_MUNMAP\");\n"
+     "                    mode = !e ? 0 : e[0] == 'k' ? 1 : e[0] == 'p' ? 2 : e[0] == 'c' ? 3 : 0;\n"
+     "                }\n"
+     "                if (mode >= 2)\n"
+     "                    memset(m->ptr, 0xA5, m->size);\n"
+     "                if (mode == 3 && erts_wasm_check_count < ERTS_WASM_CHECK_MAX) {\n"
+     "                    erts_wasm_check[erts_wasm_check_count].p = (unsigned char *) m->ptr;\n"
+     "                    erts_wasm_check[erts_wasm_check_count].n = m->size;\n"
+     "                    erts_wasm_check_count++;\n"
+     "                }\n"
+     "                if (mode == 0)\n"
+     "                    free(m->ptr);\n"
+     "                free(m);\n"
+     "            }\n"),
 ]
 for old, new in pairs:
     if s.count(old) != 1:
