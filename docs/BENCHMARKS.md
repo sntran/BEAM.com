@@ -199,6 +199,7 @@ parts in the emulator (C code), which are in every program.
 | Elixir (`elixir`, `eex`, `ex_unit`, `iex`, `logger`, `mix`, with docs) | +2.8 MB | 0 for Erlang programs | zip (`ELIXIR=0` leaves it out) |
 | The NIF of `rusty_csv` (`EXTRA_NIFS`) | +1.3 MB | +1.3 MB | emulator (custom builds) |
 | The NIF of `vix`, with libvips | +13 MB | +13 MB | emulator (custom builds) |
+| The parts `icc`, `gif`, `avif` and `svg` of `vix` (`VIX_PARTS`) | under 1 MB, under 1 MB, +12 MB, +5.5 MB | the same | emulator (custom builds) |
 | The NIF of `ex_pdfium`, with PDFium | +18.7 MB | +18.7 MB | emulator (custom builds) |
 | An Elixir program (`elixir` and `compiler`) | | +1.9 MB, start about 40 ms slower | zip of the program |
 

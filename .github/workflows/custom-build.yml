@@ -35,7 +35,7 @@ on:
         type: string
         default: "0"
       elixir:
-        description: Elixir (0 or 1)
+        description: Elixir (0 or 1), or empty for Elixir only with an elixir_version (the form of mkfifo.com)
         type: string
         default: "1"
       jit:
@@ -51,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix, rusty_csv, ex_pdfium), with spaces or commas
+        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, vix-svg, rusty_csv, ex_pdfium), with spaces or commas. With the word default, the default NIFs to keep (exqlite, bcrypt_elixir, argon2_elixir); without it, all of them
         type: string
         default: ""
       otp_version:
@@ -59,7 +59,7 @@ on:
         type: string
         default: ""
       elixir_version:
-        description: The version of Elixir (ELIXIR_VERSIONS of scripts/custom_build.py). Empty for the default.
+        description: The version of Elixir (ELIXIR_VERSIONS of scripts/custom_build.py). Empty for the default, or for no Elixir when the input elixir is empty.
         type: string
         default: ""
       reply:
@@ -218,25 +218,50 @@ jobs:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
 
-      # The WebAssembly runtime (about 3 minutes), with the key of build.yml
-      # and the NIFs of the runtime (RUNTIME_KEY of custom_build.py). The
-      # step wasm_runtime keeps it only when the SHA-256 of its inputs is
-      # the same, else it builds it again.
+      # The SHA-256 of the inputs of the runtime (the step wasm_runtime_key
+      # of scripts/steps.sh) for its cache key: a change of another step
+      # of scripts/steps.sh keeps the key.
+      - name: The inputs of the WebAssembly runtime
+        if: env.REUSE != '1' && env.REFUSED == ''
+        run: |
+          k=$(sh scripts/steps.sh wasm_runtime_key)
+          echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
+
+      # The WebAssembly runtime (about 3 minutes), with the key of build.yml.
+      # The SHA-256 of its inputs has the NIFs of the runtime. The step
+      # wasm_runtime keeps it only when that SHA-256 is the same, else it
+      # builds it again.
       - name: Cache the WebAssembly runtime
         if: env.REUSE != '1' && env.REFUSED == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm-runtime
-          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}${{ env.RUNTIME_KEY }}
+          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ env.WASM_RUNTIME_INPUTS }}
 
-      # The static libvips of the NIF of vix (about 5 minutes), with the key
-      # of vix.yml.
+      # The libraries of libvips, with those of each part (about 10
+      # minutes). Their key is the SHA-256 of their recipe, so a new set
+      # of parts builds only libvips (scripts/libvips.sh --deps-key).
+      - name: The recipe of the libraries of libvips
+        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
+        run: |
+          k=$(sh scripts/libvips.sh --deps-key)
+          echo "LIBVIPS_DEPS_KEY=$k" >> "$GITHUB_ENV"
+
+      - name: Cache the libraries of libvips
+        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/libvips-deps
+          key: libvips-deps-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.LIBVIPS_DEPS_KEY }}
+
+      # The static libvips of the NIF of vix (about 1.5 minutes on the
+      # libraries), with the key of vix.yml and the parts of VIX_PARTS.
       - name: Cache libvips
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}-parts-${{ env.VIX_PARTS }}
 
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
       # (the version of the test of the recipe), ninja, and nasm (the SIMD
@@ -258,6 +283,24 @@ jobs:
           path: build/pdfium/arm64
           key: libpdfium-arm64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
 
+      # ccache for the C and C++ compiles of cosmocc (CCACHE of
+      # scripts/steps.sh), about 4 of the 7 minutes of OTP. One cache for
+      # each OTP version, from the cache of an earlier version when it is
+      # new: most of the files of a patch release do not change.
+      - name: Install ccache
+        if: env.REUSE != '1' && env.REFUSED == ''
+        run: sudo apt-get install -y ccache
+
+      - name: Cache ccache
+        if: env.REUSE != '1' && env.REFUSED == ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/ccache
+          key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ hashFiles('patches/otp/**', 'c_src/cosmo/**') }}
+          restore-keys: |
+            ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-
+            ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-
+
       - name: Install meson
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
         run: |
@@ -269,9 +312,11 @@ jobs:
         env:
           CC: cosmocc
           AR: cosmoar
+          CCACHE: "1"
         run: |
           export OUT="$GITHUB_WORKSPACE/build/$OUT_NAME"
           build/cosmocc/bin/make
+          CCACHE_DIR=build/ccache ccache -s
 
       # The step test of the Makefile: the file runs a program, and builds one
       # that runs (with SQLite and WebAssembly, when they are in it).

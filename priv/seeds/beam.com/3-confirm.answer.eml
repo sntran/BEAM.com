@@ -5,24 +5,24 @@ Cache-Control: no-store
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Start the build</title>
-<style>:root { color-scheme: light dark; } body { margin: 0; font: 16px/1.5 system-ui, sans-serif; } main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem; } th { text-align: left; padding-right: 1rem; } .e0 .needs-elixir { display: none; } button { margin-top: 1rem; padding: .625rem 1.25rem; font: inherit; font-weight: 600; color: #fff; background: #7b2ff7; border: 0; border-radius: .375rem; cursor: pointer; }</style></head>
+<style>:root { color-scheme: light dark; } body { margin: 0; font: 16px/1.5 system-ui, sans-serif; } main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem; } th { text-align: left; padding-right: 1rem; } .v .needs-elixir { display: none; } button { margin-top: 1rem; padding: .625rem 1.25rem; font: inherit; font-weight: 600; color: #fff; background: #7b2ff7; border: 0; border-radius: .375rem; cursor: pointer; }</style></head>
 <body><main>
 <h1>Start the build</h1>
-<table class="e$elixir">
+<table class="v$elixir_version">
 <tr><th>Email</th><td>$email</td></tr>
 <tr><th>Erlang/OTP</th><td>$otp_version</td></tr>
 <tr><th>Default OTP applications that stay</th><td>$k_parsetools $k_asn1 $k_public_key $k_ssl $k_inets $k_ssh $k_xmerl $k_runtime_tools $k_tools</td></tr>
 <tr><th>More OTP applications</th><td>$apps $a_mnesia $a_os_mon $a_eldap $a_ftp $a_tftp $a_diameter $a_eunit $a_common_test $a_syntax_tools $a_edoc</td></tr>
-<tr><th>Elixir</th><td>$elixir</td></tr>
-<tr class="needs-elixir"><th>Elixir version</th><td>$elixir_version</td></tr>
+<tr><th>Elixir</th><td>$elixir_version</td></tr>
 <tr class="needs-elixir"><th>Hex</th><td>$hex</td></tr>
 <tr><th>rebar3</th><td>$rebar3</td></tr>
-<tr class="needs-elixir"><th>More NIFs</th><td>$nif1 $nif2 $nif3 $nif4</td></tr>
+<tr class="needs-elixir"><th>Default NIFs that stay</th><td>$dnif1 $dnif2 $dnif3</td></tr>
+<tr class="needs-elixir"><th>More NIFs</th><td>$nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7 $nif8</td></tr>
 <tr><th>JIT</th><td>$jit</td></tr>
 <tr><th>SQLite</th><td>$sqlite</td></tr>
 <tr><th>WebAssembly</th><td>$wasm</td></tr>
 </table>
-<p>1 means yes, and 0 means no.</p>
+<p>1 means yes, and 0 means no. An empty Elixir means no Elixir.</p>
 <form method="post" action="/beam.com">
 <input type="hidden" name="step" value="start">
 <input type="hidden" name="email" value="$email">
@@ -36,7 +36,7 @@ Cache-Control: no-store
 <input type="hidden" name="wasm" value="$wasm">
 <input type="hidden" name="otp_version" value="$otp_version">
 <input type="hidden" name="elixir_version" value="$elixir_version">
-<input type="hidden" name="nifs" value="$nif1 $nif2 $nif3 $nif4">
+<input type="hidden" name="nifs" value="$dnifs $dnif1 $dnif2 $dnif3 $nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7 $nif8">
 <input type="hidden" name="code" value="$code">
 <button>Start the build</button>
 </form>

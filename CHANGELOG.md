@@ -5,6 +5,42 @@ notes of its release.
 
 ## Unreleased
 
+- Faster custom builds (`custom-build.yml`), with three caches:
+  - The cache key of the WebAssembly runtime is the SHA-256 of its
+    inputs (`scripts/steps.sh wasm_runtime_key`). Only the functions of
+    `scripts/steps.sh` that its build runs are in it, so a change of
+    another step no longer builds the runtime again (about 3 minutes).
+  - `scripts/libvips.sh` builds the libraries of libvips, with those of
+    each part, in `build/libvips-deps`, with their own cache. A new set
+    of parts of `vix` builds only libvips (about 1.5 minutes, in place of
+    5 to 12).
+  - `CCACHE=1` of `scripts/steps.sh` puts the compiles of cosmocc through
+    ccache, with one cache for each OTP version.
+- The static libvips of `vix` can have the part `svg`, with `VIX_PARTS`
+  or the choice `vix-svg` of the builder (#153). It loads SVG and SVGZ
+  with resvg 0.48.1, a library of Rust, in place of librsvg, so it needs
+  no cairo or pango. The loader has the names and the arguments of the
+  loader of libvips. Text uses the fonts of the system. The SVG gets
+  only the images of `data:` URLs, and never a file. About 5.5 MB more.
+- The builder: the default NIFs (exqlite, bcrypt_elixir and argon2_elixir)
+  are checked boxes with the tag "default", as the default OTP
+  applications are. A box that you clear leaves out that NIF, for a
+  smaller file (`NIFS_OMIT` of `scripts/steps.sh`). In an issue, the list
+  is "Leave out default NIFs".
+- The builder: one list for Elixir, with "None" for a file with no
+  Elixir, and the versions. The workflow still takes the input `elixir`
+  of an older form.
+- The static libvips of `vix` can have three more parts, with
+  `VIX_PARTS`, or the choices `vix-icc`, `vix-gif` and `vix-avif` of the
+  builder (#148):
+  - `icc`: ICC transforms (lcms2 2.20).
+  - `gif`: GIF save (cgif 0.5.4 with libimagequant 2.4.1).
+  - `avif`: AVIF read and write (libheif 1.23.7 with aom 3.15.3), about
+    12 MB more.
+  These are libraries of sharp-libvips. Text (pango) is not in it.
+- A thread that does not set its stack size gets 1 MB, in place of the
+  80 KB of Cosmopolitan. The AVIF save of libvips stopped with SIGSEGV in
+  such a thread (C46 in `docs/UPSTREAM.md`).
 - The WebAssembly runtime: the memory of the VM no longer grows with each
   process that makes a big heap and then ends (issue 141). The `munmap()`
   of Emscripten frees only a whole mapping, and ERTS unmaps parts of a

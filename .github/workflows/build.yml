@@ -160,6 +160,14 @@ jobs:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
 
+      # The SHA-256 of the inputs of the runtime (the step wasm_runtime_key
+      # of scripts/steps.sh) for its cache key: a change of another step
+      # of scripts/steps.sh keeps the key.
+      - name: The inputs of the WebAssembly runtime
+        run: |
+          k=$(sh scripts/steps.sh wasm_runtime_key)
+          echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
+
       # The WebAssembly runtime (the step wasm_runtime, about 4 minutes).
       # The step keeps it only when the SHA-256 of its inputs is the one
       # in build/wasm-runtime/inputs, else it builds it again. The job unit
@@ -168,7 +176,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm-runtime
-          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}
+          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ env.WASM_RUNTIME_INPUTS }}
 
       - name: Build
         run: build/cosmocc/bin/make
@@ -282,13 +290,21 @@ jobs:
           sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
+      # The SHA-256 of the inputs of the runtime (the step wasm_runtime_key
+      # of scripts/steps.sh) for its cache key: a change of another step
+      # of scripts/steps.sh keeps the key.
+      - name: The inputs of the WebAssembly runtime
+        run: |
+          k=$(sh scripts/steps.sh wasm_runtime_key)
+          echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
+
       # The runtime of the job build, for the differential test
       # (tests/wasm_diff_test.exs). The job build saved it under this key.
       - name: Restore the WebAssembly runtime
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm-runtime
-          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}
+          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ env.WASM_RUNTIME_INPUTS }}
           fail-on-cache-miss: true
 
       # The differential test runs beam.wasm in Node.js, and needs JSPI

@@ -1242,6 +1242,30 @@ Linux has no `MAP_GROWSDOWN`.
 
 **Possible upstream fix.** A check for Rosetta next to the check for
 QEMU, or an option to turn off `slackmap()`.
+
+### C46. The default stack of a thread is 80 KB
+
+**Status:** 4.0.2.
+
+**Symptom.** In a beam.com with the NIF of vix, the AVIF save of libvips
+stops with SIGSEGV in a thread "libvips worker", at an AVX2 store to the
+stack.
+
+**Cause.** `pthread_attr_init()` gives a stack of 80 KB
+(`GetStackSize()`), and `pthread_create()` uses it for a thread with no
+attributes. glibc gives 8 MB, and the C runtime of Windows gives 1 MB.
+glib makes the workers of libvips with the default size, and the AV1
+encoder of aom needs more. A small program with a buffer of 500 KB on
+the stack of a thread stops in the same way.
+
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com.c` defines
+`pthread_attr_init()` with a stack of 1 MB. The linker then does not take
+the one of Cosmopolitan (it is alone in its object file), so each thread
+that does not set its stack size gets 1 MB. The threads of ERTS and of
+Rust set their own sizes.
+
+**Possible upstream fix.** A larger default, or a default from
+`RLIMIT_STACK`, as glibc does.
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2715,6 +2739,29 @@ libvips does not call it.
 
 **Possible upstream fix.** A branch for `__COSMOPOLITAN__` that reads
 `/proc/self/fd` on Linux and uses `F_GETPATH` on the BSDs and macOS.
+
+## aom (the AV1 codec of libheif)
+
+Seen with aom 3.15.3 and cosmocc 4.0.2, for the AVIF of vix
+(`scripts/libvips.sh`).
+
+### A1. The CPU check of aarch64 does not know Cosmopolitan
+
+**Symptom.** aom does not compile for aarch64:
+`#error "Runtime CPU detection selected, but no CPU detection method
+available for your platform"` in `aom_ports/aarch64_cpudetect.c`.
+
+**Cause.** The headers of Cosmopolitan remove `__linux__`
+(`libc/integral/normalize.inc`), because a program also runs on other
+systems. The file has a branch for each OS, and none of them matches.
+
+**Workaround in BEAM.com.** `patches/libvips/aom-cosmopolitan.patch`: the
+branch of Linux (`getauxval(AT_HWCAP)` and `AT_HWCAP2`) also applies to
+`__COSMOPOLITAN__`. `getauxval()` gives 0 on the other systems, and aom
+then uses Neon only. x86_64 uses `cpuid`, which needs no change.
+
+**Possible upstream fix.** A branch for `__COSMOPOLITAN__`, or a check
+for `getauxval()` in place of the check for `__linux__`.
 
 ## Blink (the x86-64 emulator)
 

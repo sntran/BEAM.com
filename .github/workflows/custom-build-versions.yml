@@ -6,9 +6,19 @@ name: Versions of the custom builds
 # build.yml tests. Each job builds beam.com with the default choices of a
 # custom build and runs the step test. Run it when a version goes into a
 # table, or when a patch of OTP or Elixir changes.
+#
+# A run on main also fills the caches of main for each OTP version (ccache
+# and the WebAssembly runtime), which custom-build.yml reads: after a new
+# version, its first custom build does not start cold. The caches of a
+# pull request are only for that pull request.
 on:
   push:
-    branches: [feat/builder-versions]
+    branches: [main]
+    paths:
+      - scripts/custom_build.py
+      - patches/otp/**
+      - patches/elixir/**
+      - .github/workflows/custom-build-versions.yml
   pull_request:
     paths:
       - scripts/custom_build.py
@@ -119,19 +129,46 @@ jobs:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
 
+      # The SHA-256 of the inputs of the runtime (the step wasm_runtime_key
+      # of scripts/steps.sh) for its cache key: a change of another step
+      # of scripts/steps.sh keeps the key.
+      - name: The inputs of the WebAssembly runtime
+        run: |
+          k=$(sh scripts/steps.sh wasm_runtime_key)
+          echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
+
       # The key of build.yml and custom-build.yml.
       - name: Cache the WebAssembly runtime
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm-runtime
-          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}
+          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ env.WASM_RUNTIME_INPUTS }}
+
+      # ccache for the C and C++ compiles of cosmocc (CCACHE of
+      # scripts/steps.sh), about 4 of the 7 minutes of OTP. One cache for
+      # each OTP version, from the cache of an earlier version when it is
+      # new: most of the files of a patch release do not change.
+      - name: Install ccache
+        run: sudo apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/ccache
+          key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ hashFiles('patches/otp/**', 'c_src/cosmo/**') }}
+          restore-keys: |
+            ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-
+            ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-
 
       # The default choices of a custom build.
       - name: Build
         env:
           CC: cosmocc
           AR: cosmoar
-        run: build/cosmocc/bin/make
+          CCACHE: "1"
+        run: |
+          build/cosmocc/bin/make
+          CCACHE_DIR=build/ccache ccache -s
 
       - name: Test
         timeout-minutes: 5

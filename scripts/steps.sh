@@ -35,6 +35,8 @@
 #   ARGON2_ELIXIR_VERSION  Version of the hex.pm package argon2_elixir
 #                    (default 4.1.3), whose NIF is linked into beam.com (for
 #                    phx.gen.auth --hashing-lib argon2). Only with ELIXIR=1.
+#   NIFS_OMIT        The default NIFs to leave out, separated by spaces:
+#                    exqlite, bcrypt_elixir, argon2_elixir (default none).
 #   EXTRA_NIFS       More hex.pm packages whose NIFs are linked (a custom
 #                    build), separated by spaces: picosat_elixir (for Ash),
 #                    vix (libvips, for the image package; native only),
@@ -48,8 +50,13 @@
 #                    the nightly Rust (default nightly-2026-11-01)
 #   LIBVIPS          For vix: a directory with x86_64/ and aarch64/, the
 #                    static libvips of each CPU. Default: $BUILD/libvips,
-#                    made by scripts/libvips.sh when it is not there.
-#                    Only with ELIXIR=1.
+#                    made by scripts/libvips.sh when it is not there, or
+#                    when it has other VIX_PARTS. Only with ELIXIR=1.
+#   VIX_PARTS        For vix: the parts of libvips to add to its formats,
+#                    separated by spaces (default none): icc (ICC
+#                    transforms), gif (GIF save), avif (AVIF read and
+#                    write; about 12 MB), svg (SVG load with resvg; needs
+#                    rustup). See scripts/libvips.sh.
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
@@ -89,6 +96,10 @@
 #                    default 0)
 #   BUILD            Build directory (default ./build)
 #   JOBS             Parallel make jobs (default: number of CPUs)
+#   CCACHE           1: the compiles of cosmocc and cosmoc++ go through
+#                    ccache (CI), in CCACHE_DIR (default build/ccache). It
+#                    is not a setting of the Makefile: the result is the
+#                    same file.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -123,6 +134,14 @@ PICOSAT_ELIXIR_VERSION=${PICOSAT_ELIXIR_VERSION:-0.2.3}
 PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d53e984e8cd99c832383b7ab78c16c66}
 VIX_VERSION=${VIX_VERSION:-0.42.0}
 VIX_SHA256=${VIX_SHA256:-c4c92051653859dc5219f553a93fa777d63525ee961c48e16e9f61fed02472ee}
+VIX_PARTS=${VIX_PARTS:-}
+NIFS_OMIT=${NIFS_OMIT:-}
+for p in $NIFS_OMIT; do
+    case $p in
+        exqlite|bcrypt_elixir|argon2_elixir) ;;
+        *) echo "Not a default NIF in NIFS_OMIT: $p (exqlite, bcrypt_elixir or argon2_elixir)" >&2; exit 1 ;;
+    esac
+done
 RUSTY_CSV_VERSION=${RUSTY_CSV_VERSION:-0.4.6}
 RUSTY_CSV_SHA256=${RUSTY_CSV_SHA256:-db9967f0889b9b967a9a1d084fcfbac56c1b0f09cb1faa84b6405e9450f6e059}
 EX_PDFIUM_VERSION=${EX_PDFIUM_VERSION:-0.6.0}
@@ -212,6 +231,51 @@ OUT=${OUT:-$BUILD/beam.com}
 
 export ERL_TOP
 PATH=$COSMOCC/bin:$PATH
+
+# CCACHE=1: copies of cosmocc and cosmoc++ in BUILD/ccache-bin, first on
+# the PATH. Each copy runs the compilers of COSMOCC/bin, and each of its
+# four compilers (gcc and g++ for x86_64 and aarch64) goes through
+# ccache. cosmocc makes one object with each compiler, so each compile is
+# a plain compile for ccache.
+# The compilers are APE files, which only a shell or an APE loader starts,
+# and ccache starts a compiler with execv(). So ccache runs real/NAME,
+# which starts the compiler with sh, and it hashes the SHA-256 of the
+# compiler (compiler_check=string:SHA), not real/NAME.
+if [ "${CCACHE:-0}" = 1 ]; then
+    if ! command -v ccache > /dev/null; then
+        echo "CCACHE=1 needs ccache" >&2
+        exit 1
+    fi
+    d=$BUILD/ccache-bin
+    mkdir -p "$d/real"
+    for t in x86_64 aarch64; do
+        for c in gcc g++; do
+            n=$t-linux-cosmo-$c
+            sha=$(sha256sum "$COSMOCC/bin/$n" | cut -d' ' -f1)
+            printf '#!/bin/sh\nexec sh %s "$@"\n' "$COSMOCC/bin/$n" > "$d/real/$n"
+            printf '#!/bin/sh\nCCACHE_COMPILERCHECK=string:%s exec ccache %s "$@"\n' \
+                "$sha" "$d/real/$n" > "$d/$n"
+            chmod +x "$d/real/$n" "$d/$n"
+        done
+    done
+    for p in cosmocc cosmoc++; do
+        sed -e "s#^BIN=\${0%/\*}\$#BIN=$COSMOCC/bin#" \
+            -e "s#=\"\$BIN/\(x86_64\|aarch64\)-linux-cosmo-\(gcc\|g++\)\"#=\"$d/\1-linux-cosmo-\2\"#" \
+            "$COSMOCC/bin/$p" > "$d/$p.new"
+        # The copy must use the wrappers: else ccache does nothing.
+        if [ "$(grep -c "^BIN=$COSMOCC/bin\$" "$d/$p.new")" != 1 ] ||
+            [ "$(grep -c "=\"$d/" "$d/$p.new")" != 4 ]; then
+            echo "CCACHE=1: $COSMOCC/bin/$p is not the expected cosmocc" >&2
+            exit 1
+        fi
+        chmod +x "$d/$p.new"
+        mv "$d/$p.new" "$d/$p"
+    done
+    CCACHE_DIR=${CCACHE_DIR:-$BUILD/ccache}
+    CCACHE_BASEDIR=$ROOT CCACHE_NOHASHDIR=1 CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-2G}
+    export CCACHE_DIR CCACHE_BASEDIR CCACHE_NOHASHDIR CCACHE_MAXSIZE
+    PATH=$d:$PATH
+fi
 export PATH
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -421,13 +485,19 @@ step_sqlite() {
     "$AR" rcs esqlite3_nif.a esqlite3_nif.o sqlite3.o
 }
 
-# The NIFs of Elixir packages are linked when their package is enabled.
-use_exqlite() { [ "$SQLITE" = 1 ] && [ "$ELIXIR" = 1 ]; }
+# The NIFs of Elixir packages are linked when their package is enabled,
+# and the default NIFs (exqlite, bcrypt_elixir, argon2_elixir) when
+# NIFS_OMIT does not name them.
+omit_nif() { case " $NIFS_OMIT " in *" $1 "*) return 0 ;; esac; return 1; }
+use_exqlite() { [ "$SQLITE" = 1 ] && [ "$ELIXIR" = 1 ] && ! omit_nif exqlite; }
 # The packages of hex_nif_recipe() whose NIFs are linked.
 hex_nif_packages() {
     [ "$ELIXIR" = 1 ] || return 0
+    for p in bcrypt_elixir argon2_elixir; do
+        omit_nif "$p" || printf '%s ' "$p"
+    done
     # shellcheck disable=SC2086
-    echo bcrypt_elixir argon2_elixir $EXTRA_NIFS
+    echo $EXTRA_NIFS
 }
 
 # The packages of hex_nif_packages() for the WebAssembly runtime: not
@@ -448,11 +518,34 @@ build_vix_nif() {
     src=$1 out=$2 cflags=$3
     bin=$COSMOCC/bin
     libvips=${LIBVIPS:-$BUILD/libvips}
-    # The static libvips of scripts/libvips.sh, once (about 5 minutes for
-    # the two CPUs). LIBVIPS names a build that exists.
-    if [ -z "${LIBVIPS:-}" ] && [ ! -f "$libvips/aarch64/lib/libvips.a" ]; then
-        COSMOCC=$COSMOCC BUILD=$BUILD sh "$ROOT/scripts/libvips.sh" "$libvips"
+    # The parts of VIX_PARTS, sorted, as scripts/libvips.sh writes them in
+    # LIBVIPS/parts.
+    parts=$(printf '%s\n' $VIX_PARTS | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//')
+    # The static libvips of scripts/libvips.sh, once for each set of
+    # parts (about 5 minutes for the two CPUs, and about 12 more for
+    # avif). LIBVIPS names a build that exists.
+    if [ -z "${LIBVIPS:-}" ] && { [ ! -f "$libvips/aarch64/lib/libvips.a" ] ||
+            [ "$(cat "$libvips/parts" 2>/dev/null)" != "$parts" ]; }; then
+        COSMOCC=$COSMOCC BUILD=$BUILD VIX_PARTS="$parts" sh "$ROOT/scripts/libvips.sh" "$libvips"
     fi
+    if [ "$(cat "$libvips/parts" 2>/dev/null)" != "$parts" ]; then
+        echo "$libvips has the parts \"$(cat "$libvips/parts" 2>/dev/null)\", not \"$parts\" (VIX_PARTS)" >&2
+        exit 1
+    fi
+    # The libraries of the archive: those of each part, and then those of
+    # the formats of each build.
+    libs=vips
+    case " $parts " in *" avif "*) libs="$libs heif aom" ;; esac
+    case " $parts " in *" icc "*) libs="$libs lcms2" ;; esac
+    case " $parts " in *" gif "*) libs="$libs cgif imagequant" ;; esac
+    # svg: resvg (native/vips_resvg) for c_src/vips/resvgload.c, as
+    # OUT/vips_resvg.a and OUT/.aarch64/vips_resvg.a, with one global name.
+    # A subshell: build_rust_nif sets src, out and bin.
+    case " $parts " in
+        *" svg "*) (build_rust_nif vips_resvg "$ROOT" "$out" vips_resvg "$cflags" vips_resvg) ;;
+    esac
+    libs="$libs hwy webpmux webpdemux webp sharpyuv png16 jpeg expat gio-2.0 gmodule-2.0"
+    libs="$libs gobject-2.0 glib-2.0 intl ffi z"
     for cpu in x86_64 aarch64; do
         p=$libvips/$cpu
         if [ ! -f "$p/lib/libvips.a" ]; then
@@ -480,10 +573,12 @@ build_vix_nif() {
         {
             echo "CREATE $a"
             echo "ADDMOD $obj/vix_nif.o.all"
-            for l in vips hwy webpmux webpdemux webp sharpyuv png16 jpeg expat \
-                     gio-2.0 gmodule-2.0 gobject-2.0 glib-2.0 intl ffi z; do
+            for l in $libs; do
                 echo "ADDLIB $p/lib/lib$l.a"
             done
+            case " $parts " in
+                *" svg "*) echo "ADDLIB $(dirname "$a")/vips_resvg.a" ;;
+            esac
             echo SAVE
             echo END
         } | "$bin/$cpu-unknown-cosmo-ar" -M
@@ -509,6 +604,8 @@ rust_nif_crate() {
         # static: pdfium-render links libpdfium.a (rust_nif_env), and
         # loads no library.
         ex_pdfium) echo "native/ex_pdfium static" ;;
+        # Not a NIF: the SVG loader of the part svg of vix (build_vix_nif).
+        vips_resvg) echo "native/vips_resvg" ;;
     esac
 }
 
@@ -541,10 +638,11 @@ rust_nif_prepare() {
     esac
 }
 
-# build_rust_nif NAME SRC OUT LIB CFLAGS: the NIF of Rustler of the
-# package NAME, in SRC (rust_nif_crate), as OUT/LIB.a and
+# build_rust_nif NAME SRC OUT LIB CFLAGS [GLOBAL]: the NIF of Rustler of
+# the package NAME, in SRC (rust_nif_crate), as OUT/LIB.a and
 # OUT/.aarch64/LIB.a. LIB is the name of the crate: Rustler exports
-# LIB_nif_init, the init function of a static NIF of that name.
+# LIB_nif_init, the init function of a static NIF of that name. GLOBAL
+# names another global name, for a crate that is not a NIF.
 #
 # The crate builds as a staticlib with the std of *-unknown-linux-musl,
 # with the Rust toolchain of its rust-toolchain.toml (else RUST_NIGHTLY).
@@ -554,7 +652,7 @@ rust_nif_prepare() {
 # rust-src). One object keeps one global name, LIB_nif_init
 # (scripts/rust_link.sh): two NIFs of Rust each have their own std.
 build_rust_nif() {
-    name=$1 src=$2 out=$3 lib=$4 cflags=$5
+    name=$1 src=$2 out=$3 lib=$4 cflags=$5 global=${6:-${4}_nif_init}
     bin=$COSMOCC/bin
     # shellcheck disable=SC2046 # the directory and the features
     set -- $(rust_nif_crate "$name")
@@ -611,8 +709,8 @@ build_rust_nif() {
             "$bin/$cpu-unknown-cosmo-cc" -O2 -I"$gen" $cflags \
                 -c "$ROOT/c_src/rust/$c.c" -o "$obj/$c.o"
         done
-        # One object with one global name, LIB_nif_init.
-        sh "$ROOT/scripts/rust_link.sh" "$COSMOCC" "$cpu" "${lib}_nif_init" \
+        # One object with one global name, LIB_nif_init or GLOBAL.
+        sh "$ROOT/scripts/rust_link.sh" "$COSMOCC" "$cpu" "$global" \
             "$obj/$lib.o" "$obj/cosmo_rust.o" "$obj/enif_table.o" "$obj/lib$lib.a"
         case $cpu in x86_64) a=$out/$lib.a ;; *) a=$out/.aarch64/$lib.a ;; esac
         "$bin/$cpu-unknown-cosmo-ar" rcs "$a" "$obj/$lib.o"
@@ -964,16 +1062,55 @@ check_static_nifs() {
 # The inputs of the WebAssembly runtime, as one SHA-256: the pinned
 # versions, the settings that change it, and the files of this repository
 # that the build reads (git ls-files: the versions in the work tree).
+#
+# Of scripts/steps.sh, only the functions of WASM_RUNTIME_FUNCS: the steps
+# hex_nifs and nif_edge, which wasm/erts/build.sh runs, and the functions
+# that they call. So a change of another step does not build the runtime
+# again (about 3 minutes in CI).
+# Caution: a function that these steps start to call must be in this list.
+WASM_RUNTIME_FUNCS="log check_commit wamr_clone step_hex_nifs build_hex_nif
+    hex_nif_recipe fetch_hex step_nif_edge hex_nif_packages edge_hex_nif_packages
+    omit_nif use_exqlite rust_nif_crate step_wasm_runtime wasm_runtime_inputs
+    steps_function"
+
+# steps_function NAME: the text of the function NAME of scripts/steps.sh,
+# on one line or from "NAME() {" to the next line "}".
+steps_function() {
+    awk -v f="$1" '
+        !on && index($0, f "() {") == 1 {
+            print
+            if ($0 !~ /[{][[:space:]]*$/) exit
+            on = 1
+            next
+        }
+        on { print; if ($0 == "}") exit }' "$ROOT/scripts/steps.sh"
+}
+
 wasm_runtime_inputs() {
+    for f in $WASM_RUNTIME_FUNCS; do
+        if [ -z "$(steps_function "$f")" ]; then
+            echo "wasm_runtime_inputs: no function $f in scripts/steps.sh" >&2
+            exit 1
+        fi
+    done
     {
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "EMSDK $EMSDK_VERSION $EMSDK_COMMIT WAMR $WAMR_VERSION $WAMR_COMMIT"
         echo "HEX_NIFS $(edge_hex_nif_packages)$(use_exqlite && echo " exqlite")"
         echo "WASM_CFLAGS ${WASM_CFLAGS:-} EXTRA_LDFLAGS ${EXTRA_LDFLAGS:-} WASM64 ${WASM64:-0}"
-        git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr \
-                scripts/steps.sh |
+        # The version and the SHA-256 of each package of HEX_NIFS.
+        for p in $(edge_hex_nif_packages); do echo "$p $(hex_nif_recipe "$p")"; done
+        if use_exqlite; then echo "exqlite $(hex_nif_recipe exqlite)"; fi
+        for f in $WASM_RUNTIME_FUNCS; do steps_function "$f"; done
+        git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr |
             while read -r f; do echo "$f $(sha256sum "$ROOT/$f" | cut -d' ' -f1)"; done
     } | sha256sum | cut -d' ' -f1
+}
+
+# The SHA-256 of wasm_runtime_inputs, for the cache key of the runtime in
+# CI (the workflows). It needs no build.
+step_wasm_runtime_key() {
+    wasm_runtime_inputs
 }
 
 step_wasm_runtime() {
