@@ -8,7 +8,7 @@ addToLibrary({
   // A thread called exit() (Erlang halt/1): end the process, with the
   // pending timers and I/O of the other threads.
   $jspiExit: (e) => {
-    if (!(e instanceof ExitStatus)) { err(e); e = new ExitStatus(2); }
+    if (!(e instanceof ExitStatus)) { err(e && e.stack ? e.stack : e); e = new ExitStatus(2); }
     Module['onExit']?.(e.status);
     if (ENVIRONMENT_IS_NODE && !Module['beamKeepProcess']) {
       if (process.env.JSPI_STATS) err(`jspi: memory ${wasmMemory.buffer.byteLength >> 20} MB`);

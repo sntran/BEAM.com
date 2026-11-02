@@ -120,7 +120,7 @@ const args = vmArgs(['-noshell', '-pa', job.pa, '-eval', job.eval]);
 // The files and the environment of a VM, and the mark file of the
 // program of the VM, for os:find_executable/1 and open_port/2.
 function prepare(m, env = {}) {
-  Object.assign(m.ENV, { BINDIR: bindir, ROOTDIR: job.root, EMU: 'beam', PROGNAME: 'erl', HOME: '/', PATH: bindir }, env);
+  Object.assign(m.ENV, { BINDIR: bindir, ROOTDIR: job.root, EMU: 'beam', PROGNAME: 'erl', HOME: '/', PATH: bindir }, job.env ?? {}, env);
   m.FS.mkdirTree(path.dirname(job.boot));
   m.FS.writeFile(job.boot, fs.readFileSync(job.boot));
   for (const dir of job.libs) copyTree(m.FS, dir);

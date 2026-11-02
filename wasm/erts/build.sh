@@ -60,6 +60,9 @@ if [ ! -d "$OTP" ]; then
         exit 1
     fi
     git -C "$OTP" apply "$HERE/otp.patch"
+    # A comparison, not for main: BEAM_WASM_MUNMAP=keep (no free) or
+    # poison (fill with 0xA5, no free), from the environment of the VM.
+    python3 -I "$HERE/munmap_mode.py" "$OTP/erts/emulator/sys/common/erl_mmap.c"
 fi
 # The hook of ERTS for NIF libraries in WebAssembly (docs/NIFS.md), also
 # in a clone of an earlier build.
@@ -188,7 +191,7 @@ if [ "${WORKER:-0}" = 1 ]; then
     fi
     # MEMORY_GROWTH_GEOMETRIC_STEP=0: the memory grows as much as malloc
     # asks, not 20% more (a Worker has 128 MB, and the memory never shrinks).
-    LDF="-O2 $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMEMORY_GROWTH_GEOMETRIC_STEP=0 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit,jspiSchedule,jspiTurn,noInitialRun,onRuntimeInitialized,nifModule --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o $NIF_WASM"
+    LDF="-O2 --profiling-funcs $WASM_ARCH_FLAGS -sJSPI -sALLOW_MEMORY_GROWTH -sMEMORY_GROWTH_GEOMETRIC_STEP=0 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=1MB -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web $FILES -sINCOMING_MODULE_JS_API=arguments,preRun,print,printErr,instantiateWasm,onExit,jspiSchedule,jspiTurn,noInitialRun,onRuntimeInitialized,nifModule --js-library $HERE/jspi_lib.js -Wl,--allow-multiple-definition $OUT/jspi_pthread.o $OUT/sp.o $NIF_WASM"
     rm -f "bin/$T/beam.emu" "bin/$T/beam.smp" "bin/$T/beam.wasm"
     make -C erts/emulator -j"$JOBS" TARGET=$T FLAVOR=emu TYPE=opt ARCHCFLAGS="-fno-exceptions ${WASM_CFLAGS:-}" DEXPORT= STATIC_NIFS="$NIFS" EMU_LDFLAGS="$LDF" opt > "$OUT/worker.log" 2>&1
     check_waits "bin/$T/beam.emu"

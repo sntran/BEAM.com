@@ -259,7 +259,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [default, acul0, mea_min]
+        group: [free, keep, poison]
     env:
       OUT: ${{ github.workspace }}/build/beam.com
     steps:
