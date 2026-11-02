@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox: on Linux, `--allow-net` now allows the options `sndbuf`,
+  `recbuf` and `linger` of `inet:setopts/2`, and these options and
+  `nodelay` of `inet:getopts/2` (#157). Before, `inet:getopts/2` left
+  them out, so Postgrex (Ecto) and Mint (Req, Finch) could not connect.
+  beam.com links a patched `pledge()` of Cosmopolitan
+  (`patches/cosmo/pledge-linux.patch`).
 - Faster custom builds (`custom-build.yml`), with three caches:
   - The cache key of the WebAssembly runtime is the SHA-256 of its
     inputs (`scripts/steps.sh wasm_runtime_key`). Only the functions of

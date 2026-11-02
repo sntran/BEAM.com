@@ -35,6 +35,12 @@ what they allow:
   shell script needs its shell too: `--allow-run=sh,./script.sh`.
   `--allow-run` without a list gives execute and read access to all
   files, so it is almost no sandbox (as in Deno).
+- On Linux, `--allow-net` allows the options of a socket that
+  `inet:setopts/2` and `inet:getopts/2` use, for example `sndbuf`,
+  `recbuf`, `nodelay`, `keepalive`, `linger`, `reuseaddr` and
+  `reuseport`, but not each option of the system. `inet:getopts/2`
+  leaves out an option that the sandbox refuses, and `inet:setopts/2`
+  can give `ok` for it.
 - Not supported, because the sandbox cannot enforce them:
   `--allow-net=HOST` (no filter by host), `--allow-env`,
   `--allow-sys`, `--allow-ffi` and the `--deny-*` flags. A build

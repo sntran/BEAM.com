@@ -593,26 +593,27 @@ if [ -d examples ]; then
     net_extra= rw_extra=
     case $os in
         linux)
-            net_extra='write '$dir/sandbox.tmp rw_extra=listen
-            net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@done'
+            net_extra="write $dir/sandbox.tmp sockopts rawopt" rw_extra=listen
+            net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@rawopt: refused@@done'
             rw='read: ok@@read: error eacces@@write: ok@@listen: error eperm@@done'
             runs='run true: ok@@run sh: error@@done'
             env='read: ok@@read: error eacces@@done' ;;
         openbsd)
-            net_extra='write '$dir/sandbox.tmp rw_extra=listen
-            net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@done'
+            net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
+            net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@done'
             rw='read: ok@@read: error e[a-z]*@@write: ok@@listen: ok@@done'
             runs=
             env='read: ok@@read: error e[a-z]*@@done' ;;
         *)
-            net_extra='write '$dir/sandbox.tmp rw_extra=listen
-            net='read: ok@@read: ok@@listen: ok@@write: ok@@done'
+            net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
+            net='read: ok@@read: ok@@listen: ok@@write: ok@@sockopts: ok@@done'
             rw='read: ok@@read: ok@@write: ok@@listen: ok@@done'
             runs='run true: ok@@run sh: ok@@done'
             env='read: ok@@read: ok@@done' ;;
     esac
     # -N: the network, and the files that it needs (/etc/hosts), not
-    # other files.
+    # other files. The options of a TCP socket that inet sets and reads
+    # (issue 157), but on Linux not each option (rawopt).
     check sandbox_net.com "$net" read /etc/hosts read "$dir/beam.com" listen $net_extra
     rm -f "$dir/sandbox.tmp"
     # A new file in a directory of --allow-write.

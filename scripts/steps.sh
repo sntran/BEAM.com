@@ -112,6 +112,8 @@ EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-ad05823719d77c8faee87348ea39513d4e2f99c5}
 COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44}
+# libc/calls/pledge-linux.c of the tag COSMOCC_VERSION (build_pledge).
+COSMO_PLEDGE_SHA256=${COSMO_PLEDGE_SHA256:-b8cc37f3d9047863abea3a42577d84eafa523d4eafaf98e4d3facbea73461a60}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
@@ -1178,6 +1180,27 @@ step_make() {
     done
 }
 
+# The pledge() of Linux of Cosmopolitan, with the options of sockets that
+# inet sets and reads (patches/cosmo/pledge-linux.patch, C47 of
+# docs/UPSTREAM.md), in the object $1. The object defines kPledge and
+# sys_pledge_linux, so the linker does not take pledge-linux.o of
+# libcosmo.a. The flags are those of the build of Cosmopolitan.
+build_pledge() {
+    src=$BUILD/cosmo-pledge-$COSMOCC_VERSION
+    if [ ! -f "$src/.beam_com_patched" ]; then
+        rm -rf "$src"
+        mkdir -p "$src/libc/calls"
+        curl -fsSL -o "$src/libc/calls/pledge-linux.c" \
+            "https://raw.githubusercontent.com/jart/cosmopolitan/$COSMOCC_VERSION/libc/calls/pledge-linux.c"
+        check_sha256 "$src/libc/calls/pledge-linux.c" "$COSMO_PLEDGE_SHA256" \
+            "libc/calls/pledge-linux.c of Cosmopolitan $COSMOCC_VERSION"
+        patch -p1 -d "$src" < "$ROOT/patches/cosmo/pledge-linux.patch"
+        touch "$src/.beam_com_patched"
+    fi
+    "$CC" -std=gnu23 -D_COSMO_SOURCE -Os -ffreestanding -fno-omit-frame-pointer \
+        -c "$src/libc/calls/pledge-linux.c" -o "$1"
+}
+
 step_multicall() {
     log "Linking the multi-call emulator"
     t=$(target)
@@ -1187,6 +1210,8 @@ step_multicall() {
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
     objs="$objs $objdir/beam_com_watch.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
+    build_pledge "$objdir/beam_com_pledge.o"
+    objs="$objs $objdir/beam_com_pledge.o"
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it (neither for driver_tab.c nor for its object).
