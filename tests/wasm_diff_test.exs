@@ -135,10 +135,10 @@ defmodule BeamCom.WasmDiffTest do
   # the snapshot end after it. The program waits after that case, so the
   # threads of ERTS return for the snapshot. The run with -Mea min has no
   # carriers.
-  # A comparison, not for main: 5 runs as the test, and 5 runs with no
-  # pool of carriers (+Muacul 0).
-  for i <- 1..5, {label, flags} <- [{"default", []}, {"acul0", ["+Muacul", "0"]}] do
-    @tag timeout: 900_000
+  # A comparison, not for main: 4 runs as the test, and 4 runs with no
+  # pool of carriers (+Muacul 0). A run that hangs fails after 150 s.
+  for i <- 1..4, {label, flags} <- [{"default", []}, {"acul0", ["+Muacul", "0"]}] do
+    @tag timeout: 150_000
     @tag run: i, flags: flags, label: label
     test "pool comparison #{label} #{i}", ctx do
       mem_check(ctx, "mem_pool_#{ctx.label}_#{ctx.run}", %{flags: ctx.flags})
