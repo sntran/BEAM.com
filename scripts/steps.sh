@@ -72,6 +72,11 @@
 #                    custom build: "mnesia eldap"); their Erlang code only
 #                    (the C code of an application, as the port programs of
 #                    os_mon, is not built)
+#   OTP_OMIT         Default OTP applications to leave out of the zip, with
+#                    spaces (for a custom build: "ssh xmerl"). Only these:
+#                    parsetools asn1 public_key ssl inets ssh xmerl
+#                    runtime_tools tools. An application in the zip that
+#                    needs one of them stops the build.
 #   HEX              1: put Hex in the zip, for mix (a custom build;
 #                    default 0). Only with ELIXIR=1.
 #   REBAR3           1: put rebar3 in the zip, as the tool rebar3 (and for
@@ -129,6 +134,7 @@ REBAR3_VERSION=${REBAR3_VERSION:-3.27.1}
 REBAR3_SHA256=${REBAR3_SHA256:-708407032479514dd68b581a0b09a68b5a781fb6f53dcf4ad81ce4ef6b92940f}
 ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 OTP_APPS=${OTP_APPS:-}
+OTP_OMIT=${OTP_OMIT:-}
 HEX=${HEX:-0}
 REBAR3=${REBAR3:-0}
 BUILD=${BUILD:-$ROOT/build}
@@ -164,6 +170,29 @@ for app in $OTP_APPS; do
         *) BUNDLE_APPS="$BUNDLE_APPS $app" SRC_APPS="$SRC_APPS $app" ;;
     esac
 done
+# The default applications that a custom build can leave out (OTP_OMIT).
+# The others (kernel, stdlib, sasl, compiler and crypto) are for beam.com
+# itself. The build still makes them: only the zip leaves them out.
+OMITTABLE_APPS="parsetools asn1 public_key ssl inets ssh xmerl runtime_tools tools"
+for app in $OTP_OMIT; do
+    case " $OMITTABLE_APPS " in
+        *" $app "*) ;;
+        *) echo "OTP_OMIT: $app cannot be left out (only: $OMITTABLE_APPS)" >&2
+           exit 1 ;;
+    esac
+    case " $OTP_APPS " in
+        *" $app "*) echo "OTP_OMIT: $app is also in OTP_APPS" >&2
+                    exit 1 ;;
+    esac
+done
+apps=
+for app in $BUNDLE_APPS; do
+    case " $OTP_OMIT " in
+        *" $app "*) ;;
+        *) apps="$apps $app" ;;
+    esac
+done
+BUNDLE_APPS=${apps# }
 
 ERL_TOP=$BUILD/otp
 RELEASE=$BUILD/release
@@ -1019,6 +1048,22 @@ step_release() {
     (cd "$RELEASE" && ./Install -minimal "$RELEASE" >/dev/null)
 }
 
+# Stop when an application of the zip needs (in the applications of its
+# .app file) an application of OTP_OMIT.
+check_omitted_apps() {
+    [ -n "$OTP_OMIT" ] || return 0
+    for app in $BUNDLE_APPS; do
+        needs=$(tr -d '\n' < "$ERL_TOP/lib/$app/ebin/$app.app" |
+            sed -n 's/.*{applications, *\[\([^]]*\)\].*/\1/p' | tr -d ' \t' | tr , ' ')
+        for need in $needs; do
+            case " $OTP_OMIT " in
+                *" $need "*) echo "OTP_OMIT: $app needs $need" >&2
+                             exit 1 ;;
+            esac
+        done
+    done
+}
+
 step_bundle() {
     log "Bundling $OUT"
     t=$(target)
@@ -1030,6 +1075,7 @@ step_bundle() {
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
     cp "$ROOT/c_src/cosmo/windows.inetrc" "$ROOT/c_src/cosmo/sandbox.inetrc" "$STAGE/bin/"
+    check_omitted_apps
     for app in $BUNDLE_APPS; do
         src=$ERL_TOP/lib/$app
         vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/ebin/$app.app")

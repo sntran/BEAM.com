@@ -77,11 +77,18 @@ APE files directly, register the APE loader with `binfmt_misc` (see
 ## A custom build
 
 The default `beam.com` has a fixed set of OTP applications, and no Hex
-or rebar3. A custom build can have more:
+or rebar3. A custom build can have more, or less:
 
 - `OTP_APPS="mnesia eldap"`: more OTP applications in the zip (their Erlang
   code; the C code of an application, as the port programs of `os_mon`,
   is not built).
+- `OTP_OMIT="ssh xmerl"`: default OTP applications to leave out of the
+  zip, for a smaller file. Only `parsetools`, `asn1`, `public_key`,
+  `ssl`, `inets`, `ssh`, `xmerl`, `runtime_tools` and `tools`: beam.com
+  itself needs `kernel`, `stdlib`, `sasl`, `compiler` and `crypto`. The
+  build stops when an application of the zip needs an application of
+  `OTP_OMIT` (`ssl` needs `public_key`, which needs `asn1`). Hex, rebar3
+  and the downloads of packages need `inets` and `ssl`.
 - `HEX=1`: Hex in the zip (the newest, from `mix local.hex`). The tools
   of Elixir have it in their code path, so `mix.com deps.get` needs no
   `mix local.hex`. Only with `ELIXIR=1`.
@@ -139,7 +146,11 @@ when the build did not run. The file stays in the prerelease
   [`scripts/beam-fifo.py`](../scripts/beam-fifo.py) saves them in
   the holder, with the secrets of the environment (see its help).
 - The FIFO and the workflow accept only the values of the issue form
-  ([`scripts/custom_build.py`](../scripts/custom_build.py)).
+  ([`scripts/custom_build.py`](../scripts/custom_build.py)). The form
+  has a box for each default OTP application that a build can leave out,
+  checked, and a box for each known OTP application to add. The workflow
+  refuses a request that leaves out an application that another one
+  needs, before the build, and the email gives the reason.
 - One build runs at a time, in the sequence of the requests. At most 3
   requests wait, and at most 10 new builds are made each day (UTC).
 - Two requests with the same choices on the same commit get the same

@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- A custom build can leave out default OTP applications, for a smaller
+  file: `OTP_OMIT="ssh xmerl"`, or the boxes of the issue form and of the
+  form of mkfifo.com. The form of mkfifo.com has a checked box for each
+  default application that a build can leave out, and a box for each
+  known OTP application to add. The workflow refuses a request that
+  leaves out an application that another one needs (`ssl` needs
+  `public_key`), before the build. The NIFs of Rust have their own group
+  in the form. The default OTP applications of the texts now name
+  `tools`, which was in the file but not in the list.
+
 - A custom build can link the NIF of `rusty_csv` 0.4.6, the first NIF
   of Rust (Rustler) in beam.com: `EXTRA_NIFS=rusty_csv`, or the option
   in the issue form and the form of mkfifo.com. `build_rust_nif` in

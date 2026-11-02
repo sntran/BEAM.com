@@ -20,6 +20,12 @@ on:
         description: More OTP applications, with spaces or commas
         type: string
         default: ""
+      keep:
+        description: >-
+          The word keep, and the default OTP applications to keep (the others
+          that a build can leave out go out). Empty keeps each one.
+        type: string
+        default: ""
       hex:
         description: Hex (0 or 1)
         type: string
@@ -105,6 +111,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BODY: ${{ github.event.issue.body }}
           INPUT_APPS: ${{ inputs.apps }}
+          INPUT_KEEP: ${{ inputs.keep }}
           INPUT_HEX: ${{ inputs.hex }}
           INPUT_REBAR3: ${{ inputs.rebar3 }}
           INPUT_ELIXIR: ${{ inputs.elixir }}
@@ -233,6 +240,11 @@ jobs:
           if [ "$HEX" = 1 ]; then "$f" mix hex; fi
           for app in $OTP_APPS; do
             "$f" -noshell -eval "ok = application:load($app), halt()."
+          done
+          for app in $OTP_OMIT; do
+            if "$f" -noshell -eval "ok = application:load($app), halt()." 2> /dev/null; then
+              echo "The file has $app, which the request leaves out" >&2; exit 1
+            fi
           done
 
       # The FIFO beam.com: the file goes to the prerelease custom-builds,

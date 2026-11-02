@@ -25,7 +25,11 @@ input, select { box-sizing: border-box; width: 100%; padding: .5rem; font: inher
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0 1rem; }
 button { margin-top: 1rem; padding: .625rem 1.25rem; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: .375rem; cursor: pointer; }
 .trap { position: absolute; left: -10000px; }
+.sub { margin: 1rem 0 .25rem; font-weight: 600; }
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0 1rem; }
+.tag { display: inline-block; margin-left: .25rem; padding: 0 .4rem; font-size: .75rem; line-height: 1.4; color: var(--accent); border: 1px solid var(--accent); border-radius: 1rem; }
 code { font-size: .9em; }
+.nw { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -37,10 +41,36 @@ code { font-size: .9em; }
 <form method="post" action="/beam.com">
 <fieldset>
 <legend>Erlang/OTP</legend>
-<p class="muted">The default beam.com has kernel, stdlib, sasl, compiler, parsetools, crypto, asn1, public_key, ssl, inets, ssh, xmerl and runtime_tools.</p>
-<label for="apps">More OTP applications, with spaces</label>
-<input id="apps" name="apps" placeholder="mnesia os_mon eunit" maxlength="1000" pattern="([a-z][a-z0-9_]{0,63}( [a-z][a-z0-9_]{0,63}){0,39})?" autocomplete="off">
-<p class="muted">For example: mnesia, os_mon, eldap, ftp, tftp, diameter, eunit, common_test, tools, syntax_tools, edoc. Only their Erlang code goes in.</p>
+<p class="muted">beam.com always has kernel, stdlib, sasl, compiler and crypto.</p>
+<input type="hidden" name="otp" value="keep">
+<p class="sub">Default applications. Clear a box to leave one out, for a smaller file.</p>
+<div class="checks">
+<label class="check"><input type="checkbox" name="k_parsetools" value="parsetools" checked> <span>parsetools <span class="tag">default</span> <span class="muted">leex and yecc</span></span></label>
+<label class="check"><input type="checkbox" name="k_asn1" value="asn1" checked> <span>asn1 <span class="tag">default</span> <span class="muted">ASN.1, for public_key</span></span></label>
+<label class="check"><input type="checkbox" name="k_public_key" value="public_key" checked> <span>public_key <span class="tag">default</span> <span class="muted">certificates and keys; needs asn1</span></span></label>
+<label class="check"><input type="checkbox" name="k_ssl" value="ssl" checked> <span>ssl <span class="tag">default</span> <span class="muted">TLS; needs public_key</span></span></label>
+<label class="check"><input type="checkbox" name="k_inets" value="inets" checked> <span>inets <span class="tag">default</span> <span class="muted">httpc, for downloads</span></span></label>
+<label class="check"><input type="checkbox" name="k_ssh" value="ssh" checked> <span>ssh <span class="tag">default</span> <span class="muted">SSH client and daemon; needs public_key</span></span></label>
+<label class="check"><input type="checkbox" name="k_xmerl" value="xmerl" checked> <span>xmerl <span class="tag">default</span> <span class="muted">XML</span></span></label>
+<label class="check"><input type="checkbox" name="k_runtime_tools" value="runtime_tools" checked> <span>runtime_tools <span class="tag">default</span> <span class="muted">in the apps of Phoenix</span></span></label>
+<label class="check"><input type="checkbox" name="k_tools" value="tools" checked> <span>tools <span class="tag">default</span> <span class="muted">cover, for <code class="nw">mix test --cover</code></span></span></label>
+</div>
+<p class="sub">More applications</p>
+<div class="checks">
+<label class="check"><input type="checkbox" name="a_mnesia" value="mnesia"> <span>mnesia <span class="muted">database</span></span></label>
+<label class="check"><input type="checkbox" name="a_os_mon" value="os_mon"> <span>os_mon <span class="muted">system monitor</span></span></label>
+<label class="check"><input type="checkbox" name="a_eldap" value="eldap"> <span>eldap <span class="muted">LDAP client; needs asn1</span></span></label>
+<label class="check"><input type="checkbox" name="a_ftp" value="ftp"> <span>ftp <span class="muted">FTP client</span></span></label>
+<label class="check"><input type="checkbox" name="a_tftp" value="tftp"> <span>tftp <span class="muted">TFTP</span></span></label>
+<label class="check"><input type="checkbox" name="a_diameter" value="diameter"> <span>diameter <span class="muted">Diameter protocol</span></span></label>
+<label class="check"><input type="checkbox" name="a_eunit" value="eunit"> <span>eunit <span class="muted">unit tests</span></span></label>
+<label class="check"><input type="checkbox" name="a_common_test" value="common_test"> <span>common_test <span class="muted">test framework</span></span></label>
+<label class="check"><input type="checkbox" name="a_syntax_tools" value="syntax_tools"> <span>syntax_tools <span class="muted">for edoc</span></span></label>
+<label class="check"><input type="checkbox" name="a_edoc" value="edoc"> <span>edoc <span class="muted">documentation; adds syntax_tools</span></span></label>
+</div>
+<label for="apps">Other OTP applications, with spaces</label>
+<input id="apps" name="apps" placeholder="snmp megaco" maxlength="1000" pattern="([a-z][a-z0-9_]{0,63}( [a-z][a-z0-9_]{0,63}){0,39})?" autocomplete="off">
+<p class="muted">Only the Erlang code of an application goes in: not its C code (as the port programs of os_mon). Hex, rebar3 and the downloads of packages need inets and ssl. A request that leaves out an application that another one needs gets an email with the reason, and no build.</p>
 <div class="row">
 <div><label for="jit">Emulator</label>
 <select id="jit" name="jit"><option value="1">JIT (beam.com)</option><option value="0">Interpreter (beam-emu.com)</option></select></div>
@@ -61,11 +91,13 @@ code { font-size: .9em; }
 <div><label for="rebar3">rebar3</label>
 <select id="rebar3" name="rebar3"><option value="0">No</option><option value="1">Yes</option></select></div>
 </div>
-<p>More NIFs of hex.pm packages (need Elixir)</p>
-<label class="check"><input type="checkbox" name="nif1" value="picosat_elixir"> picosat_elixir (for Ash)</label>
-<label class="check"><input type="checkbox" name="nif2" value="vix"> vix (libvips, for the image package; about 13 MB more)</label>
-<label class="check"><input type="checkbox" name="nif3" value="rusty_csv"> rusty_csv (CSV, a NIF of Rust; about 1.3 MB more)</label>
-<p class="muted">The default beam.com has the NIFs of exqlite, bcrypt_elixir and argon2_elixir.</p>
+<p class="sub">More NIFs of hex.pm packages (need Elixir)</p>
+<p class="muted">The default beam.com has the NIFs of exqlite, bcrypt_elixir and argon2_elixir. A NIF that you do not choose adds nothing to the file.</p>
+<label class="check"><input type="checkbox" name="nif1" value="picosat_elixir"> <span>picosat_elixir <span class="muted">for Ash</span></span></label>
+<label class="check"><input type="checkbox" name="nif2" value="vix"> <span>vix <span class="muted">libvips, for the image package; about 13 MB more</span></span></label>
+<p class="sub">NIFs of Rust (Rustler)</p>
+<p class="muted">Without one of these, the file has no Rust code.</p>
+<label class="check"><input type="checkbox" name="nif3" value="rusty_csv"> <span>rusty_csv <span class="muted">CSV; about 1.3 MB more</span></span></label>
 </fieldset>
 
 <fieldset>
