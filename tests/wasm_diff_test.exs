@@ -168,10 +168,13 @@ defmodule BeamCom.WasmDiffTest do
     {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
     {args, job} = Map.pop(job, :args, "[]")
     job = Map.put(job, :eval, "mem_check:main(#{args}), halt().")
+    # The crash dump of the VM, when it stops with one.
+    dump = Path.join([ctx.top, "wasm-node", name, "erl_crash.dump"])
+    job = Map.put(job, :out, %{"/work/erl_crash.dump" => dump})
     {out, status} = wasm(%{ctx | ebin: ebin}, name, "node", job)
     # The stderr of the VM (wasm/4 writes it to a file), for the messages.
     err = File.read!(Path.join([ctx.top, "wasm-node", name, "stderr"]))
-    out = out <> "stderr:\n" <> String.slice(err, -4000, 4000)
+    out = out <> "stderr:\n" <> String.slice(err, -4000, 4000) <> crash_summary(dump)
     assert status == 0, out
 
     for c <- @mem_cases do
@@ -185,6 +188,26 @@ defmodule BeamCom.WasmDiffTest do
 
     assert out =~ ~r/^mem_check: keeper ok$/m
     out
+  end
+
+  # The slogan and the current process of a crash dump, for the message
+  # of a failed test.
+  defp crash_summary(dump) do
+    case File.read(dump) do
+      {:ok, text} ->
+        lines = String.split(text, "\n")
+        head = Enum.take(lines, 12)
+
+        stack =
+          lines
+          |> Enum.drop_while(&(not String.starts_with?(&1, "Current Process")))
+          |> Enum.take(40)
+
+        Enum.join(["crash dump:" | head ++ ["..." | stack]], "\n")
+
+      {:error, _} ->
+        ""
+    end
   end
 
   defp nif_check(ctx, name, compiled, job \\ %{}) do
