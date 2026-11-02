@@ -224,7 +224,20 @@ that can be signed. The file is the APE file with the ELF or Mach-O
 header of the target at its start (the shell script of the APE file
 has these headers). The size and the zip do not change, and the file
 still runs its release from `/zip`. The builder gives the same bytes as
-`assimilate` (tested with the fat `beam.com`).
+`assimilate` (tested with the fat `beam.com`), with one change for
+x86_64 ELF files (`x86_64-linux` and `x86_64-freebsd`):
+
+- In the APE file, the first `PT_LOAD` segment (the code) starts at the
+  file offset 0x10000, after the shell script.
+- Rosetta of Apple (for example in a Linux container of `container --arch
+  amd64` on Apple Silicon) refuses such a file: `first load segment not
+  at file offset 0`.
+- So the builder starts that segment at the offset 0, and at an address
+  that is lower by 0x10000. The head of the file then maps below the
+  code. The code, its addresses and the other segments do not change.
+
+A file of `--assimilate` does not have this change. Under Rosetta, use a
+file of `--target x86_64-linux`.
 
 The file runs only on its target. Apple Silicon has no native form:
 there, APE files run with the APE loader. On Windows, the APE file is

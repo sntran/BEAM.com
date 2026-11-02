@@ -5,6 +5,10 @@ notes of its release.
 
 ## Unreleased
 
+- An x86_64 ELF file of `--target` (`x86_64-linux`, `x86_64-freebsd`)
+  has its first `PT_LOAD` segment at the file offset 0. Rosetta of Apple,
+  for example in a Linux container of `container --arch amd64`, refused
+  the file before: `first load segment not at file offset 0` (#149).
 - A custom build can link the NIF of `ex_pdfium` 0.6.0 (PDF documents
   with PDFium, a NIF of Rust): `EXTRA_NIFS=ex_pdfium`, or the option in
   the issue form and the form of mkfifo.com.

@@ -1540,6 +1540,54 @@ defmodule BeamComBuildTest do
                )
     end
 
+    # Rosetta needs the first PT_LOAD segment at the file offset 0 (#149).
+    test "x86_64: the first PT_LOAD starts at the offset 0" do
+      phdrs = [phdr(6, 64, 0x400040, 112, 112), phdr(1, 0x10000, 0x400000, 0x100, 0x200)]
+      want = [phdr(6, 64, 0x400040, 112, 112), phdr(1, 0, 0x3F0000, 0x10100, 0x10200)]
+
+      assert loads(0x3E, 0, want) ==
+               :beam_com_build.native(~c"x86_64-unknown-linux-gnu", loads(0x3E, 0, phdrs))
+    end
+
+    test "x86_64: only the first PT_LOAD changes" do
+      phdrs = [phdr(1, 0x10000, 0x400000, 0x100, 0x100), phdr(1, 0x20000, 0x800000, 1, 1)]
+      want = [phdr(1, 0, 0x3F0000, 0x10100, 0x10100), phdr(1, 0x20000, 0x800000, 1, 1)]
+
+      assert loads(0x3E, 9, want) ==
+               :beam_com_build.native(~c"x86_64-unknown-freebsd", loads(0x3E, 9, phdrs))
+    end
+
+    test "x86_64: a first PT_LOAD at the offset 0 does not change" do
+      phdrs = [phdr(1, 0, 0x400000, 0x100, 0x100)]
+
+      assert loads(0x3E, 0, phdrs) ==
+               :beam_com_build.native(~c"x86_64-unknown-linux-gnu", loads(0x3E, 0, phdrs))
+    end
+
+    test "x86_64: an address below the offset does not change" do
+      phdrs = [phdr(1, 0x10000, 0x8000, 0x100, 0x100)]
+
+      assert loads(0x3E, 0, phdrs) ==
+               :beam_com_build.native(~c"x86_64-unknown-linux-gnu", loads(0x3E, 0, phdrs))
+    end
+
+    test "x86_64: no PT_LOAD, or program headers past the end" do
+      phdrs = [phdr(6, 64, 0x400040, 56, 56)]
+
+      assert loads(0x3E, 0, phdrs) ==
+               :beam_com_build.native(~c"x86_64-unknown-linux-gnu", loads(0x3E, 0, phdrs))
+
+      short = :binary.part(loads(0x3E, 0, phdrs), 0, 100)
+      assert short == :beam_com_build.native(~c"x86_64-unknown-linux-gnu", short)
+    end
+
+    test "aarch64: the first PT_LOAD does not change" do
+      phdrs = [phdr(1, 0xA54000, 0x800000000, 0x100, 0x100)]
+
+      assert loads(0xB7, 0, phdrs) ==
+               :beam_com_build.native(~c"aarch64-unknown-linux-gnu", loads(0xB7, 0, phdrs))
+    end
+
     test "a native base: an error without --target, or for another CPU: APE, no target" do
       assert :ok == :beam_com_build.check_base(ape(), :none)
     end
@@ -2050,6 +2098,21 @@ defmodule BeamComBuildTest do
     <<127, "ELF", 2, 1, 1, abi, 0::64, 2::little-16, machine::little-16, 1::little-32,
       0x401000::little-64, 0::64, 64::little-64, 0::32, 64::little-16, 56::little-16,
       1::little-16, 0::48>>
+  end
+
+  # An ELF file with these program headers right after the ELF header
+  # (e_phoff 64, e_phnum the count).
+  defp loads(machine, abi, phdrs) do
+    <<head::binary-size(32), _::64, mid::binary-size(16), _::16, rest::binary>> =
+      elf(machine, abi)
+
+    <<head::binary, 64::little-64, mid::binary, length(phdrs)::little-16, rest::binary,
+      :erlang.iolist_to_binary(phdrs)::binary, tail()::binary>>
+  end
+
+  defp phdr(type, offset, vaddr, filesz, memsz) do
+    <<type::little-32, 5::little-32, offset::little-64, vaddr::little-64, 0x2000::little-64,
+      filesz::little-64, memsz::little-64, 0x4000::little-64>>
   end
 
   defp octal(bin), do: for(<<b <- bin>>, do: :io_lib.format(~c"\\~.8b", [b]))
