@@ -133,6 +133,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <label class="check"><input type="checkbox" name="nif5" value="vix-icc"> <span>ICC transforms <span class="muted">lcms2; under 1 MB more</span></span></label>
 <label class="check"><input type="checkbox" name="nif6" value="vix-gif"> <span>GIF save <span class="muted">cgif and libimagequant; under 1 MB more</span></span></label>
 <label class="check"><input type="checkbox" name="nif7" value="vix-avif"> <span>AVIF read and write <span class="muted">libheif and aom; about 12 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif8" value="vix-svg"> <span>SVG load <span class="muted">resvg, with the fonts of the system for text; about 5.5 MB more</span></span></label>
 </div>
 <p class="sub">NIFs of Rust (Rustler)</p>
 <p class="muted">Without one of these, the file has no Rust code.</p>

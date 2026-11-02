@@ -9,6 +9,8 @@ on:
     paths:
       - scripts/libvips.sh
       - patches/libvips/**
+      - c_src/vips/**
+      - native/vips_resvg/**
       - tests/programs/vix_check/**
       - .github/workflows/vix.yml
   workflow_dispatch:
@@ -25,7 +27,7 @@ env:
   COSMOCC_VERSION: "4.0.2"
   OPENSSL_VERSION: "4.0.3"
   # All the parts of the libvips of vix (VIX_PARTS of scripts/steps.sh).
-  VIX_PARTS: "avif gif icc"
+  VIX_PARTS: "avif gif icc svg"
 
 jobs:
   build:
@@ -56,7 +58,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}-parts-${{ env.VIX_PARTS }}
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**', 'c_src/vips/**') }}-parts-${{ env.VIX_PARTS }}
 
       - name: Register the APE loader
         run: |
@@ -127,6 +129,7 @@ jobs:
           grep -q '^vix_check: avif 160x120$' check.txt
           grep -q '^vix_check: gif 160x120$' check.txt
           grep -q '^vix_check: icc 4 bands, then 3 bands$' check.txt
+          grep -q '^vix_check: svg 160x120 4 bands, svgz 160x120, file 160x120, linked file refused, ' check.txt
           sh ./vix_check.com bench 5 | tee bench.txt
           { echo "### vix: ${{ matrix.name }}"; echo; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
@@ -136,7 +139,7 @@ jobs:
         run: |
           Copy-Item vix_check.com vix_check.exe
           ./vix_check.exe | Tee-Object check.txt
-          foreach ($line in '^vix_check: ok$', '^vix_check: avif 160x120$', '^vix_check: gif 160x120$', '^vix_check: icc 4 bands, then 3 bands$') {
+          foreach ($line in '^vix_check: ok$', '^vix_check: avif 160x120$', '^vix_check: gif 160x120$', '^vix_check: icc 4 bands, then 3 bands$', '^vix_check: svg 160x120 4 bands, svgz 160x120, file 160x120, linked file refused, ') {
             if (-not (Select-String -Path check.txt -Pattern $line -Quiet)) { exit 1 }
           }
           ./vix_check.exe bench 5 | Tee-Object bench.txt

@@ -119,20 +119,34 @@ or rebar3. A custom build can have more, or less:
     those of the precompiled vix. The file is about 13 MB larger (about
     6 MB with gzip).
   - `VIX_PARTS` adds parts to the libvips of `vix`, separated by spaces.
-    In the builder, these are the choices `vix-icc`, `vix-gif` and
-    `vix-avif` under `vix`:
+    In the builder, these are the choices `vix-icc`, `vix-gif`,
+    `vix-avif` and `vix-svg` under `vix`:
 
     | Part | For | Libraries | More size |
     |---|---|---|---|
     | `icc` | ICC transforms | lcms2 | under 1 MB |
     | `gif` | GIF save | cgif, and libimagequant for the palette | under 1 MB |
     | `avif` | AVIF read and write | libheif with aom, `MinSizeRel` as in sharp-libvips | about 12 MB (5 MB with gzip) |
+    | `svg` | SVG and SVGZ load | resvg (Rust, `native/vips_resvg`), not librsvg | about 5.5 MB (2.7 MB with gzip) |
 
     `avif` adds about 12 minutes to the build of libvips. An AVIF encode
     of 1 megapixel takes about 1.7 s on 4 CPUs. `scripts/libvips.sh`
     writes the parts in `build/libvips/parts`, and a build with other
-    parts builds libvips again. There is no SVG load (librsvg) and no
-    text (pango).
+    parts builds libvips again. There is no text operation (pango).
+  - `svg` puts `c_src/vips/resvgload.c` in the place of the loader of
+    librsvg. It has the same names (`svgload`, `svgload_buffer` and
+    `svgload_source`) and the same arguments. resvg draws the text of an
+    SVG with the fonts of the system: the folders of fontconfig on Linux,
+    and the font folders of macOS and Windows. With no fonts, the text
+    is not drawn. `build_rust_nif` builds the crate (it needs rustup).
+    The differences from librsvg:
+    - The loader draws the whole image in memory in one step, not in
+      tiles.
+    - The output has 8 bits for each band. `high_bitdepth` gives a
+      warning.
+    - The SVG gets only the images of `data:` URLs. It never reads a
+      file or the network, so an SVG from a user cannot read the files
+      of the server.
   - The NIF of `vix` is native only: the WebAssembly runtime has no
     threads, and libvips needs them.
   - `rusty_csv` is a NIF of Rust (Rustler). `build_rust_nif` builds the

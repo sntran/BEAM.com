@@ -1,7 +1,7 @@
 #!/bin/sh
 # libvips and the libraries that it needs, as static libraries of cosmocc,
 # for the NIF of vix (EXTRA_NIFS=vix, see build_vix_nif in steps.sh).
-# Usage: [VIX_PARTS="icc gif avif"] scripts/libvips.sh [OUT]
+# Usage: [VIX_PARTS="icc gif avif svg"] scripts/libvips.sh [OUT]
 #   OUT: the directory of the result (default $BUILD/libvips): OUT/x86_64
 #   and OUT/aarch64, each with include/, lib/ and lib/pkgconfig/, and
 #   OUT/parts with the parts of the build.
@@ -10,6 +10,8 @@
 #     icc   ICC transforms (lcms2)
 #     gif   GIF save (cgif, and libimagequant for the palette)
 #     avif  AVIF read and write (libheif with aom; about 12 MB of the file)
+#     svg   SVG load (c_src/vips/resvgload.c). The loader calls resvg
+#           (native/vips_resvg), which build_vix_nif of steps.sh links.
 # Needs: cosmocc ($COSMOCC, default build/cosmocc), meson, ninja, cmake,
 # nasm (the SIMD code of libjpeg-turbo and aom on x86_64), pkg-config,
 # curl, git and python3.
@@ -31,8 +33,8 @@ JOBS=${JOBS:-4}
 # The parts, sorted, each one time.
 for p in ${VIX_PARTS:-}; do
     case $p in
-        icc|gif|avif) ;;
-        *) echo "Unknown part of VIX_PARTS: $p (icc, gif or avif)" >&2; exit 1 ;;
+        icc|gif|avif|svg) ;;
+        *) echo "Unknown part of VIX_PARTS: $p (icc, gif, avif or svg)" >&2; exit 1 ;;
     esac
 done
 PARTS=$(printf '%s\n' ${VIX_PARTS:-} | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//')
@@ -272,6 +274,16 @@ EOF
     # tests or fuzz programs.
     unpack vips-8.18.7
     sed -i "/^subdir('man')$/,/^subdir('fuzz')$/d" meson.build
+    if has svg; then
+        # The loader of resvg in place of the loader of librsvg: the same
+        # names, and foreign.c registers them with no HAVE_RSVG.
+        cp "$ROOT/c_src/vips/resvgload.c" libvips/foreign/
+        sed -i "s/^\( *\)'svgload.c',$/&\n\1'resvgload.c',/" libvips/foreign/meson.build
+        sed -i '/^#ifdef HAVE_RSVG$/{N;s/^#ifdef HAVE_RSVG\n\(.vips_foreign_load_svg_file_get_type\)/#if 1 \/* resvgload.c *\/\n\1/}' \
+            libvips/foreign/foreign.c
+        grep -q "^ *'resvgload.c',$" libvips/foreign/meson.build
+        grep -q '^#if 1 /\* resvgload.c \*/$' libvips/foreign/foreign.c
+    fi
     meson_build -Dauto_features=disabled -Ddeprecated=false -Dexamples=false \
         -Dcplusplus=false -Dmodules=disabled -Dintrospection=disabled \
         -Djpeg=enabled -Dpng=enabled -Dwebp=enabled -Dzlib=enabled -Dhighway=enabled \

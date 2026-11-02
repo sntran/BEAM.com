@@ -63,7 +63,7 @@ NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
 DEFAULT_NIFS = ("exqlite", "bcrypt_elixir", "argon2_elixir")
 # The parts of the libvips of vix (VIX_PARTS of scripts/steps.sh), as
 # words of the NIFs. Each one also selects vix.
-VIX_PARTS = {"vix-icc": "icc", "vix-gif": "gif", "vix-avif": "avif"}
+VIX_PARTS = {"vix-icc": "icc", "vix-gif": "gif", "vix-avif": "avif", "vix-svg": "svg"}
 # The versions of Erlang/OTP and Elixir that a build can use, with the
 # commit of each tag (a tag can move). The patches of patches/otp and
 # patches/elixir apply to each. The workflow custom-build-versions.yml

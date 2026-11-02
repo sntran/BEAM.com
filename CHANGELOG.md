@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- The static libvips of `vix` can have the part `svg`, with `VIX_PARTS`
+  or the choice `vix-svg` of the builder (#153). It loads SVG and SVGZ
+  with resvg 0.48.1, a library of Rust, in place of librsvg, so it needs
+  no cairo or pango. The loader has the names and the arguments of the
+  loader of libvips. Text uses the fonts of the system. The SVG gets
+  only the images of `data:` URLs, and never a file. About 5.5 MB more.
 - The builder: the default NIFs (exqlite, bcrypt_elixir and argon2_elixir)
   are checked boxes with the tag "default", as the default OTP
   applications are. A box that you clear leaves out that NIF, for a
@@ -20,7 +26,7 @@ notes of its release.
   - `gif`: GIF save (cgif 0.5.4 with libimagequant 2.4.1).
   - `avif`: AVIF read and write (libheif 1.23.7 with aom 3.15.3), about
     12 MB more.
-  These are libraries of sharp-libvips. SVG and text are not in it.
+  These are libraries of sharp-libvips. Text (pango) is not in it.
 - A thread that does not set its stack size gets 1 MB, in place of the
   80 KB of Cosmopolitan. The AVIF save of libvips stopped with SIGSEGV in
   such a thread (C46 in `docs/UPSTREAM.md`).

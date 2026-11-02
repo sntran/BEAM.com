@@ -5,11 +5,26 @@ defmodule VixCheck do
   - No argument: each operation once, with a result that the output
     checks, and "vix_check: ok" at the end. The formats: JPEG, PNG and
     WebP, and the parts of VIX_PARTS when the build has them (AVIF, GIF
-    save, ICC transforms; else "not in this build").
+    save, ICC transforms, SVG load; else "not in this build").
   - `bench [RUNS]`: the median time of each operation, in milliseconds,
     on an image of 4000x3000 (12 megapixels). RUNS: default 5.
   """
   alias Vix.Vips.{Image, Operation}
+
+  # An SVG of 160x120: a rectangle and a circle with half alpha.
+  @svg """
+  <svg xmlns="http://www.w3.org/2000/svg" width="160" height="120">
+    <rect x="10" y="10" width="140" height="100" fill="#c03020"/>
+    <circle cx="80" cy="60" r="40" fill="#2040c0" fill-opacity="0.5"/>
+  </svg>
+  """
+
+  # Only text, on no background: its alpha is 0 when no font drew it.
+  @svg_text """
+  <svg xmlns="http://www.w3.org/2000/svg" width="160" height="40">
+    <text x="4" y="30" font-family="sans-serif" font-size="24">vix svg</text>
+  </svg>
+  """
 
   def main(["bench" | rest]) do
     runs =
@@ -78,12 +93,50 @@ defmodule VixCheck do
       "#{Image.bands(cmyk)} bands, then #{Image.bands(srgb)} bands"
     end)
 
+    # SVG load with resvg: the SVG, its SVGZ, an SVG file, an SVG that
+    # links a PNG file (the loader must not read it), and text with the
+    # fonts of the system ("no text" on a system with no fonts).
+    part("svg", fn -> svg(png) end)
+
     {:ok, thumb} = Operation.thumbnail_buffer(jpg, 100)
     IO.puts("vix_check: thumbnail #{Image.width(thumb)}x#{Image.height(thumb)}")
     {:ok, black} = Operation.black(64, 64)
     {:ok, gray} = Operation.linear(black, [1.0], [128.0])
     IO.puts("vix_check: average #{avg(gray)}")
     IO.puts("vix_check: ok")
+  end
+
+  defp svg(png) do
+    base = Path.join(System.tmp_dir!(), "vix_check_#{System.unique_integer([:positive])}")
+    File.write!(base <> ".svg", @svg)
+    File.write!(base <> ".png", png)
+
+    try do
+      {:ok, svg} = Image.new_from_buffer(@svg)
+      {:ok, svgz} = Image.new_from_buffer(:zlib.gzip(@svg))
+      {:ok, file} = Image.new_from_file(base <> ".svg")
+
+      link =
+        ~s(<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30">) <>
+          ~s(<image href="#{base}.png" width="40" height="30"/></svg>)
+
+      {:ok, linked} = Image.new_from_buffer(link)
+      linked = if alpha(linked) > 0, do: "linked file read", else: "linked file refused"
+      {:ok, text} = Image.new_from_buffer(@svg_text)
+      drawn = if alpha(text) > 0, do: "text", else: "no text"
+
+      "#{Image.width(svg)}x#{Image.height(svg)} #{Image.bands(svg)} bands, " <>
+        "svgz #{Image.width(svgz)}x#{Image.height(svgz)}, " <>
+        "file #{Image.width(file)}x#{Image.height(file)}, #{linked}, #{drawn}"
+    after
+      File.rm(base <> ".svg")
+      File.rm(base <> ".png")
+    end
+  end
+
+  defp alpha(img) do
+    {:ok, a} = Operation.extract_band(img, 3)
+    avg(a)
   end
 
   # A part of VIX_PARTS: its line, or "not in this build" when the libvips
