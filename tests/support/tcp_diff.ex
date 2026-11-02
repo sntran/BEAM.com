@@ -20,7 +20,9 @@ defmodule BeamCom.TcpDiff do
     `{:setopts, opts}`, `{:getopts, names}`, `{:shutdown, how}`,
     `:close`, `:peername`: calls on the socket.
   - `{:async_recv, length, timeout}`: a recv in a new process, whose
-    result `:await` gives (or `:none` after 1000 ms).
+    result `:await` gives (or `:none` after 1000 ms). The result is not a
+    message of a step: it comes from that process, at a time that the
+    sync of a step does not control.
   - `:give_away`: `controlling_process/2` to a new process, and the
     messages that it then has. `:give_away_dead` gives the socket to a
     process that stopped, and `:give_back` calls `controlling_process/2`
@@ -343,10 +345,16 @@ defmodule BeamCom.TcpDiff do
     {step, normal(result, w.socket), normal(flush(), w.socket)}
   end
 
-  @doc "The messages in the mailbox of the caller, in order."
+  # The result of an :async_recv.
+  defguardp async?(m) when is_tuple(m) and tuple_size(m) == 2 and elem(m, 0) == :async
+
+  @doc """
+  The messages in the mailbox of the caller, in order. The result of an
+  `:async_recv` stays in the mailbox for `:await`.
+  """
   def flush do
     receive do
-      m -> [m | flush()]
+      m when not async?(m) -> [m | flush()]
     after
       0 -> []
     end
@@ -356,7 +364,10 @@ defmodule BeamCom.TcpDiff do
   def sync(w, count \\ 0)
 
   def sync(%{kind: :native}, count) do
-    wait(fn -> elem(Process.info(self(), :message_queue_len), 1) >= count end)
+    wait(fn ->
+      Enum.count(elem(Process.info(self(), :messages), 1), &(not async?(&1))) >= count
+    end)
+
     Process.sleep(@settle)
   end
 
