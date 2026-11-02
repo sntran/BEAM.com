@@ -7,24 +7,40 @@
 %%
 %%   - force_build/1 (at the start of a tool of Elixir) makes
 %%     rustler_precompiled "build" each crate with Rustler. A precompiled
-%%     NIF is a native library, which beam.com cannot load.
+%%     NIF is a native library, which beam.com cannot load. It sets the
+%%     environment variable RUSTLER_PRECOMPILED_FORCE_BUILD_ALL, not the
+%%     application env force_build_all: use RustlerPrecompiled reads that
+%%     key with Application.compile_env/3, and a release whose sys.config
+%%     does not set it then stops at boot. A value from the variable (the
+%%     default of compile_env/3) is not recorded.
 %%   - Without the package rustler, the module Rustler of beam.com
 %%     ('Elixir.Rustler') gives the module of the NIF an on_load function
 %%     that loads the linked NIF (using/1 and config/2). This function
 %%     calls no module of beam.com: a program or a release of Mix has
 %%     none. For a crate that is not linked, the compilation stops with
-%%     an error.
+%%     an error. With BEAM_COM_UNLINKED_NIFS=stub, the module compiles
+%%     with no on_load function, and each function of the NIF fails at
+%%     its first call (erlang:nif_error/1 of the module).
 %%   - With the package rustler (in the deps of the project), its module
 %%     Rustler comes first in the code path. force_build/1 then sets
 %%     skip_compilation? for each linked crate: Rustler runs no cargo, and
-%%     load_nif/2 finds the static NIF.
+%%     load_nif/2 finds the static NIF. use Rustler reads that env with
+%%     Application.compile_env/3, so the config of a release must set it
+%%     too: config :APP, MODULE, skip_compilation?: true.
 -module(beam_com_rustler).
 
 -export([force_build/1, config/2, using/1]).
 
 -ifdef(TEST).
--export([linked/1, check/3]).
+-export([linked/1, check/3, unlinked/0]).
 -endif.
+
+%% The environment variable of rustler_precompiled that forces the build
+%% of each crate with Rustler.
+-define(FORCE_BUILD_ALL, "RUSTLER_PRECOMPILED_FORCE_BUILD_ALL").
+%% The environment variable of the switch for a crate that is not linked:
+%% "stub", or not set (an error).
+-define(UNLINKED, "BEAM_COM_UNLINKED_NIFS").
 
 %% The packages with a NIF of Rust that beam.com can link: the package,
 %% the module of the NIF and the name of the crate.
@@ -40,7 +56,7 @@ force_build(Nifs) ->
     [{module, M} = code:ensure_loaded(M)
      || M <- ['Elixir.Rustler', ?MODULE, beam_com_make, beam_com]],
     persistent_term:put(?MODULE, Nifs),
-    application:set_env(rustler_precompiled, force_build_all, true, [{persistent, true}]),
+    os:putenv(?FORCE_BUILD_ALL, "true"),
     lists:foreach(
       fun({App, Module, _Crate, _Vsn}) ->
               Old = case application:get_env(App, Module) of
@@ -58,25 +74,30 @@ linked(Nifs) ->
 
 %% The quoted code of "use Rustler, Opts" (Opts: the quoted options).
 %% Each variable has a name with the prefix beam_com_rustler_, because it
-%% is a variable of the body of the module.
+%% is a variable of the body of the module. With the config stub (a crate
+%% that is not linked, and BEAM_COM_UNLINKED_NIFS=stub), the module has no
+%% on_load function.
 using(Opts) ->
     Code = <<"beam_com_rustler_config = :beam_com_rustler.config(__MODULE__, beam_com_rustler_opts)\n"
-             "@on_load :rustler_init\n"
-             "@doc false\n"
-             "def rustler_init do\n"
-             "  :code.purge(__MODULE__)\n"
-             "  :erlang.load_nif(\n"
-             "    unquote(elem(beam_com_rustler_config, 0)),\n"
-             "    unquote(elem(beam_com_rustler_config, 1))\n"
-             "  )\n"
+             "if beam_com_rustler_config != :stub do\n"
+             "  @on_load :rustler_init\n"
+             "  @doc false\n"
+             "  def rustler_init do\n"
+             "    :code.purge(__MODULE__)\n"
+             "    :erlang.load_nif(\n"
+             "      unquote(elem(beam_com_rustler_config, 0)),\n"
+             "      unquote(elem(beam_com_rustler_config, 1))\n"
+             "    )\n"
+             "  end\n"
              "end\n">>,
     {'__block__', _, Body} = 'Elixir.Code':'string_to_quoted!'(Code),
     {'__block__', [], [{'=', [], [{beam_com_rustler_opts, [], nil}, Opts]} | Body]}.
 
 %% At the compilation of the module of the NIF: {Path, LoadData}, the
-%% arguments of load_nif/2 (LoadData quoted), or an error (a RuntimeError
-%% of Elixir) for a crate that is not linked. ERTS finds the static NIF by
-%% the name of the module, and does not open the file Path.
+%% arguments of load_nif/2 (LoadData quoted). For a crate that is not
+%% linked: an error (a RuntimeError of Elixir), or stub with
+%% BEAM_COM_UNLINKED_NIFS=stub (and a warning). ERTS finds the static NIF
+%% by the name of the module, and does not open the file Path.
 config(Module, Opts) when is_list(Opts) ->
     App = proplists:get_value(otp_app, Opts),
     Crate = name(proplists:get_value(crate, Opts, App)),
@@ -92,8 +113,28 @@ config(Module, Opts) when is_list(Opts) ->
                      [atom_to_binary(App), "/priv/native/lib", Crate]),
             {Path, LoadData};
         {error, Message} ->
-            erlang:error('Elixir.RuntimeError':exception(
-                           iolist_to_binary(['Elixir.Kernel':inspect(Module), ": ", Message])))
+            Text = iolist_to_binary(['Elixir.Kernel':inspect(Module), ": ", Message]),
+            case unlinked() of
+                stub ->
+                    io:format(standard_error,
+                              "warning: ~ts. The module compiles with no NIF, and each "
+                              "function of the NIF fails at its first call "
+                              "(" ?UNLINKED "=stub).~n", [Text]),
+                    stub;
+                error ->
+                    erlang:error('Elixir.RuntimeError':exception(
+                                   iolist_to_binary(
+                                     [Text, ". To compile the module with no NIF, so that each "
+                                      "function of the NIF fails at its first call, set "
+                                      ?UNLINKED "=stub"])))
+            end
+    end.
+
+%% The switch for a crate that is not linked: stub or error.
+unlinked() ->
+    case os:getenv(?UNLINKED) of
+        "stub" -> stub;
+        _ -> error
     end.
 
 %% ok, or {error, Message}. Version: the version of the package that

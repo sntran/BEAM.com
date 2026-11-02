@@ -16,6 +16,25 @@ notes of its release.
 - The comment and the README of `examples/phoenix_demo` said that the host
   uses `-Mea min`. The host uses the allocators of ERTS unless
   `BEAM_ERL_FLAGS` has `-Mea`.
+- An x86_64 ELF file of `--target` (`x86_64-linux`, `x86_64-freebsd`)
+  has its first `PT_LOAD` segment at the file offset 0. Rosetta of Apple,
+  for example in a Linux container of `container --arch amd64`, refused
+  the file before: `first load segment not at file offset 0` (#149).
+- Each thread stack on Linux is a plain map with a guard page. Before,
+  Cosmopolitan made thread stacks with `MAP_GROWSDOWN`, and under
+  Rosetta the program then stopped with SIGSEGV at the start (C45 in
+  `docs/UPSTREAM.md`, #149).
+- A Mix release of a project with a NIF of Rust (rusty_csv, ex_pdfium)
+  now boots (issue 147). `beam_com_rustler:force_build/1` set
+  `force_build_all` of rustler_precompiled in the application env, and
+  Elixir recorded it as a value of compile time that the release did not
+  have. It now sets the environment variable
+  `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL`. Compile the package again
+  (`mix deps.compile rusty_csv --force`) after the update.
+- `BEAM_COM_UNLINKED_NIFS=stub` (issue 146): a package with a NIF of Rust
+  that the file does not link compiles with no NIF, and each function of
+  the NIF fails at its first call. Without it, the compilation stops, and
+  the error names the switch.
 
 - A custom build can link the NIF of `ex_pdfium` 0.6.0 (PDF documents
   with PDFium, a NIF of Rust): `EXTRA_NIFS=ex_pdfium`, or the option in

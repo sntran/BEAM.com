@@ -1209,6 +1209,39 @@ the five systems of CI.
 
 **Possible upstream fix.** A canary that cosmocc gives in the same place
 on each system, or a warning from cosmocc for `-fstack-protector*`.
+
+### C45. Thread stacks with `MAP_GROWSDOWN` fail under Rosetta
+
+**Status:** 4.0.2.
+
+**Symptom.** In a Linux container of Apple `container run --arch amd64`
+(Rosetta), an x86_64 ELF file of `--target x86_64-linux` stops with
+SIGSEGV (`SEGV_MAPERR`) at the start. The fault moves with the flags: in
+`aoff_get_free_block` of ERTS, in `__mspace_malloc` with `+Meamin`, and
+in `__get_symbol` with `--strace`. Each address is near the stacks of
+the threads (issue 149).
+
+**Cause.** On Linux, `slackmap()` in `libc/intrin/stack.c` makes the
+stack of each new thread. It selects an address below the other maps,
+puts a guard page there with `MAP_FIXED_NOREPLACE`, and puts the top page
+of the stack above it with `MAP_GROWSDOWN`. The kernel then grows the
+stack down. Under Rosetta, the `mmap()` calls of the guard page give
+`EEXIST` over about 4.4 MB, and the program faults in memory near these
+stacks. Cosmopolitan does not use `slackmap()` under QEMU user mode
+(`IsQemuUser()`), or when a thread stack is larger than the soft
+`RLIMIT_STACK`. With `ulimit -s 64`, the same file runs under Rosetta,
+with the JIT.
+
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com.c` defines
+`IsQemuUser()`, which gives 1. The linker then does not take the one of
+Cosmopolitan, so each thread stack is a plain `mmap()` with a guard page
+(`mprotect()`), on each system. Cosmopolitan uses the same path when
+`cosmo_dlopen()` is linked. Cosmopolitan calls `IsQemuUser()` only there
+and in its check of memory leaks. `tests/run.sh` checks that a start on
+Linux has no `MAP_GROWSDOWN`.
+
+**Possible upstream fix.** A check for Rosetta next to the check for
+QEMU, or an option to turn off `slackmap()`.
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2789,13 +2822,22 @@ optional dependency of these packages.
 when the module `Rustler` is loaded. Without `skip_compilation?`,
 rustler runs `cargo`.
 
-**Workaround in BEAM.com.** `beam_com_rustler:force_build/1` sets
-`force_build_all` of rustler_precompiled, and `skip_compilation?` for
-each linked crate. beam.com has a module `Rustler` with only
-`__using__/1` (`src/beam_com/Elixir.Rustler.erl`): it gives the module
-of the NIF an `on_load` function that loads the static NIF, and stops
-the compilation for a crate that is not linked. The package rustler,
-when a project has it, comes first in the code path.
+**Workaround in BEAM.com.** `beam_com_rustler:force_build/1` sets the
+environment variable `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL`, and
+`skip_compilation?` for each linked crate. beam.com has a module
+`Rustler` with only `__using__/1` (`src/beam_com/Elixir.Rustler.erl`): it
+gives the module of the NIF an `on_load` function that loads the static
+NIF, and stops the compilation for a crate that is not linked (or, with
+`BEAM_COM_UNLINKED_NIFS=stub`, compiles the module with no NIF). The
+package rustler, when a project has it, comes first in the code path.
+
+Caution: `use RustlerPrecompiled` reads `force_build_all` with
+`Application.compile_env/3`. When `force_build/1` set it in the
+application env, Elixir recorded the value, and a release whose
+`sys.config` does not set it stopped at boot (issue 147). A value from the
+environment variable, the default of `compile_env/3`, is not recorded.
+`use Rustler` of the package rustler reads `skip_compilation?` in the
+same way, so a project with that package must also set it in its config.
 
 **Possible upstream fix.** An option of rustler_precompiled (or an env)
 for runtimes that have the NIFs built in, as for E4.
