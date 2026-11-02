@@ -30,15 +30,17 @@ template("cosmo_toolchain") {
   }
 }
 
+# Chromium compiles with -fstack-protector on Linux. On x86_64, GCC then
+# reads the guard at %fs:0x28. Cosmopolitan has its TLS in %fs only on
+# Linux: on macOS and Windows, FT_Init_FreeType stopped with SIGSEGV at
+# this read. On aarch64, GCC reads the global __stack_chk_guard, which
+# Cosmopolitan does not have. So both toolchains turn it off.
 cosmo_toolchain("x64") {
   triple = "x86_64-unknown-cosmo"
   cpu = "x64"
-  extra_flags = ""
+  extra_flags = "-fno-stack-protector"
 }
 
-# Chromium compiles with -fstack-protector on Linux. On aarch64, GCC then
-# reads the global __stack_chk_guard, which Cosmopolitan does not have (on
-# x86_64, the guard is in the TLS, at %fs:0x28).
 cosmo_toolchain("arm64") {
   triple = "aarch64-unknown-cosmo"
   cpu = "arm64"
