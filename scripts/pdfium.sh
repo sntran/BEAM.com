@@ -40,7 +40,7 @@ export PATH="$SRC/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0
 cd "$SRC"
 if [ ! -f .gclient ]; then
     gclient config --unmanaged https://pdfium.googlesource.com/pdfium.git \
-        --custom-var checkout_configuration=minimal
+        --custom-var checkout_configuration=small
     echo "target_os = [ 'linux' ]" >> .gclient
 fi
 if [ "$(git -C pdfium rev-parse HEAD 2>/dev/null)" != "$PDFIUM_COMMIT" ]; then

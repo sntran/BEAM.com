@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium-src
-          key: pdfium-src-7881-${{ matrix.cpu }}-v1
+          key: pdfium-src-7881-${{ matrix.cpu }}-small-v1
 
       - name: Build
         env:
