@@ -153,10 +153,11 @@ defmodule BeamCom.WasmDiffTest do
   end
 
   # The limits of the growth: a binary of 16 MB, or a heap of about 8 MB
-  # of heap_shrink, can leave one block of free memory that the next one
-  # does not fit in (one run in CI grew by 8 MB once). A leak over the 30
-  # runs of heap_shrink is many times larger.
-  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 16 * 1024 * 1024}
+  # of heap_shrink, can leave blocks of free memory that the next one does
+  # not fit in. In CI, heap_shrink grew by 0, 8 or 16 MB in its 30 runs,
+  # and then stayed flat. Without the fix, it grew by about 15 MB in each
+  # run (453 MB).
+  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 32 * 1024 * 1024}
   @mem_cases ~w(renders big_binaries heap_shrink binary_growth parallel)
 
   defp mem_check(ctx, name, job) do
