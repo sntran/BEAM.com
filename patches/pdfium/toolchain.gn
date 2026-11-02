@@ -18,6 +18,9 @@ template("cosmo_toolchain") {
     nm = "${prefix}nm"
     readelf = "${prefix}readelf"
     ld = cxx
+    # gcc_toolchain puts these flags after the flags of Chromium.
+    extra_cflags = invoker.extra_flags
+    extra_cxxflags = invoker.extra_flags
     toolchain_args = {
       current_cpu = invoker.cpu
       current_os = "linux"
@@ -30,9 +33,14 @@ template("cosmo_toolchain") {
 cosmo_toolchain("x64") {
   triple = "x86_64-unknown-cosmo"
   cpu = "x64"
+  extra_flags = ""
 }
 
+# Chromium compiles with -fstack-protector on Linux. On aarch64, GCC then
+# reads the global __stack_chk_guard, which Cosmopolitan does not have (on
+# x86_64, the guard is in the TLS, at %fs:0x28).
 cosmo_toolchain("arm64") {
   triple = "aarch64-unknown-cosmo"
   cpu = "arm64"
+  extra_flags = "-fno-stack-protector"
 }
