@@ -54,6 +54,14 @@ on:
         description: More NIFs (picosat_elixir, vix, rusty_csv), with spaces or commas
         type: string
         default: ""
+      otp_version:
+        description: The version of Erlang/OTP (OTP_VERSIONS of scripts/custom_build.py). Empty for the default.
+        type: string
+        default: ""
+      elixir_version:
+        description: The version of Elixir (ELIXIR_VERSIONS of scripts/custom_build.py). Empty for the default.
+        type: string
+        default: ""
       reply:
         description: The encrypted address of the requester (from the FIFO beam.com of mkfifo.com)
         type: string
@@ -78,8 +86,9 @@ concurrency:
   group: custom-build-${{ github.event.issue.number || format('run-{0}', github.run_id) }}
   cancel-in-progress: true
 
+# The step "Read the choices" sets OTP_VERSION and ELIXIR_VERSION, with
+# their commits.
 env:
-  OTP_VERSION: "29.1.1"
   COSMOCC_VERSION: "4.0.2"
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
@@ -119,6 +128,8 @@ jobs:
           INPUT_SQLITE: ${{ inputs.sqlite }}
           INPUT_WASM: ${{ inputs.wasm }}
           INPUT_NIFS: ${{ inputs.nifs }}
+          INPUT_OTP_VERSION: ${{ inputs.otp_version }}
+          INPUT_ELIXIR_VERSION: ${{ inputs.elixir_version }}
           INPUT_REPLY: ${{ inputs.reply }}
         # The text of the issue and the inputs are input of a user: they
         # only select known values (scripts/custom_build.py).
@@ -127,6 +138,7 @@ jobs:
           python3 -I scripts/custom_build.py "$source" "$GITHUB_SHA"
 
       - name: Check the names of the applications
+        if: env.REFUSED == ''
         run: |
           git clone -q --depth 1 --branch "OTP-$OTP_VERSION" https://github.com/erlang/otp.git build/otp
           # A request of the FIFO gets the name in its answer (the names
@@ -205,6 +217,26 @@ jobs:
         with:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
+
+      # The WebAssembly runtime (about 3 minutes), with the key of build.yml
+      # and the NIFs of the runtime (RUNTIME_KEY of custom_build.py). The
+      # step wasm_runtime keeps it only when the SHA-256 of its inputs is
+      # the same, else it builds it again.
+      - name: Cache the WebAssembly runtime
+        if: env.REUSE != '1' && env.REFUSED == ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/wasm-runtime
+          key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}${{ env.RUNTIME_KEY }}
+
+      # The static libvips of the NIF of vix (about 5 minutes), with the key
+      # of vix.yml.
+      - name: Cache libvips
+        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/libvips
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}
 
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
       # (the version of the test of the recipe), ninja, and nasm (the SIMD
@@ -285,6 +317,8 @@ jobs:
         run: |
           {
             echo "The build is ready: [$OUT_NAME]($URL) (a zip with the file; the download needs a GitHub account, for 90 days)."
+            echo
+            echo "Erlang/OTP $OTP_VERSION. Elixir: $ELIXIR (version $ELIXIR_VERSION)."
             echo
             echo "OTP applications added: ${OTP_APPS:-none}. Hex: $HEX. rebar3: $REBAR3. More NIFs: ${EXTRA_NIFS:-none}. Elixir: $ELIXIR. JIT: $JIT. SQLite: $SQLITE. WebAssembly: $WASM."
             echo

@@ -5,6 +5,25 @@ notes of its release.
 
 ## Unreleased
 
+- The custom builds of mkfifo.com/beam.com and of the issue form:
+  - A request can choose the version of Erlang/OTP (29.1.1, the
+    default, 29.1.2 or 29.0.6) and of Elixir (1.20.4, the default, or
+    1.20.5). The workflow `custom-build-versions.yml` builds and tests
+    each pair. The `NOTICE` of a build names its versions.
+  - The form of mkfifo.com hides the parts that need Elixir when
+    Elixir is "No", and the build ignores them. A choice that the build
+    refuses shows a warning, and the button is off. Rules of CSS do this,
+    because the page has no script.
+  - A request with the same choices gets the file of an earlier build
+    also after a commit that does not change the source of the build.
+    Before, the key of a file had the commit, so each commit on `main`
+    made a new build.
+  - A new build takes the WebAssembly runtime and the libvips of `vix`
+    from the cache of GitHub Actions. This saves up to 8 of about 16
+    minutes.
+- `NOTICE` named OpenSSL 4.0.2, but the build uses 4.0.3. The `NOTICE`
+  of the file now names the OpenSSL version of the build.
+
 - Fixes of the custom builds of mkfifo.com/beam.com:
   - The step "Test" of the workflow now has the `CC` and `AR` of the
     build. Before, `make test` saw other settings, built again from the
