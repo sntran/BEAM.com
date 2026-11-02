@@ -155,6 +155,12 @@ def dispatch(env):
     choices["otp_version"] = env.get("INPUT_OTP_VERSION", "").split()
     choices["elixir_version"] = env.get("INPUT_ELIXIR_VERSION", "").split()
     choices["reply"] = reply
+    # Without Elixir, the form of mkfifo.com hides Hex and the NIFs (a rule
+    # of CSS), but their fields still send their values. So the build
+    # ignores them. An issue shows each choice, and settings() refuses.
+    if not choices["elixir"]:
+        choices["hex"] = False
+        choices["nifs"] = []
     return choices
 
 

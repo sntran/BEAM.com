@@ -160,8 +160,13 @@ when the build did not run. The file stays in the prerelease
   ([`scripts/custom_build.py`](../scripts/custom_build.py)). The form
   has a box for each default OTP application that a build can leave out,
   checked, a box for each known OTP application to add, and a list of
-  the versions of Erlang/OTP and of Elixir. Without Elixir, the build
-  ignores the version of Elixir. The workflow
+  the versions of Erlang/OTP and of Elixir.
+- The page has no script (the CSP of the FIFO lets in only inline
+  styles). Rules of CSS with `:has()` do the work of a script. Without
+  Elixir, the form hides the Elixir version, Hex and the NIFs, and the
+  build ignores them. A choice that the build refuses, as `ssl` without
+  `public_key`, shows a warning and turns off the button. The workflow
+  checks each rule again, because a request can come without the page. The workflow
   refuses a request that leaves out an application that another one
   needs, before the build, and the email gives the reason.
 - One build runs at a time, in the sequence of the requests. At most 3

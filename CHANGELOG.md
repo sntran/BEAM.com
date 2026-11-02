@@ -10,6 +10,10 @@ notes of its release.
     default, 29.1.2 or 29.0.6) and of Elixir (1.20.4, the default, or
     1.20.5). The workflow `custom-build-versions.yml` builds and tests
     each pair. The `NOTICE` of a build names its versions.
+  - The form of mkfifo.com hides the parts that need Elixir when
+    Elixir is "No", and the build ignores them. A choice that the build
+    refuses shows a warning, and the button is off. Rules of CSS do this,
+    because the page has no script.
   - A request with the same choices gets the file of an earlier build
     also after a commit that does not change the source of the build.
     Before, the key of a file had the commit, so each commit on `main`
