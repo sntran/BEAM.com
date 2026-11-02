@@ -1209,6 +1209,39 @@ the five systems of CI.
 
 **Possible upstream fix.** A canary that cosmocc gives in the same place
 on each system, or a warning from cosmocc for `-fstack-protector*`.
+
+### C45. Thread stacks with `MAP_GROWSDOWN` fail under Rosetta
+
+**Status:** 4.0.2.
+
+**Symptom.** In a Linux container of Apple `container run --arch amd64`
+(Rosetta), an x86_64 ELF file of `--target x86_64-linux` stops with
+SIGSEGV (`SEGV_MAPERR`) at the start. The fault moves with the flags: in
+`aoff_get_free_block` of ERTS, in `__mspace_malloc` with `+Meamin`, and
+in `__get_symbol` with `--strace`. Each address is near the stacks of
+the threads (issue 149).
+
+**Cause.** On Linux, `slackmap()` in `libc/intrin/stack.c` makes the
+stack of each new thread. It selects an address below the other maps,
+puts a guard page there with `MAP_FIXED_NOREPLACE`, and puts the top page
+of the stack above it with `MAP_GROWSDOWN`. The kernel then grows the
+stack down. Under Rosetta, the `mmap()` calls of the guard page give
+`EEXIST` over about 4.4 MB, and the program faults in memory near these
+stacks. Cosmopolitan does not use `slackmap()` under QEMU user mode
+(`IsQemuUser()`), or when a thread stack is larger than the soft
+`RLIMIT_STACK`. With `ulimit -s 64`, the same file runs under Rosetta,
+with the JIT.
+
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com.c` defines
+`IsQemuUser()`, which gives 1. The linker then does not take the one of
+Cosmopolitan, so each thread stack is a plain `mmap()` with a guard page
+(`mprotect()`), on each system. Cosmopolitan uses the same path when
+`cosmo_dlopen()` is linked. Cosmopolitan calls `IsQemuUser()` only there
+and in its check of memory leaks. `tests/run.sh` checks that a start on
+Linux has no `MAP_GROWSDOWN`.
+
+**Possible upstream fix.** A check for Rosetta next to the check for
+QEMU, or an option to turn off `slackmap()`.
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

@@ -473,7 +473,7 @@ native(Target, Bin) ->
             %% A native file of this CPU (see check_base/2): only the OS
             %% ABI can be different.
             <<Ident:7/binary, OsAbi, Rest/binary>> = Bin,
-            <<Ident/binary, (native_abi(Abi, OsAbi)), Rest/binary>>;
+            load_at_zero(<<Ident/binary, (native_abi(Abi, OsAbi)), Rest/binary>>);
         {{macho, Cpu}, {macho, Cpu}} ->
             Bin;
         _ ->
@@ -481,8 +481,42 @@ native(Target, Bin) ->
                        {elf, Machine, Abi} -> elf_header(Bin, Machine, Abi);
                        {macho, Cpu} -> macho_header(Bin, Cpu)
                    end,
-            <<Head/binary, (binary:part(Bin, byte_size(Head), byte_size(Bin) - byte_size(Head)))/binary>>
+            load_at_zero(<<Head/binary,
+                           (binary:part(Bin, byte_size(Head), byte_size(Bin) - byte_size(Head)))/binary>>)
     end.
+
+%% Rosetta of Apple (x86_64 Linux on Apple Silicon) refuses an ELF file
+%% whose first PT_LOAD segment does not start at the file offset 0. In the
+%% APE file, the code of x86_64 starts after the shell script, at 0x10000.
+%% The new segment starts at the offset 0 and at an address that is lower
+%% by the same amount, so the head of the file maps below the code. The
+%% other segments, the entry point and p_paddr do not change. An aarch64
+%% file does not change: Rosetta does not run it, and its code starts far
+%% into the file. A file with no such segment does not change either.
+load_at_zero(<<127, "ELF", 2, 1, _:10/binary, _Type:16/little, 16#3e:16/little, _:12/binary,
+               PhOff:64/little, _:14/binary, PhEntSize:16/little, PhNum:16/little,
+               _/binary>> = Bin) when PhEntSize >= 56 ->
+    first_load(Bin, PhOff, PhEntSize, PhNum);
+load_at_zero(Bin) ->
+    Bin.
+
+first_load(Bin, _, _, 0) ->
+    Bin;
+first_load(Bin, Off, Size, N) when Off + 56 =< byte_size(Bin) ->
+    case Bin of
+        <<Before:Off/binary, 1:32/little, Flags:32/little, Offset:64/little, Vaddr:64/little,
+          Paddr:64/little, FileSz:64/little, MemSz:64/little, Align:64/little,
+          After/binary>> when Offset > 0, Vaddr >= Offset ->
+            <<Before/binary, 1:32/little, Flags:32/little, 0:64, (Vaddr - Offset):64/little,
+              Paddr:64/little, (FileSz + Offset):64/little, (MemSz + Offset):64/little,
+              Align:64/little, After/binary>>;
+        <<_:Off/binary, 1:32/little, _/binary>> ->
+            Bin;
+        _ ->
+            first_load(Bin, Off + Size, Size, N - 1)
+    end;
+first_load(Bin, _, _, _) ->
+    Bin.
 
 %% The kernels other than FreeBSD do not look at the OS ABI; assimilate
 %% sets it to System V (0) for them. FreeBSD needs its own (9).
