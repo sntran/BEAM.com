@@ -1,0 +1,38 @@
+# The toolchains of cosmocc for PDFium (scripts/pdfium.sh copies this file
+# to build/toolchain/cosmo/BUILD.gn of the checkout). The model is the musl
+# toolchain of bblanchon/pdfium-binaries: GCC, not clang, and the C++
+# library of the compiler (use_custom_libcxx = false).
+import("//build/toolchain/gcc_toolchain.gni")
+
+declare_args() {
+  # The bin directory of an unpacked cosmocc (an absolute path).
+  cosmocc_bin = ""
+}
+
+template("cosmo_toolchain") {
+  gcc_toolchain(target_name) {
+    prefix = "$cosmocc_bin/${invoker.triple}-"
+    cc = "${prefix}cc"
+    cxx = "${prefix}c++"
+    ar = "${prefix}ar"
+    nm = "${prefix}nm"
+    readelf = "${prefix}readelf"
+    ld = cxx
+    toolchain_args = {
+      current_cpu = invoker.cpu
+      current_os = "linux"
+      is_clang = false
+      use_remoteexec = false
+    }
+  }
+}
+
+cosmo_toolchain("x64") {
+  triple = "x86_64-unknown-cosmo"
+  cpu = "x64"
+}
+
+cosmo_toolchain("arm64") {
+  triple = "aarch64-unknown-cosmo"
+  cpu = "arm64"
+}
