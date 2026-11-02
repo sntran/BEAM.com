@@ -150,10 +150,17 @@ defmodule BeamCom.WasmDiffTest do
     end
   end
 
-  @tag timeout: 900_000
-  test "the memory of the VM stays flat over the cases of mem_check", ctx do
-    out = mem_check(ctx, "mem_check", %{})
-    assert out =~ ~r/^mem_check: erlang_memory \d+$/m
+  # Three runs with the default flags: when the unmap of the start of a
+  # block freed the whole block, the split segments of the cache of
+  # erl_mseg.c broke the memory in about 5 runs of 6 (EM9 in
+  # docs/UPSTREAM.md).
+  for run <- 1..3 do
+    @tag timeout: 900_000
+    @tag run: run
+    test "the memory of the VM stays flat over the cases of mem_check (run #{run})", ctx do
+      out = mem_check(ctx, "mem_check_#{ctx.run}", %{})
+      assert out =~ ~r/^mem_check: erlang_memory \d+$/m
+    end
   end
 
   @tag timeout: 900_000
@@ -183,9 +190,10 @@ defmodule BeamCom.WasmDiffTest do
     {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
     {args, job} = Map.pop(job, :args, "[]")
     job = Map.put(job, :eval, "mem_check:main(#{args}), halt().")
-    # The crash dump of the VM, when it stops with one (the VM runs in /).
+    # The crash dump of the VM, when it stops with one (mem_check sets
+    # ERL_CRASH_DUMP).
     dump = Path.join([ctx.top, "wasm-node", name, "erl_crash.dump"])
-    job = Map.put(job, :out, %{"/erl_crash.dump" => dump})
+    job = Map.put(job, :out, %{"/work/erl_crash.dump" => dump})
     {out, status} = wasm(%{ctx | ebin: ebin}, name, "node", job)
     # The stderr of the VM (wasm/4 writes it to a file), for the messages.
     err = File.read!(Path.join([ctx.top, "wasm-node", name, "stderr"]))

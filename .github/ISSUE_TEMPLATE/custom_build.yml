@@ -65,34 +65,38 @@ body:
         - label: Hex (for mix.com; needs Elixir)
         - label: rebar3 (the tool rebar3.com, and for the rebar3 dependencies of mix.com)
   - type: checkboxes
+    id: nifs_omit
+    attributes:
+      label: Leave out default NIFs
+      description: The default beam.com links the NIFs of these hex.pm packages (with Elixir; exqlite also needs SQLite).
+      options:
+        - label: exqlite (SQLite for Elixir, for ecto_sqlite3)
+        - label: bcrypt_elixir (for phx.gen.auth)
+        - label: argon2_elixir (for phx.gen.auth --hashing-lib argon2)
+  - type: checkboxes
     id: nifs
     attributes:
       label: More NIFs
-      description: NIFs of hex.pm packages, linked into beam.com (needs Elixir). The default beam.com has those of exqlite, bcrypt_elixir and argon2_elixir.
+      description: NIFs of hex.pm packages, linked into beam.com (needs Elixir).
       options:
         - label: picosat_elixir (for Ash)
-        - label: vix (libvips, for the image package; about 13 MB more; not in the WebAssembly runtime)
+        - label: vix (libvips, for the image package; JPEG, PNG, WebP, GIF load and PPM; about 13 MB more; not in the WebAssembly runtime)
+        - label: vix-icc (vix with ICC transforms, lcms2; under 1 MB more than vix)
+        - label: vix-gif (vix with GIF save, cgif and libimagequant; under 1 MB more than vix)
+        - label: vix-avif (vix with AVIF read and write, libheif and aom; about 12 MB more than vix)
+        - label: vix-svg (vix with SVG load, resvg; text with the fonts of the system; about 5.5 MB more than vix)
         - label: rusty_csv (CSV, a NIF of Rust; about 1.3 MB more; not in the WebAssembly runtime)
         - label: ex_pdfium (PDF documents with PDFium, a NIF of Rust; about 19 MB more; not in the WebAssembly runtime)
-  - type: dropdown
-    id: elixir
-    attributes:
-      label: Elixir
-      options:
-        - "Yes"
-        - "No"
-      default: 0
-    validations:
-      required: true
   - type: dropdown
     id: elixir_version
     attributes:
       label: Elixir version
-      description: Only for Elixir "Yes" (ELIXIR_VERSIONS of scripts/custom_build.py).
+      description: None for a file with no Elixir (ELIXIR_VERSIONS of scripts/custom_build.py).
       options:
+        - None (no Elixir)
         - 1.20.4 (default)
         - 1.20.5
-      default: 0
+      default: 1
     validations:
       required: true
   - type: dropdown

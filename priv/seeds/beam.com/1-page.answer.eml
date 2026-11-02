@@ -34,18 +34,25 @@ code { font-size: .9em; }
    use :has() in place of a script: without Elixir, the parts that need
    Elixir go away, and a choice that the build refuses shows a warning
    and turns off the button. The workflow checks each rule again. */
-form:has(#elixir option[value="0"]:checked) .needs-elixir { display: none; }
+form:has(#elixir_version option[value=""]:checked) .needs-elixir { display: none; }
+/* The parts of vix show only with vix. A hidden part still sends its
+   value, and the workflow ignores a part without vix. */
+.vix-parts { margin-left: 1.5rem; }
+/* exqlite needs SQLite. A hidden box still sends its value, and a build
+   without SQLite has no exqlite. */
+form:has(#sqlite option[value="0"]:checked) .needs-sqlite { display: none; }
+form:has([name=nif2]:not(:checked)) .vix-parts { display: none; }
 .no-elixir, .warn { display: none; }
-form:has(#elixir option[value="0"]:checked) .no-elixir { display: block; }
+form:has(#elixir_version option[value=""]:checked) .no-elixir { display: block; }
 .warn { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid #d97706; border-radius: .375rem; color: inherit; background: rgba(217, 119, 6, .12); }
 form:has([name=k_public_key]:not(:checked)):has(:is([name=k_ssl], [name=k_ssh]):checked) .w-public-key,
 form:has([name=k_asn1]:not(:checked)):has(:is([name=k_public_key], [name=a_eldap]):checked) .w-asn1,
 form:has(#rebar3 option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) .w-rebar3,
-form:has(#elixir option[value="1"]:checked):has(#hex option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) .w-hex { display: block; }
+form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) .w-hex { display: block; }
 form:has([name=k_public_key]:not(:checked)):has(:is([name=k_ssl], [name=k_ssh]):checked) button,
 form:has([name=k_asn1]:not(:checked)):has(:is([name=k_public_key], [name=a_eldap]):checked) button,
 form:has(#rebar3 option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) button,
-form:has(#elixir option[value="1"]:checked):has(#hex option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) button { opacity: .45; pointer-events: none; }
+form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) button { opacity: .45; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -102,10 +109,8 @@ form:has(#elixir option[value="1"]:checked):has(#hex option[value="1"]:checked):
 <fieldset>
 <legend>Elixir and tools</legend>
 <div class="row">
-<div><label for="elixir">Elixir</label>
-<select id="elixir" name="elixir"><option value="1">Yes</option><option value="0">No</option></select></div>
-<div class="needs-elixir"><label for="elixir_version">Elixir version</label>
-<select id="elixir_version" name="elixir_version"><option value="1.20.4" selected>1.20.4 (default)</option><option value="1.20.5">1.20.5</option></select></div>
+<div><label for="elixir_version">Elixir</label>
+<select id="elixir_version" name="elixir_version"><option value="">None</option><option value="1.20.4" selected>1.20.4 (default)</option><option value="1.20.5">1.20.5</option></select></div>
 <div class="needs-elixir"><label for="hex">Hex (needs Elixir)</label>
 <select id="hex" name="hex"><option value="0">No</option><option value="1">Yes</option></select></div>
 <div><label for="rebar3">rebar3</label>
@@ -113,10 +118,23 @@ form:has(#elixir option[value="1"]:checked):has(#hex option[value="1"]:checked):
 </div>
 <p class="muted no-elixir">Without Elixir, the file has no Hex and no NIFs of hex.pm packages.</p>
 <div class="needs-elixir">
-<p class="sub">More NIFs of hex.pm packages (need Elixir)</p>
-<p class="muted">The default beam.com has the NIFs of exqlite, bcrypt_elixir and argon2_elixir. A NIF that you do not choose adds nothing to the file.</p>
+<input type="hidden" name="dnifs" value="default">
+<p class="sub">Default NIFs of hex.pm packages. Clear a box to leave one out, for a smaller file.</p>
+<div class="checks">
+<label class="check needs-sqlite"><input type="checkbox" name="dnif1" value="exqlite" checked> <span>exqlite <span class="tag">default</span> <span class="muted">SQLite for Elixir, for ecto_sqlite3; needs SQLite</span></span></label>
+<label class="check"><input type="checkbox" name="dnif2" value="bcrypt_elixir" checked> <span>bcrypt_elixir <span class="tag">default</span> <span class="muted">for phx.gen.auth</span></span></label>
+<label class="check"><input type="checkbox" name="dnif3" value="argon2_elixir" checked> <span>argon2_elixir <span class="tag">default</span> <span class="muted">for phx.gen.auth --hashing-lib argon2</span></span></label>
+</div>
+<p class="sub">More NIFs of hex.pm packages</p>
+<p class="muted">A NIF that you do not choose adds nothing to the file.</p>
 <label class="check"><input type="checkbox" name="nif1" value="picosat_elixir"> <span>picosat_elixir <span class="muted">for Ash</span></span></label>
-<label class="check"><input type="checkbox" name="nif2" value="vix"> <span>vix <span class="muted">libvips, for the image package; about 13 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif2" value="vix"> <span>vix <span class="muted">libvips, for the image package: JPEG, PNG, WebP, GIF load and PPM; about 13 MB more</span></span></label>
+<div class="vix-parts">
+<label class="check"><input type="checkbox" name="nif5" value="vix-icc"> <span>ICC transforms <span class="muted">lcms2; under 1 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif6" value="vix-gif"> <span>GIF save <span class="muted">cgif and libimagequant; under 1 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif7" value="vix-avif"> <span>AVIF read and write <span class="muted">libheif and aom; about 12 MB more</span></span></label>
+<label class="check"><input type="checkbox" name="nif8" value="vix-svg"> <span>SVG load <span class="muted">resvg, with the fonts of the system for text; about 5.5 MB more</span></span></label>
+</div>
 <p class="sub">NIFs of Rust (Rustler)</p>
 <p class="muted">Without one of these, the file has no Rust code.</p>
 <label class="check"><input type="checkbox" name="nif3" value="rusty_csv"> <span>rusty_csv <span class="muted">CSV; about 1.3 MB more</span></span></label>

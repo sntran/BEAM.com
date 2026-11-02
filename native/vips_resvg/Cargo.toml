@@ -1,0 +1,21 @@
+# The SVG loader of libvips for the part svg of vix (VIX_PARTS): resvg
+# draws the SVG, and c_src/vips/resvgload.c gives it to libvips. The
+# step build_vix_nif of scripts/steps.sh builds this crate as a staticlib
+# with one global name, vips_resvg.
+[package]
+name = "vips_resvg"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# SVGZ, text with the fonts of the system, and embedded raster images. No
+# memmap-fonts: fontdb reads each font file into memory.
+resvg = { version = "=0.48.1", default-features = false, features = ["svgz", "text", "system-fonts", "raster-images"] }
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
