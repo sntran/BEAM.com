@@ -26,6 +26,8 @@ DEPOT_TOOLS_COMMIT=bed65db1bb5d1022dab89cf62e7609b12084747b
 
 case $cpu in x64|arm64) ;; *) echo "pdfium.sh: CPU must be x64 or arm64" >&2; exit 1 ;; esac
 mkdir -p "$SRC" "$out"
+# Absolute: the build runs in the checkout.
+out=$(cd "$out" && pwd)
 cosmocc_bin=$(cd "$COSMOCC/bin" && pwd)
 
 if [ ! -d "$SRC/depot_tools/.git" ]; then
@@ -61,6 +63,7 @@ apply() {
 }
 apply build build-cosmopolitan.patch
 apply third_party/abseil-cpp abseil-cosmopolitan.patch
+apply third_party/zlib zlib-cosmopolitan.patch
 mkdir -p build/toolchain/cosmo
 cp "$ROOT/patches/pdfium/toolchain.gn" build/toolchain/cosmo/BUILD.gn
 dir=out/cosmo-$cpu
