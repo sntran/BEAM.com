@@ -132,7 +132,9 @@ defmodule BeamCom.WasmDiffTest do
   # failed, and the memory grew with each run. A process keeps 8 MB of data
   # during all the cases, and it must be the same at the end. The run with
   # a snapshot restores the VM after the first case, so carriers of before
-  # the snapshot end after it. The run with -Mea min has no carriers.
+  # the snapshot end after it. The program waits after that case, so the
+  # threads of ERTS return for the snapshot. The run with -Mea min has no
+  # carriers.
   @tag timeout: 900_000
   test "the memory of the VM stays flat over the cases of mem_check", ctx do
     out = mem_check(ctx, "mem_check", %{})
@@ -141,7 +143,7 @@ defmodule BeamCom.WasmDiffTest do
 
   @tag timeout: 900_000
   test "the memory of the VM stays flat over the cases of mem_check, after a snapshot", ctx do
-    mem_check(ctx, "mem_check_snapshot", %{snapshot: true})
+    mem_check(ctx, "mem_check_snapshot", %{snapshot: true, args: "[pause]"})
   end
 
   @tag timeout: 900_000
@@ -150,9 +152,11 @@ defmodule BeamCom.WasmDiffTest do
     assert out =~ ~r/^mem_check: erlang_memory none$/m
   end
 
-  # The limits of the growth: a binary of 16 MB can leave one block of
-  # free memory that the next one does not fit in.
-  @mem_limits %{"big_binaries" => 24 * 1024 * 1024}
+  # The limits of the growth: a binary of 16 MB, or a heap of about 8 MB
+  # of heap_shrink, can leave one block of free memory that the next one
+  # does not fit in (one run in CI grew by 8 MB once). A leak over the 30
+  # runs of heap_shrink is many times larger.
+  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 16 * 1024 * 1024}
   @mem_cases ~w(renders big_binaries heap_shrink binary_growth parallel)
 
   defp mem_check(ctx, name, job) do
@@ -161,7 +165,8 @@ defmodule BeamCom.WasmDiffTest do
     File.cp!(Path.join(ctx.ebin, "mem_check.beam"), Path.join(ebin, "mem_check.beam"))
     src = Path.join([__DIR__, "..", "src", "wasm_host", "wasm_host.erl"])
     {:ok, _} = :compile.file(String.to_charlist(src), [:report, outdir: String.to_charlist(ebin)])
-    job = Map.put(job, :eval, "mem_check:main([]), halt().")
+    {args, job} = Map.pop(job, :args, "[]")
+    job = Map.put(job, :eval, "mem_check:main(#{args}), halt().")
     {out, status} = wasm(%{ctx | ebin: ebin}, name, "node", job)
     # The stderr of the VM (wasm/4 writes it to a file), for the messages.
     err = File.read!(Path.join([ctx.top, "wasm-node", name, "stderr"]))

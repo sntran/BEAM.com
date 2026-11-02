@@ -15,12 +15,20 @@
 %% A process keeps a binary of 8 MB and a list during all the cases, and
 %% checks them at the end: an unmap must not free memory that is in use.
 %% Only for the runtime of WebAssembly.
+%%
+%% With the argument pause, the program waits 1500 ms after the first
+%% case: the driver takes a snapshot 300 ms after the first line, and the
+%% threads of ERTS return only while the program waits.
 -module(mem_check).
 -export([main/1]).
 
-main(_) ->
+main(Args) ->
     Keeper = keeper(),
     run(renders, fun() -> renders(50) end, fun() -> renders(250) end),
+    case lists:member(pause, Args) of
+        true -> receive after 1500 -> ok end;
+        false -> ok
+    end,
     run(big_binaries, fun() -> repeat(3, fun big_binary/0) end,
         fun() -> repeat(20, fun big_binary/0) end),
     run(heap_shrink, fun() -> repeat(3, fun heap_shrink/0) end,
