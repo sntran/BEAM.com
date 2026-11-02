@@ -23,6 +23,8 @@
 -export([main/1]).
 
 main(Args) ->
+    %% A crash dump goes where the test reads it (as diff_halt does).
+    true = os:putenv("ERL_CRASH_DUMP", "/work/erl_crash.dump"),
     Keeper = keeper(),
     run(renders, fun() -> renders(50) end, fun() -> renders(250) end),
     case lists:member(pause, Args) of
