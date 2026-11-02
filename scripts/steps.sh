@@ -55,7 +55,8 @@
 #   VIX_PARTS        For vix: the parts of libvips to add to its formats,
 #                    separated by spaces (default none): icc (ICC
 #                    transforms), gif (GIF save), avif (AVIF read and
-#                    write; about 12 MB). See scripts/libvips.sh.
+#                    write; about 12 MB), svg (SVG load with resvg; needs
+#                    rustup). See scripts/libvips.sh.
 #   WASM             1: link WebAssembly (WAMR) into beam.com, and put the
 #                    wasm application in the zip (default 1)
 #   WAMR_VERSION     WAMR git tag without "WAMR-" (default 2.4.5)
@@ -488,6 +489,12 @@ build_vix_nif() {
     case " $parts " in *" avif "*) libs="$libs heif aom" ;; esac
     case " $parts " in *" icc "*) libs="$libs lcms2" ;; esac
     case " $parts " in *" gif "*) libs="$libs cgif imagequant" ;; esac
+    # svg: resvg (native/vips_resvg) for c_src/vips/resvgload.c, as
+    # OUT/vips_resvg.a and OUT/.aarch64/vips_resvg.a, with one global name.
+    # A subshell: build_rust_nif sets src, out and bin.
+    case " $parts " in
+        *" svg "*) (build_rust_nif vips_resvg "$ROOT" "$out" vips_resvg "$cflags" vips_resvg) ;;
+    esac
     libs="$libs hwy webpmux webpdemux webp sharpyuv png16 jpeg expat gio-2.0 gmodule-2.0"
     libs="$libs gobject-2.0 glib-2.0 intl ffi z"
     for cpu in x86_64 aarch64; do
@@ -520,6 +527,9 @@ build_vix_nif() {
             for l in $libs; do
                 echo "ADDLIB $p/lib/lib$l.a"
             done
+            case " $parts " in
+                *" svg "*) echo "ADDLIB $(dirname "$a")/vips_resvg.a" ;;
+            esac
             echo SAVE
             echo END
         } | "$bin/$cpu-unknown-cosmo-ar" -M
@@ -545,6 +555,8 @@ rust_nif_crate() {
         # static: pdfium-render links libpdfium.a (rust_nif_env), and
         # loads no library.
         ex_pdfium) echo "native/ex_pdfium static" ;;
+        # Not a NIF: the SVG loader of the part svg of vix (build_vix_nif).
+        vips_resvg) echo "native/vips_resvg" ;;
     esac
 }
 
@@ -577,10 +589,11 @@ rust_nif_prepare() {
     esac
 }
 
-# build_rust_nif NAME SRC OUT LIB CFLAGS: the NIF of Rustler of the
-# package NAME, in SRC (rust_nif_crate), as OUT/LIB.a and
+# build_rust_nif NAME SRC OUT LIB CFLAGS [GLOBAL]: the NIF of Rustler of
+# the package NAME, in SRC (rust_nif_crate), as OUT/LIB.a and
 # OUT/.aarch64/LIB.a. LIB is the name of the crate: Rustler exports
-# LIB_nif_init, the init function of a static NIF of that name.
+# LIB_nif_init, the init function of a static NIF of that name. GLOBAL
+# names another global name, for a crate that is not a NIF.
 #
 # The crate builds as a staticlib with the std of *-unknown-linux-musl,
 # with the Rust toolchain of its rust-toolchain.toml (else RUST_NIGHTLY).
@@ -590,7 +603,7 @@ rust_nif_prepare() {
 # rust-src). One object keeps one global name, LIB_nif_init
 # (scripts/rust_link.sh): two NIFs of Rust each have their own std.
 build_rust_nif() {
-    name=$1 src=$2 out=$3 lib=$4 cflags=$5
+    name=$1 src=$2 out=$3 lib=$4 cflags=$5 global=${6:-${4}_nif_init}
     bin=$COSMOCC/bin
     # shellcheck disable=SC2046 # the directory and the features
     set -- $(rust_nif_crate "$name")
@@ -647,8 +660,8 @@ build_rust_nif() {
             "$bin/$cpu-unknown-cosmo-cc" -O2 -I"$gen" $cflags \
                 -c "$ROOT/c_src/rust/$c.c" -o "$obj/$c.o"
         done
-        # One object with one global name, LIB_nif_init.
-        sh "$ROOT/scripts/rust_link.sh" "$COSMOCC" "$cpu" "${lib}_nif_init" \
+        # One object with one global name, LIB_nif_init or GLOBAL.
+        sh "$ROOT/scripts/rust_link.sh" "$COSMOCC" "$cpu" "$global" \
             "$obj/$lib.o" "$obj/cosmo_rust.o" "$obj/enif_table.o" "$obj/lib$lib.a"
         case $cpu in x86_64) a=$out/$lib.a ;; *) a=$out/.aarch64/$lib.a ;; esac
         "$bin/$cpu-unknown-cosmo-ar" rcs "$a" "$obj/$lib.o"

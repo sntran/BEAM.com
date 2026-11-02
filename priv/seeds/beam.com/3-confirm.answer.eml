@@ -17,7 +17,7 @@ Cache-Control: no-store
 <tr class="needs-elixir"><th>Hex</th><td>$hex</td></tr>
 <tr><th>rebar3</th><td>$rebar3</td></tr>
 <tr class="needs-elixir"><th>Default NIFs that stay</th><td>$dnif1 $dnif2 $dnif3</td></tr>
-<tr class="needs-elixir"><th>More NIFs</th><td>$nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7</td></tr>
+<tr class="needs-elixir"><th>More NIFs</th><td>$nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7 $nif8</td></tr>
 <tr><th>JIT</th><td>$jit</td></tr>
 <tr><th>SQLite</th><td>$sqlite</td></tr>
 <tr><th>WebAssembly</th><td>$wasm</td></tr>
@@ -36,7 +36,7 @@ Cache-Control: no-store
 <input type="hidden" name="wasm" value="$wasm">
 <input type="hidden" name="otp_version" value="$otp_version">
 <input type="hidden" name="elixir_version" value="$elixir_version">
-<input type="hidden" name="nifs" value="$dnifs $dnif1 $dnif2 $dnif3 $nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7">
+<input type="hidden" name="nifs" value="$dnifs $dnif1 $dnif2 $dnif3 $nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7 $nif8">
 <input type="hidden" name="code" value="$code">
 <button>Start the build</button>
 </form>

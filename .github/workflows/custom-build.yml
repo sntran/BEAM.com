@@ -51,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, rusty_csv, ex_pdfium), with spaces or commas. With the word default, the default NIFs to keep (exqlite, bcrypt_elixir, argon2_elixir); without it, all of them
+        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, vix-svg, rusty_csv, ex_pdfium), with spaces or commas. With the word default, the default NIFs to keep (exqlite, bcrypt_elixir, argon2_elixir); without it, all of them
         type: string
         default: ""
       otp_version:
