@@ -448,7 +448,7 @@ build_vix_nif() {
     src=$1 out=$2 cflags=$3
     bin=$COSMOCC/bin
     libvips=${LIBVIPS:-$BUILD/libvips}
-    # The static libvips of scripts/libvips.sh, once (about 5 minutes for
+    # The static libvips of scripts/libvips.sh, once (about 17 minutes for
     # the two CPUs). LIBVIPS names a build that exists.
     if [ -z "${LIBVIPS:-}" ] && [ ! -f "$libvips/aarch64/lib/libvips.a" ]; then
         COSMOCC=$COSMOCC BUILD=$BUILD sh "$ROOT/scripts/libvips.sh" "$libvips"
@@ -480,7 +480,7 @@ build_vix_nif() {
         {
             echo "CREATE $a"
             echo "ADDMOD $obj/vix_nif.o.all"
-            for l in vips hwy webpmux webpdemux webp sharpyuv png16 jpeg expat \
+            for l in vips heif aom lcms2 cgif imagequant hwy webpmux webpdemux webp sharpyuv png16 jpeg expat \
                      gio-2.0 gmodule-2.0 gobject-2.0 glib-2.0 intl ffi z; do
                 echo "ADDLIB $p/lib/lib$l.a"
             done

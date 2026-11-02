@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- The static libvips of `vix` (`EXTRA_NIFS=vix`) has AVIF read and write
+  (libheif 1.23.7 with aom 3.15.3), ICC transforms (lcms2 2.20) and GIF
+  save (cgif 0.5.4 with libimagequant 2.4.1), as the libvips of
+  sharp-libvips (#148). SVG and text are not in it.
+- A thread that does not set its stack size gets 1 MB, in place of the
+  80 KB of Cosmopolitan. The AVIF save of libvips stopped with SIGSEGV in
+  such a thread (C46 in `docs/UPSTREAM.md`).
 - A custom build can link the NIF of `ex_pdfium` 0.6.0 (PDF documents
   with PDFium, a NIF of Rust): `EXTRA_NIFS=ex_pdfium`, or the option in
   the issue form and the form of mkfifo.com.

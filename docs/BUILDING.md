@@ -105,11 +105,19 @@ or rebar3. A custom build can have more, or less:
   Rust). Only with `ELIXIR=1`.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
     builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config;
-    about 5 minutes with 4 CPUs), or `LIBVIPS` names a build that exists. It has
-    the formats JPEG, PNG, WebP, GIF and PPM, and the SIMD code of
-    zlib-ng, libjpeg-turbo, libwebp and Highway: the times of
-    `tests/programs/vix_check` are near those of the precompiled vix.
-    The file is about 13 MB larger (about 6 MB with gzip).
+    about 17 minutes with 4 CPUs), or `LIBVIPS` names a build that exists.
+    It has the libraries of sharp-libvips for these parts:
+    - The formats JPEG, PNG, WebP, GIF and PPM.
+    - AVIF read and write: libheif with aom, built with `MinSizeRel`, as
+      sharp-libvips does.
+    - ICC transforms: lcms2.
+    - GIF save: cgif, with libimagequant for the palette.
+    - The SIMD code of zlib-ng, libjpeg-turbo, libwebp, Highway and aom.
+    It has no SVG load (librsvg) and no text (pango). The times of
+    `tests/programs/vix_check` are near those of the precompiled vix. An
+    AVIF encode of 1 megapixel takes about 1.7 s on 4 CPUs. The file is
+    about 30 MB larger (about 15 MB with gzip). aom and libheif are about
+    17 MB of this (about 9 MB with gzip).
   - The NIF of `vix` is native only: the WebAssembly runtime has no
     threads, and libvips needs them.
   - `rusty_csv` is a NIF of Rust (Rustler). `build_rust_nif` builds the
@@ -193,7 +201,7 @@ when the build did not run. The file stays in the prerelease
   `custom_build.py`). A commit that changes only the documents, the
   tests, the workflows or the envelopes of the FIFO keeps the key.
 - A new build takes the WebAssembly runtime (about 3 minutes) and the
-  libvips of `vix` (about 5 minutes) from the cache of GitHub Actions
+  libvips of `vix` (about 17 minutes) from the cache of GitHub Actions
   when their inputs did not change. The runtime has the cache key of
   `build.yml`, so the builds of `main` fill it.
 - GitHub never sees the email address: the FIFO sends it in a box of

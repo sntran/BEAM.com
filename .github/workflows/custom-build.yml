@@ -229,7 +229,7 @@ jobs:
           path: build/wasm-runtime
           key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ hashFiles('wasm/erts/**', 'c_src/erts_wasm/**', 'c_src/wasm/**', 'patches/otp/**', 'patches/wamr/**', 'scripts/steps.sh') }}${{ env.RUNTIME_KEY }}
 
-      # The static libvips of the NIF of vix (about 5 minutes), with the key
+      # The static libvips of the NIF of vix (about 17 minutes), with the key
       # of vix.yml.
       - name: Cache libvips
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')

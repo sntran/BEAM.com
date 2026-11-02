@@ -1,0 +1,21 @@
+aom 3.15.3 with Cosmopolitan (scripts/libvips.sh, for the AVIF of vix):
+
+- The headers of Cosmopolitan remove __linux__, so the check of the CPU
+  of aarch64 found no method and stopped the build. The method of Linux
+  (getauxval) works in Cosmopolitan: it gives 0 on the other systems, and
+  then aom uses Neon only.
+
+--- a/aom_ports/aarch64_cpudetect.c
++++ b/aom_ports/aarch64_cpudetect.c
+@@ -127,7 +127,10 @@
+   return flags;
+ }
+ 
+-#elif defined(__linux__)  // end defined(AOM_USE_ANDROID_CPU_FEATURES)
++// Cosmopolitan removes __linux__ (its programs also run on other
++// systems). Its getauxval() gives the hardware capabilities of Linux, and
++// 0 on the other systems: then only Neon.
++#elif defined(__linux__) || defined(__COSMOPOLITAN__)  // end defined(AOM_USE_ANDROID_CPU_FEATURES)
+ 
+ #include <sys/auxv.h>
+ 

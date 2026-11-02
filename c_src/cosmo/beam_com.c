@@ -47,6 +47,7 @@
 #include "libc/nt/dll.h"                    /* LoadLibrary(), GetProcAddress() */
 #include "libc/nt/runtime.h"                /* ExitProcess() */
 #include "libc/runtime/runtime.h"           /* __get_tmpdir() */
+#include <pthread.h>                        /* pthread_attr_t */
 #include "net/http/escape.h"                /* EncodeBase64() */
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
 
@@ -2011,4 +2012,25 @@ void beam_com_main(int *argcp, char ***argvp)
 
     *argcp = all.n;
     *argvp = all.v;
+}
+
+/*
+ * The default stack of a new thread (C46 of docs/UPSTREAM.md).
+ * Cosmopolitan gives 80 KB (GetStackSize()) to a thread that does not set
+ * its stack size, where glibc gives 8 MB and the C runtime of Windows
+ * gives 1 MB. A thread of a NIF library, for example a worker of libvips
+ * (glib) that encodes AVIF with aom, then writes past its stack.
+ * pthread_create() of Cosmopolitan calls this function for a thread with
+ * no attributes. This pthread_attr_init() takes the place of the one of
+ * Cosmopolitan, with a default of 1 MB. The threads of ERTS set their own
+ * stack sizes.
+ */
+#define BEAM_COM_THREAD_STACK (1024 * 1024)
+
+errno_t pthread_attr_init(pthread_attr_t *attr) {
+    *attr = (pthread_attr_t){
+        .__stacksize = BEAM_COM_THREAD_STACK,
+        .__guardsize = getpagesize(),
+    };
+    return 0;
 }

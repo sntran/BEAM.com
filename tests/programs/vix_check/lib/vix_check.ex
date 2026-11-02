@@ -3,7 +3,8 @@ defmodule VixCheck do
   `vix_check.com`: image operations with the NIF of vix.
 
   - No argument: each operation once, with a result that the output
-    checks, and "vix_check: ok" at the end.
+    checks, and "vix_check: ok" at the end. The formats: JPEG, PNG, WebP,
+    AVIF and GIF, and ICC transforms.
   - `bench [RUNS]`: the median time of each operation, in milliseconds,
     on an image of 4000x3000 (12 megapixels). RUNS: default 5.
   """
@@ -56,6 +57,17 @@ defmodule VixCheck do
     {:ok, webp} = Image.write_to_buffer(small, ".webp")
     {:ok, webp_back} = Image.new_from_buffer(webp)
     IO.puts("vix_check: webp #{Image.width(webp_back)}x#{Image.height(webp_back)}")
+    # AVIF (libheif with aom), GIF save (cgif), and ICC transforms (lcms2)
+    # with the built-in profiles of libvips.
+    {:ok, avif} = Image.write_to_buffer(small, ".avif[Q=60]")
+    {:ok, avif_back} = Image.new_from_buffer(avif)
+    IO.puts("vix_check: avif #{Image.width(avif_back)}x#{Image.height(avif_back)}")
+    {:ok, gif} = Image.write_to_buffer(small, ".gif")
+    {:ok, gif_back} = Image.new_from_buffer(gif)
+    IO.puts("vix_check: gif #{Image.width(gif_back)}x#{Image.height(gif_back)}")
+    {:ok, cmyk} = Operation.icc_transform(small, "cmyk")
+    {:ok, srgb} = Operation.icc_transform(cmyk, "srgb")
+    IO.puts("vix_check: icc #{Image.bands(cmyk)} bands, then #{Image.bands(srgb)} bands")
     {:ok, thumb} = Operation.thumbnail_buffer(jpg, 100)
     IO.puts("vix_check: thumbnail #{Image.width(thumb)}x#{Image.height(thumb)}")
     {:ok, black} = Operation.black(64, 64)
@@ -101,7 +113,13 @@ defmodule VixCheck do
          avg(b)
        end},
       {"webp encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".webp[Q=80]") end},
-      {"png encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".png") end}
+      {"png encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".png") end},
+      {"avif encode 1 MP", fn -> {:ok, _} = Image.write_to_buffer(mp1, ".avif[Q=60]") end},
+      {"icc transform 1 MP",
+       fn ->
+         {:ok, c} = Operation.icc_transform(mp1, "cmyk")
+         avg(c)
+       end}
     ]
     |> Enum.each(fn {name, f} ->
       f.()
