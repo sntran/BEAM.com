@@ -574,8 +574,8 @@ fi
 # and Landlock, OpenBSD only the paths (unveil), and the other systems
 # ignore it.
 if [ -d examples ]; then
-    check_status 1 beam.com '--allow-net takes no hosts' \
-        tests/programs/sandbox_check.erl --allow-net=example.com -o "$dir/never.com"
+    check_status 1 beam.com '--allow-net: a bad domain' \
+        tests/programs/sandbox_check.erl '--allow-net=*.com' -o "$dir/never.com"
     check_status 1 beam.com '--allow-env is not supported' \
         tests/programs/sandbox_check.erl --allow-env -o "$dir/never.com"
     check_status 1 beam.com 'unknown option --allow-bogus' \
@@ -641,6 +641,44 @@ if [ -d examples ]; then
         export SSL_CERT_FILE
         check sandbox_net.com "$env" read "$dir/ca-one.pem" read "$dir/beam.com"
         unset SSL_CERT_FILE
+    fi
+    # --allow-net=HOST,...: the resolver of beam.com and the check of each
+    # address (c_src/cosmo/beam_com_net.c), on each system, with the name
+    # server of tests/programs/dns_fake.erl. A name that the list does not
+    # allow never goes to the name server.
+    check beam.com 'wrote .*dns_fake.com' tests/programs/dns_fake.erl -o "$dir/dns_fake.com"
+    if [ -f "$dir/dns_fake.com" ]; then
+        chmod +x "$dir/dns_fake.com"
+        $runner "$dir/dns_fake.com" > "$dir/dns_fake.out" 2>&1 &
+        fake=$!
+        i=0
+        while ! grep -q '^dns_fake: [0-9]* [0-9]*$' "$dir/dns_fake.out" && [ $i -lt 30 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        ports=$(sed -n 's/^dns_fake: \([0-9]*\) \([0-9]*\)$/\1 \2/p' "$dir/dns_fake.out")
+        dns=${ports% *} tcp=${ports#* }
+        BEAM_COM_ALLOW="net=*.test.example:$tcp" BEAM_COM_DNS_UPSTREAM=127.0.0.1:$dns
+        export BEAM_COM_ALLOW BEAM_COM_DNS_UPSTREAM
+        check sandbox_none.com 'connect a.test.example: ok@@connect big.test.example: ok@@connect alias.test.example: ok@@connect test.example: error nxdomain@@connect other.example: error nxdomain@@connect a.test.example: error eacces@@connect 127.0.0.2: error eacces@@udp 127.0.0.1: error eacces@@done' \
+            connect a.test.example "$tcp" connect big.test.example "$tcp" \
+            connect alias.test.example "$tcp" connect test.example "$tcp" \
+            connect other.example "$tcp" connect a.test.example "$dns" \
+            connect 127.0.0.2 "$tcp" udp 127.0.0.1 "$dns"
+        unset BEAM_COM_ALLOW BEAM_COM_DNS_UPSTREAM
+        kill "$fake" 2>/dev/null
+        wait "$fake" 2>/dev/null
+        cat "$dir/dns_fake.out"
+        if grep -q 'asked other.example' "$dir/dns_fake.out" ||
+           grep -q 'asked test.example' "$dir/dns_fake.out" ||
+           ! grep -q 'asked a.test.example' "$dir/dns_fake.out"; then
+            echo "FAIL: dns_fake.com: the names that the resolver asked"
+            fail=1
+            failed="$failed
+  dns_fake.com: the names that the resolver asked"
+        else
+            echo "PASS: dns_fake.com"
+        fi
     fi
 fi
 

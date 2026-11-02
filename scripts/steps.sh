@@ -176,6 +176,9 @@ if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
 # c_src/cosmo/beam_com_libc.h (docs/UPSTREAM.md C33 and C34). The link of
 # the emulator and the check of step_test use the same list.
 LIBC_WRAPS="-Wl,--wrap=memchr -Wl,--wrap=strncpy"
+# The calls that the host list of --allow-net checks (only the link of
+# the emulator; see c_src/cosmo/beam_com_net.c).
+NET_WRAPS="-Wl,--wrap=connect -Wl,--wrap=bind -Wl,--wrap=sendto -Wl,--wrap=sendmsg"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -365,7 +368,8 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_inet_gethost.c "$ROOT"/c_src/cosmo/beam_com_epmd.h \
        "$ROOT"/c_src/cosmo/beam_com_epmd.c "$ROOT"/c_src/cosmo/beam_com_epmd_srv.c \
        "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
-       "$ROOT"/c_src/cosmo/beam_com_libc.h "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_libc.h "$ROOT"/c_src/cosmo/beam_com_net.c \
+       "$ROOT"/c_src/cosmo/beam_com_net.h "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -1208,7 +1212,7 @@ step_multicall() {
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
-    objs="$objs $objdir/beam_com_watch.o"
+    objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_net.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_pledge "$objdir/beam_com_pledge.o"
     objs="$objs $objdir/beam_com_pledge.o"
@@ -1219,9 +1223,10 @@ step_multicall() {
     nifs=$(static_nifs)
     # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
     # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c. The
-    # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h.
+    # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h, and the
+    # wraps of NET_WRAPS (--allow-net=HOST,...) in beam_com_net.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -1559,6 +1564,12 @@ step_test() {
         "$BUILD/libc_edges_wrap.com" | tee "$BUILD/test.out"
         grep -q '^results: ok$' "$BUILD/test.out"
         grep -q '^functions with a fault: 0$' "$BUILD/test.out"
+        # The parts of the host list of --allow-net that need no network
+        # (c_src/cosmo/beam_com_net.c): tests/run.sh has the rest.
+        log "Checking the host list of --allow-net"
+        cosmocc -O2 -Wno-unused-function -o "$BUILD/net_check.com" "$ROOT/tests/cosmo/net_check.c"
+        "$BUILD/net_check.com" | tee "$BUILD/test.out"
+        grep -q '^net_check: ok$' "$BUILD/test.out"
     fi
 }
 

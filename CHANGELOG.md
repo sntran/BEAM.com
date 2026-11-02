@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox: `--allow-net=HOST,...` allows the network only for a list
+  of hosts: names, `*.DOMAIN`, and addresses, each with an optional port
+  (docs/SANDBOX.md, "A list of hosts"). beam.com has its own resolver of
+  DNS: kernel asks only it, a name that the list does not allow gives
+  `nxdomain` and never goes to a name server, and each connect, UDP send
+  and bind gets only the addresses of the answers of allowed names
+  (`{error, eacces}` for another). On Linux 6.7 and later, Landlock also
+  limits the TCP ports. The list works on each system, also where the
+  other permissions do nothing. It needs
+  `patches/otp/0004-sandbox-resolver.patch`.
 - The sandbox: on Linux, `--allow-net` now allows the options `sndbuf`,
   `recbuf` and `linger` of `inet:setopts/2`, and these options and
   `nodelay` of `inet:getopts/2` (#157). Before, `inet:getopts/2` left

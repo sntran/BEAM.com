@@ -2041,6 +2041,29 @@ two lookups.
 **Possible upstream fix.** `if (prt) erts_port_dec_refc(prt);`, as in
 `enif_is_port_alive()`.
 
+### O27. inet_config has no setting for one name server that stays
+
+**Status:** OTP 29.1.1 (`lib/kernel/src/inet_config.erl`). Not a bug:
+BEAM.com needs it for the sandbox with a host list.
+
+**Symptom.** With `--allow-net=HOST,...`, kernel must ask only the
+resolver of beam.com, on `127.0.0.1` and a port that changes at each
+start. An inetrc file can give `{nameserver, IP, Port}`, but it is a
+file, and the sandbox cannot write one. `inet_db` also reads
+`/etc/resolv.conf` again before each lookup, and puts its name servers
+in place of the list (see the text of `windows_setup()` in
+`c_src/cosmo/beam_com.c`).
+
+**Workaround in BEAM.com.** `patches/otp/0004-sandbox-resolver.patch`:
+when `BEAM_COM_DNS` is `127.0.0.1:PORT`, `inet_config:init/0` sets the
+lookup `[file, dns]`, `{resolv_conf, ""}`, and the name servers
+`[{{127,0,0,1}, PORT}]`. `c_src/cosmo/beam_com_net.c` sets the variable.
+The setting is not a part of the sandbox: the wraps of the network check
+each address, also when Erlang code changes the name servers.
+
+**Possible upstream fix.** None needed. An environment variable for the
+name servers, as `ERL_INETRC` is for the file, would do the same.
+
 ## Emscripten
 
 Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/history/WASM-LOG.md,

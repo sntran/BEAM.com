@@ -12,7 +12,7 @@ beam.com [FLAGS] [INPUT] [-- ARGUMENTS]    # run INPUT (default: the project her
 beam.com [FLAGS] INPUT -o OUTPUT           # make the executable OUTPUT
 
 FLAGS: [-a APP]... [--allow-read[=PATH,...]] [--allow-write[=PATH,...]]
-       [--allow-net] [--allow-run[=PROGRAM,...]] [--allow-all]
+       [--allow-net[=HOST,...]] [--allow-run[=PROGRAM,...]] [--allow-all]
        [--target TARGET] [--main MODULE] [--tool rebar|mix]
        [--extract-priv APP]... [--cacerts FILE]
 ```

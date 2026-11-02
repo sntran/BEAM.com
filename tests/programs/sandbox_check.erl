@@ -9,12 +9,18 @@
 %%                              TCP socket that inet sets (issue 157)
 %%   sandbox_check rawopt       read TCP_CONGESTION, an option that the
 %%                              sandbox of Linux does not allow
+%%   sandbox_check connect HOST PORT
+%%                              connect to a TCP port (a name or an
+%%                              address), and close the socket
+%%   sandbox_check udp HOST PORT
+%%                              send a UDP datagram
 %%   sandbox_check run PROGRAM  run a program (a port), found in PATH, with
 %%                              the arguments -c "exit 0" (sh ends at once,
 %%                              and true ignores them)
 %%
 %% A result is "ok" or the error, for example "write: error eperm". The
-%% result of run names its program: "run sh: ok". The result of rawopt
+%% result of run names its program: "run sh: ok", and the result of connect
+%% and udp names the host: "connect a.example: error nxdomain". The result of rawopt
 %% is "ok" or "refused".
 -module(sandbox_check).
 -export([main/1]).
@@ -36,6 +42,14 @@ run(["sockopts" | Rest]) ->
     run(Rest);
 run(["rawopt" | Rest]) ->
     io:format("rawopt: ~s~n", [rawopt()]),
+    run(Rest);
+run(["connect", Host, Port | Rest]) ->
+    report("connect " ++ Host, connect(Host, list_to_integer(Port))),
+    run(Rest);
+run(["udp", Host, Port | Rest]) ->
+    {ok, S} = gen_udp:open(0),
+    report("udp " ++ Host, gen_udp:send(S, Host, list_to_integer(Port), <<"x">>)),
+    gen_udp:close(S),
     run(Rest);
 run(["run", Program | Rest]) ->
     report("run " ++ Program, run_program(Program)),
@@ -82,6 +96,12 @@ rawopt() ->
         end,
     gen_tcp:close(L),
     Result.
+
+connect(Host, Port) ->
+    case gen_tcp:connect(Host, Port, [], 10000) of
+        {ok, S} -> gen_tcp:close(S);
+        Error -> Error
+    end.
 
 run_program(Program) ->
     case os:find_executable(Program) of

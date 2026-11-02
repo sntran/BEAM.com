@@ -897,6 +897,10 @@ defmodule BeamComBuildTest do
                build.(%{run: [~c"git"], net: true, write: :all, read: [~c"/etc", ~c"/srv"]})
 
       assert "net\n" == build.(%{net: true})
+
+      assert "net=*.example.com:443,10.0.0.1\n" ==
+               build.(%{net: [~c"*.example.com:443", ~c"10.0.0.1"]})
+
       # --allow-all wins over the others.
       assert "all\n" == build.(%{all: true, net: true})
       # Without flags, no file (no sandbox).
@@ -1435,6 +1439,55 @@ defmodule BeamComBuildTest do
       test "#{Enum.join(flags, " ")}" do
         assert unquote(Macro.escape(allow)) == allow(unquote(flags))
       end
+    end
+
+    test "--allow-net=HOST,...: lower case, no dot at the end, sorted" do
+      assert %{net: [~c"*.b.example:443", ~c"a.example"]} ==
+               allow([~c"--allow-net=A.Example.,*.b.example:443"])
+    end
+
+    test "--allow-net=HOST,...: addresses" do
+      assert %{net: [~c"10.0.0.1:5432", ~c"::1", ~c"[::1]:8080"]} ==
+               allow([~c"--allow-net=[::1]:8080,10.0.0.1:5432,::1"])
+    end
+
+    test "--allow-net=HOST,...: lists add up, without duplicates" do
+      assert %{net: [~c"a.example", ~c"b.example"]} ==
+               allow([~c"--allow-net=a.example", ~c"--allow-net=b.example,a.example"])
+    end
+
+    test "--allow-net=HOST,...: -N wins" do
+      assert %{net: true} == allow([~c"--allow-net=a.example", ~c"-N"])
+      assert %{net: true} == allow([~c"-N", ~c"--allow-net=a.example"])
+    end
+
+    for {host, what} <- [
+          {~c"*.com", ~c"a bad domain (*.DOMAIN needs two labels or more)"},
+          {~c"*.a..b", ~c"a bad domain (*.DOMAIN needs two labels or more)"},
+          {~c"1.2.3", ~c"a bad IPv4 address"},
+          {~c"a..b", ~c"a bad host"},
+          {~c"a b.example", ~c"a bad host"},
+          {~c"*", ~c"a bad host"},
+          {~c"a.example:0", ~c"a bad port"},
+          {~c"a.example:65536", ~c"a bad port"},
+          {~c"a.example:", ~c"a bad port"},
+          {~c"[::1", ~c"a bad IPv6 address"},
+          {~c"[::g]:80", ~c"a bad IPv6 address"},
+          {~c"1::2::3", ~c"a bad IPv6 address"}
+        ] do
+      test "--allow-net=#{host} is refused" do
+        host = unquote(host)
+
+        assert {:error, ~c"--allow-net: ~ts: ~ts", [unquote(what), host]} ==
+                 catch_throw(allow([~c"--allow-net=" ++ host]))
+      end
+    end
+
+    test "--allow-net takes 64 hosts or fewer" do
+      hosts = Enum.map_join(1..65, ",", &"h#{&1}.example")
+
+      assert {:error, ~c"--allow-net takes 64 hosts or fewer", []} ==
+               catch_throw(allow([~c"--allow-net=" ++ String.to_charlist(hosts)]))
     end
 
     test "--allow-all= is unknown" do
