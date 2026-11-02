@@ -57,6 +57,10 @@ WAIT_SECONDS = 180 * 60
 RELEASE = "custom-builds"
 
 NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
+# The NIFs of the default build (with Elixir; exqlite also needs SQLite),
+# which a build can leave out (NIFS_OMIT of scripts/steps.sh). The form
+# sends the word "default" and the names of the default NIFs to keep.
+DEFAULT_NIFS = ("exqlite", "bcrypt_elixir", "argon2_elixir")
 # The parts of the libvips of vix (VIX_PARTS of scripts/steps.sh), as
 # words of the NIFs. Each one also selects vix.
 VIX_PARTS = {"vix-icc": "icc", "vix-gif": "gif", "vix-avif": "avif"}
@@ -128,15 +132,20 @@ def issue(body):
         "apps": apps,
         "omit": [a.split()[0] for a in checked("Leave out default OTP applications")],
         "nifs": [n.split()[0] for n in checked("More NIFs")],
+        "nifs_omit": [n.split()[0] for n in checked("Leave out default NIFs")],
         "hex": any(t.startswith("Hex") for t in tools),
         "rebar3": any(t.startswith("rebar3") for t in tools),
-        "elixir": choice("Elixir", "Yes") != "No",
+        # "None" in the dropdown Elixir version, or "No" in the dropdown
+        # Elixir of an older form.
+        "elixir": choice("Elixir", "Yes") != "No"
+                  and not choice("Elixir version", "").startswith("None"),
         "jit": not choice("Emulator", "").startswith("Interpreter"),
         "sqlite": choice("SQLite", "Yes") != "No",
         "wasm": choice("WebAssembly (WAMR)", "Yes") != "No",
         # "29.1.1 (default)": the first word.
         "otp_version": choice("Erlang/OTP version", "").split()[:1],
-        "elixir_version": choice("Elixir version", "").split()[:1],
+        "elixir_version": [] if choice("Elixir version", "").startswith("None")
+                          else choice("Elixir version", "").split()[:1],
         "reply": "",
     }
 
@@ -151,10 +160,24 @@ def dispatch(env):
     reply = env.get("INPUT_REPLY", "")
     if reply and not REPLY.fullmatch(reply):
         fail("The input reply is not an encrypted address")
-    choices = {name: flag(name) for name in FLAGS}
+    choices = {name: flag(name) for name in FLAGS if name != "elixir"}
+    # Elixir: 0 or 1 from an older form. The form of now has one list,
+    # elixir_version, with an empty value for no Elixir, and sends elixir
+    # empty.
+    if env.get("INPUT_ELIXIR", "") == "":
+        choices["elixir"] = env.get("INPUT_ELIXIR_VERSION", "").strip() != ""
+    else:
+        choices["elixir"] = flag("elixir")
     choices["apps"] = env.get("INPUT_APPS", "").replace(",", " ").split()
     choices["omit"] = omitted(env.get("INPUT_KEEP", ""))
-    choices["nifs"] = env.get("INPUT_NIFS", "").replace(",", " ").split()
+    words = env.get("INPUT_NIFS", "").replace(",", " ").split()
+    # "default" and the default NIFs to keep; without the word (an older
+    # form), the build keeps each one.
+    if "default" in words:
+        choices["nifs_omit"] = [n for n in DEFAULT_NIFS if n not in words]
+    else:
+        choices["nifs_omit"] = []
+    choices["nifs"] = [w for w in words if w != "default" and w not in DEFAULT_NIFS]
     choices["otp_version"] = env.get("INPUT_OTP_VERSION", "").split()
     choices["elixir_version"] = env.get("INPUT_ELIXIR_VERSION", "").split()
     choices["reply"] = reply
@@ -242,6 +265,16 @@ def settings(choices, default=None):
     bad = sorted(n for n in words if n not in NIFS and n not in VIX_PARTS)
     if bad:
         fail(f"Not NIFs of the list: {', '.join(bad)}")
+    nifs_omit = set(choices.get("nifs_omit", []))
+    bad = sorted(n for n in nifs_omit if n not in DEFAULT_NIFS)
+    if bad:
+        fail(f"Not default NIFs: {', '.join(bad)}")
+    # Only the default NIFs that the build would link: none without
+    # Elixir, and exqlite only with SQLite.
+    if not choices["elixir"]:
+        nifs_omit = set()
+    if not choices["sqlite"]:
+        nifs_omit.discard("exqlite")
     parts = sorted(VIX_PARTS[n] for n in words if n in VIX_PARTS)
     nifs = sorted({n for n in words if n in NIFS} | ({"vix"} if parts else set()))
     if choices["hex"] and not choices["elixir"]:
@@ -290,6 +323,9 @@ def settings(choices, default=None):
     # Only with a part: the KEY of a build with no part stays the same.
     if parts:
         env["VIX_PARTS"] = " ".join(parts)
+    # The same for the default NIFs.
+    if nifs_omit:
+        env["NIFS_OMIT"] = " ".join(n for n in DEFAULT_NIFS if n in nifs_omit)
     env["OUT_NAME"] = "beam.com" if env["JIT"] == "1" else "beam-emu.com"
     return env
 
@@ -330,10 +366,11 @@ def runtime_key(env):
     wasm_runtime_inputs of scripts/steps.sh). Empty for the NIFs of the
     default build, so a custom build can use the cache of build.yml."""
     nifs = []
+    omit = env.get("NIFS_OMIT", "").split()
     if env["ELIXIR"] == "1":
-        nifs = ["bcrypt_elixir", "argon2_elixir"]
+        nifs = [n for n in ("bcrypt_elixir", "argon2_elixir") if n not in omit]
         nifs += [n for n in env["EXTRA_NIFS"].split() if n == "picosat_elixir"]
-        if env["SQLITE"] == "1":
+        if env["SQLITE"] == "1" and "exqlite" not in omit:
             nifs.append("exqlite")
     if nifs == ["bcrypt_elixir", "argon2_elixir", "exqlite"]:
         return ""
@@ -480,7 +517,7 @@ def notify(status, reason=""):
         return
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     names = ("OTP_VERSION", "OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR",
-             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "EXTRA_NIFS", "VIX_PARTS")
+             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "NIFS_OMIT", "EXTRA_NIFS", "VIX_PARTS")
     body = {
         "status": status,
         "reason": reason,

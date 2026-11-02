@@ -35,6 +35,8 @@
 #   ARGON2_ELIXIR_VERSION  Version of the hex.pm package argon2_elixir
 #                    (default 4.1.3), whose NIF is linked into beam.com (for
 #                    phx.gen.auth --hashing-lib argon2). Only with ELIXIR=1.
+#   NIFS_OMIT        The default NIFs to leave out, separated by spaces:
+#                    exqlite, bcrypt_elixir, argon2_elixir (default none).
 #   EXTRA_NIFS       More hex.pm packages whose NIFs are linked (a custom
 #                    build), separated by spaces: picosat_elixir (for Ash),
 #                    vix (libvips, for the image package; native only),
@@ -128,6 +130,13 @@ PICOSAT_ELIXIR_SHA256=${PICOSAT_ELIXIR_SHA256:-f76c9db2dec9d2561ffaa9be35f65403d
 VIX_VERSION=${VIX_VERSION:-0.42.0}
 VIX_SHA256=${VIX_SHA256:-c4c92051653859dc5219f553a93fa777d63525ee961c48e16e9f61fed02472ee}
 VIX_PARTS=${VIX_PARTS:-}
+NIFS_OMIT=${NIFS_OMIT:-}
+for p in $NIFS_OMIT; do
+    case $p in
+        exqlite|bcrypt_elixir|argon2_elixir) ;;
+        *) echo "Not a default NIF in NIFS_OMIT: $p (exqlite, bcrypt_elixir or argon2_elixir)" >&2; exit 1 ;;
+    esac
+done
 RUSTY_CSV_VERSION=${RUSTY_CSV_VERSION:-0.4.6}
 RUSTY_CSV_SHA256=${RUSTY_CSV_SHA256:-db9967f0889b9b967a9a1d084fcfbac56c1b0f09cb1faa84b6405e9450f6e059}
 EX_PDFIUM_VERSION=${EX_PDFIUM_VERSION:-0.6.0}
@@ -426,13 +435,19 @@ step_sqlite() {
     "$AR" rcs esqlite3_nif.a esqlite3_nif.o sqlite3.o
 }
 
-# The NIFs of Elixir packages are linked when their package is enabled.
-use_exqlite() { [ "$SQLITE" = 1 ] && [ "$ELIXIR" = 1 ]; }
+# The NIFs of Elixir packages are linked when their package is enabled,
+# and the default NIFs (exqlite, bcrypt_elixir, argon2_elixir) when
+# NIFS_OMIT does not name them.
+omit_nif() { case " $NIFS_OMIT " in *" $1 "*) return 0 ;; esac; return 1; }
+use_exqlite() { [ "$SQLITE" = 1 ] && [ "$ELIXIR" = 1 ] && ! omit_nif exqlite; }
 # The packages of hex_nif_recipe() whose NIFs are linked.
 hex_nif_packages() {
     [ "$ELIXIR" = 1 ] || return 0
+    for p in bcrypt_elixir argon2_elixir; do
+        omit_nif "$p" || printf '%s ' "$p"
+    done
     # shellcheck disable=SC2086
-    echo bcrypt_elixir argon2_elixir $EXTRA_NIFS
+    echo $EXTRA_NIFS
 }
 
 # The packages of hex_nif_packages() for the WebAssembly runtime: not
