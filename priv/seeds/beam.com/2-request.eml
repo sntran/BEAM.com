@@ -15,6 +15,7 @@ elixir_version: ^(?<elixir_version>|1\.[0-9]{1,3}\.[0-9]{1,3})$
 nif1: ^(?<nif1>|picosat_elixir)$
 nif2: ^(?<nif2>|vix)$
 nif3: ^(?<nif3>|rusty_csv)$
+nif4: ^(?<nif4>|ex_pdfium)$
 otp: ^(?<otp>|keep)$
 k_parsetools: ^(?<k_parsetools>|parsetools)$
 k_asn1: ^(?<k_asn1>|asn1)$

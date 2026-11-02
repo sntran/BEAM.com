@@ -1268,6 +1268,12 @@ step_bundle() {
         -e "s|^Elixir [0-9][0-9.]* (|Elixir $ELIXIR_VERSION (|" \
         "$ROOT/NOTICE" > "$STAGE/licenses/NOTICE"
     cp "$ERL_TOP"/LICENSES/*.txt "$STAGE/licenses/otp/"
+    # The NIF of ex_pdfium has PDFium and its third-party code: their
+    # license texts, from scripts/pdfium.sh.
+    if hex_nif_packages | grep -qw ex_pdfium; then
+        mkdir -p "$STAGE/licenses/pdfium"
+        cp "${PDFIUM:-$BUILD/pdfium}"/x64/licenses/* "$STAGE/licenses/pdfium/"
+    fi
     # The license texts of the Elixir source (LICENSES/), when Elixir is
     # in the zip.
     if [ "$ELIXIR" = 1 ] && [ -d "$BUILD/elixir-$ELIXIR_VERSION/LICENSES" ]; then

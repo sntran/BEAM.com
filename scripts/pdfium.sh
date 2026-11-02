@@ -101,4 +101,27 @@ fi
 cp "$dir/obj/libpdfium.a" "$out/libpdfium.a"
 rm -rf "$out/include"
 cp -R public "$out/include"
+# The license texts of PDFium and of the third-party code in libpdfium.a.
+# The step bundle of scripts/steps.sh puts them in the zip of a build
+# with the NIF of ex_pdfium (licenses/pdfium).
+rm -rf "$out/licenses"
+mkdir -p "$out/licenses"
+cp LICENSE "$out/licenses/pdfium.txt"
+for d in freetype/src abseil-cpp icu zlib libjpeg_turbo libopenjpeg lcms agg23 \
+    fast_float/src bigint; do
+    name=${d%%/*}
+    found=
+    for f in LICENSE LICENSE.txt LICENSE.TXT LICENSE.md LICENSE-MIT LICENSE-APACHE \
+        LICENSE-BOOST COPYING docs/FTL.TXT README.pdfium; do
+        if [ -f "third_party/$d/$f" ]; then
+            cp "third_party/$d/$f" "$out/licenses/$name-${f##*/}"
+            found=1
+        fi
+    done
+    if [ -z "$found" ]; then
+        echo "No license file in third_party/$d" >&2
+        exit 1
+    fi
+done
+ls "$out/licenses"
 ls -l "$out/libpdfium.a"

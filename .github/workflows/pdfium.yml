@@ -7,9 +7,17 @@ name: PDFium with cosmocc
 # Then a beam.com with EXTRA_NIFS=ex_pdfium and these libraries, and
 # tests/programs/ex_pdfium_check made with it: its check and its times on
 # each system.
+#
+# On main, the job build also fills the cache of libpdfium.a, which
+# custom-build.yml uses (the same key).
 on:
   push:
-    branches: [feat/pdfium]
+    branches: [main]
+    paths:
+      - scripts/pdfium.sh
+      - patches/pdfium/**
+      - tests/programs/ex_pdfium_check/**
+      - .github/workflows/pdfium.yml
   pull_request:
     paths:
       - scripts/pdfium.sh
@@ -65,6 +73,13 @@ jobs:
         with:
           path: build/pdfium-src
           key: pdfium-src-7881-${{ matrix.cpu }}-small-v1
+
+      # The key of custom-build.yml.
+      - name: Cache libpdfium.a
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/pdfium/${{ matrix.cpu }}
+          key: libpdfium-${{ matrix.cpu }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
 
       - name: Build
         env:
@@ -137,6 +152,9 @@ jobs:
             EXTRA_NIFS=ex_pdfium PDFIUM="$PWD/build/pdfium" bundle
           build/beam.com --version | tee version.txt
           grep -q 'Linked NIFs.* ex_pdfium-' version.txt
+          # The license texts of PDFium (scripts/pdfium.sh).
+          unzip -l build/beam.com | grep ' licenses/pdfium/'
+          unzip -l build/beam.com | grep -q ' licenses/pdfium/pdfium.txt$'
 
       - name: Make ex_pdfium_check.com
         run: |
