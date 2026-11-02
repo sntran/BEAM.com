@@ -21,6 +21,7 @@ on:
       - src/beam_com/Elixir.Rustler.erl
       - tests/programs/rust_probe/**
       - tests/programs/rusty_csv_check/**
+      - tests/programs/rusty_csv_release/**
       - .github/workflows/rust.yml
   workflow_dispatch:
 
@@ -152,6 +153,22 @@ jobs:
           build/beam.com tests/programs/rusty_csv_check -o build/rusty_csv_check.com
           build/rusty_csv_check.com
           ls -l build/beam.com build/rusty_csv_check.com
+
+      # Issue 147: a Mix release with a NIF of Rust boots. Before, Elixir
+      # recorded force_build_all of rustler_precompiled as a value of
+      # compile time, and the boot of the release stopped.
+      - name: A Mix release with rusty_csv boots
+        working-directory: tests/programs/rusty_csv_release
+        env:
+          MIX_ENV: prod
+        run: |
+          B="$GITHUB_WORKSPACE/build/beam.com"
+          "$B" mix local.hex --force --if-missing
+          "$B" mix deps.get
+          "$B" mix release --overwrite
+          "$B" _build/prod/rel/rusty_csv_release -o "$GITHUB_WORKSPACE/build/rusty_csv_release.com"
+          "$GITHUB_WORKSPACE/build/rusty_csv_release.com" | tee out.txt
+          grep -q '^rusty_csv_release: \[\["a", "b"\], \["1", "2"\]\]$' out.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

@@ -146,6 +146,17 @@ or rebar3. A custom build can have more, or less:
     ([`pdfium.yml`](../.github/workflows/pdfium.yml)). Its times are near
     those of the precompiled NIF (see "ex_pdfium" in
     [`BENCHMARKS.md`](BENCHMARKS.md)). The NIF is native only.
+  - A package with a NIF of Rust that the file does not link stops the
+    compilation of the project, with the NIFs of Rust of the file in the
+    error. With `BEAM_COM_UNLINKED_NIFS=stub` at compile time, its module
+    compiles with no NIF, and each function of the NIF fails at its first
+    call (`:nif_not_loaded`). The rest of the app works.
+  - A project with the package `rustler` in its deps uses that package
+    in place of the module `Rustler` of beam.com. `use Rustler` reads
+    `skip_compilation?` with `Application.compile_env/3`, so the config
+    of the project must set it for each linked crate, for example
+    `config :rusty_csv, RustyCSV.Native, skip_compilation?: true`. Else a
+    release stops at boot.
 
 - `OTP_VERSION=29.1.2 OTP_COMMIT=...` and `ELIXIR_VERSION=1.20.5
   ELIXIR_COMMIT=...`: other versions of Erlang/OTP and Elixir. The commit
