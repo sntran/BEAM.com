@@ -135,10 +135,17 @@ defmodule BeamCom.WasmDiffTest do
   # the snapshot end after it. The program waits after that case, so the
   # threads of ERTS return for the snapshot. The run with -Mea min has no
   # carriers.
-  @tag timeout: 900_000
-  test "the memory of the VM stays flat over the cases of mem_check", ctx do
-    out = mem_check(ctx, "mem_check", %{})
-    assert out =~ ~r/^mem_check: erlang_memory \d+$/m
+  # Three runs with the default flags: when the unmap of the start of a
+  # block freed the whole block, the split segments of the cache of
+  # erl_mseg.c broke the memory in about 5 runs of 6 (EM9 in
+  # docs/UPSTREAM.md).
+  for run <- 1..3 do
+    @tag timeout: 900_000
+    @tag run: run
+    test "the memory of the VM stays flat over the cases of mem_check (run #{run})", ctx do
+      out = mem_check(ctx, "mem_check_#{ctx.run}", %{})
+      assert out =~ ~r/^mem_check: erlang_memory \d+$/m
+    end
   end
 
   @tag timeout: 900_000
