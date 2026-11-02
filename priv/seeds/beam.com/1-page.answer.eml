@@ -41,6 +41,8 @@ code { font-size: .9em; }
 <form method="post" action="/beam.com">
 <fieldset>
 <legend>Erlang/OTP</legend>
+<label for="otp_version">Version</label>
+<select id="otp_version" name="otp_version"><option value="29.1.1" selected>29.1.1 (default)</option><option value="29.1.2">29.1.2</option><option value="29.0.6">29.0.6</option></select>
 <p class="muted">beam.com always has kernel, stdlib, sasl, compiler and crypto.</p>
 <input type="hidden" name="otp" value="keep">
 <p class="sub">Default applications. Clear a box to leave one out, for a smaller file.</p>
@@ -86,6 +88,8 @@ code { font-size: .9em; }
 <div class="row">
 <div><label for="elixir">Elixir</label>
 <select id="elixir" name="elixir"><option value="1">Yes</option><option value="0">No</option></select></div>
+<div><label for="elixir_version">Elixir version</label>
+<select id="elixir_version" name="elixir_version"><option value="1.20.4" selected>1.20.4 (default)</option><option value="1.20.5">1.20.5</option></select></div>
 <div><label for="hex">Hex (needs Elixir)</label>
 <select id="hex" name="hex"><option value="0">No</option><option value="1">Yes</option></select></div>
 <div><label for="rebar3">rebar3</label>

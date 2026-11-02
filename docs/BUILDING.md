@@ -123,6 +123,17 @@ or rebar3. A custom build can have more, or less:
     precompiled NIF. Its parse of 10 MB takes about 1/19 of the time of
     NimbleCSV. The NIF is native only.
 
+- `OTP_VERSION=29.1.2 OTP_COMMIT=...` and `ELIXIR_VERSION=1.20.5
+  ELIXIR_COMMIT=...`: other versions of Erlang/OTP and Elixir. The commit
+  of the tag is necessary, because a tag can move. The patches of
+  `patches/otp` apply to OTP 29.0 and later, not to OTP 28. Elixir 1.19
+  does not support OTP 29. `OTP_VERSIONS` and `ELIXIR_VERSIONS` of
+  [`scripts/custom_build.py`](../scripts/custom_build.py) give the
+  versions of the forms, with their commits. The workflow
+  [`custom-build-versions.yml`](../.github/workflows/custom-build-versions.yml)
+  builds and tests each pair of these versions. Add a version to a table
+  only after that workflow passes.
+
 With `HEX=1 REBAR3=1`, a clone of a project, `mix.com deps.get` and
 `iex.com -S mix phx.server` work as with a normal Elixir installation.
 
@@ -148,13 +159,22 @@ when the build did not run. The file stays in the prerelease
 - The FIFO and the workflow accept only the values of the issue form
   ([`scripts/custom_build.py`](../scripts/custom_build.py)). The form
   has a box for each default OTP application that a build can leave out,
-  checked, and a box for each known OTP application to add. The workflow
+  checked, a box for each known OTP application to add, and a list of
+  the versions of Erlang/OTP and of Elixir. Without Elixir, the build
+  ignores the version of Elixir. The workflow
   refuses a request that leaves out an application that another one
   needs, before the build, and the email gives the reason.
 - One build runs at a time, in the sequence of the requests. At most 3
   requests wait, and at most 10 new builds are made each day (UTC).
-- Two requests with the same choices on the same commit get the same
-  file: the second one gets the link at once, with no build.
+- Two requests with the same choices get the same file: the second one
+  gets the link at once, with no build. The key of the file is the
+  SHA-256 of the choices and of the source of the build (`source()` of
+  `custom_build.py`). A commit that changes only the documents, the
+  tests, the workflows or the envelopes of the FIFO keeps the key.
+- A new build takes the WebAssembly runtime (about 3 minutes) and the
+  libvips of `vix` (about 5 minutes) from the cache of GitHub Actions
+  when their inputs did not change. The runtime has the cache key of
+  `build.yml`, so the builds of `main` fill it.
 - GitHub never sees the email address: the FIFO sends it in a box of
   `secretbox`, which only the FIFO opens.
 - The workflow needs the secret `BEAM_FIFO_SECRET` of the repository:

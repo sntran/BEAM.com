@@ -10,11 +10,17 @@ applications must be names of OTP.
 Usage:
 
   custom_build.py issue|dispatch COMMIT
-    The settings of the Makefile, OUT_NAME, KEY and REPLY go to the file
-    of GITHUB_ENV, and a table to the file of GITHUB_STEP_SUMMARY (when
-    these variables are set). KEY is the SHA-256 of the settings and of
-    the commit: two requests with the same choices on the same commit
-    have the same KEY, and the same file.
+    The settings of the Makefile, OUT_NAME, KEY, RUNTIME_KEY and REPLY go
+    to the file of GITHUB_ENV, and a table to the file of
+    GITHUB_STEP_SUMMARY (when these variables are set). KEY is the SHA-256
+    of the settings and of the source of the build at COMMIT (source()).
+    Two requests with the same choices have the same KEY and the same
+    file, also on a later commit that changes only the documents, the
+    tests or the workflows.
+  custom_build.py versions   The versions that a build can use, as JSON: the
+    tables, the defaults, and "pairs", each pair of an OTP version and an
+    Elixir version except the pair of the defaults (the matrix of
+    custom-build-versions.yml).
   custom_build.py exists     Status 0 when the release has the file of KEY.
   custom_build.py today      The number of files of the release of today (UTC).
   custom_build.py put FILE   Puts FILE in the release, as asset_name().
@@ -34,6 +40,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -50,6 +57,27 @@ WAIT_SECONDS = 180 * 60
 RELEASE = "custom-builds"
 
 NIFS = ("picosat_elixir", "vix", "rusty_csv")
+# The versions of Erlang/OTP and Elixir that a build can use, with the
+# commit of each tag (a tag can move). The patches of patches/otp and
+# patches/elixir apply to each. The workflow custom-build-versions.yml
+# builds and tests each pair. The default versions are the versions of
+# scripts/steps.sh (defaults()), and they must be in these tables.
+OTP_VERSIONS = {
+    "29.1.2": "d199a49a01a2079afb6f2c5c9ae047cd4555e68d",
+    "29.1.1": "ad05823719d77c8faee87348ea39513d4e2f99c5",
+    "29.0.6": "e07fd07837e5aa845657f5fa340637121e451d47",
+}
+# Elixir 1.19 does not support OTP 29.
+ELIXIR_VERSIONS = {
+    "1.20.5": "4a28692668bef879029291b7ff329a84a1f933bb",
+    "1.20.4": "759443e724f55bf58e71c0603644e99058918d52",
+}
+# The paths of the repository that do not change the file of a build:
+# the documents, the tests, the workflows, the Mix project of the tests,
+# and the envelopes of the FIFO. A change of another path makes a new
+# KEY.
+NOT_SOURCE = (".github", ".formatter.exs", ".gitignore", "docs", "examples", "js", "lib",
+              "mix.exs", "mix.lock", "package.json", "priv/seeds", "specs", "tests")
 # The default OTP applications that a build can leave out (OTP_OMIT of
 # scripts/steps.sh), and the applications that need them. The other
 # default applications (kernel, stdlib, sasl, compiler and crypto) are
@@ -103,6 +131,9 @@ def issue(body):
         "jit": not choice("Emulator", "").startswith("Interpreter"),
         "sqlite": choice("SQLite", "Yes") != "No",
         "wasm": choice("WebAssembly (WAMR)", "Yes") != "No",
+        # "29.1.1 (default)": the first word.
+        "otp_version": choice("Erlang/OTP version", "").split()[:1],
+        "elixir_version": choice("Elixir version", "").split()[:1],
         "reply": "",
     }
 
@@ -121,6 +152,8 @@ def dispatch(env):
     choices["apps"] = env.get("INPUT_APPS", "").replace(",", " ").split()
     choices["omit"] = omitted(env.get("INPUT_KEEP", ""))
     choices["nifs"] = env.get("INPUT_NIFS", "").replace(",", " ").split()
+    choices["otp_version"] = env.get("INPUT_OTP_VERSION", "").split()
+    choices["elixir_version"] = env.get("INPUT_ELIXIR_VERSION", "").split()
     choices["reply"] = reply
     return choices
 
@@ -153,7 +186,37 @@ def needed(names):
     return out
 
 
-def settings(choices):
+def defaults(root=None):
+    """The default versions of scripts/steps.sh: {"OTP_VERSION": ...,
+    "OTP_COMMIT": ..., "ELIXIR_VERSION": ..., "ELIXIR_COMMIT": ...}. Each
+    must be in OTP_VERSIONS or ELIXIR_VERSIONS, with the same commit."""
+    root = root or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    with open(os.path.join(root, "scripts", "steps.sh")) as f:
+        text = f.read()
+    out = {}
+    for name in ("OTP_VERSION", "OTP_COMMIT", "ELIXIR_VERSION", "ELIXIR_COMMIT"):
+        found = re.search(rf"^{name}=\${{{name}:-([0-9a-f.]+)}}$", text, flags=re.M)
+        if not found:
+            fail(f"No default {name} in scripts/steps.sh")
+        out[name] = found.group(1)
+    for kind, table in (("OTP", OTP_VERSIONS), ("ELIXIR", ELIXIR_VERSIONS)):
+        if table.get(out[f"{kind}_VERSION"]) != out[f"{kind}_COMMIT"]:
+            fail(f"The default {kind}_VERSION of scripts/steps.sh is not in the table, "
+                 "or has another commit")
+    return out
+
+
+def version(words, table, default, name):
+    """The version of WORDS (no word: DEFAULT), when TABLE has it."""
+    if not words:
+        return default
+    if len(words) > 1 or words[0] not in table:
+        fail(f"Not a version of {name} that a build can use: {' '.join(words)[:20]}. "
+             f"The versions: {', '.join(table)}")
+    return words[0]
+
+
+def settings(choices, default=None):
     # An application that a chosen application needs, and that is not a
     # default application, goes in too (syntax_tools for edoc).
     apps = sorted(needed(choices["apps"]) - set(OMITTABLE))
@@ -185,8 +248,20 @@ def settings(choices):
             names = ", ".join(missing)
             other = {"hex": "choose No for Hex", "rebar3": "choose No for rebar3"}
             fail(f"{user} needs {names}. Keep {names}, or {other.get(user, 'leave out ' + user)}.")
+    default = default or defaults()
+    otp = version(choices.get("otp_version", []), OTP_VERSIONS, default["OTP_VERSION"], "OTP")
+    elixir = version(choices.get("elixir_version", []), ELIXIR_VERSIONS,
+                     default["ELIXIR_VERSION"], "Elixir")
+    # Without Elixir, the version of Elixir changes nothing (the form has
+    # no script that turns off its list). The default keeps one KEY.
+    if not choices["elixir"]:
+        elixir = default["ELIXIR_VERSION"]
     one = lambda b: "1" if b else "0"
     env = {
+        "OTP_VERSION": otp,
+        "OTP_COMMIT": OTP_VERSIONS[otp],
+        "ELIXIR_VERSION": elixir,
+        "ELIXIR_COMMIT": ELIXIR_VERSIONS[elixir],
         "OTP_APPS": " ".join(apps),
         "OTP_OMIT": " ".join(omit),
         "HEX": one(choices["hex"]),
@@ -201,9 +276,50 @@ def settings(choices):
     return env
 
 
-def key(env, commit):
-    text = "".join(f"{k}={env[k]}\n" for k in sorted(env)) + f"COMMIT={commit}\n"
+def source(commit, git=None):
+    """The source of the build at COMMIT: the git object of each path
+    that is not in NOT_SOURCE (and not a Markdown file at the top), one
+    line for each path. A folder with a path of NOT_SOURCE in it gives its
+    entries."""
+    git = git or (lambda *args: subprocess.run(
+        ("git",) + args, check=True, capture_output=True, text=True).stdout)
+
+    def walk(folder):
+        listing = git("ls-tree", commit, "--", folder + "/") if folder else git("ls-tree", commit)
+        for line in listing.splitlines():
+            meta, _, name = line.partition("\t")
+            if name in NOT_SOURCE or ("/" not in name and name.endswith(".md")):
+                continue
+            if any(n.startswith(name + "/") for n in NOT_SOURCE):
+                yield from walk(name)
+            else:
+                yield f"{meta.split()[2]} {name}"
+
+    lines = list(walk(""))
+    if not any(line.endswith(" scripts") for line in lines):
+        fail(f"No source at the commit {commit}")
+    return "".join(f"{line}\n" for line in lines)
+
+
+def key(env, source_text):
+    text = "".join(f"{k}={env[k]}\n" for k in sorted(env)) + source_text
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def runtime_key(env):
+    """The part of the cache key of the WebAssembly runtime that comes
+    from the choices: the hex.pm NIFs of the runtime (see
+    wasm_runtime_inputs of scripts/steps.sh). Empty for the NIFs of the
+    default build, so a custom build can use the cache of build.yml."""
+    nifs = []
+    if env["ELIXIR"] == "1":
+        nifs = ["bcrypt_elixir", "argon2_elixir"]
+        nifs += [n for n in env["EXTRA_NIFS"].split() if n == "picosat_elixir"]
+        if env["SQLITE"] == "1":
+            nifs.append("exqlite")
+    if nifs == ["bcrypt_elixir", "argon2_elixir", "exqlite"]:
+        return ""
+    return "-" + "-".join(nifs or ["none"])
 
 
 def github(path, method="GET", data=None, content_type=None, base=None):
@@ -345,8 +461,8 @@ def notify(status, reason=""):
         print("No FIFO to notify")
         return
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    names = ("OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR", "JIT", "SQLITE", "WASM",
-             "EXTRA_NIFS")
+    names = ("OTP_VERSION", "OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR",
+             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "EXTRA_NIFS")
     body = {
         "status": status,
         "reason": reason,
@@ -384,6 +500,15 @@ def main(argv):
     command = argv[1] if len(argv) > 1 else ""
     if command == "exists" and len(argv) == 2:
         sys.exit(0 if exists() else 1)
+    if command == "versions" and len(argv) == 2:
+        default = defaults()
+        pairs = [{"otp": o, "otp_commit": oc, "elixir": e, "elixir_commit": ec}
+                 for o, oc in OTP_VERSIONS.items() for e, ec in ELIXIR_VERSIONS.items()
+                 if (o, e) != (default["OTP_VERSION"], default["ELIXIR_VERSION"])]
+        print(json.dumps({"otp": OTP_VERSIONS, "elixir": ELIXIR_VERSIONS,
+                          "default_otp": default["OTP_VERSION"],
+                          "default_elixir": default["ELIXIR_VERSION"], "pairs": pairs}))
+        return
     if command == "today" and len(argv) == 2:
         print(today())
         return
@@ -434,7 +559,7 @@ def main(argv):
             return
     if argv[1] == "issue":
         env = settings(choices)
-    out = dict(env, KEY=key(env, commit))
+    out = dict(env, KEY=key(env, source(commit)), RUNTIME_KEY=runtime_key(env))
     if choices["reply"]:
         out["REPLY"] = choices["reply"]
     if "GITHUB_ENV" in os.environ:

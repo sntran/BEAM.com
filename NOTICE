@@ -33,7 +33,7 @@ Cosmopolitan Libc 4.0.2 (the C runtime of the APE file)
   shows them.
   https://github.com/jart/cosmopolitan
 
-OpenSSL 4.0.2 (libcrypto, for the crypto NIF)
+OpenSSL 4.0.3 (libcrypto, for the crypto NIF)
   Copyright The OpenSSL Project Authors.
   Apache License 2.0 (LICENSE).
   https://github.com/openssl/openssl
@@ -78,7 +78,7 @@ of lazy_html in lib/beam_com/priv/nifs; only a program with lazy_html
 
 The WebAssembly runtime (beam.wasm and beam.mjs in the zip, for
 --target wasm32)
-  Erlang/OTP 29.1.1 and OpenSSL 4.0.2, as above, compiled with
+  Erlang/OTP 29.1.1 and OpenSSL 4.0.3, as above, compiled with
   Emscripten. The runtime contains the system libraries of Emscripten:
   - Emscripten: MIT License and University of Illinois/NCSA Open Source
     License (licenses/emscripten.txt). https://github.com/emscripten-core/emscripten
