@@ -404,6 +404,13 @@ allow(Flag, Allow) ->
                                          not lists:member(H, Old)],
                     length(Hosts) =< 64 orelse
                         throw({error, "--allow-net takes 64 hosts or fewer", []}),
+                    case [H || "*." ++ _ = H <- Hosts, not lists:member(H, Old)] of
+                        [] ->
+                            ok;
+                        Wild ->
+                            Rules = public_suffixes(),
+                            lists:foreach(fun(H) -> net_warning(H, Rules) end, Wild)
+                    end,
                     Allow#{net => Hosts}
             end;
         {K, none} when K =:= read; K =:= write; K =:= run -> Allow#{K => all};
@@ -468,6 +475,65 @@ net_host(Text) ->
         {{ipv6, _}, _} -> Host;
         {_, none} -> string:trim(Addr, trailing, ".");
         {_, _} -> string:trim(Addr, trailing, ".") ++ ":" ++ Port
+    end.
+
+%% A warning for *.DOMAIN when other owners can have names under DOMAIN
+%% (net_shared/2): the program can then send data to a host of another
+%% owner, for example a bucket of S3 or a site of github.io.
+net_warning("*." ++ Host, Rules) ->
+    Domain = hd(string:split(Host, ":")),
+    case net_shared(Domain, Rules) of
+        false ->
+            ok;
+        Suffix ->
+            io:format(standard_error,
+                      "~ts: warning: --allow-net=*.~ts: ~ts is in the Public Suffix List, "
+                      "so other owners can have names under ~ts~n",
+                      [beam_com:name(), Host, Suffix, Domain])
+    end.
+
+%% The public suffix that is DOMAIN or is under DOMAIN, or false. Rules:
+%% the names of the Public Suffix List, "*.NAME" for each name under NAME
+%% (one label), and "!NAME" for a name that is not a suffix. A rule
+%% "*.DOMAIN" makes each name under DOMAIN a suffix.
+net_shared(Domain, Rules) ->
+    Under = "." ++ Domain,
+    Exact = lists:member(Domain, Rules) orelse
+        (lists:any(fun("*." ++ Parent) -> lists:suffix("." ++ Parent, Domain) andalso
+                                              length(string:split(Domain, ".", all)) =:=
+                                                  length(string:split(Parent, ".", all)) + 1;
+                      (_) -> false
+                   end, Rules)
+         andalso not lists:member("!" ++ Domain, Rules)),
+    case Exact of
+        true ->
+            Domain;
+        false ->
+            case [Name || R <- Rules, hd(R) =/= $!,
+                          Name <- [case R of "*." ++ N -> N; _ -> R end],
+                          lists:suffix(Under, Name) orelse R =:= "*." ++ Domain] of
+                [] -> false;
+                [Name | _] -> Name
+            end
+    end.
+
+%% The rules of lib/beam_com/priv/public_suffix_list.dat (ASCII only:
+%% the names of the list are in lower case). None when the file is not
+%% there.
+public_suffixes() ->
+    case code:priv_dir(beam_com) of
+        {error, _} ->
+            [];
+        Dir ->
+            case file:read_file(filename:join(Dir, "public_suffix_list.dat")) of
+                {ok, Data} ->
+                    [binary_to_list(R) || Line <- binary:split(Data, <<"\n">>, [global]),
+                                          [R | _] <- [string:lexemes(Line, " \t\r")],
+                                          binary:first(R) =/= $/,
+                                          lists:all(fun(C) -> C < 128 end, binary_to_list(R))];
+                {error, _} ->
+                    []
+            end
     end.
 
 net_port(Port) ->

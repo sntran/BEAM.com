@@ -136,6 +136,12 @@ Limits of the list:
   together) works.
 - A name of the list can send data to its name servers in the names of
   its queries, for example `secret.example.com` with `*.example.com`.
+- Caution: `*.DOMAIN` allows the names of each owner under `DOMAIN`.
+  With `*.s3.amazonaws.com` or `*.github.io`, the program can send data
+  to a bucket or a site of another person. The build gives a warning
+  when `DOMAIN` is in the [Public Suffix List](https://publicsuffix.org),
+  or has a name of the list under it. Give the names of your hosts
+  instead.
 - Without the supervisor, native code that makes the system calls
   itself does not go through the check. The NIFs of beam.com use the C
   library.

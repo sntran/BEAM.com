@@ -76,6 +76,11 @@ of lazy_html in lib/beam_com/priv/nifs; only a program with lazy_html
   lexbor: Copyright 2018-2020 Alexander Borisov. Apache License 2.0
   (LICENSE). https://github.com/lexbor/lexbor
 
+The Public Suffix List (lib/beam_com/priv/public_suffix_list.dat, for
+the warning of --allow-net=*.DOMAIN; only beam.com contains it)
+  Mozilla Public License 2.0 (licenses/mpl-2.0.txt).
+  https://publicsuffix.org
+
 The WebAssembly runtime (beam.wasm and beam.mjs in the zip, for
 --target wasm32)
   Erlang/OTP 29.1.1 and OpenSSL 4.0.3, as above, compiled with
