@@ -77,12 +77,17 @@ jobs:
           key: pdfium-src-7881-${{ matrix.cpu }}-small-v1
 
       # The key of custom-build.yml.
+      - name: The inputs of libpdfium.a
+        run: |
+          k=$(sh scripts/steps.sh cache_keys)
+          echo "$k" >> "$GITHUB_ENV"
+
       - name: Cache libpdfium.a
         id: cache_libpdfium_a
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium/${{ matrix.cpu }}
-          key: libpdfium-${{ matrix.cpu }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+          key: libpdfium-${{ matrix.cpu }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.PDFIUM_INPUTS }}
 
       - name: Build
         env:

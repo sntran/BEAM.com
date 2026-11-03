@@ -61,6 +61,9 @@ jobs:
         run: |
           k=$(sh scripts/libvips.sh --deps-key)
           echo "LIBVIPS_DEPS_KEY=$k" >> "$GITHUB_ENV"
+          # The key of libvips (scripts/steps.sh cache_keys).
+          k=$(sh scripts/steps.sh cache_keys)
+          echo "$k" >> "$GITHUB_ENV"
 
       - name: Cache the libraries of libvips
         id: cache_the_libraries_of_libvips
@@ -76,7 +79,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**', 'c_src/vips/**') }}-parts-${{ env.VIX_PARTS }}
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.LIBVIPS_INPUTS }}
 
       - name: Register the APE loader
         run: |

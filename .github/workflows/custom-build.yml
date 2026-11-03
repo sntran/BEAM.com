@@ -226,6 +226,9 @@ jobs:
         run: |
           k=$(sh scripts/steps.sh wasm_runtime_key)
           echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
+          # The keys of the caches of libpdfium.a, libvips and ccache.
+          k=$(sh scripts/steps.sh cache_keys)
+          echo "$k" >> "$GITHUB_ENV"
 
       # The WebAssembly runtime (about 3 minutes), with the key of build.yml.
       # The SHA-256 of its inputs has the NIFs of the runtime. The step
@@ -266,14 +269,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium/x64
-          key: libpdfium-x64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+          key: libpdfium-x64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.PDFIUM_INPUTS }}
 
       - name: Cache libpdfium.a (arm64)
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'ex_pdfium')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium/arm64
-          key: libpdfium-arm64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+          key: libpdfium-arm64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.PDFIUM_INPUTS }}
 
       # ccache for the C and C++ compiles of cosmocc (CCACHE of
       # scripts/steps.sh), about 4 of the 7 minutes of OTP. One cache for
@@ -288,7 +291,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/ccache
-          key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ hashFiles('patches/otp/**', 'c_src/cosmo/**') }}
+          key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ env.CCACHE_INPUTS }}
           restore-keys: |
             ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-
             ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-

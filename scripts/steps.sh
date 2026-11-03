@@ -16,6 +16,15 @@
 #          nif_edge
 #   With no step, all steps run in order (not hex_nifs and nif_edge).
 #
+# The keys of the steps (see "The keys of the steps" below):
+#
+#   scripts/steps.sh key STEP...    the key of each step
+#   scripts/steps.sh inputs STEP    the inputs of the step, as text
+#   scripts/steps.sh keys STEP...   the keys for the Makefile
+#   scripts/steps.sh check_keys     a check of the lists of files
+#   scripts/steps.sh cache_keys     the keys of the caches of CI
+#   scripts/steps.sh part_keys      the keys of the parts of this build
+#
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
@@ -1179,44 +1188,236 @@ check_static_nifs() {
     done
 }
 
-# The WebAssembly runtime of --target wasm32 (Cloudflare Workers): ERTS
-# built with Emscripten (wasm/erts/build.sh, the variant for Workers), from
-# a clone of the same OTP, with this build of OTP as its bootstrap. The
-# step bundle puts it in the zip (WASM_RUNTIME).
-# The inputs of the WebAssembly runtime, as one SHA-256: the pinned
-# versions, the settings that change it, and the files of this repository
-# that the build reads (git ls-files: the versions in the work tree).
+# The keys of the steps (docs/BUILDING.md, "The keys of the steps"). A
+# key is the SHA-256 of the inputs of a step, and the Makefile runs a
+# step again only when its key changed. The store of parts and the
+# caches of CI use keys of the same kind. A key hashes these inputs:
 #
-# Of scripts/steps.sh, only the functions of WASM_RUNTIME_FUNCS: the steps
-# hex_nifs and nif_edge, which wasm/erts/build.sh runs, and the functions
-# that they call. So a change of another step does not build the runtime
-# again (about 3 minutes in CI).
-# Caution: a function that these steps start to call must be in this list.
-WASM_RUNTIME_FUNCS="log check_commit wamr_clone step_hex_nifs build_hex_nif
-    hex_nif_recipe fetch_hex step_nif_edge hex_nif_packages edge_hex_nif_packages
-    omit_nif use_exqlite rust_nif_crate step_wasm_runtime wasm_runtime_inputs
-    steps_function"
+#   - The code of the step function, and of each function that this code
+#     names, again and again (steps_code). Comment lines are not code, so
+#     a change of a comment does not change a key.
+#   - The value of each variable in capitals that this code reads (the
+#     settings), except the variables of KEY_IGNORE.
+#   - The SHA-256 of each file of its list (step_files), as the work tree
+#     has it.
+#
+# The key of a step does not hash the keys of the steps that it needs:
+# the Makefile runs a step again when a step that it needs ran again.
 
-# steps_function NAME: the text of the function NAME of scripts/steps.sh,
-# on one line or from "NAME() {" to the next line "}".
-steps_function() {
-    awk -v f="$1" '
-        !on && index($0, f "() {") == 1 {
-            print
-            if ($0 !~ /[{][[:space:]]*$/) exit
-            on = 1
+# The variables that do not change what a step makes.
+KEY_IGNORE="PATH JOBS PARTS_URL PARTS_PUT CCACHE CCACHE_DIR CCACHE_MAXSIZE"
+
+# The steps of the Makefile, each with a key.
+KEY_STEPS="toolchain openssl otp configure sqlite nifs wasm make elixir release
+    multicall wasm_runtime bundle"
+
+# The functions that find keys. Their code names the steps only to find
+# a key, so steps_code does not follow these names.
+KEY_FUNCS="steps_code key_settings key_files step_roots step_files step_inputs step_key
+    write_keys step_check_keys wasm_runtime_inputs step_wasm_runtime_key step_cache_keys
+    nif_part_key otp_part_key elixir_part_key step_part_keys otp_from_part"
+
+# steps_code MODE NAME...: the functions NAME... of scripts/steps.sh, and
+# each function that their code names, again and again. A NAME with "-"
+# before it is a function not to follow, as the functions of KEY_FUNCS.
+# MODE "text": their code with no comment lines, in the order of the
+# names. MODE "names": their names. MODE "settings": the variables in
+# capitals that their code reads. A function starts at a line "NAME() {"
+# or "NAME() (", and ends at the next line "}" or ")", or on its first
+# line.
+steps_code() {
+    awk -v mode="$1" -v roots="$(shift; echo "$*")" -v stops="$KEY_FUNCS" '
+        function add(n) {
+            if ((n in code) && !(n in seen) && !(n in stop)) {
+                seen[n] = 1
+                todo[++last] = n
+            }
+        }
+        !on && /^[a-z_][a-z0-9_]*\(\) [{(]/ {
+            name = substr($0, 1, index($0, "(") - 1)
+            code[name] = $0 "\n"
+            if ($0 ~ /[{(][[:space:]]*$/) on = 1
             next
         }
-        on { print; if ($0 == "}") exit }' "$ROOT/scripts/steps.sh"
+        on {
+            if ($0 !~ /^[[:space:]]*#/) code[name] = code[name] $0 "\n"
+            if ($0 == "}" || $0 == ")") on = 0
+        }
+        END {
+            n = split(stops, r, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) stop[r[i]] = 1
+            n = split(roots, r, " ")
+            for (i = 1; i <= n; i++) if (r[i] ~ /^-/) stop[substr(r[i], 2)] = 1
+            for (i = 1; i <= n; i++) {
+                if (r[i] ~ /^-/) continue
+                delete stop[r[i]]
+                if (!(r[i] in code)) {
+                    print "steps_code: no function " r[i] " in scripts/steps.sh" > "/dev/stderr"
+                    exit 1
+                }
+                add(r[i])
+            }
+            for (i = 1; i <= last; i++) {
+                k = split(code[todo[i]], w, /[^A-Za-z0-9_]+/)
+                for (j = 1; j <= k; j++) add(w[j])
+            }
+            for (i = 2; i <= last; i++) {
+                v = todo[i]
+                for (j = i - 1; j >= 1 && todo[j] > v; j--) todo[j + 1] = todo[j]
+                todo[j + 1] = v
+            }
+            for (i = 1; i <= last; i++) {
+                if (mode == "names") print todo[i]
+                else if (mode == "text") printf "%s", code[todo[i]]
+                else {
+                    s = code[todo[i]]
+                    while (match(s, /\$[{]?[A-Z][A-Z0-9_]*/)) {
+                        v = substr(s, RSTART, RLENGTH)
+                        sub(/^\$[{]?/, "", v)
+                        vars[v] = 1
+                        s = substr(s, RSTART + RLENGTH)
+                    }
+                }
+            }
+            if (mode == "settings") for (v in vars) print v
+        }' "$ROOT/scripts/steps.sh"
 }
 
-wasm_runtime_inputs() {
-    for f in $WASM_RUNTIME_FUNCS; do
-        if [ -z "$(steps_function "$f")" ]; then
-            echo "wasm_runtime_inputs: no function $f in scripts/steps.sh" >&2
-            exit 1
+# key_settings NAME...: a line "NAME=VALUE" for each variable NAME, except
+# the variables of KEY_IGNORE. Each NAME is a name in capitals of
+# steps_code.
+key_settings() (
+    for ks in "$@"; do
+        case " $KEY_IGNORE " in *" $ks "*) continue ;; esac
+        eval "printf '%s=%s\n' \"\$ks\" \"\${$ks-}\""
+    done
+)
+
+# key_files PATH...: the SHA-256 of each file of these paths that git
+# knows, as the work tree has it. A PATH can have the patterns of git,
+# for example c_src/cosmo/*.c. In a tree with no git (the source archive
+# of a release), each file of these paths.
+key_files() (
+    cd "$ROOT"
+    if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        git ls-files -z -- "$@" | xargs -0r sha256sum
+    else
+        set +f
+        # shellcheck disable=SC2048,SC2086 # The patterns of the paths.
+        find $* -type f 2> /dev/null | LC_ALL=C sort | tr '\n' '\0' | xargs -0r sha256sum
+    fi
+)
+
+# step_roots STEP: the functions of the code of the step STEP, for
+# steps_code. The step wasm_runtime also has the steps that
+# wasm/erts/build.sh runs. These build only the NIFs of
+# edge_hex_nif_packages, so not vix and no NIF of Rust.
+step_roots() {
+    case $1 in
+        wasm_runtime) echo step_wasm_runtime step_hex_nifs step_nif_edge \
+            -build_vix_nif -build_rust_nif ;;
+        *) echo "step_$1" ;;
+    esac
+}
+
+# step_files STEP: the files of this repository that the step STEP reads,
+# as paths for git ls-files. "sh scripts/steps.sh check_keys" finds each
+# path of ROOT in the code of a step that is not in its list.
+# Caution: a file that a step starts to read must be in its list.
+step_files() {
+    case $1 in
+        toolchain|openssl|release) ;;
+        otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h" ;;
+        configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
+        sqlite) echo "patches/esqlite" ;;
+        nifs) echo "scripts/libvips.sh patches/libvips c_src/vips native/vips_resvg
+                    scripts/pdfium.sh patches/pdfium c_src/rust scripts/rust_link.sh
+                    c_src/erts_wasm/sqlite_vfs.c" ;;
+        wasm) echo "c_src/wasm patches/wamr" ;;
+        make) echo "c_src/cosmo/depcc" ;;
+        elixir) echo "patches/elixir" ;;
+        multicall) echo "patches/cosmo" ;;
+        wasm_runtime) echo "wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr" ;;
+        bundle) echo "src priv licenses c_src/cosmo/*.inetrc c_src/wasm/include LICENSE NOTICE" ;;
+        *) echo "step_files: no step $1" >&2
+           return 1 ;;
+    esac
+}
+
+# step_inputs STEP: the inputs of the step STEP, as text.
+step_inputs() (
+    set -f
+    roots=$(step_roots "$1")
+    files=$(step_files "$1")
+    code=$(steps_code text $roots)
+    settings=$(steps_code settings $roots | LC_ALL=C sort)
+    values=$(key_settings $settings)
+    sums=
+    [ -z "$files" ] || sums=$(key_files $files)
+    printf 'step %s\n%s\n%s\n%s\n' "$1" "$code" "$values" "$sums"
+)
+
+# step_key STEP: the key of the step STEP.
+step_key() (
+    inputs=$(step_inputs "$1")
+    printf '%s\n' "$inputs" | sha256sum | cut -d' ' -f1
+)
+
+# write_keys STEP...: the key of each step STEP in BUILD/stamps/STEP.key,
+# and its inputs in BUILD/stamps/STEP.inputs. A key is written again only
+# when it changed, because the Makefile compares the times of these
+# files. To see why a step runs again, compare its file of inputs with
+# the output of "sh scripts/steps.sh inputs STEP" before the build.
+write_keys() (
+    mkdir -p "$BUILD/stamps"
+    for wk in "$@"; do
+        inputs=$(step_inputs "$wk")
+        k=$(printf '%s\n' "$inputs" | sha256sum | cut -d' ' -f1)
+        f=$BUILD/stamps/$wk
+        if [ "$(cat "$f.key" 2>/dev/null)" != "$k" ]; then
+            printf '%s\n' "$inputs" > "$f.inputs"
+            echo "$k" > "$f.key.new"
+            mv "$f.key.new" "$f.key"
         fi
     done
+)
+
+# The check of the lists of files: each path of ROOT in the code of a
+# step must be in the list of the step (step_files). The code can give
+# only the start of a path ("$ROOT/patches/otp/*.patch" gives
+# patches/otp/), so a file of the list must start with it.
+step_check_keys() (
+    bad=0
+    set -f
+    for ck in $KEY_STEPS; do
+        files=$(step_files "$ck")
+        known=
+        [ -z "$files" ] || known=$(cd "$ROOT" && git ls-files -- $files)
+        code=$(steps_code text $(step_roots "$ck"))
+        paths=$(printf '%s\n' "$code" |
+            grep -o '\$[{]\{0,1\}ROOT[}]\{0,1\}"\{0,1\}/[A-Za-z0-9_./-]*' |
+            sed 's#^[^/]*/##' | LC_ALL=C sort -u)
+        for path in $paths; do
+            if ! printf '%s\n' "$known" | awk -v p="$path" 'index($0, p) == 1 { f = 1 } END { exit !f }'; then
+                echo "check_keys: the step $ck reads $path, which is not in step_files" >&2
+                bad=1
+            fi
+        done
+    done
+    [ "$bad" = 0 ] || exit 1
+    echo "check_keys: ok"
+)
+
+# The inputs of the WebAssembly runtime, as one SHA-256: the pinned
+# versions, the settings that change it, the code of the step
+# wasm_runtime (with the steps hex_nifs and nif_edge, which
+# wasm/erts/build.sh runs), and its files. The cache of CI has this key,
+# and the workflows find it before the build. So this key names its
+# settings: a variable of the environment of the build, which the
+# workflow does not have, must not change it.
+wasm_runtime_inputs() (
+    code=$(steps_code text $(step_roots wasm_runtime))
+    files=$(key_files $(step_files wasm_runtime))
     {
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "EMSDK $EMSDK_VERSION $EMSDK_COMMIT WAMR $WAMR_VERSION $WAMR_COMMIT"
@@ -1225,16 +1426,29 @@ wasm_runtime_inputs() {
         # The version and the SHA-256 of each package of HEX_NIFS.
         for p in $(edge_hex_nif_packages); do echo "$p $(hex_nif_recipe "$p")"; done
         if use_exqlite; then echo "exqlite $(hex_nif_recipe exqlite)"; fi
-        for f in $WASM_RUNTIME_FUNCS; do steps_function "$f"; done
-        git -C "$ROOT" ls-files wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr |
-            while read -r f; do echo "$f $(sha256sum "$ROOT/$f" | cut -d' ' -f1)"; done
+        printf '%s\n%s\n' "$code" "$files"
     } | sha256sum | cut -d' ' -f1
-}
+)
 
 # The SHA-256 of wasm_runtime_inputs, for the cache key of the runtime in
 # CI (the workflows). It needs no build.
 step_wasm_runtime_key() {
     wasm_runtime_inputs
+}
+
+# The keys of the other caches of CI, as lines NAME=KEY for the file
+# GITHUB_ENV of a workflow. They need no build.
+#   PDFIUM_INPUTS   libpdfium.a (scripts/pdfium.sh).
+#   LIBVIPS_INPUTS  libvips of VIX_PARTS (scripts/libvips.sh).
+#   CCACHE_INPUTS   ccache of OTP: the files that change the objects.
+step_cache_keys() {
+    pdfium=$(key_files scripts/pdfium.sh patches/pdfium)
+    libvips=$(key_files scripts/libvips.sh patches/libvips c_src/vips)
+    ccache=$(key_files patches/otp c_src/cosmo)
+    parts=$(printf '%s\n' $VIX_PARTS | LC_ALL=C sort -u | tr '\n' ' ')
+    echo "PDFIUM_INPUTS=$(printf '%s\n' "$pdfium" | sha256sum | cut -d' ' -f1)"
+    echo "LIBVIPS_INPUTS=$(printf '%s\n%s\n' "$parts" "$libvips" | sha256sum | cut -d' ' -f1)"
+    echo "CCACHE_INPUTS=$(printf '%s\n' "$ccache" | sha256sum | cut -d' ' -f1)"
 }
 
 # The store of prebuilt parts (docs/BUILDING.md, "The store of parts"). A
@@ -1286,32 +1500,22 @@ part_put() {
     mv "$pp_file.tmp" "$pp_file"
 }
 
-# part_files PATH...: the SHA-256 of each file of these paths that git
-# knows, for the key of a part.
-part_files() {
-    git -C "$ROOT" ls-files "$@" |
-        while read -r pf; do echo "$pf $(sha256sum "$ROOT/$pf" | cut -d' ' -f1)"; done
-}
-
-# part_funcs NAME...: the text of these functions of scripts/steps.sh, for
-# the key of a part. Caution: a function that a step of a part starts to
-# call must be in its list.
-part_funcs() {
-    for pf in "$@"; do
-        if [ -z "$(steps_function "$pf")" ]; then
-            echo "part_funcs: no function $pf in scripts/steps.sh" >&2
-            exit 1
-        fi
-        steps_function "$pf"
-    done
-}
-
 # The key of the NIF of the package $1 (step_nifs): its recipe, the NIF
-# API of this OTP (the headers that the NIF reads), cosmocc, and the files
-# and functions that build it. Not the OTP version: a NIF of the same API
-# works with each version of OTP 29.
-nif_part_key() {
+# API of this OTP (the headers that the NIF reads), cosmocc, the code that
+# builds it (build_hex_nif and fetch_hex, with each function that they
+# call), and its settings and files. Not the OTP version: a NIF of the
+# same API works with each version of OTP 29. The key names its settings,
+# so a setting of another NIF does not change it.
+nif_part_key() (
     t=$(target)
+    code=$(steps_code text build_hex_nif fetch_hex)
+    case $1 in
+        vix) files=$(key_files scripts/libvips.sh patches/libvips c_src/vips native/vips_resvg \
+                 c_src/rust scripts/rust_link.sh) ;;
+        ex_pdfium) files=$(key_files scripts/pdfium.sh patches/pdfium c_src/rust scripts/rust_link.sh) ;;
+        *) files=
+           [ -z "$(rust_nif_crate "$1")" ] || files=$(key_files c_src/rust scripts/rust_link.sh) ;;
+    esac
     {
         echo "nif $1 $(hex_nif_recipe "$1")"
         echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 RUST_NIGHTLY ${RUST_NIGHTLY:-}"
@@ -1319,67 +1523,61 @@ nif_part_key() {
                  erts/emulator/beam/erl_drv_nif.h "erts/include/$t/erl_int_sizes_config.h"; do
             echo "$h $(sha256sum "$ERL_TOP/$h" | cut -d' ' -f1)"
         done
-        part_funcs build_hex_nif fetch_hex
         case $1 in
-            vix)
-                echo "VIX_PARTS $(printf '%s\n' $VIX_PARTS | sort -u | tr '\n' ' ') LIBVIPS ${LIBVIPS:-}"
-                part_funcs build_vix_nif build_rust_nif rust_nif_crate
-                echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
-                part_files scripts/libvips.sh patches/libvips c_src/vips native/vips_resvg \
-                    c_src/rust scripts/rust_link.sh ;;
-            ex_pdfium)
-                echo "PDFIUM ${PDFIUM:-}"
-                part_funcs build_rust_nif rust_nif_crate rust_nif_env rust_nif_prepare
-                echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
-                part_files scripts/pdfium.sh patches/pdfium c_src/rust scripts/rust_link.sh ;;
-            *)
-                if [ -n "$(rust_nif_crate "$1")" ]; then
-                    part_funcs build_rust_nif rust_nif_crate rust_nif_env rust_nif_prepare
-                    echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
-                    part_files c_src/rust scripts/rust_link.sh
-                fi ;;
+            vix) echo "VIX_PARTS $(printf '%s\n' $VIX_PARTS | sort -u | tr '\n' ' ') LIBVIPS ${LIBVIPS:-}" ;;
+            ex_pdfium) echo "PDFIUM ${PDFIUM:-}" ;;
         esac
+        echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
+        printf '%s\n%s\n' "$code" "$files"
     } | sha256sum | cut -d' ' -f1
-}
+)
 
 # The key of the built OTP tree (the steps otp, configure and make): the
-# versions, the settings of the configure and of the build, the files that
-# change each object (patches/otp, erts_cosmo.h, noshared, depcc), and the
-# path of the tree, which its Makefiles hold. The other files of
-# c_src/cosmo go into the step multicall, which compiles them again.
-otp_part_key() {
+# versions, the settings of the configure and of the build, the code of
+# the three steps, the files that change each object (patches/otp,
+# erts_cosmo.h, noshared, depcc), and the path of the tree, which its
+# Makefiles hold. The other files of c_src/cosmo go into the step
+# multicall, which compiles them again.
+otp_part_key() (
+    code=$(steps_code text step_otp step_configure step_make)
+    files=$(key_files patches/otp c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc)
     {
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 CC $CC CXX $CXX AR $AR"
         echo "JIT $JIT CCACHE ${CCACHE:-0} BUILD $BUILD ERL_TOP $ERL_TOP"
         echo "EXTRA_APPS $EXTRA_APPS"
         echo "SRC_APPS $(printf '%s\n' $SRC_APPS | sort -u | tr '\n' ' ')"
-        part_funcs step_otp step_configure step_make
-        part_files patches/otp c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc
+        printf '%s\n%s\n' "$code" "$files"
     } | sha256sum | cut -d' ' -f1
-}
+)
 
 # The key of the built Elixir (the step elixir): its version, its
-# patches, and the OTP that compiled it.
-elixir_part_key() {
+# patches, its code, and the OTP that compiled it.
+elixir_part_key() (
+    code=$(steps_code text step_elixir)
+    files=$(key_files patches/elixir)
+    otp=$(otp_part_key)
     {
-        echo "ELIXIR $ELIXIR_VERSION $ELIXIR_COMMIT OTP $(otp_part_key)"
-        part_funcs step_elixir
-        part_files patches/elixir
+        echo "ELIXIR $ELIXIR_VERSION $ELIXIR_COMMIT OTP $otp"
+        printf '%s\n%s\n' "$code" "$files"
     } | sha256sum | cut -d' ' -f1
-}
+)
 
 # The key of each part of this build, one "NAME KEY" on each line (for
 # the logs of CI). It needs the steps otp and configure: the NIF keys read
 # the headers of the OTP tree.
-step_part_keys() {
-    echo "otp $(otp_part_key)"
-    [ "$ELIXIR" = 1 ] && echo "elixir $(elixir_part_key)"
+step_part_keys() (
+    k=$(otp_part_key)
+    echo "otp $k"
+    if [ "$ELIXIR" = 1 ]; then
+        k=$(elixir_part_key)
+        echo "elixir $k"
+    fi
     for p in $(hex_nif_packages); do
-        echo "nif-$p $(nif_part_key "$p")"
+        k=$(nif_part_key "$p")
+        echo "nif-$p $k"
     done
-    return 0
-}
+)
 
 # 1 when the build uses a store (PARTS_URL) and the OTP tree is a part
 # with the key of this build: the steps configure and make then have
@@ -1390,6 +1588,10 @@ otp_from_part() {
         [ "$(cat "$ERL_TOP/.beam_com_part" 2>/dev/null)" = "$(otp_part_key)" ]
 }
 
+# The WebAssembly runtime of --target wasm32 (Cloudflare Workers): ERTS
+# built with Emscripten (wasm/erts/build.sh, the variant for Workers), from
+# a clone of the same OTP, with this build of OTP as its bootstrap. The
+# step bundle puts it in the zip (WASM_RUNTIME).
 step_wasm_runtime() {
     [ "${WASM_RUNTIME:-}" = none ] && return 0
     # A runtime of the same inputs (for example from the cache of CI)
@@ -1897,6 +2099,25 @@ if [ $# -eq 0 ]; then
     set -- toolchain openssl otp configure sqlite nifs wasm make elixir release \
         multicall wasm_runtime bundle test unit
 fi
+# "keys STEP...": write the key of each step for the Makefile. "key
+# STEP...": print the key of each step, one "STEP KEY" on each line.
+# "inputs STEP": print the inputs of the step.
+case $1 in
+    inputs)
+        step_inputs "$2"
+        exit 0 ;;
+    keys)
+        shift
+        write_keys "$@"
+        exit 0 ;;
+    key)
+        shift
+        for s in "$@"; do
+            k=$(step_key "$s")
+            echo "$s $k"
+        done
+        exit 0 ;;
+esac
 mkdir -p "$BUILD"
 for s in "$@"; do
     "step_$s"

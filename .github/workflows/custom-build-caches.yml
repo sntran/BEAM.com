@@ -125,6 +125,9 @@ jobs:
         run: |
           k=$(sh scripts/steps.sh wasm_runtime_key)
           echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
+          # The keys of the caches of libpdfium.a, libvips and ccache.
+          k=$(sh scripts/steps.sh cache_keys)
+          echo "$k" >> "$GITHUB_ENV"
 
       - name: Cache the WebAssembly runtime
         id: wasm
@@ -150,14 +153,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium/x64
-          key: libpdfium-x64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+          key: libpdfium-x64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.PDFIUM_INPUTS }}
 
       - name: Cache libpdfium.a (arm64)
         id: pdfium_arm64
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium/arm64
-          key: libpdfium-arm64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
+          key: libpdfium-arm64-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.PDFIUM_INPUTS }}
 
       - name: Install ccache
         run: sudo apt-get install -y ccache
@@ -167,7 +170,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/ccache
-          key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ hashFiles('patches/otp/**', 'c_src/cosmo/**') }}
+          key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ env.CCACHE_INPUTS }}
           restore-keys: |
             ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-
             ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-
