@@ -208,16 +208,29 @@ if (Test-Path "examples") {
     Check "beam.com" 'the application nosuch is not in beam.com' @("examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
 }
 
-# The sandbox (--allow-*): Windows ignores it, so each action works; the
-# flags must still be accepted and checked. The host list of --allow-net
-# works on Windows too (see below).
+# The sandbox (--allow-*) on Windows (c_src/cosmo/beam_com_fs.c): the
+# check of the paths, no network without net, and a job object of one
+# process without run. The host list of --allow-net works on Windows too
+# (see below).
 if (Test-Path "examples") {
     Check "beam.com" '--allow-net: a bad domain' @("tests/programs/sandbox_check.erl", "--allow-net=*.com", "-o", "$Dir/never.com") 1
     Check "beam.com" 'wrote .*sandbox_net.com' @("tests/programs/sandbox_check.erl", "-N", "--allow-read=/etc", "-o", "$Dir/sandbox_net.com")
     if (Test-Path (Join-Path $Dir "sandbox_net.com")) {
         Remove-Item (Join-Path $Dir "sandbox.tmp") -ErrorAction SilentlyContinue
-        Check "sandbox_net.com" 'read: ok@@write: ok@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
+        Check "sandbox_net.com" 'a job object of one process@@read: error eacces@@write: error eacces@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
     }
+    # A directory of --allow-write, with another case of the name. ".."
+    # leaves it, and Windows reads ".. " as "..", so the check refuses it.
+    $rw = Join-Path $Dir "sandbox-w"
+    Remove-Item $rw -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory $rw | Out-Null
+    Check "beam.com" 'wrote .*sandbox_rw.com' @("tests/programs/sandbox_check.erl", "--allow-write=$rw", "-o", "$Dir/sandbox_rw.com")
+    if (Test-Path (Join-Path $Dir "sandbox_rw.com")) {
+        Check "sandbox_rw.com" 'a job object of one process@@read: error eacces@@write: ok@@write: ok@@write: error eacces@@write: error eacces@@listen: error eacces@@done' `
+            @("read", "$Dir/beam.com", "write", "$rw/new.txt", "write", ($rw.ToUpper() + "\upper.txt"),
+              "write", "$rw/../sandbox.tmp", "write", "$rw/.. /sandbox.tmp", "listen")
+    }
+    Remove-Item $rw -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --allow-net=HOST,...: the resolver of beam.com and the check of each

@@ -69,10 +69,12 @@ int __real_connect(int, const struct sockaddr *, socklen_t);
 int __real_bind(int, const struct sockaddr *, socklen_t);
 ssize_t __real_sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 ssize_t __real_sendmsg(int, const struct msghdr *, int);
+int __real_socket(int, int, int);
 int __wrap_connect(int, const struct sockaddr *, socklen_t);
 int __wrap_bind(int, const struct sockaddr *, socklen_t);
 ssize_t __wrap_sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 ssize_t __wrap_sendmsg(int, const struct msghdr *, int);
+int __wrap_socket(int, int, int);
 
 /* The most addresses that the resolver keeps, the most threads that
  * answer at one time, and the time of each try of a name server. */
@@ -108,6 +110,7 @@ struct net_ns {
 static struct net_rule net_rules[BEAM_COM_NET_RULES];
 static int net_nrules;
 static int net_on;
+static int net_deny; /* no permission net (beam_com_net_deny()) */
 static int net_verbose;
 static struct net_addr net_addrs[NET_ADDRS];
 static int net_naddrs;
@@ -357,6 +360,8 @@ static int net_check(const struct sockaddr *sa, socklen_t len, int bind)
     const struct sockaddr_in *in;
     const struct sockaddr_in6 *in6;
 
+    if (net_deny && sa && (sa->sa_family == AF_INET || sa->sa_family == AF_INET6))
+        return 0;
     if (!net_on || !sa)
         return 1;
     if (len >= sizeof(struct sockaddr_in) && sa->sa_family == AF_INET) {
@@ -411,6 +416,21 @@ ssize_t __wrap_sendmsg(int fd, const struct msghdr *msg, int flags)
         return -1;
     }
     return __real_sendmsg(fd, msg, flags);
+}
+
+/* Without the permission net, only on Windows (beam_com_net_deny()). */
+int __wrap_socket(int domain, int type, int protocol)
+{
+    if (net_deny && (domain == AF_INET || domain == AF_INET6)) {
+        errno = EACCES;
+        return -1;
+    }
+    return __real_socket(domain, type, protocol);
+}
+
+void beam_com_net_deny(void)
+{
+    net_deny = 1;
 }
 
 /* --- Messages of DNS --------------------------------------------------- */

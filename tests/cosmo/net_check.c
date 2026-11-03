@@ -10,6 +10,7 @@
 #define __real_bind bind
 #define __real_sendto sendto
 #define __real_sendmsg sendmsg
+#define __real_socket socket
 #include "../../c_src/cosmo/beam_com_net.c"
 
 static int failures;

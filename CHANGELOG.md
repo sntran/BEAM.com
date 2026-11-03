@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox on Windows: `--allow-read` and `--allow-write` now limit
+  the paths of the calls of the C library (`{error, eacces}` for
+  another path), without `--allow-net` a socket of IPv4 or IPv6 gives
+  `{error, eacces}`, and without `--allow-run` a job object of one
+  process stops each new process (docs/SANDBOX.md, "Windows"). Before,
+  Windows ignored the flags.
 - The sandbox: on Linux 5.6 and later, a supervisor process checks the
   calls of the network of a program with `--allow-net=HOST,...`, with
   seccomp user notification. The host list then also holds for native
