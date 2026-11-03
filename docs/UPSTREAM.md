@@ -2345,11 +2345,23 @@ unmapped block and scans it at the exit found the writes: 30 blocks of
 8,323,072 bytes, each written from the offset 4,063,232 (the size of the
 head).
 
+The cache of segments of `erl_mseg.c` (`+MMmcs`, 10 segments by default)
+also kept memory from `malloc()`. A segment is a block of `malloc()` here,
+and `malloc()` has its own lists of free memory, so the cache had no use.
+With the cache, the case `heap_shrink` of `mem_check` grew the size of
+the memory by 16 MB here and by up to 32 MB in CI, in steps of 8 MB, and
+the memory that `malloc()` gave out (`wasm_host:memory(used)`) grew by 14
+MB. With `+MMmcs 0`, each case was flat, and the peak of the run was 74
+MB in place of 162 MB. So `wasm/erts/otp.patch` makes 0 the default of
+`mcs` for `__EMSCRIPTEN__` (`erl_mseg.h`). An app can still give
+`+MMmcs`.
+
 `tests/wasm_diff/mem_check.erl` checks the memory of
 the VM over renders in new processes, binaries of 16 MB, a heap that
 shrinks, a binary that grows, and 16 processes at one time, also after
 a snapshot and with `-Mea min`, and that 8 MB of data that a process
-keeps do not change.
+keeps do not change. It checks the size of the memory and the memory that
+`malloc()` gives out.
 
 **Possible upstream change.** A partial `munmap()` of an anonymous
 mapping in Emscripten, or an `EINVAL` that ERTS checks.

@@ -1469,7 +1469,10 @@ export class Vm {
     const t1 = Date.now();
     return new Promise((resolve, reject) => {
       const snapKB = snapBytes ? snapBytes.byteLength >> 10 : 0;
-      this.onready = () => { this.live(); this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms), ${this.memory()}`); resolve(); };
+      // The version of the deploy (BEAM_VERSION): a test or an app sees in
+      // the log when a Durable Object runs the code of a new deploy.
+      const version = env.BEAM_VERSION?.id ? `, version ${env.BEAM_VERSION.id}` : '';
+      this.onready = () => { this.live(); this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms${version}), ${this.memory()}`); resolve(); };
       createBeam({
         noInitialRun: !!snap,
         onRuntimeInitialized: snap ? () => {

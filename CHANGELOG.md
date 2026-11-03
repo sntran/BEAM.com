@@ -5,6 +5,25 @@ notes of its release.
 
 ## Unreleased
 
+- `wasm_host:memory(used)` gives the memory that the VM uses now in the
+  WebAssembly runtime: the bytes that `malloc()` gives out. It goes down
+  when the VM frees memory, also with `-Mea min`. `wasm_host:memory/0`
+  (the size, which never shrinks) is also `wasm_host:memory(size)`
+  (#166).
+- The WebAssembly runtime has no cache of segments of ERTS by default
+  (`+MMmcs 0`). The cache kept freed carriers from `malloc()`, so a heap
+  that shrinks grew the memory of the VM by up to 32 MB, in steps of 8
+  MB. With no cache, the peak of `tests/wasm_diff/mem_check.erl` went
+  from 162 MB to 74 MB, and each of its cases is flat. The test now also
+  checks `wasm_host:memory(used)`.
+- `docs/WORKERS.md` tells what a deploy does to a Durable Object that
+  runs: it keeps its VM and the old code for up to 300 s by default, and
+  `--durable-objects-code-update-mode immediate` resets it at once
+  (#165). The line `beam: ready in ...` of the log has the version of the
+  deploy (`BEAM_VERSION`).
+- `docs/WORKERS.md` tells how Cloudflare counts the 128 MB of an isolate,
+  and which value an app or a load test compares with it (#167).
+
 - The Makefile runs a step again when its key changed, not when a file
   is newer (`docs/BUILDING.md`, "The keys of the steps"). The key of a
   step is the SHA-256 of its code in `scripts/steps.sh`, with each
