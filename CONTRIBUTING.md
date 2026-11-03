@@ -31,16 +31,28 @@ CI runs the tests on each system for each pull request. A change of the
 docs only starts no run.
 
 For tests on a system that you do not have, for example macOS or Windows,
-start the workflow "Remote shell" (`.github/workflows/remote-shell.yml`)
-by hand, with a branch `debug/...`. Then send each command:
+use SSH to a runner of CI:
+
+1. Make a key, one time:
+   `beam.com -a ssh scripts/remote_ssh.erl -- keygen ~/.ssh/beam_com_ci`.
+2. Start the workflow "Remote SSH" (`.github/workflows/remote-ssh.yml`)
+   by hand, with the runner, the line of `~/.ssh/beam_com_ci.pub`, and a
+   branch `debug/...`.
+3. When the branch exists, run commands and copy files:
 
 ```sh
-scripts/remote_shell_send.sh debug/shell cmd.sh   # prints the output
+scripts/remote_ssh_client.sh debug/ssh ~/.ssh/beam_com_ci exec 'uname -a'
+scripts/remote_ssh_client.sh debug/ssh ~/.ssh/beam_com_ci put beam.com beam.com
+scripts/remote_ssh_client.sh debug/ssh ~/.ssh/beam_com_ci get out.log out.log
+scripts/remote_ssh_client.sh debug/ssh - bridge 2222   # for OpenSSH: ssh -p 2222 runner@127.0.0.1
 ```
 
-The runner runs the file with bash, and its files stay between the
-commands. A file with the word `stop` ends the job. The two branches of
-the shell each hold one commit, and the job deletes them at its end.
+The server is Erlang `:ssh` (`scripts/remote_ssh.erl`) behind a
+WebSocket and a quick tunnel of Cloudflare, so the client needs only
+HTTPS (also through `HTTPS_PROXY`). Each command runs with bash in a work
+directory that stays between the commands. `touch "$REMOTE_SSH_STOP"`
+ends the job, and so does the limit of minutes. The job deletes the
+branch at its end.
 
 ## Rules for a change
 
