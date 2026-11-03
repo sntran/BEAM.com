@@ -5,6 +5,15 @@ notes of its release.
 
 ## Unreleased
 
+- The caches of the custom builds are full on `main`
+  (`custom-build-caches.yml`). The first custom build after a change
+  took about 30 minutes, because only a run on `main` fills a cache that
+  it reads, and `vix.yml` runs on pull requests. The new workflow fills
+  the libraries of libvips, libvips, ccache, libpdfium.a and the
+  WebAssembly runtime after each change of their inputs, and reads them
+  two times each week, so GitHub does not remove them.
+- The cache key of libvips in `custom-build.yml` has `c_src/vips/`, as
+  in `vix.yml`. Before, a change of the SVG loader kept an old libvips.
 - The APE file starts under Rosetta of Apple (a Linux container of
   `container --arch amd64`). The APE loader of x86_64 crashed there
   before the program started, because its code segment could be

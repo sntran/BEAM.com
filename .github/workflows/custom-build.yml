@@ -239,7 +239,8 @@ jobs:
           key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ env.WASM_RUNTIME_INPUTS }}
 
       # The libraries of libvips, with those of each part (about 10
-      # minutes). Their key is the SHA-256 of their recipe, so a new set
+      # minutes). custom-build-caches.yml fills this cache and the next
+      # ones on main. Their key is the SHA-256 of their recipe, so a new set
       # of parts builds only libvips (scripts/libvips.sh --deps-key).
       - name: The recipe of the libraries of libvips
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
@@ -256,12 +257,13 @@ jobs:
 
       # The static libvips of the NIF of vix (about 1.5 minutes on the
       # libraries), with the key of vix.yml and the parts of VIX_PARTS.
+      # c_src/vips/ holds a loader of libvips, so it is in the key.
       - name: Cache libvips
         if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**') }}-parts-${{ env.VIX_PARTS }}
+          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**', 'c_src/vips/**') }}-parts-${{ env.VIX_PARTS }}
 
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
       # (the version of the test of the recipe), ninja, and nasm (the SIMD

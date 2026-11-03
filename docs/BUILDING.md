@@ -262,6 +262,13 @@ when the build did not run. The file stays in the prerelease
     the 7 minutes of the build of OTP are C and C++ compiles. A new OTP
     version starts from the cache of an earlier version.
     `custom-build-versions.yml` fills it for each pair of versions.
+  - Only a run on `main` fills a cache that a custom build can read.
+    [`custom-build-caches.yml`](../.github/workflows/custom-build-caches.yml)
+    builds a custom build with all the parts of `vix`, `ex_pdfium` and
+    `rusty_csv`. It fills these caches and libpdfium.a for the default
+    OTP version. It runs after a merge that changes their inputs, and
+    two times each week, because GitHub removes a cache that no run
+    reads for 7 days. When each cache is there, it builds nothing.
 - GitHub never sees the email address: the FIFO sends it in a box of
   `secretbox`, which only the FIFO opens.
 - The workflow needs the secret `BEAM_FIFO_SECRET` of the repository:
