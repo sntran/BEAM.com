@@ -188,6 +188,8 @@ for f in open openat creat opendir readlink readlinkat unlink unlinkat rmdir ren
     mkdirat lchown fchownat; do
     FS_WRAPS="$FS_WRAPS -Wl,--wrap=$f"
 done
+# getcwd() in the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
+MAC_WRAPS="-Wl,--wrap=getcwd"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -1237,9 +1239,10 @@ step_multicall() {
     # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c. The
     # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h, and the
     # wraps of NET_WRAPS (--allow-net=HOST,...) in beam_com_net.c, and
-    # the wraps of FS_WRAPS (the paths on Windows) in beam_com_fs.c.
+    # the wraps of FS_WRAPS (the paths on Windows) in beam_com_fs.c, and
+    # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 

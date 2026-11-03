@@ -199,6 +199,79 @@ const char *beam_com_seatbelt_profile(void)
 }
 
 #ifndef BEAM_COM_SEATBELT_TEST
+/*
+ * getcwd() in the sandbox. The getcwd() of Cosmopolitan on XNU opens "."
+ * and asks for its path (F_GETPATH), and the open needs file-read-data
+ * on the directory, which the profile refuses: kernel then cannot start
+ * ("loader cannot read current directory"). On Linux, Landlock does not
+ * check getcwd(). Here getattrlist() of libSystem gives the path
+ * (ATTR_CMN_FULLPATH), which needs only the metadata. The link has
+ * -Wl,--wrap=getcwd (MAC_WRAPS of scripts/steps.sh).
+ */
+struct sb_attrlist {
+    uint16_t bitmapcount, reserved;
+    uint32_t commonattr, volattr, dirattr, fileattr, forkattr;
+};
+#define SB_ATTR_BIT_MAP_COUNT 5
+#define SB_ATTR_CMN_FULLPATH 0x08000000u
+
+static int (*sb_getattrlist)(const char *, void *, void *, size_t, unsigned long);
+static int sb_on;
+
+char *__real_getcwd(char *, size_t);
+char *__wrap_getcwd(char *, size_t);
+
+/* The path of the working directory in out, or -1. */
+static int sb_cwd(char *out, size_t size)
+{
+    struct sb_attrlist list = {SB_ATTR_BIT_MAP_COUNT, 0, SB_ATTR_CMN_FULLPATH, 0, 0, 0, 0};
+    union {
+        char bytes[PATH_MAX + 64];
+        uint32_t align;
+    } buf;
+    int32_t offset;
+    uint32_t length, total;
+
+    if (sb_getattrlist(".", &list, buf.bytes, sizeof(buf.bytes), 0) != 0)
+        return -1;
+    /* The buffer: a total length, then the reference of the path (an
+     * offset from the reference, and a length with the final NUL). */
+    memcpy(&total, buf.bytes, 4);
+    memcpy(&offset, buf.bytes + 4, 4);
+    memcpy(&length, buf.bytes + 8, 4);
+    if (total > sizeof(buf.bytes) || offset < 8 || length < 2 ||
+        (size_t)offset + 4 + length > total || buf.bytes[4 + offset] != '/' ||
+        buf.bytes[4 + offset + length - 1] != '\0')
+        return -1;
+    if (length > size) {
+        errno = ERANGE;
+        return -2;
+    }
+    memcpy(out, buf.bytes + 4 + offset, length);
+    return 0;
+}
+
+char *__wrap_getcwd(char *buf, size_t size)
+{
+    char path[PATH_MAX];
+    int rc;
+
+    if (!sb_on)
+        return __real_getcwd(buf, size);
+    rc = sb_cwd(path, sizeof(path));
+    if (rc == -1)
+        return __real_getcwd(buf, size);
+    if (rc == -2)
+        return NULL;
+    if (!buf)
+        return size && strlen(path) + 1 > size ? (errno = ERANGE, NULL) : strdup(path);
+    if (strlen(path) + 1 > size) {
+        errno = ERANGE;
+        return NULL;
+    }
+    return strcpy(buf, path);
+}
+
 const char *beam_com_seatbelt_apply(void)
 {
     int (*init)(const char *, uint64_t, char **);
@@ -221,12 +294,15 @@ const char *beam_com_seatbelt_apply(void)
         !(f = cosmo_dlsym(lib, "sandbox_init")) || !(g = cosmo_dlsym(lib, "sandbox_free_error")) ||
         !(init = cosmo_dltramp(f)) || !(free_error = cosmo_dltramp(g)))
         return "sandbox_init() of libSystem is not there";
+    if ((h = cosmo_dlsym(lib, "getattrlist")))
+        sb_getattrlist = cosmo_dltramp(h);
     if (init(beam_com_seatbelt_profile(), 0, &error) != 0) {
         snprintf(reason, sizeof(reason), "sandbox_init(): %s", error ? error : "error");
         if (error)
             free_error(error);
         return reason;
     }
+    sb_on = sb_getattrlist != NULL;
     return NULL;
 }
 #endif
