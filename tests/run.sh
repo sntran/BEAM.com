@@ -642,6 +642,26 @@ if [ -d examples ]; then
         check sandbox_net.com "$env" read "$dir/ca-one.pem" read "$dir/beam.com"
         unset SSL_CERT_FILE
     fi
+    # The sandbox of Windows (c_src/cosmo/beam_com_fs.c), on Linux with
+    # BEAM_COM_WINDOWS_SANDBOX=1. Its check uses the name, so a link out
+    # of the rules gets EACCES, where Landlock follows the link to
+    # /etc/hosts. Without net, a socket gets EACCES (the wrap), not EPERM
+    # (pledge).
+    if [ "$os" = linux ]; then
+        rm -rf "$dir/sandbox-w" "$dir/sandbox-link"
+        mkdir "$dir/sandbox-w"
+        ln -s /etc/hosts "$dir/sandbox-link"
+        BEAM_COM_ALLOW="read=/etc;write=$dir/sandbox-w" BEAM_COM_WINDOWS_SANDBOX=1
+        export BEAM_COM_ALLOW BEAM_COM_WINDOWS_SANDBOX
+        check sandbox_none.com 'read: ok@@read: error eacces@@write: ok@@write: error eacces@@listen: error eacces@@done' \
+            read /etc/hosts read "$dir/sandbox-link" write "$dir/sandbox-w/new.txt" \
+            write "$dir/sandbox-w/../sandbox.tmp" listen
+        unset BEAM_COM_WINDOWS_SANDBOX
+        check sandbox_none.com 'read: ok@@read: ok@@listen: error eperm@@done' \
+            read /etc/hosts read "$dir/sandbox-link" listen
+        unset BEAM_COM_ALLOW
+        rm -rf "$dir/sandbox-w" "$dir/sandbox-link"
+    fi
     # --allow-net=HOST,...: the resolver of beam.com and the check of each
     # address (c_src/cosmo/beam_com_net.c), on each system, with the name
     # server of tests/programs/dns_fake.erl. A name that the list does not

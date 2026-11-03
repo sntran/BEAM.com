@@ -54,7 +54,41 @@ client, because the native resolver is a port program.
 |---|---|
 | Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
 | OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
-| macOS, Windows, FreeBSD, NetBSD | no: the flags are ignored |
+| Windows | in the process: the C library checks the paths and the sockets, and a job object stops new processes ([Windows](#windows)) |
+| macOS, FreeBSD, NetBSD | no: the flags are ignored |
+
+## Windows
+
+Windows has no call that limits the paths of a process, so beam.com
+checks the calls of the C library itself (`c_src/cosmo/beam_com_fs.c`):
+
+- A read (`open()` for reading, `opendir()`, `readlink()`) needs a path
+  of `--allow-read` or of `--allow-write`.
+- A change (`open()` for writing, `mkdir()`, `rmdir()`, `unlink()`,
+  `rename()`, `link()`, `symlink()`, `chmod()`, `chown()`, `truncate()`
+  and the times) needs a path of `--allow-write`.
+- `stat()` and `access()` need no permission, as with Landlock.
+- A refused call gives `{error, eacces}`. A refused read of a path that
+  does not exist gives `{error, enoent}`, as with Landlock.
+
+The check uses the name of the path. beam.com makes the path absolute,
+removes `.` and `..`, and ignores the case and the form of the drive
+(`C:\x`, `c:/x` and `/C/x` are one path). The check refuses the names
+that Windows reads in a different way: a part that ends with `.` or a
+space (Windows reads `.. ` as `..`), a `:` after the drive (a stream of
+a file), and a name that starts with `\\` (a share or a device). The
+program can always read its own file, its zip (`/zip`), and the files
+that beam.com writes at the start (the name servers and the
+certificates of Windows).
+
+Without `--allow-net`, a socket of IPv4 or IPv6 gives `{error, eacces}`.
+
+Without `--allow-run`, the process is in a job object with a limit of
+one process. Windows then refuses each new process, also for native
+code. `BEAM_COM_VERBOSE=1` prints "a job object of one process".
+
+`BEAM_COM_WINDOWS_SANDBOX=1` with `BEAM_COM_ALLOW` does the checks of
+the paths and of the sockets on Linux too, for the tests.
 
 ## A list of hosts
 
@@ -120,8 +154,8 @@ on the other systems. `BEAM_COM_VERBOSE=1` tells which check is in use.
 On Linux 6.7 and later, when each entry has a port, Landlock also allows
 TCP `connect` and `bind` only for the ports of the list, in the kernel.
 
-The list also works on macOS, Windows, FreeBSD and NetBSD, where the
-other permissions have no effect, and on OpenBSD.
+The list also works on Windows, macOS, FreeBSD and NetBSD, where the
+other permissions have no effect or less effect, and on OpenBSD.
 
 Limits of the list:
 
@@ -158,9 +192,13 @@ Limits of the list:
 The sandbox limits what a program can do, but it is not a complete
 wall. Know these limits before you depend on it:
 
-- Caution: on macOS, Windows, FreeBSD and NetBSD, the flags have no
-  effect, and the program prints no warning. A program runs there with
-  all the rights of its user.
+- Caution: on macOS, FreeBSD and NetBSD, the flags have no effect, and
+  the program prints no warning. A program runs there with all the
+  rights of its user.
+- Caution: on Windows, only the calls of the C library get the check of
+  the paths and of the sockets. Native code that calls Windows itself
+  does not go through it. The check does not follow a link or a
+  junction, so a link in an allowed directory can lead outside it.
 - `--allow-write` also lets the program change the mode and the times
   of the other files of the user (`chmod`, `utime`). Landlock does not
   control these calls.

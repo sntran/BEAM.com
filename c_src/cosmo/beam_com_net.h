@@ -26,4 +26,9 @@ const char *beam_com_net_prepare(int from_env);
  * in BEAM_COM_DNS. Gives NULL, or the step that failed. */
 const char *beam_com_net_start(void);
 
+/* No network: socket() of IPv4 and IPv6, and connect(), bind() and the
+ * sends to an address of them, give EACCES. For Windows, where pledge()
+ * does nothing (apply_allow() of beam_com.c). */
+void beam_com_net_deny(void);
+
 #endif
