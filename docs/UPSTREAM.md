@@ -1325,6 +1325,32 @@ with the numbers of each CPU.
 
 **Possible upstream fix.** `"i"(277)` in the aarch64 branch.
 
+### C49. x86_64: the APE loader has a code segment that cannot be read
+
+**Status:** 4.0.2.
+
+**Symptom.** In a Linux container of Apple `container --arch amd64`
+(Rosetta), an APE file stops with SIGSEGV before the program starts. The
+shell part of the file writes the APE loader to `~/.ape-1.10` and
+starts it, and the loader crashes, also with no argument (issue 149).
+
+**Cause.** The first `PT_LOAD` segment of `bin/ape-x86_64.elf` (the
+code of the loader) has `PF_X` with no `PF_R`. The kernel of x86_64
+lets a program read such a page all the same. Rosetta for Linux runs on
+arm64, which has pages that can be executed but not read, and it must
+read the x86_64 code to translate it. The segments of `ape-aarch64.elf`
+and of the programs have `PF_R`.
+
+**Workaround in BEAM.com.** `fix_ape_loader()` of `scripts/steps.sh`
+adds `PF_R` to each `PT_LOAD` segment of `bin/ape-x86_64.elf`, after
+the download of cosmocc and on each use of a cosmocc that is already
+there. apelink then puts the changed loader in the APE file.
+`step_test` checks the loader in `beam.com`. A loader that an older file
+wrote to `~/.ape-1.10` stays there: remove it once.
+
+**Possible upstream fix.** `PF_R | PF_X` for the code segment in the
+linker script of the loader (`ape/loader.lds`).
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
