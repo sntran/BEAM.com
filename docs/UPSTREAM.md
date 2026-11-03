@@ -1266,6 +1266,47 @@ Rust set their own sizes.
 
 **Possible upstream fix.** A larger default, or a default from
 `RLIMIT_STACK`, as glibc does.
+
+### C47. pledge() "inet" refuses the buffer options of a socket
+
+**Status:** 4.0.2. The branch master of 2026-11-02 has the same lists.
+
+**Symptom.** In a sandbox with the network (`--allow-net`, or
+`BEAM_COM_ALLOW=net`), `inet:getopts/2` gives no `sndbuf`, `recbuf`,
+`nodelay` or `linger` for a TCP socket, and `inet:setopts/2` of
+`sndbuf`, `recbuf` and `linger` has no effect. Both calls give `ok`,
+because inet leaves out an option that the system refuses. Postgrex and
+Mint read `sndbuf` and `recbuf` after each connect, so they cannot
+connect (issue 157).
+
+**Cause.** On Linux, the promise "inet" of `pledge()` allows
+`setsockopt()` and `getsockopt()` only for a list of options
+(`AllowSetsockoptRestrict()` and `AllowGetsockoptRestrict()` of
+`libc/calls/pledge-linux.c`). `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`
+are in neither list, and `TCP_NODELAY` is not in the list of
+`getsockopt()`. A refused call gives `EPERM` with
+`PLEDGE_PENALTY_RETURN_EPERM`. The `pledge()` of OpenBSD allows all the
+options of `SOL_SOCKET` except `SO_RTABLE` with "inet", and `TCP_NODELAY`
+of `IPPROTO_TCP`.
+
+**Workaround in BEAM.com.** `build_pledge` of `scripts/steps.sh` gets
+`libc/calls/pledge-linux.c` of the tag of cosmocc, applies
+`patches/cosmo/pledge-linux.patch`, and links the object into the
+emulator. The patch adds one BPF fragment after each of the two
+fragments of upstream:
+
+- `setsockopt()`: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER` of
+  `SOL_SOCKET`.
+- `getsockopt()`: the same three options, and `TCP_NODELAY` of
+  `SOL_TCP`.
+
+The object defines `kPledge` and `sys_pledge_linux`, so the linker does
+not take `pledge-linux.o` of `libcosmo.a`. `tests/run.sh` checks the
+options with `sandbox_check sockopts`, and checks with
+`sandbox_check rawopt` that the sandbox still refuses another option
+(`TCP_CONGESTION`).
+
+**Possible upstream fix.** Add these options to the two lists.
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

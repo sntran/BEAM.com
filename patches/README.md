@@ -86,6 +86,16 @@ order, with `git apply`.
 |---|---|---|---|
 | `glib-cosmopolitan.patch` | `glib/glib-unix.c`, `gio/gsocket.c` of glib 2.90.0 | No static assertion on `O_NONBLOCK`, `G_FILE_ERROR_NOSYS` from `g_unix_fd_query_path()`, and no source-specific multicast for IPv6, with Cosmopolitan. | C38, C39, G1 |
 
+## Cosmopolitan (`patches/cosmo/`)
+
+`build_pledge` of `scripts/steps.sh` applies it, with `patch -p1`, to
+the file of Cosmopolitan that it gets for the tag of cosmocc, and links
+the object into the emulator.
+
+| Patch | File | What it does | Items |
+|---|---|---|---|
+| `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
+
 ## Changes that are not patch files
 
 Some changes are compiler flags or small edits in `scripts/steps.sh`.
