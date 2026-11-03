@@ -640,10 +640,11 @@ if [ -d examples ]; then
         echo "--- the log of macOS for the processes of the APE loader, last 5 minutes"
         log show --style compact --last 5m --predicate 'eventMessage CONTAINS[c] "ape-1.10"' 2>&1 |
             tail -80
-        # A process that crashed has a report of macOS.
-        for f in $(ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i ape | head -2); do
+        # A process that crashed has a report of macOS. Its name starts
+        # with ".ape", so ls needs -A.
+        for f in $(ls -At "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i ape | head -1); do
             echo "--- $f"
-            head -c 6000 "$HOME/Library/Logs/DiagnosticReports/$f"
+            head -c 16000 "$HOME/Library/Logs/DiagnosticReports/$f"
             echo
         done
     fi
