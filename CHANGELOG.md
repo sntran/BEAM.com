@@ -5,6 +5,15 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox of Linux (#172):
+  - `--allow-net` allows Unix sockets, as on macOS, for example
+    `NOTIFY_SOCKET` of systemd and the socket of PostgreSQL. Before, each
+    Unix socket gave `{error, eperm}`.
+  - `--allow-write` allows `file:change_mode/2`, `file:change_time/2`,
+    and so `File.cp/2` and `File.touch/1`. They first call `chown()`
+    with no change of the owner, which the sandbox refused. That call
+    now gives the result of `stat()` on each system, not only on
+    Windows.
 - On Linux, a program with a sandbox prints a warning when the kernel
   has no Landlock (#171). The limits of the paths need Landlock, and
   without it they did nothing with no message, for example in Apple

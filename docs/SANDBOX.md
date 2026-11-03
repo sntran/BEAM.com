@@ -17,7 +17,7 @@ what they allow:
 |---|---|---|
 | `--allow-read[=PATH,...]` | `-R` | read these files and directories (all, without a list) |
 | `--allow-write[=PATH,...]` | `-W` | write and create these files and directories (all, without a list) |
-| `--allow-net[=HOST,...]` | `-N` | use sockets and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS); with a list, only for these hosts (see [A list of hosts](#a-list-of-hosts)) |
+| `--allow-net[=HOST,...]` | `-N` | use sockets (also Unix sockets) and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS); with a list, only for these hosts (see [A list of hosts](#a-list-of-hosts)) |
 | `--allow-run[=PROGRAM,...]` | | start these programs as ports (all, without a list); a name without `/` is found in `PATH` |
 | `--allow-all` | `-A` | do everything: no sandbox |
 
@@ -240,6 +240,10 @@ wall. Know these limits before you depend on it:
 - `--allow-write` also lets the program change the mode and the times
   of the other files of the user (`chmod`, `utime`). Landlock does not
   control these calls.
+- Caution: `--allow-net` also allows Unix sockets, also with a list of
+  hosts. A Unix socket can reach a local service with more rights, for
+  example `/var/run/docker.sock`. Landlock does not control a connection
+  to a Unix socket.
 - `--allow-run` gives execute access to the directories of the
   libraries (`/lib`, `/usr/lib`, `/usr/libexec`, ...), and some
   programs are in these directories. On Linux, the programs that it

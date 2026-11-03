@@ -4,6 +4,9 @@
 %%
 %%   sandbox_check read PATH    read a file
 %%   sandbox_check write PATH   write a file
+%%   sandbox_check chmod PATH   change the mode of a file (to 600)
+%%   sandbox_check touch PATH   change the times of a file
+%%   sandbox_check unix         open a Unix datagram socket
 %%   sandbox_check listen       open a TCP socket on 127.0.0.1
 %%   sandbox_check sockopts     set and read the options of a connected
 %%                              TCP socket that inet sets (issue 157)
@@ -36,6 +39,15 @@ run(["read", Path | Rest]) ->
     run(Rest);
 run(["write", Path | Rest]) ->
     report(write, file:write_file(Path, <<"x">>)),
+    run(Rest);
+run(["chmod", Path | Rest]) ->
+    report(chmod, file:change_mode(Path, 8#600)),
+    run(Rest);
+run(["touch", Path | Rest]) ->
+    report(touch, file:change_time(Path, {{2026, 1, 1}, {0, 0, 0}})),
+    run(Rest);
+run(["unix" | Rest]) ->
+    report(unix, gen_udp:open(0, [local])),
     run(Rest);
 run(["listen" | Rest]) ->
     report(listen, gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}])),
