@@ -1,0 +1,60 @@
+# A shell on a runner of CI, for tests and debugging on a system that a
+# person does not have, for example macOS (scripts/remote_shell.sh). Start
+# it by hand. Then push cmd.sh to the branch of the input "branch"; the
+# runner runs it and pushes its output to out.txt on the same branch.
+# Push the file "stop" to the branch to end the job sooner.
+#
+# The job gets no secret. Its token can write to the repository, only to
+# push the output: give the shell no command that a person did not write.
+name: Remote shell
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: The runner
+        type: choice
+        options: [macos-latest, macos-15-intel, ubuntu-26.04, ubuntu-24.04-arm, windows-latest]
+        default: macos-latest
+      branch:
+        description: The branch of the commands and of the output (debug/...)
+        type: string
+        default: debug/shell
+      minutes:
+        description: How long the shell waits for commands
+        type: number
+        default: 60
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: remote-shell-${{ inputs.branch }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: Remote shell on ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 125
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check the branch
+        shell: bash
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          case $BRANCH in
+            debug/*) ;;
+            *) echo "The branch must start with debug/: $BRANCH" >&2; exit 1 ;;
+          esac
+      - name: Run the commands of the branch
+        shell: bash
+        env:
+          BRANCH: ${{ inputs.branch }}
+          MINUTES: ${{ inputs.minutes }}
+          # For gh: for example "gh run download RUN -n NAME" for a beam.com
+          # of an earlier run.
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/remote_shell.sh

@@ -30,6 +30,12 @@ tests/run.sh build           # the behavior tests
 CI runs the tests on each system for each pull request. A change of the
 docs only starts no run.
 
+For tests on a system that you do not have, for example macOS, start the
+workflow "Remote shell" (`.github/workflows/remote-shell.yml`) by hand.
+Then push a `cmd.sh` to its branch (`debug/...`). The runner runs it with
+bash, and it pushes the output to `out.txt` on that branch. The files of
+the runner stay between the commands. Push a file `stop` to end the job.
+
 ## Rules for a change
 
 - Each change has tests of its behavior, also for errors and limits, not
