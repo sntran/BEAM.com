@@ -5,6 +5,27 @@ notes of its release.
 
 ## Unreleased
 
+- The Makefile runs a step again when its key changed, not when a file
+  is newer (`docs/BUILDING.md`, "The keys of the steps"). The key of a
+  step is the SHA-256 of its code in `scripts/steps.sh`, with each
+  function that it calls, of the settings that this code reads, and of
+  its files. So a change of `scripts/steps.sh` runs again only the
+  steps that use the changed code, and a new checkout runs no step
+  again. The list of settings of the Makefile is gone.
+- The keys of the parts follow the functions that their steps call, in
+  place of a list of names. The key of the WebAssembly runtime follows
+  them too. Each key is new, so the store builds each part one time.
+- The workflows take the keys of the caches of libvips, libpdfium.a and
+  ccache from `sh scripts/steps.sh cache_keys`, in place of their own
+  lists of files. `build.yml` runs `sh scripts/steps.sh check_keys`,
+  which finds a file in the code of a step that is not in the list of
+  the step.
+- The step `bundle` runs again after a change of
+  `c_src/wasm/include/erl_int_sizes_config.h`, and the step `multicall`
+  after a change of `patches/cosmo/`. The step `nifs` runs again after a
+  change of the files of libvips, PDFium or the NIFs of Rust. Before,
+  the Makefile did not list these files.
+
 - A store of prebuilt parts for the custom builds (`docs/BUILDING.md`,
   "The store of parts"): the built OTP, Elixir and each NIF, as files
   of the prerelease `parts` whose names have the SHA-256 of their

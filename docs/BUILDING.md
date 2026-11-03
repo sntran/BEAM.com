@@ -6,17 +6,17 @@ for a custom build.
 
 ## Build
 
-You need Linux (x86_64), `git`, GNU make 4, `perl`, `curl`, `zip` and
-`unzip`. The [`Makefile`](../Makefile) downloads the sources, applies the
-patches, builds a small OTP and makes `build/beam.com`:
+You need Linux (x86_64), `git`, GNU make 4.3 or later, `perl`, `curl`,
+`zip` and `unzip`. The [`Makefile`](../Makefile) downloads the sources,
+applies the patches, builds a small OTP and makes `build/beam.com`:
 
 ```sh
 make toolchain               # downloads cosmocc, with its own GNU make 4.4
 build/cosmocc/bin/make       # all the steps
 ```
 
-Any GNU make 4 works. CI uses the make of cosmocc, so the build does not
-depend on the make of the host.
+Any GNU make 4.3 or later works. CI uses the make of cosmocc, so the
+build does not depend on the make of the host.
 
 The build downloads:
 
@@ -48,18 +48,14 @@ The steps, in order. The code of each step is in
 | `test` | `bundle` | Runs `beam.com`, and builds and runs a program with it. |
 | `unit` | `bundle` | Runs the tests of the Mix project with the `beam.com` of the build (`beam.com mix test --cover`). |
 
-`make STEP` runs the step and each step that it needs first. Each step
-writes a stamp in `build/stamps/`. A step runs again only when:
-
-- a step that it needs ran again;
-- one of its files in this repository changed (for example, `src/` for
-  `bundle`, and `patches/otp/` for `otp`);
-- a setting changed (`build/stamps/config`), for example `JIT=0`.
+`make STEP` runs the step and each step that it needs first. A step runs
+again only when its key changed, or when a step that it needs ran again
+(see [The keys of the steps](#the-keys-of-the-steps)). A new time of a
+file, as in a new checkout, does not run a step again.
 
 `test` and `unit` run each time. `make redo-STEP` runs a step again with
-no change of its inputs, for example after a change of
-`scripts/steps.sh`. The steps run one at a time, because they share the
-OTP tree. Each step uses `JOBS` processes. With `CCACHE=1`, the
+no change of its inputs. The steps run one at a time, because they share
+the OTP tree. Each step uses `JOBS` processes. With `CCACHE=1`, the
 compiles of cosmocc and cosmoc++ go through ccache, in `build/ccache`
 (`CCACHE_DIR`). It is not a setting: the file is the same.
 
@@ -255,12 +251,15 @@ when the build did not run. The file stays in the prerelease
 - For a part that is not in the store, a build takes these parts of it
   from the cache of GitHub Actions when their inputs did not change:
   - The WebAssembly runtime (about 3 minutes). Its key is the SHA-256 of
-    its inputs (`scripts/steps.sh wasm_runtime_key`): only the functions
-    of `scripts/steps.sh` that its build runs, so a change of another
-    step keeps it. It has the key of `build.yml`, so the builds of
+    its inputs (`scripts/steps.sh wasm_runtime_key`): only the code of
+    `scripts/steps.sh` that its build runs, so a change of another step
+    keeps it. It has the key of `build.yml`, so the builds of
     `main` fill it.
   - The libraries of libvips (about 10 minutes).
   - libpdfium.a for each CPU (about 10 minutes each).
+  - The keys of libvips, libpdfium.a and ccache come from
+    `sh scripts/steps.sh cache_keys`, so the workflows have no list of
+    files of their own.
   - The objects of ccache (`CCACHE=1`) for each OTP version: about 4 of
     the 7 minutes of the build of OTP are C and C++ compiles. A new OTP
     version starts from the cache of an earlier version.
@@ -294,9 +293,9 @@ part never goes stale. `PARTS_URL=... make` uses a store, and
 
 | Part | The output of | Its key has |
 |---|---|---|
-| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the functions of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
-| `elixir` | the step `elixir` | the version of Elixir, `patches/elixir`, the function of the step, and the key of `otp` |
-| `nif-PACKAGE` | one NIF of the step `nifs`: `LIB.a` and `.aarch64/LIB.a` | the recipe of the package, the NIF API (the headers of the OTP tree), cosmocc, the functions that build it, and its files (`scripts/libvips.sh`, `patches/libvips`, `c_src/vips` and `native/vips_resvg` for vix with its parts; `scripts/pdfium.sh` and `patches/pdfium` for ex_pdfium; `c_src/rust` and `scripts/rust_link.sh` for a NIF of Rust) |
+| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the code of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
+| `elixir` | the step `elixir` | the version of Elixir, `patches/elixir`, the code of the step, and the key of `otp` |
+| `nif-PACKAGE` | one NIF of the step `nifs`: `LIB.a` and `.aarch64/LIB.a` | the recipe of the package, the NIF API (the headers of the OTP tree), cosmocc, the code that builds it, and its files (`scripts/libvips.sh`, `patches/libvips`, `c_src/vips` and `native/vips_resvg` for vix with its parts; `scripts/pdfium.sh` and `patches/pdfium` for ex_pdfium; `c_src/rust` and `scripts/rust_link.sh` for a NIF of Rust) |
 
 The other files of `c_src/cosmo` are not in the key of `otp`: the step
 `multicall` compiles them again. A tree of the store gets one time for
@@ -320,9 +319,49 @@ The build itself has no token.
 - Caution: a part is code that goes into the files of beam.com. Only the
   workflows of `main` put parts, never a pull request.
 - Caution: a key that leaves out an input gives a part that does not
-  match its inputs. A function that a step of a part starts to call
-  must be in the list of its key (`nif_part_key`, `otp_part_key` and
-  `elixir_part_key` in `scripts/steps.sh`).
+  match its inputs. The code of a key is that of its functions, as in
+  the keys of the steps. A key of a part names its settings and its
+  files (`nif_part_key`, `otp_part_key` and `elixir_part_key` in
+  `scripts/steps.sh`): add a setting or a file that a step of a part
+  starts to read.
+
+## The keys of the steps
+
+The key of a step is the SHA-256 of its inputs. The Makefile runs a step
+again only when its key changed, or when a step that it needs ran again.
+`scripts/steps.sh` finds the inputs of each step:
+
+- The code: the function of the step, and each function that this code
+  names, again and again. Comment lines are not code, so a change of a
+  comment keeps the key. The functions that find keys
+  (`KEY_FUNCS`) are not followed, because their code names the steps
+  only to find a key.
+- The settings: the value of each variable in capitals that this code
+  reads. `KEY_IGNORE` lists the variables that do not change what a step
+  makes, for example `JOBS`, `PATH` and `CCACHE`.
+- The files: the SHA-256 of each file of its list in `step_files`, as
+  the work tree has it.
+
+Thus a change of a function of `scripts/steps.sh` runs again only the
+steps that use it. For example, a change of `build_pledge` runs
+`multicall` and the steps after it.
+
+The commands:
+
+| Command | What it does |
+|---|---|
+| `sh scripts/steps.sh key STEP...` | Prints the key of each step. |
+| `sh scripts/steps.sh inputs STEP` | Prints the inputs of a step. Compare it with `build/stamps/STEP.inputs`, the inputs of the last key, to see why a step runs again. |
+| `sh scripts/steps.sh check_keys` | Finds each path of the repository in the code of a step that is not in its list of files. CI runs it. |
+| `sh scripts/steps.sh cache_keys` | Prints the keys of the caches of CI (libvips, libpdfium.a and ccache). |
+
+- Caution: a file that a step starts to read must be in its list in
+  `step_files`. `check_keys` finds a path that the code writes with
+  `$ROOT`, but not a file that another program reads, as the files that
+  `wasm/erts/build.sh` reads.
+- Caution: a setting that only a program reads, and not the code of a
+  step, is not in a key. Read it in the code of the step, or run
+  `make redo-STEP` after a change.
 
 ## The runtime directory (internal)
 
