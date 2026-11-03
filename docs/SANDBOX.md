@@ -67,9 +67,11 @@ the process and to each program that it starts. The rules are the rules
 of Linux:
 
 - A read of the data of a file needs a path of `--allow-read` or
-  `--allow-write`. The files of the system that start a process
-  (`/System`, `/usr/lib`) can always be read. `stat()` needs no
-  permission, as with Landlock.
+  `--allow-write`. The files of the system can always be read:
+  `/System`, `/usr`, `/bin`, `/sbin`, `/Library/Apple`,
+  `/private/preboot` and the shared cache of dyld. dyld needs some of
+  them to start a process. `stat()` needs no permission, as with
+  Landlock.
 - A change of a file needs a path of `--allow-write`.
 - A new program needs a path of `--allow-run`. beam.com can always start
   its own file and its APE loader (the helper programs).

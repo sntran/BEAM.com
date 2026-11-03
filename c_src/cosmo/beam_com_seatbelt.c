@@ -15,9 +15,12 @@
  * refuses:
  *
  * - the read of the data of each file, except the paths of the rules and
- *   the files of the system that dyld needs to start a process (/System,
- *   /usr/lib). The metadata (stat()) needs no permission, as with
- *   Landlock;
+ *   the files of the system, which hold no data of a person: /System,
+ *   /usr, /bin, /sbin, /Library/Apple, /private/preboot (the cryptexes of
+ *   the boot) and the shared cache of dyld. dyld of macOS 26 needs some
+ *   of them to start a process: without them, it stops in
+ *   ignition_halt() before main(), and the log has no refusal. The
+ *   metadata (stat()) needs no permission, as with Landlock;
  * - each change of a file, except the paths of the rules, /dev/null,
  *   /dev/dtracehelper and the terminals;
  * - each new program, except the paths of the rules with "x" (this
@@ -190,8 +193,10 @@ const char *beam_com_seatbelt_profile(void)
     if (ok && !sb_omit_read)
         ok = sb_text(out, &n, sizeof(out),
                      "(deny file-read-data (subpath \"/\"))\n"
-                     "(allow file-read-data (subpath \"/System\") (subpath \"/usr/lib\")\n"
-                     "    (subpath \"/private/var/db/dyld\")\n"
+                     "(allow file-read-data (literal \"/\") (subpath \"/System\")\n"
+                     "    (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\")\n"
+                     "    (subpath \"/Library/Apple\") (subpath \"/private/preboot\")\n"
+                     "    (subpath \"/private/var/db/dyld\") (literal \"/dev/autofs_nowait\")\n"
                      "    (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\")\n"
                      "    (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\")\n"
                      "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
