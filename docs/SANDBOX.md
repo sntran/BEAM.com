@@ -92,6 +92,31 @@ Thus kernel and the check get the same answer, also from a name server
 that gives other addresses at each query. A program cannot ask another
 name server: that address is not allowed.
 
+On Linux 5.6 and later, a process of its own does the check of step 3,
+in place of the C library, also for native code and for the programs of
+`--allow-run`:
+
+- At the start, beam.com forks. The parent is the supervisor, with the
+  resolver and the addresses. The child is the program. `ps` shows two
+  processes, and a signal to the parent (`SIGTERM`, `SIGHUP`, `SIGUSR1`,
+  `SIGUSR2`) goes to the child. The parent ends with the status of the
+  child.
+- A seccomp filter of the program stops each `connect`, `bind`,
+  `sendmsg`, `sendmmsg`, and `sendto` with an address. The supervisor
+  copies the address and the data, checks the copy, and makes the call
+  on a copy of the socket. Thus the program cannot change the address
+  after the check. A call on a Unix socket goes on as usual.
+- A program of `--allow-run` keeps the filter. When it asks a name
+  server of the system over UDP, the supervisor first checks the name
+  and records the answer. A name off the list gets `EACCES`, so it
+  never goes to the name server. The program cannot use TCP to a name
+  server.
+
+The supervisor needs `pidfd_getfd()`, `process_vm_readv()`, and the
+Yama setting `ptrace_scope` 0 or 1. Without them (an older kernel, a
+container that refuses these calls), the C library does the check, as
+on the other systems. `BEAM_COM_VERBOSE=1` tells which check is in use.
+
 On Linux 6.7 and later, when each entry has a port, Landlock also allows
 TCP `connect` and `bind` only for the ports of the list, in the kernel.
 
@@ -100,12 +125,20 @@ other permissions have no effect, and on OpenBSD.
 
 Limits of the list:
 
-- Caution: a program of `--allow-run` does not get the list. It can
-  connect to each host, on the ports of Landlock only.
+- Caution: without the supervisor, a program of `--allow-run` does not
+  get the list. It can connect to each host, on the ports of Landlock
+  only.
+- With the supervisor, a program of `--allow-run` can send a query to a
+  name server with `send()` on a connected socket (glibc does it for
+  one question). The supervisor does not see that query, so it records
+  no address, and the program cannot connect to the address of its
+  answer. A query of two questions (`sendmmsg()`, as for IPv4 and IPv6
+  together) works.
 - A name of the list can send data to its name servers in the names of
   its queries, for example `secret.example.com` with `*.example.com`.
-- Native code that makes the system calls itself does not go through
-  the check. The NIFs of beam.com use the C library.
+- Without the supervisor, native code that makes the system calls
+  itself does not go through the check. The NIFs of beam.com use the C
+  library.
 - An address stays allowed for one hour after the TTL of its answer,
   because programs keep addresses for some time. An address that two
   names share is allowed for each of their entries.

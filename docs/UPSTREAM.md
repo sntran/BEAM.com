@@ -1307,6 +1307,24 @@ options with `sandbox_check sockopts`, and checks with
 (`TCP_CONGESTION`).
 
 **Possible upstream fix.** Add these options to the two lists.
+### C48. aarch64: seccomp() makes the system call sendmsg
+
+**Status:** 4.0.2.
+
+**Symptom.** On Linux aarch64, `seccomp(SECCOMP_SET_MODE_FILTER, flags,
+prog)` does not install a filter. It gives the result of
+`sendmsg(operation, flags, prog)`.
+
+**Cause.** The aarch64 branch of `libc/calls/seccomp.c` puts 211 in x8.
+211 is `sendmsg` on aarch64. The number of `seccomp` there is 277 (on
+x86_64 it is 317).
+
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com_net.c` makes the
+system calls of the supervisor of `--allow-net` itself (`netd_sys()`),
+with the numbers of each CPU.
+
+**Possible upstream fix.** `"i"(277)` in the aarch64 branch.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

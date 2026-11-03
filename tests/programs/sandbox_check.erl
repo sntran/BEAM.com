@@ -14,6 +14,9 @@
 %%                              address), and close the socket
 %%   sandbox_check udp HOST PORT
 %%                              send a UDP datagram
+%%   sandbox_check pyconnect HOST PORT
+%%                              connect to a TCP port from python3, a
+%%                              program of --allow-run (no proxy)
 %%   sandbox_check run PROGRAM  run a program (a port), found in PATH, with
 %%                              the arguments -c "exit 0" (sh ends at once,
 %%                              and true ignores them)
@@ -50,6 +53,9 @@ run(["udp", Host, Port | Rest]) ->
     {ok, S} = gen_udp:open(0),
     report("udp " ++ Host, gen_udp:send(S, Host, list_to_integer(Port), <<"x">>)),
     gen_udp:close(S),
+    run(Rest);
+run(["pyconnect", Host, Port | Rest]) ->
+    io:format("pyconnect ~s: ~s~n", [Host, pyconnect(Host, Port)]),
     run(Rest);
 run(["run", Program | Rest]) ->
     report("run " ++ Program, run_program(Program)),
@@ -101,6 +107,30 @@ connect(Host, Port) ->
     case gen_tcp:connect(Host, Port, [], 10000) of
         {ok, S} -> gen_tcp:close(S);
         Error -> Error
+    end.
+
+%% "ok", or the name of the exception of Python.
+pyconnect(Host, Port) ->
+    Script = "import socket, sys\n"
+             "try:\n"
+             "    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=10).close()\n"
+             "    print('ok')\n"
+             "except Exception as e:\n"
+             "    print('error', type(e).__name__)\n",
+    case os:find_executable("python3") of
+        false ->
+            "error no_python3";
+        Exe ->
+            P = open_port({spawn_executable, Exe},
+                          [exit_status, stderr_to_stdout, binary, {args, ["-c", Script, Host, Port]}]),
+            string:trim(binary_to_list(collect(P, <<>>)))
+    end.
+
+collect(P, Acc) ->
+    receive
+        {P, {data, D}} -> collect(P, <<Acc/binary, D/binary>>);
+        {P, {exit_status, _}} -> Acc
+    after 30000 -> <<"error timeout">>
     end.
 
 run_program(Program) ->

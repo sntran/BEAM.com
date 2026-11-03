@@ -32,8 +32,14 @@
  * by the ports of Landlock. Native code that makes the system call
  * itself does not go through the wraps.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* prctl() */
+#endif
 #include <arpa/inet.h>
 #include <errno.h>
+#include <stddef.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -51,6 +57,8 @@
 #ifndef BEAM_COM_NET_TEST
 #include <cosmo.h>
 #include "libc/calls/landlock.h"            /* landlock_create_ruleset() */
+#include "libc/calls/struct/filter.internal.h" /* struct sock_filter */
+#include "libc/calls/struct/bpf.internal.h"
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
 #include "libc/dce.h"                       /* IsLinux() */
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
@@ -542,6 +550,20 @@ static void dns_record(const unsigned char *m, size_t n, const char *qname, uint
     dns_walk(m, n, chain, &nchain, rules);
 }
 
+/* The entries of the list that allow the question of the query q (n
+ * bytes): one question of the class IN. 0 for another message. name gets
+ * the name of the question. */
+static uint64_t dns_query_rules(const unsigned char *q, size_t n, char name[256])
+{
+    size_t off = 12;
+
+    if (n < 12 || (q[2] & 0x80) || ((q[2] >> 3) & 0x0f) != 0 || get16(q + 4) != 1)
+        return 0;
+    if (dns_name(q, n, &off, name) || off + 4 > n || get16(q + off + 2) != 1)
+        return 0;
+    return net_name_rules(name);
+}
+
 /* An answer with no records: the header and the question of the query
  * q, with the flags QR, RD of q, RA and the code rcode. */
 static size_t dns_empty(const unsigned char *q, size_t qend, unsigned char *out, unsigned rcode,
@@ -884,6 +906,718 @@ static void *net_loop(void *arg)
 
 #ifndef BEAM_COM_NET_TEST
 
+/* --- Linux: the supervisor of the calls of the network ---------------- *
+ *
+ * The wraps of the libc see only the calls of the libc, and native code
+ * can make a system call itself. On Linux 5.6 and later, a process of its
+ * own checks each call (seccomp user notification):
+ *
+ * 1. Before the sandbox, beam.com forks. The parent is the supervisor,
+ *    with the resolver and the table of addresses. The child goes on as
+ *    the VM. The supervisor is an ancestor of the VM and of the programs
+ *    of --allow-run, so Yama (ptrace_scope 1) lets it read their memory
+ *    and get their sockets.
+ * 2. The VM installs a seccomp filter: connect(), bind(), sendto() with
+ *    an address, sendmsg() and sendmmsg() wait for the supervisor. The
+ *    supervisor takes the listener of the filter with pidfd_getfd(), and
+ *    the VM closes its own copy. The children of the VM keep the filter.
+ * 3. For a socket of IPv4 or IPv6, the supervisor copies the address and
+ *    the data (process_vm_readv()), checks the copy, and makes the call
+ *    itself, on a copy of the socket (pidfd_getfd()). So the process
+ *    cannot change the address after the check. For another socket, the
+ *    kernel goes on with the call (SECCOMP_USER_NOTIF_FLAG_CONTINUE): the
+ *    family of a socket does not change.
+ * 4. A program of --allow-run asks the name servers of the system. For a
+ *    query over UDP to them, the supervisor checks the name, asks the
+ *    name server itself first and records the answer, and then sends the
+ *    query of the program. A name that the list does not allow gets
+ *    EACCES. The program cannot use TCP to them.
+ *
+ * Without these features (an older kernel, ptrace_scope 2 or 3, or a
+ * container that refuses pidfd_getfd()), the wraps of the libc and the
+ * Landlock ports do the check, as on the other systems.
+ *
+ * Caution: a query that a program sends with send() on a socket that it
+ * connected to a name server (glibc for one question) is not visible: the
+ * supervisor allows the connect(), and it records no address for the
+ * name. The program then cannot connect to the address of its answer.
+ */
+
+#ifdef __x86_64__
+#define NETD_ARCH 0xc000003eu
+enum { NR_IOCTL = 16, NR_CONNECT = 42, NR_SENDTO = 44, NR_SENDMSG = 46, NR_BIND = 49,
+       NR_GETSOCKOPT = 55, NR_GETPEERNAME = 52, NR_PRCTL = 157, NR_SENDMMSG = 307,
+       NR_VM_READV = 310, NR_VM_WRITEV = 311, NR_SECCOMP = 317 };
+#else
+#define NETD_ARCH 0xc00000b7u
+enum { NR_IOCTL = 29, NR_CONNECT = 203, NR_SENDTO = 206, NR_SENDMSG = 211, NR_BIND = 200,
+       NR_GETSOCKOPT = 209, NR_GETPEERNAME = 205, NR_PRCTL = 167, NR_SENDMMSG = 269,
+       NR_VM_READV = 270, NR_VM_WRITEV = 271, NR_SECCOMP = 277 };
+#endif
+enum { NR_PIDFD_OPEN = 434, NR_PIDFD_GETFD = 438 };
+
+/* The ioctl() of the listener (linux/seccomp.h). */
+#define NOTIF_RECV 0xc0502100ul
+#define NOTIF_SEND 0xc0182101ul
+#define NOTIF_ID_VALID 0x40082102ul
+#define NOTIF_CONTINUE 1u
+#define NETD_FLAG_NEW_LISTENER 8u
+#define NETD_FLAG_WAIT_KILLABLE_RECV 32u
+#define NETD_RET_USER_NOTIF 0x7fc00000u
+
+/* The most data of one call that the supervisor copies: a stream sends
+ * a part of it, a datagram gets EMSGSIZE. */
+#define NETD_DATA (1 << 20)
+#define NETD_WORKERS 128
+
+struct netd_data {
+    int32_t nr;
+    uint32_t arch;
+    uint64_t ip;
+    uint64_t args[6];
+};
+struct netd_notif {
+    uint64_t id;
+    uint32_t pid;
+    uint32_t flags;
+    struct netd_data data;
+};
+struct netd_resp {
+    uint64_t id;
+    int64_t val;
+    int32_t error;
+    uint32_t flags;
+};
+/* struct msghdr, struct iovec and struct mmsghdr of 64-bit Linux, as the
+ * memory of the process has them. */
+struct netd_msghdr {
+    uint64_t name;
+    uint32_t namelen, pad;
+    uint64_t iov, iovlen, control, controllen;
+    int32_t flags;
+    uint32_t pad2;
+};
+struct netd_iovec {
+    uint64_t base, len;
+};
+struct netd_mmsghdr {
+    struct netd_msghdr hdr;
+    uint32_t len, pad;
+};
+
+static int netd_on;          /* the VM: the supervisor checks its calls */
+static pid_t netd_vm;        /* the supervisor: the process of the VM */
+static atomic_int netd_workers;
+
+/* A system call: the result, or -errno. */
+static long netd_sys(long n, long a, long b, long c, long d, long e, long f)
+{
+#ifdef __x86_64__
+    register long r10 asm("r10") = d;
+    register long r8 asm("r8") = e;
+    register long r9 asm("r9") = f;
+    long rc;
+    asm volatile("syscall"
+                 : "=a"(rc)
+                 : "0"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
+                 : "rcx", "r11", "memory");
+    return rc;
+#else
+    register long x8 asm("x8") = n;
+    register long x0 asm("x0") = a;
+    register long x1 asm("x1") = b;
+    register long x2 asm("x2") = c;
+    register long x3 asm("x3") = d;
+    register long x4 asm("x4") = e;
+    register long x5 asm("x5") = f;
+    asm volatile("svc\t0"
+                 : "+r"(x0)
+                 : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+                 : "memory");
+    return x0;
+#endif
+}
+
+static int netd_read(pid_t pid, uint64_t remote, void *local, size_t n)
+{
+    struct iovec l = {local, n}, r = {(void *)(uintptr_t)remote, n};
+    return n == 0 || netd_sys(NR_VM_READV, pid, (long)&l, 1, (long)&r, 1, 0) == (long)n ? 0 : -1;
+}
+
+static int netd_write(pid_t pid, uint64_t remote, const void *local, size_t n)
+{
+    struct iovec l = {(void *)local, n}, r = {(void *)(uintptr_t)remote, n};
+    return netd_sys(NR_VM_WRITEV, pid, (long)&l, 1, (long)&r, 1, 0) == (long)n ? 0 : -1;
+}
+
+/* The process of a thread: the Tgid of /proc/TID/status. */
+static pid_t netd_tgid(pid_t tid)
+{
+    char path[64], line[128];
+    pid_t tgid = -1;
+    FILE *f;
+
+    snprintf(path, sizeof(path), "/proc/%d/status", (int)tid);
+    if (!(f = fopen(path, "r")))
+        return -1;
+    while (fgets(line, sizeof(line), f))
+        if (strncmp(line, "Tgid:", 5) == 0) {
+            tgid = atoi(line + 5);
+            break;
+        }
+    fclose(f);
+    return tgid;
+}
+
+/* The address of a sockaddr of Linux (a copy): 0 when it is IPv4 or
+ * IPv6, with an IPv4-mapped address as IPv4. */
+static int netd_addr(const unsigned char *sa, size_t len, int *family, unsigned char addr[16],
+                     int *port)
+{
+    unsigned f = sa[0] | sa[1] << 8;
+    static const unsigned char mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+
+    if (len >= 16 && f == 2) {
+        *family = AF_INET;
+        *port = sa[2] << 8 | sa[3];
+        memcpy(addr, sa + 4, 4);
+        return 0;
+    }
+    if (len >= 24 && f == 10) {
+        *port = sa[2] << 8 | sa[3];
+        if (memcmp(sa + 8, mapped, 12) == 0) {
+            *family = AF_INET;
+            memcpy(addr, sa + 20, 4);
+        } else {
+            *family = AF_INET6;
+            memcpy(addr, sa + 8, 16);
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int netd_is_ns(int family, const unsigned char *addr, int port)
+{
+    int i;
+    for (i = 0; i < net_nns; i++)
+        if (net_ns[i].family == family && net_ns[i].port == port &&
+            memcmp(net_ns[i].addr, addr, family == AF_INET ? 4 : 16) == 0)
+            return 1;
+    return 0;
+}
+
+/* A query of a program to a name server: 0 when the list allows its
+ * name. The supervisor asks the name server first, and records the
+ * addresses of its answer, so that they are in the table before the
+ * program gets its own answer. */
+static int netd_dns(const unsigned char *q, size_t n)
+{
+    char name[256];
+    uint64_t rules = dns_query_rules(q, n, name);
+    unsigned char *ask;
+    size_t qend, rn, off = 12;
+    unsigned id;
+
+    if (!rules) {
+        if (net_verbose)
+            fprintf(stderr, "beam.com: the sandbox refused a query of a program (--allow-net)\n");
+        return -1;
+    }
+    if (dns_name(q, n, &off, name) || !(ask = malloc(n + NET_MSG)))
+        return 0;
+    qend = off + 4;
+    memcpy(ask, q, qend);
+    put16(ask + 6, 0);
+    put16(ask + 8, 0);
+    put16(ask + 10, 0);
+    if (getrandom(&id, sizeof(id), 0) != sizeof(id))
+        id = (unsigned)rand();
+    put16(ask, id & 0xffff);
+    if ((rn = net_ask(ask, qend, qend, ask + n)))
+        dns_record(ask + n, rn, name, rules);
+    free(ask);
+    return 0;
+}
+
+/* The check of a destination: 0, or the errno. dgram: a socket of
+ * datagrams. data: the data of a send, or NULL (connect(), bind()). */
+static int netd_check(const unsigned char *sa, size_t len, int bind, int child, int dgram,
+                      const unsigned char *data, size_t n)
+{
+    unsigned char addr[16];
+    int family, port;
+
+    if (len >= 2 && (sa[0] | sa[1] << 8) == 0)
+        return bind ? EACCES : 0; /* AF_UNSPEC: connect() undoes the peer */
+    if (netd_addr(sa, len, &family, addr, &port))
+        return EAFNOSUPPORT;
+    if (child && !bind && netd_is_ns(family, addr, port)) {
+        if (!dgram)
+            return EACCES;
+        return data && netd_dns(data, n) ? EACCES : 0;
+    }
+    return net_allowed(family, addr, port, bind) ? 0 : EACCES;
+}
+
+/* The data of iovecs of the process, in one buffer. */
+static unsigned char *netd_gather(pid_t pid, uint64_t iov, uint64_t iovlen, int dgram,
+                                  size_t *n, int *err)
+{
+    struct netd_iovec *v;
+    unsigned char *buf;
+    size_t total = 0, i, take;
+
+    *n = 0;
+    if (iovlen > 1024) {
+        *err = EMSGSIZE;
+        return NULL;
+    }
+    v = calloc(iovlen ? iovlen : 1, sizeof(*v));
+    if (!v || netd_read(pid, iov, v, iovlen * sizeof(*v))) {
+        free(v);
+        *err = EFAULT;
+        return NULL;
+    }
+    for (i = 0; i < iovlen; i++)
+        total += v[i].len > NETD_DATA ? NETD_DATA + 1 : v[i].len;
+    if (total > NETD_DATA && dgram) {
+        free(v);
+        *err = EMSGSIZE;
+        return NULL;
+    }
+    if (!(buf = malloc(total > NETD_DATA ? NETD_DATA : total ? total : 1))) {
+        free(v);
+        *err = ENOMEM;
+        return NULL;
+    }
+    for (i = 0; i < iovlen && *n < NETD_DATA; i++) {
+        take = v[i].len < NETD_DATA - *n ? v[i].len : NETD_DATA - *n;
+        if (netd_read(pid, v[i].base, buf + *n, take)) {
+            free(v);
+            free(buf);
+            *err = EFAULT;
+            return NULL;
+        }
+        *n += take;
+    }
+    free(v);
+    return buf;
+}
+
+/* One sendmsg() of the process: the result, or -errno. peer: the peer of
+ * the socket (for a message with no address). */
+static long netd_sendmsg(pid_t pid, int fd, const struct netd_msghdr *h, int flags, int child,
+                         int dgram, const unsigned char *peer, size_t peerlen)
+{
+    unsigned char name[128], *data, *control = NULL;
+    struct msghdr m;
+    struct iovec io;
+    size_t n;
+    long rc;
+    int err = 0;
+
+    memset(&m, 0, sizeof(m));
+    if (h->name && h->namelen) {
+        if (h->namelen > sizeof(name))
+            return -EINVAL;
+        if (netd_read(pid, h->name, name, h->namelen))
+            return -EFAULT;
+    }
+    if (!(data = netd_gather(pid, h->iov, h->iovlen, dgram, &n, &err)))
+        return -err;
+    if (h->name && h->namelen)
+        err = netd_check(name, h->namelen, 0, child, dgram, data, n);
+    else if (peer)
+        err = netd_check(peer, peerlen, 0, child, dgram, data, n);
+    if (!err && h->controllen) {
+        if (h->controllen > 65536)
+            err = ENOBUFS;
+        else if (!(control = malloc(h->controllen)) ||
+                 netd_read(pid, h->control, control, h->controllen))
+            err = EFAULT;
+    }
+    if (err) {
+        free(data);
+        free(control);
+        return -err;
+    }
+    io.iov_base = data;
+    io.iov_len = n;
+    m.msg_name = h->name && h->namelen ? name : NULL;
+    m.msg_namelen = h->name ? h->namelen : 0;
+    m.msg_iov = &io;
+    m.msg_iovlen = 1;
+    m.msg_control = control;
+    m.msg_controllen = control ? h->controllen : 0;
+    rc = netd_sys(NR_SENDMSG, fd, (long)&m, flags, 0, 0, 0);
+    free(data);
+    free(control);
+    return rc;
+}
+
+static void netd_reply(int listener, uint64_t id, long rc, int cont)
+{
+    struct netd_resp r;
+
+    memset(&r, 0, sizeof(r));
+    r.id = id;
+    if (cont)
+        r.flags = NOTIF_CONTINUE;
+    else if (rc < 0)
+        r.error = (int32_t)rc;
+    else
+        r.val = rc;
+    netd_sys(NR_IOCTL, listener, NOTIF_SEND, (long)&r, 0, 0, 0);
+}
+
+/* One call of a process: check it, and make it, or let the kernel go on
+ * with it. */
+static void netd_handle(int listener, const struct netd_notif *req)
+{
+    const uint64_t *a = req->data.args;
+    long nr = req->data.nr, rc = -EACCES;
+    pid_t tid = req->pid, pid = netd_tgid(tid);
+    int pidfd, fd = -1, child = pid != netd_vm, domain = 0, type = 0, dgram;
+    unsigned char sa[128], peer[128], *data = NULL;
+    socklen_t ol = sizeof(int), pl = sizeof(peer);
+    uint64_t id = req->id;
+    size_t n = 0;
+
+    if (pid <= 0 || (pidfd = (int)netd_sys(NR_PIDFD_OPEN, pid, 0, 0, 0, 0, 0)) < 0)
+        goto reply;
+    if (netd_sys(NR_IOCTL, listener, NOTIF_ID_VALID, (long)&id, 0, 0, 0) < 0) {
+        close(pidfd);
+        return;
+    }
+    fd = (int)netd_sys(NR_PIDFD_GETFD, pidfd, (long)a[0], 0, 0, 0, 0);
+    close(pidfd);
+    if (fd < 0) {
+        rc = fd == -EBADF ? -EBADF : -EACCES;
+        goto reply;
+    }
+    if (netd_sys(NR_GETSOCKOPT, fd, SOL_SOCKET, 39 /* SO_DOMAIN */, (long)&domain, (long)&ol, 0) ||
+        (domain != AF_INET && domain != AF_INET6)) {
+        /* Not a socket of the network: the kernel goes on (ENOTSOCK for
+         * a file). */
+        close(fd);
+        netd_reply(listener, id, 0, 1);
+        return;
+    }
+    ol = sizeof(int);
+    netd_sys(NR_GETSOCKOPT, fd, SOL_SOCKET, 3 /* SO_TYPE */, (long)&type, (long)&ol, 0);
+    dgram = type == SOCK_DGRAM;
+    if (nr == NR_CONNECT || nr == NR_BIND) {
+        if (a[2] > sizeof(sa)) {
+            rc = -EINVAL;
+        } else if (netd_read(tid, a[1], sa, a[2])) {
+            rc = -EFAULT;
+        } else if ((rc = -netd_check(sa, a[2], nr == NR_BIND, child, dgram, NULL, 0)) == 0) {
+            rc = netd_sys(nr, fd, (long)sa, (long)a[2], 0, 0, 0);
+        }
+    } else if (nr == NR_SENDTO) {
+        size_t len = a[2] > NETD_DATA ? NETD_DATA : a[2];
+        if (a[2] > NETD_DATA && dgram)
+            rc = -EMSGSIZE;
+        else if (a[5] > sizeof(sa))
+            rc = -EINVAL;
+        else if (!(data = malloc(len ? len : 1)) || netd_read(tid, a[1], data, len) ||
+                 netd_read(tid, a[4], sa, a[5]))
+            rc = -EFAULT;
+        else if ((rc = -netd_check(sa, a[5], 0, child, dgram, data, len)) == 0)
+            rc = netd_sys(NR_SENDTO, fd, (long)data, (long)len, (long)a[3], (long)sa, (long)a[5]);
+        n = len;
+    } else if (nr == NR_SENDMSG || nr == NR_SENDMMSG) {
+        int has_peer = netd_sys(NR_GETPEERNAME, fd, (long)peer, (long)&pl, 0, 0, 0) == 0;
+        if (nr == NR_SENDMSG) {
+            struct netd_msghdr h;
+            rc = netd_read(tid, a[1], &h, sizeof(h))
+                     ? -EFAULT
+                     : netd_sendmsg(tid, fd, &h, (int)a[2], child, dgram, has_peer ? peer : NULL, pl);
+        } else {
+            struct netd_mmsghdr h;
+            uint64_t i, vlen = a[2] > 64 ? 64 : a[2];
+            uint32_t sent;
+            for (i = 0, rc = 0; i < vlen; i++) {
+                long one;
+                if (netd_read(tid, a[1] + i * sizeof(h), &h, sizeof(h))) {
+                    one = -EFAULT;
+                } else {
+                    one = netd_sendmsg(tid, fd, &h.hdr, (int)a[3], child, dgram,
+                                       has_peer ? peer : NULL, pl);
+                }
+                if (one < 0) {
+                    if (i == 0)
+                        rc = one;
+                    break;
+                }
+                sent = (uint32_t)one;
+                netd_write(tid, a[1] + i * sizeof(h) + offsetof(struct netd_mmsghdr, len), &sent,
+                           sizeof(sent));
+                rc = (long)(i + 1);
+            }
+        }
+    }
+    (void)n;
+reply:
+    free(data);
+    if (fd >= 0)
+        close(fd);
+    netd_reply(listener, id, rc, 0);
+}
+
+struct netd_job {
+    int listener;
+    struct netd_notif req;
+};
+
+static void *netd_worker(void *arg)
+{
+    struct netd_job *job = arg;
+    netd_handle(job->listener, &job->req);
+    free(job);
+    atomic_fetch_sub(&netd_workers, 1);
+    return NULL;
+}
+
+static void *netd_loop(void *arg)
+{
+    int listener = (int)(intptr_t)arg;
+    struct pollfd p;
+    struct netd_job *job;
+    pthread_t t;
+    pthread_attr_t attr;
+
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    for (;;) {
+        p.fd = listener;
+        p.events = POLLIN;
+        p.revents = 0;
+        if (poll(&p, 1, -1) < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (!(p.revents & POLLIN)) {
+            if (p.revents & (POLLHUP | POLLERR | POLLNVAL))
+                break;
+            continue;
+        }
+        if (!(job = calloc(1, sizeof(*job))))
+            continue;
+        job->listener = listener;
+        if (netd_sys(NR_IOCTL, listener, NOTIF_RECV, (long)&job->req, 0, 0, 0) < 0) {
+            free(job);
+            continue;
+        }
+        /* A call can wait (a connect() of a blocking socket): each one in
+         * a thread, and in this thread when there are too many. */
+        if (atomic_fetch_add(&netd_workers, 1) >= NETD_WORKERS ||
+            pthread_create(&t, &attr, netd_worker, job)) {
+            atomic_fetch_sub(&netd_workers, 1);
+            netd_handle(listener, &job->req);
+            free(job);
+        }
+    }
+    pthread_attr_destroy(&attr);
+    return NULL;
+}
+
+/* The features of the supervisor: NULL, or the reason that it is not
+ * there. */
+static const char *netd_probe(void)
+{
+    uint16_t sizes[3];
+    char buf[8];
+    int pidfd, fd;
+    FILE *f;
+
+    if (getenv("BEAM_COM_NET_NO_SUPERVISOR"))
+        return "BEAM_COM_NET_NO_SUPERVISOR";
+    if (netd_sys(NR_SECCOMP, 3 /* SECCOMP_GET_NOTIF_SIZES */, 0, (long)sizes, 0, 0, 0) ||
+        sizes[0] != sizeof(struct netd_notif) || sizes[1] != sizeof(struct netd_resp))
+        return "no seccomp user notification (Linux 5.0)";
+    if ((pidfd = (int)netd_sys(NR_PIDFD_OPEN, getpid(), 0, 0, 0, 0, 0)) < 0)
+        return "no pidfd_open() (Linux 5.3)";
+    fd = (int)netd_sys(NR_PIDFD_GETFD, pidfd, pidfd, 0, 0, 0, 0);
+    close(pidfd);
+    if (fd < 0)
+        return "no pidfd_getfd() (Linux 5.6, or a container that refuses it)";
+    close(fd);
+    if (netd_read(getpid(), (uint64_t)(uintptr_t)&sizes, buf, 2))
+        return "no process_vm_readv()";
+    if ((f = fopen("/proc/sys/kernel/yama/ptrace_scope", "r"))) {
+        int scope = fgetc(f);
+        fclose(f);
+        if (scope >= '2')
+            return "Yama ptrace_scope 2 or 3";
+    }
+    return NULL;
+}
+
+/* The filter of the VM. Another architecture (32-bit calls, x32) gets
+ * EACCES. */
+static int netd_filter(void)
+{
+    struct sock_filter f[24];
+    struct sock_fprog prog;
+    int n = 0, k, allow, notif;
+    long fd;
+
+#define NETD_TO(t) ((unsigned char)((t) - n - 1))
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 4);
+    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NETD_ARCH, 1, 0);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, 0x00050000u | EACCES);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 0);
+#ifdef __x86_64__
+    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x40000000u, 0, 1);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, 0x00050000u | EACCES);
+#endif
+    k = n;
+    allow = k + 9;
+    notif = k + 10;
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_CONNECT, NETD_TO(notif), 0);
+    n++;
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_BIND, NETD_TO(notif), 0);
+    n++;
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_SENDMSG, NETD_TO(notif), 0);
+    n++;
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_SENDMMSG, NETD_TO(notif), 0);
+    n++;
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_SENDTO, 0, NETD_TO(allow));
+    n++;
+    /* sendto() with an address: args[4], at 16 + 4 * 8. */
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 48);
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, NETD_TO(notif));
+    n++;
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 52);
+    f[n] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, NETD_TO(allow), NETD_TO(notif));
+    n++;
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, 0x7fff0000u);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, NETD_RET_USER_NOTIF);
+#undef NETD_TO
+    prog.len = (unsigned short)n;
+    prog.filter = f;
+    if (netd_sys(NR_PRCTL, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0, 0))
+        return -1;
+    fd = netd_sys(NR_SECCOMP, 1 /* SECCOMP_SET_MODE_FILTER */,
+                  NETD_FLAG_NEW_LISTENER | NETD_FLAG_WAIT_KILLABLE_RECV, (long)&prog, 0, 0, 0);
+    if (fd == -EINVAL)
+        fd = netd_sys(NR_SECCOMP, 1, NETD_FLAG_NEW_LISTENER, (long)&prog, 0, 0, 0);
+    return fd < 0 ? -1 : (int)fd;
+}
+
+static volatile sig_atomic_t netd_signal;
+
+static void netd_forward(int sig)
+{
+    kill(netd_vm, sig);
+}
+
+/* The supervisor: the resolver and the checks, until the VM ends. It
+ * then ends with the status of the VM. */
+static void netd_parent(pid_t vm, int sock) __attribute__((__noreturn__));
+static void netd_parent(pid_t vm, int sock)
+{
+    /* The signals of Cosmopolitan are not constants. */
+    const int forward[] = {SIGTERM, SIGHUP, SIGUSR1, SIGUSR2, SIGWINCH};
+    struct sigaction sa;
+    sigset_t all, old;
+    pthread_t t;
+    pthread_attr_t attr;
+    int fd = -1, pidfd, listener = -1, status, i, null;
+
+    netd_vm = vm;
+    /* The VM and its programs cannot attach to the supervisor. */
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+    if (read(sock, &fd, sizeof(fd)) == sizeof(fd) && fd >= 0 &&
+        (pidfd = (int)netd_sys(NR_PIDFD_OPEN, vm, 0, 0, 0, 0, 0)) >= 0) {
+        listener = (int)netd_sys(NR_PIDFD_GETFD, pidfd, fd, 0, 0, 0, 0);
+        close(pidfd);
+    }
+    if (listener < 0) {
+        fprintf(stderr, "beam.com: --allow-net: the supervisor did not get the filter\n");
+        kill(vm, SIGKILL);
+    }
+    if (write(sock, "", 1) != 1)
+        kill(vm, SIGKILL);
+    close(sock);
+    if ((null = open("/dev/null", O_RDWR)) >= 0) {
+        dup2(null, 0);
+        dup2(null, 1);
+        if (null > 2)
+            close(null);
+    }
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = netd_forward;
+    sigemptyset(&sa.sa_mask);
+    for (i = 0; i < (int)(sizeof(forward) / sizeof(*forward)); i++)
+        sigaction(forward[i], &sa, NULL);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+    if (listener >= 0) {
+        sigfillset(&all);
+        pthread_sigmask(SIG_SETMASK, &all, &old);
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&t, &attr, net_loop, NULL) ||
+            pthread_create(&t, &attr, netd_loop, (void *)(intptr_t)listener)) {
+            fprintf(stderr, "beam.com: --allow-net: the supervisor did not start\n");
+            kill(vm, SIGKILL);
+        }
+        pthread_attr_destroy(&attr);
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
+    }
+    while (waitpid(vm, &status, 0) < 0)
+        if (errno != EINTR)
+            _exit(127);
+    if (WIFSIGNALED(status)) {
+        signal(WTERMSIG(status), SIG_DFL);
+        sigemptyset(&all);
+        sigprocmask(SIG_SETMASK, &all, NULL);
+        kill(getpid(), WTERMSIG(status));
+        _exit(128 + WTERMSIG(status));
+    }
+    _exit(WIFEXITED(status) ? WEXITSTATUS(status) : 127);
+}
+
+/* Fork: the parent is the supervisor (it does not return), the child the
+ * VM, with the filter. Gives NULL in the VM, or the step that failed. */
+static const char *netd_fork(void)
+{
+    int sv[2], listener;
+    pid_t parent = getpid(), pid;
+    char ack;
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv))
+        return "socketpair";
+    if ((pid = fork()) < 0)
+        return "fork";
+    if (pid > 0) {
+        close(sv[1]);
+        netd_parent(pid, sv[0]);
+    }
+    close(sv[0]);
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) || getppid() != parent)
+        _exit(127);
+    if ((listener = netd_filter()) < 0) {
+        listener = -1;
+        if (write(sv[1], &listener, sizeof(listener)) < 0) {
+        }
+        return "seccomp";
+    }
+    if (write(sv[1], &listener, sizeof(listener)) != sizeof(listener) ||
+        read(sv[1], &ack, 1) != 1)
+        _exit(127);
+    /* Caution: the VM must not keep the listener, else it could answer
+     * for its own calls. */
+    close(listener);
+    close(sv[1]);
+    return NULL;
+}
+
 /* The names of the hosts file that the list allows, for all time: kernel
  * reads this file before it asks the resolver. */
 static void net_hosts_file(void)
@@ -1047,12 +1781,27 @@ static const char *net_landlock(void)
 
 const char *beam_com_net_prepare(int from_env)
 {
+    const char *why = NULL, *step;
+
     net_verbose = getenv("BEAM_COM_VERBOSE") != NULL;
     net_name_servers(from_env);
     net_hosts_file();
     if (net_sockets())
         return "the socket of the resolver";
-    net_on = 1;
+    if (IsLinux() && !(why = netd_probe())) {
+        /* Only the VM returns. The resolver is in the supervisor. */
+        if ((step = netd_fork()))
+            return step;
+        close(net_udp);
+        close(net_tcp);
+        netd_on = 1;
+        if (net_verbose)
+            fprintf(stderr, "beam.com: --allow-net: the supervisor checks the calls\n");
+    } else {
+        if (why && net_verbose)
+            fprintf(stderr, "beam.com: --allow-net: no supervisor: %s\n", why);
+        net_on = 1;
+    }
     return net_landlock();
 }
 
@@ -1065,6 +1814,8 @@ const char *beam_com_net_start(void)
 
     snprintf(addr, sizeof(addr), "127.0.0.1:%d", net_port);
     setenv("BEAM_COM_DNS", addr, 1);
+    if (netd_on)
+        return NULL;
     /* The threads of the resolver take no signals: ERTS handles them. */
     sigfillset(&all);
     pthread_sigmask(SIG_SETMASK, &all, &old);
