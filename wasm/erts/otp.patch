@@ -911,3 +911,33 @@ index e07a162..190ccc4 100644
  
      /*
       * On an operating systems that support MAP_ALIGN (SunOS >=5.9) we
+diff --git a/erts/emulator/sys/common/erl_mseg.h b/erts/emulator/sys/common/erl_mseg.h
+index 024563e..2430d62 100644
+--- a/erts/emulator/sys/common/erl_mseg.h
++++ b/erts/emulator/sys/common/erl_mseg.h
+@@ -66,11 +66,24 @@ typedef struct {
+     ErtsMMapInit literal_mmap;
+ } ErtsMsegInit_t;
+ 
++/*
++ * Emscripten: a segment is a block of malloc() (os_mmap() of erl_mmap.c),
++ * and malloc() has its own lists of free memory. A cache of segments
++ * only keeps memory from malloc(). It also splits a cached segment in
++ * two segments, and the block goes back to malloc() only when both are
++ * unmapped. So by default there is no cache (+MMmcs 0).
++ */
++#ifdef __EMSCRIPTEN__
++#  define ERTS_MSEG_DEFAULT_MCS 0
++#else
++#  define ERTS_MSEG_DEFAULT_MCS 10
++#endif
++
+ #define ERTS_MSEG_INIT_DEFAULT_INITIALIZER				\
+ {									\
+     4*1024*1024,	/* amcbf: Absolute max cache bad fit	*/	\
+     20,			/* rmcbf: Relative max cache bad fit	*/	\
+-    10,			/* mcs:   Max cache size		*/	\
++    ERTS_MSEG_DEFAULT_MCS,	/* mcs:   Max cache size		*/	\
+     0,                  /* nos:   Number of schedulers		*/	\
+     0,                  /* ndai:  Number of dirty alloc instances*/	\
+     ERTS_MMAP_INIT_DEFAULT_INITER,					\

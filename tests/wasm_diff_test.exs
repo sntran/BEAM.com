@@ -159,15 +159,14 @@ defmodule BeamCom.WasmDiffTest do
     assert out =~ ~r/^mem_check: erlang_memory none$/m
   end
 
-  # The limits of the growth: a binary of 16 MB, or a heap of about 8 MB
-  # of heap_shrink, can leave blocks of free memory that the next one does
-  # not fit in. In CI, heap_shrink grew by 0 to 32 MB in its 30 runs, in
-  # steps of 8 MB, and then stayed flat. Without the fix, it grew by about
-  # 15 MB in each run (453 MB). So for heap_shrink, the check of a leak is
-  # the growth in its last 10 runs (@mem_tail_limits): about 150 MB with a
-  # leak, and 24 MB or less for three steps of 8 MB.
-  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 48 * 1024 * 1024}
-  @mem_tail_limits %{"heap_shrink" => 24 * 1024 * 1024}
+  # Each case may grow the size of the memory (wasm_host:memory/0) and the
+  # memory that malloc() gives out (wasm_host:memory(used)) by less than
+  # 8 MB. Before the runtime had no cache of segments (+MMmcs 0, EM9 in
+  # docs/UPSTREAM.md), heap_shrink grew the size by 0 to 32 MB, in steps
+  # of 8 MB, and the cache kept these blocks from malloc(). With no cache,
+  # each case was flat here, and the peak of the run was 74 MB in place of
+  # 162 MB.
+  @mem_limit 8 * 1024 * 1024
   @mem_cases ~w(renders big_binaries heap_shrink binary_growth parallel)
 
   defp mem_check(ctx, name, job) do
@@ -193,18 +192,16 @@ defmodule BeamCom.WasmDiffTest do
         Regex.run(~r/^mem_check: #{c} (\d+) (\d+)$/m, out) || flunk("no #{c}: #{out}")
 
       growth = String.to_integer(last) - String.to_integer(first)
-      limit = Map.get(@mem_limits, c, 8 * 1024 * 1024)
-      assert growth < limit, "#{c}: the memory of the VM grew #{div(growth, 1024)} KB: #{out}"
 
-      with %{^c => tail_limit} <- @mem_tail_limits do
-        [_, from, to] =
-          Regex.run(~r/^mem_check: #{c} tail (\d+) (\d+)$/m, out) || flunk("no #{c} tail: #{out}")
+      assert growth < @mem_limit,
+             "#{c}: the memory of the VM grew #{div(growth, 1024)} KB: #{out}"
 
-        tail = String.to_integer(to) - String.to_integer(from)
+      [_, used_first, used_last] =
+        Regex.run(~r/^mem_check: #{c} used (\d+) (\d+) \d+$/m, out) ||
+          flunk("no #{c} used: #{out}")
 
-        assert tail < tail_limit,
-               "#{c}: the memory of the VM grew #{div(tail, 1024)} KB in the last 10 runs: #{out}"
-      end
+      used = String.to_integer(used_last) - String.to_integer(used_first)
+      assert used < @mem_limit, "#{c}: the memory in use grew #{div(used, 1024)} KB: #{out}"
     end
 
     assert out =~ ~r/^mem_check: keeper ok$/m

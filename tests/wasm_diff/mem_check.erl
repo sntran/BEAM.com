@@ -11,7 +11,9 @@
 %%   parallel      16 processes with big heaps at one time, then their end
 %%
 %% Each case runs a first time, then again: the output has the memory of
-%% WebAssembly (wasm_host:memory/0) after the first time and at the end.
+%% WebAssembly (wasm_host:memory/0) after the first time and at the end,
+%% and the same for the memory that malloc() gives out
+%% (wasm_host:memory(used)), with the time of that call in microseconds.
 %% A process keeps a binary of 8 MB and a list during all the cases, and
 %% checks them at the end: an unmap must not free memory that is in use.
 %% Only for the runtime of WebAssembly.
@@ -47,6 +49,7 @@ main(Args) ->
 
 run(Name, First, Again) ->
     First(),
+    put(used_first, wasm_host:memory(used)),
     A = wasm_host:memory(),
     put(steps, [A]),
     Again(),
@@ -55,10 +58,13 @@ run(Name, First, Again) ->
     Steps = changes(All),
     io:format("mem_check: ~s ~b ~b~n", [Name, A, B]),
     io:format("mem_check: ~s steps~s~n", [Name, [[$\s, integer_to_list(S)] || S <- Steps]]),
-    %% The memory 10 repetitions before the end, and at the end: a leak
-    %% grows in each repetition, and the free memory that a block does not
-    %% fit in stops after some steps.
-    io:format("mem_check: ~s tail ~b ~b~n", [Name, lists:nth(max(1, length(All) - 10), All), B]).
+    %% The memory that malloc() gives out after the first time and at the
+    %% end (wasm_host:memory(used)): it goes down when the VM frees memory,
+    %% so a leak grows it, and free memory that a block does not fit in
+    %% does not.
+    UsedA = get(used_first),
+    {Time, UsedB} = timer:tc(wasm_host, memory, [used]),
+    io:format("mem_check: ~s used ~b ~b ~b~n", [Name, UsedA, UsedB, Time]).
 
 %% The memory after each repetition of the second time, with no two
 %% values the same one after the other: a leak gives many steps, and the

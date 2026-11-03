@@ -832,12 +832,38 @@ The main cause of that growth was a leak of carriers: the `munmap()` of
 Emscripten frees only a whole mapping, and ERTS unmaps parts of a mapping
 to align a carrier. So most carriers never went back to `malloc()`
 (EM9 in [`UPSTREAM.md`](UPSTREAM.md)). The runtime now has its own
-`mmap()` for ERTS, and freed carriers go back to `malloc()`. An app reads
+`mmap()` for ERTS, and freed carriers go back to `malloc()`. It also has
+no cache of segments by default (`+MMmcs 0`): the cache kept freed
+carriers from `malloc()`, and the peak of `tests/wasm_diff/mem_check.erl`
+went from 162 MB to 74 MB without it. An app reads
 the memory of the VM with `wasm_host:memory/0`: the size of the memory of
 WebAssembly in bytes, which the host counts against the 128 MB. It
 never shrinks, so it is also the peak. It works also with `-Mea min`, where
-`erlang:memory/0` is not supported. An app can use it to refuse new work
-before the isolate goes over its limit.
+`erlang:memory/0` is not supported.
+
+`wasm_host:memory(used)` gives the memory that the VM uses now: the bytes
+that `malloc()` gives out (`mallinfo()` of dlmalloc). It goes down when the
+VM frees memory, and the VM uses that free memory again before the size
+grows. `wasm_host:memory(size)` is `wasm_host:memory/0`. A guard that
+refuses new work only when the free part is too small for it:
+
+```erlang
+Size = wasm_host:memory(size),
+Used = wasm_host:memory(used),
+Refuse = Size - Used < Reserve andalso Size > Limit - Reserve.
+```
+
+- With `-Mea min`, almost all the memory of ERTS goes through `malloc()`,
+  so `used` is near the use of the VM. In `tests/wasm_diff/mem_check.erl`,
+  `used` went back to 27.7 MB after each case, with a size of 56 MB.
+- With the default allocators, `used` also has the free parts of the
+  carriers of ERTS, so it is higher than `erlang:memory(total)`.
+- Free memory can be in blocks that are too small for a large binary or
+  heap. Then the size grows, also when `Size - Used` is large.
+- Caution: `mallinfo()` walks all the chunks of `malloc()`. One call took
+  0.02 to 0.06 ms with the default allocators, and 0.3 to 0.7 ms with
+  `-Mea min` (Node.js, a VM of 56 MB). Call it at most each few seconds,
+  or keep the value.
 
 The host also starts the VM with `-sbwt none -sbwtdcpu none -sbwtdio
 none`: no busy wait of the schedulers. A scheduler with no work spins for
@@ -933,6 +959,24 @@ Caution: `wrangler dev` does not apply the limit of 128 MB. A test that
 passes in `wrangler dev` can reset the object on Cloudflare. Test the
 memory on Cloudflare, and read the lines `beam: memory N MB (a new peak
 of this VM)` of `wrangler tail`.
+
+How Cloudflare counts the 128 MB: the limit counts the JavaScript heap
+and the memory of WebAssembly of the isolate
+([Workers limits](https://developers.cloudflare.com/workers/platform/limits/#memory)).
+When an isolate goes over the limit, Cloudflare lets the requests in
+flight complete. It sends the new requests to a new isolate. So a peak
+above 128 MB can pass, and the object resets later. Cloudflare does not
+tell when it does this check.
+
+- On Cloudflare (a Phoenix LiveView game, November 2026), the objects
+  reset only at a VM (`wasm_host:memory/0`) of 133 to 167 MB. Some runs
+  passed with a VM of 143 MB. Do not plan for such a peak: the reset
+  closes each open connection of the object.
+- Compare the sum of the VM and of the modules of the Worker
+  (`app.com`, and the snapshot of the build) with 128 MB. In these runs,
+  this check refused some loads that passed on Cloudflare, but it
+  refused each load that reset an object. So a load test under
+  `wrangler dev` with this check gives a safe number of users.
 
 The bridge of the host has one listener for each port, so the app needs
 one acceptor. In a Phoenix app, give Bandit `thousand_island_options:
@@ -1676,8 +1720,23 @@ not in the key of the snapshot.
   with a spawn (see "Peer nodes"), and only the NIFs of the
   runtime or NIF libraries in WebAssembly.
 - No UDP. Incoming TCP only through a WebSocket (see above).
-- An isolate can close at any time, and a deploy resets the Durable
-  Objects. The next request boots or restores a new VM.
+- An isolate can close at any time. The next request boots or restores
+  a new VM.
+- A deploy does not reset a Durable Object that runs. The deploy
+  completes at once, and the object keeps its VM and the old code. The
+  object takes the new code when it hibernates, when Cloudflare evicts
+  it after 70 to 140 s with no request, or at the end of `max_delay`
+  (300 s by default). See
+  [Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/).
+  - For a reset at once, deploy with
+    `npx wrangler deploy --durable-objects-code-update-mode immediate`.
+    The reset closes the open connections of the object.
+  - For a shorter wait, set `max_delay` in seconds in `wrangler.jsonc`:
+    `"durable_objects": { "code_update_strategy": { "mode": "deferred",
+    "max_delay": 30 } }`.
+  - The line `beam: ready in ... ms (..., version ID)` of the log gives
+    the version of the deploy (the binding `BEAM_VERSION`). A test reads
+    it to know that the VM runs the code of the new deploy.
 - Argon2 with its default costs (64 MiB) can go over the 128 MB of an
   isolate. Use lower costs, or bcrypt.
 - On Deno KV, one transaction of SQLite writes at most 160 blocks of 4 KiB
