@@ -421,6 +421,24 @@ step_openssl() {
 }
 
 step_otp() {
+    # A built tree with the key of this build, from the store. All its
+    # files get the same time, so a file that a later step writes (the
+    # files of c_src/cosmo below, the NIFs) is newer, and make builds only
+    # what depends on it.
+    if [ -n "${PARTS_URL:-}" ] && ! otp_from_part; then
+        key=$(otp_part_key)
+        rm -rf "$ERL_TOP.part"
+        if part_get otp "$key" "$ERL_TOP.part"; then
+            rm -rf "$ERL_TOP"
+            mv "$ERL_TOP.part/$(basename "$ERL_TOP")" "$ERL_TOP"
+            rm -rf "$ERL_TOP.part"
+            now=$(date +%Y%m%d%H%M.%S)
+            find "$ERL_TOP" -exec touch -h -t "$now" {} +
+            echo "$key" > "$ERL_TOP/.beam_com_part"
+        else
+            rm -rf "$ERL_TOP.part"
+        fi
+    fi
     if [ ! -d "$ERL_TOP/.git" ]; then
         log "Cloning Erlang/OTP $OTP_VERSION"
         git clone -q --depth 1 --branch "OTP-$OTP_VERSION" \
@@ -447,6 +465,11 @@ step_otp() {
 }
 
 step_configure() {
+    if otp_from_part; then
+        log "Using the configured OTP of the store"
+        return 0
+    fi
+    rm -f "$ERL_TOP/.beam_com_part"
     log "Configuring OTP with $CC"
     cd "$ERL_TOP"
     # Notes on the cache variables:
@@ -935,7 +958,28 @@ step_nifs() {
         "$AR" rcs sqlite3_nif.a sqlite3_nif.o
     fi
     for p in $(hex_nif_packages); do
-        build_hex_nif "$p" "$HEXNIFS/static" "$CC" "$AR" "$erl_flags"
+        # Its archive for each CPU: static/LIB.a and static/.aarch64/LIB.a.
+        # The name in its own variable: build_vix_nif and
+        # rust_nif_prepare set p.
+        pkg=$p
+        lib=$(hex_nif_recipe "$pkg" | cut -d' ' -f3)
+        key=$(nif_part_key "$pkg")
+        # The NIF of ex_pdfium also has the license texts of PDFium, for
+        # the step bundle.
+        set -- "$lib.a" ".aarch64/$lib.a"
+        [ "$pkg" = ex_pdfium ] && set -- "$@" licenses-pdfium
+        if part_get "nif-$pkg" "$key" "$HEXNIFS/static" &&
+            [ -f "$HEXNIFS/static/$lib.a" ] && [ -f "$HEXNIFS/static/.aarch64/$lib.a" ]; then
+            continue
+        fi
+        build_hex_nif "$pkg" "$HEXNIFS/static" "$CC" "$AR" "$erl_flags"
+        lib=$(hex_nif_recipe "$pkg" | cut -d' ' -f3)
+        if [ "$pkg" = ex_pdfium ]; then
+            rm -rf "$HEXNIFS/static/licenses-pdfium"
+            mkdir -p "$HEXNIFS/static/licenses-pdfium"
+            cp "${PDFIUM:-$BUILD/pdfium}"/x64/licenses/* "$HEXNIFS/static/licenses-pdfium/"
+        fi
+        part_put "nif-$pkg" "$key" "$HEXNIFS/static" "$@"
     done
     return 0
 }
@@ -1193,6 +1237,159 @@ step_wasm_runtime_key() {
     wasm_runtime_inputs
 }
 
+# The store of prebuilt parts (docs/BUILDING.md, "The store of parts"). A
+# part is the output of a step, NAME-KEY.tar.xz, and KEY is the SHA-256
+# of all its inputs: the same inputs give the same name, so a part never
+# goes stale. The settings:
+#
+#   PARTS_URL   the address of the store with no "/" at the end, for
+#               example the files of the release "parts". Empty: no store.
+#   PARTS_PUT   an absolute directory for each part that a step built.
+#               Empty: none. In CI, a later step with the token puts these
+#               files in the store, so the build itself has no token.
+#
+# Caution: a part is code that goes into the files of beam.com. Only the
+# workflows of main may put parts (custom-build.yml and
+# custom-build-caches.yml), never a pull request.
+
+# part_get NAME KEY DIR: unpack the part NAME-KEY into DIR. Status 1 when
+# the store has no such part (or there is no store).
+part_get() {
+    [ -n "${PARTS_URL:-}" ] || return 1
+    pg_file=$BUILD/parts/$1-$2.tar.xz
+    mkdir -p "$BUILD/parts" "$3"
+    if ! curl -fsSL --retry 3 -o "$pg_file.tmp" "$PARTS_URL/$1-$2.tar.xz" 2>/dev/null; then
+        rm -f "$pg_file.tmp"
+        return 1
+    fi
+    mv "$pg_file.tmp" "$pg_file"
+    xz -dc "$pg_file" | tar -xf - -C "$3"
+    rm -f "$pg_file"
+    log "Using the part $1 of the store ($2)"
+}
+
+# part_put NAME KEY DIR PATH...: pack PATH... of DIR as the part NAME-KEY,
+# in the directory PARTS_PUT.
+part_put() {
+    [ -n "${PARTS_PUT:-}" ] || return 0
+    case $PARTS_PUT in
+        /*) ;;
+        *) echo "PARTS_PUT: an absolute directory, not $PARTS_PUT" >&2
+           exit 1 ;;
+    esac
+    pp_name=$1 pp_key=$2 pp_dir=$3
+    shift 3
+    pp_file=$PARTS_PUT/$pp_name-$pp_key.tar.xz
+    mkdir -p "$PARTS_PUT"
+    log "Packing the part $pp_name for the store ($pp_key)"
+    tar -cf - -C "$pp_dir" "$@" | xz -T0 -3 > "$pp_file.tmp"
+    mv "$pp_file.tmp" "$pp_file"
+}
+
+# part_files PATH...: the SHA-256 of each file of these paths that git
+# knows, for the key of a part.
+part_files() {
+    git -C "$ROOT" ls-files "$@" |
+        while read -r pf; do echo "$pf $(sha256sum "$ROOT/$pf" | cut -d' ' -f1)"; done
+}
+
+# part_funcs NAME...: the text of these functions of scripts/steps.sh, for
+# the key of a part. Caution: a function that a step of a part starts to
+# call must be in its list.
+part_funcs() {
+    for pf in "$@"; do
+        if [ -z "$(steps_function "$pf")" ]; then
+            echo "part_funcs: no function $pf in scripts/steps.sh" >&2
+            exit 1
+        fi
+        steps_function "$pf"
+    done
+}
+
+# The key of the NIF of the package $1 (step_nifs): its recipe, the NIF
+# API of this OTP (the headers that the NIF reads), cosmocc, and the files
+# and functions that build it. Not the OTP version: a NIF of the same API
+# works with each version of OTP 29.
+nif_part_key() {
+    t=$(target)
+    {
+        echo "nif $1 $(hex_nif_recipe "$1")"
+        echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 RUST_NIGHTLY ${RUST_NIGHTLY:-}"
+        for h in erts/emulator/beam/erl_nif.h erts/emulator/beam/erl_nif_api_funcs.h \
+                 erts/emulator/beam/erl_drv_nif.h "erts/include/$t/erl_int_sizes_config.h"; do
+            echo "$h $(sha256sum "$ERL_TOP/$h" | cut -d' ' -f1)"
+        done
+        part_funcs build_hex_nif fetch_hex
+        case $1 in
+            vix)
+                echo "VIX_PARTS $(printf '%s\n' $VIX_PARTS | sort -u | tr '\n' ' ') LIBVIPS ${LIBVIPS:-}"
+                part_funcs build_vix_nif build_rust_nif rust_nif_crate
+                echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
+                part_files scripts/libvips.sh patches/libvips c_src/vips native/vips_resvg \
+                    c_src/rust scripts/rust_link.sh ;;
+            ex_pdfium)
+                echo "PDFIUM ${PDFIUM:-}"
+                part_funcs build_rust_nif rust_nif_crate rust_nif_env rust_nif_prepare
+                echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
+                part_files scripts/pdfium.sh patches/pdfium c_src/rust scripts/rust_link.sh ;;
+            *)
+                if [ -n "$(rust_nif_crate "$1")" ]; then
+                    part_funcs build_rust_nif rust_nif_crate rust_nif_env rust_nif_prepare
+                    echo "RUST_SHIM_SYMS $RUST_SHIM_SYMS"
+                    part_files c_src/rust scripts/rust_link.sh
+                fi ;;
+        esac
+    } | sha256sum | cut -d' ' -f1
+}
+
+# The key of the built OTP tree (the steps otp, configure and make): the
+# versions, the settings of the configure and of the build, the files that
+# change each object (patches/otp, erts_cosmo.h, noshared, depcc), and the
+# path of the tree, which its Makefiles hold. The other files of
+# c_src/cosmo go into the step multicall, which compiles them again.
+otp_part_key() {
+    {
+        echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
+        echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 CC $CC CXX $CXX AR $AR"
+        echo "JIT $JIT CCACHE ${CCACHE:-0} BUILD $BUILD ERL_TOP $ERL_TOP"
+        echo "EXTRA_APPS $EXTRA_APPS"
+        echo "SRC_APPS $(printf '%s\n' $SRC_APPS | sort -u | tr '\n' ' ')"
+        part_funcs step_otp step_configure step_make
+        part_files patches/otp c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc
+    } | sha256sum | cut -d' ' -f1
+}
+
+# The key of the built Elixir (the step elixir): its version, its
+# patches, and the OTP that compiled it.
+elixir_part_key() {
+    {
+        echo "ELIXIR $ELIXIR_VERSION $ELIXIR_COMMIT OTP $(otp_part_key)"
+        part_funcs step_elixir
+        part_files patches/elixir
+    } | sha256sum | cut -d' ' -f1
+}
+
+# The key of each part of this build, one "NAME KEY" on each line (for
+# the logs of CI). It needs the steps otp and configure: the NIF keys read
+# the headers of the OTP tree.
+step_part_keys() {
+    echo "otp $(otp_part_key)"
+    [ "$ELIXIR" = 1 ] && echo "elixir $(elixir_part_key)"
+    for p in $(hex_nif_packages); do
+        echo "nif-$p $(nif_part_key "$p")"
+    done
+    return 0
+}
+
+# 1 when the build uses a store (PARTS_URL) and the OTP tree is a part
+# with the key of this build: the steps configure and make then have
+# nothing to do. Without a store, make runs as before, so a change in
+# the tree by hand is built.
+otp_from_part() {
+    [ -n "${PARTS_URL:-}" ] &&
+        [ "$(cat "$ERL_TOP/.beam_com_part" 2>/dev/null)" = "$(otp_part_key)" ]
+}
+
 step_wasm_runtime() {
     [ "${WASM_RUNTIME:-}" = none ] && return 0
     # A runtime of the same inputs (for example from the cache of CI)
@@ -1239,6 +1436,10 @@ step_hex_nifs() {
 }
 
 step_make() {
+    if otp_from_part; then
+        log "Using the built OTP of the store"
+        return 0
+    fi
     log "Building OTP (small build)"
     cd "$ERL_TOP"
     # cosmocc does not support "-MM" with many input files. depcc runs
@@ -1256,6 +1457,11 @@ step_make() {
         log "Building $app (Erlang code)"
         PATH=$ERL_TOP/bootstrap/bin:$PATH make -C "lib/$app/src" opt
     done
+    if [ -n "${PARTS_PUT:-}" ]; then
+        key=$(otp_part_key)
+        echo "$key" > "$ERL_TOP/.beam_com_part"
+        part_put otp "$key" "$(dirname "$ERL_TOP")" "$(basename "$ERL_TOP")"
+    fi
 }
 
 # The pledge() of Linux of Cosmopolitan, with the options of sockets that
@@ -1311,8 +1517,24 @@ step_multicall() {
 # run on the build machine).
 step_elixir() {
     [ "$ELIXIR" = 1 ] || return 0
-    log "Building Elixir $ELIXIR_VERSION"
     src=$BUILD/elixir-$ELIXIR_VERSION
+    if [ -n "${PARTS_URL:-}${PARTS_PUT:-}" ]; then
+        key=$(elixir_part_key)
+        if [ -n "${PARTS_URL:-}" ] && [ "$(cat "$src/.beam_com_part" 2>/dev/null)" = "$key" ]; then
+            log "Using the built Elixir of the store"
+            return 0
+        fi
+        rm -rf "$src.part"
+        if part_get elixir "$key" "$src.part"; then
+            rm -rf "$src"
+            mv "$src.part/$(basename "$src")" "$src"
+            rm -rf "$src.part"
+            echo "$key" > "$src/.beam_com_part"
+            return 0
+        fi
+        rm -rf "$src.part"
+    fi
+    log "Building Elixir $ELIXIR_VERSION"
     if [ ! -d "$src/.git" ]; then
         rm -rf "$src"
         git clone -q --depth 1 --branch "v$ELIXIR_VERSION" \
@@ -1328,6 +1550,10 @@ step_elixir() {
         touch "$src/.beam_com_patched"
     fi
     (cd "$src" && PATH="$ERL_TOP/bin:$PATH" make compile)
+    if [ -n "${PARTS_PUT:-}" ]; then
+        echo "$key" > "$src/.beam_com_part"
+        part_put elixir "$key" "$BUILD" "$(basename "$src")"
+    fi
 }
 
 step_release() {
@@ -1518,7 +1744,7 @@ step_bundle() {
     # license texts, from scripts/pdfium.sh.
     if hex_nif_packages | grep -qw ex_pdfium; then
         mkdir -p "$STAGE/licenses/pdfium"
-        cp "${PDFIUM:-$BUILD/pdfium}"/x64/licenses/* "$STAGE/licenses/pdfium/"
+        cp "$HEXNIFS/static/licenses-pdfium"/* "$STAGE/licenses/pdfium/"
     fi
     # The license texts of the Elixir source (LICENSES/), when Elixir is
     # in the zip.

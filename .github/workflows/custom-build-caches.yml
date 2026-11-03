@@ -1,21 +1,28 @@
-name: Caches of the custom builds
+name: Caches and parts of the custom builds
 
-# Fills the caches of main that custom-build.yml reads, so a custom build
-# does not start cold: the libraries of libvips and libvips (about 13
-# minutes), ccache for OTP (about 4 minutes), libpdfium.a (about 20
-# minutes) and the WebAssembly runtime (about 3 minutes). Only a run on
-# main fills them: the caches of a pull request are only for that pull
-# request, and vix.yml runs only on pull requests.
+# Fills the store of parts and the caches of main that custom-build.yml
+# reads, so a custom build does not start cold.
+#
+# - The store of parts (docs/BUILDING.md, "The store of parts"): the
+#   built OTP (about 7 minutes), Elixir (about 1 minute) and each NIF
+#   (vix with its libraries about 15 minutes, ex_pdfium with libpdfium.a
+#   about 21 minutes). A part does not expire.
+# - The caches, for a part that is not in the store yet: the libraries of
+#   libvips (about 13 minutes), ccache for OTP (about 4 minutes),
+#   libpdfium.a (about 20 minutes) and the WebAssembly runtime (about 3
+#   minutes). Only a run on main fills them: the caches of a pull request
+#   are only for that pull request, and vix.yml runs only on pull
+#   requests.
 #
 # It builds beam.com with the choices of a custom build of the form, with
 # the default NIFs and each heavy NIF: vix with all its parts, ex_pdfium
 # and rusty_csv. scripts/custom_build.py makes the settings, so the
-# versions and the cache keys are those of custom-build.yml. A custom
-# build with fewer parts of vix builds only libvips (about 1.5 minutes).
+# versions and the keys are those of custom-build.yml. A custom build with
+# other parts of vix builds only libvips and the NIF (about 3 minutes).
 #
 # GitHub removes a cache that no run reads for 7 days. The schedule reads
-# each cache two times each week. When each cache is there with its key,
-# the job builds nothing.
+# each cache two times each week. When the store has each part, the build
+# takes about one minute.
 on:
   push:
     branches: [main]
@@ -28,13 +35,19 @@ on:
       - patches/otp/**
       - c_src/cosmo/**
       - scripts/custom_build.py
+      - scripts/steps.sh
+      - scripts/rust_link.sh
+      - c_src/rust/**
+      - patches/elixir/**
       - .github/workflows/custom-build-caches.yml
   schedule:
     - cron: "17 4 * * 1,4"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # For the new parts in the release "parts" (the step after the build).
+  # The checkout keeps no token, so the build cannot use it.
+  contents: write
   # For the list of the caches (the last step).
   actions: read
 
@@ -49,7 +62,7 @@ env:
 
 jobs:
   caches:
-    name: Fill the caches
+    name: Fill the parts and the caches
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 120
@@ -132,13 +145,6 @@ jobs:
           path: build/libvips-deps
           key: libvips-deps-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.LIBVIPS_DEPS_KEY }}
 
-      - name: Cache libvips
-        id: libvips
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**', 'c_src/vips/**') }}-parts-${{ env.VIX_PARTS }}
-
       - name: Cache libpdfium.a (x64)
         id: pdfium_x64
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -166,48 +172,51 @@ jobs:
             ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-
             ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-
 
-      # A cache that is there with its key does not change, so the job
-      # builds only when one is not.
-      - name: Find a missing cache
-        env:
-          HITS: >-
-            ${{ steps.wasm.outputs.cache-hit }} ${{ steps.deps.outputs.cache-hit }}
-            ${{ steps.libvips.outputs.cache-hit }} ${{ steps.pdfium_x64.outputs.cache-hit }}
-            ${{ steps.pdfium_arm64.outputs.cache-hit }} ${{ steps.ccache.outputs.cache-hit }}
-        # A missing cache gives an empty value or false.
-        run: |
-          set -- $HITS
-          if [ "$*" = "true true true true true true" ]; then
-            echo "Each cache is there with its key: no build."
-          else
-            echo "A cache is missing (cache-hit: $HITS)."
-            echo "BUILD_NEEDED=1" >> "$GITHUB_ENV"
-          fi
-
       - name: Install meson
-        if: env.BUILD_NEEDED == '1'
         run: |
           python3 -m pip install --user meson==1.12.1
           sudo apt-get install -y ninja-build nasm
 
-      # The build of custom-build.yml. The post steps of the caches save
-      # each cache that was missing, when the job ends with no error.
+      # The build of custom-build.yml, with the store. The post steps of
+      # the caches save each cache that was missing, when the job ends
+      # with no error.
       - name: Build
-        if: env.BUILD_NEEDED == '1'
         env:
           CC: cosmocc
           AR: cosmoar
           CCACHE: "1"
+          PARTS_URL: https://github.com/${{ github.repository }}/releases/download/parts
+          PARTS_PUT: ${{ runner.temp }}/parts-new
         run: |
           build/cosmocc/bin/make
           CCACHE_DIR=build/ccache ccache -s
+          # The key of each part, for the log.
+          sh scripts/steps.sh part_keys
 
       - name: Check the file
-        if: env.BUILD_NEEDED == '1'
         run: |
           build/beam.com --version | tee version.txt
           grep -q 'Linked NIFs.* vix-' version.txt
           grep -q 'Linked NIFs.* ex_pdfium-' version.txt
+
+      # As in custom-build.yml: after the checks, so a part of a build
+      # that failed does not go into the store.
+      - name: Put the new parts in the store
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW: ${{ runner.temp }}/parts-new
+        run: |
+          set -- "$NEW"/*.tar.xz
+          [ -f "$1" ] || { echo "No new part"; exit 0; }
+          gh release view parts --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create parts --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "Prebuilt parts" --notes "The parts of the custom builds: docs/BUILDING.md, \"The store of parts\"." ||
+            gh release view parts --repo "$GITHUB_REPOSITORY" > /dev/null
+          for f in "$@"; do
+            ls -l "$f"
+            gh release upload parts "$f" --repo "$GITHUB_REPOSITORY" ||
+              echo "The store did not take $(basename "$f") (it can be there already)"
+          done
 
       # The use of the 10 GB of caches of the repository, and the largest
       # caches, for a person who looks for the cause of a missing cache.
