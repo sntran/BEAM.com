@@ -37,10 +37,10 @@ itself goes to that project. BEAM.com takes their fixes in a new release.
 
 ## Limits to know
 
-- The sandbox works in the kernel on Linux and OpenBSD. On Windows, the
-  C library of the process checks the paths and the sockets, so native
-  code that calls Windows itself goes around it. On macOS, FreeBSD and
-  NetBSD, the `--allow-*` flags have no effect (see
+- The sandbox works in the kernel on Linux, OpenBSD and macOS arm64. On
+  Windows, the C library of the process checks the paths and the
+  sockets, so native code that calls Windows itself goes around it. On
+  macOS x86_64, FreeBSD and NetBSD, the `--allow-*` flags have no effect (see
   [`docs/SANDBOX.md`](docs/SANDBOX.md)).
 - In a Worker, anyone who can reach the Worker can reach the listeners
   of its program through `/.tcp/PORT`. Protect that path before you

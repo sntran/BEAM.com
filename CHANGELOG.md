@@ -5,6 +5,10 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox on macOS arm64: `--allow-read`, `--allow-write`,
+  `--allow-net` and `--allow-run` now give a profile of Seatbelt, the
+  sandbox of macOS, with the rules of Linux (docs/SANDBOX.md, "macOS").
+  A refused call gives `{error, eperm}`. Before, macOS ignored the flags.
 - The sandbox on Windows: `--allow-read` and `--allow-write` now limit
   the paths of the calls of the C library (`{error, eacces}` for
   another path), without `--allow-net` a socket of IPv4 or IPv6 gives
