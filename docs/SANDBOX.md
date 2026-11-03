@@ -17,7 +17,7 @@ what they allow:
 |---|---|---|
 | `--allow-read[=PATH,...]` | `-R` | read these files and directories (all, without a list) |
 | `--allow-write[=PATH,...]` | `-W` | write and create these files and directories (all, without a list) |
-| `--allow-net` | `-N` | use sockets and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS) |
+| `--allow-net[=HOST,...]` | `-N` | use sockets and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS); with a list, only for these hosts (see [A list of hosts](#a-list-of-hosts)) |
 | `--allow-run[=PROGRAM,...]` | | start these programs as ports (all, without a list); a name without `/` is found in `PATH` |
 | `--allow-all` | `-A` | do everything: no sandbox |
 
@@ -42,8 +42,7 @@ what they allow:
   leaves out an option that the sandbox refuses, and `inet:setopts/2`
   can give `ok` for it.
 - Not supported, because the sandbox cannot enforce them:
-  `--allow-net=HOST` (no filter by host), `--allow-env`,
-  `--allow-sys`, `--allow-ffi` and the `--deny-*` flags. A build
+  `--allow-env`, `--allow-sys`, `--allow-ffi` and the `--deny-*` flags. A build
   (`beam.com INPUT -o OUTPUT`) stops with an error for them.
 
 A forbidden action gives an error: reading or writing a hidden file
@@ -56,6 +55,64 @@ client, because the native resolver is a port program.
 | Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
 | OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
 | macOS, Windows, FreeBSD, NetBSD | no: the flags are ignored |
+
+## A list of hosts
+
+`--allow-net=HOST,...` allows the network only for these hosts:
+
+```sh
+beam.com app.exs --allow-net='api.example.com,*.s3.amazonaws.com:443,db.internal:5432' -o app.com
+```
+
+| Entry | Allows |
+|---|---|
+| `NAME` | the name, on each port |
+| `NAME:PORT` | the name, on this port |
+| `*.DOMAIN` | each name under `DOMAIN` (`a.DOMAIN`, `a.b.DOMAIN`), but not `DOMAIN`; `DOMAIN` has two labels or more |
+| `10.0.0.5`, `[::1]` | the address, on each port (an IPv6 address with a port is in brackets: `[::1]:8080`) |
+| `ADDRESS:PORT` | the address, on this port, also for `gen_tcp:listen/2` (`0.0.0.0:4000` for all the addresses of the host) |
+
+The list has 64 entries or fewer. The names are in lower case.
+
+The kernel cannot filter by host, so beam.com does the check in the
+process, with its own resolver of DNS:
+
+1. Kernel asks only the resolver of beam.com, on `127.0.0.1`. The
+   resolver sends a query to the name servers of the system only for a
+   name of the list. Each other name gives `{error, nxdomain}`, and the
+   query does not leave the process.
+2. The resolver records each address of its answers, and of the names
+   of their CNAME chains, for the entries that allow the name. The names
+   of `/etc/hosts` count too.
+3. Each `connect`, each UDP send, and each `bind` to a port other than 0
+   needs one of these addresses, an address of the list, or the resolver
+   itself, with an allowed port. Else the call gives `{error, eacces}`.
+
+Thus kernel and the check get the same answer, also from a name server
+that gives other addresses at each query. A program cannot ask another
+name server: that address is not allowed.
+
+On Linux 6.7 and later, when each entry has a port, Landlock also allows
+TCP `connect` and `bind` only for the ports of the list, in the kernel.
+
+The list also works on macOS, Windows, FreeBSD and NetBSD, where the
+other permissions have no effect, and on OpenBSD.
+
+Limits of the list:
+
+- Caution: a program of `--allow-run` does not get the list. It can
+  connect to each host, on the ports of Landlock only.
+- A name of the list can send data to its name servers in the names of
+  its queries, for example `secret.example.com` with `*.example.com`.
+- Native code that makes the system calls itself does not go through
+  the check. The NIFs of beam.com use the C library.
+- An address stays allowed for one hour after the TTL of its answer,
+  because programs keep addresses for some time. An address that two
+  names share is allowed for each of their entries.
+- `BEAM_COM_VERBOSE=1` prints each name that the resolver refuses.
+- With permissions from `BEAM_COM_ALLOW`, `BEAM_COM_DNS_UPSTREAM=IP:PORT`
+  gives the name server of the resolver (for tests). A program with
+  permissions in its file ignores it.
 
 ## Limits
 

@@ -1,0 +1,46 @@
+The resolver of the sandbox with a host list (--allow-net=HOST,...,
+c_src/cosmo/beam_com_net.c, O27 of docs/UPSTREAM.md): when BEAM_COM_DNS
+is "127.0.0.1:PORT", kernel looks up names in the hosts file and then
+with this name server only, and it does not read resolv.conf again.
+
+diff --git a/lib/kernel/src/inet_config.erl b/lib/kernel/src/inet_config.erl
+index bbad464..3c4c93c 100644
+--- a/lib/kernel/src/inet_config.erl
++++ b/lib/kernel/src/inet_config.erl
+@@ -83,6 +83,9 @@ init() ->
+ 	_  -> error("syntax error in ~ts~n", [RcFile])
+     end,
+ 
++    %% BEAM.com: the resolver of the sandbox with a host list
++    beam_com_dns(),
++
+     %% Set up a resolver configuration file for inet_res,
+     %% unless that already has been done
+     case OsType of
+@@ -429,6 +432,26 @@ valid_type(hosts) ->             true;
+ valid_type(win32) ->             true;
+ valid_type(_) ->                 false.
+ 
++%% BEAM.com: with --allow-net=HOST,..., beam.com has its own resolver on
++%% 127.0.0.1, and BEAM_COM_DNS gives its address ("127.0.0.1:PORT", see
++%% c_src/cosmo/beam_com_net.c). It is the only name server, after the
++%% hosts file, and the resolv.conf of the system does not replace it.
++beam_com_dns() ->
++    case os:getenv("BEAM_COM_DNS") of
++        "127.0.0.1:" ++ Text ->
++            case string:to_integer(Text) of
++                {Port, []} when Port > 0, Port < 65536 ->
++                    ok = inet_db:add_rc_list([{lookup, [file, dns]}, {resolv_conf, ""}]),
++                    inet_db:res_option(nameservers, [{{127,0,0,1}, Port}]),
++                    inet_db:res_option(alt_nameservers, []),
++                    ok;
++                _ ->
++                    ok
++            end;
++        _ ->
++            ok
++    end.
++
+ read_inetrc() ->
+     File = case application:get_env(inetrc) of
+                {ok, Value} when is_list(Value) -> Value;

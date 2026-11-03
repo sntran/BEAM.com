@@ -175,6 +175,7 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 /* memchr() and strncpy() that read no byte past their buffer (UPSTREAM.md
  * C33 and C34). tests/cosmo/libc_edges.c tests the same file. */
 #include "beam_com_libc.h"
+#include "beam_com_net.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -408,6 +409,8 @@ int beam_com_execve(const char *path, char *const argv[], char *const envp[])
  *   read, read=PATH,...     read all files, or only these
  *   write, write=PATH,...   write (and create) all files, or only these
  *   net                     sockets and DNS
+ *   net=HOST,...            sockets and DNS for these hosts only
+ *                           (c_src/cosmo/beam_com_net.c)
  *   run, run=PROGRAM,...    start all programs (ports), or only these
  *   all                     no sandbox
  *
@@ -438,8 +441,8 @@ static char *cert_file(void);
 
 struct allow {
     int all, net, run;
-    int read_all, write_all, run_all;
-    struct arglist read, write, programs;
+    int read_all, write_all, run_all, net_all;
+    struct arglist read, write, programs, hosts;
 };
 
 static void sandbox_error(int helper, const char *what, const char *arg)
@@ -526,8 +529,10 @@ static void allow_parse(int helper, struct allow *a, char *word)
         *value++ = '\0';
     if (strcmp(word, "all") == 0 && !value)
         a->all = 1;
-    else if (strcmp(word, "net") == 0 && !value)
+    else if (strcmp(word, "net") == 0) {
         a->net = 1;
+        value ? allow_list(value, &a->hosts) : (void)(a->net_all = 1);
+    }
     else if (strcmp(word, "read") == 0)
         value ? allow_list(value, &a->read) : (void)(a->read_all = 1);
     else if (strcmp(word, "write") == 0)
@@ -555,7 +560,37 @@ static void allow_parse(int helper, struct allow *a, char *word)
 #define BEAM_COM_BASE_PROMISES "stdio rpath "
 #endif
 
-static void apply_allow(int helper, struct allow *a)
+/* --allow-net=HOST,...: the list, and the resolver and the ports of
+ * beam_com_net.c. Before the first unveil(): the seccomp filter of the
+ * commit of unveil() forbids a second Landlock ruleset. */
+static int net_prepare(int helper, struct allow *a, int from_env)
+{
+    char error[512];
+    const char *step;
+    int i;
+
+    if (helper || !a->hosts.n || a->net_all)
+        return 0;
+    for (i = 0; i < a->hosts.n; i++)
+        if (beam_com_net_rule(a->hosts.v[i], error, sizeof(error))) {
+            fprintf(stderr, "beam.com: --allow-net: %s\n", error);
+            beam_com_exit(127, 1);
+        }
+    if ((step = beam_com_net_prepare(from_env)))
+        sandbox_error(helper, "--allow-net:", step);
+    return 1;
+}
+
+/* After pledge(): the threads of the resolver keep the sandbox. */
+static void net_start(int helper, int hosts)
+{
+    const char *step;
+
+    if (hosts && (step = beam_com_net_start()))
+        sandbox_error(helper, "--allow-net:", step);
+}
+
+static void apply_allow(int helper, struct allow *a, int from_env)
 {
     static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
                                  "/usr/local/lib", "/usr/libexec"};
@@ -567,6 +602,7 @@ static void apply_allow(int helper, struct allow *a)
     /* Before the first unveil(): on OpenBSD, that call already hides the
      * other paths (Landlock hides them only at the commit). */
     char *certs = a->net ? cert_file() : NULL;
+    int hosts = net_prepare(helper, a, from_env);
     size_t k;
     int i;
 
@@ -616,8 +652,10 @@ static void apply_allow(int helper, struct allow *a)
      * (SIGABRT at the start, also for the interpreter), and it stops the
      * process on a forbidden system call instead of returning an error.
      * There the sandbox is unveil() only (the paths). */
-    if (IsOpenbsd())
+    if (IsOpenbsd()) {
+        net_start(helper, hosts);
         return;
+    }
     snprintf(promises, sizeof(promises), "%s%s%s%s", BEAM_COM_BASE_PROMISES,
              a->write_all || a->write.n ? "wpath cpath fattr flock " : "",
              a->net ? "inet dns " : "",
@@ -626,6 +664,7 @@ static void apply_allow(int helper, struct allow *a)
              a->run ? "proc exec sendfd recvfd " : "");
     if (pledge(promises, NULL) == -1)
         sandbox_error(helper, "pledge", promises);
+    net_start(helper, hosts);
 
     /* Without "proc exec", ERTS cannot start its port programs, and the
      * native name resolver is one: kernel halts when it cannot start it.
@@ -639,13 +678,14 @@ static void apply_sandbox(int helper)
     struct allow a = {0};
     struct arglist words = {0};
     char *env, *copy, *word, *save;
-    int i;
+    int i, from_env = 0;
 
     if (helper && IsLinux())
         return;
     __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
 
     if (!read_lines(BEAM_COM_ALLOW, &words) && (env = getenv("BEAM_COM_ALLOW")) && *env) {
+        from_env = 1;
         copy = strdup(env);
         for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
             push(&words, word);
@@ -655,7 +695,7 @@ static void apply_sandbox(int helper)
     for (i = 0; i < words.n; i++)
         allow_parse(helper, &a, words.v[i]);
     if (!a.all)
-        apply_allow(helper, &a);
+        apply_allow(helper, &a, from_env);
 }
 
 static int file_exists(const char *path)
