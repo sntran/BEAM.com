@@ -55,7 +55,38 @@ client, because the native resolver is a port program.
 | Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
 | OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
 | Windows | in the process: the C library checks the paths and the sockets, and a job object stops new processes ([Windows](#windows)) |
-| macOS, FreeBSD, NetBSD | no: the flags are ignored |
+| macOS arm64 | yes: a profile of Seatbelt ([macOS](#macos)) |
+| macOS x86_64, FreeBSD, NetBSD | no: the flags are ignored |
+
+## macOS
+
+On macOS arm64, beam.com gives the rules to Seatbelt, the sandbox of
+macOS, with `sandbox_init()` of libSystem
+(`c_src/cosmo/beam_com_seatbelt.c`). The kernel applies the profile to
+the process and to each program that it starts. The rules are the rules
+of Linux:
+
+- A read of the data of a file needs a path of `--allow-read` or
+  `--allow-write`. The files of the system can always be read:
+  `/System`, `/usr`, `/bin`, `/sbin`, `/Library/Apple`,
+  `/private/preboot` and the shared cache of dyld. dyld needs some of
+  them to start a process. `stat()` needs no permission, as with
+  Landlock.
+- A change of a file needs a path of `--allow-write`.
+- A new program needs a path of `--allow-run`. beam.com can always start
+  its own file and its APE loader (the helper programs).
+- Without `--allow-net`, the profile refuses the sockets of IP, a
+  connection to a Unix socket with a path, and the DNS service of macOS.
+  A pair of sockets (`socketpair()`) stays allowed, as on Linux.
+- A refused call gives `{error, eperm}`.
+
+`BEAM_COM_VERBOSE=1` prints "the sandbox of macOS (Seatbelt) is on".
+For the tests, `BEAM_COM_SEATBELT_OMIT=read,write,exec,net` with
+`BEAM_COM_ALLOW` leaves these parts out of the profile. A program with
+permissions in its file ignores it.
+
+On macOS x86_64, a Cosmopolitan program cannot load libSystem, so the
+flags have no effect there.
 
 ## Windows
 
@@ -192,8 +223,8 @@ Limits of the list:
 The sandbox limits what a program can do, but it is not a complete
 wall. Know these limits before you depend on it:
 
-- Caution: on macOS, FreeBSD and NetBSD, the flags have no effect, and
-  the program prints no warning. A program runs there with all the
+- Caution: on macOS x86_64, FreeBSD and NetBSD, the flags have no
+  effect, and the program prints no warning. A program runs there with all the
   rights of its user.
 - Caution: on Windows, only the calls of the C library get the check of
   the paths and of the sockets. Native code that calls Windows itself
@@ -212,6 +243,8 @@ wall. Know these limits before you depend on it:
   absolute paths, and do not put a writable directory in `PATH`.
 - The JIT can write in `/dev/shm` on Linux, and in `/tmp` on the other
   systems, also without `--allow-write`.
+- On macOS, `sandbox_init()` is a deprecated function of Apple. Apple
+  can change the language of the profiles in a new macOS.
 
 `BEAM_COM_ALLOW` gives permissions to a program that has none in its
 file, to try a sandbox without a new build: the flags without

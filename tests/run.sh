@@ -591,19 +591,26 @@ if [ -d examples ]; then
         tests/programs/sandbox_check.erl -o "$dir/sandbox_none.com"
     rm -f "$dir/sandbox.tmp"
     net_extra= rw_extra=
-    case $os in
-        linux)
+    case $os-$(uname -m) in
+        linux-*)
             net_extra="write $dir/sandbox.tmp sockopts rawopt" rw_extra=listen
             net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@rawopt: refused@@done'
             rw='read: ok@@read: error eacces@@write: ok@@listen: error eperm@@done'
             runs='run true: ok@@run sh: error@@done'
             env='read: ok@@read: error eacces@@done' ;;
-        openbsd)
+        openbsd-*)
             net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
             net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@done'
             rw='read: ok@@read: error e[a-z]*@@write: ok@@listen: ok@@done'
             runs=
             env='read: ok@@read: error e[a-z]*@@done' ;;
+        # Seatbelt (c_src/cosmo/beam_com_seatbelt.c) refuses with EPERM.
+        darwin-arm64)
+            net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
+            net='read: ok@@read: error eperm@@listen: ok@@write: error eperm@@sockopts: ok@@done'
+            rw='read: ok@@read: error eperm@@write: ok@@listen: error e[a-z]*@@done'
+            runs='run true: ok@@run sh: error@@done'
+            env='read: ok@@read: error eperm@@done' ;;
         *)
             net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
             net='read: ok@@read: ok@@listen: ok@@write: ok@@sockopts: ok@@done'
@@ -622,10 +629,27 @@ if [ -d examples ]; then
     check sandbox_rw.com "$rw" \
         read /etc/hosts read "$dir/beam.com" write "$dir/sandbox-w/new.txt" $rw_extra
     rm -rf "$dir/sandbox-w"
+    pre=$failed
     if [ -n "$runs" ]; then
         check sandbox_run.com "$runs" run true run sh
     else
         probe sandbox_run.com run true run sh
+    fi
+    # The refusals of Seatbelt (c_src/cosmo/beam_com_seatbelt.c) go to the
+    # log of macOS, not to the program. For a failed check, print the log
+    # of the processes of the APE loader and the newest crash report (its
+    # name starts with ".ape", so ls needs -A). BEAM_COM_SEATBELT_OMIT
+    # leaves parts of the profile out, to find the part that stops it.
+    if [ "$failed" != "$pre" ] && [ "$os-$(uname -m)" = darwin-arm64 ] &&
+       command -v log >/dev/null; then
+        echo "--- the log of macOS for the processes of the APE loader, last 5 minutes"
+        log show --style compact --last 5m --predicate 'eventMessage CONTAINS[c] "ape-1.10"' 2>&1 |
+            tail -80
+        for f in $(ls -At "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i ape | head -1); do
+            echo "--- $f"
+            head -c 16000 "$HOME/Library/Logs/DiagnosticReports/$f"
+            echo
+        done
     fi
     # BEAM_COM_ALLOW: permissions for a program without them; a program
     # with permissions in its file ignores it.

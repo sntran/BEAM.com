@@ -187,6 +187,7 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
  * C33 and C34). tests/cosmo/libc_edges.c tests the same file. */
 #include "beam_com_libc.h"
 #include "beam_com_net.h"
+#include "beam_com_seatbelt.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -469,9 +470,16 @@ static void sandbox_error(int helper, const char *what, const char *arg)
  * path of unveil() is a rule of the check too: "r" reads, "w" and "c"
  * write ("x" alone gives no rule). */
 static int sandbox_fs;
+/* 1 on macOS, for the profile of Seatbelt (beam_com_seatbelt.c), which
+ * gets each path of unveil() too. */
+static int sandbox_mac;
+/* 1 when the permissions come from BEAM_COM_ALLOW, not from the file. */
+static int sandbox_from_env;
 
 static void sandbox_fs_allow(const char *path, const char *permissions)
 {
+    if (sandbox_mac && path)
+        beam_com_seatbelt_allow(path, permissions);
     if (sandbox_fs && path && (strchr(permissions, 'r') || strchr(permissions, 'w') ||
                                strchr(permissions, 'c')))
         beam_com_fs_allow(path, strchr(permissions, 'w') || strchr(permissions, 'c'));
@@ -681,15 +689,30 @@ static const char *windows_no_process(void)
 #endif
 
 /* The parts of the sandbox that pledge() and unveil() have on Linux and
- * OpenBSD: on Windows, the check of the paths (the rules of
- * sandbox_unveil()), no network without net, and no new process without
- * run. With BEAM_COM_WINDOWS_SANDBOX=1, the first two also on Linux, for
- * the tests. */
+ * OpenBSD. On macOS, the profile of Seatbelt. On Windows, the check of
+ * the paths (the rules of sandbox_unveil()), no network without net, and
+ * no new process without run. With BEAM_COM_WINDOWS_SANDBOX=1, the two
+ * first parts of Windows also on Linux, for the tests. */
 static void sandbox_windows(int helper, struct allow *a)
 {
     char buf[512];
     const char *hosts, *step;
 
+    if (sandbox_mac) {
+        beam_com_seatbelt_net(a->net);
+        /* For the tests: the parts of the profile to leave out, to find
+         * the part that stops a program. Only with BEAM_COM_ALLOW: the
+         * permissions of a file never change. */
+        if (sandbox_from_env && getenv("BEAM_COM_SEATBELT_OMIT"))
+            beam_com_seatbelt_omit(getenv("BEAM_COM_SEATBELT_OMIT"));
+        if ((step = beam_com_seatbelt_apply())) {
+            fprintf(stderr, "beam.com: the sandbox of macOS: %s\n", step);
+            beam_com_exit(127, 1);
+        }
+        if (getenv("BEAM_COM_VERBOSE"))
+            fprintf(stderr, IsXnuSilicon() ? "beam.com: the sandbox of macOS (Seatbelt) is on\n"
+                                           : "beam.com: no sandbox on macOS x86_64\n");
+    }
     if (!sandbox_fs)
         return;
     if (a->net && beam_com_is_windows() && (hosts = GetHostsTxtPath(buf, sizeof(buf))))
@@ -725,6 +748,8 @@ static void apply_allow(int helper, struct allow *a, int from_env)
     size_t k;
     int i;
 
+    sandbox_mac = !helper && IsXnu();
+    sandbox_from_env = from_env;
     sandbox_fs = !helper && (beam_com_is_windows() ||
                              (from_env && getenv("BEAM_COM_WINDOWS_SANDBOX") &&
                               strcmp(getenv("BEAM_COM_WINDOWS_SANDBOX"), "1") == 0));

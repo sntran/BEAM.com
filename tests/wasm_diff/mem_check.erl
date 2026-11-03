@@ -51,9 +51,14 @@ run(Name, First, Again) ->
     put(steps, [A]),
     Again(),
     B = wasm_host:memory(),
-    Steps = changes(lists:reverse(erase(steps))),
+    All = lists:reverse(erase(steps)),
+    Steps = changes(All),
     io:format("mem_check: ~s ~b ~b~n", [Name, A, B]),
-    io:format("mem_check: ~s steps~s~n", [Name, [[$\s, integer_to_list(S)] || S <- Steps]]).
+    io:format("mem_check: ~s steps~s~n", [Name, [[$\s, integer_to_list(S)] || S <- Steps]]),
+    %% The memory 10 repetitions before the end, and at the end: a leak
+    %% grows in each repetition, and the free memory that a block does not
+    %% fit in stops after some steps.
+    io:format("mem_check: ~s tail ~b ~b~n", [Name, lists:nth(max(1, length(All) - 10), All), B]).
 
 %% The memory after each repetition of the second time, with no two
 %% values the same one after the other: a leak gives many steps, and the
