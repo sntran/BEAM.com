@@ -5,6 +5,44 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox on macOS arm64: `--allow-read`, `--allow-write`,
+  `--allow-net` and `--allow-run` now give a profile of Seatbelt, the
+  sandbox of macOS, with the rules of Linux (docs/SANDBOX.md, "macOS").
+  A refused call gives `{error, eperm}`. Before, macOS ignored the flags.
+- The sandbox on Windows: `--allow-read` and `--allow-write` now limit
+  the paths of the calls of the C library (`{error, eacces}` for
+  another path), without `--allow-net` a socket of IPv4 or IPv6 gives
+  `{error, eacces}`, and without `--allow-run` a job object of one
+  process stops each new process (docs/SANDBOX.md, "Windows"). Before,
+  Windows ignored the flags.
+- The sandbox: on Linux 5.6 and later, a supervisor process checks the
+  calls of the network of a program with `--allow-net=HOST,...`, with
+  seccomp user notification. The host list then also holds for native
+  code and for the programs of `--allow-run` (with their DNS queries to
+  the name servers of the system). The supervisor is the parent process,
+  and it gives its signals to the program. Without the features, the C
+  library does the check, as before.
+- The build gives a warning for `--allow-net=*.DOMAIN` when other owners
+  can have names under `DOMAIN`: `DOMAIN` is in the Public Suffix List
+  (`*.github.io`, `*.co.uk`), or a name of the list is under it
+  (`*.amazonaws.com`). beam.com has a copy of the list
+  (`priv/public_suffix_list.dat`, Mozilla Public License 2.0).
+- The sandbox: `--allow-net=HOST,...` allows the network only for a list
+  of hosts: names, `*.DOMAIN`, and addresses, each with an optional port
+  (docs/SANDBOX.md, "A list of hosts"). beam.com has its own resolver of
+  DNS: kernel asks only it, a name that the list does not allow gives
+  `nxdomain` and never goes to a name server, and each connect, UDP send
+  and bind gets only the addresses of the answers of allowed names
+  (`{error, eacces}` for another). On Linux 6.7 and later, Landlock also
+  limits the TCP ports. The list works on each system, also where the
+  other permissions do nothing. It needs
+  `patches/otp/0004-sandbox-resolver.patch`.
+- The sandbox: on Linux, `--allow-net` now allows the options `sndbuf`,
+  `recbuf` and `linger` of `inet:setopts/2`, and these options and
+  `nodelay` of `inet:getopts/2` (#157). Before, `inet:getopts/2` left
+  them out, so Postgrex (Ecto) and Mint (Req, Finch) could not connect.
+  beam.com links a patched `pledge()` of Cosmopolitan
+  (`patches/cosmo/pledge-linux.patch`).
 - Faster custom builds (`custom-build.yml`), with three caches:
   - The cache key of the WebAssembly runtime is the SHA-256 of its
     inputs (`scripts/steps.sh wasm_runtime_key`). Only the functions of

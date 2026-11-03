@@ -1266,6 +1266,65 @@ Rust set their own sizes.
 
 **Possible upstream fix.** A larger default, or a default from
 `RLIMIT_STACK`, as glibc does.
+
+### C47. pledge() "inet" refuses the buffer options of a socket
+
+**Status:** 4.0.2. The branch master of 2026-11-02 has the same lists.
+
+**Symptom.** In a sandbox with the network (`--allow-net`, or
+`BEAM_COM_ALLOW=net`), `inet:getopts/2` gives no `sndbuf`, `recbuf`,
+`nodelay` or `linger` for a TCP socket, and `inet:setopts/2` of
+`sndbuf`, `recbuf` and `linger` has no effect. Both calls give `ok`,
+because inet leaves out an option that the system refuses. Postgrex and
+Mint read `sndbuf` and `recbuf` after each connect, so they cannot
+connect (issue 157).
+
+**Cause.** On Linux, the promise "inet" of `pledge()` allows
+`setsockopt()` and `getsockopt()` only for a list of options
+(`AllowSetsockoptRestrict()` and `AllowGetsockoptRestrict()` of
+`libc/calls/pledge-linux.c`). `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`
+are in neither list, and `TCP_NODELAY` is not in the list of
+`getsockopt()`. A refused call gives `EPERM` with
+`PLEDGE_PENALTY_RETURN_EPERM`. The `pledge()` of OpenBSD allows all the
+options of `SOL_SOCKET` except `SO_RTABLE` with "inet", and `TCP_NODELAY`
+of `IPPROTO_TCP`.
+
+**Workaround in BEAM.com.** `build_pledge` of `scripts/steps.sh` gets
+`libc/calls/pledge-linux.c` of the tag of cosmocc, applies
+`patches/cosmo/pledge-linux.patch`, and links the object into the
+emulator. The patch adds one BPF fragment after each of the two
+fragments of upstream:
+
+- `setsockopt()`: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER` of
+  `SOL_SOCKET`.
+- `getsockopt()`: the same three options, and `TCP_NODELAY` of
+  `SOL_TCP`.
+
+The object defines `kPledge` and `sys_pledge_linux`, so the linker does
+not take `pledge-linux.o` of `libcosmo.a`. `tests/run.sh` checks the
+options with `sandbox_check sockopts`, and checks with
+`sandbox_check rawopt` that the sandbox still refuses another option
+(`TCP_CONGESTION`).
+
+**Possible upstream fix.** Add these options to the two lists.
+### C48. aarch64: seccomp() makes the system call sendmsg
+
+**Status:** 4.0.2.
+
+**Symptom.** On Linux aarch64, `seccomp(SECCOMP_SET_MODE_FILTER, flags,
+prog)` does not install a filter. It gives the result of
+`sendmsg(operation, flags, prog)`.
+
+**Cause.** The aarch64 branch of `libc/calls/seccomp.c` puts 211 in x8.
+211 is `sendmsg` on aarch64. The number of `seccomp` there is 277 (on
+x86_64 it is 317).
+
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com_net.c` makes the
+system calls of the supervisor of `--allow-net` itself (`netd_sys()`),
+with the numbers of each CPU.
+
+**Possible upstream fix.** `"i"(277)` in the aarch64 branch.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -1999,6 +2058,29 @@ two lookups.
 
 **Possible upstream fix.** `if (prt) erts_port_dec_refc(prt);`, as in
 `enif_is_port_alive()`.
+
+### O27. inet_config has no setting for one name server that stays
+
+**Status:** OTP 29.1.1 (`lib/kernel/src/inet_config.erl`). Not a bug:
+BEAM.com needs it for the sandbox with a host list.
+
+**Symptom.** With `--allow-net=HOST,...`, kernel must ask only the
+resolver of beam.com, on `127.0.0.1` and a port that changes at each
+start. An inetrc file can give `{nameserver, IP, Port}`, but it is a
+file, and the sandbox cannot write one. `inet_db` also reads
+`/etc/resolv.conf` again before each lookup, and puts its name servers
+in place of the list (see the text of `windows_setup()` in
+`c_src/cosmo/beam_com.c`).
+
+**Workaround in BEAM.com.** `patches/otp/0004-sandbox-resolver.patch`:
+when `BEAM_COM_DNS` is `127.0.0.1:PORT`, `inet_config:init/0` sets the
+lookup `[file, dns]`, `{resolv_conf, ""}`, and the name servers
+`[{{127,0,0,1}, PORT}]`. `c_src/cosmo/beam_com_net.c` sets the variable.
+The setting is not a part of the sandbox: the wraps of the network check
+each address, also when Erlang code changes the name servers.
+
+**Possible upstream fix.** None needed. An environment variable for the
+name servers, as `ERL_INETRC` is for the file, would do the same.
 
 ## Emscripten
 

@@ -112,6 +112,8 @@ EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-ad05823719d77c8faee87348ea39513d4e2f99c5}
 COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44}
+# libc/calls/pledge-linux.c of the tag COSMOCC_VERSION (build_pledge).
+COSMO_PLEDGE_SHA256=${COSMO_PLEDGE_SHA256:-b8cc37f3d9047863abea3a42577d84eafa523d4eafaf98e4d3facbea73461a60}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
@@ -174,6 +176,20 @@ if [ "$JIT" = 1 ]; then FLAVOR=jit; else FLAVOR=emu; fi
 # c_src/cosmo/beam_com_libc.h (docs/UPSTREAM.md C33 and C34). The link of
 # the emulator and the check of step_test use the same list.
 LIBC_WRAPS="-Wl,--wrap=memchr -Wl,--wrap=strncpy"
+# The calls that the host list of --allow-net checks (only the link of
+# the emulator; see c_src/cosmo/beam_com_net.c).
+NET_WRAPS="-Wl,--wrap=connect -Wl,--wrap=bind -Wl,--wrap=sendto -Wl,--wrap=sendmsg -Wl,--wrap=socket"
+# The calls that the check of the paths of Windows checks (only the link
+# of the emulator; see c_src/cosmo/beam_com_fs.c). mkdir and chown have
+# their wraps in c_src/cosmo/beam_com.c.
+FS_WRAPS=""
+for f in open openat creat opendir readlink readlinkat unlink unlinkat rmdir rename \
+    renameat link linkat symlink symlinkat chmod fchmodat truncate utimes utimensat utime \
+    mkdirat lchown fchownat; do
+    FS_WRAPS="$FS_WRAPS -Wl,--wrap=$f"
+done
+# getcwd() in the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
+MAC_WRAPS="-Wl,--wrap=getcwd"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -363,7 +379,10 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_inet_gethost.c "$ROOT"/c_src/cosmo/beam_com_epmd.h \
        "$ROOT"/c_src/cosmo/beam_com_epmd.c "$ROOT"/c_src/cosmo/beam_com_epmd_srv.c \
        "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
-       "$ROOT"/c_src/cosmo/beam_com_libc.h "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_libc.h "$ROOT"/c_src/cosmo/beam_com_net.c \
+       "$ROOT"/c_src/cosmo/beam_com_net.h "$ROOT"/c_src/cosmo/beam_com_fs.c \
+       "$ROOT"/c_src/cosmo/beam_com_fs.h "$ROOT"/c_src/cosmo/beam_com_seatbelt.c \
+       "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -1178,6 +1197,27 @@ step_make() {
     done
 }
 
+# The pledge() of Linux of Cosmopolitan, with the options of sockets that
+# inet sets and reads (patches/cosmo/pledge-linux.patch, C47 of
+# docs/UPSTREAM.md), in the object $1. The object defines kPledge and
+# sys_pledge_linux, so the linker does not take pledge-linux.o of
+# libcosmo.a. The flags are those of the build of Cosmopolitan.
+build_pledge() {
+    src=$BUILD/cosmo-pledge-$COSMOCC_VERSION
+    if [ ! -f "$src/.beam_com_patched" ]; then
+        rm -rf "$src"
+        mkdir -p "$src/libc/calls"
+        curl -fsSL -o "$src/libc/calls/pledge-linux.c" \
+            "https://raw.githubusercontent.com/jart/cosmopolitan/$COSMOCC_VERSION/libc/calls/pledge-linux.c"
+        check_sha256 "$src/libc/calls/pledge-linux.c" "$COSMO_PLEDGE_SHA256" \
+            "libc/calls/pledge-linux.c of Cosmopolitan $COSMOCC_VERSION"
+        patch -p1 -d "$src" < "$ROOT/patches/cosmo/pledge-linux.patch"
+        touch "$src/.beam_com_patched"
+    fi
+    "$CC" -std=gnu23 -D_COSMO_SOURCE -Os -ffreestanding -fno-omit-frame-pointer \
+        -c "$src/libc/calls/pledge-linux.c" -o "$1"
+}
+
 step_multicall() {
     log "Linking the multi-call emulator"
     t=$(target)
@@ -1185,8 +1225,11 @@ step_multicall() {
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
-    objs="$objs $objdir/beam_com_watch.o"
+    objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_net.o $objdir/beam_com_fs.o"
+    objs="$objs $objdir/beam_com_seatbelt.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
+    build_pledge "$objdir/beam_com_pledge.o"
+    objs="$objs $objdir/beam_com_pledge.o"
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it (neither for driver_tab.c nor for its object).
@@ -1194,9 +1237,12 @@ step_multicall() {
     nifs=$(static_nifs)
     # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
     # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c. The
-    # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h.
+    # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h, and the
+    # wraps of NET_WRAPS (--allow-net=HOST,...) in beam_com_net.c, and
+    # the wraps of FS_WRAPS (the paths on Windows) in beam_com_fs.c, and
+    # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -1365,6 +1411,8 @@ step_bundle() {
     # (scripts/lazy_html.sh), which beam_com_make copies.
     mkdir -p "$STAGE/lib/beam_com/priv"
     cp -R "$ROOT/priv/nifs" "$STAGE/lib/beam_com/priv/"
+    # The warning of --allow-net=*.DOMAIN (beam_com_build:net_shared/2).
+    cp "$ROOT/priv/public_suffix_list.dat" "$STAGE/lib/beam_com/priv/"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_script-0.1.0/ebin" \
         "$ROOT"/src/beam_com_script/*.erl
     cp "$ROOT/src/beam_com_script/beam_com_script.app.src" \
@@ -1534,6 +1582,22 @@ step_test() {
         "$BUILD/libc_edges_wrap.com" | tee "$BUILD/test.out"
         grep -q '^results: ok$' "$BUILD/test.out"
         grep -q '^functions with a fault: 0$' "$BUILD/test.out"
+        # The parts of the host list of --allow-net that need no network
+        # (c_src/cosmo/beam_com_net.c): tests/run.sh has the rest.
+        log "Checking the host list of --allow-net"
+        cosmocc -O2 -Wno-unused-function -o "$BUILD/net_check.com" "$ROOT/tests/cosmo/net_check.c"
+        "$BUILD/net_check.com" | tee "$BUILD/test.out"
+        grep -q '^net_check: ok$' "$BUILD/test.out"
+        # The check of the paths of Windows (c_src/cosmo/beam_com_fs.c).
+        log "Checking the paths of the sandbox of Windows"
+        cosmocc -O2 -Wno-unused-function -o "$BUILD/fs_check.com" "$ROOT/tests/cosmo/fs_check.c"
+        "$BUILD/fs_check.com" | tee "$BUILD/test.out"
+        grep -q '^fs_check: ok$' "$BUILD/test.out"
+        # The profile of the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
+        log "Checking the profile of the sandbox of macOS"
+        cosmocc -O2 -o "$BUILD/seatbelt_check.com" "$ROOT/tests/cosmo/seatbelt_check.c"
+        "$BUILD/seatbelt_check.com" | tee "$BUILD/test.out"
+        grep -q '^seatbelt_check: ok$' "$BUILD/test.out"
     fi
 }
 

@@ -574,8 +574,8 @@ fi
 # and Landlock, OpenBSD only the paths (unveil), and the other systems
 # ignore it.
 if [ -d examples ]; then
-    check_status 1 beam.com '--allow-net takes no hosts' \
-        tests/programs/sandbox_check.erl --allow-net=example.com -o "$dir/never.com"
+    check_status 1 beam.com '--allow-net: a bad domain' \
+        tests/programs/sandbox_check.erl '--allow-net=*.com' -o "$dir/never.com"
     check_status 1 beam.com '--allow-env is not supported' \
         tests/programs/sandbox_check.erl --allow-env -o "$dir/never.com"
     check_status 1 beam.com 'unknown option --allow-bogus' \
@@ -591,28 +591,36 @@ if [ -d examples ]; then
         tests/programs/sandbox_check.erl -o "$dir/sandbox_none.com"
     rm -f "$dir/sandbox.tmp"
     net_extra= rw_extra=
-    case $os in
-        linux)
-            net_extra='write '$dir/sandbox.tmp rw_extra=listen
-            net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@done'
+    case $os-$(uname -m) in
+        linux-*)
+            net_extra="write $dir/sandbox.tmp sockopts rawopt" rw_extra=listen
+            net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@rawopt: refused@@done'
             rw='read: ok@@read: error eacces@@write: ok@@listen: error eperm@@done'
             runs='run true: ok@@run sh: error@@done'
             env='read: ok@@read: error eacces@@done' ;;
-        openbsd)
-            net_extra='write '$dir/sandbox.tmp rw_extra=listen
-            net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@done'
+        openbsd-*)
+            net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
+            net='read: ok@@read: error e[a-z]*@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@done'
             rw='read: ok@@read: error e[a-z]*@@write: ok@@listen: ok@@done'
             runs=
             env='read: ok@@read: error e[a-z]*@@done' ;;
+        # Seatbelt (c_src/cosmo/beam_com_seatbelt.c) refuses with EPERM.
+        darwin-arm64)
+            net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
+            net='read: ok@@read: error eperm@@listen: ok@@write: error eperm@@sockopts: ok@@done'
+            rw='read: ok@@read: error eperm@@write: ok@@listen: error e[a-z]*@@done'
+            runs='run true: ok@@run sh: error@@done'
+            env='read: ok@@read: error eperm@@done' ;;
         *)
-            net_extra='write '$dir/sandbox.tmp rw_extra=listen
-            net='read: ok@@read: ok@@listen: ok@@write: ok@@done'
+            net_extra="write $dir/sandbox.tmp sockopts" rw_extra=listen
+            net='read: ok@@read: ok@@listen: ok@@write: ok@@sockopts: ok@@done'
             rw='read: ok@@read: ok@@write: ok@@listen: ok@@done'
             runs='run true: ok@@run sh: ok@@done'
             env='read: ok@@read: ok@@done' ;;
     esac
     # -N: the network, and the files that it needs (/etc/hosts), not
-    # other files.
+    # other files. The options of a TCP socket that inet sets and reads
+    # (issue 157), but on Linux not each option (rawopt).
     check sandbox_net.com "$net" read /etc/hosts read "$dir/beam.com" listen $net_extra
     rm -f "$dir/sandbox.tmp"
     # A new file in a directory of --allow-write.
@@ -621,10 +629,27 @@ if [ -d examples ]; then
     check sandbox_rw.com "$rw" \
         read /etc/hosts read "$dir/beam.com" write "$dir/sandbox-w/new.txt" $rw_extra
     rm -rf "$dir/sandbox-w"
+    pre=$failed
     if [ -n "$runs" ]; then
         check sandbox_run.com "$runs" run true run sh
     else
         probe sandbox_run.com run true run sh
+    fi
+    # The refusals of Seatbelt (c_src/cosmo/beam_com_seatbelt.c) go to the
+    # log of macOS, not to the program. For a failed check, print the log
+    # of the processes of the APE loader and the newest crash report (its
+    # name starts with ".ape", so ls needs -A). BEAM_COM_SEATBELT_OMIT
+    # leaves parts of the profile out, to find the part that stops it.
+    if [ "$failed" != "$pre" ] && [ "$os-$(uname -m)" = darwin-arm64 ] &&
+       command -v log >/dev/null; then
+        echo "--- the log of macOS for the processes of the APE loader, last 5 minutes"
+        log show --style compact --last 5m --predicate 'eventMessage CONTAINS[c] "ape-1.10"' 2>&1 |
+            tail -80
+        for f in $(ls -At "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i ape | head -1); do
+            echo "--- $f"
+            head -c 16000 "$HOME/Library/Logs/DiagnosticReports/$f"
+            echo
+        done
     fi
     # BEAM_COM_ALLOW: permissions for a program without them; a program
     # with permissions in its file ignores it.
@@ -640,6 +665,85 @@ if [ -d examples ]; then
         export SSL_CERT_FILE
         check sandbox_net.com "$env" read "$dir/ca-one.pem" read "$dir/beam.com"
         unset SSL_CERT_FILE
+    fi
+    # The sandbox of Windows (c_src/cosmo/beam_com_fs.c), on Linux with
+    # BEAM_COM_WINDOWS_SANDBOX=1. Its check uses the name, so a link out
+    # of the rules gets EACCES, where Landlock follows the link to
+    # /etc/hosts. Without net, a socket gets EACCES (the wrap), not EPERM
+    # (pledge).
+    if [ "$os" = linux ]; then
+        rm -rf "$dir/sandbox-w" "$dir/sandbox-link"
+        mkdir "$dir/sandbox-w"
+        ln -s /etc/hosts "$dir/sandbox-link"
+        BEAM_COM_ALLOW="read=/etc;write=$dir/sandbox-w" BEAM_COM_WINDOWS_SANDBOX=1
+        export BEAM_COM_ALLOW BEAM_COM_WINDOWS_SANDBOX
+        check sandbox_none.com 'read: ok@@read: error eacces@@write: ok@@write: error eacces@@listen: error eacces@@done' \
+            read /etc/hosts read "$dir/sandbox-link" write "$dir/sandbox-w/new.txt" \
+            write "$dir/sandbox-w/../sandbox.tmp" listen
+        unset BEAM_COM_WINDOWS_SANDBOX
+        check sandbox_none.com 'read: ok@@read: ok@@listen: error eperm@@done' \
+            read /etc/hosts read "$dir/sandbox-link" listen
+        unset BEAM_COM_ALLOW
+        rm -rf "$dir/sandbox-w" "$dir/sandbox-link"
+    fi
+    # --allow-net=HOST,...: the resolver of beam.com and the check of each
+    # address (c_src/cosmo/beam_com_net.c), on each system, with the name
+    # server of tests/programs/dns_fake.erl. A name that the list does not
+    # allow never goes to the name server.
+    check beam.com 'wrote .*dns_fake.com' tests/programs/dns_fake.erl -o "$dir/dns_fake.com"
+    if [ -f "$dir/dns_fake.com" ]; then
+        chmod +x "$dir/dns_fake.com"
+        $runner "$dir/dns_fake.com" > "$dir/dns_fake.out" 2>&1 &
+        fake=$!
+        i=0
+        while ! grep -q '^dns_fake: [0-9]* [0-9]*$' "$dir/dns_fake.out" && [ $i -lt 30 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        ports=$(sed -n 's/^dns_fake: \([0-9]*\) \([0-9]*\)$/\1 \2/p' "$dir/dns_fake.out")
+        dns=${ports% *} tcp=${ports#* }
+        BEAM_COM_ALLOW="net=*.test.example:$tcp" BEAM_COM_DNS_UPSTREAM=127.0.0.1:$dns
+        export BEAM_COM_ALLOW BEAM_COM_DNS_UPSTREAM
+        supervisor=
+        if [ "$os" = linux ]; then
+            supervisor='the supervisor checks the calls@@'
+        fi
+        check sandbox_none.com "${supervisor}"'connect a.test.example: ok@@connect big.test.example: ok@@connect alias.test.example: ok@@connect test.example: error nxdomain@@connect other.example: error nxdomain@@connect a.test.example: error eacces@@connect 127.0.0.2: error eacces@@udp 127.0.0.1: error eacces@@done' \
+            connect a.test.example "$tcp" connect big.test.example "$tcp" \
+            connect alias.test.example "$tcp" connect test.example "$tcp" \
+            connect other.example "$tcp" connect a.test.example "$dns" \
+            connect 127.0.0.2 "$tcp" udp 127.0.0.1 "$dns"
+        # On Linux, without the supervisor of the calls: the wraps of the
+        # libc (as on the other systems).
+        if [ "$os" = linux ]; then
+            BEAM_COM_NET_NO_SUPERVISOR=1
+            export BEAM_COM_NET_NO_SUPERVISOR
+            check sandbox_none.com 'no supervisor@@connect a.test.example: ok@@connect other.example: error nxdomain@@connect 127.0.0.2: error eacces@@done' \
+                connect a.test.example "$tcp" connect other.example "$tcp" connect 127.0.0.2 "$tcp"
+            unset BEAM_COM_NET_NO_SUPERVISOR
+            # A program of --allow-run (python3) gets the host list from
+            # the supervisor, with the address that the VM resolved.
+            if command -v python3 >/dev/null; then
+                BEAM_COM_ALLOW="net=*.test.example:$tcp;run=python3"
+                check sandbox_none.com 'the supervisor checks the calls@@connect a.test.example: ok@@pyconnect 127.0.0.1: ok@@pyconnect 127.0.0.2: error PermissionError@@pyconnect 127.0.0.1: error PermissionError@@done' \
+                    connect a.test.example "$tcp" pyconnect 127.0.0.1 "$tcp" \
+                    pyconnect 127.0.0.2 "$tcp" pyconnect 127.0.0.1 "$dns"
+            fi
+        fi
+        unset BEAM_COM_ALLOW BEAM_COM_DNS_UPSTREAM
+        kill "$fake" 2>/dev/null
+        wait "$fake" 2>/dev/null
+        cat "$dir/dns_fake.out"
+        if grep -q 'asked other.example' "$dir/dns_fake.out" ||
+           grep -q 'asked test.example' "$dir/dns_fake.out" ||
+           ! grep -q 'asked a.test.example' "$dir/dns_fake.out"; then
+            echo "FAIL: dns_fake.com: the names that the resolver asked"
+            fail=1
+            failed="$failed
+  dns_fake.com: the names that the resolver asked"
+        else
+            echo "PASS: dns_fake.com"
+        fi
     fi
 fi
 

@@ -34,6 +34,7 @@ order, with `git apply`.
 | | `lib/erl_interface/src/connect/ei_resolve.c` | The `gethostbyname_r` of Cosmopolitan. | O7 |
 | `0002-jit.patch` | `erts/configure*`, `make/autoconf/otp.m4`, `erts/emulator/Makefile.in`, `asmjit`, `beam/jit/` | A fat JIT: both backends, selected at compile time for each CPU half and at run time for macOS. | O13, O14, C22 |
 | `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hooks for NIF libraries in WebAssembly (an open, and a close of an entry that ERTS refuses), and `erl_nif.h` for `__wasm__` (not Emscripten). `wasm/erts/build.sh` applies it too. | O24 |
+| `0004-sandbox-resolver.patch` | `lib/kernel/src/inet_config.erl` | With `BEAM_COM_DNS`, the resolver of the sandbox with a host list is the only name server (`--allow-net=HOST,...`). | O27 |
 
 ## Elixir (`patches/elixir/`)
 
@@ -85,6 +86,16 @@ order, with `git apply`.
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `glib-cosmopolitan.patch` | `glib/glib-unix.c`, `gio/gsocket.c` of glib 2.90.0 | No static assertion on `O_NONBLOCK`, `G_FILE_ERROR_NOSYS` from `g_unix_fd_query_path()`, and no source-specific multicast for IPv6, with Cosmopolitan. | C38, C39, G1 |
+
+## Cosmopolitan (`patches/cosmo/`)
+
+`build_pledge` of `scripts/steps.sh` applies it, with `patch -p1`, to
+the file of Cosmopolitan that it gets for the tag of cosmocc, and links
+the object into the emulator.
+
+| Patch | File | What it does | Items |
+|---|---|---|---|
+| `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
 
 ## Changes that are not patch files
 

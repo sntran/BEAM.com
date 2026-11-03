@@ -1,0 +1,83 @@
+libc/calls/pledge-linux.c of Cosmopolitan 4.0.2, for beam.com (the
+function build_pledge of scripts/steps.sh, issue 157, C47 of
+docs/UPSTREAM.md):
+
+- The promise "inet" also allows setsockopt() of SO_SNDBUF, SO_RCVBUF and
+  SO_LINGER of SOL_SOCKET.
+- The promise "inet" also allows getsockopt() of SO_SNDBUF, SO_RCVBUF and
+  SO_LINGER of SOL_SOCKET, and of TCP_NODELAY of SOL_TCP.
+
+Each change is one more BPF fragment after the fragment of upstream, and
+the fragments of upstream do not change.
+
+--- a/libc/calls/pledge-linux.c
++++ b/libc/calls/pledge-linux.c
+@@ -1613,6 +1613,56 @@ static privileged void AllowGetsockoptRestrict(struct Filter *f) {
+   AppendFilter(f, PLEDGE(fragment));
+ }
+ 
++// BEAM.com: setsockopt() can also set these options of the level
++// SOL_SOCKET (1), which inet:setopts/2 sets (issue 157):
++//
++//   - SO_SNDBUF (0x07)
++//   - SO_RCVBUF (0x08)
++//   - SO_LINGER (0x0d)
++//
++static privileged void AllowSetsockoptBeamCom(struct Filter *f) {
++  static const struct sock_filter fragment[] = {
++      /*L0*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_linux_setsockopt, 0, 8),
++      /*L1*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(args[1])),
++      /*L2*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 5),
++      /*L3*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(args[2])),
++      /*L4*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x07, 2, 0),
++      /*L5*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x08, 1, 0),
++      /*L6*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x0d, 0, 1),
++      /*L7*/ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
++      /*L8*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(nr)),
++      /*L9*/ /* next filter */
++  };
++  AppendFilter(f, PLEDGE(fragment));
++}
++
++// BEAM.com: getsockopt() can also read these options, which
++// inet:getopts/2 reads (issue 157):
++//
++//   - SO_SNDBUF   (0x07) of SOL_SOCKET (1)
++//   - SO_RCVBUF   (0x08) of SOL_SOCKET (1)
++//   - SO_LINGER   (0x0d) of SOL_SOCKET (1)
++//   - TCP_NODELAY (0x01) of SOL_TCP    (6)
++//
++static privileged void AllowGetsockoptBeamCom(struct Filter *f) {
++  static const struct sock_filter fragment[] = {
++      /* L0*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_linux_getsockopt, 0, 11),
++      /* L1*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(args[1])),
++      /* L2*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 6, 0, 2),
++      /* L3*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(args[2])),
++      /* L4*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x01, 5, 6),
++      /* L5*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 5),
++      /* L6*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(args[2])),
++      /* L7*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x07, 2, 0),
++      /* L8*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x08, 1, 0),
++      /* L9*/ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x0d, 0, 1),
++      /*L10*/ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
++      /*L11*/ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, OFF(nr)),
++      /*L12*/ /* next filter */
++  };
++  AppendFilter(f, PLEDGE(fragment));
++}
++
+ // The flags parameter of mmap() must not have:
+ //
+ //   - MAP_LOCKED   (0x02000)
+@@ -2245,9 +2295,11 @@ static privileged void AppendPledge(struct Filter *f,   //
+         break;
+       case __NR_linux_setsockopt | RESTRICT:
+         AllowSetsockoptRestrict(f);
++        AllowSetsockoptBeamCom(f);
+         break;
+       case __NR_linux_getsockopt | RESTRICT:
+         AllowGetsockoptRestrict(f);
++        AllowGetsockoptBeamCom(f);
+         break;
+ #ifdef __NR_linux_creat
+       case __NR_linux_creat | RESTRICT:

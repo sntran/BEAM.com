@@ -19,7 +19,7 @@ systems.
 - Static NIFs: `crypto` and `asn1` (OpenSSL 4.0.3), SQLite 3.53.4
   (esqlite and exqlite), WebAssembly (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir. See [`LIBRARIES.md`](LIBRARIES.md).
-- A sandbox with the permission flags of Deno (Linux and OpenBSD). See
+- A sandbox with the permission flags of Deno (Linux, OpenBSD, macOS arm64 and Windows). See
   [`SANDBOX.md`](SANDBOX.md).
 - Native files for one system (`--target`), distributed Erlang with
   `epmd` in the file, a file watcher for `phoenix_live_reload`, and

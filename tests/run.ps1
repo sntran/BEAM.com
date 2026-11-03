@@ -208,14 +208,73 @@ if (Test-Path "examples") {
     Check "beam.com" 'the application nosuch is not in beam.com' @("examples/hashsum.erl", "-a", "nosuch", "-o", "$Dir/never.com") 1
 }
 
-# The sandbox (--allow-*): Windows ignores it, so each action works; the
-# flags must still be accepted and checked.
+# The sandbox (--allow-*) on Windows (c_src/cosmo/beam_com_fs.c): the
+# check of the paths, no network without net, and a job object of one
+# process without run. The host list of --allow-net works on Windows too
+# (see below).
 if (Test-Path "examples") {
-    Check "beam.com" '--allow-net takes no hosts' @("tests/programs/sandbox_check.erl", "--allow-net=example.com", "-o", "$Dir/never.com") 1
+    Check "beam.com" '--allow-net: a bad domain' @("tests/programs/sandbox_check.erl", "--allow-net=*.com", "-o", "$Dir/never.com") 1
     Check "beam.com" 'wrote .*sandbox_net.com' @("tests/programs/sandbox_check.erl", "-N", "--allow-read=/etc", "-o", "$Dir/sandbox_net.com")
     if (Test-Path (Join-Path $Dir "sandbox_net.com")) {
         Remove-Item (Join-Path $Dir "sandbox.tmp") -ErrorAction SilentlyContinue
-        Check "sandbox_net.com" 'read: ok@@write: ok@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
+        Check "sandbox_net.com" 'a job object of one process@@read: error eacces@@write: error eacces@@listen: ok@@done' @("read", "$Dir/beam.com", "write", "$Dir/sandbox.tmp", "listen")
+    }
+    # A directory of --allow-write, with another case of the name. ".."
+    # leaves it, and Windows reads ".. " as "..", so the check refuses it.
+    $rw = Join-Path $Dir "sandbox-w"
+    Remove-Item $rw -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory $rw | Out-Null
+    Check "beam.com" 'wrote .*sandbox_rw.com' @("tests/programs/sandbox_check.erl", "--allow-write=$rw", "-o", "$Dir/sandbox_rw.com")
+    if (Test-Path (Join-Path $Dir "sandbox_rw.com")) {
+        Check "sandbox_rw.com" 'a job object of one process@@read: error eacces@@write: ok@@write: ok@@write: error eacces@@write: error eacces@@listen: error eacces@@done' `
+            @("read", "$Dir/beam.com", "write", "$rw/new.txt", "write", ($rw.ToUpper() + "\upper.txt"),
+              "write", "$rw/../sandbox.tmp", "write", "$rw/.. /sandbox.tmp", "listen")
+    }
+    Remove-Item $rw -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --allow-net=HOST,...: the resolver of beam.com and the check of each
+# address, with the name server of tests/programs/dns_fake.erl (see
+# tests/run.sh). A name that the list does not allow never goes to the
+# name server.
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*dns_fake.com' @("tests/programs/dns_fake.erl", "-o", "$Dir/dns_fake.com")
+    Check "beam.com" 'wrote .*sandbox_none.com' @("tests/programs/sandbox_check.erl", "-o", "$Dir/sandbox_none.com")
+    if ((Test-Path (Join-Path $Dir "dns_fake.com")) -and (Test-Path (Join-Path $Dir "sandbox_none.com"))) {
+        $fakeExe = Join-Path $Dir "dns_fake.exe"
+        Copy-Item (Join-Path $Dir "dns_fake.com") $fakeExe -Force
+        $fakeOut = Join-Path $Dir "dns_fake.out"
+        $fake = Start-Process -FilePath (Resolve-Path $fakeExe).Path -PassThru -NoNewWindow `
+            -RedirectStandardOutput $fakeOut -RedirectStandardError "$fakeOut.err"
+        $ports = $null
+        for ($i = 0; $i -lt 30 -and -not $ports; $i++) {
+            Start-Sleep -Seconds 1
+            $m = Select-String -Path $fakeOut -Pattern '^dns_fake: (\d+) (\d+)$' -ErrorAction SilentlyContinue
+            if ($m) { $ports = $m.Matches[0].Groups }
+        }
+        if ($ports) {
+            $dns = $ports[1].Value
+            $tcp = $ports[2].Value
+            $env:BEAM_COM_ALLOW = "net=*.test.example:$tcp"
+            $env:BEAM_COM_DNS_UPSTREAM = "127.0.0.1:$dns"
+            Check "sandbox_none.com" 'connect a.test.example: ok@@connect big.test.example: ok@@connect alias.test.example: ok@@connect test.example: error nxdomain@@connect other.example: error nxdomain@@connect a.test.example: error eacces@@connect 127.0.0.2: error eacces@@udp 127.0.0.1: error eacces@@done' `
+                @("connect", "a.test.example", $tcp, "connect", "big.test.example", $tcp,
+                  "connect", "alias.test.example", $tcp, "connect", "test.example", $tcp,
+                  "connect", "other.example", $tcp, "connect", "a.test.example", $dns,
+                  "connect", "127.0.0.2", $tcp, "udp", "127.0.0.1", $dns)
+            Remove-Item Env:BEAM_COM_ALLOW, Env:BEAM_COM_DNS_UPSTREAM
+        }
+        Stop-Process -Id $fake.Id -Force -ErrorAction SilentlyContinue
+        $asked = @(Get-Content $fakeOut -ErrorAction SilentlyContinue)
+        $asked | Write-Host
+        if (-not $ports -or ($asked -match 'asked (other|test)\.example$') -or
+            -not ($asked -match 'asked a\.test\.example$')) {
+            Write-Host "FAIL: dns_fake.com: the names that the resolver asked"
+            $script:fail = 1
+            $failures.Add("dns_fake.com: the names that the resolver asked")
+        } else {
+            Write-Host "PASS: dns_fake.com"
+        }
     }
 }
 

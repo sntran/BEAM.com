@@ -144,10 +144,19 @@ int __wrap_close(int fd)
  * for each absolute path. POSIX gives EEXIST when the path exists. */
 int __real_mkdir(const char *path, mode_t mode);
 
+#include "beam_com_fs.h"
+
+/* The sandbox of the paths of Windows checks mkdir() and chown() too
+ * (c_src/cosmo/beam_com_fs.c). */
 int __wrap_mkdir(const char *path, mode_t mode)
 {
     struct stat st;
-    int rc = __real_mkdir(path, mode), e = errno;
+    int rc, e;
+
+    if (beam_com_fs_check(path, 1))
+        return -1;
+    rc = __real_mkdir(path, mode);
+    e = errno;
 
     if (rc == -1 && e == EACCES && beam_com_is_windows())
         errno = stat(path, &st) == 0 ? EEXIST : e;
@@ -167,6 +176,8 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 {
     struct stat st;
 
+    if (beam_com_fs_check(path, 1))
+        return -1;
     if (beam_com_is_windows() && owner == (uid_t)-1 && group == (gid_t)-1)
         return stat(path, &st);
     return __real_chown(path, owner, group);
@@ -175,6 +186,8 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 /* memchr() and strncpy() that read no byte past their buffer (UPSTREAM.md
  * C33 and C34). tests/cosmo/libc_edges.c tests the same file. */
 #include "beam_com_libc.h"
+#include "beam_com_net.h"
+#include "beam_com_seatbelt.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -408,6 +421,8 @@ int beam_com_execve(const char *path, char *const argv[], char *const envp[])
  *   read, read=PATH,...     read all files, or only these
  *   write, write=PATH,...   write (and create) all files, or only these
  *   net                     sockets and DNS
+ *   net=HOST,...            sockets and DNS for these hosts only
+ *                           (c_src/cosmo/beam_com_net.c)
  *   run, run=PROGRAM,...    start all programs (ports), or only these
  *   all                     no sandbox
  *
@@ -438,8 +453,8 @@ static char *cert_file(void);
 
 struct allow {
     int all, net, run;
-    int read_all, write_all, run_all;
-    struct arglist read, write, programs;
+    int read_all, write_all, run_all, net_all;
+    struct arglist read, write, programs, hosts;
 };
 
 static void sandbox_error(int helper, const char *what, const char *arg)
@@ -450,9 +465,30 @@ static void sandbox_error(int helper, const char *what, const char *arg)
     beam_com_exit(127, 1);
 }
 
+/* 1 when beam_com_fs.c checks the paths: on Windows, where unveil()
+ * does nothing, and with BEAM_COM_WINDOWS_SANDBOX=1 for the tests. Each
+ * path of unveil() is a rule of the check too: "r" reads, "w" and "c"
+ * write ("x" alone gives no rule). */
+static int sandbox_fs;
+/* 1 on macOS, for the profile of Seatbelt (beam_com_seatbelt.c), which
+ * gets each path of unveil() too. */
+static int sandbox_mac;
+/* 1 when the permissions come from BEAM_COM_ALLOW, not from the file. */
+static int sandbox_from_env;
+
+static void sandbox_fs_allow(const char *path, const char *permissions)
+{
+    if (sandbox_mac && path)
+        beam_com_seatbelt_allow(path, permissions);
+    if (sandbox_fs && path && (strchr(permissions, 'r') || strchr(permissions, 'w') ||
+                               strchr(permissions, 'c')))
+        beam_com_fs_allow(path, strchr(permissions, 'w') || strchr(permissions, 'c'));
+}
+
 static void sandbox_unveil(int helper, const char *path,
                            const char *permissions)
 {
+    sandbox_fs_allow(path, permissions);
     if (unveil(path, permissions) == -1)
         sandbox_error(helper, "unveil", path);
 }
@@ -463,6 +499,7 @@ static void sandbox_unveil(int helper, const char *path,
 static void sandbox_unveil_optional(int helper, const char *path,
                                     const char *permissions)
 {
+    sandbox_fs_allow(path, permissions);
     if (path && unveil(path, permissions) == -1 && errno != ENOENT)
         sandbox_error(helper, "unveil", path);
 }
@@ -526,8 +563,10 @@ static void allow_parse(int helper, struct allow *a, char *word)
         *value++ = '\0';
     if (strcmp(word, "all") == 0 && !value)
         a->all = 1;
-    else if (strcmp(word, "net") == 0 && !value)
+    else if (strcmp(word, "net") == 0) {
         a->net = 1;
+        value ? allow_list(value, &a->hosts) : (void)(a->net_all = 1);
+    }
     else if (strcmp(word, "read") == 0)
         value ? allow_list(value, &a->read) : (void)(a->read_all = 1);
     else if (strcmp(word, "write") == 0)
@@ -555,7 +594,145 @@ static void allow_parse(int helper, struct allow *a, char *word)
 #define BEAM_COM_BASE_PROMISES "stdio rpath "
 #endif
 
-static void apply_allow(int helper, struct allow *a)
+/* --allow-net=HOST,...: the list, and the resolver and the ports of
+ * beam_com_net.c. Before the first unveil(): the seccomp filter of the
+ * commit of unveil() forbids a second Landlock ruleset. */
+static int net_prepare(int helper, struct allow *a, int from_env)
+{
+    char error[512];
+    const char *step;
+    int i;
+
+    if (helper || !a->hosts.n || a->net_all)
+        return 0;
+    for (i = 0; i < a->hosts.n; i++)
+        if (beam_com_net_rule(a->hosts.v[i], error, sizeof(error))) {
+            fprintf(stderr, "beam.com: --allow-net: %s\n", error);
+            beam_com_exit(127, 1);
+        }
+    if ((step = beam_com_net_prepare(from_env)))
+        sandbox_error(helper, "--allow-net:", step);
+    return 1;
+}
+
+/* After pledge(): the threads of the resolver keep the sandbox. */
+static void net_start(int helper, int hosts)
+{
+    const char *step;
+
+    if (hosts && (step = beam_com_net_start()))
+        sandbox_error(helper, "--allow-net:", step);
+}
+
+#ifdef __x86_64__
+/*
+ * No new process on Windows (no permission run): a job object with
+ * JOB_OBJECT_LIMIT_ACTIVE_PROCESS and a limit of one process. The limit
+ * is in the kernel, also for native code: CreateProcess() fails. The
+ * job cannot end, and a process cannot leave it (no BREAKAWAY_OK).
+ * kernel32.dll is loaded already; the functions have the Microsoft x64
+ * calling convention (__ms_abi__).
+ */
+struct nt_job_basic_limits {
+    int64_t PerProcessUserTimeLimit;
+    int64_t PerJobUserTimeLimit;
+    uint32_t LimitFlags;
+    uintptr_t MinimumWorkingSetSize;
+    uintptr_t MaximumWorkingSetSize;
+    uint32_t ActiveProcessLimit;
+    uintptr_t Affinity;
+    uint32_t PriorityClass;
+    uint32_t SchedulingClass;
+};
+#define NT_JOB_BASIC_LIMIT_INFORMATION 2
+#define NT_JOB_LIMIT_ACTIVE_PROCESS 0x8u
+
+typedef int64_t(__attribute__((__ms_abi__)) *nt_CreateJobObjectW)(void *attributes,
+                                                                    const char16_t *name);
+typedef int(__attribute__((__ms_abi__)) *nt_SetInformationJobObject)(int64_t job, int info_class,
+                                                                    void *info, uint32_t size);
+typedef int(__attribute__((__ms_abi__)) *nt_AssignProcessToJobObject)(int64_t job,
+                                                                     int64_t process);
+
+/* Gives NULL, or the step that failed. */
+static const char *windows_no_process(void)
+{
+    struct nt_job_basic_limits limits = {0};
+    nt_CreateJobObjectW create_job;
+    nt_SetInformationJobObject set_info;
+    nt_AssignProcessToJobObject assign;
+    int64_t kernel32, job;
+
+    if (!(kernel32 = LoadLibrary(u"kernel32.dll")))
+        return "LoadLibrary";
+    create_job = (nt_CreateJobObjectW)GetProcAddress(kernel32, "CreateJobObjectW");
+    set_info = (nt_SetInformationJobObject)GetProcAddress(kernel32, "SetInformationJobObject");
+    assign = (nt_AssignProcessToJobObject)GetProcAddress(kernel32, "AssignProcessToJobObject");
+    if (!create_job || !set_info || !assign)
+        return "GetProcAddress";
+    if (!(job = create_job(NULL, NULL)))
+        return "CreateJobObjectW";
+    limits.LimitFlags = NT_JOB_LIMIT_ACTIVE_PROCESS;
+    limits.ActiveProcessLimit = 1;
+    if (!set_info(job, NT_JOB_BASIC_LIMIT_INFORMATION, &limits, sizeof(limits)))
+        return "SetInformationJobObject";
+    /* -1: the pseudo handle of this process (GetCurrentProcess()). */
+    if (!assign(job, -1))
+        return "AssignProcessToJobObject";
+    return NULL;
+}
+#else
+static const char *windows_no_process(void)
+{
+    return NULL;
+}
+#endif
+
+/* The parts of the sandbox that pledge() and unveil() have on Linux and
+ * OpenBSD. On macOS, the profile of Seatbelt. On Windows, the check of
+ * the paths (the rules of sandbox_unveil()), no network without net, and
+ * no new process without run. With BEAM_COM_WINDOWS_SANDBOX=1, the two
+ * first parts of Windows also on Linux, for the tests. */
+static void sandbox_windows(int helper, struct allow *a)
+{
+    char buf[512];
+    const char *hosts, *step;
+
+    if (sandbox_mac) {
+        beam_com_seatbelt_net(a->net);
+        /* For the tests: the parts of the profile to leave out, to find
+         * the part that stops a program. Only with BEAM_COM_ALLOW: the
+         * permissions of a file never change. */
+        if (sandbox_from_env && getenv("BEAM_COM_SEATBELT_OMIT"))
+            beam_com_seatbelt_omit(getenv("BEAM_COM_SEATBELT_OMIT"));
+        if ((step = beam_com_seatbelt_apply())) {
+            fprintf(stderr, "beam.com: the sandbox of macOS: %s\n", step);
+            beam_com_exit(127, 1);
+        }
+        if (getenv("BEAM_COM_VERBOSE"))
+            fprintf(stderr, IsXnuSilicon() ? "beam.com: the sandbox of macOS (Seatbelt) is on\n"
+                                           : "beam.com: no sandbox on macOS x86_64\n");
+    }
+    if (!sandbox_fs)
+        return;
+    if (a->net && beam_com_is_windows() && (hosts = GetHostsTxtPath(buf, sizeof(buf))))
+        beam_com_fs_allow(hosts, 0);
+    beam_com_fs_policy();
+    if (!a->net)
+        beam_com_net_deny();
+    if (!a->run && beam_com_is_windows()) {
+        if ((step = windows_no_process())) {
+            if (!helper)
+                fprintf(stderr, "beam.com: the job object of Windows: %s: error %u\n", step,
+                        (unsigned)GetLastError());
+            beam_com_exit(127, 1);
+        }
+        if (getenv("BEAM_COM_VERBOSE"))
+            fprintf(stderr, "beam.com: no permission run: a job object of one process\n");
+    }
+}
+
+static void apply_allow(int helper, struct allow *a, int from_env)
 {
     static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
                                  "/usr/local/lib", "/usr/libexec"};
@@ -567,8 +744,15 @@ static void apply_allow(int helper, struct allow *a)
     /* Before the first unveil(): on OpenBSD, that call already hides the
      * other paths (Landlock hides them only at the commit). */
     char *certs = a->net ? cert_file() : NULL;
+    int hosts = net_prepare(helper, a, from_env);
     size_t k;
     int i;
+
+    sandbox_mac = !helper && IsXnu();
+    sandbox_from_env = from_env;
+    sandbox_fs = !helper && (beam_com_is_windows() ||
+                             (from_env && getenv("BEAM_COM_WINDOWS_SANDBOX") &&
+                              strcmp(getenv("BEAM_COM_WINDOWS_SANDBOX"), "1") == 0));
 
     /* BEAM.com executes its own file again for the helper programs,
      * and ERTS opens /dev/null at start. */
@@ -609,6 +793,7 @@ static void apply_allow(int helper, struct allow *a)
         for (i = 0; i < a->programs.n; i++)
             sandbox_unveil_optional(helper, find_program(a->programs.v[i]), "rx");
     }
+    sandbox_windows(helper, a);
     if (unveil(NULL, NULL) == -1)
         sandbox_error(helper, "unveil", "(commit)");
 
@@ -616,8 +801,10 @@ static void apply_allow(int helper, struct allow *a)
      * (SIGABRT at the start, also for the interpreter), and it stops the
      * process on a forbidden system call instead of returning an error.
      * There the sandbox is unveil() only (the paths). */
-    if (IsOpenbsd())
+    if (IsOpenbsd()) {
+        net_start(helper, hosts);
         return;
+    }
     snprintf(promises, sizeof(promises), "%s%s%s%s", BEAM_COM_BASE_PROMISES,
              a->write_all || a->write.n ? "wpath cpath fattr flock " : "",
              a->net ? "inet dns " : "",
@@ -626,6 +813,7 @@ static void apply_allow(int helper, struct allow *a)
              a->run ? "proc exec sendfd recvfd " : "");
     if (pledge(promises, NULL) == -1)
         sandbox_error(helper, "pledge", promises);
+    net_start(helper, hosts);
 
     /* Without "proc exec", ERTS cannot start its port programs, and the
      * native name resolver is one: kernel halts when it cannot start it.
@@ -639,13 +827,14 @@ static void apply_sandbox(int helper)
     struct allow a = {0};
     struct arglist words = {0};
     char *env, *copy, *word, *save;
-    int i;
+    int i, from_env = 0;
 
     if (helper && IsLinux())
         return;
     __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
 
     if (!read_lines(BEAM_COM_ALLOW, &words) && (env = getenv("BEAM_COM_ALLOW")) && *env) {
+        from_env = 1;
         copy = strdup(env);
         for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
             push(&words, word);
@@ -655,7 +844,7 @@ static void apply_sandbox(int helper)
     for (i = 0; i < words.n; i++)
         allow_parse(helper, &a, words.v[i]);
     if (!a.all)
-        apply_allow(helper, &a);
+        apply_allow(helper, &a, from_env);
 }
 
 static int file_exists(const char *path)
@@ -1231,6 +1420,9 @@ static FILE *windows_tmp_file(int slot, const char *suffix, char **pathp)
     if (!windows_tmp_files[0] && !windows_tmp_files[1])
         atexit(windows_remove_tmp_files);
     windows_tmp_files[slot] = path;
+    /* The sandbox of the paths: ERTS reads the file, and the exit
+     * removes it. */
+    beam_com_fs_allow(path, 1);
     *pathp = path;
     return f;
 }
@@ -1935,8 +2127,10 @@ void beam_com_main(int *argcp, char ***argvp)
         has_release = 1;
         has_args = 0;
     }
-    if (!has_release && !has_args)
+    if (!has_release && !has_args) {
+        beam_com_fs_start();
         return; /* Not a bundle: behave like a plain beam.smp. */
+    }
 
     /* ERL_FLAGS has more flags, as with erl, and ELIXIR_ERL_OPTIONS for
      * the Elixir tools, as with the scripts of Elixir. */
@@ -2027,6 +2221,9 @@ void beam_com_main(int *argcp, char ***argvp)
 
     *argcp = all.n;
     *argvp = all.v;
+    /* The check of the paths starts now, after the files of the start
+     * (windows_setup()). */
+    beam_com_fs_start();
 }
 
 /*

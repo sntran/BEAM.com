@@ -371,7 +371,8 @@ slashes(Path, _) -> Path.
 
 %% The sandbox of the program (see beam_com.c): /zip/.allow has one
 %% permission on each line, as the --allow-* flags without "--allow-":
-%% "read", "read=/etc,/srv", "write=/tmp", "net", "run=git", or "all".
+%% "read", "read=/etc,/srv", "write=/tmp", "net", "net=example.com:443",
+%% "run=git", or "all".
 sandbox_files(#{allow := Allow}) ->
     [{".allow", allow_lines(Allow)}];
 sandbox_files(_) ->
@@ -394,9 +395,24 @@ allow(Flag, Allow) ->
     case allow_flag(Flag) of
         {all, _} -> Allow#{all => true};
         {net, none} -> Allow#{net => true};
-        {net, _} ->
-            throw({error, "--allow-net takes no hosts: the sandbox cannot "
-                   "filter the network by host", []});
+        {net, Value} ->
+            case {maps:get(net, Allow, []), string:lexemes(Value, ",")} of
+                {_, []} -> throw({error, "~ts needs a list after \"=\"", [Flag]});
+                {true, _} -> Allow;
+                {Old, New} ->
+                    Hosts = Old ++ [H || H <- lists:usort([net_host(N) || N <- New]),
+                                         not lists:member(H, Old)],
+                    length(Hosts) =< 64 orelse
+                        throw({error, "--allow-net takes 64 hosts or fewer", []}),
+                    case [H || "*." ++ _ = H <- Hosts, not lists:member(H, Old)] of
+                        [] ->
+                            ok;
+                        Wild ->
+                            Rules = public_suffixes(),
+                            lists:foreach(fun(H) -> net_warning(H, Rules) end, Wild)
+                    end,
+                    Allow#{net => Hosts}
+            end;
         {K, none} when K =:= read; K =:= write; K =:= run -> Allow#{K => all};
         {K, Value} when K =:= read; K =:= write; K =:= run ->
             case {maps:get(K, Allow, []), string:lexemes(Value, ",")} of
@@ -410,6 +426,132 @@ allow(Flag, Allow) ->
         unknown ->
             throw({error, "unknown option ~ts", [Flag]})
     end.
+
+%% One host of --allow-net=HOST,..., with the rules of beam_com_net_rule()
+%% in c_src/cosmo/beam_com_net.c: a name, *.DOMAIN (each name under
+%% DOMAIN, which has two labels or more), an IPv4 address, or an IPv6
+%% address (in brackets with a port), each with an optional :PORT. Names
+%% are in lower case, with no dot at the end.
+net_host(Text) ->
+    Host = string:lowercase(string:trim(Text)),
+    Bad = fun(What) -> throw({error, "--allow-net: ~ts: ~ts", [What, Text]}) end,
+    {Addr, Port} =
+        case Host of
+            "[" ++ Rest ->
+                case string:split(Rest, "]") of
+                    [A, ""] -> {{ipv6, A}, none};
+                    [A, ":" ++ P] -> {{ipv6, A}, P};
+                    _ -> Bad("a bad IPv6 address")
+                end;
+            _ ->
+                case string:split(Host, ":", all) of
+                    [H] -> {H, none};
+                    [H, P] -> {H, P};
+                    _ -> {{ipv6, Host}, none}
+                end
+        end,
+    Port =:= none orelse net_port(Port) orelse Bad("a bad port"),
+    case Addr of
+        {ipv6, A6} ->
+            case inet:parse_ipv6strict_address(A6) of
+                {ok, _} -> ok;
+                _ -> Bad("a bad IPv6 address")
+            end;
+        "*." ++ Domain ->
+            Name = string:trim(Domain, trailing, "."),
+            net_name(Name) andalso length(string:split(Name, ".", all)) >= 2 orelse
+                Bad("a bad domain (*.DOMAIN needs two labels or more)");
+        Name0 ->
+            Name = string:trim(Name0, trailing, "."),
+            case inet:parse_ipv4strict_address(Name) of
+                {ok, _} -> ok;
+                _ ->
+                    lists:all(fun(C) -> C =:= $. orelse (C >= $0 andalso C =< $9) end, Name)
+                        andalso Bad("a bad IPv4 address"),
+                    net_name(Name) orelse Bad("a bad host")
+            end
+    end,
+    case {Addr, Port} of
+        {{ipv6, _}, _} -> Host;
+        {_, none} -> string:trim(Addr, trailing, ".");
+        {_, _} -> string:trim(Addr, trailing, ".") ++ ":" ++ Port
+    end.
+
+%% A warning for *.DOMAIN when other owners can have names under DOMAIN
+%% (net_shared/2): the program can then send data to a host of another
+%% owner, for example a bucket of S3 or a site of github.io.
+net_warning("*." ++ Host, Rules) ->
+    Domain = hd(string:split(Host, ":")),
+    case net_shared(Domain, Rules) of
+        false ->
+            ok;
+        Suffix ->
+            io:format(standard_error,
+                      "~ts: warning: --allow-net=*.~ts: ~ts is in the Public Suffix List, "
+                      "so other owners can have names under ~ts~n",
+                      [beam_com:name(), Host, Suffix, Domain])
+    end.
+
+%% The public suffix that is DOMAIN or is under DOMAIN, or false. Rules:
+%% the names of the Public Suffix List, "*.NAME" for each name under NAME
+%% (one label), and "!NAME" for a name that is not a suffix. A rule
+%% "*.DOMAIN" makes each name under DOMAIN a suffix.
+net_shared(Domain, Rules) ->
+    Under = "." ++ Domain,
+    Exact = lists:member(Domain, Rules) orelse
+        (lists:any(fun("*." ++ Parent) -> lists:suffix("." ++ Parent, Domain) andalso
+                                              length(string:split(Domain, ".", all)) =:=
+                                                  length(string:split(Parent, ".", all)) + 1;
+                      (_) -> false
+                   end, Rules)
+         andalso not lists:member("!" ++ Domain, Rules)),
+    case Exact of
+        true ->
+            Domain;
+        false ->
+            case [Name || R <- Rules, hd(R) =/= $!,
+                          Name <- [case R of "*." ++ N -> N; _ -> R end],
+                          lists:suffix(Under, Name) orelse R =:= "*." ++ Domain] of
+                [] -> false;
+                [Name | _] -> Name
+            end
+    end.
+
+%% The rules of lib/beam_com/priv/public_suffix_list.dat (ASCII only:
+%% the names of the list are in lower case). None when the file is not
+%% there.
+public_suffixes() ->
+    case code:priv_dir(beam_com) of
+        {error, _} ->
+            [];
+        Dir ->
+            case file:read_file(filename:join(Dir, "public_suffix_list.dat")) of
+                {ok, Data} ->
+                    [binary_to_list(R) || Line <- binary:split(Data, <<"\n">>, [global]),
+                                          [R | _] <- [string:lexemes(Line, " \t\r")],
+                                          binary:first(R) =/= $/,
+                                          lists:all(fun(C) -> C < 128 end, binary_to_list(R))];
+                {error, _} ->
+                    []
+            end
+    end.
+
+net_port(Port) ->
+    case string:to_integer(Port) of
+        {N, []} -> N >= 1 andalso N =< 65535 andalso length(Port) =< 5;
+        _ -> false
+    end.
+
+net_name(Name) ->
+    Labels = string:split(Name, ".", all),
+    length(Name) =< 253 andalso Name =/= "" andalso
+        lists:all(fun(L) ->
+                          L =/= "" andalso length(L) =< 63 andalso
+                              lists:all(fun(C) -> (C >= $a andalso C =< $z) orelse
+                                                      (C >= $0 andalso C =< $9) orelse
+                                                      C =:= $- orelse C =:= $_
+                                        end, L)
+                  end, Labels).
 
 allow_flag("-R") -> {read, none};
 allow_flag("-W") -> {write, none};
