@@ -1395,6 +1395,8 @@ step_bundle() {
     # (scripts/lazy_html.sh), which beam_com_make copies.
     mkdir -p "$STAGE/lib/beam_com/priv"
     cp -R "$ROOT/priv/nifs" "$STAGE/lib/beam_com/priv/"
+    # The warning of --allow-net=*.DOMAIN (beam_com_build:net_shared/2).
+    cp "$ROOT/priv/public_suffix_list.dat" "$STAGE/lib/beam_com/priv/"
     "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_script-0.1.0/ebin" \
         "$ROOT"/src/beam_com_script/*.erl
     cp "$ROOT/src/beam_com_script/beam_com_script.app.src" \

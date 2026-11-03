@@ -1483,6 +1483,33 @@ defmodule BeamComBuildTest do
       end
     end
 
+    for {host, under} <- [
+          {"*.github.io", "github.io"},
+          {"*.co.uk", "co.uk"},
+          {"*.amazonaws.com", "amazonaws.com"},
+          {"*.s3.amazonaws.com:443", "s3.amazonaws.com"},
+          {"*.kawasaki.jp", "kawasaki.jp"}
+        ] do
+      test "--allow-net=#{host}: a warning, other owners have names under it" do
+        warning =
+          capture_io(:stderr, fn ->
+            allow([String.to_charlist("--allow-net=" <> unquote(host))])
+          end)
+
+        assert warning =~ "warning: --allow-net=#{unquote(host)}: "
+
+        assert warning =~
+                 "is in the Public Suffix List, so other owners can have names under #{unquote(under)}\n"
+      end
+    end
+
+    test "--allow-net=*.DOMAIN: no warning for one owner" do
+      assert "" ==
+               capture_io(:stderr, fn ->
+                 allow([~c"--allow-net=*.example.com,*.www.ck,*.city.kawasaki.jp,api.github.io"])
+               end)
+    end
+
     test "--allow-net takes 64 hosts or fewer" do
       hosts = Enum.map_join(1..65, ",", &"h#{&1}.example")
 
