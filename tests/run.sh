@@ -637,8 +637,15 @@ if [ -d examples ]; then
     # The refusals of Seatbelt (c_src/cosmo/beam_com_seatbelt.c) go to the
     # log of macOS, not to the program. Print them, for a failed check.
     if [ "$os-$(uname -m)" = darwin-arm64 ] && command -v log >/dev/null; then
-        echo "--- the refusals of Seatbelt in the last 5 minutes"
-        log show --style compact --last 5m --predicate 'sender == "Sandbox"' 2>&1 | tail -60
+        echo "--- the log of macOS for the processes of the APE loader, last 5 minutes"
+        log show --style compact --last 5m --predicate 'eventMessage CONTAINS[c] "ape-1.10"' 2>&1 |
+            tail -80
+        # A process that crashed has a report of macOS.
+        for f in $(ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i ape | head -2); do
+            echo "--- $f"
+            head -c 6000 "$HOME/Library/Logs/DiagnosticReports/$f"
+            echo
+        done
     fi
     # BEAM_COM_ALLOW: permissions for a program without them; a program
     # with permissions in its file ignores it.
