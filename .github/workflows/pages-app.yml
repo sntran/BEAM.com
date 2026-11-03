@@ -217,7 +217,14 @@ jobs:
           sh ./beam.com --assimilate
           chmod +x beam.com
           ./beam.com --version
-          echo "id=$(sha256sum beam.com | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # The id of the cache of deps and _build: the versions of
+          # beam.com, OTP, Elixir and ERTS, the emulator, the linked NIFs
+          # and the applications, not the SHA-256 of the file. Each build
+          # of beam.com has a new SHA-256, so each run saved a new cache
+          # of about 180 MB, and these caches filled the 10 GB of the
+          # repository. The lines of the runner (OS type, Architecture,
+          # Schedulers) are not in it.
+          echo "id=$(./beam.com --version | grep -v -E '^ *(OS type|Architecture|Schedulers) *:' | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           mkdir -p bin
           ln -sf "$PWD/beam.com" bin/beam.com
           ln -sf "$PWD/beam.com" bin/mix.com

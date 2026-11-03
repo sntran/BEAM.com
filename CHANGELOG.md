@@ -14,6 +14,9 @@ notes of its release.
   two times each week, so GitHub does not remove them.
 - The cache key of libvips in `custom-build.yml` has `c_src/vips/`, as
   in `vix.yml`. Before, a change of the SVG loader kept an old libvips.
+- The cache of `deps` and `_build` of `pages-app.yml` has the versions
+  of `beam.com` in its key, not the SHA-256 of the file. Each run saved
+  a new cache of about 180 MB, and 32 of them used 5.8 GB of the 10 GB.
 - A pull request only reads the caches of GitHub Actions. Before, each
   pull request saved its own copy of a cache that it changed, and these
   copies pushed out the caches of `main` (GitHub keeps 10 GB of caches
