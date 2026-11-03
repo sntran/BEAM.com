@@ -677,9 +677,12 @@ not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
 gives `ENOSYS` on Windows for all values.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c` gives, on
-Windows, for `-1` and `-1`: 0 when the path exists, else the error of
-`stat()` (`ENOENT`, on which `File.touch/1` makes the file).
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c` gives,
+for `-1` and `-1`: 0 when the path exists, else the error of `stat()`
+(`ENOENT`, on which `File.touch/1` makes the file). It does this on each
+system: the sandbox of Linux has no promise `chown`, so the call failed
+there too, and `file:change_mode/2` and `file:change_time/2` failed with
+it (#172).
 
 **Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
 return 0 for `-1` and `-1` when the path exists.

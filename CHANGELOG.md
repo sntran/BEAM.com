@@ -34,6 +34,21 @@ notes of its release.
   of `beam.com` with each part in a local store took 39 s.
 - The license texts of PDFium come from the part of ex_pdfium
   (`hexnifs/static/licenses-pdfium`).
+- The sandbox of Linux (#172):
+  - `--allow-net` allows Unix sockets, as on macOS, for example
+    `NOTIFY_SOCKET` of systemd and the socket of PostgreSQL. Before, each
+    Unix socket gave `{error, eperm}`.
+  - `--allow-write` allows `file:change_mode/2`, `file:change_time/2`,
+    and so `File.cp/2` and `File.touch/1`. They first call `chown()`
+    with no change of the owner, which the sandbox refused. That call
+    now gives the result of `stat()` on each system, not only on
+    Windows.
+- On Linux, when the kernel has no Landlock (#171), for example in Apple
+  `container`, the paths of a sandbox had no limit, with no message.
+  beam.com now checks the paths in the calls of the C library there, as
+  on Windows, and prints a warning: that check is weaker than Landlock.
+  With `BEAM_COM_VERBOSE=1`, the program prints the ABI version of
+  Landlock.
 - The caches of the custom builds are full on `main`
   (`custom-build-caches.yml`). The first custom build after a change
   took about 30 minutes, because only a run on `main` fills a cache that

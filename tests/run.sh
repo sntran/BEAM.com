@@ -659,6 +659,40 @@ if [ -d examples ]; then
     BEAM_COM_ALLOW=read
     check sandbox_net.com "$env" read /etc/hosts read "$dir/beam.com"
     unset BEAM_COM_ALLOW
+    # On Linux, write allows the change of the mode and of the times
+    # (chown with no change first, #172), and net allows a Unix socket.
+    if [ "$os" = linux ]; then
+        rm -rf "$dir/sandbox-w"
+        mkdir "$dir/sandbox-w"
+        BEAM_COM_ALLOW="write=$dir/sandbox-w;net"
+        export BEAM_COM_ALLOW
+        check sandbox_none.com 'write: ok@@chmod: ok@@touch: ok@@unix: ok@@done' \
+            write "$dir/sandbox-w/f" chmod "$dir/sandbox-w/f" touch "$dir/sandbox-w/f" unix
+        BEAM_COM_ALLOW="write=$dir/sandbox-w"
+        check sandbox_none.com 'unix: error eperm@@done' unix
+        unset BEAM_COM_ALLOW
+        rm -rf "$dir/sandbox-w"
+    fi
+    # Landlock on Linux: the ABI with BEAM_COM_VERBOSE, and a warning on a
+    # kernel without it (BEAM_COM_NO_LANDLOCK=1 acts as one, issue 171).
+    if [ "$os" = linux ]; then
+        BEAM_COM_ALLOW='read=/etc;net'
+        export BEAM_COM_ALLOW
+        check sandbox_none.com 'Landlock ABI [1-9]' read /etc/hosts
+        # Without Landlock, the check of the paths in the calls of the C
+        # library limits the paths (EACCES). The kernel here has Landlock,
+        # so the link to /etc/hosts shows that the check of the C library
+        # refuses it by its name, where Landlock follows it.
+        rm -f "$dir/sandbox-link"
+        ln -s /etc/hosts "$dir/sandbox-link"
+        BEAM_COM_ALLOW="read=/etc/hosts;net"
+        BEAM_COM_NO_LANDLOCK=1
+        export BEAM_COM_ALLOW BEAM_COM_NO_LANDLOCK
+        check sandbox_none.com 'warning: the kernel has no Landlock@@read: ok@@read: error eacces@@done' \
+            read /etc/hosts read "$dir/sandbox-link"
+        unset BEAM_COM_NO_LANDLOCK BEAM_COM_ALLOW
+        rm -f "$dir/sandbox-link"
+    fi
     # -N: the file of SSL_CERT_FILE also, for public_key.
     if [ -f "$dir/ca-one.pem" ]; then
         SSL_CERT_FILE=$dir/ca-one.pem

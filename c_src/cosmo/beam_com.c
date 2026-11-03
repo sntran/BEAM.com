@@ -41,6 +41,7 @@
 #include "libc/dlopen/dlfcn.h"               /* cosmo_dlopen(), cosmo_dltramp() */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
+#include "libc/calls/landlock.h"                /* landlock_create_ruleset() */
 
 /* Cosmopolitan internals used for the Windows setup (see below). */
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
@@ -163,13 +164,15 @@ int __wrap_mkdir(const char *path, mode_t mode)
     return rc;
 }
 
-/* chown() on Windows (UPSTREAM.md C28). The emulator is linked with
+/* chown() with no change (UPSTREAM.md C28). The emulator is linked with
  * -Wl,--wrap=chown (build.sh). prim_file:write_file_info/3 (for example
- * File.touch/1 of Elixir, which Mix calls) always sets the owner, with -1
- * and -1 when the owner does not change, which POSIX does not change.
- * Cosmopolitan's chown() gives ENOSYS on Windows. There, chown(path, -1,
- * -1) gives 0 when the path exists, else the error of stat() (ENOENT, on
- * which File.touch/1 makes the file). */
+ * file:change_mode/2, file:change_time/2 and File.touch/1 of Elixir)
+ * always sets the owner, with -1 and -1 when the owner does not change,
+ * which POSIX does not change. Cosmopolitan's chown() gives ENOSYS on
+ * Windows, and the sandbox of Linux refuses it (no promise "chown"), so
+ * the change of the mode or of the times after it failed (#172). So
+ * chown(path, -1, -1) gives 0 when the path exists, else the error of
+ * stat() (ENOENT, on which File.touch/1 makes the file). */
 int __real_chown(const char *path, uid_t owner, gid_t group);
 
 int __wrap_chown(const char *path, uid_t owner, gid_t group)
@@ -178,7 +181,7 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 
     if (beam_com_fs_check(path, 1))
         return -1;
-    if (beam_com_is_windows() && owner == (uid_t)-1 && group == (gid_t)-1)
+    if (owner == (uid_t)-1 && group == (gid_t)-1)
         return stat(path, &st);
     return __real_chown(path, owner, group);
 }
@@ -732,6 +735,48 @@ static void sandbox_windows(int helper, struct allow *a)
     }
 }
 
+/* The ABI version of Landlock of the kernel of Linux, or 0 when the
+ * kernel has no Landlock. The unveil() of Cosmopolitan uses Landlock on
+ * Linux. Without it, unveil() does nothing and returns 0, so the paths
+ * have no limit (issue 171). BEAM_COM_NO_LANDLOCK=1 acts as a kernel
+ * without Landlock, for the tests, only with BEAM_COM_ALLOW. */
+static int landlock_abi(int from_env)
+{
+    const char *no = getenv("BEAM_COM_NO_LANDLOCK");
+    int abi;
+
+    if (from_env && no && strcmp(no, "1") == 0)
+        return 0;
+    abi = landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    return abi > 0 ? abi : 0;
+}
+
+/* On Linux, when the permissions limit the paths and the kernel has no
+ * Landlock: the check of the paths of the sandbox of Windows
+ * (beam_com_fs.c) in the calls of the C library, and a warning. That
+ * check is weaker than Landlock: native code that makes its own system
+ * calls, the helper programs and the programs of --allow-run do not go
+ * through it. Before the first unveil(), which gives each path to the
+ * check, and before pledge(). */
+static void landlock_check(int helper, struct allow *a, int from_env)
+{
+    int abi;
+
+    if (helper || !IsLinux())
+        return;
+    if (a->read_all && a->write_all && (a->run_all || !a->programs.n))
+        return;
+    abi = landlock_abi(from_env);
+    if (!abi) {
+        sandbox_fs = 1;
+        fprintf(stderr, "beam.com: warning: the kernel has no Landlock, so beam.com checks "
+                        "the paths only in the calls of the C library: native code and the "
+                        "programs of --allow-run are not limited\n");
+    } else if (getenv("BEAM_COM_VERBOSE")) {
+        fprintf(stderr, "beam.com: the sandbox of Linux: Landlock ABI %d\n", abi);
+    }
+}
+
 static void apply_allow(int helper, struct allow *a, int from_env)
 {
     static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
@@ -753,6 +798,7 @@ static void apply_allow(int helper, struct allow *a, int from_env)
     sandbox_fs = !helper && (beam_com_is_windows() ||
                              (from_env && getenv("BEAM_COM_WINDOWS_SANDBOX") &&
                               strcmp(getenv("BEAM_COM_WINDOWS_SANDBOX"), "1") == 0));
+    landlock_check(helper, a, from_env);
 
     /* BEAM.com executes its own file again for the helper programs,
      * and ERTS opens /dev/null at start. */
@@ -807,7 +853,9 @@ static void apply_allow(int helper, struct allow *a, int from_env)
     }
     snprintf(promises, sizeof(promises), "%s%s%s%s", BEAM_COM_BASE_PROMISES,
              a->write_all || a->write.n ? "wpath cpath fattr flock " : "",
-             a->net ? "inet dns " : "",
+             /* A Unix socket too, as in the profile of macOS (#172):
+              * for example systemd (NOTIFY_SOCKET) and PostgreSQL. */
+             a->net ? "inet unix dns " : "",
              /* erl_child_setup gets the descriptors of a port over a
               * socket (SCM_RIGHTS). */
              a->run ? "proc exec sendfd recvfd " : "");

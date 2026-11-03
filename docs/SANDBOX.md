@@ -17,7 +17,7 @@ what they allow:
 |---|---|---|
 | `--allow-read[=PATH,...]` | `-R` | read these files and directories (all, without a list) |
 | `--allow-write[=PATH,...]` | `-W` | write and create these files and directories (all, without a list) |
-| `--allow-net[=HOST,...]` | `-N` | use sockets and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS); with a list, only for these hosts (see [A list of hosts](#a-list-of-hosts)) |
+| `--allow-net[=HOST,...]` | `-N` | use sockets (also Unix sockets) and DNS, and read the files that they need (`/etc/hosts`, `/etc/resolv.conf`, the certificates of the OS); with a list, only for these hosts (see [A list of hosts](#a-list-of-hosts)) |
 | `--allow-run[=PROGRAM,...]` | | start these programs as ports (all, without a list); a name without `/` is found in `PATH` |
 | `--allow-all` | `-A` | do everything: no sandbox |
 
@@ -226,6 +226,16 @@ wall. Know these limits before you depend on it:
 - Caution: on macOS x86_64, FreeBSD and NetBSD, the flags have no
   effect, and the program prints no warning. A program runs there with all the
   rights of its user.
+- Caution: on Linux, the kernel limits the paths only with Landlock
+  (Linux 5.13 or later, with Landlock in the kernel). A kernel can have
+  no Landlock, for example the kernel of Apple `container`. There
+  beam.com checks the paths in the calls of the C library, as on
+  Windows, and prints the warning "the kernel has no Landlock" at its
+  start. Native code that makes its own system calls, the helper
+  programs and the programs of `--allow-run` do not go through that
+  check, and it does not follow a link. The limits of the system calls
+  and of the network still apply. With `BEAM_COM_VERBOSE=1`, the program
+  prints the ABI version of Landlock.
 - Caution: on Windows, only the calls of the C library get the check of
   the paths and of the sockets. Native code that calls Windows itself
   does not go through it. The check does not follow a link or a
@@ -233,6 +243,10 @@ wall. Know these limits before you depend on it:
 - `--allow-write` also lets the program change the mode and the times
   of the other files of the user (`chmod`, `utime`). Landlock does not
   control these calls.
+- Caution: `--allow-net` also allows Unix sockets, also with a list of
+  hosts. A Unix socket can reach a local service with more rights, for
+  example `/var/run/docker.sock`. Landlock does not control a connection
+  to a Unix socket.
 - `--allow-run` gives execute access to the directories of the
   libraries (`/lib`, `/usr/lib`, `/usr/libexec`, ...), and some
   programs are in these directories. On Linux, the programs that it
