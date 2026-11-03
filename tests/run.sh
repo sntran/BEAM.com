@@ -634,6 +634,12 @@ if [ -d examples ]; then
     else
         probe sandbox_run.com run true run sh
     fi
+    # The refusals of Seatbelt (c_src/cosmo/beam_com_seatbelt.c) go to the
+    # log of macOS, not to the program. Print them, for a failed check.
+    if [ "$os-$(uname -m)" = darwin-arm64 ] && command -v log >/dev/null; then
+        echo "--- the refusals of Seatbelt in the last 5 minutes"
+        log show --style compact --last 5m --predicate 'sender == "Sandbox"' 2>&1 | tail -60
+    fi
     # BEAM_COM_ALLOW: permissions for a program without them; a program
     # with permissions in its file ignores it.
     BEAM_COM_ALLOW='read=/etc;net'
