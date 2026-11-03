@@ -14,11 +14,12 @@ notes of its release.
     with no change of the owner, which the sandbox refused. That call
     now gives the result of `stat()` on each system, not only on
     Windows.
-- On Linux, a program with a sandbox prints a warning when the kernel
-  has no Landlock (#171). The limits of the paths need Landlock, and
-  without it they did nothing with no message, for example in Apple
-  `container`. With `BEAM_COM_VERBOSE=1`, the program prints the ABI
-  version of Landlock.
+- On Linux, when the kernel has no Landlock (#171), for example in Apple
+  `container`, the paths of a sandbox had no limit, with no message.
+  beam.com now checks the paths in the calls of the C library there, as
+  on Windows, and prints a warning: that check is weaker than Landlock.
+  With `BEAM_COM_VERBOSE=1`, the program prints the ABI version of
+  Landlock.
 - The caches of the custom builds are full on `main`
   (`custom-build-caches.yml`). The first custom build after a change
   took about 30 minutes, because only a run on `main` fills a cache that

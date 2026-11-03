@@ -679,10 +679,19 @@ if [ -d examples ]; then
         BEAM_COM_ALLOW='read=/etc;net'
         export BEAM_COM_ALLOW
         check sandbox_none.com 'Landlock ABI [1-9]' read /etc/hosts
+        # Without Landlock, the check of the paths in the calls of the C
+        # library limits the paths (EACCES). The kernel here has Landlock,
+        # so the link to /etc/hosts shows that the check of the C library
+        # refuses it by its name, where Landlock follows it.
+        rm -f "$dir/sandbox-link"
+        ln -s /etc/hosts "$dir/sandbox-link"
+        BEAM_COM_ALLOW="read=/etc/hosts;net"
         BEAM_COM_NO_LANDLOCK=1
-        export BEAM_COM_NO_LANDLOCK
-        check sandbox_none.com 'warning: the kernel has no Landlock' read /etc/hosts
+        export BEAM_COM_ALLOW BEAM_COM_NO_LANDLOCK
+        check sandbox_none.com 'warning: the kernel has no Landlock@@read: ok@@read: error eacces@@done' \
+            read /etc/hosts read "$dir/sandbox-link"
         unset BEAM_COM_NO_LANDLOCK BEAM_COM_ALLOW
+        rm -f "$dir/sandbox-link"
     fi
     # -N: the file of SSL_CERT_FILE also, for public_key.
     if [ -f "$dir/ca-one.pem" ]; then

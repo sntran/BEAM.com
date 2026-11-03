@@ -226,13 +226,16 @@ wall. Know these limits before you depend on it:
 - Caution: on macOS x86_64, FreeBSD and NetBSD, the flags have no
   effect, and the program prints no warning. A program runs there with all the
   rights of its user.
-- Caution: on Linux, the limits of the paths need Landlock (Linux 5.13
-  or later, with Landlock in the kernel). A kernel can have no Landlock,
-  for example the kernel of Apple `container`. There the paths have no
-  limit, and the program prints the warning "the kernel has no
-  Landlock" at its start. The limits of the system calls and of the
-  network still apply. With `BEAM_COM_VERBOSE=1`, the program prints the
-  ABI version of Landlock.
+- Caution: on Linux, the kernel limits the paths only with Landlock
+  (Linux 5.13 or later, with Landlock in the kernel). A kernel can have
+  no Landlock, for example the kernel of Apple `container`. There
+  beam.com checks the paths in the calls of the C library, as on
+  Windows, and prints the warning "the kernel has no Landlock" at its
+  start. Native code that makes its own system calls, the helper
+  programs and the programs of `--allow-run` do not go through that
+  check, and it does not follow a link. The limits of the system calls
+  and of the network still apply. With `BEAM_COM_VERBOSE=1`, the program
+  prints the ABI version of Landlock.
 - Caution: on Windows, only the calls of the C library get the check of
   the paths and of the sockets. Native code that calls Windows itself
   does not go through it. The check does not follow a link or a

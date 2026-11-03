@@ -751,9 +751,13 @@ static int landlock_abi(int from_env)
     return abi > 0 ? abi : 0;
 }
 
-/* On Linux, a warning when the kernel has no Landlock and the
- * permissions limit the paths. Before the first unveil() and before
- * pledge(). */
+/* On Linux, when the permissions limit the paths and the kernel has no
+ * Landlock: the check of the paths of the sandbox of Windows
+ * (beam_com_fs.c) in the calls of the C library, and a warning. That
+ * check is weaker than Landlock: native code that makes its own system
+ * calls, the helper programs and the programs of --allow-run do not go
+ * through it. Before the first unveil(), which gives each path to the
+ * check, and before pledge(). */
 static void landlock_check(int helper, struct allow *a, int from_env)
 {
     int abi;
@@ -763,12 +767,14 @@ static void landlock_check(int helper, struct allow *a, int from_env)
     if (a->read_all && a->write_all && (a->run_all || !a->programs.n))
         return;
     abi = landlock_abi(from_env);
-    if (!abi)
-        fprintf(stderr, "beam.com: warning: the kernel has no Landlock, so the sandbox "
-                        "does not limit the paths of --allow-read, --allow-write and "
-                        "--allow-run\n");
-    else if (getenv("BEAM_COM_VERBOSE"))
+    if (!abi) {
+        sandbox_fs = 1;
+        fprintf(stderr, "beam.com: warning: the kernel has no Landlock, so beam.com checks "
+                        "the paths only in the calls of the C library: native code and the "
+                        "programs of --allow-run are not limited\n");
+    } else if (getenv("BEAM_COM_VERBOSE")) {
         fprintf(stderr, "beam.com: the sandbox of Linux: Landlock ABI %d\n", abi);
+    }
 }
 
 static void apply_allow(int helper, struct allow *a, int from_env)
@@ -789,10 +795,10 @@ static void apply_allow(int helper, struct allow *a, int from_env)
 
     sandbox_mac = !helper && IsXnu();
     sandbox_from_env = from_env;
-    landlock_check(helper, a, from_env);
     sandbox_fs = !helper && (beam_com_is_windows() ||
                              (from_env && getenv("BEAM_COM_WINDOWS_SANDBOX") &&
                               strcmp(getenv("BEAM_COM_WINDOWS_SANDBOX"), "1") == 0));
+    landlock_check(helper, a, from_env);
 
     /* BEAM.com executes its own file again for the helper programs,
      * and ERTS opens /dev/null at start. */
