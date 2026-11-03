@@ -473,6 +473,8 @@ static int sandbox_fs;
 /* 1 on macOS, for the profile of Seatbelt (beam_com_seatbelt.c), which
  * gets each path of unveil() too. */
 static int sandbox_mac;
+/* 1 when the permissions come from BEAM_COM_ALLOW, not from the file. */
+static int sandbox_from_env;
 
 static void sandbox_fs_allow(const char *path, const char *permissions)
 {
@@ -698,6 +700,11 @@ static void sandbox_windows(int helper, struct allow *a)
 
     if (sandbox_mac) {
         beam_com_seatbelt_net(a->net);
+        /* For the tests: the parts of the profile to leave out, to find
+         * the part that stops a program. Only with BEAM_COM_ALLOW: the
+         * permissions of a file never change. */
+        if (sandbox_from_env && getenv("BEAM_COM_SEATBELT_OMIT"))
+            beam_com_seatbelt_omit(getenv("BEAM_COM_SEATBELT_OMIT"));
         if ((step = beam_com_seatbelt_apply())) {
             fprintf(stderr, "beam.com: the sandbox of macOS: %s\n", step);
             beam_com_exit(127, 1);
@@ -742,6 +749,7 @@ static void apply_allow(int helper, struct allow *a, int from_env)
     int i;
 
     sandbox_mac = !helper && IsXnu();
+    sandbox_from_env = from_env;
     sandbox_fs = !helper && (beam_com_is_windows() ||
                              (from_env && getenv("BEAM_COM_WINDOWS_SANDBOX") &&
                               strcmp(getenv("BEAM_COM_WINDOWS_SANDBOX"), "1") == 0));

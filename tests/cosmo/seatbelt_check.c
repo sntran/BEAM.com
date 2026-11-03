@@ -109,6 +109,16 @@ int main(void)
     beam_com_seatbelt_allow("/tmp/a\nb", "r");
     CHECK(strcmp(beam_com_seatbelt_profile(), "(version 1)\n(deny default)\n") == 0);
 
+    /* The parts that BEAM_COM_SEATBELT_OMIT leaves out. */
+    reset();
+    beam_com_seatbelt_omit("read,exec");
+    p = beam_com_seatbelt_profile();
+    CHECK(!strstr(p, "file-read-data"));
+    CHECK(!strstr(p, "process-exec"));
+    CHECK(has(p, "(deny file-write* (subpath \"/\"))"));
+    CHECK(has(p, "(deny network*"));
+    beam_com_seatbelt_omit("");
+
     /* Too many rules: the profile refuses all. */
     reset();
     for (i = 0; i <= SB_RULES; i++)

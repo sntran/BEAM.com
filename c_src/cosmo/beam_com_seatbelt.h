@@ -10,6 +10,10 @@ void beam_com_seatbelt_allow(const char *path, const char *permissions);
 /* 1: --allow-net (all hosts, or a list of hosts). */
 void beam_com_seatbelt_net(int allowed);
 
+/* Leave parts of the profile out: "read", "write", "exec" and "net" in
+ * parts. Only for tests (BEAM_COM_SEATBELT_OMIT with BEAM_COM_ALLOW). */
+void beam_com_seatbelt_omit(const char *parts);
+
 /* The profile in SBPL of the rules so far. */
 const char *beam_com_seatbelt_profile(void);
 

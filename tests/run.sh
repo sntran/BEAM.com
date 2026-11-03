@@ -637,6 +637,13 @@ if [ -d examples ]; then
     # The refusals of Seatbelt (c_src/cosmo/beam_com_seatbelt.c) go to the
     # log of macOS, not to the program. Print them, for a failed check.
     if [ "$os-$(uname -m)" = darwin-arm64 ] && command -v log >/dev/null; then
+        # Which part of the profile stops a program of --allow-run: the
+        # same check without each part (BEAM_COM_SEATBELT_OMIT).
+        for omit in read write exec net; do
+            echo "--- run true without the part $omit of the profile"
+            BEAM_COM_ALLOW="read=/etc;run=true" BEAM_COM_SEATBELT_OMIT=$omit \
+                $runner "$dir/sandbox_none.com" run true 2>&1 | tail -4
+        done
         echo "--- the log of macOS for the processes of the APE loader, last 5 minutes"
         log show --style compact --last 5m --predicate 'eventMessage CONTAINS[c] "ape-1.10"' 2>&1 |
             tail -80

@@ -163,6 +163,18 @@ static int sb_allow(char *out, size_t *n, size_t size, const char *operation, in
     return ok;
 }
 
+/* The parts of the profile that BEAM_COM_SEATBELT_OMIT leaves out, for a
+ * test that finds the part that stops a program (beam_com_seatbelt_omit()). */
+static int sb_omit_read, sb_omit_write, sb_omit_exec, sb_omit_net;
+
+void beam_com_seatbelt_omit(const char *parts)
+{
+    sb_omit_read = !!strstr(parts, "read");
+    sb_omit_write = !!strstr(parts, "write");
+    sb_omit_exec = !!strstr(parts, "exec");
+    sb_omit_net = !!strstr(parts, "net");
+}
+
 const char *beam_com_seatbelt_profile(void)
 {
     static char out[SB_PROFILE];
@@ -173,31 +185,34 @@ const char *beam_com_seatbelt_profile(void)
      * with less than the rules. */
     if (sb_full)
         return "(version 1)\n(deny default)\n";
-    ok = sb_text(out, &n, sizeof(out),
-                 "(version 1)\n"
-                 "(allow default)\n"
-                 /* The reads. */
-                 "(deny file-read-data (subpath \"/\"))\n"
-                 "(allow file-read-data (subpath \"/System\") (subpath \"/usr/lib\")\n"
-                 "    (subpath \"/private/var/db/dyld\")\n"
-                 "    (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\")\n"
-                 "    (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\")\n"
-                 "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
-         sb_allow(out, &n, sizeof(out), "file-read-data", 0) &&
-         /* The changes. */
-         sb_text(out, &n, sizeof(out),
-                 "(deny file-write* (subpath \"/\"))\n"
-                 "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\")\n"
-                 "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
-         sb_allow(out, &n, sizeof(out), "file-write*", 1) &&
-         /* The programs. */
-         sb_text(out, &n, sizeof(out), "(deny process-exec* (subpath \"/\"))\n") &&
-         sb_allow(out, &n, sizeof(out), "process-exec*", 2) &&
-         /* The network. */
-         (sb_net || sb_text(out, &n, sizeof(out),
-                            "(deny network* (local ip \"*:*\") (remote ip \"*:*\")\n"
-                            "    (remote unix-socket))\n"
-                            "(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n"));
+    ok = sb_text(out, &n, sizeof(out), "(version 1)\n(allow default)\n");
+    /* The reads. */
+    if (ok && !sb_omit_read)
+        ok = sb_text(out, &n, sizeof(out),
+                     "(deny file-read-data (subpath \"/\"))\n"
+                     "(allow file-read-data (subpath \"/System\") (subpath \"/usr/lib\")\n"
+                     "    (subpath \"/private/var/db/dyld\")\n"
+                     "    (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\")\n"
+                     "    (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\")\n"
+                     "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
+             sb_allow(out, &n, sizeof(out), "file-read-data", 0);
+    /* The changes. */
+    if (ok && !sb_omit_write)
+        ok = sb_text(out, &n, sizeof(out),
+                     "(deny file-write* (subpath \"/\"))\n"
+                     "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\")\n"
+                     "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
+             sb_allow(out, &n, sizeof(out), "file-write*", 1);
+    /* The programs. */
+    if (ok && !sb_omit_exec)
+        ok = sb_text(out, &n, sizeof(out), "(deny process-exec* (subpath \"/\"))\n") &&
+             sb_allow(out, &n, sizeof(out), "process-exec*", 2);
+    /* The network. */
+    if (ok && !sb_net && !sb_omit_net)
+        ok = sb_text(out, &n, sizeof(out),
+                     "(deny network* (local ip \"*:*\") (remote ip \"*:*\")\n"
+                     "    (remote unix-socket))\n"
+                     "(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n");
     if (!ok)
         return "(version 1)\n(deny default)\n";
     return out;

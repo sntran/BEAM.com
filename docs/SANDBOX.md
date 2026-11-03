@@ -79,6 +79,9 @@ of Linux:
 - A refused call gives `{error, eperm}`.
 
 `BEAM_COM_VERBOSE=1` prints "the sandbox of macOS (Seatbelt) is on".
+For the tests, `BEAM_COM_SEATBELT_OMIT=read,write,exec,net` with
+`BEAM_COM_ALLOW` leaves these parts out of the profile. A program with
+permissions in its file ignores it.
 
 On macOS x86_64, a Cosmopolitan program cannot load libSystem, so the
 flags have no effect there.
