@@ -659,6 +659,17 @@ if [ -d examples ]; then
     BEAM_COM_ALLOW=read
     check sandbox_net.com "$env" read /etc/hosts read "$dir/beam.com"
     unset BEAM_COM_ALLOW
+    # Landlock on Linux: the ABI with BEAM_COM_VERBOSE, and a warning on a
+    # kernel without it (BEAM_COM_NO_LANDLOCK=1 acts as one, issue 171).
+    if [ "$os" = linux ]; then
+        BEAM_COM_ALLOW='read=/etc;net'
+        export BEAM_COM_ALLOW
+        check sandbox_none.com 'Landlock ABI [1-9]' read /etc/hosts
+        BEAM_COM_NO_LANDLOCK=1
+        export BEAM_COM_NO_LANDLOCK
+        check sandbox_none.com 'warning: the kernel has no Landlock' read /etc/hosts
+        unset BEAM_COM_NO_LANDLOCK BEAM_COM_ALLOW
+    fi
     # -N: the file of SSL_CERT_FILE also, for public_key.
     if [ -f "$dir/ca-one.pem" ]; then
         SSL_CERT_FILE=$dir/ca-one.pem

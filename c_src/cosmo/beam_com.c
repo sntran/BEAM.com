@@ -41,6 +41,7 @@
 #include "libc/dlopen/dlfcn.h"               /* cosmo_dlopen(), cosmo_dltramp() */
 #include "ape/ape.h"                            /* APE_VERSION_STR */
 #include "libc/calls/pledge.h"                  /* __pledge_mode */
+#include "libc/calls/landlock.h"                /* landlock_create_ruleset() */
 
 /* Cosmopolitan internals used for the Windows setup (see below). */
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
@@ -732,6 +733,42 @@ static void sandbox_windows(int helper, struct allow *a)
     }
 }
 
+/* The ABI version of Landlock of the kernel of Linux, or 0 when the
+ * kernel has no Landlock. The unveil() of Cosmopolitan uses Landlock on
+ * Linux. Without it, unveil() does nothing and returns 0, so the paths
+ * have no limit (issue 171). BEAM_COM_NO_LANDLOCK=1 acts as a kernel
+ * without Landlock, for the tests, only with BEAM_COM_ALLOW. */
+static int landlock_abi(int from_env)
+{
+    const char *no = getenv("BEAM_COM_NO_LANDLOCK");
+    int abi;
+
+    if (from_env && no && strcmp(no, "1") == 0)
+        return 0;
+    abi = landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    return abi > 0 ? abi : 0;
+}
+
+/* On Linux, a warning when the kernel has no Landlock and the
+ * permissions limit the paths. Before the first unveil() and before
+ * pledge(). */
+static void landlock_check(int helper, struct allow *a, int from_env)
+{
+    int abi;
+
+    if (helper || !IsLinux())
+        return;
+    if (a->read_all && a->write_all && (a->run_all || !a->programs.n))
+        return;
+    abi = landlock_abi(from_env);
+    if (!abi)
+        fprintf(stderr, "beam.com: warning: the kernel has no Landlock, so the sandbox "
+                        "does not limit the paths of --allow-read, --allow-write and "
+                        "--allow-run\n");
+    else if (getenv("BEAM_COM_VERBOSE"))
+        fprintf(stderr, "beam.com: the sandbox of Linux: Landlock ABI %d\n", abi);
+}
+
 static void apply_allow(int helper, struct allow *a, int from_env)
 {
     static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
@@ -750,6 +787,7 @@ static void apply_allow(int helper, struct allow *a, int from_env)
 
     sandbox_mac = !helper && IsXnu();
     sandbox_from_env = from_env;
+    landlock_check(helper, a, from_env);
     sandbox_fs = !helper && (beam_com_is_windows() ||
                              (from_env && getenv("BEAM_COM_WINDOWS_SANDBOX") &&
                               strcmp(getenv("BEAM_COM_WINDOWS_SANDBOX"), "1") == 0));
