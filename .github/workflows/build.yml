@@ -169,6 +169,8 @@ jobs:
       # of scripts/steps.sh keeps the key.
       - name: The inputs of the WebAssembly runtime
         run: |
+          # Each file that a step reads must be in the key of the step.
+          sh scripts/steps.sh check_keys
           k=$(sh scripts/steps.sh wasm_runtime_key)
           echo "WASM_RUNTIME_INPUTS=$k" >> "$GITHUB_ENV"
 
