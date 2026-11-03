@@ -22,7 +22,10 @@
  *   /dev/dtracehelper and the terminals;
  * - each new program, except the paths of the rules with "x" (this
  *   file, the APE loader, and the programs of --allow-run);
- * - the network, without --allow-net.
+ * - the network, without --allow-net: the sockets of IP, a connection
+ *   to a Unix socket with a path, and the DNS service of macOS. A pair
+ *   of sockets (socketpair()) stays allowed: ERTS gives the requests of
+ *   the ports to erl_child_setup over one, as with pledge() on Linux.
  *
  * Seatbelt takes the last rule that matches, among the rules with a
  * path, so the allowed paths come after the refusal of "/". A path of a
@@ -192,7 +195,9 @@ const char *beam_com_seatbelt_profile(void)
          sb_allow(out, &n, sizeof(out), "process-exec*", 2) &&
          /* The network. */
          (sb_net || sb_text(out, &n, sizeof(out),
-                            "(deny network*)\n"));
+                            "(deny network* (local ip \"*:*\") (remote ip \"*:*\")\n"
+                            "    (remote unix-socket))\n"
+                            "(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n"));
     if (!ok)
         return "(version 1)\n(deny default)\n";
     return out;

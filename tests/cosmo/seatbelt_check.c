@@ -54,7 +54,9 @@ int main(void)
     CHECK(has(p, "(deny file-read-data (subpath \"/\"))"));
     CHECK(has(p, "(deny file-write* (subpath \"/\"))"));
     CHECK(has(p, "(deny process-exec* (subpath \"/\"))"));
-    CHECK(has(p, "(deny network*)"));
+    CHECK(has(p, "(deny network* (local ip \"*:*\") (remote ip \"*:*\")"));
+    CHECK(has(p, "(remote unix-socket))"));
+    CHECK(has(p, "(deny mach-lookup (global-name \"com.apple.dnssd.service\"))"));
     CHECK(!strstr(p, "(allow file-read-data (subpath \"/etc"));
 
     /* The rules: each one after the refusal of its operation. */
@@ -72,7 +74,8 @@ int main(void)
     CHECK(has(p, want));
     CHECK(!strstr(p, "(allow file-write* (subpath \"/etc\"))"));
     CHECK(strstr(p, "(allow process-exec* (subpath \"/") != NULL);
-    CHECK(!strstr(p, "(deny network*)"));
+    CHECK(!strstr(p, "(deny network*"));
+    CHECK(!strstr(p, "dnssd"));
     CHECK(at(p, "(deny file-read-data (subpath \"/\"))") <
           at(p, "(allow file-read-data (subpath \"/etc\"))"));
     CHECK(at(p, "(deny file-write* (subpath \"/\"))") < at(p, want) ||

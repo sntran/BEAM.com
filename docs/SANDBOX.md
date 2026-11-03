@@ -73,7 +73,9 @@ of Linux:
 - A change of a file needs a path of `--allow-write`.
 - A new program needs a path of `--allow-run`. beam.com can always start
   its own file and its APE loader (the helper programs).
-- Without `--allow-net`, each socket of the network is refused.
+- Without `--allow-net`, the profile refuses the sockets of IP, a
+  connection to a Unix socket with a path, and the DNS service of macOS.
+  A pair of sockets (`socketpair()`) stays allowed, as on Linux.
 - A refused call gives `{error, eperm}`.
 
 `BEAM_COM_VERBOSE=1` prints "the sandbox of macOS (Seatbelt) is on".
