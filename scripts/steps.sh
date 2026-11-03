@@ -313,9 +313,69 @@ check_commit() {
     fi
 }
 
+# The APE loader of x86_64 in cosmocc (bin/ape-x86_64.elf) has a code
+# segment that can be executed but not read (PF_X with no PF_R). The
+# kernel of x86_64 reads such pages all the same, but Rosetta for Linux
+# runs on arm64, which has execute-only pages, and the loader faults at
+# once (issue 149, C49 of docs/UPSTREAM.md). Each PT_LOAD segment gets
+# PF_R, as ape-aarch64.elf has. apelink then puts the changed loader in
+# each APE file (cosmocc and step_bundle give it this file).
+fix_ape_loader() {
+    f=$COSMOCC/bin/ape-x86_64.elf
+    [ -f "$f" ] || return 0
+    # An ELF file of x86_64: the magic, and e_machine 62 at offset 18.
+    [ "$(od -An -c -N4 "$f" | tr -d ' ')" = '177ELF' ] || return 0
+    [ "$(od -An -tu1 -j18 -N1 "$f" | tr -d ' ')" = 62 ] || return 0
+    phnum=$(od -An -tu2 -j56 -N2 "$f" | tr -d ' ')
+    i=0
+    while [ "$i" -lt "$phnum" ]; do
+        ph=$((64 + 56 * i))
+        if [ "$(od -An -tu4 -j"$ph" -N4 "$f" | tr -d ' ')" = 1 ]; then
+            flags=$(od -An -tu1 -j$((ph + 4)) -N1 "$f" | tr -d ' ')
+            if [ $((flags & 4)) = 0 ]; then
+                # shellcheck disable=SC2059 # the octal escape is the format.
+                printf "\\$(printf '%03o' $((flags | 4)))" |
+                    dd of="$f" bs=1 seek=$((ph + 4)) conv=notrunc 2>/dev/null
+                log "The APE loader of x86_64: PT_LOAD $i is readable now"
+            fi
+        fi
+        i=$((i + 1))
+    done
+}
+
+# Each PT_LOAD segment of the APE loader of x86_64 in the APE file $1
+# has PF_R. The shell part of the file gives the place of the loader:
+# the first line that unpacks a loader to "$t.$$".
+check_ape_loader() {
+    line=$(head -c 65536 "$1" | grep -a -m1 'gzip -dc >"$t\.\$\$"')
+    skip=$(echo "$line" | sed -n 's/.*skip=\([0-9]*\).*/\1/p')
+    count=$(echo "$line" | sed -n 's/.*count=\([0-9]*\).*/\1/p')
+    if [ -z "$skip" ] || [ -z "$count" ]; then
+        echo "$1: no APE loader in the shell part" >&2
+        exit 1
+    fi
+    dd if="$1" skip="$skip" count="$count" bs=1 2>/dev/null | gzip -dc > "$BUILD/ape-loader.elf"
+    [ "$(od -An -tu1 -j18 -N1 "$BUILD/ape-loader.elf" | tr -d ' ')" = 62 ] || {
+        echo "$1: the first APE loader is not for x86_64" >&2
+        exit 1
+    }
+    phnum=$(od -An -tu2 -j56 -N2 "$BUILD/ape-loader.elf" | tr -d ' ')
+    i=0
+    while [ "$i" -lt "$phnum" ]; do
+        ph=$((64 + 56 * i))
+        if [ "$(od -An -tu4 -j"$ph" -N4 "$BUILD/ape-loader.elf" | tr -d ' ')" = 1 ] &&
+           [ $(($(od -An -tu1 -j$((ph + 4)) -N1 "$BUILD/ape-loader.elf") & 4)) = 0 ]; then
+            echo "$1: PT_LOAD $i of the APE loader of x86_64 cannot be read" >&2
+            exit 1
+        fi
+        i=$((i + 1))
+    done
+}
+
 step_toolchain() {
     if [ -x "$COSMOCC/bin/cosmocc" ]; then
         log "Using cosmocc in $COSMOCC"
+        fix_ape_loader
         return
     fi
     log "Downloading cosmocc $COSMOCC_VERSION"
@@ -325,6 +385,7 @@ step_toolchain() {
     check_sha256 "$BUILD/cosmocc.zip" "$COSMOCC_SHA256" "cosmocc-$COSMOCC_VERSION.zip"
     (cd "$COSMOCC" && unzip -q "$BUILD/cosmocc.zip")
     rm -f "$BUILD/cosmocc.zip"
+    fix_ape_loader
 }
 
 step_openssl() {
@@ -1546,6 +1607,11 @@ step_test() {
     "$BUILD/hashsum.com" abc | tee "$BUILD/test.out"
     grep -q "^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc" \
         "$BUILD/test.out"
+    # The APE loader of x86_64 in the files can be read (fix_ape_loader,
+    # C49 of docs/UPSTREAM.md).
+    log "Checking the APE loader of x86_64 in $OUT and in a program"
+    check_ape_loader "$OUT"
+    check_ape_loader "$BUILD/hashsum.com"
     # The program keeps the code of kernel and stdlib stored (step_bundle).
     unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/kernel-[^/]*/ebin/code.beam$'
     unzip -v "$BUILD/hashsum.com" | grep -q ' Stored .* lib/stdlib-[^/]*/ebin/lists.beam$'

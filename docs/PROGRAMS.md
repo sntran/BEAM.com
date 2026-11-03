@@ -237,7 +237,9 @@ x86_64 ELF files (`x86_64-linux` and `x86_64-freebsd`):
   code. The code, its addresses and the other segments do not change.
 
 A file of `--assimilate` does not have this change. Under Rosetta, use a
-file of `--target x86_64-linux`.
+file of `--target x86_64-linux`, or the APE file itself: its APE loader
+can be read under Rosetta too (C49 of docs/UPSTREAM.md). A loader that
+an older APE file wrote to `~/.ape-1.10` stays there, so remove it once.
 
 The file runs only on its target. Apple Silicon has no native form:
 there, APE files run with the APE loader. On Windows, the APE file is

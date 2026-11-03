@@ -5,6 +5,11 @@ notes of its release.
 
 ## Unreleased
 
+- The APE file starts under Rosetta of Apple (a Linux container of
+  `container --arch amd64`). The APE loader of x86_64 crashed there
+  before the program started, because its code segment could be
+  executed but not read (C49 in docs/UPSTREAM.md). The build now marks
+  the segments of the loader readable. Remove an old `~/.ape-1.10` once.
 - The sandbox on Windows: `--allow-read` and `--allow-write` now limit
   the paths of the calls of the C library (`{error, eacces}` for
   another path), without `--allow-net` a socket of IPv4 or IPv6 gives
