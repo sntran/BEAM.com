@@ -1,0 +1,232 @@
+/*
+ * --- Sandbox: Seatbelt on macOS -----------------------------------------
+ *
+ * macOS has no pledge() and no unveil(). Its sandbox is Seatbelt: a
+ * profile in SBPL that sandbox_init() of libSystem applies to the
+ * process and to each process that it starts later. apply_allow() of
+ * beam_com.c gives each path of unveil() here (beam_com_seatbelt_allow()),
+ * so the rules are the rules of Linux:
+ *
+ * - "r": the path can be read (file-read-data).
+ * - "w" or "c": the path can be read and changed (file-write*).
+ * - "x": the path can be read and executed (process-exec).
+ *
+ * The profile allows each other operation (allow default), and then it
+ * refuses:
+ *
+ * - the read of the data of each file, except the paths of the rules and
+ *   the files of the system that dyld needs to start a process (/System,
+ *   /usr/lib). The metadata (stat()) needs no permission, as with
+ *   Landlock;
+ * - each change of a file, except the paths of the rules, /dev/null,
+ *   /dev/dtracehelper and the terminals;
+ * - each new program, except the paths of the rules with "x" (this
+ *   file, the APE loader, and the programs of --allow-run);
+ * - the network, without --allow-net.
+ *
+ * Seatbelt takes the last rule that matches, among the rules with a
+ * path, so the allowed paths come after the refusal of "/". A path of a
+ * rule is its real path, because Seatbelt compares real paths (/tmp is
+ * /private/tmp). A refused call gives EPERM.
+ *
+ * sandbox_init() is in libSystem, which only the APE loader of macOS
+ * arm64 gives to a Cosmopolitan program (cosmo_dlopen()). On macOS
+ * x86_64, there is no sandbox: the flags have no effect there.
+ *
+ * A helper program (erl_child_setup) keeps the profile of its parent,
+ * so it does not apply it again.
+ */
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef BEAM_COM_SEATBELT_TEST
+#include <cosmo.h>
+#include "libc/dce.h"              /* IsXnuSilicon() */
+#include "libc/dlopen/dlfcn.h"     /* cosmo_dlopen() */
+#endif
+#include "beam_com_seatbelt.h"
+
+#define SB_RULES 512
+#define SB_PROFILE (256 * 1024)
+
+struct sb_rule {
+    char *path; /* a real path */
+    int read, write, exec;
+};
+
+static struct sb_rule sb_rules[SB_RULES];
+static int sb_nrules;
+static int sb_net;
+static int sb_full; /* a rule was left out: the profile refuses all */
+
+/* The real path of path, or of its directory and its name when it does
+ * not exist (a file of --allow-write that the program makes later).
+ * NULL when the directory does not exist either. */
+static char *sb_real(const char *path)
+{
+    char buf[PATH_MAX], dir[PATH_MAX], *slash, *real;
+
+    if ((real = realpath(path, NULL)))
+        return real;
+    if (strlen(path) >= sizeof(dir))
+        return NULL;
+    strcpy(dir, path);
+    if (!(slash = strrchr(dir, '/')) || !slash[1])
+        return NULL;
+    *slash = '\0';
+    if (!realpath(*dir ? dir : "/", buf) ||
+        strlen(buf) + strlen(slash + 1) + 2 > sizeof(buf))
+        return NULL;
+    if (strcmp(buf, "/") != 0)
+        strcat(buf, "/");
+    strcat(buf, slash + 1);
+    return strdup(buf);
+}
+
+void beam_com_seatbelt_allow(const char *path, const char *permissions)
+{
+    struct sb_rule *r;
+    char *real;
+
+    if (!path || !*path || !(real = sb_real(path)))
+        return;
+    if (sb_nrules >= SB_RULES) {
+        free(real);
+        sb_full = 1;
+        return;
+    }
+    r = &sb_rules[sb_nrules++];
+    r->path = real;
+    r->read = !!strpbrk(permissions, "rwcx");
+    r->write = !!strpbrk(permissions, "wc");
+    r->exec = !!strchr(permissions, 'x');
+}
+
+void beam_com_seatbelt_net(int allowed)
+{
+    sb_net = allowed;
+}
+
+/* A string of SBPL: "PATH", with \ and " escaped. 0 when it does not
+ * fit, or when the path has a control character. */
+static int sb_string(char *out, size_t *n, size_t size, const char *s)
+{
+    if (*n + 2 >= size)
+        return 0;
+    out[(*n)++] = '"';
+    for (; *s; s++) {
+        if ((unsigned char)*s < 0x20 || *s == 0x7f)
+            return 0;
+        if (*n + 4 >= size)
+            return 0;
+        if (*s == '"' || *s == '\\')
+            out[(*n)++] = '\\';
+        out[(*n)++] = *s;
+    }
+    out[(*n)++] = '"';
+    out[*n] = '\0';
+    return 1;
+}
+
+static int sb_text(char *out, size_t *n, size_t size, const char *s)
+{
+    size_t len = strlen(s);
+
+    if (*n + len + 1 >= size)
+        return 0;
+    memcpy(out + *n, s, len + 1);
+    *n += len;
+    return 1;
+}
+
+/* One rule: "(allow OPERATION (subpath "PATH"))" for each rule with the
+ * permission. A path of "/" is (subpath "/"). */
+static int sb_allow(char *out, size_t *n, size_t size, const char *operation, int which)
+{
+    int i, ok = 1;
+
+    for (i = 0; i < sb_nrules && ok; i++) {
+        const struct sb_rule *r = &sb_rules[i];
+        int want = which == 0 ? r->read : which == 1 ? r->write : r->exec;
+        if (!want)
+            continue;
+        ok = sb_text(out, n, size, "(allow ") && sb_text(out, n, size, operation) &&
+             sb_text(out, n, size, " (subpath ") && sb_string(out, n, size, r->path) &&
+             sb_text(out, n, size, "))\n");
+    }
+    return ok;
+}
+
+const char *beam_com_seatbelt_profile(void)
+{
+    static char out[SB_PROFILE];
+    size_t n = 0;
+    int ok;
+
+    /* A rule that does not fit refuses each operation: never a profile
+     * with less than the rules. */
+    if (sb_full)
+        return "(version 1)\n(deny default)\n";
+    ok = sb_text(out, &n, sizeof(out),
+                 "(version 1)\n"
+                 "(allow default)\n"
+                 /* The reads. */
+                 "(deny file-read-data (subpath \"/\"))\n"
+                 "(allow file-read-data (subpath \"/System\") (subpath \"/usr/lib\")\n"
+                 "    (subpath \"/private/var/db/dyld\")\n"
+                 "    (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\")\n"
+                 "    (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\")\n"
+                 "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
+         sb_allow(out, &n, sizeof(out), "file-read-data", 0) &&
+         /* The changes. */
+         sb_text(out, &n, sizeof(out),
+                 "(deny file-write* (subpath \"/\"))\n"
+                 "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\")\n"
+                 "    (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n") &&
+         sb_allow(out, &n, sizeof(out), "file-write*", 1) &&
+         /* The programs. */
+         sb_text(out, &n, sizeof(out), "(deny process-exec* (subpath \"/\"))\n") &&
+         sb_allow(out, &n, sizeof(out), "process-exec*", 2) &&
+         /* The network. */
+         (sb_net || sb_text(out, &n, sizeof(out),
+                            "(deny network*)\n"));
+    if (!ok)
+        return "(version 1)\n(deny default)\n";
+    return out;
+}
+
+#ifndef BEAM_COM_SEATBELT_TEST
+const char *beam_com_seatbelt_apply(void)
+{
+    int (*init)(const char *, uint64_t, char **);
+    void (*free_error)(char *);
+    int (*executable_path)(char *, unsigned *);
+    void *lib, *f, *g, *h;
+    char *error = NULL, loader[PATH_MAX];
+    unsigned size = sizeof(loader);
+    static char reason[512];
+
+    if (!IsXnuSilicon())
+        return NULL;
+    /* The APE loader that runs this process: the helper programs
+     * (beam_com_spawn_helper()) start with it. */
+    if ((lib = cosmo_dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY)) &&
+        (h = cosmo_dlsym(lib, "_NSGetExecutablePath")) && (executable_path = cosmo_dltramp(h)) &&
+        executable_path(loader, &size) == 0)
+        beam_com_seatbelt_allow(loader, "rx");
+    if (!lib || !(f = cosmo_dlsym(lib, "sandbox_init")) ||
+        !(f = cosmo_dlsym(lib, "sandbox_init")) || !(g = cosmo_dlsym(lib, "sandbox_free_error")) ||
+        !(init = cosmo_dltramp(f)) || !(free_error = cosmo_dltramp(g)))
+        return "sandbox_init() of libSystem is not there";
+    if (init(beam_com_seatbelt_profile(), 0, &error) != 0) {
+        snprintf(reason, sizeof(reason), "sandbox_init(): %s", error ? error : "error");
+        if (error)
+            free_error(error);
+        return reason;
+    }
+    return NULL;
+}
+#endif

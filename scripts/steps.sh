@@ -379,7 +379,8 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
        "$ROOT"/c_src/cosmo/beam_com_libc.h "$ROOT"/c_src/cosmo/beam_com_net.c \
        "$ROOT"/c_src/cosmo/beam_com_net.h "$ROOT"/c_src/cosmo/beam_com_fs.c \
-       "$ROOT"/c_src/cosmo/beam_com_fs.h "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_fs.h "$ROOT"/c_src/cosmo/beam_com_seatbelt.c \
+       "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -1223,6 +1224,7 @@ step_multicall() {
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
     objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_net.o $objdir/beam_com_fs.o"
+    objs="$objs $objdir/beam_com_seatbelt.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_pledge "$objdir/beam_com_pledge.o"
     objs="$objs $objdir/beam_com_pledge.o"
@@ -1586,6 +1588,11 @@ step_test() {
         cosmocc -O2 -Wno-unused-function -o "$BUILD/fs_check.com" "$ROOT/tests/cosmo/fs_check.c"
         "$BUILD/fs_check.com" | tee "$BUILD/test.out"
         grep -q '^fs_check: ok$' "$BUILD/test.out"
+        # The profile of the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
+        log "Checking the profile of the sandbox of macOS"
+        cosmocc -O2 -o "$BUILD/seatbelt_check.com" "$ROOT/tests/cosmo/seatbelt_check.c"
+        "$BUILD/seatbelt_check.com" | tee "$BUILD/test.out"
+        grep -q '^seatbelt_check: ok$' "$BUILD/test.out"
     fi
 }
 
