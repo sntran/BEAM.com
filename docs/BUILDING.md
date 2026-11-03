@@ -249,15 +249,18 @@ when the build did not run. The file stays in the prerelease
   SHA-256 of the choices and of the source of the build (`source()` of
   `custom_build.py`). A commit that changes only the documents, the
   tests, the workflows or the envelopes of the FIFO keeps the key.
-- A new build takes these parts from the cache of GitHub Actions when
-  their inputs did not change:
+- A new build takes most of its work from the store of parts (see
+  [The store of parts](#the-store-of-parts)): the built OTP, Elixir and
+  each NIF. With each part in the store, a build takes a few minutes.
+- For a part that is not in the store, a build takes these parts of it
+  from the cache of GitHub Actions when their inputs did not change:
   - The WebAssembly runtime (about 3 minutes). Its key is the SHA-256 of
     its inputs (`scripts/steps.sh wasm_runtime_key`): only the functions
     of `scripts/steps.sh` that its build runs, so a change of another
     step keeps it. It has the key of `build.yml`, so the builds of
     `main` fill it.
-  - The libraries of libvips (about 10 minutes), and libvips for each
-    set of parts (about 1.5 minutes).
+  - The libraries of libvips (about 10 minutes).
+  - libpdfium.a for each CPU (about 10 minutes each).
   - The objects of ccache (`CCACHE=1`) for each OTP version: about 4 of
     the 7 minutes of the build of OTP are C and C++ compiles. A new OTP
     version starts from the cache of an earlier version.
@@ -265,10 +268,10 @@ when the build did not run. The file stays in the prerelease
   - Only a run on `main` fills a cache that a custom build can read.
     [`custom-build-caches.yml`](../.github/workflows/custom-build-caches.yml)
     builds a custom build with all the parts of `vix`, `ex_pdfium` and
-    `rusty_csv`. It fills these caches and libpdfium.a for the default
-    OTP version. It runs after a merge that changes their inputs, and
-    two times each week, because GitHub removes a cache that no run
-    reads for 7 days. When each cache is there, it builds nothing.
+    `rusty_csv`. It fills the store and these caches for the default
+    versions. It runs after a merge that changes their inputs, and two
+    times each week, because GitHub removes a cache that no run reads
+    for 7 days.
   - A pull request only reads the caches, so its copies do not push out
     the caches of `main` from the 10 GB of the repository. The log of
     `custom-build-caches.yml` shows the use of the 10 GB and the largest
@@ -279,6 +282,47 @@ when the build did not run. The file stays in the prerelease
   the FIFO accepts an answer only with it. The variable `BEAM_FIFO_URL`
   changes the address of the FIFO. The token of the workflow puts the
   files in the release, so no other key is necessary.
+
+## The store of parts
+
+A part is the output of some steps of `scripts/steps.sh`, which a build
+can take in place of the work: `NAME-KEY.tar.xz`. KEY is the SHA-256 of
+all the inputs of the part, so the same inputs give the same name, and a
+part never goes stale. `PARTS_URL=... make` uses a store, and
+`sh scripts/steps.sh part_keys` prints the key of each part of a build
+(after the steps `otp` and `configure`).
+
+| Part | The output of | Its key has |
+|---|---|---|
+| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the functions of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
+| `elixir` | the step `elixir` | the version of Elixir, `patches/elixir`, the function of the step, and the key of `otp` |
+| `nif-PACKAGE` | one NIF of the step `nifs`: `LIB.a` and `.aarch64/LIB.a` | the recipe of the package, the NIF API (the headers of the OTP tree), cosmocc, the functions that build it, and its files (`scripts/libvips.sh`, `patches/libvips`, `c_src/vips` and `native/vips_resvg` for vix with its parts; `scripts/pdfium.sh` and `patches/pdfium` for ex_pdfium; `c_src/rust` and `scripts/rust_link.sh` for a NIF of Rust) |
+
+The other files of `c_src/cosmo` are not in the key of `otp`: the step
+`multicall` compiles them again. A tree of the store gets one time for
+all its files, so that a file that a later step writes is newer, and
+make builds only what depends on it.
+
+The settings:
+
+- `PARTS_URL`: the address of the store, with no `/` at the end. A
+  missing part is not an error: the step builds it.
+- `PARTS_PUT`: an absolute directory. A step that builds a part packs it
+  there.
+
+In CI, the store is the prerelease `parts` of the repository, and
+`PARTS_URL` is the address of its files.
+[`custom-build.yml`](../.github/workflows/custom-build.yml) and
+`custom-build-caches.yml` build with `PARTS_PUT`, and after the checks
+of the file, a step with the token puts the new parts in the release.
+The build itself has no token.
+
+- Caution: a part is code that goes into the files of beam.com. Only the
+  workflows of `main` put parts, never a pull request.
+- Caution: a key that leaves out an input gives a part that does not
+  match its inputs. A function that a step of a part starts to call
+  must be in the list of its key (`nif_part_key`, `otp_part_key` and
+  `elixir_part_key` in `scripts/steps.sh`).
 
 ## The runtime directory (internal)
 

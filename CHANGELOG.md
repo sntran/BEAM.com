@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- A store of prebuilt parts for the custom builds (`docs/BUILDING.md`,
+  "The store of parts"): the built OTP, Elixir and each NIF, as files
+  of the prerelease `parts` whose names have the SHA-256 of their
+  inputs. A custom build takes each part from it, and puts each new
+  part there. A part does not expire, as a cache does. Here, a build
+  of `beam.com` with each part in a local store took 39 s.
+- The license texts of PDFium come from the part of ex_pdfium
+  (`hexnifs/static/licenses-pdfium`).
 - The caches of the custom builds are full on `main`
   (`custom-build-caches.yml`). The first custom build after a change
   took about 30 minutes, because only a run on `main` fills a cache that

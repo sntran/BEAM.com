@@ -255,16 +255,6 @@ jobs:
           path: build/libvips-deps
           key: libvips-deps-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.LIBVIPS_DEPS_KEY }}
 
-      # The static libvips of the NIF of vix (about 1.5 minutes on the
-      # libraries), with the key of vix.yml and the parts of VIX_PARTS.
-      # c_src/vips/ holds a loader of libvips, so it is in the key.
-      - name: Cache libvips
-        if: env.REUSE != '1' && env.REFUSED == '' && contains(env.EXTRA_NIFS, 'vix')
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: build/libvips
-          key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**', 'c_src/vips/**') }}-parts-${{ env.VIX_PARTS }}
-
       # scripts/libvips.sh builds libvips for the NIF of vix with meson
       # (the version of the test of the recipe), ninja, and nasm (the SIMD
       # code of libjpeg-turbo).
@@ -309,12 +299,20 @@ jobs:
           python3 -m pip install --user meson==1.12.1
           sudo apt-get install -y ninja-build nasm
 
+      # The store of prebuilt parts (docs/BUILDING.md, "The store of
+      # parts"): the built OTP, Elixir and each NIF, in the files of the
+      # prerelease "parts". The build takes each part of its choices from
+      # it, and packs each part that it builds in PARTS_PUT. The step "Put
+      # the new parts in the store" puts them there: the build has no
+      # token.
       - name: Build
         if: env.REUSE != '1' && env.REFUSED == ''
         env:
           CC: cosmocc
           AR: cosmoar
           CCACHE: "1"
+          PARTS_URL: https://github.com/${{ github.repository }}/releases/download/parts
+          PARTS_PUT: ${{ runner.temp }}/parts-new
         run: |
           export OUT="$GITHUB_WORKSPACE/build/$OUT_NAME"
           build/cosmocc/bin/make
@@ -356,6 +354,27 @@ jobs:
 
       # The FIFO beam.com: the file goes to the prerelease custom-builds,
       # where the FIFO reads it. The cleanup deletes it after 30 days.
+      # After the checks: a part of a build that failed does not go into
+      # the store. A part that is there already (a build at the same
+      # time) stays: the same name has the same inputs.
+      - name: Put the new parts in the store
+        if: env.REUSE != '1' && env.REFUSED == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW: ${{ runner.temp }}/parts-new
+        run: |
+          set -- "$NEW"/*.tar.xz
+          [ -f "$1" ] || { echo "No new part"; exit 0; }
+          gh release view parts --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create parts --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "Prebuilt parts" --notes "The parts of the custom builds: docs/BUILDING.md, \"The store of parts\"." ||
+            gh release view parts --repo "$GITHUB_REPOSITORY" > /dev/null
+          for f in "$@"; do
+            ls -l "$f"
+            gh release upload parts "$f" --repo "$GITHUB_REPOSITORY" ||
+              echo "The store did not take $(basename "$f") (it can be there already)"
+          done
+
       - name: Put the file in the release
         if: github.event_name == 'workflow_dispatch' && env.REUSE != '1' && env.REFUSED == ''
         env:
