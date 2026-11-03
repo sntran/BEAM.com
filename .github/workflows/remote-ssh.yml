@@ -1,0 +1,88 @@
+# SSH to a runner of CI, for tests and debugging on a system that a person
+# does not have, for example macOS or Windows. Erlang :ssh is the server
+# (scripts/remote_ssh.erl), behind a WebSocket and a quick tunnel of
+# Cloudflare. The job puts the URL and the fingerprint of the host key on
+# the branch BRANCH, and deletes the branch at its end. Then:
+#
+#   scripts/remote_ssh_client.sh BRANCH KEY exec 'uname -a'
+#
+# Only the private key of the public key of the input can log in. The
+# job gets no secret. Its token can write to the repository (for the
+# branch) and read the artifacts of other runs (gh run download), and the
+# commands get it as GH_TOKEN.
+name: Remote SSH
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: The runner
+        type: choice
+        options: [macos-latest, macos-15-intel, ubuntu-26.04, ubuntu-24.04-arm, windows-latest]
+        default: macos-latest
+      key:
+        description: The public key that can log in (one line, ssh-ed25519 ...)
+        type: string
+        required: true
+      branch:
+        description: The branch for the URL of the server (debug/...)
+        type: string
+        default: debug/ssh
+      minutes:
+        description: How long the server runs (120 or fewer)
+        type: number
+        default: 60
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: remote-ssh-${{ inputs.branch }}
+  cancel-in-progress: true
+
+jobs:
+  ssh:
+    name: SSH on ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 125
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check the inputs
+        shell: bash
+        env:
+          BRANCH: ${{ inputs.branch }}
+          KEY: ${{ inputs.key }}
+        run: |
+          case $BRANCH in
+            debug/*) ;;
+            *) echo "The branch must start with debug/: $BRANCH" >&2; exit 1 ;;
+          esac
+          case $KEY in
+            "ssh-ed25519 "*) ;;
+            *) echo "The key must be one line ssh-ed25519 ..." >&2; exit 1 ;;
+          esac
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/authorized_keys"
+      # beam.com cannot start the programs of a port on Windows, so the
+      # server there runs on a stock OTP.
+      - name: Install Erlang/OTP
+        if: runner.os == 'Windows'
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          otp-version: "29"
+      - name: Download beam.com
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download edge -p beam.com -D "$RUNNER_TEMP" -R "$GITHUB_REPOSITORY"
+      - name: Run the SSH server
+        shell: bash
+        env:
+          BRANCH: ${{ inputs.branch }}
+          MINUTES: ${{ inputs.minutes }}
+          KEYS: ${{ runner.temp }}/authorized_keys
+          ERL_MODE: ${{ runner.os == 'Windows' && 'erl' || 'beam.com' }}
+          BEAM_COM: ${{ runner.temp }}/beam.com
+          REMOTE_SSH_SHELL: ${{ runner.os == 'Windows' && 'C:\Program Files\Git\bin\bash.exe' || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/remote_ssh_runner.sh
