@@ -1,8 +1,10 @@
 # A shell on a runner of CI, for tests and debugging on a system that a
-# person does not have, for example macOS (scripts/remote_shell.sh). Start
-# it by hand. Then push cmd.sh to the branch of the input "branch"; the
-# runner runs it and pushes its output to out.txt on the same branch.
-# Push the file "stop" to the branch to end the job sooner.
+# person does not have, for example macOS or Windows
+# (scripts/remote_shell.sh). Start it by hand, then send each command with
+# scripts/remote_shell_send.sh BRANCH FILE, which prints the output. The
+# branch BRANCH and BRANCH-out each hold one commit with no parent, and
+# the job deletes them at its end. A command "stop" ends the job sooner.
+# Two runs with two branches can be open at the same time.
 #
 # The job gets no secret. Its token can write to the repository, only to
 # push the output: give the shell no command that a person did not write.
