@@ -161,10 +161,13 @@ defmodule BeamCom.WasmDiffTest do
 
   # The limits of the growth: a binary of 16 MB, or a heap of about 8 MB
   # of heap_shrink, can leave blocks of free memory that the next one does
-  # not fit in. In CI, heap_shrink grew by 0, 8 or 16 MB in its 30 runs,
-  # and then stayed flat. Without the fix, it grew by about 15 MB in each
-  # run (453 MB).
-  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 32 * 1024 * 1024}
+  # not fit in. In CI, heap_shrink grew by 0 to 32 MB in its 30 runs, in
+  # steps of 8 MB, and then stayed flat. Without the fix, it grew by about
+  # 15 MB in each run (453 MB). So for heap_shrink, the check of a leak is
+  # the growth in its last 10 runs (@mem_tail_limits): about 150 MB with a
+  # leak, and 24 MB or less for three steps of 8 MB.
+  @mem_limits %{"big_binaries" => 24 * 1024 * 1024, "heap_shrink" => 48 * 1024 * 1024}
+  @mem_tail_limits %{"heap_shrink" => 24 * 1024 * 1024}
   @mem_cases ~w(renders big_binaries heap_shrink binary_growth parallel)
 
   defp mem_check(ctx, name, job) do
@@ -192,6 +195,16 @@ defmodule BeamCom.WasmDiffTest do
       growth = String.to_integer(last) - String.to_integer(first)
       limit = Map.get(@mem_limits, c, 8 * 1024 * 1024)
       assert growth < limit, "#{c}: the memory of the VM grew #{div(growth, 1024)} KB: #{out}"
+
+      with %{^c => tail_limit} <- @mem_tail_limits do
+        [_, from, to] =
+          Regex.run(~r/^mem_check: #{c} tail (\d+) (\d+)$/m, out) || flunk("no #{c} tail: #{out}")
+
+        tail = String.to_integer(to) - String.to_integer(from)
+
+        assert tail < tail_limit,
+               "#{c}: the memory of the VM grew #{div(tail, 1024)} KB in the last 10 runs: #{out}"
+      end
     end
 
     assert out =~ ~r/^mem_check: keeper ok$/m
