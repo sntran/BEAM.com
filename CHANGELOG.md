@@ -14,6 +14,13 @@ notes of its release.
   two times each week, so GitHub does not remove them.
 - The cache key of libvips in `custom-build.yml` has `c_src/vips/`, as
   in `vix.yml`. Before, a change of the SVG loader kept an old libvips.
+- A pull request only reads the caches of GitHub Actions. Before, each
+  pull request saved its own copy of a cache that it changed, and these
+  copies pushed out the caches of `main` (GitHub keeps 10 GB of caches
+  for each repository). A custom build then started cold: a build on
+  2026-11-03 built libpdfium.a again (21 minutes). Only the WebAssembly
+  runtime of `build.yml` still saves in a pull request, because the job
+  `unit` of the same run reads it.
 - The APE file starts under Rosetta of Apple (a Linux container of
   `container --arch amd64`). The APE loader of x86_64 crashed there
   before the program started, because its code segment could be

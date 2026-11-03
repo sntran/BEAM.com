@@ -240,7 +240,8 @@ jobs:
           fi
 
       - name: Cache deps and _build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_deps_and_build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ${{ inputs.path }}/deps
@@ -302,6 +303,18 @@ jobs:
         with:
           path: ${{ runner.temp }}/site
           name: ${{ inputs.name }}
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of deps and _build
+        if: github.event_name != 'pull_request' && steps.cache_deps_and_build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ inputs.path }}/deps
+            ${{ inputs.path }}/_build
+          key: ${{ steps.cache_deps_and_build.outputs.cache-primary-key }}
 
   deploy:
     name: Publish the site

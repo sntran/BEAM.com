@@ -51,7 +51,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -69,14 +70,16 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Cache the checkout of PDFium
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_the_checkout_of_pdfium
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium-src
           key: pdfium-src-7881-${{ matrix.cpu }}-small-v1
 
       # The key of custom-build.yml.
       - name: Cache libpdfium.a
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_libpdfium_a
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/pdfium/${{ matrix.cpu }}
           key: libpdfium-${{ matrix.cpu }}-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/pdfium.sh', 'patches/pdfium/**') }}
@@ -102,6 +105,30 @@ jobs:
             build/pdfium/${{ matrix.cpu }}
           if-no-files-found: warn
 
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of the checkout of PDFium
+        if: github.event_name != 'pull_request' && steps.cache_the_checkout_of_pdfium.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/pdfium-src
+          key: ${{ steps.cache_the_checkout_of_pdfium.outputs.cache-primary-key }}
+
+      - name: Save the cache of libpdfium.a
+        if: github.event_name != 'pull_request' && steps.cache_libpdfium_a.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/pdfium/${{ matrix.cpu }}
+          key: ${{ steps.cache_libpdfium_a.outputs.cache-primary-key }}
+
   nif:
     name: Build with ex_pdfium
     needs: build
@@ -111,7 +138,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -120,7 +148,8 @@ jobs:
         run: make toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
@@ -167,6 +196,23 @@ jobs:
           name: ex_pdfium_check
           path: build/ex_pdfium_check.com
           if-no-files-found: error
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL
+        if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: ${{ steps.cache_openssl.outputs.cache-primary-key }}
 
   nif-run:
     name: ex_pdfium on ${{ matrix.name }}

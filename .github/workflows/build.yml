@@ -119,7 +119,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           # "checked": the cache of a download with its SHA-256 checked.
@@ -131,7 +132,8 @@ jobs:
         run: make toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
@@ -149,13 +151,15 @@ jobs:
       # The WebAssembly runtime of --target wasm32 (the step wasm_runtime):
       # Emscripten, and OpenSSL built with it.
       - name: Cache emsdk
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_emsdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/emsdk
           key: emsdk-${{ env.EMSDK_VERSION }}-checked
 
       - name: Cache OpenSSL for WebAssembly
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl_for_webassembly
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
@@ -171,7 +175,8 @@ jobs:
       # The WebAssembly runtime (the step wasm_runtime, about 4 minutes).
       # The step keeps it only when the SHA-256 of its inputs is the one
       # in build/wasm-runtime/inputs, else it builds it again. The job unit
-      # restores it with the same key.
+      # restores it with the same key. So this cache also saves in a pull
+      # request: the job unit of the same run needs it.
       - name: Cache the WebAssembly runtime
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -255,6 +260,37 @@ jobs:
             build/strace.txt
           if-no-files-found: ignore
 
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL
+        if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: ${{ steps.cache_openssl.outputs.cache-primary-key }}
+
+      - name: Save the cache of emsdk
+        if: github.event_name != 'pull_request' && steps.cache_emsdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/emsdk
+          key: ${{ steps.cache_emsdk.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL for WebAssembly
+        if: github.event_name != 'pull_request' && steps.cache_openssl_for_webassembly.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/wasm/openssl
+          key: ${{ steps.cache_openssl_for_webassembly.outputs.cache-primary-key }}
+
   # The unit tests (the step unit) on the beam.com of the job build, in
   # their own job: the jobs that need the build do not wait for them.
   unit:
@@ -273,7 +309,8 @@ jobs:
 
       # assimilate of cosmocc, for the tests of tests/check_format.sh.
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -325,6 +362,16 @@ jobs:
         env:
           BEAM_COM_NETNS: "1"
         run: scripts/steps.sh unit
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
 
   # The models of the protocols (specs/ and lib/beam_com/protocol) with
   # TLC: mix beam_com.tlc. It needs no build of beam.com.

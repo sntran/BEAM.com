@@ -95,7 +95,8 @@ jobs:
           persist-credentials: false
 
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -104,7 +105,8 @@ jobs:
         run: make toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
@@ -118,13 +120,15 @@ jobs:
           sudo sh -c "echo ':APE-jart:M::jartsr::/usr/bin/ape:' > /proc/sys/fs/binfmt_misc/register"
 
       - name: Cache emsdk
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_emsdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/emsdk
           key: emsdk-${{ env.EMSDK_VERSION }}-checked
 
       - name: Cache OpenSSL for WebAssembly
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl_for_webassembly
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm/openssl
           key: wasm-openssl-${{ env.OPENSSL_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}
@@ -139,7 +143,8 @@ jobs:
 
       # The key of build.yml and custom-build.yml.
       - name: Cache the WebAssembly runtime
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_the_webassembly_runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/wasm-runtime
           key: wasm-runtime-${{ env.OTP_VERSION }}-emsdk-${{ env.EMSDK_VERSION }}-${{ env.WASM_RUNTIME_INPUTS }}
@@ -152,7 +157,8 @@ jobs:
         run: sudo apt-get install -y ccache
 
       - name: Cache ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/ccache
           key: ccache-cosmocc-${{ env.COSMOCC_VERSION }}-otp-${{ env.OTP_VERSION }}-${{ hashFiles('patches/otp/**', 'c_src/cosmo/**') }}
@@ -187,3 +193,48 @@ jobs:
           unzip -p build/beam.com licenses/NOTICE | grep -q "^Elixir $ELIXIR_VERSION ("
           build/beam.com elixir -e 'IO.puts(System.version())' | tee elixir.txt
           grep -qx "$ELIXIR_VERSION" elixir.txt
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL
+        if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: ${{ steps.cache_openssl.outputs.cache-primary-key }}
+
+      - name: Save the cache of emsdk
+        if: github.event_name != 'pull_request' && steps.cache_emsdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/emsdk
+          key: ${{ steps.cache_emsdk.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL for WebAssembly
+        if: github.event_name != 'pull_request' && steps.cache_openssl_for_webassembly.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/wasm/openssl
+          key: ${{ steps.cache_openssl_for_webassembly.outputs.cache-primary-key }}
+
+      - name: Save the cache of the WebAssembly runtime
+        if: github.event_name != 'pull_request' && steps.cache_the_webassembly_runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/wasm-runtime
+          key: ${{ steps.cache_the_webassembly_runtime.outputs.cache-primary-key }}
+
+      - name: Save the cache of ccache
+        if: github.event_name != 'pull_request' && steps.cache_ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/ccache
+          key: ${{ steps.cache_ccache.outputs.cache-primary-key }}

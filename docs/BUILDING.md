@@ -269,6 +269,10 @@ when the build did not run. The file stays in the prerelease
     OTP version. It runs after a merge that changes their inputs, and
     two times each week, because GitHub removes a cache that no run
     reads for 7 days. When each cache is there, it builds nothing.
+  - A pull request only reads the caches, so its copies do not push out
+    the caches of `main` from the 10 GB of the repository. The log of
+    `custom-build-caches.yml` shows the use of the 10 GB and the largest
+    caches.
 - GitHub never sees the email address: the FIFO sends it in a box of
   `secretbox`, which only the FIFO opens.
 - The workflow needs the secret `BEAM_FIFO_SECRET` of the repository:

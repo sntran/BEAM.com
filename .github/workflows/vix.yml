@@ -38,7 +38,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -47,7 +48,8 @@ jobs:
         run: make toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
@@ -61,7 +63,8 @@ jobs:
           echo "LIBVIPS_DEPS_KEY=$k" >> "$GITHUB_ENV"
 
       - name: Cache the libraries of libvips
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_the_libraries_of_libvips
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips-deps
           key: libvips-deps-cosmocc-${{ env.COSMOCC_VERSION }}-${{ env.LIBVIPS_DEPS_KEY }}
@@ -69,7 +72,8 @@ jobs:
       # The static libvips of the two CPUs, for the same recipe and parts
       # (the key of custom-build.yml).
       - name: Cache libvips
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_libvips
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/libvips
           key: libvips-cosmocc-${{ env.COSMOCC_VERSION }}-${{ hashFiles('scripts/libvips.sh', 'patches/libvips/**', 'c_src/vips/**') }}-parts-${{ env.VIX_PARTS }}
@@ -111,6 +115,37 @@ jobs:
           name: vix_check
           path: build/vix_check.com
           if-no-files-found: error
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL
+        if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: ${{ steps.cache_openssl.outputs.cache-primary-key }}
+
+      - name: Save the cache of the libraries of libvips
+        if: github.event_name != 'pull_request' && steps.cache_the_libraries_of_libvips.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/libvips-deps
+          key: ${{ steps.cache_the_libraries_of_libvips.outputs.cache-primary-key }}
+
+      - name: Save the cache of libvips
+        if: github.event_name != 'pull_request' && steps.cache_libvips.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/libvips
+          key: ${{ steps.cache_libvips.outputs.cache-primary-key }}
 
   run:
     name: Run on ${{ matrix.name }}

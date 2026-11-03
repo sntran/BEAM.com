@@ -46,7 +46,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -71,6 +72,16 @@ jobs:
           name: rust_probe
           path: build/rust_probe.com
           if-no-files-found: error
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
 
   run:
     name: Run on ${{ matrix.name }}
@@ -114,7 +125,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache cosmocc
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_cosmocc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ env.COSMOCC_VERSION }}-checked
@@ -123,7 +135,8 @@ jobs:
         run: make toolchain
 
       - name: Cache OpenSSL
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache_openssl
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/openssl
           key: openssl-${{ env.OPENSSL_VERSION }}-cosmocc-${{ env.COSMOCC_VERSION }}-cosmocc
@@ -175,6 +188,23 @@ jobs:
           name: rusty_csv_check
           path: build/rusty_csv_check.com
           if-no-files-found: error
+
+      # The saves of the caches of this job. A pull request only reads
+      # the caches, so it does not push out the caches of main (GitHub
+      # keeps 10 GB of caches for each repository).
+      - name: Save the cache of cosmocc
+        if: github.event_name != 'pull_request' && steps.cache_cosmocc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmocc
+          key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of OpenSSL
+        if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/openssl
+          key: ${{ steps.cache_openssl.outputs.cache-primary-key }}
 
   nif-run:
     name: rusty_csv on ${{ matrix.name }}

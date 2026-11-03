@@ -35,6 +35,8 @@ on:
 
 permissions:
   contents: read
+  # For the list of the caches (the last step).
+  actions: read
 
 concurrency:
   group: custom-build-caches
@@ -206,3 +208,14 @@ jobs:
           build/beam.com --version | tee version.txt
           grep -q 'Linked NIFs.* vix-' version.txt
           grep -q 'Linked NIFs.* ex_pdfium-' version.txt
+
+      # The use of the 10 GB of caches of the repository, and the largest
+      # caches, for a person who looks for the cause of a missing cache.
+      - name: The caches of the repository
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
+            --jq '"\(.active_caches_count) caches, \(.active_caches_size_in_bytes / 1048576 | floor) MB"'
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 40 --sort size_in_bytes --order desc
