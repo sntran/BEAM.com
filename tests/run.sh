@@ -660,11 +660,32 @@ if [ -d examples ]; then
         dns=${ports% *} tcp=${ports#* }
         BEAM_COM_ALLOW="net=*.test.example:$tcp" BEAM_COM_DNS_UPSTREAM=127.0.0.1:$dns
         export BEAM_COM_ALLOW BEAM_COM_DNS_UPSTREAM
-        check sandbox_none.com 'connect a.test.example: ok@@connect big.test.example: ok@@connect alias.test.example: ok@@connect test.example: error nxdomain@@connect other.example: error nxdomain@@connect a.test.example: error eacces@@connect 127.0.0.2: error eacces@@udp 127.0.0.1: error eacces@@done' \
+        supervisor=
+        if [ "$os" = linux ]; then
+            supervisor='the supervisor checks the calls@@'
+        fi
+        check sandbox_none.com "${supervisor}"'connect a.test.example: ok@@connect big.test.example: ok@@connect alias.test.example: ok@@connect test.example: error nxdomain@@connect other.example: error nxdomain@@connect a.test.example: error eacces@@connect 127.0.0.2: error eacces@@udp 127.0.0.1: error eacces@@done' \
             connect a.test.example "$tcp" connect big.test.example "$tcp" \
             connect alias.test.example "$tcp" connect test.example "$tcp" \
             connect other.example "$tcp" connect a.test.example "$dns" \
             connect 127.0.0.2 "$tcp" udp 127.0.0.1 "$dns"
+        # On Linux, without the supervisor of the calls: the wraps of the
+        # libc (as on the other systems).
+        if [ "$os" = linux ]; then
+            BEAM_COM_NET_NO_SUPERVISOR=1
+            export BEAM_COM_NET_NO_SUPERVISOR
+            check sandbox_none.com 'no supervisor@@connect a.test.example: ok@@connect other.example: error nxdomain@@connect 127.0.0.2: error eacces@@done' \
+                connect a.test.example "$tcp" connect other.example "$tcp" connect 127.0.0.2 "$tcp"
+            unset BEAM_COM_NET_NO_SUPERVISOR
+            # A program of --allow-run (python3) gets the host list from
+            # the supervisor, with the address that the VM resolved.
+            if command -v python3 >/dev/null; then
+                BEAM_COM_ALLOW="net=*.test.example:$tcp;run=python3"
+                check sandbox_none.com 'the supervisor checks the calls@@connect a.test.example: ok@@pyconnect 127.0.0.1: ok@@pyconnect 127.0.0.2: error PermissionError@@pyconnect 127.0.0.1: error PermissionError@@done' \
+                    connect a.test.example "$tcp" pyconnect 127.0.0.1 "$tcp" \
+                    pyconnect 127.0.0.2 "$tcp" pyconnect 127.0.0.1 "$dns"
+            fi
+        fi
         unset BEAM_COM_ALLOW BEAM_COM_DNS_UPSTREAM
         kill "$fake" 2>/dev/null
         wait "$fake" 2>/dev/null

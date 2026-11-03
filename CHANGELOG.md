@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- The sandbox: on Linux 5.6 and later, a supervisor process checks the
+  calls of the network of a program with `--allow-net=HOST,...`, with
+  seccomp user notification. The host list then also holds for native
+  code and for the programs of `--allow-run` (with their DNS queries to
+  the name servers of the system). The supervisor is the parent process,
+  and it gives its signals to the program. Without the features, the C
+  library does the check, as before.
 - The build gives a warning for `--allow-net=*.DOMAIN` when other owners
   can have names under `DOMAIN`: `DOMAIN` is in the Public Suffix List
   (`*.github.io`, `*.co.uk`), or a name of the list is under it
