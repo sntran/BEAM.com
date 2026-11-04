@@ -28,6 +28,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -386,10 +388,40 @@ static int ape_loader(char *buf, size_t size)
  * libc/calls/syscall-sysv.internal.h. */
 int __sys_execve(const char *path, char *const argv[], char *const envp[]);
 
+/* On Linux without Landlock, the programs that erl_child_setup can start
+ * (exec_prepare()): the real path of each file, and each directory with
+ * all that is in it. Landlock gives these paths "x" (apply_allow()). An
+ * empty list: erl_child_setup starts each program. */
+static struct arglist exec_files, exec_dirs;
+static int exec_check;
+
+/* 1 when erl_child_setup can start the file of path. Also 1 when the
+ * file has no real path: then execve() gives the error, as with Landlock
+ * (for example ENOENT). */
+static int exec_allowed(const char *path)
+{
+    char real[PATH_MAX];
+    size_t n;
+    int i;
+
+    if (!exec_check || !realpath(path, real))
+        return 1;
+    for (i = 0; i < exec_files.n; i++)
+        if (strcmp(real, exec_files.v[i]) == 0)
+            return 1;
+    for (i = 0; i < exec_dirs.n; i++) {
+        n = strlen(exec_dirs.v[i]);
+        if (strncmp(real, exec_dirs.v[i], n) == 0 && (real[n] == '/' || real[n] == '\0'))
+            return 1;
+    }
+    return 0;
+}
+
 /* execve() for the files that BEAM.com starts: an APE file starts with
  * the loader of this process when a loader runs it (see above). When the
  * kernel cannot start the loader, it is Cosmopolitan's execve(), as
- * before. Returns only on error. */
+ * before. On Linux without Landlock, a file that is not in the list of
+ * --allow-run gives EACCES, as with Landlock. Returns only on error. */
 int beam_com_execve(const char *path, char *const argv[], char *const envp[])
 {
     extern char **environ;
@@ -398,6 +430,10 @@ int beam_com_execve(const char *path, char *const argv[], char *const envp[])
     struct arglist args = {0};
     int i;
 
+    if (!exec_allowed(path)) {
+        errno = EACCES;
+        return -1;
+    }
     if (!envp)
         envp = environ;
     if (ape_loader(loader, sizeof(loader)) && is_ape_file(path)) {
@@ -769,6 +805,11 @@ static void landlock_check(int helper, struct allow *a, int from_env)
     abi = landlock_abi(from_env);
     if (!abi) {
         sandbox_fs = 1;
+        /* For exec_prepare() in erl_child_setup, which starts with the
+         * environment of this process. The variable only turns the check
+         * on: without it, Landlock limits the programs. */
+        if (a->programs.n && !a->run_all)
+            setenv("BEAM_COM_RUN_CHECK", "1", 1);
         fprintf(stderr, "beam.com: warning: the kernel has no Landlock, so beam.com checks "
                         "the paths only in the calls of the C library: native code and the "
                         "programs of --allow-run are not limited\n");
@@ -870,29 +911,105 @@ static void apply_allow(int helper, struct allow *a, int from_env)
         setenv("ERL_INETRC", BEAM_COM_BINDIR "/sandbox.inetrc", 1);
 }
 
+/* The permissions: the file BEAM_COM_ALLOW of the zip, else the
+ * variable BEAM_COM_ALLOW (from_env gets 1). 0 when there are none. */
+static int read_allow(int helper, struct allow *a, int *from_env)
+{
+    struct arglist words = {0};
+    char *env, *copy, *word, *save;
+    int i;
+
+    *from_env = 0;
+    if (!read_lines(BEAM_COM_ALLOW, &words) && (env = getenv("BEAM_COM_ALLOW")) && *env) {
+        *from_env = 1;
+        copy = strdup(env);
+        for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
+            push(&words, word);
+    }
+    for (i = 0; i < words.n; i++)
+        allow_parse(helper, a, words.v[i]);
+    return words.n > 0;
+}
+
 static void apply_sandbox(int helper)
 {
     struct allow a = {0};
-    struct arglist words = {0};
-    char *env, *copy, *word, *save;
-    int i, from_env = 0;
+    int from_env;
 
     if (helper && IsLinux())
         return;
     __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
 
-    if (!read_lines(BEAM_COM_ALLOW, &words) && (env = getenv("BEAM_COM_ALLOW")) && *env) {
-        from_env = 1;
-        copy = strdup(env);
-        for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
-            push(&words, word);
-    }
-    if (!words.n)
-        return;
-    for (i = 0; i < words.n; i++)
-        allow_parse(helper, &a, words.v[i]);
-    if (!a.all)
+    if (read_allow(helper, &a, &from_env) && !a.all)
         apply_allow(helper, &a, from_env);
+}
+
+/* A path of the list of exec_allowed(), by its real path. */
+static void exec_add(const char *path)
+{
+    char real[PATH_MAX];
+    struct stat st;
+
+    if (!path || !realpath(path, real) || stat(real, &st) == -1)
+        return;
+    push(S_ISDIR(st.st_mode) ? &exec_dirs : &exec_files, strdup(real));
+}
+
+/*
+ * erl_child_setup on Linux, when the kernel has no Landlock and
+ * --allow-run has a list: the paths that Landlock would give "x" in
+ * apply_allow(). Without Landlock, nothing else limits the programs
+ * that erl_child_setup starts (the helpers keep the seccomp filter of
+ * the VM, which allows exec with --allow-run). The programs that it
+ * starts still have no limits of the paths. The list comes from PATH
+ * when erl_child_setup starts, which is when the VM starts.
+ * landlock_check() of the VM sets BEAM_COM_RUN_CHECK=1: the seccomp
+ * filter of the VM can refuse a probe of Landlock in the helper.
+ */
+static void exec_prepare(void)
+{
+    static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
+                                 "/usr/local/lib", "/usr/libexec"};
+    const char *on = getenv("BEAM_COM_RUN_CHECK"), *home = getenv("HOME");
+    struct allow a = {0};
+    char loader[4096];
+    size_t k;
+    int i, from_env;
+
+    if (!IsLinux() || !on || strcmp(on, "1") != 0 || !read_allow(1, &a, &from_env) ||
+        a.all || a.run_all || !a.programs.n)
+        return;
+    exec_add(GetProgramExecutableName());
+    if (ape_loader(loader, sizeof(loader)) && *loader)
+        exec_add(loader);
+    exec_add("/usr/bin/ape");
+    exec_add(join(__get_tmpdir(), "/.ape-", APE_VERSION_STR));
+    if (home)
+        exec_add(join(home, "/.ape-", APE_VERSION_STR));
+    for (k = 0; k < sizeof(libs) / sizeof(libs[0]); k++)
+        exec_add(libs[k]);
+    for (i = 0; i < a.programs.n; i++)
+        exec_add(find_program(a.programs.v[i]));
+    exec_check = 1;
+}
+
+/* execle() of erl_child_setup (a port of {spawn, Command} starts the
+ * shell): beam_com_execve() with the arguments of execle(). See
+ * c_src/cosmo/beam_com_child_setup.c. Returns only on error. */
+int beam_com_execle(const char *path, const char *arg, ...)
+{
+    struct arglist args = {0};
+    char *const *envp;
+    const char *word;
+    va_list ap;
+
+    push(&args, (char *)arg);
+    va_start(ap, arg);
+    while ((word = va_arg(ap, const char *)))
+        push(&args, (char *)word);
+    envp = va_arg(ap, char *const *);
+    va_end(ap);
+    return beam_com_execve(path, args.v, envp);
 }
 
 static int file_exists(const char *path)
@@ -1950,8 +2067,10 @@ void beam_com_main(int *argcp, char ***argvp)
     apply_sandbox(starts_with(name, "erl_child_setup") ||
                   starts_with(name, "inet_gethost") || starts_with(name, "epmd"));
 
-    if (starts_with(name, "erl_child_setup"))
+    if (starts_with(name, "erl_child_setup")) {
+        exec_prepare();
         exit(erl_child_setup_main(argc, argv));
+    }
     if (starts_with(name, "inet_gethost"))
         exit(inet_gethost_main(argc, argv));
     /* epmd: started by start_epmd() below, or by the user ("epmd

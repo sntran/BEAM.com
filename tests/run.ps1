@@ -287,14 +287,14 @@ if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "sandbox_none.com")))
     foreach ($row in Get-Content "tests/sandbox_claims.txt") {
         if ($row -match '^#' -or $row.Trim() -eq '') { continue }
         $f = $row -split ' \| '
-        if ($f.Count -ne 8) {
-            Write-Host "FAIL: tests/sandbox_claims.txt: a line without 8 fields: $row"
+        if ($f.Count -ne 9) {
+            Write-Host "FAIL: tests/sandbox_claims.txt: a line without 9 fields: $row"
             $script:fail = 1
-            $failures.Add("tests/sandbox_claims.txt: a line without 8 fields")
+            $failures.Add("tests/sandbox_claims.txt: a line without 9 fields")
             continue
         }
         Write-Host "--- claim: $($f[0])"
-        $want = $f[5]
+        $want = $f[6]
         if ($want -eq '-') {
             Write-Host "SKIP: not on this system"
             continue
