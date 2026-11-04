@@ -74,7 +74,13 @@ jobs:
         if: runner.os != 'Windows'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download edge -p beam.com -D "$RUNNER_TEMP" -R "$GITHUB_REPOSITORY"
+        # The execute bit: the shell header of an APE file starts with
+        # "command -v $0", and the /bin/sh of macOS (bash) gives nothing for
+        # a file that is not executable. Then the header fails with "gzip:
+        # (stdin): unexpected end of file".
+        run: |
+          gh release download edge -p beam.com -D "$RUNNER_TEMP" -R "$GITHUB_REPOSITORY"
+          chmod +x "$RUNNER_TEMP/beam.com"
       - name: Run the SSH server
         shell: bash
         env:
