@@ -16,7 +16,8 @@
 #   is a directory outside the rules, with a.txt and d/. $SELF is the file
 #   of the program. Each line gets new directories.
 # - $SOCK is a Unix socket that listens, in $IN (a listener of python3
-#   in tests/run.sh, when python3 is there). Only tests/run.sh has it.
+#   in tests/run.sh). Only tests/run.sh has it, and it skips the lines
+#   with $SOCK when python3 is not there.
 #
 # Caution: a change of docs/SANDBOX.md needs a change of these lines, and
 # a line that fails is a difference between the document and the program.
@@ -61,8 +62,9 @@ net: a TCP socket | net | listen | ok | ok | ok | ok | ok
 net: no socket without --allow-net | read=$IN | listen | error eperm | error eperm | error eacces | ok | ok
 net: also Unix sockets | net | unix | ok | ok | - | ok | ok
 net: no Unix socket without --allow-net | read=$IN | unix | error eperm | ok | - | ok | ok
-net: a connection to a Unix socket with a path | net | unixconnect $SOCK | ok | ok | - | ok | ok
-net: no connection to a Unix socket without --allow-net | read=$IN | unixconnect $SOCK | error eperm | error eperm | - | ok | ok
+net: a connection to a Unix socket with a path | net | unixconnect $SOCK | ok | ok | - | error enoent | ok
+net: no connection to a Unix socket without --allow-net | read=$IN | unixconnect $SOCK | error eperm | error eperm | - | error eacces | ok
+net: on OpenBSD, --allow-write of its path allows a connection to a Unix socket | write=$IN | unixconnect $SOCK | error eperm | error eperm | - | ok | ok
 net: a list of hosts also allows Unix sockets | net=a.test.example | unix | ok | ok | - | ok | ok
 net: the options of a socket that inet uses | net | sockopts | ok | ok | ok | ok | ok
 net: on Linux, not each option of the system | net | rawopt | refused | - | - | - | -

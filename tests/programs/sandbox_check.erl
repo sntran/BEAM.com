@@ -9,10 +9,10 @@
 %%   sandbox_check unix         open a Unix datagram socket
 %%   sandbox_check unixconnect PATH
 %%                              connect to a Unix socket with a path: ok
-%%                              also for enoent and econnrefused, because
-%%                              then the call reached the file system (for
-%%                              a path of 100 bytes or more, the last
-%%                              action: see unix_connect/1)
+%%                              also for econnrefused (the socket file is
+%%                              there, with no listener). For a path of 100
+%%                              bytes or more, use it as the last action
+%%                              (see unix_connect/1).
 %%   sandbox_check readn PATH   read 16 bytes of a file (for a device)
 %%   sandbox_check stat PATH    read the information of a file
 %%   sandbox_check list PATH    list a directory
@@ -172,7 +172,6 @@ unix_connect(Path) ->
     end.
 
 unix_result({ok, S}) -> gen_tcp:close(S);
-unix_result({error, enoent}) -> ok;
 unix_result({error, econnrefused}) -> ok;
 unix_result(Error) -> Error.
 

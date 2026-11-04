@@ -53,7 +53,7 @@ client, because the native resolver is a port program.
 | System | The sandbox |
 |---|---|
 | Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
-| OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
+| OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()`, but a connection to a Unix socket with a path needs `--allow-write` for that path (`unveil()` gives it with "w") |
 | Windows | in the process: the C library checks the paths and the sockets, and a job object stops new processes ([Windows](#windows)) |
 | macOS arm64 | yes: a profile of Seatbelt ([macOS](#macos)) |
 | macOS x86_64, FreeBSD, NetBSD | no: the flags are ignored |

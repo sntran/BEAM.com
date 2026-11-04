@@ -692,19 +692,21 @@ if [ -d examples ]; then
         sock_pid=
         case $action in
             *'$SOCK'*)
-                if command -v python3 >/dev/null; then
-                    python3 -c 'import socket, sys, time
+                if ! command -v python3 >/dev/null; then
+                    echo "SKIP: no python3 for the socket of \$SOCK"
+                    continue
+                fi
+                python3 -c 'import socket, sys, time
 s = socket.socket(socket.AF_UNIX)
 s.bind(sys.argv[1])
 s.listen(8)
 time.sleep(120)' "$claims/in/srv.sock" &
-                    sock_pid=$!
-                    i=0
-                    while [ ! -S "$claims/in/srv.sock" ] && [ $i -lt 50 ]; do
-                        sleep 0.1
-                        i=$((i + 1))
-                    done
-                fi ;;
+                sock_pid=$!
+                i=0
+                while [ ! -S "$claims/in/srv.sock" ] && [ $i -lt 50 ]; do
+                    sleep 0.1
+                    i=$((i + 1))
+                done ;;
         esac
         allow=$(printf '%s' "$allow" | sed "s#\$IN#$claims/in#g; s#\$OUT#$claims/out#g")
         action=$(printf '%s' "$action" |
