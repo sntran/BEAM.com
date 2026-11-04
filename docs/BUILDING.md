@@ -343,7 +343,7 @@ again only when its key changed, or when a step that it needs ran again.
   the work tree has it.
 
 Thus a change of a function of `scripts/steps.sh` runs again only the
-steps that use it. For example, a change of `build_pledge` runs
+steps that use it. For example, a change of `build_cosmo_file` runs
 `multicall` and the steps after it.
 
 The commands:

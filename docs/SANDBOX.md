@@ -260,6 +260,11 @@ wall. Know these limits before you depend on it:
 - On macOS, `sandbox_init()` is a deprecated function of Apple. Apple
   can change the language of the profiles in a new macOS.
 
+`tests/sandbox_claims.txt` holds the claims of this document as a table
+of tests: a permission, an action, and the result on each system.
+`tests/run.sh` and `tests/run.ps1` run it in CI. A change of a claim
+here needs a change of the table.
+
 `BEAM_COM_ALLOW` gives permissions to a program that has none in its
 file, to try a sandbox without a new build: the flags without
 `--allow-`, separated by `;`, for example

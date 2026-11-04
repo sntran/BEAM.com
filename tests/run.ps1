@@ -278,6 +278,43 @@ if (Test-Path "examples") {
     }
 }
 
+# The claims of docs/SANDBOX.md (tests/sandbox_claims.txt), with the
+# column of Windows: see tests/run.sh. Check runs the program as
+# sandbox_none.exe, so that is its own file ($SELF).
+if ((Test-Path "examples") -and (Test-Path (Join-Path $Dir "sandbox_none.com"))) {
+    $claims = Join-Path $Dir "claims"
+    $self = Join-Path $Dir "sandbox_none.exe"
+    foreach ($row in Get-Content "tests/sandbox_claims.txt") {
+        if ($row -match '^#' -or $row.Trim() -eq '') { continue }
+        $f = $row -split ' \| '
+        if ($f.Count -ne 8) {
+            Write-Host "FAIL: tests/sandbox_claims.txt: a line without 8 fields: $row"
+            $script:fail = 1
+            $failures.Add("tests/sandbox_claims.txt: a line without 8 fields")
+            continue
+        }
+        Write-Host "--- claim: $($f[0])"
+        $want = $f[5]
+        if ($want -eq '-') {
+            Write-Host "SKIP: not on this system"
+            continue
+        }
+        Remove-Item $claims -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory "$claims/in/sub", "$claims/in/d", "$claims/out/d" | Out-Null
+        Set-Content "$claims/in/a.txt" "a"
+        Set-Content "$claims/in/sub/b.txt" "b"
+        Set-Content "$claims/out/a.txt" "a"
+        $allow = $f[1].Replace('$IN', "$claims/in").Replace('$OUT', "$claims/out")
+        $words = @($f[2].Replace('$IN', "$claims/in").Replace('$OUT', "$claims/out").Replace('$SELF', $self) -split ' ')
+        $name = $words[0]
+        if ($name -eq 'run') { $name = "run $($words[1])" }
+        $env:BEAM_COM_ALLOW = $allow
+        Check "sandbox_none.com" "(?m)^${name}: $want`r?$" $words
+        Remove-Item Env:BEAM_COM_ALLOW
+    }
+    Remove-Item $claims -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # Hex packages (from hex.pm, so this needs the network): see tests/run.sh.
 if (Test-Path "examples") {
     Remove-Item "examples/hexweb/rebar.lock" -ErrorAction SilentlyContinue
