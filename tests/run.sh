@@ -651,6 +651,80 @@ if [ -d examples ]; then
             echo
         done
     fi
+    # The claims of docs/SANDBOX.md (tests/sandbox_claims.txt): each line
+    # runs sandbox_none.com with BEAM_COM_ALLOW and its action, and checks
+    # the result of this system. The directories of $IN and $OUT are new
+    # for each line. The table is on the file descriptor 3, so that the
+    # programs do not read it.
+    case $os-$(uname -m) in
+        linux-*) col=4 ;;
+        darwin-arm64) col=5 ;;
+        openbsd-*) col=7 ;;
+        *) col=8 ;;
+    esac
+    claims=$dir/claims
+    self=$dir/sandbox_none.com
+    tab=$(printf '\t')
+    awk -F ' [|] ' -v c="$col" '$0 !~ /^#/ && NF > 0 {
+            if (NF != 8) { print "BAD\t" $0; next }
+            print $1 "\t" $2 "\t" $3 "\t" $c
+        }' "$top/tests/sandbox_claims.txt" > "$tmp.claims"
+    while IFS=$tab read -r claim allow action want <&3; do
+        if [ "$claim" = BAD ]; then
+            echo "FAIL: tests/sandbox_claims.txt: a line without 8 fields: $allow"
+            fail=1
+            failed="$failed
+  tests/sandbox_claims.txt: a line without 8 fields"
+            continue
+        fi
+        echo "--- claim: $claim"
+        if [ "$want" = - ]; then
+            echo "SKIP: not on this system"
+            continue
+        fi
+        rm -rf "$claims"
+        mkdir -p "$claims/in/sub" "$claims/in/d" "$claims/out/d"
+        echo a > "$claims/in/a.txt"
+        echo b > "$claims/in/sub/b.txt"
+        echo a > "$claims/out/a.txt"
+        # $SOCK: a Unix socket that listens, so that a refused connection
+        # gets the error of the sandbox, not ENOENT.
+        sock_pid=
+        case $action in
+            *'$SOCK'*)
+                if ! command -v python3 >/dev/null; then
+                    echo "SKIP: no python3 for the socket of \$SOCK"
+                    continue
+                fi
+                python3 -c 'import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.listen(8)
+time.sleep(120)' "$claims/in/srv.sock" &
+                sock_pid=$!
+                i=0
+                while [ ! -S "$claims/in/srv.sock" ] && [ $i -lt 50 ]; do
+                    sleep 0.1
+                    i=$((i + 1))
+                done ;;
+        esac
+        allow=$(printf '%s' "$allow" | sed "s#\$IN#$claims/in#g; s#\$OUT#$claims/out#g")
+        action=$(printf '%s' "$action" |
+            sed "s#\$IN#$claims/in#g; s#\$OUT#$claims/out#g; s#\$SELF#$self#g; s#\$SOCK#$claims/in/srv.sock#g")
+        # shellcheck disable=SC2086 # The words of the action.
+        set -- $action
+        name=$1
+        [ "$1" = run ] && name="run $2"
+        BEAM_COM_ALLOW=$allow
+        export BEAM_COM_ALLOW
+        check sandbox_none.com "^$name: $want\$" "$@"
+        unset BEAM_COM_ALLOW
+        if [ -n "$sock_pid" ]; then
+            kill "$sock_pid" 2>/dev/null
+            wait "$sock_pid" 2>/dev/null
+        fi
+    done 3< "$tmp.claims"
+    rm -rf "$claims" "$tmp.claims"
     # BEAM_COM_ALLOW: permissions for a program without them; a program
     # with permissions in its file ignores it.
     BEAM_COM_ALLOW='read=/etc;net'

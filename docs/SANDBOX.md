@@ -53,7 +53,7 @@ client, because the native resolver is a port program.
 | System | The sandbox |
 |---|---|
 | Linux | yes: seccomp (system calls) and Landlock (paths, Linux 5.13 and later) |
-| OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()` |
+| OpenBSD | the paths only (`unveil()`: `--allow-read`, `--allow-write`, and the programs of `--allow-run`); sockets and ports are not limited, because OpenBSD stops ERTS under `pledge()`, but a connection to a Unix socket with a path needs `--allow-write` for that path (`unveil()` gives it with "w") |
 | Windows | in the process: the C library checks the paths and the sockets, and a job object stops new processes ([Windows](#windows)) |
 | macOS arm64 | yes: a profile of Seatbelt ([macOS](#macos)) |
 | macOS x86_64, FreeBSD, NetBSD | no: the flags are ignored |
@@ -259,6 +259,11 @@ wall. Know these limits before you depend on it:
   systems, also without `--allow-write`.
 - On macOS, `sandbox_init()` is a deprecated function of Apple. Apple
   can change the language of the profiles in a new macOS.
+
+`tests/sandbox_claims.txt` holds the claims of this document as a table
+of tests: a permission, an action, and the result on each system.
+`tests/run.sh` and `tests/run.ps1` run it in CI. A change of a claim
+here needs a change of the table.
 
 `BEAM_COM_ALLOW` gives permissions to a program that has none in its
 file, to try a sandbox without a new build: the flags without

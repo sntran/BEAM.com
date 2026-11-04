@@ -1292,7 +1292,7 @@ are in neither list, and `TCP_NODELAY` is not in the list of
 options of `SOL_SOCKET` except `SO_RTABLE` with "inet", and `TCP_NODELAY`
 of `IPPROTO_TCP`.
 
-**Workaround in BEAM.com.** `build_pledge` of `scripts/steps.sh` gets
+**Workaround in BEAM.com.** `build_cosmo_file` of `scripts/steps.sh` gets
 `libc/calls/pledge-linux.c` of the tag of cosmocc, applies
 `patches/cosmo/pledge-linux.patch`, and links the object into the
 emulator. The patch adds one BPF fragment after each of the two
@@ -1353,6 +1353,36 @@ wrote to `~/.ape-1.10` stays there: remove it once.
 
 **Possible upstream fix.** `PF_R | PF_X` for the code segment in the
 linker script of the loader (`ape/loader.lds`).
+
+### C50. unveil() of Linux does not control the removal of files
+
+**Status:** 4.0.2.
+
+**Symptom.** In each sandbox on Linux, also with `--allow-read` only, the
+program can delete each file and each empty directory that its user can
+delete: `file:delete/1` and `file:del_dir/1` give `ok` outside the paths
+of the rules. A rename from outside the rules gives `exdev`, not
+`eacces`. `tests/sandbox_claims.txt` found it.
+
+**Cause.** `unveil()` of `libc/calls/unveil.c` makes a ruleset of
+Landlock that handles only the rights of `UNVEIL_READ`, `UNVEIL_WRITE`,
+`UNVEIL_EXEC` and `UNVEIL_CREATE`. These have no
+`LANDLOCK_ACCESS_FS_REMOVE_FILE` and no `LANDLOCK_ACCESS_FS_REMOVE_DIR`,
+so Landlock does not control `unlink()` and `rmdir()`. On OpenBSD, the
+permission "c" of `unveil()` allows both the creation and the removal of
+files.
+
+**Workaround in BEAM.com.** `build_cosmo_file` of `scripts/steps.sh`
+gets `libc/calls/unveil.c` of the tag of cosmocc, applies
+`patches/cosmo/unveil.patch`, and links the object into the emulator,
+as for C47. The patch adds the two rights of removal to
+`UNVEIL_CREATE`. The paths of `--allow-write` have "c", so the program
+can remove a file there, and nowhere else. The object defines `unveil`,
+`sys_unveil_linux` and `init_landlock_version`, so the linker does not
+take `unveil.o` of `libcosmo.a`.
+
+**Possible upstream fix.** Add `LANDLOCK_ACCESS_FS_REMOVE_FILE` and
+`LANDLOCK_ACCESS_FS_REMOVE_DIR` to `UNVEIL_CREATE`.
 
 ## WAMR (WebAssembly Micro Runtime)
 

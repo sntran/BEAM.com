@@ -1,0 +1,75 @@
+# The claims of docs/SANDBOX.md, one claim on each line. tests/run.sh and
+# tests/run.ps1 run each line: the program tests/programs/sandbox_check.erl
+# (built with no permissions) with BEAM_COM_ALLOW, and its action. Its
+# output must have the line "NAME: RESULT" (NAME is the first word of the
+# action, and "run PROGRAM" for run), with the result of this system.
+#
+# The fields, separated by " | ":
+#
+#   claim | BEAM_COM_ALLOW | action | linux | darwin-arm64 | windows | openbsd | other
+#
+# - other: macOS x86_64, FreeBSD and NetBSD, which have no sandbox.
+# - A result is a pattern of grep (and of PowerShell), for example "ok",
+#   "error eacces" or "error e[a-z]*". "-": this line does not apply on
+#   this system.
+# - $IN is a directory of the rules, with a.txt, sub/b.txt and d/. $OUT
+#   is a directory outside the rules, with a.txt and d/. $SELF is the file
+#   of the program. Each line gets new directories.
+# - $SOCK is a Unix socket that listens, in $IN (a listener of python3
+#   in tests/run.sh). Only tests/run.sh has it, and it skips the lines
+#   with $SOCK when python3 is not there.
+#
+# Caution: a change of docs/SANDBOX.md needs a change of these lines, and
+# a line that fails is a difference between the document and the program.
+# Change the program, or change the document and the line. Do not change
+# only the line.
+
+# Reads (--allow-read)
+read: a file of the list | read=$IN | read $IN/a.txt | ok | ok | ok | ok | ok
+read: a file outside the list | read=$IN | read $OUT/a.txt | error eacces | error eperm | error eacces | error e[a-z]* | ok
+read: a directory includes all that is in it | read=$IN | read $IN/sub/b.txt | ok | ok | ok | ok | ok
+read: the flags add up | read=$IN;read=$OUT | read $OUT/a.txt | ok | ok | ok | ok | ok
+read: a directory outside the list | read=$IN | list $OUT | error eacces | error eperm | error eacces | error e[a-z]* | ok
+read: stat() needs no permission | read=$IN | stat $OUT/a.txt | ok | ok | ok | - | ok
+read: --allow-write also allows a read | write=$IN | read $IN/a.txt | ok | ok | ok | ok | ok
+read: the program reads its own file | read=$IN | read $SELF | ok | ok | ok | ok | ok
+read: the program reads /dev/null | read=$IN | readn /dev/null | ok | ok | ok | ok | ok
+read: the program reads /dev/urandom | read=$IN | readn /dev/urandom | ok | ok | ok | ok | ok
+
+# Changes (--allow-write)
+write: a new file in a directory of the list | write=$IN | write $IN/new.txt | ok | ok | ok | ok | ok
+write: a file outside the list | write=$IN | write $OUT/new.txt | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: --allow-read does not allow a change | read=$IN | write $IN/new.txt | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: a new directory in the list | write=$IN | mkdir $IN/m | ok | ok | ok | ok | ok
+write: a new directory outside the list | write=$IN | mkdir $OUT/m | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: the removal of a file of the list | write=$IN | delete $IN/a.txt | ok | ok | ok | ok | ok
+write: the removal of a file outside the list | write=$IN | delete $OUT/a.txt | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: --allow-read does not allow a removal | read=$IN | delete $IN/a.txt | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: the removal of a directory outside the list | write=$IN | rmdir $OUT/d | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: a rename in the list | write=$IN | rename $IN/a.txt $IN/r.txt | ok | ok | ok | ok | ok
+write: a rename from outside the list | write=$IN | rename $OUT/a.txt $IN/r.txt | error eacces | error eperm | error eacces | error e[a-z]* | ok
+write: a symbolic link in the list | write=$IN | symlink a.txt $IN/l | ok | ok | - | ok | ok
+write: a symbolic link outside the list | write=$IN | symlink a.txt $OUT/l | error eacces | error eperm | - | error e[a-z]* | ok
+write: the mode of a file of the list | write=$IN | chmod $IN/a.txt | ok | ok | ok | ok | ok
+write: the times of a file of the list | write=$IN | touch $IN/a.txt | ok | ok | ok | ok | ok
+write: on Linux, also the mode of the other files of the user (Limits) | write=$IN | chmod $OUT/a.txt | ok | error eperm | error eacces | error e[a-z]* | ok
+write: on Linux, also the times of the other files of the user (Limits) | write=$IN | touch $OUT/a.txt | ok | error eperm | error eacces | error e[a-z]* | ok
+write: --allow-read does not allow a change of the mode | read=$IN | chmod $IN/a.txt | error eperm | error eperm | error eacces | error e[a-z]* | ok
+
+# The network (--allow-net)
+net: the files that the network needs | net | read /etc/hosts | ok | ok | - | ok | ok
+net: a TCP socket | net | listen | ok | ok | ok | ok | ok
+net: no socket without --allow-net | read=$IN | listen | error eperm | error eperm | error eacces | ok | ok
+net: also Unix sockets | net | unix | ok | ok | - | ok | ok
+net: no Unix socket without --allow-net | read=$IN | unix | error eperm | ok | - | ok | ok
+net: a connection to a Unix socket with a path | net | unixconnect $SOCK | ok | ok | - | error enoent | ok
+net: no connection to a Unix socket without --allow-net | read=$IN | unixconnect $SOCK | error eperm | error eperm | - | error eacces | ok
+net: on OpenBSD, --allow-write of its path allows a connection to a Unix socket | write=$IN | unixconnect $SOCK | error eperm | error eperm | - | ok | ok
+net: a list of hosts also allows Unix sockets | net=a.test.example | unix | ok | ok | - | ok | ok
+net: the options of a socket that inet uses | net | sockopts | ok | ok | ok | ok | ok
+net: on Linux, not each option of the system | net | rawopt | refused | - | - | - | -
+
+# Programs (--allow-run)
+run: no port without --allow-run | read=$IN | run true | error.* | error.* | - | error.* | ok
+run: a program of the list | run=true | run true | ok | ok | - | - | ok
+run: only the programs of the list | run=true | run sh | error.* | error.* | - | - | ok

@@ -5,6 +5,19 @@ notes of its release.
 
 ## Unreleased
 
+- Security: on Linux, each sandbox let the program delete each file and
+  each empty directory of its user, also with `--allow-read` only. The
+  `unveil()` of Cosmopolitan did not give Landlock the rights of removal
+  (C50 of `docs/UPSTREAM.md`). Now a removal needs a path of
+  `--allow-write`, as the other changes do, and a rename from outside
+  the rules gives `eacces`.
+- `tests/sandbox_claims.txt`: each claim of `docs/SANDBOX.md` as a test,
+  with the expected result on Linux, macOS arm64, Windows, OpenBSD and
+  the systems with no sandbox. `tests/run.sh` and `tests/run.ps1` run it
+  in CI. `sandbox_check` has more actions for it (`mkdir`, `rmdir`,
+  `delete`, `rename`, `symlink`, `stat`, `list`, `readn` and
+  `unixconnect`).
+
 - `wasm_host:memory(used)` gives the memory that the VM uses now in the
   WebAssembly runtime: the bytes that `malloc()` gives out. It goes down
   when the VM frees memory, also with `-Mea min`. `wasm_host:memory/0`

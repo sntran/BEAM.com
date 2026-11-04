@@ -7,6 +7,22 @@
 %%   sandbox_check chmod PATH   change the mode of a file (to 600)
 %%   sandbox_check touch PATH   change the times of a file
 %%   sandbox_check unix         open a Unix datagram socket
+%%   sandbox_check unixconnect PATH
+%%                              connect to a Unix socket with a path: ok
+%%                              also for econnrefused (the socket file is
+%%                              there, with no listener). For a path of 100
+%%                              bytes or more, use it as the last action
+%%                              (see unix_connect/1).
+%%   sandbox_check readn PATH   read 16 bytes of a file (for a device)
+%%   sandbox_check stat PATH    read the information of a file
+%%   sandbox_check list PATH    list a directory
+%%   sandbox_check mkdir PATH   make a directory
+%%   sandbox_check rmdir PATH   remove an empty directory
+%%   sandbox_check delete PATH  delete a file
+%%   sandbox_check rename FROM TO
+%%                              rename a file
+%%   sandbox_check symlink TARGET LINK
+%%                              make a symbolic link
 %%   sandbox_check listen       open a TCP socket on 127.0.0.1
 %%   sandbox_check sockopts     set and read the options of a connected
 %%                              TCP socket that inet sets (issue 157)
@@ -48,6 +64,33 @@ run(["touch", Path | Rest]) ->
     run(Rest);
 run(["unix" | Rest]) ->
     report(unix, gen_udp:open(0, [local])),
+    run(Rest);
+run(["unixconnect", Path | Rest]) ->
+    report(unixconnect, unix_connect(Path)),
+    run(Rest);
+run(["readn", Path | Rest]) ->
+    report(readn, read_bytes(Path, 16)),
+    run(Rest);
+run(["stat", Path | Rest]) ->
+    report(stat, file:read_file_info(Path)),
+    run(Rest);
+run(["list", Path | Rest]) ->
+    report(list, file:list_dir(Path)),
+    run(Rest);
+run(["mkdir", Path | Rest]) ->
+    report(mkdir, file:make_dir(Path)),
+    run(Rest);
+run(["rmdir", Path | Rest]) ->
+    report(rmdir, file:del_dir(Path)),
+    run(Rest);
+run(["delete", Path | Rest]) ->
+    report(delete, file:delete(Path)),
+    run(Rest);
+run(["rename", From, To | Rest]) ->
+    report(rename, file:rename(From, To)),
+    run(Rest);
+run(["symlink", Target, Link | Rest]) ->
+    report(symlink, file:make_symlink(Target, Link)),
     run(Rest);
 run(["listen" | Rest]) ->
     report(listen, gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}])),
@@ -114,6 +157,36 @@ rawopt() ->
         end,
     gen_tcp:close(L),
     Result.
+
+%% The address of a Unix socket has 104 bytes at most on the BSDs and
+%% macOS. A longer path (a deep work directory) connects with the name in
+%% its directory, and the program stays in that directory: the change
+%% back can be refused (unveil() of OpenBSD hides the directories outside
+%% the rules), so use it as the last action.
+unix_connect(Path) when length(Path) < 100 ->
+    unix_result(gen_tcp:connect({local, Path}, 0, [local], 5000));
+unix_connect(Path) ->
+    case file:set_cwd(filename:dirname(Path)) of
+        ok -> unix_result(gen_tcp:connect({local, filename:basename(Path)}, 0, [local], 5000));
+        Error -> Error
+    end.
+
+unix_result({ok, S}) -> gen_tcp:close(S);
+unix_result({error, econnrefused}) -> ok;
+unix_result(Error) -> Error.
+
+read_bytes(Path, N) ->
+    case file:open(Path, [read, raw, binary]) of
+        {ok, F} ->
+            Result = file:read(F, N),
+            ok = file:close(F),
+            case Result of
+                eof -> {ok, <<>>};
+                _ -> Result
+            end;
+        Error ->
+            Error
+    end.
 
 connect(Host, Port) ->
     case gen_tcp:connect(Host, Port, [], 10000) of
