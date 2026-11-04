@@ -1651,6 +1651,25 @@ if [ -d examples ]; then
     fi
 fi
 
+# Native NIF objects (docs/NIFS.md): the application native_nif_check,
+# with priv/native_nif_check.x86_64.o and .aarch64.o in the zip of the
+# program. BEAM_COM_NIF_DEBUG names the object of the CPU that load_nif/2
+# loads.
+if [ -d examples ]; then
+    check beam.com 'wrote .*native_nif_check.com' tests/programs/native_nif_check \
+        --main native_nif_check -o "$dir/native_nif_check.com"
+    if [ -f "$dir/native_nif_check.com" ]; then
+        case $(uname -m) in
+            x86_64 | amd64 | AMD64) nif_file='native_nif_check\.x86_64\.o$' ;;
+            *) nif_file='native_nif_check\.aarch64\.o$' ;;
+        esac
+        BEAM_COM_NIF_DEBUG=1
+        export BEAM_COM_NIF_DEBUG
+        check native_nif_check.com "nif_native: .*$nif_file@@native_nif_check: all [0-9]* passed"
+        unset BEAM_COM_NIF_DEBUG
+    fi
+fi
+
 if [ -d examples ]; then
     # W^X: the JIT maps its code two times (executable, and writable),
     # so no page is writable and executable. On Linux, +JMsingle (one

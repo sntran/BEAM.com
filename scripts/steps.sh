@@ -493,7 +493,9 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_libc.h "$ROOT"/c_src/cosmo/beam_com_net.c \
        "$ROOT"/c_src/cosmo/beam_com_net.h "$ROOT"/c_src/cosmo/beam_com_fs.c \
        "$ROOT"/c_src/cosmo/beam_com_fs.h "$ROOT"/c_src/cosmo/beam_com_seatbelt.c \
-       "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ROOT"/c_src/cosmo/beam_com_nif.c \
+       "$ROOT"/c_src/cosmo/beam_com_nif.h "$ROOT"/c_src/cosmo/beam_com_nif_syms.c \
+       "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -1726,7 +1728,7 @@ step_multicall() {
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
     objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_net.o $objdir/beam_com_fs.o"
-    objs="$objs $objdir/beam_com_seatbelt.o"
+    objs="$objs $objdir/beam_com_seatbelt.o $objdir/beam_com_nif.o $objdir/beam_com_nif_syms.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"
     build_cosmo_file unveil "$COSMO_UNVEIL_SHA256" "$objdir/beam_com_unveil.o"
@@ -2124,6 +2126,28 @@ step_test() {
         cosmocc -O2 -o "$BUILD/seatbelt_check.com" "$ROOT/tests/cosmo/seatbelt_check.c"
         "$BUILD/seatbelt_check.com" | tee "$BUILD/test.out"
         grep -q '^seatbelt_check: ok$' "$BUILD/test.out"
+        # The loader of native NIF objects (c_src/cosmo/beam_com_nif.c),
+        # with its test objects for both CPUs. tests/run.sh loads a NIF
+        # object in a program on each system.
+        log "Checking the loader of native NIF objects"
+        # A NIF_LIBC name of the table must not be an IFUNC symbol of the
+        # libc (beam_com_nif_libc.h): its address breaks each call of it.
+        bin=$(dirname "$(command -v cosmocc)")
+        for arch in x86_64 aarch64; do
+            "$bin/$arch-linux-cosmo-nm" "$bin/../$arch-linux-cosmo/lib/libcosmo.a" 2>/dev/null |
+                awk '$2 == "i" { print $3 }'
+        done | sort -u > "$BUILD/nif_ifunc.txt"
+        ifunc=$(sed -n 's/^NIF_LIBC(\(.*\))$/\1/p' "$ROOT/c_src/cosmo/beam_com_nif_libc.h" |
+            grep -xF -f "$BUILD/nif_ifunc.txt" || true)
+        if [ -n "$ifunc" ]; then
+            echo "IFUNC symbols in c_src/cosmo/beam_com_nif_libc.h (use NIF_LIBC_IFUNC):" $ifunc >&2
+            exit 1
+        fi
+        sh "$ROOT/tests/cosmo/nif_load_objs.sh" "$BUILD/nif_load"
+        cosmocc -O2 -Wall -Wno-unused-function -I"$BUILD/nif_load" \
+            -o "$BUILD/nif_load_check.com" "$ROOT/tests/cosmo/nif_load_check.c"
+        "$BUILD/nif_load_check.com" | tee "$BUILD/test.out"
+        grep -q '^nif_load_check: ok$' "$BUILD/test.out"
     fi
 }
 

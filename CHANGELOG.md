@@ -5,6 +5,18 @@ notes of its release.
 
 ## Unreleased
 
+- Native NIF objects (`docs/NIFS.md`): `erlang:load_nif(PATH, Info)`
+  loads `PATH.x86_64.o` or `PATH.aarch64.o` from the zip of the program,
+  before a NIF in WebAssembly. The object is the NIF as `cosmocc -c`
+  compiles it (and `ld -r` joins it), with no change to its C code. It
+  runs at the speed of native code, on each system of the CPU. The
+  object can call each `enif_*` function and the functions of the libc
+  in `c_src/cosmo/beam_com_nif_libc.h`. Thread-local data and C++ are
+  not supported yet. `tests/programs/native_nif_check` runs on each
+  system in `tests/run.sh`.
+- `beam.com --nif-include`: the headers also work for a native NIF object
+  of `cosmocc`, on x86_64 and aarch64.
+
 - macOS arm64: about 1 start in 300 of a program with a sandbox hung
   before ERTS started, with the CPU in use (#177). The APE loader mapped
   the program over regions of the malloc zone of libSystem, so a call of

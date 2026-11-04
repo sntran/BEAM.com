@@ -1,17 +1,25 @@
-# NIF libraries in WebAssembly
+# NIF libraries
 
 `beam.com` is one static file, so it cannot load a native NIF library
-(a `.so` or `.dll` file): ERTS has no `dlopen()` in it. It can load a
-NIF library that is compiled to WebAssembly. One `.wasm` file then
-works on all the systems and CPUs of `beam.com`.
+(a `.so` or `.dll` file): ERTS has no `dlopen()` in it. It can load two
+other kinds of NIF:
+
+- A native NIF object: the `.o` files of the NIF for x86_64 and aarch64,
+  from `cosmocc`. `beam.com` links the object into the running program,
+  so the NIF runs at the speed of native code. See "Native NIF objects"
+  below.
+- A NIF library that is compiled to WebAssembly. One `.wasm` file then
+  works on all the systems and CPUs of `beam.com`.
 
 When `erlang:load_nif(PATH, Info)` finds no static NIF for the module,
 it looks for these files, in this order:
 
-1. `PATH.x86_64.aot` or `PATH.aarch64.aot` (the CPU of the computer): an
-   AOT file, compiled to machine code. It runs at almost the speed of a
+1. `PATH.x86_64.o` or `PATH.aarch64.o` (the CPU of the computer): a
+   native NIF object.
+2. `PATH.x86_64.aot` or `PATH.aarch64.aot`: an AOT file, a WebAssembly
+   module compiled to machine code. It runs at almost the speed of a
    native NIF.
-2. `PATH.wasm`: the WebAssembly module. The interpreter of WAMR runs it.
+3. `PATH.wasm`: the WebAssembly module. The interpreter of WAMR runs it.
 
 The C code of the NIF does not change: the same `ERL_NIF_INIT`, the
 same `enif_*` functions. `beam.com INPUT -o OUTPUT` copies the files in
@@ -19,11 +27,59 @@ same `enif_*` functions. `beam.com INPUT -o OUTPUT` copies the files in
 reads them from the zip: nothing goes onto the disk.
 
 How you make the `.wasm` file is your choice: any C compiler for
-`wasm32-wasip1` works. This page shows Zig and wasi-sdk. For the speed
-of native code, a custom build of `beam.com` can link the NIF as a
-static NIF (see "Custom builds" in [`BUILDING.md`](BUILDING.md)).
+`wasm32-wasip1` works. This page shows Zig and wasi-sdk. A custom build
+of `beam.com` can also link the NIF as a static NIF (see "Custom builds"
+in [`BUILDING.md`](BUILDING.md)).
+
+## Native NIF objects
+
+A native NIF object is the NIF as `cosmocc` compiles it, with no link:
+`cosmocc -c` gives one object for x86_64 and one for aarch64
+(`.aarch64/`). For a NIF with more than one file, `ld -r` joins the
+objects of each CPU into one object:
+
+```sh
+include=$(beam.com --nif-include)
+cosmocc -O2 -I"$include" -c c_src/my_nif.c -o my_nif.o
+cosmocc -O2 -I"$include" -c c_src/util.c -o util.o
+x86_64-linux-cosmo-ld -r -o priv/my_nif.x86_64.o my_nif.o util.o
+aarch64-linux-cosmo-ld -r -o priv/my_nif.aarch64.o .aarch64/my_nif.o .aarch64/util.o
+```
+
+Then `erlang:load_nif("priv/my_nif", 0)` loads `priv/my_nif.x86_64.o` or
+`priv/my_nif.aarch64.o`. The same object works on each system of
+`beam.com` with that CPU: Linux, macOS, Windows, and the BSDs.
+
+- The entry of the object is `nif_init`, as for a dynamic library, or
+  `LIB_nif_init`, with `LIB` the name of the file
+  (`-DSTATIC_ERLANG_NIF_LIBNAME=LIB`).
+- The object can call each `enif_*` function, and the functions of the
+  libc in
+  [`c_src/cosmo/beam_com_nif_libc.h`](../c_src/cosmo/beam_com_nif_libc.h):
+  the strings, the memory, `stdio`, the math functions, the threads, the
+  time, and the files. A symbol that is not there stops the load, and the
+  error of `load_nif/2` names it.
+- The constructors of the object run at the load. A second `load_nif/2`
+  of the same file (an upgrade of the module) gives the same copy of the
+  object, as `dlopen()` does: its static data stays. The program keeps
+  the object until it stops.
+- Not yet: thread-local data (`_Thread_local`, and the TLS of Rust), and
+  C++ with its own runtime. The load of such an object fails with an
+  error.
+
+`BEAM_COM_NIF_DEBUG=1` writes `nif_native: FILE` for each object that
+loads. `BEAM_COM_NIF_NATIVE=0` turns the loader off.
+
+Caution: a native NIF object runs in the VM with all of its rights, as
+a native NIF does. A crash of the object stops the VM. A NIF in
+WebAssembly cannot do this.
 
 ## Speed
+
+The NIF of `bcrypt_elixir` as a native NIF object runs at the speed of
+the same NIF as a static NIF: one hash with cost 12 took 241 to 243 ms
+as an object, and 237 to 269 ms as a static NIF, on one x86_64
+computer. The two give the same hash.
 
 The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 
@@ -326,6 +382,18 @@ the compiled module of a Worker, and after a snapshot and its restore.
 
 ## The test
 
+[`tests/programs/native_nif_check`](../tests/programs/native_nif_check)
+is an application with a native NIF of two C files, its objects in
+`priv/`, and `build.sh`, which makes them. Its checks: the terms,
+binaries, maps, resources with destructors, monitors, a thread of
+`enif_thread_create` that sends messages, dirty NIFs, `enif_schedule_nif`,
+exceptions, the libc, a constructor, 32 processes at the same time, a
+load by an other module, a broken object, an object that needs a missing
+function, and an upgrade of the module. `tests/run.sh` builds it and runs
+it on each system. `tests/cosmo/nif_load_check.c` (in `step_test` of
+`scripts/steps.sh`) checks the loader with no ERTS: the relocations of
+both CPUs, the errors, and 3,000 broken objects.
+
 [`tests/programs/nif_check`](../tests/programs/nif_check) is an
 application with a NIF in C (`c_src/nif_check.c`, and
 `c_src/nif_check_mv.c` for a function with four results), its `.wasm`
@@ -338,6 +406,17 @@ grow by their modules.
 
 ## How it works
 
+- `c_src/cosmo/beam_com_nif.c`: the loader of native NIF objects. It
+  checks the ELF object, maps its sections near the program (the code of
+  `cosmocc` uses addresses of 32 bits), does the relocations of x86_64
+  and aarch64, adds a stub for a call that is too far, gives each FDE of
+  `.eh_frame` to libunwind, and runs the constructors. On macOS arm64 it
+  writes the code in `MAP_JIT` memory. `beam_com_nif_hook()` (from
+  `main()` of `beam_com.c`) puts it before the loader of WebAssembly in
+  the hook `erts_wasm_nif_open`.
+- `c_src/cosmo/beam_com_nif_syms.c`: the symbols that an object can use,
+  the `enif_*` functions of `erl_nif_api_funcs.h` and the list of
+  `beam_com_nif_libc.h`.
 - `patches/otp/0003-wasm-nif.patch`: `erts_load_nif` calls the hook
   `erts_wasm_nif_open` before it opens a dynamic library, and the hook
   `erts_wasm_nif_close` with an entry of the first hook that it refuses
