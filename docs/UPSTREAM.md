@@ -1384,6 +1384,68 @@ take `unveil.o` of `libcosmo.a`.
 **Possible upstream fix.** Add `LANDLOCK_ACCESS_FS_REMOVE_FILE` and
 `LANDLOCK_ACCESS_FS_REMOVE_DIR` to `UNVEIL_CREATE`.
 
+### C51. macOS arm64: the APE loader maps the program over regions of malloc
+
+**Status:** 4.0.2, APE loader 1.10 (`ape/ape-m1.c`), macOS 26.6.2
+(25G83).
+
+**Symptom.** About 1 start in 300 to 1 in 600 of a program with a
+sandbox hangs before ERTS starts, with the CPU in use (`R<` in `ps`)
+(issue 177). The stack is not always the same. In some hangs the thread
+spins in the `+initialize` of a class of libobjc, under the first
+`os_log()` of `sandbox_init()`. In others, `malloc()` of Cosmopolitan
+jumps to address 0 (`EXC_BAD_ACCESS`, `pc = 0`), and the fault comes
+again for ever. A start with no sandbox did not hang in 600 starts.
+
+**Cause.** In a hang, the data of the program at the end of `.bss` are
+zero: `__dlmalloc` and the other pointers of `dlmalloc.o`, `g_heaps`,
+`mparams`, `__foreign`, and the TLS block that `x28` points to. Two pages
+of 16 KB are zero, and they hold data a short time before. `vmmap` gives
+the cause:
+
+```
+VM_ALLOCATE                 800000000-800800000  r-x/rwx
+MALLOC_SMALL (empty)        800800000-800c00000  rw-/rwx  DefaultMallocZone
+MALLOC_SMALL                800c00000-801000000  rw-/rwx  DefaultMallocZone
+```
+
+The malloc zone of libSystem has regions at the fixed addresses of the
+data and of the `.bss` of the program (`0x800800000` and up). The APE
+loader is a program of libSystem, so its `malloc()` can make these
+regions before the loader maps the program. `Spawn()` of `ape-m1.c` then
+maps each segment with `MAP_FIXED`, which replaces the region. libSystem
+still gives out blocks of the region, so a later call of libSystem from
+the program (`cosmo_dlopen()`, `sandbox_init()`, `os_log()`) gets memory
+in the program, and `calloc()` or a free writes over its data. A probe
+of the range at the start of `main()` of the loader found it in use in
+about 7 starts of 10.
+
+**Workaround in BEAM.com.** `fix_ape_m1` of `scripts/steps.sh` applies
+`patches/cosmo/ape-m1.patch` to `bin/ape-m1.c` of cosmocc. The loader:
+
+1. reserves `0x800000000`-`0x801000000` with `PROT_NONE` at the start of
+   `main()`, when the range is free;
+2. before it maps a program with fixed addresses, removes the
+   reservation, and maps each range of a `PT_LOAD` segment without
+   `MAP_FIXED`: macOS gives back the hint only when the range is free;
+3. when a range is in use, starts itself again with `execve()`
+   (`APE_LOADER_TRIES` counts the tries, at most 64).
+
+On the runner `macos-latest`, 3,000 sandboxed starts with this loader
+gave no hang and no failure. The old loader gave 4 hangs in 2,655
+starts in the same test. A new start costs about 4 ms. The longest
+series was 22 new starts.
+
+Caution: the shell header compiles the loader only when
+`$TMPDIR/.ape-1.10` (or `~/.ape-1.10`) does not exist. A Mac keeps the
+loader of an older APE file there until a person removes it.
+
+**Possible upstream fix.** The loader must not map over a mapping that
+is there: a check of each range, or a base address of the programs
+outside the ranges of the malloc of macOS. A reproducer: a loop of
+starts of an APE program that calls `sandbox_init()` of libSystem, and
+`vmmap` of a process that hangs.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
