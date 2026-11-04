@@ -385,10 +385,30 @@ check_ape_loader() {
     done
 }
 
+# The APE loader of macOS arm64 in cosmocc (bin/ape-m1.c), which apelink
+# puts in each APE file as source: the shell header compiles it with cc
+# on the Mac. patches/cosmo/ape-m1.patch makes the loader check that the
+# fixed addresses of the program are free, and start again when they are
+# not (issue 177, C51 of docs/UPSTREAM.md). The original stays in
+# ape-m1.c.orig, and the mark has the SHA-256 of the patch, so a new
+# patch applies to the original.
+fix_ape_m1() {
+    f=$COSMOCC/bin/ape-m1.c
+    [ -f "$f" ] || return 0
+    patch_sum=$(sha256sum "$ROOT/patches/cosmo/ape-m1.patch" | cut -d' ' -f1)
+    [ "$(cat "$f.beam_com_patched" 2>/dev/null)" = "$patch_sum" ] && return 0
+    [ -f "$f.orig" ] || cp "$f" "$f.orig"
+    cp "$f.orig" "$f"
+    patch -s -p1 -d "$COSMOCC/bin" < "$ROOT/patches/cosmo/ape-m1.patch"
+    echo "$patch_sum" > "$f.beam_com_patched"
+    log "The APE loader of macOS arm64: patches/cosmo/ape-m1.patch"
+}
+
 step_toolchain() {
     if [ -x "$COSMOCC/bin/cosmocc" ]; then
         log "Using cosmocc in $COSMOCC"
         fix_ape_loader
+        fix_ape_m1
         return
     fi
     log "Downloading cosmocc $COSMOCC_VERSION"
@@ -399,6 +419,7 @@ step_toolchain() {
     (cd "$COSMOCC" && unzip -q "$BUILD/cosmocc.zip")
     rm -f "$BUILD/cosmocc.zip"
     fix_ape_loader
+    fix_ape_m1
 }
 
 step_openssl() {
@@ -1328,7 +1349,8 @@ step_roots() {
 # Caution: a file that a step starts to read must be in its list.
 step_files() {
     case $1 in
-        toolchain|openssl|release) ;;
+        toolchain) echo "patches/cosmo/ape-m1.patch" ;;
+        openssl|release) ;;
         otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h" ;;
         configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
         sqlite) echo "patches/esqlite" ;;

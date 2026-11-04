@@ -1,0 +1,106 @@
+--- a/ape-m1.c
++++ b/ape-m1.c
+@@ -42,6 +42,8 @@
+ #include <sys/uio.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <mach-o/dyld.h>
++#include <stdlib.h>
+ 
+ #define pagesz 16384
+ /* maximum path size that cosmo can take */
+@@ -581,6 +583,41 @@
+   return sysret(sysctlnametomib(name, mibp, sizep));
+ }
+ 
++/* BEAM.com: the arguments and the environment of the loader, for
++   Respawn(). */
++static char **g_argv, **g_envp;
++
++/* BEAM.com: the addresses of a program with fixed addresses
++   (IMAGE_BASE_VIRTUAL of Cosmopolitan), reserved with PROT_NONE at the
++   start of main(), so that the malloc() of libSystem does not put a
++   region there before Spawn() maps the program. */
++#define RESERVE_BASE 0x800000000ul
++#define RESERVE_SIZE 0x1000000ul
++static int g_reserved;
++extern char **environ;
++
++/* BEAM.com: start the loader again, in a new process with a new layout
++   of its address space. A part of the fixed addresses of the program is
++   in use (see Spawn). APE_LOADER_TRIES counts the tries, at most 64.
++   On macOS 26, the range is in use in about 7 starts of 10, and each
++   new start costs about 4 ms. */
++__attribute__((__noreturn__)) static void Respawn(const char *exe) {
++  char path[PATH_MAX], count[8];
++  uint32_t size = sizeof(path);
++  const char *tries = getenv("APE_LOADER_TRIES");
++  int n = tries ? atoi(tries) : 0;
++  if (n >= 64)
++    Pexit(exe, 0, "the fixed addresses of the program are in use");
++  count[0] = '0' + (n + 1) / 10;
++  count[1] = '0' + (n + 1) % 10;
++  count[2] = 0;
++  if (_NSGetExecutablePath(path, &size))
++    Pexit(exe, 0, "the path of the APE loader is too long");
++  setenv("APE_LOADER_TRIES", count, 1);
++  execve(path, g_argv, environ);
++  Pexit(exe, -errno, "execve of the APE loader");
++}
++
+ __attribute__((__noreturn__)) static void Spawn(const char *exe, int fd,
+                                                 long *sp, struct ElfEhdr *e,
+                                                 struct ElfPhdr *p,
+@@ -664,6 +701,33 @@
+     dynbase = 0;
+   }
+ 
++  /* BEAM.com: each range of a program with fixed addresses must be
++     free. MAP_FIXED of XNU replaces a mapping that is there, for
++     example a region of the malloc zones of libSystem, which this
++     loader can have made already. Then the malloc() of libSystem gives
++     out blocks in the memory of the program, and a call of libSystem
++     (sandbox_init(), os_log()) writes over its data (issue 177). A
++     mapping without MAP_FIXED gets the hint only when it is free. */
++  if (g_reserved) {
++    sys_munmap((void *)RESERVE_BASE, RESERVE_SIZE);
++    g_reserved = 0;
++  }
++  if (e->e_type != ET_DYN) {
++    for (i = 0; i < e->e_phnum; ++i) {
++      if (p[i].p_type != PT_LOAD)
++        continue;
++      a = p[i].p_vaddr & -pagesz;
++      b = (p[i].p_vaddr + p[i].p_memsz + (pagesz - 1)) & -pagesz;
++      rc = sys_mmap((void *)a, b - a, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS,
++                    -1, 0);
++      if (rc != (long)a) {
++        if (rc >= 0)
++          sys_munmap((void *)rc, b - a);
++        Respawn(exe);
++      }
++    }
++  }
++
+   /* load elf */
+   for (i = 0; i < e->e_phnum; ++i) {
+     void *addr;
+@@ -943,6 +1007,18 @@
+   union ElfEhdrBuf *ebuf;
+   char *p, *pe, *exe, *prog, *execfn;
+ 
++  g_argv = argv;
++  g_envp = envp;
++  {
++    long r = sys_mmap((void *)RESERVE_BASE, RESERVE_SIZE, PROT_NONE,
++                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (r == (long)RESERVE_BASE) {
++      g_reserved = 1;
++    } else if (r >= 0) {
++      sys_munmap((void *)r, RESERVE_SIZE);
++    }
++  }
++
+   /* allocate loader memory in program's arg block */
+   n = sizeof(struct ApeLoader);
+   M = (struct ApeLoader *)__builtin_alloca(n);

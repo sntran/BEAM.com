@@ -89,13 +89,17 @@ order, with `git apply`.
 
 ## Cosmopolitan (`patches/cosmo/`)
 
-`build_pledge` of `scripts/steps.sh` applies it, with `patch -p1`, to
-the file of Cosmopolitan that it gets for the tag of cosmocc, and links
-the object into the emulator.
+`build_cosmo_file` of `scripts/steps.sh` applies a patch of `libc/`,
+with `patch -p1`, to the file of Cosmopolitan that it gets for the tag
+of cosmocc, and links the object into the emulator. `fix_ape_m1` applies
+`ape-m1.patch` to `bin/ape-m1.c` of cosmocc, the source of the APE
+loader of macOS arm64 that apelink puts in each APE file.
 
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
+| `unveil.patch` | `libc/calls/unveil.c` | The permission "c" also gives Landlock the rights of the removal of a file and of a directory. | C50 |
+| `ape-m1.patch` | `bin/ape-m1.c` of cosmocc | The loader reserves the fixed addresses of the program at its start, checks that each range is free before it maps the program, and starts again when a range is in use. | C51 |
 
 ## Changes that are not patch files
 

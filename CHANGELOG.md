@@ -5,6 +5,21 @@ notes of its release.
 
 ## Unreleased
 
+- macOS arm64: about 1 start in 300 of a program with a sandbox hung
+  before ERTS started, with the CPU in use (#177). The APE loader mapped
+  the program over regions of the malloc zone of libSystem, so a call of
+  libSystem (`sandbox_init()`, `os_log()`) wrote over the data of the
+  program. `patches/cosmo/ape-m1.patch` makes the loader check that the
+  fixed addresses of the program are free, and start again when they
+  are not (C51 of `docs/UPSTREAM.md`). On a Mac that has the loader of an
+  older APE file in `$TMPDIR/.ape-1.10` or `~/.ape-1.10`, remove it, so
+  that the shell header compiles the new loader.
+- The workflow "Remote SSH" makes the downloaded `beam.com` executable.
+  The shell header of an APE file starts with `command -v "$0"`, and the
+  `/bin/sh` of macOS (bash) gives nothing for a file that is not
+  executable. So the server did not start on macOS, with "gzip: (stdin):
+  unexpected end of file".
+
 - Security: on Linux, each sandbox let the program delete each file and
   each empty directory of its user, also with `--allow-read` only. The
   `unveil()` of Cosmopolitan did not give Landlock the rights of removal
