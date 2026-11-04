@@ -92,6 +92,29 @@ static char *sb_real(const char *path)
     return strdup(buf);
 }
 
+/* The program file (its real path) and the text of its permissions,
+ * for the digest of BEAM_COM_SEATBELT. */
+static char *sb_identity;
+
+void beam_com_seatbelt_identity(const char *text)
+{
+    const char *nl = strchr(text, '\n');
+    char *file, *real;
+    size_t n;
+
+    free(sb_identity);
+    if (!nl || !(file = strndup(text, (size_t)(nl - text)))) {
+        sb_identity = strdup(text);
+        return;
+    }
+    real = sb_real(file);
+    free(file);
+    n = (real ? strlen(real) : 0) + strlen(nl) + 1;
+    if ((sb_identity = malloc(n)))
+        snprintf(sb_identity, n, "%s%s", real ? real : "", nl);
+    free(real);
+}
+
 void beam_com_seatbelt_allow(const char *path, const char *permissions)
 {
     struct sb_rule *r;
@@ -223,6 +246,21 @@ const char *beam_com_seatbelt_profile(void)
     return out;
 }
 
+/* The FNV-1a hash of 64 bits of a text, as 16 hexadecimal digits.
+ * beam_com_seatbelt_apply() keeps the digest of the identity (the
+ * program file and its permissions) in BEAM_COM_SEATBELT. */
+const char *beam_com_seatbelt_digest(const char *text)
+{
+    static char out[17];
+    uint64_t h = 14695981039346656037ull;
+    const unsigned char *p;
+
+    for (p = (const unsigned char *)text; *p; p++)
+        h = (h ^ *p) * 1099511628211ull;
+    snprintf(out, sizeof(out), "%016llx", (unsigned long long)h);
+    return out;
+}
+
 #ifndef BEAM_COM_SEATBELT_TEST
 /*
  * getcwd() in the sandbox. The getcwd() of Cosmopolitan on XNU opens "."
@@ -303,7 +341,8 @@ const char *beam_com_seatbelt_apply(void)
     void (*free_error)(char *);
     int (*executable_path)(char *, unsigned *);
     void *lib, *f, *g, *h;
-    char *error = NULL, loader[PATH_MAX];
+    char *error = NULL, loader[PATH_MAX], digest[17];
+    const char *profile, *inherited;
     unsigned size = sizeof(loader);
     static char reason[512];
 
@@ -321,12 +360,32 @@ const char *beam_com_seatbelt_apply(void)
         return "sandbox_init() of libSystem is not there";
     if ((h = cosmo_dlsym(lib, "getattrlist")))
         sb_getattrlist = cosmo_dltramp(h);
-    if (init(beam_com_seatbelt_profile(), 0, &error) != 0) {
-        snprintf(reason, sizeof(reason), "sandbox_init(): %s", error ? error : "error");
+    profile = beam_com_seatbelt_profile();
+    snprintf(digest, sizeof(digest), "%s",
+             beam_com_seatbelt_digest(sb_identity ? sb_identity : profile));
+    if (init(profile, 0, &error) != 0) {
+        /* sandbox_init() refuses a process that has a profile already
+         * (EPERM): for example the new VM of erl mode, which keeps the
+         * profile of the program that started it. When the digest of
+         * the program file and the permissions of the parent
+         * (BEAM_COM_SEATBELT) is the digest of this process, the
+         * process goes on in that profile. The text of a profile can
+         * differ between the two (the path of the APE loader). Another
+         * program or other permissions stop it. The variable cannot
+         * remove a rule: the kernel applies the profile of the parent
+         * all the same. */
+        inherited = getenv("BEAM_COM_SEATBELT");
+        snprintf(reason, sizeof(reason), "sandbox_init(): %s (digest %s, BEAM_COM_SEATBELT %s)",
+                 error ? error : "error", digest, inherited ? inherited : "not set");
         if (error)
             free_error(error);
+        if (inherited && strcmp(inherited, digest) == 0) {
+            sb_on = sb_getattrlist != NULL;
+            return NULL;
+        }
         return reason;
     }
+    setenv("BEAM_COM_SEATBELT", digest, 1);
     sb_on = sb_getattrlist != NULL;
     return NULL;
 }

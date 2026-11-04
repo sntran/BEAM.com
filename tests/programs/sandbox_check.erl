@@ -39,6 +39,9 @@
 %%   sandbox_check run PROGRAM  run a program (a port), found in PATH, with
 %%                              the arguments -c "exit 0" (sh ends at once,
 %%                              and true ignores them)
+%%   sandbox_check erl PATH     start the file of the program in erl mode
+%%                              (BEAM_COM_ERL=1, as peer does): the new VM
+%%                              reads PATH, and the result is its result
 %%
 %% A result is "ok" or the error, for example "write: error eperm". The
 %% result of run names its program: "run sh: ok", and the result of connect
@@ -111,6 +114,9 @@ run(["udp", Host, Port | Rest]) ->
     run(Rest);
 run(["pyconnect", Host, Port | Rest]) ->
     io:format("pyconnect ~s: ~s~n", [Host, pyconnect(Host, Port)]),
+    run(Rest);
+run(["erl", Path | Rest]) ->
+    report(erl, erl_mode(Path)),
     run(Rest);
 run(["run", Program | Rest]) ->
     report("run " ++ Program, run_program(Program)),
@@ -232,6 +238,38 @@ run_program(Program) ->
             catch
                 error:Reason -> {error, Reason}
             end
+    end.
+
+%% The file of this program in erl mode, with the environment of this
+%% VM (BEAM_COM_ALLOW too). The new VM reads Path and prints "ok" or
+%% "error REASON". Another exit, for example 127 when its sandbox did not
+%% start, gives {error, {exit_status, S}}.
+erl_mode(Path) ->
+    {ok, [[Exe]]} = init:get_argument(beam_com_exe),
+    Code = lists:flatten(io_lib:format(
+        "case file:read_file(~p) of {ok, _} -> io:format(\"ok~~n\"); "
+        "{error, R} -> io:format(\"error ~~p~~n\", [R]) end, halt().", [Path])),
+    try open_port({spawn_executable, Exe}, [{env, [{"BEAM_COM_ERL", "1"}]}, exit_status,
+                                            stderr_to_stdout, {args, ["-noshell", "-eval", Code]}]) of
+        Port -> erl_mode_wait(Port, [])
+    catch
+        error:Reason -> {error, Reason}
+    end.
+
+erl_mode_wait(Port, Out) ->
+    receive
+        {Port, {data, D}} -> erl_mode_wait(Port, [Out | D]);
+        {Port, {exit_status, 0}} ->
+            Lines = string:split(lists:flatten(Out), "\n", all),
+            case [L || L <- Lines, L =:= "ok" orelse lists:prefix("error ", L)] of
+                ["ok" | _] -> ok;
+                ["error " ++ R | _] -> {error, list_to_atom(R)};
+                [] -> {error, {no_result, lists:flatten(Out)}}
+            end;
+        {Port, {exit_status, S}} ->
+            io:format("erl: the output of the new VM: ~ts~n", [lists:flatten(Out)]),
+            {error, {exit_status, S}}
+    after 60000 -> {error, timeout}
     end.
 
 wait(Port) ->

@@ -127,6 +127,33 @@ int main(void)
     CHECK(strcmp(beam_com_seatbelt_profile(), "(version 1)\n(deny default)\n") == 0);
     reset();
 
+    /* The digest of BEAM_COM_SEATBELT: 16 hexadecimal digits, the same
+     * for the same profile, and another for another profile. */
+    {
+        char one[17], two[17];
+
+        beam_com_seatbelt_allow("/etc", "r");
+        snprintf(one, sizeof(one), "%s", beam_com_seatbelt_digest(beam_com_seatbelt_profile()));
+        snprintf(two, sizeof(two), "%s", beam_com_seatbelt_digest(beam_com_seatbelt_profile()));
+        CHECK(strlen(one) == 16 && strspn(one, "0123456789abcdef") == 16);
+        CHECK(strcmp(one, two) == 0);
+        beam_com_seatbelt_allow("/srv", "r");
+        snprintf(two, sizeof(two), "%s", beam_com_seatbelt_digest(beam_com_seatbelt_profile()));
+        CHECK(strcmp(one, two) != 0);
+        CHECK(strcmp(beam_com_seatbelt_digest(""), "cbf29ce484222325") == 0);
+        reset();
+
+        /* The identity has the real path of the program file. */
+        beam_com_seatbelt_identity("/tmp/../tmp\nread=/etc;run=true;");
+        CHECK(sb_identity && strstr(sb_identity, "\nread=/etc;run=true;"));
+        CHECK(sb_identity && strstr(sb_identity, "/../") == NULL);
+        snprintf(one, sizeof(one), "%s", beam_com_seatbelt_digest(sb_identity));
+        beam_com_seatbelt_identity("/tmp\nread=/etc;run=true;");
+        CHECK(strcmp(one, beam_com_seatbelt_digest(sb_identity)) == 0);
+        beam_com_seatbelt_identity("/tmp\nread=/etc;");
+        CHECK(strcmp(one, beam_com_seatbelt_digest(sb_identity)) != 0);
+    }
+
     if (failures) {
         printf("seatbelt_check: %d failures\n", failures);
         return 1;
