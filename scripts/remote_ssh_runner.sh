@@ -77,6 +77,20 @@ wait_for() {
 }
 
 export REMOTE_SSH_MINUTES=$MINUTES REMOTE_SSH_PORT=$PORT
+# Facts of the file of beam.com and of the parts of its shell header.
+if [ "$ERL_MODE" = beam.com ]; then
+    echo "remote ssh: $(ls -l "$BEAM_COM")"
+    (sha256sum "$BEAM_COM" 2>/dev/null || shasum -a 256 "$BEAM_COM")
+    echo "remote ssh: TMPDIR=${TMPDIR:-} HOME=${HOME:-} uname -m=$(uname -m)"
+    head -c 16384 "$BEAM_COM" | strings | grep -E 'dd if=.*skip=[0-9]{5,}' | while read -r line; do
+        skip=$(echo "$line" | sed -n 's/.*skip=\([0-9]*\).*/\1/p')
+        count=$(echo "$line" | sed -n 's/.*count=\([0-9]*\).*/\1/p')
+        got=$(dd if="$BEAM_COM" skip="$skip" count="$count" bs=1 2>/dev/null | wc -c | tr -d ' ')
+        if dd if="$BEAM_COM" skip="$skip" count="$count" bs=1 2>/dev/null | gzip -t 2>/dev/null; then r=ok; else r=bad; fi
+        echo "remote ssh: header part skip=$skip count=$count: $got bytes, gzip $r"
+    done
+    ls -la "${TMPDIR:-/tmp}"/.ape* "$HOME"/.ape* 2>&1 | head -n 5
+fi
 case $ERL_MODE in
     beam.com)
         sh "${BEAM_COM:?}" -a ssh "$repo/scripts/remote_ssh.erl" -- \
