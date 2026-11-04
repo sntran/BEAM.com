@@ -17,8 +17,12 @@ void beam_com_seatbelt_omit(const char *parts);
 /* The profile in SBPL of the rules so far. */
 const char *beam_com_seatbelt_profile(void);
 
+/* The digest of a profile: 16 hexadecimal digits. */
+const char *beam_com_seatbelt_digest(const char *profile);
+
 /* Apply the profile with sandbox_init() (macOS arm64 only). Gives NULL,
- * or the reason of the failure. */
+ * or the reason of the failure. A process that has the same profile
+ * from its parent (BEAM_COM_SEATBELT) also gives NULL. */
 const char *beam_com_seatbelt_apply(void);
 
 #endif
