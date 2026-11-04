@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- A build URL: `curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'`
+  gives a custom build with the default NIFs and rusty_csv, and
+  `?nifs=rusty_csv` gives only rusty_csv. The answer is the file as a
+  stream. When the file is not there yet, the request waits for its
+  build (about 2 to 3 minutes), with no email and no form. See "A build
+  URL" in `docs/BUILDING.md`.
 - macOS arm64: about 1 start in 300 of a program with a sandbox hung
   before ERTS started, with the CPU in use (#177). The APE loader mapped
   the program over regions of the malloc zone of libSystem, so a call of
@@ -913,7 +919,7 @@ on npm it has the dist-tag `next` (`npm install beam.com@next`).
   `.ex` files, applications, and rebar3 and Mix projects, with Hex
   packages, and with no Erlang installation. `mix`, `iex`, `elixir`,
   `elixirc` and `escript` are in the file.
-- Static NIFs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
+- Static nifs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
   exqlite), WebAssembly and WASI (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir.
 - NIF libraries in WebAssembly: when a NIF has no native library,

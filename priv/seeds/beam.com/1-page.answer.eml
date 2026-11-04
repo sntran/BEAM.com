@@ -155,6 +155,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <p class="warn w-hex">Hex needs inets and ssl. Keep inets and ssl, or choose No for Hex.</p>
 <button>Send me the link</button>
 </form>
+<p class="muted">A program or CI can get a build with one request, with no email: <code class="nw">curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'</code> gives the default NIFs and rusty_csv, and <code>?nifs=rusty_csv</code> gives only rusty_csv. The request waits for the build, about 2 to 3 minutes.</p>
 <p class="muted">This page is a FIFO of <a href="https://mkfifo.com/">mkfifo.com</a>. The build runs on GitHub Actions from the main branch of BEAM.com. A member of the repository can also ask for a build with <a href="https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml">an issue</a>.</p>
 </main>
 </body>

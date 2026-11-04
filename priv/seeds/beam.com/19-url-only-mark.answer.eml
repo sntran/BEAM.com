@@ -1,0 +1,5 @@
+To: -
+Status: 422
+Cache-Control: no-store
+
+$(cat beam.com/t/beam-u.only.$(printf %s $nifs | tr , '\n' | sort -u | tr '\n' .)$(date -u +%Y%m%d).txt)
