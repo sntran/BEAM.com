@@ -375,7 +375,8 @@ const char *beam_com_seatbelt_apply(void)
          * remove a rule: the kernel applies the profile of the parent
          * all the same. */
         inherited = getenv("BEAM_COM_SEATBELT");
-        snprintf(reason, sizeof(reason), "sandbox_init(): %s", error ? error : "error");
+        snprintf(reason, sizeof(reason), "sandbox_init(): %s (digest %s, BEAM_COM_SEATBELT %s)",
+                 error ? error : "error", digest, inherited ? inherited : "not set");
         if (error)
             free_error(error);
         if (inherited && strcmp(inherited, digest) == 0) {
