@@ -426,8 +426,22 @@ WSL
     chmod +x "$tmp.win" "$tmp.wsl"
     if "$tmp.wsl" -c true 2>/dev/null; then
         runner=$tmp.wsl
+        pre=$failed
         check beam.com 'child_setup: loader@@erl mode ok@@wsl_names {ok,\[{"wsl_check"' -sname wsl_check \
             -noshell -eval "io:format(\"wsl_names ~p~n\", [net_adm:names()]), $loader_eval"
+        # The facts of a failure: the user, the program file, and the
+        # calls that find the program file and its zip. The next check
+        # removes $tmp.diag.
+        if [ "$failed" != "$pre" ]; then
+            echo "--- the fake WSL: the user, the uid map and the program file"
+            $runner -c 'id; cat /proc/self/uid_map; ls -la "$1"' sh "$dir/beam.com" 2>&1
+            if command -v strace > /dev/null 2>&1; then
+                echo "--- strace of beam.com -sname in the fake WSL"
+                $runner -c 'exec strace -f -e trace=execve,openat,readlink,readlinkat -o "$1" sh "$2" -sname wsl_strace -noshell -eval "halt()."' \
+                    sh "$tmp.diag" "$dir/beam.com" > /dev/null 2>&1
+                grep -v -E 'ENOENT|/lib/|/etc/ld' "$tmp.diag" | head -n 80
+            fi
+        fi
         $runner "$dir/beam.com" epmd -kill > /dev/null 2>&1
         check beam.com '^usage: inotifywait ' elixir -e '{out, 1} = System.cmd("sh", ["-c", System.fetch_env!("FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE")], stderr_to_stdout: true); IO.write(out)'
         runner=sh
@@ -590,12 +604,25 @@ if [ -d examples ]; then
     check beam.com 'wrote .*sandbox_none.com' \
         tests/programs/sandbox_check.erl -o "$dir/sandbox_none.com"
     rm -f "$dir/sandbox.tmp"
+    # A kernel of Linux with no Landlock (issue 171): beam.com prints a
+    # warning at the start of a sandbox, and checks the paths and the
+    # sockets in the calls of the C library, as on Windows. A refused
+    # socket then gives EACCES (the wrap), not EPERM (pledge).
+    landlock=1 sock=eperm
+    if [ "$os" = linux ]; then
+        BEAM_COM_ALLOW=read=/etc BEAM_COM_VERBOSE=1 $runner "$dir/sandbox_none.com" > "$tmp.landlock" 2>&1
+        if grep -q 'the kernel has no Landlock' "$tmp.landlock"; then
+            landlock=0 sock=eacces
+            echo "NOTE: this kernel has no Landlock"
+        fi
+        rm -f "$tmp.landlock"
+    fi
     net_extra= rw_extra=
     case $os-$(uname -m) in
         linux-*)
             net_extra="write $dir/sandbox.tmp sockopts rawopt" rw_extra=listen
             net='read: ok@@read: error eacces@@listen: ok@@write: error e[a-z]*@@sockopts: ok@@rawopt: refused@@done'
-            rw='read: ok@@read: error eacces@@write: ok@@listen: error eperm@@done'
+            rw="read: ok@@read: error eacces@@write: ok@@listen: error $sock@@done"
             runs='run true: ok@@run sh: error@@done'
             env='read: ok@@read: error eacces@@done' ;;
         openbsd-*)
@@ -656,17 +683,8 @@ if [ -d examples ]; then
     # the result of this system. The directories of $IN and $OUT are new
     # for each line. The table is on the file descriptor 3, so that the
     # programs do not read it.
-    # On Linux, a kernel with no Landlock (issue 171) has its own column:
-    # beam.com then prints a warning at the start of a sandbox.
-    landlock=1
-    if [ "$os" = linux ]; then
-        BEAM_COM_ALLOW=read=/etc BEAM_COM_VERBOSE=1 $runner "$dir/sandbox_none.com" > "$tmp.landlock" 2>&1
-        if grep -q 'the kernel has no Landlock' "$tmp.landlock"; then
-            landlock=0
-            echo "NOTE: this kernel has no Landlock"
-        fi
-        rm -f "$tmp.landlock"
-    fi
+    # On Linux, a kernel with no Landlock (issue 171) has its own column
+    # ($landlock, see above).
     case $os-$(uname -m)-$landlock in
         linux-*-1) col=4 ;;
         linux-*-0) col=5 ;;
@@ -805,8 +823,14 @@ time.sleep(120)' "$claims/in/srv.sock" &
             read /etc/hosts read "$dir/sandbox-link" write "$dir/sandbox-w/new.txt" \
             write "$dir/sandbox-w/../sandbox.tmp" listen
         unset BEAM_COM_WINDOWS_SANDBOX
-        check sandbox_none.com 'read: ok@@read: ok@@listen: error eperm@@done' \
-            read /etc/hosts read "$dir/sandbox-link" listen
+        # Without Landlock, this is the check of the C library again.
+        if [ "$landlock" = 1 ]; then
+            check sandbox_none.com 'read: ok@@read: ok@@listen: error eperm@@done' \
+                read /etc/hosts read "$dir/sandbox-link" listen
+        else
+            check sandbox_none.com 'read: ok@@read: error eacces@@listen: error eacces@@done' \
+                read /etc/hosts read "$dir/sandbox-link" listen
+        fi
         unset BEAM_COM_ALLOW
         rm -rf "$dir/sandbox-w" "$dir/sandbox-link"
     fi

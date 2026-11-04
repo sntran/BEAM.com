@@ -11,6 +11,13 @@ notes of its release.
   (C50 of `docs/UPSTREAM.md`). Now a removal needs a path of
   `--allow-write`, as the other changes do, and a rename from outside
   the rules gives `eacces`.
+- Security: on Linux with a kernel that has no Landlock, `--allow-run`
+  with a list let the program start each program as a port. Now
+  `erl_child_setup` checks the real path of each program, and of the
+  shell of `{spawn, Command}`, against the paths that Landlock gives
+  "x": the programs of the list, the directories of the libraries, the
+  file of the program and its APE loader. Another program gives
+  `eacces`, as with Landlock. The CI job below found it.
 - CI runs `tests/run.sh` on Linux with a kernel that has no Landlock
   (#171): the kernel of the runner in a VM of QEMU (virtme-ng), with
   `lsm=` and no `landlock`. `tests/sandbox_claims.txt` has a column for

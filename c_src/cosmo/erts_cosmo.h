@@ -118,6 +118,14 @@ int beam_com_execve(const char *path, char *const argv[],
                     char *const envp[]) __attribute__((__weak__));
 
 /*
+ * Defined in beam_com.c. execle() for erl_child_setup (the shell of a
+ * port of {spawn, Command}, see beam_com_child_setup.c): the same as
+ * beam_com_execve() with the arguments of execle(). Returns only on
+ * error.
+ */
+int beam_com_execle(const char *path, const char *arg, ...);
+
+/*
  * Defined in beam_com.c. On macOS arm64, starts the helper program of the
  * /zip/bin path with posix_spawn() of libSystem (fd3 at fd 3, other and
  * fd3 closed, a new session), because the child of fork() can hang in
