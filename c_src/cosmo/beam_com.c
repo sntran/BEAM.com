@@ -496,6 +496,10 @@ struct allow {
     struct arglist read, write, programs, hosts;
 };
 
+/* The text of the permissions of read_allow(): the words, each with a
+ * ";" after it. */
+static char *allow_text;
+
 static void sandbox_error(int helper, const char *what, const char *arg)
 {
     if (helper)
@@ -739,6 +743,10 @@ static void sandbox_windows(int helper, struct allow *a)
 
     if (sandbox_mac) {
         beam_com_seatbelt_net(a->net);
+        /* The program file and its permissions: a new VM of erl mode
+         * with the same ones goes on in the profile of its parent. */
+        beam_com_seatbelt_identity(join(GetProgramExecutableName(), "\n",
+                                        allow_text ? allow_text : ""));
         /* For the tests: the parts of the profile to leave out, to find
          * the part that stops a program. Only with BEAM_COM_ALLOW: the
          * permissions of a file never change. */
@@ -932,6 +940,9 @@ static int read_allow(int helper, struct allow *a, int *from_env)
         for (word = strtok_r(copy, ";\n", &save); word; word = strtok_r(NULL, ";\n", &save))
             push(&words, word);
     }
+    allow_text = strdup("");
+    for (i = 0; i < words.n; i++)
+        allow_text = join(allow_text, words.v[i], ";");
     for (i = 0; i < words.n; i++)
         allow_parse(helper, a, words.v[i]);
     return words.n > 0;

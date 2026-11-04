@@ -19,9 +19,9 @@ notes of its release.
   `unveil` with `--allow-run`. A new Landlock ruleset only removes
   rights, so the new VM can do no more than the program. On macOS
   arm64, the new VM stopped too, because Seatbelt refuses a second
-  `sandbox_init()`. Now the program keeps the digest of its profile in
-  `BEAM_COM_SEATBELT`, and a new VM with the same profile goes on with
-  the profile of its parent. `tests/sandbox_claims.txt` checks it
+  `sandbox_init()`. Now the program keeps the digest of its file and
+  its permissions in `BEAM_COM_SEATBELT`, and a new VM with the same
+  file and permissions goes on in the profile of its parent. `tests/sandbox_claims.txt` checks it
   (`sandbox_check erl PATH`).
 - Security: on Linux with a kernel that has no Landlock, `--allow-run`
   with a list let the program start each program as a port. Now

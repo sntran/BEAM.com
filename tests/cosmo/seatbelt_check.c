@@ -142,6 +142,16 @@ int main(void)
         CHECK(strcmp(one, two) != 0);
         CHECK(strcmp(beam_com_seatbelt_digest(""), "cbf29ce484222325") == 0);
         reset();
+
+        /* The identity has the real path of the program file. */
+        beam_com_seatbelt_identity("/tmp/../tmp\nread=/etc;run=true;");
+        CHECK(sb_identity && strstr(sb_identity, "\nread=/etc;run=true;"));
+        CHECK(sb_identity && strstr(sb_identity, "/../") == NULL);
+        snprintf(one, sizeof(one), "%s", beam_com_seatbelt_digest(sb_identity));
+        beam_com_seatbelt_identity("/tmp\nread=/etc;run=true;");
+        CHECK(strcmp(one, beam_com_seatbelt_digest(sb_identity)) == 0);
+        beam_com_seatbelt_identity("/tmp\nread=/etc;");
+        CHECK(strcmp(one, beam_com_seatbelt_digest(sb_identity)) != 0);
     }
 
     if (failures) {
