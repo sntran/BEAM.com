@@ -219,7 +219,10 @@ Without a GitHub account, use the form of
 link with a one-time code to your email address, and the link starts the
 same workflow. A second email gives the link of the file, or the reason
 when the build did not run. The file stays in the prerelease
-`custom-builds` for 30 days, and the FIFO streams it.
+`custom-builds` for 30 days, and the FIFO streams it. The email also
+gives the link of the file in the release of GitHub, for a script or CI:
+the bot protection of Cloudflare on mkfifo.com can stop a client that is
+not a browser.
 
 - The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
   envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
