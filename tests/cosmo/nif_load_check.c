@@ -14,6 +14,7 @@
 
 #include <fcntl.h>
 #include <math.h>
+#include <pthread.h>
 
 static int failures;
 
@@ -82,6 +83,138 @@ static void refused(const unsigned char *bytes, size_t size, const char *part)
         CHECK(contains(err, part));
 }
 
+/* The functions of the TLS object (nif_load_tls.c, nif_load_tls_asm.S). */
+struct tls_fns {
+    int (*get)(void), (*ctor)(void), (*zsum)(int), (*ie)(void);
+    int (*gd)(void), (*ld)(void), (*big)(void);
+    void *(*addr)(void);
+};
+
+static int tls_fns_of(struct bcn_module *m, struct tls_fns *f)
+{
+    *(void **)&f->get = bcn_symbol(m, "t_get");
+    *(void **)&f->ctor = bcn_symbol(m, "t_constructor_value");
+    *(void **)&f->zsum = bcn_symbol(m, "t_zero_sum");
+    *(void **)&f->ie = bcn_symbol(m, "t_ie_get");
+    *(void **)&f->gd = bcn_symbol(m, "t_gd");
+    *(void **)&f->ld = bcn_symbol(m, "t_ld");
+    *(void **)&f->big = bcn_symbol(m, "t_big_end");
+    *(void **)&f->addr = bcn_symbol(m, "t_address");
+    return f->get && f->ctor && f->zsum && f->ie && f->gd && f->ld && f->big && f->addr;
+}
+
+/* The checks of a thread that did not use the module: each variable has
+ * its initial value, then the thread changes its own copy. Gives the
+ * number of the first check that failed, or 0. */
+static int tls_fresh(const struct tls_fns *f)
+{
+    if (f->get() != 4) return 1;
+    if (f->zsum(7) != 0) return 2;
+    if (f->ie() != 43) return 3;
+    if (f->gd() != 41) return 4;
+    if (f->ld() != 42) return 5;
+    if (f->big() != 0) return 6;
+    if (f->get() != 5) return 7;
+    if (f->zsum(9) != 7 * 100) return 8;
+    if (f->ie() != 44 || f->gd() != 42 || f->ld() != 43) return 9;
+    return 0;
+}
+
+/* A thread that waits until GO, then runs tls_fresh. */
+struct tls_thread {
+    pthread_t tid;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int go;
+    const struct tls_fns *f;
+    int result;
+    void *addr;
+};
+
+static void *tls_thread_main(void *arg)
+{
+    struct tls_thread *t = arg;
+    pthread_mutex_lock(&t->mu);
+    while (!t->go)
+        pthread_cond_wait(&t->cv, &t->mu);
+    pthread_mutex_unlock(&t->mu);
+    if (t->f) {
+        t->result = tls_fresh(t->f);
+        t->addr = t->f->addr();
+    }
+    return NULL;
+}
+
+static void tls_thread_start(struct tls_thread *t)
+{
+    memset(t, 0, sizeof(*t));
+    t->result = -1;
+    pthread_mutex_init(&t->mu, NULL);
+    pthread_cond_init(&t->cv, NULL);
+    pthread_create(&t->tid, NULL, tls_thread_main, t);
+}
+
+static void tls_thread_run(struct tls_thread *t, const struct tls_fns *f)
+{
+    pthread_mutex_lock(&t->mu);
+    t->f = f;
+    t->go = 1;
+    pthread_cond_signal(&t->cv);
+    pthread_mutex_unlock(&t->mu);
+    pthread_join(t->tid, NULL);
+}
+
+/* Thread-local data: a thread that started before the load, the thread
+ * that loads (with a constructor), a thread that starts after the load,
+ * and a second module of the same object. */
+static void tls_checks(const unsigned char *tls, size_t tlsn, const unsigned char *big, size_t bign)
+{
+    struct tls_thread before, after;
+    struct tls_fns f, f2;
+    struct bcn_module *m, *m2;
+    char err[512];
+
+    tls_thread_start(&before);
+    m = bcn_load(tls, tlsn, lookup, err, sizeof(err));
+    if (!m) {
+        fprintf(stderr, "nif_load_check: the load of the TLS object failed: %s\n", err);
+        failures++;
+        tls_thread_run(&before, NULL);
+        return;
+    }
+    CHECK(tls_fns_of(m, &f));
+    if (failures)
+        return;
+    /* The constructor ran in this thread: 3 + 1. */
+    CHECK(f.ctor() == 4);
+    CHECK(f.get() == 5);
+    CHECK(f.zsum(1) == 0 && f.ie() == 43 && f.gd() == 41 && f.ld() == 42 && f.big() == 0);
+    tls_thread_run(&before, &f);
+    CHECK(before.result == 0);
+    if (before.result)
+        fprintf(stderr, "nif_load_check: the thread before the load: check %d\n", before.result);
+    tls_thread_start(&after);
+    tls_thread_run(&after, &f);
+    CHECK(after.result == 0);
+    if (after.result)
+        fprintf(stderr, "nif_load_check: the thread after the load: check %d\n", after.result);
+    CHECK(before.addr != f.addr() && after.addr != f.addr());
+    /* The other threads did not change the data of this thread. */
+    CHECK(f.get() == 6 && f.zsum(0) == 100 && f.ie() == 44 && f.gd() == 42 && f.ld() == 43);
+
+    /* A second module of the object has its own data. */
+    m2 = bcn_load(tls, tlsn, lookup, err, sizeof(err));
+    CHECK(m2 != NULL);
+    if (m2 && tls_fns_of(m2, &f2)) {
+        CHECK(f2.ctor() == 4 && f2.get() == 5 && f2.gd() == 41);
+        CHECK(f.get() == 7 && f.gd() == 43);
+        CHECK(f2.addr() != f.addr());
+        free_module(m2);
+    }
+    free_module(m);
+    refused(big, bign, "larger than");
+}
+
 /* The loader never crashes on a broken object: random changes in a copy
  * of the object with no constructors (so no broken code runs). */
 static void broken_objects(const unsigned char *obj, size_t size)
@@ -116,13 +249,15 @@ int main(void)
 {
 #if defined(__x86_64__)
     const unsigned char *obj = obj_x86_64, *other = obj_aarch64, *objb = objb_x86_64;
-    const unsigned char *tls = tls_x86_64;
+    const unsigned char *tls = tls_x86_64, *tlsbig = tlsbig_x86_64;
+    size_t tlsbign = sizeof(tlsbig_x86_64);
     size_t objn = sizeof(obj_x86_64), othern = sizeof(obj_aarch64), objbn = sizeof(objb_x86_64);
     size_t tlsn = sizeof(tls_x86_64);
     uintptr_t limit = 0x80000000u;
 #else
     const unsigned char *obj = obj_aarch64, *other = obj_x86_64, *objb = objb_aarch64;
-    const unsigned char *tls = tls_aarch64;
+    const unsigned char *tls = tls_aarch64, *tlsbig = tlsbig_aarch64;
+    size_t tlsbign = sizeof(tlsbig_aarch64);
     size_t objn = sizeof(obj_aarch64), othern = sizeof(obj_x86_64), objbn = sizeof(objb_aarch64);
     size_t tlsn = sizeof(tls_aarch64);
     uintptr_t limit = (uintptr_t)__executable_start + 0x100000000ull;
@@ -216,7 +351,7 @@ int main(void)
     refused((const unsigned char *)"\177ELFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 64,
             "not a 64-bit little-endian ELF object");
     refused(other, othern, "an object of a different CPU");
-    refused(tls, tlsn, "thread-local data is not supported yet");
+    tls_checks(tls, tlsn, tlsbig, tlsbign);
     missing_name = "host_add";
     refused(obj, objn, "the program has no symbol host_add");
     missing_name = NULL;

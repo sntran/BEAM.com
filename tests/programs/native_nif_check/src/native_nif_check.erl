@@ -6,11 +6,11 @@
 -export([add/2, echo/1, upcase/1, iolist/1, map_keys/1, mul/2, counter_new/0,
          counter_add/2, dtor_count/0, watch/1, unwatch/1, send_self/1, raise/1,
          dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, code/1,
-         info/1, big/0]).
+         info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0]).
 -nifs([add/2, echo/1, upcase/1, iolist/1, map_keys/1, mul/2, counter_new/0,
        counter_add/2, dtor_count/0, watch/1, unwatch/1, send_self/1, raise/1,
        dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, code/1,
-       info/1, big/0]).
+       info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0]).
 -on_load(init/0).
 
 init() ->
@@ -44,6 +44,10 @@ libc() -> erlang:nif_error(not_loaded).
 code(_) -> erlang:nif_error(not_loaded).
 info(_) -> erlang:nif_error(not_loaded).
 big() -> erlang:nif_error(not_loaded).
+tls_check() -> erlang:nif_error(not_loaded).
+tls_check_dirty() -> erlang:nif_error(not_loaded).
+tls_check_io() -> erlang:nif_error(not_loaded).
+tls_thread() -> erlang:nif_error(not_loaded).
 
 main(_) ->
     case run() of
@@ -92,6 +96,10 @@ run() ->
          {big, fun() -> [U, I, R] = big(), {U, I, is_reference(R)} end,
           {18446744073709551615, -9223372036854775808, true}},
          {parallel, fun parallel/0, ok},
+         {tls_schedulers, fun tls_schedulers/0, [0]},
+         {tls_dirty, fun() -> tls_many(fun tls_check_dirty/0) end, [0]},
+         {tls_dirty_io, fun() -> tls_many(fun tls_check_io/0) end, [0]},
+         {tls_threads, fun() -> lists:usort([tls_thread() || _ <- lists:seq(1, 20)]) end, [0]},
          {other_module, fun other_module/0, {[bad_lib], true, 3}},
          {broken, fun() -> refused("broken") end, {load_failed, true}},
          {missing, fun() -> refused("missing") end, {load_failed, true}},
@@ -160,6 +168,21 @@ parallel() ->
         true -> ok;
         false -> Got
     end.
+
+%% Thread-local data: the first call on each scheduler thread checks the
+%% initial values (the threads started before the load).
+tls_schedulers() ->
+    Self = self(),
+    N = erlang:system_info(schedulers),
+    Pids = [spawn_opt(fun() -> Self ! {self(), tls_check()} end, [{scheduler, I}])
+            || I <- lists:seq(1, N)],
+    lists:usort([receive {P, R} -> R after 5000 -> timeout end || P <- Pids]).
+
+%% Many calls at the same time: they go to each dirty scheduler.
+tls_many(F) ->
+    Self = self(),
+    Pids = [spawn(fun() -> Self ! {self(), F()} end) || _ <- lists:seq(1, 200)],
+    lists:usort([receive {P, R} -> R after 20000 -> timeout end || P <- Pids]).
 
 %% ERTS refuses a load of the object by an other module (bad_lib). The
 %% loader keeps one copy of each object: 20 such loads do not take 20

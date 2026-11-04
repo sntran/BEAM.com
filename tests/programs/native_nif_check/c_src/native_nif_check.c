@@ -14,6 +14,7 @@
 #include <string.h>
 
 extern int util_calls;
+int tls_check_thread(void);
 const char *util_name(int i);
 extern long (*const util_ops[3])(long, long);
 
@@ -441,6 +442,34 @@ static ERL_NIF_TERM big(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
                            enif_make_int64(env, -9223372036854775807LL - 1), enif_make_ref(env));
 }
 
+/* Thread-local data (native_nif_check_tls.c): the first call in each
+ * thread checks the initial values. On a normal scheduler, a dirty
+ * scheduler, and a new thread. */
+static ERL_NIF_TERM tls_check(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    (void)argc;
+    (void)argv;
+    return enif_make_int(env, tls_check_thread());
+}
+
+static void *tls_thread_main(void *arg)
+{
+    *(int *)arg = tls_check_thread();
+    return NULL;
+}
+
+static ERL_NIF_TERM tls_thread(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ErlNifTid tid;
+    int result = -1;
+    (void)argc;
+    (void)argv;
+    if (enif_thread_create("native_nif_check_tls", &tid, tls_thread_main, &result, NULL))
+        return enif_make_badarg(env);
+    enif_thread_join(tid, NULL);
+    return enif_make_int(env, result);
+}
+
 static ErlNifFunc funcs[] = {
     { "add", 2, add, 0 },
     { "echo", 1, echo, 0 },
@@ -463,6 +492,10 @@ static ErlNifFunc funcs[] = {
     { "code", 1, code, 0 },
     { "info", 1, info, 0 },
     { "big", 0, big, 0 },
+    { "tls_check", 0, tls_check, 0 },
+    { "tls_check_dirty", 0, tls_check, ERL_NIF_DIRTY_JOB_CPU_BOUND },
+    { "tls_check_io", 0, tls_check, ERL_NIF_DIRTY_JOB_IO_BOUND },
+    { "tls_thread", 0, tls_thread, 0 },
 };
 
 ERL_NIF_INIT(native_nif_check, funcs, load, NULL, upgrade, NULL)

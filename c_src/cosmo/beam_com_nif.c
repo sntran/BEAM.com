@@ -22,8 +22,15 @@
  *     (MAP_JIT on macOS on Apple silicon, as the JIT does). The constants
  *     become read-only. The unwind tables go to libunwind, and the
  *     constructors (.init_array) run.
- *   - Thread-local data is not supported yet: an object with it gives an
- *     error.
+ *   - Thread-local data: the program has one static TLS area
+ *     (beam_com_nif_tls), and each module gets a part of it, at a fixed
+ *     offset from the thread pointer of each thread. So each TLS model of
+ *     the object becomes a fixed offset: local exec, initial exec (a GOT
+ *     slot), general and local dynamic (__tls_get_addr of this file), and
+ *     the TLS descriptors of aarch64. The initial values go into the
+ *     template of the area, for the threads that start later, and into
+ *     the area of each thread that runs (the thread list of
+ *     Cosmopolitan). See "Thread-local data" below.
  *
  * The functions of ERTS (the hook of erl_nif.c) are at the end of this
  * file. tests/cosmo/nif_load_check.c includes this file with
@@ -40,6 +47,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <cosmo.h>
+#include <libc/dce.h>
+#include <libc/thread/posixthread.internal.h>
+#include <libc/thread/tls.h>
 
 /* ELF64, little-endian: only what the loader reads. */
 typedef struct {
@@ -116,6 +126,14 @@ typedef struct {
 #define R_X86_64_SIZE64 33
 #define R_X86_64_GOTPCRELX 41
 #define R_X86_64_REX_GOTPCRELX 42
+#define R_X86_64_DTPMOD64 16
+#define R_X86_64_DTPOFF64 17
+#define R_X86_64_TPOFF64 18
+#define R_X86_64_TLSGD 19
+#define R_X86_64_TLSLD 20
+#define R_X86_64_DTPOFF32 21
+#define R_X86_64_GOTTPOFF 22
+#define R_X86_64_TPOFF32 23
 
 /* The relocations of aarch64. */
 #define R_AARCH64_NONE 0
@@ -148,6 +166,35 @@ typedef struct {
 #define R_AARCH64_LDST128_ABS_LO12_NC 299
 #define R_AARCH64_ADR_GOT_PAGE 311
 #define R_AARCH64_LD64_GOT_LO12_NC 312
+#define R_AARCH64_TLSIE_MOVW_GOTTPREL_G1 539
+#define R_AARCH64_TLSIE_MOVW_GOTTPREL_G0_NC 540
+#define R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 541
+#define R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC 542
+#define R_AARCH64_TLSIE_LD_GOTTPREL_PREL19 543
+#define R_AARCH64_TLSLE_MOVW_TPREL_G2 544
+#define R_AARCH64_TLSLE_MOVW_TPREL_G1 545
+#define R_AARCH64_TLSLE_MOVW_TPREL_G1_NC 546
+#define R_AARCH64_TLSLE_MOVW_TPREL_G0 547
+#define R_AARCH64_TLSLE_MOVW_TPREL_G0_NC 548
+#define R_AARCH64_TLSLE_ADD_TPREL_HI12 549
+#define R_AARCH64_TLSLE_ADD_TPREL_LO12 550
+#define R_AARCH64_TLSLE_ADD_TPREL_LO12_NC 551
+#define R_AARCH64_TLSLE_LDST8_TPREL_LO12 552
+#define R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC 553
+#define R_AARCH64_TLSLE_LDST16_TPREL_LO12 554
+#define R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC 555
+#define R_AARCH64_TLSLE_LDST32_TPREL_LO12 556
+#define R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC 557
+#define R_AARCH64_TLSLE_LDST64_TPREL_LO12 558
+#define R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC 559
+#define R_AARCH64_TLSDESC_ADR_PAGE21 562
+#define R_AARCH64_TLSDESC_LD64_LO12 563
+#define R_AARCH64_TLSDESC_ADD_LO12 564
+#define R_AARCH64_TLSDESC_LDR 567
+#define R_AARCH64_TLSDESC_ADD 568
+#define R_AARCH64_TLSDESC_CALL 569
+#define R_AARCH64_TLSLE_LDST128_TPREL_LO12 570
+#define R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC 571
 
 #if defined(__x86_64__)
 #define BCN_MACHINE BCN_EM_X86_64
@@ -184,6 +231,124 @@ void __unw_remove_dynamic_fde(uintptr_t fde);
 static int bcn_unwind = 1;
 #else
 #define bcn_unwind 1
+#endif
+
+/* Thread-local data.
+ *
+ * beam_com_nif_tls is the static TLS area of the modules: each thread has
+ * its own copy, at the same offset from its thread pointer (bcn_tls_tpoff).
+ * A module gets a part of the area, and never gives it back. Its first
+ * BCN_TLS_MARK bytes hold a mark, so the loader finds the template of the
+ * area in .tdata of the program: each new thread copies .tdata.
+ *
+ * The thread pointer is the TIB on x86_64 (%gs:0x30 in the code of
+ * cosmocc), and x28 on aarch64 (the TIB + 1). Cosmopolitan does not set
+ * tpidr_el0, but the code of Rust adds tpidr_el0 to the result of a TLS
+ * descriptor: bcn_tlsdesc subtracts it. */
+#ifndef BEAM_COM_NIF_TLS_SIZE
+#define BEAM_COM_NIF_TLS_SIZE 32768
+#endif
+#define BCN_TLS_MARK 64
+#define BCN_TLS_ALIGN 64
+static const unsigned char bcn_tls_mark[32] = {
+    'B', 'E', 'A', 'M', '.', 'c', 'o', 'm', ' ', 'N', 'I', 'F', ' ', 'T', 'L', 'S',
+    0x5a, 0x3c, 0x96, 0xe1, 0x0f, 0x77, 0x2b, 0xd4, 0x81, 0x6e, 0x39, 0xc2, 0x47, 0xa5, 0x1d, 0xf8,
+};
+_Thread_local unsigned char beam_com_nif_tls[BEAM_COM_NIF_TLS_SIZE]
+    __attribute__((aligned(BCN_TLS_ALIGN))) = {
+    'B', 'E', 'A', 'M', '.', 'c', 'o', 'm', ' ', 'N', 'I', 'F', ' ', 'T', 'L', 'S',
+    0x5a, 0x3c, 0x96, 0xe1, 0x0f, 0x77, 0x2b, 0xd4, 0x81, 0x6e, 0x39, 0xc2, 0x47, 0xa5, 0x1d, 0xf8,
+};
+/* The template of .tdata (ape.lds of Cosmopolitan). It is in the
+ * segment of the constants, after the code: a segment starts on its own
+ * page, so the pages of the template hold no code. */
+extern char _tdata_start[];
+extern char _tdata_size[];
+
+static pthread_mutex_t bcn_tls_lock = PTHREAD_MUTEX_INITIALIZER;
+static size_t bcn_tls_used = BCN_TLS_MARK;
+static unsigned char *bcn_tls_template; /* the area in the template */
+static intptr_t bcn_tls_tpoff;           /* the offset of the area from the thread pointer */
+static int bcn_tls_state;                /* 0: not checked, 1: ready, -1: not usable */
+static const char *bcn_tls_why = "";
+
+/* The thread pointer of the thread of TIB: the code of cosmocc adds its
+ * TLS offsets to it. */
+static char *tls_pointer(struct CosmoTib *tib)
+{
+#if defined(__aarch64__)
+    return (char *)(tib + 1);
+#else
+    return (char *)tib;
+#endif
+}
+
+/* The size of .tdata: an absolute symbol, which ADRP of aarch64 cannot
+ * reach. */
+static size_t tdata_size(void)
+{
+#if defined(__aarch64__)
+    size_t n;
+    __asm__("movz %0, #:abs_g1:_tdata_size\n\tmovk %0, #:abs_g0_nc:_tdata_size" : "=r"(n));
+    return n;
+#else
+    return (size_t)_tdata_size;
+#endif
+}
+
+/* Finds the template of the area, and checks the thread list, once. */
+static int tls_ready(void)
+{
+    pthread_mutex_lock(&bcn_tls_lock);
+    if (!bcn_tls_state) {
+        unsigned char *t = (unsigned char *)_tdata_start;
+        size_t size = tdata_size(), k, hits = 0;
+        struct Dll *e;
+        int self = 0;
+        for (k = 0; k + BEAM_COM_NIF_TLS_SIZE <= size; k++)
+            if (t[k] == 'B' && !memcmp(t + k, bcn_tls_mark, sizeof(bcn_tls_mark))) {
+                bcn_tls_template = t + k;
+                hits++;
+            }
+        bcn_tls_tpoff = (char *)beam_com_nif_tls - tls_pointer(__get_tls());
+        _pthread_lock();
+        for (e = dll_first(_pthread_list); e; e = dll_next(_pthread_list, e))
+            if (POSIXTHREAD_CONTAINER(e) == _pthread_self())
+                self = 1;
+        _pthread_unlock();
+        bcn_tls_state = -1;
+        if (hits != 1)
+            bcn_tls_why = "the template of the TLS area is not in .tdata";
+        else if (_pthread_self()->tib != __get_tls() || !self)
+            bcn_tls_why = "the thread list of Cosmopolitan is not as the loader knows it";
+        else
+            bcn_tls_state = 1;
+    }
+    pthread_mutex_unlock(&bcn_tls_lock);
+    return bcn_tls_state == 1;
+}
+
+/* __tls_get_addr of the general and local dynamic models: TI is the
+ * offset of the module in the area, and the offset in the module. */
+static void *bcn_tls_get_addr(const uint64_t *ti)
+{
+    return beam_com_nif_tls + ti[0] + ti[1];
+}
+
+#if defined(__aarch64__)
+/* The function of a TLS descriptor {bcn_tlsdesc, offset from x28}: it
+ * gives the offset from tpidr_el0, and changes only x0. */
+void bcn_tlsdesc(void);
+__asm__(".text\n"
+        ".balign 16\n"
+        "bcn_tlsdesc:\n"
+        "\tldr x0, [x0, #8]\n"
+        "\tadd x0, x0, x28\n"
+        "\tstr x1, [sp, #-16]!\n"
+        "\tmrs x1, tpidr_el0\n"
+        "\tsub x0, x0, x1\n"
+        "\tldr x1, [sp], #16\n"
+        "\tret\n");
 #endif
 
 struct bcn_global {
@@ -228,7 +393,28 @@ typedef struct {
     char *error;
     size_t errsize;
     int jit;                 /* the code is MAP_JIT (macOS on Apple silicon) */
+    /* Thread-local data. */
+    unsigned char *tlssym;   /* 1: the symbol is in a TLS section */
+    uint64_t *tls_secoff;    /* the offset of each TLS section in the image */
+    unsigned char *tls_image; /* the initial values (.tdata, .tbss) */
+    size_t tls_size, tls_align;
+    size_t tls_off;          /* the offset of the module in beam_com_nif_tls */
+    struct bcn_tls_slot *tls_slots;
+    size_t ntls_slots;
+    void **seen;             /* the threads that got the initial values */
+    size_t nseen, seen_cap;
 } bcn_load_t;
+
+/* A GOT slot of a TLS relocation: one slot of an offset from the thread
+ * pointer (KIND 0), or two slots (KIND 1: a TLS descriptor on aarch64, the
+ * argument of __tls_get_addr on x86_64; KIND 2: the module, for the local
+ * dynamic model). */
+struct bcn_tls_slot {
+    size_t sym;
+    int64_t addend;
+    int kind;
+    uint32_t slot; /* the first GOT slot, + 1 */
+};
 
 static int fail(bcn_load_t *l, const char *fmt, ...)
 {
@@ -277,7 +463,8 @@ static uint32_t sym_shndx(bcn_load_t *l, size_t i)
  * constants, 2 the data. -1: not in memory. */
 static int sec_group(const bcn_shdr *s)
 {
-    if (!(s->sh_flags & BCN_SHF_ALLOC) || s->sh_size == 0)
+    /* A TLS section is in the TLS image, not in a mapping. */
+    if (!(s->sh_flags & BCN_SHF_ALLOC) || s->sh_size == 0 || (s->sh_flags & BCN_SHF_TLS))
         return -1;
     if (s->sh_flags & BCN_SHF_EXECINSTR)
         return 0;
@@ -321,8 +508,9 @@ static int check_object(bcn_load_t *l)
             return fail(l, "section %u has an alignment above 64 KiB", i);
         if (s->sh_size > ((uint64_t)1 << 30))
             return fail(l, "section %u is larger than 1 GiB", i);
-        if ((s->sh_flags & BCN_SHF_ALLOC) && (s->sh_flags & BCN_SHF_TLS) && s->sh_size)
-            return fail(l, "thread-local data is not supported yet");
+        if ((s->sh_flags & BCN_SHF_ALLOC) && (s->sh_flags & BCN_SHF_TLS) && s->sh_size &&
+            s->sh_addralign > BCN_TLS_ALIGN)
+            return fail(l, "the thread-local section %u has an alignment above %d", i, BCN_TLS_ALIGN);
         if (s->sh_type == BCN_SHT_REL)
             return fail(l, "REL relocations are not supported (only RELA)");
     }
@@ -388,6 +576,82 @@ static int is_call_reloc(uint32_t type)
 #endif
 }
 
+/* The kind of the GOT slot of a TLS relocation, or -1 for no slot. */
+static int tls_slot_kind(uint32_t type)
+{
+#if defined(__x86_64__)
+    switch (type) {
+    case R_X86_64_GOTTPOFF: return 0;
+    case R_X86_64_TLSGD: return 1;
+    case R_X86_64_TLSLD: return 2;
+    }
+#else
+    switch (type) {
+    case R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21:
+    case R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC:
+    case R_AARCH64_TLSIE_LD_GOTTPREL_PREL19:
+        return 0;
+    case R_AARCH64_TLSDESC_ADR_PAGE21:
+    case R_AARCH64_TLSDESC_LD64_LO12:
+    case R_AARCH64_TLSDESC_ADD_LO12:
+        return 1;
+    }
+#endif
+    return -1;
+}
+
+/* A relocation of thread-local data. */
+static int is_tls_reloc(uint32_t type)
+{
+#if defined(__x86_64__)
+    return type >= R_X86_64_DTPMOD64 && type <= R_X86_64_TPOFF32;
+#else
+    return type >= 512 && type <= 573;
+#endif
+}
+
+/* The addend that names the slot: on aarch64 the slot holds S + A; on
+ * x86_64 the addend of the relocation is for the PC. */
+static int64_t tls_slot_addend(int64_t addend)
+{
+#if defined(__x86_64__)
+    (void)addend;
+    return 0;
+#else
+    return addend;
+#endif
+}
+
+/* The slot of SYM, ADDEND, and KIND (KIND 2: one for the module), or 0. */
+static uint32_t tls_slot_find(bcn_load_t *l, size_t sym, int64_t addend, int kind)
+{
+    size_t k;
+    for (k = 0; k < l->ntls_slots; k++) {
+        struct bcn_tls_slot *t = &l->tls_slots[k];
+        if (t->kind == kind && (kind == 2 || (t->sym == sym && t->addend == addend)))
+            return t->slot;
+    }
+    return 0;
+}
+
+static int tls_slot_add(bcn_load_t *l, size_t sym, int64_t addend, int kind)
+{
+    struct bcn_tls_slot *t;
+    if (tls_slot_find(l, sym, addend, kind))
+        return 1;
+    t = realloc(l->tls_slots, (l->ntls_slots + 1) * sizeof(*t));
+    if (!t)
+        return fail(l, "no memory");
+    l->tls_slots = t;
+    t += l->ntls_slots++;
+    t->sym = sym;
+    t->addend = addend;
+    t->kind = kind;
+    t->slot = (uint32_t)l->ngot + 1;
+    l->ngot += kind ? 2 : 1;
+    return 1;
+}
+
 /* The slots of the GOT and the stubs that the relocations need, and the
  * place of each COMMON symbol. */
 static int count_slots(bcn_load_t *l, uint64_t *common_size)
@@ -410,6 +674,9 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
                 return fail(l, "a relocation names symbol %zu of %zu", s, l->nsyms);
             if (is_got_reloc(type) && !l->got[s])
                 l->got[s] = (uint32_t)++l->ngot;
+            if (tls_slot_kind(type) >= 0 &&
+                !tls_slot_add(l, s, tls_slot_addend(rel[j].r_addend), tls_slot_kind(type)))
+                return 0;
             /* A stub is a jump: only for a call from the code. */
             if (is_call_reloc(type) && (l->sh[r->sh_info].sh_flags & BCN_SHF_EXECINSTR) &&
                 sym_shndx(l, s) == BCN_SHN_UNDEF && s != 0 && !l->stub[s])
@@ -502,9 +769,19 @@ static int sym_addr(bcn_load_t *l, size_t i, uintptr_t *out)
     }
     if (l->resolved[i] == 2)
         return 0;
-    if ((s->st_info & 0xf) == BCN_STT_TLS)
-        return fail(l, "thread-local data is not supported yet (%s)", sym_name(l, s));
     shndx = sym_shndx(l, i);
+    /* A symbol of thread-local data: its offset in the TLS image. */
+    if (shndx < l->nsec && shndx != BCN_SHN_UNDEF && (l->sh[shndx].sh_flags & BCN_SHF_TLS)) {
+        l->symaddr[i] = (uintptr_t)(l->tls_secoff[shndx] + s->st_value);
+        l->resolved[i] = 1;
+        l->tlssym[i] = 1;
+        *out = l->symaddr[i];
+        return 1;
+    }
+    if ((s->st_info & 0xf) == BCN_STT_TLS) {
+        l->resolved[i] = 2;
+        return fail(l, "the thread-local symbol %s is not in the object", sym_name(l, s));
+    }
     if (shndx == BCN_SHN_UNDEF) {
         const char *name = sym_name(l, s);
         if (i == 0 || !*name)
@@ -513,6 +790,8 @@ static int sym_addr(bcn_load_t *l, size_t i, uintptr_t *out)
             a = l->dso_handle;
         else if (!strcmp(name, "_GLOBAL_OFFSET_TABLE_"))
             a = l->got_base;
+        else if (!strcmp(name, "__tls_get_addr"))
+            a = (uintptr_t)bcn_tls_get_addr;
         else if (!(a = (uintptr_t)l->lookup(name)) && (s->st_info >> 4) != BCN_STB_WEAK) {
             l->resolved[i] = 2;
             return fail(l, "the program has no symbol %s", name);
@@ -578,6 +857,36 @@ static uint32_t enc_imm12(uint32_t insn, uint64_t imm)
 }
 #endif
 
+/* The offset of the TLS symbol at S + A (an offset in the TLS image)
+ * from the thread pointer. */
+static int64_t tls_tpoff(bcn_load_t *l, uintptr_t S, int64_t A)
+{
+    return (int64_t)bcn_tls_tpoff + (int64_t)l->tls_off + (int64_t)S + A;
+}
+
+/* The GOT slot of a TLS relocation, with its values in it. */
+static uintptr_t tls_slot(bcn_load_t *l, size_t si, uintptr_t S, int64_t A, int kind)
+{
+    int64_t a = tls_slot_addend(A);
+    uint32_t slot = tls_slot_find(l, si, a, kind);
+    uint8_t *g = (uint8_t *)(l->got_base + (uintptr_t)(slot - 1) * 8);
+    if (kind == 0) {
+        put64(g, (uint64_t)tls_tpoff(l, S, a));
+    } else if (kind == 2) {
+        put64(g, l->tls_off);
+        put64(g + 8, 0);
+    } else {
+#if defined(__x86_64__)
+        put64(g, l->tls_off);
+        put64(g + 8, S);
+#else
+        put64(g, (uint64_t)(uintptr_t)bcn_tlsdesc);
+        put64(g + 8, (uint64_t)tls_tpoff(l, S, a));
+#endif
+    }
+    return (uintptr_t)g;
+}
+
 static int relocate(bcn_load_t *l, const bcn_shdr *target, uintptr_t base, const bcn_rela *r)
 {
     uint32_t type = (uint32_t)r->r_info;
@@ -592,8 +901,35 @@ static int relocate(bcn_load_t *l, const bcn_shdr *target, uintptr_t base, const
         return 1;
     if (!sym_addr(l, si, &S))
         return 0;
+    if (is_tls_reloc(type) != l->tlssym[si])
+        return fail(l, "the relocation type %u does not fit the symbol %s", type, sym_name(l, &l->syms[si]));
 #if defined(__x86_64__)
     switch (type) {
+    case R_X86_64_TPOFF32:
+        v = tls_tpoff(l, S, A);
+        if (!fits_s32(v))
+            return fail(l, "the thread-local offset of %s is out of range", sym_name(l, &l->syms[si]));
+        put32(w, (uint32_t)v);
+        return 1;
+    case R_X86_64_GOTTPOFF:
+    case R_X86_64_TLSGD:
+    case R_X86_64_TLSLD:
+        v = (int64_t)(tls_slot(l, si, S, A, tls_slot_kind(type)) + A - P);
+        if (!fits_s32(v))
+            return fail(l, "the GOT is out of the range of a 32-bit offset");
+        put32(w, (uint32_t)v);
+        return 1;
+    case R_X86_64_DTPOFF32:
+        put32(w, (uint32_t)(S + A));
+        return 1;
+    case R_X86_64_TPOFF64:
+    case R_X86_64_DTPOFF64:
+    case R_X86_64_DTPMOD64:
+        if (target->sh_size - r->r_offset < 8)
+            return fail(l, "a relocation is out of its section");
+        put64(w, type == R_X86_64_TPOFF64 ? (uint64_t)tls_tpoff(l, S, A)
+                 : type == R_X86_64_DTPOFF64 ? S + A : l->tls_off);
+        return 1;
     case R_X86_64_64:
     case R_X86_64_PC64:
     case R_X86_64_SIZE64:
@@ -761,11 +1097,86 @@ static int relocate(bcn_load_t *l, const bcn_shdr *target, uintptr_t base, const
             G = got_slot(l, si, S);
             put32(w, enc_imm12(insn, (G & 0xfff) >> 3));
             return 1;
+        /* Thread-local data: the offset from x28 (local exec), a GOT
+         * slot with it (initial exec), or a TLS descriptor. */
+        case R_AARCH64_TLSLE_ADD_TPREL_HI12:
+            v = tls_tpoff(l, S, A);
+            if (v < 0 || v >= (1 << 24))
+                return fail(l, "the thread-local offset of %s is out of range", sym_name(l, &l->syms[si]));
+            put32(w, enc_imm12(insn, (uint64_t)v >> 12));
+            return 1;
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12:
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12_NC:
+        case R_AARCH64_TLSLE_LDST8_TPREL_LO12:
+        case R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC:
+        case R_AARCH64_TLSLE_LDST16_TPREL_LO12:
+        case R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC:
+        case R_AARCH64_TLSLE_LDST32_TPREL_LO12:
+        case R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC:
+        case R_AARCH64_TLSLE_LDST64_TPREL_LO12:
+        case R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC:
+        case R_AARCH64_TLSLE_LDST128_TPREL_LO12:
+        case R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC: {
+            int scale = type <= R_AARCH64_TLSLE_ADD_TPREL_LO12_NC ? 0
+                        : type >= R_AARCH64_TLSLE_LDST128_TPREL_LO12 ? 4
+                        : (int)(type - R_AARCH64_TLSLE_LDST8_TPREL_LO12) / 2;
+            int nc = type == R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC ||
+                     (type < R_AARCH64_TLSLE_LDST128_TPREL_LO12 &&
+                      ((type - R_AARCH64_TLSLE_ADD_TPREL_LO12) & 1));
+            v = tls_tpoff(l, S, A);
+            if (v < 0 || (!nc && v >= 4096) || (v & ((1 << scale) - 1)))
+                return fail(l, "the thread-local offset of %s is out of range", sym_name(l, &l->syms[si]));
+            put32(w, enc_imm12(insn, ((uint64_t)v & 0xfff) >> scale));
+            return 1;
+        }
+        case R_AARCH64_TLSLE_MOVW_TPREL_G2:
+        case R_AARCH64_TLSLE_MOVW_TPREL_G1:
+        case R_AARCH64_TLSLE_MOVW_TPREL_G1_NC:
+        case R_AARCH64_TLSLE_MOVW_TPREL_G0:
+        case R_AARCH64_TLSLE_MOVW_TPREL_G0_NC: {
+            int shift = type == R_AARCH64_TLSLE_MOVW_TPREL_G2 ? 32
+                        : type <= R_AARCH64_TLSLE_MOVW_TPREL_G1_NC ? 16 : 0;
+            int nc = type == R_AARCH64_TLSLE_MOVW_TPREL_G1_NC || type == R_AARCH64_TLSLE_MOVW_TPREL_G0_NC;
+            v = tls_tpoff(l, S, A);
+            if (v < 0 || (!nc && ((uint64_t)v >> (shift + 16))))
+                return fail(l, "the thread-local offset of %s is out of range", sym_name(l, &l->syms[si]));
+            put32(w, (insn & ~(0xffffu << 5)) | ((((uint64_t)v >> shift) & 0xffffu) << 5));
+            return 1;
+        }
+        case R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21:
+        case R_AARCH64_TLSDESC_ADR_PAGE21:
+            G = tls_slot(l, si, S, A, tls_slot_kind(type));
+            v = (int64_t)((G & ~(uintptr_t)0xfff) - (P & ~(uintptr_t)0xfff)) >> 12;
+            if (!fits_bits(v, 21))
+                return fail(l, "the GOT is out of the range of ADRP");
+            put32(w, enc_adr(insn, v));
+            return 1;
+        case R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC:
+        case R_AARCH64_TLSDESC_LD64_LO12:
+            G = tls_slot(l, si, S, A, tls_slot_kind(type));
+            put32(w, enc_imm12(insn, (G & 0xfff) >> 3));
+            return 1;
+        case R_AARCH64_TLSDESC_ADD_LO12:
+            G = tls_slot(l, si, S, A, 1);
+            put32(w, enc_imm12(insn, G & 0xfff));
+            return 1;
+        case R_AARCH64_TLSIE_LD_GOTTPREL_PREL19:
+            G = tls_slot(l, si, S, A, 0);
+            v = (int64_t)(G - P);
+            if (!fits_bits(v, 21) || (v & 3))
+                return fail(l, "the GOT is out of the range of a 19-bit offset");
+            put32(w, (insn & ~(0x7ffffu << 5)) | ((((uint32_t)(v >> 2)) & 0x7ffffu) << 5));
+            return 1;
+        case R_AARCH64_TLSDESC_CALL:
+        case R_AARCH64_TLSDESC_LDR:
+        case R_AARCH64_TLSDESC_ADD:
+            /* Marks for the relaxations of a linker: no change. */
+            return 1;
         }
     }
 #endif
-    if ((type >= 18 && type <= 23) || (type >= 512 && type <= 573) || (type >= 1024 && type <= 1032))
-        return fail(l, "thread-local data is not supported yet");
+    if (is_tls_reloc(type))
+        return fail(l, "the thread-local relocation type %u is not supported (the TLS model of the object)", type);
     return fail(l, "the relocation type %u is not supported", type);
 }
 
@@ -815,7 +1226,8 @@ out:
     return ok;
 }
 
-static int eh_frame_ok(const uint8_t *p, size_t size)
+/* The check of the unwind table, for tests/cosmo/nif_load_check.c. */
+__attribute__((unused)) static int eh_frame_ok(const uint8_t *p, size_t size)
 {
     size_t n;
     return eh_frame_walk(p, size, NULL, &n);
@@ -916,6 +1328,10 @@ static int keep_globals(bcn_load_t *l, struct bcn_module *m)
             size_t len = strlen(sym_name(l, s)) + 1;
             if (!sym_addr(l, i, &a))
                 return 0;
+            /* A TLS symbol: its address in the thread that loads, as
+             * dlsym() gives. */
+            if (l->tlssym[i])
+                a += (uintptr_t)(beam_com_nif_tls + l->tls_off);
             memcpy(p, sym_name(l, s), len);
             m->globals[m->nglobals].name = p;
             m->globals[m->nglobals].addr = a;
@@ -929,6 +1345,11 @@ static int keep_globals(bcn_load_t *l, struct bcn_module *m)
 
 static void free_load(bcn_load_t *l)
 {
+    free(l->tlssym);
+    free(l->tls_secoff);
+    free(l->tls_image);
+    free(l->tls_slots);
+    free(l->seen);
     free(l->secaddr);
     free(l->symaddr);
     free(l->resolved);
@@ -951,6 +1372,99 @@ static void free_module(struct bcn_module *m)
     free(m->names);
     free(m);
 }
+
+/* Writes the TLS image of the module into the area of each thread of the
+ * list. With SECOND, only into the threads that the first pass did not
+ * see: the threads that started during the load. pthread_create() copies
+ * the template before it puts the thread in the list, so a thread can be
+ * in neither pass only when its start takes all of the load. */
+static void tls_write_threads(bcn_load_t *l, int second)
+{
+    struct Dll *e;
+    size_t k;
+
+    _pthread_lock();
+    for (e = dll_first(_pthread_list); e; e = dll_next(_pthread_list, e)) {
+        struct PosixThread *pt = POSIXTHREAD_CONTAINER(e);
+        for (k = 0; k < l->nseen && l->seen[k] != pt; k++)
+            ;
+        if (!pt->tib || (second && k < l->nseen))
+            continue;
+        memcpy(tls_pointer(pt->tib) + bcn_tls_tpoff + l->tls_off, l->tls_image, l->tls_size);
+        if (!second && k == l->nseen && l->nseen < l->seen_cap)
+            l->seen[l->nseen++] = pt;
+    }
+    _pthread_unlock();
+}
+
+/* The initial values of the TLS of the module: into the template of the
+ * area (the threads that start later), and into the area of each thread
+ * of the list. The template is in the read-only part of the program: its
+ * pages stay writable after the first module with initial values that are
+ * not zero. A system that refuses it (OpenBSD makes the program
+ * immutable) refuses such a module. */
+static int tls_install(bcn_load_t *l)
+{
+    unsigned char *t = bcn_tls_template + l->tls_off;
+    size_t k;
+
+    for (k = 0; k < l->tls_size && !l->tls_image[k]; k++)
+        ;
+    if (k < l->tls_size) {
+        uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
+        uintptr_t a = (uintptr_t)t & ~(page - 1), b = (uintptr_t)t + l->tls_size;
+        if (mprotect((void *)a, b - a, PROT_READ | PROT_WRITE))
+            return fail(l, "the initial values of the thread-local data cannot go into the template: %s",
+                        strerror(errno));
+        memcpy(t, l->tls_image, l->tls_size);
+    }
+    l->seen_cap = (size_t)_pthread_count + 64;
+    if (!(l->seen = malloc(l->seen_cap * sizeof(*l->seen))))
+        return fail(l, "no memory");
+    l->seen[l->nseen++] = _pthread_self();
+    memcpy(beam_com_nif_tls + l->tls_off, l->tls_image, l->tls_size);
+    tls_write_threads(l, 0);
+    return 1;
+}
+
+#if defined(__x86_64__)
+/* The TLS code of cosmocc reads the thread pointer with "mov %gs:0x30" (or
+ * "add %gs:0x30"). Cosmopolitan changes these instructions in the program
+ * on Windows (the TLS slot of the thread) and on OpenBSD and NetBSD (%fs)
+ * at its start (__morph_tls): this does the same in the code of a
+ * module, with the same pattern. */
+static void tls_morph(uint8_t *p, size_t n)
+{
+    static const uint8_t mask[8] = { 0xff, 0xfb, 0xff, 0xc7, 0xff, 0xff, 0xff, 0xff };
+    static const uint8_t mov[8] = { 0x65, 0x48, 0x8b, 0x04, 0x25, 0x30, 0, 0 };
+    static const uint8_t add[8] = { 0x65, 0x48, 0x03, 0x04, 0x25, 0x30, 0, 0 };
+    unsigned dis = 0x1480 + __tls_index * 8;
+    uint8_t *end = p + n;
+    int k, is_mov, is_add;
+
+    if (!IsWindows() && !IsOpenbsd() && !IsNetbsd())
+        return;
+    for (; p + 9 <= end; p++) {
+        if (p[0] != 0x65)
+            continue;
+        for (is_mov = is_add = 1, k = 0; k < 8; k++) {
+            is_mov &= (p[k] & mask[k]) == mov[k];
+            is_add &= (p[k] & mask[k]) == add[k];
+        }
+        if ((!is_mov && !is_add) || p[8])
+            continue;
+        if (IsWindows()) {
+            p[5] = (uint8_t)dis;
+            p[6] = (uint8_t)(dis >> 8);
+            p[7] = (uint8_t)(dis >> 16);
+            p[8] = (uint8_t)(dis >> 24);
+        } else {
+            p[0] = 0x64;
+        }
+        p += 8;
+    }
+}
+#endif
 
 struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn lookup,
                             char *error, size_t errsize)
@@ -987,12 +1501,57 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
     l.got = calloc(l.nsyms, sizeof(*l.got));
     l.stub = calloc(l.nsyms, sizeof(*l.stub));
     l.common_off = calloc(l.nsyms, sizeof(*l.common_off));
-    if (!l.secaddr || !secoff || !l.symaddr || !l.resolved || !l.got || !l.stub || !l.common_off) {
+    l.tlssym = calloc(l.nsyms, 1);
+    l.tls_secoff = calloc(l.nsec, sizeof(*l.tls_secoff));
+    if (!l.secaddr || !secoff || !l.symaddr || !l.resolved || !l.got || !l.stub || !l.common_off ||
+        !l.tlssym || !l.tls_secoff) {
         fail(&l, "no memory");
         goto out;
     }
     if (!count_slots(&l, &common_size))
         goto out;
+
+    /* The TLS image: the TLS sections, and the part of beam_com_nif_tls
+     * of the module. */
+    for (i = 0; i < l.nsec; i++) {
+        const bcn_shdr *t = &l.sh[i];
+        size_t a = t->sh_addralign ? (size_t)t->sh_addralign : 1;
+        if (!(t->sh_flags & BCN_SHF_ALLOC) || !(t->sh_flags & BCN_SHF_TLS) || !t->sh_size)
+            continue;
+        l.tls_size = align_up(l.tls_size, a);
+        l.tls_secoff[i] = l.tls_size;
+        l.tls_size += t->sh_size;
+        if (a > l.tls_align)
+            l.tls_align = a;
+    }
+    if (l.tls_size) {
+        if (!tls_ready()) {
+            fail(&l, "thread-local data: %s", bcn_tls_why);
+            goto out;
+        }
+        if (l.tls_size > BEAM_COM_NIF_TLS_SIZE || !(l.tls_image = calloc(1, l.tls_size))) {
+            fail(&l, "the thread-local data of the object is larger than %d bytes", BEAM_COM_NIF_TLS_SIZE);
+            goto out;
+        }
+        pthread_mutex_lock(&bcn_tls_lock);
+        l.tls_off = align_up(bcn_tls_used, l.tls_align);
+        if (l.tls_off + l.tls_size <= BEAM_COM_NIF_TLS_SIZE)
+            bcn_tls_used = l.tls_off + l.tls_size;
+        pthread_mutex_unlock(&bcn_tls_lock);
+        if (l.tls_off + l.tls_size > BEAM_COM_NIF_TLS_SIZE) {
+            fail(&l, "the thread-local data of the NIF objects is larger than %d bytes in all",
+                 BEAM_COM_NIF_TLS_SIZE);
+            goto out;
+        }
+        for (i = 0; i < l.nsec; i++) {
+            const bcn_shdr *t = &l.sh[i];
+            if (!(t->sh_flags & BCN_SHF_ALLOC) || !(t->sh_flags & BCN_SHF_TLS) || !t->sh_size)
+                continue;
+            l.secaddr[i] = (uintptr_t)(l.tls_image + l.tls_secoff[i]);
+            if (t->sh_type != BCN_SHT_NOBITS)
+                memcpy(l.tls_image + l.tls_secoff[i], bytes + t->sh_offset, t->sh_size);
+        }
+    }
 
     /* The layout: the offset of each section in its group. */
     for (i = 0; i < l.nsec; i++) {
@@ -1046,10 +1605,17 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
         if (j < n)
             break;
     }
+    if (i < l.nsec) {
+        if (l.jit)
+            __jit_end();
+        goto out;
+    }
+#if defined(__x86_64__)
+    if (l.tls_size)
+        tls_morph(m->code, (size_t)off[0]);
+#endif
     if (l.jit)
         __jit_end();
-    if (i < l.nsec)
-        goto out;
 #if defined(__aarch64__)
     __builtin___clear_cache((char *)m->code, (char *)m->code + m->code_size);
 #endif
@@ -1088,7 +1654,11 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
             m->nfdes += n;
         }
     }
+    if (l.tls_size && !tls_install(&l))
+        goto out;
     run_constructors(&l);
+    if (l.tls_size)
+        tls_write_threads(&l, 1);
     ok = 1;
 out:
     free(secoff);

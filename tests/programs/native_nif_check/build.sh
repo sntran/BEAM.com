@@ -17,13 +17,18 @@ mkdir -p "$here/priv"
 obj=$(mktemp -d "${TMPDIR:-/tmp}/native_nif_check.XXXXXX")
 trap 'rm -rf "$obj"' EXIT
 cd "$obj"
-for f in native_nif_check native_nif_check_util native_nif_check_missing; do
+for f in native_nif_check native_nif_check_util native_nif_check_tls native_nif_check_missing; do
     cosmocc -O2 -Wall -I"$include" -c "$here/c_src/$f.c" -o "$f.o"
 done
+# The TLS models of Rust in assembly: cosmocc takes no .S file, so the
+# compiler of each CPU.
+x86_64-unknown-cosmo-cc -c "$here/c_src/native_nif_check_tls.S" -o tls_asm.o
+aarch64-unknown-cosmo-cc -c "$here/c_src/native_nif_check_tls.S" -o .aarch64/tls_asm.o
 x86_64-linux-cosmo-ld -r -o "$here/priv/native_nif_check.x86_64.o" \
-    native_nif_check.o native_nif_check_util.o
+    native_nif_check.o native_nif_check_util.o native_nif_check_tls.o tls_asm.o
 aarch64-linux-cosmo-ld -r -o "$here/priv/native_nif_check.aarch64.o" \
-    .aarch64/native_nif_check.o .aarch64/native_nif_check_util.o
+    .aarch64/native_nif_check.o .aarch64/native_nif_check_util.o \
+    .aarch64/native_nif_check_tls.o .aarch64/tls_asm.o
 cp native_nif_check_missing.o "$here/priv/missing.x86_64.o"
 cp .aarch64/native_nif_check_missing.o "$here/priv/missing.aarch64.o"
 for arch in x86_64 aarch64; do

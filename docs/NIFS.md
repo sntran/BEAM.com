@@ -63,9 +63,15 @@ Then `erlang:load_nif("priv/my_nif", 0)` loads `priv/my_nif.x86_64.o` or
   of the same file (an upgrade of the module) gives the same copy of the
   object, as `dlopen()` does: its static data stays. The program keeps
   the object until it stops.
-- Not yet: thread-local data (`_Thread_local`, and the TLS of Rust), and
-  C++ with its own runtime. The load of such an object fails with an
-  error.
+- Thread-local data works: `_Thread_local` of C, and the TLS of Rust
+  (`thread_local!`, and the threads of rayon). The program has one
+  static TLS area of 32 KiB for all the objects, and each thread has its
+  own copy. A thread that started before the load gets the initial values
+  too. The initial values that are not zero go into the template of the
+  thread data of the program: a system that refuses this change (OpenBSD
+  can make the program immutable) refuses such an object.
+- Not yet: C++ with its own runtime. The load of such an object fails
+  with an error.
 
 `BEAM_COM_NIF_DEBUG=1` writes `nif_native: FILE` for each object that
 loads. `BEAM_COM_NIF_NATIVE=0` turns the loader off.
@@ -80,6 +86,10 @@ The NIF of `bcrypt_elixir` as a native NIF object runs at the speed of
 the same NIF as a static NIF: one hash with cost 12 took 241 to 243 ms
 as an object, and 237 to 269 ms as a static NIF, on one x86_64
 computer. The two give the same hash.
+
+The NIF of `rusty_csv` (Rust) also loads as an object, from the object
+of its static NIF: `parse_string_parallel` parses 200,000 rows in 260 ms
+with the threads of rayon.
 
 The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 
@@ -389,7 +399,10 @@ binaries, maps, resources with destructors, monitors, a thread of
 `enif_thread_create` that sends messages, dirty NIFs, `enif_schedule_nif`,
 exceptions, the libc, a constructor, 32 processes at the same time, a
 load by an other module, a broken object, an object that needs a missing
-function, and an upgrade of the module. `tests/run.sh` builds it and runs
+function, and an upgrade of the module. Its thread-local data
+(`native_nif_check_tls.c` and `.S`) has each TLS model of C and Rust: the
+first call on each scheduler, each dirty scheduler, and a new thread
+checks the initial values. `tests/run.sh` builds it and runs
 it on each system. `tests/cosmo/nif_load_check.c` (in `step_test` of
 `scripts/steps.sh`) checks the loader with no ERTS: the relocations of
 both CPUs, the errors, and 3,000 broken objects.
@@ -410,7 +423,8 @@ grow by their modules.
   checks the ELF object, maps its sections near the program (the code of
   `cosmocc` uses addresses of 32 bits), does the relocations of x86_64
   and aarch64, adds a stub for a call that is too far, gives each FDE of
-  `.eh_frame` to libunwind, and runs the constructors. On macOS arm64 it
+  `.eh_frame` to libunwind, and runs the constructors. Thread-local
+  data: the comment "Thread-local data" in the file. On macOS arm64 it
   writes the code in `MAP_JIT` memory. `beam_com_nif_hook()` (from
   `main()` of `beam_com.c`) puts it before the loader of WebAssembly in
   the hook `erts_wasm_nif_open`.

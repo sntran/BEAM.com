@@ -10,15 +10,21 @@ here=$(cd "$(dirname "$0")" && pwd)
 out=$1
 mkdir -p "$out"
 cd "$out"
-for f in nif_load_obj_a nif_load_obj_b nif_load_tls; do
+for f in nif_load_obj_a nif_load_obj_b nif_load_tls nif_load_tls_big; do
     cosmocc -O2 -c "$here/$f.c" -o "$f.o"
 done
 x86_64-linux-cosmo-ld -r -o obj.x86_64.o nif_load_obj_a.o nif_load_obj_b.o
 aarch64-linux-cosmo-ld -r -o obj.aarch64.o .aarch64/nif_load_obj_a.o .aarch64/nif_load_obj_b.o
 x86_64-linux-cosmo-ld -r -o objb.x86_64.o nif_load_obj_b.o
 aarch64-linux-cosmo-ld -r -o objb.aarch64.o .aarch64/nif_load_obj_b.o
-x86_64-linux-cosmo-ld -r -o tls.x86_64.o nif_load_tls.o
-aarch64-linux-cosmo-ld -r -o tls.aarch64.o .aarch64/nif_load_tls.o
+# The TLS models of Rust in assembly: cosmocc takes no .S file, so the
+# compiler of each CPU.
+x86_64-unknown-cosmo-cc -c "$here/nif_load_tls_asm.S" -o tls_asm.x86_64.o
+aarch64-unknown-cosmo-cc -c "$here/nif_load_tls_asm.S" -o tls_asm.aarch64.o
+x86_64-linux-cosmo-ld -r -o tls.x86_64.o nif_load_tls.o tls_asm.x86_64.o
+aarch64-linux-cosmo-ld -r -o tls.aarch64.o .aarch64/nif_load_tls.o tls_asm.aarch64.o
+x86_64-linux-cosmo-ld -r -o tlsbig.x86_64.o nif_load_tls_big.o
+aarch64-linux-cosmo-ld -r -o tlsbig.aarch64.o .aarch64/nif_load_tls_big.o
 
 emit() {
     printf 'static const unsigned char %s[] __attribute__((aligned(16))) = {\n' "$1"
@@ -33,4 +39,6 @@ emit() {
     emit objb_aarch64 objb.aarch64.o
     emit tls_x86_64 tls.x86_64.o
     emit tls_aarch64 tls.aarch64.o
+    emit tlsbig_x86_64 tlsbig.x86_64.o
+    emit tlsbig_aarch64 tlsbig.aarch64.o
 } > nif_load_objs.h
