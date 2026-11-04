@@ -11,6 +11,14 @@ notes of its release.
   (C50 of `docs/UPSTREAM.md`). Now a removal needs a path of
   `--allow-write`, as the other changes do, and a rename from outside
   the rules gives `eacces`.
+- On Linux, a program with `--allow-run` could not start its own file
+  in erl mode (for example with `peer`): the new VM printed "the kernel
+  has no Landlock" and stopped with the exit status 127. The `pledge()`
+  of the program refused the system calls of Landlock, so the new VM
+  could not make its own sandbox. Now the program has the promise
+  `unveil` with `--allow-run`. A new Landlock ruleset only removes
+  rights, so the new VM can do no more than the program.
+  `tests/sandbox_claims.txt` checks it (`sandbox_check erl PATH`).
 - Security: on Linux with a kernel that has no Landlock, `--allow-run`
   with a list let the program start each program as a port. Now
   `erl_child_setup` checks the real path of each program, and of the

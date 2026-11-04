@@ -898,8 +898,14 @@ static void apply_allow(int helper, struct allow *a, int from_env)
               * for example systemd (NOTIFY_SOCKET) and PostgreSQL. */
              a->net ? "inet unix dns " : "",
              /* erl_child_setup gets the descriptors of a port over a
-              * socket (SCM_RIGHTS). */
-             a->run ? "proc exec sendfd recvfd " : "");
+              * socket (SCM_RIGHTS). "unveil": the system calls of
+              * Landlock, for a program that starts its own file (erl
+              * mode) or another beam.com program, which makes its own
+              * sandbox. A new Landlock ruleset only removes rights, and
+              * the rules of this process stay. Without it, the child
+              * got EPERM from Landlock, printed "the kernel has no
+              * Landlock", and stopped at its first unveil(). */
+             a->run ? "proc exec sendfd recvfd unveil " : "");
     if (pledge(promises, NULL) == -1)
         sandbox_error(helper, "pledge", promises);
     net_start(helper, hosts);

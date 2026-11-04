@@ -77,3 +77,5 @@ net: on Linux, not each option of the system | net | rawopt | refused | refused 
 run: no port without --allow-run | read=$IN | run true | error.* | error.* | error.* | - | error.* | ok
 run: a program of the list | run=true | run true | ok | ok | ok | - | - | ok
 run: only the programs of the list | run=true | run sh | error.* | error.* | error.* | - | - | ok
+run: the program starts its own file in erl mode (peer) | read=$IN;run=true | erl $IN/a.txt | ok | ok | ok | - | ok | ok
+run: its own file in erl mode keeps the sandbox | read=$IN;run=true | erl $OUT/a.txt | error eacces | error eacces | error eperm | - | error e[a-z]* | ok

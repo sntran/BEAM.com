@@ -35,6 +35,9 @@ what they allow:
   shell script needs its shell too: `--allow-run=sh,./script.sh`.
   `--allow-run` without a list gives execute and read access to all
   files, so it is almost no sandbox (as in Deno).
+- With `--allow-run`, a program can start its own file in erl mode, for
+  example with `peer` (see `docs/PROGRAMS.md`). The new VM has the
+  permissions of the program, and it can do no more than the program.
 - On Linux, `--allow-net` allows the options of a socket that
   `inet:setopts/2` and `inet:getopts/2` use, for example `sndbuf`,
   `recbuf`, `nodelay`, `keepalive`, `linger`, `reuseaddr` and
