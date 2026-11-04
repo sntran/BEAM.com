@@ -5,6 +5,10 @@ notes of its release.
 
 ## Unreleased
 
+- The email of a custom build from mkfifo.com/beam.com also gives the
+  link of the file in the prerelease `custom-builds` of GitHub. The bot
+  protection of Cloudflare on mkfifo.com stopped the download of a CI
+  job (Azure Pipelines). The link of GitHub gives the same file.
 - macOS arm64: about 1 start in 300 of a program with a sandbox hung
   before ERTS started, with the CPU in use (#177). The APE loader mapped
   the program over regions of the malloc zone of libSystem, so a call of
