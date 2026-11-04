@@ -978,12 +978,23 @@ jobs:
       # the warning of beam.com. Then tests/run.sh. The VM writes the exit
       # status of the tests in the checkout, and the job checks that file:
       # a test that fails cannot pass because of the exit status of vng.
+      # The tests run as the user of the job, as in the job test (vng runs
+      # a script as root by default). As root, the user namespace of the
+      # fake WSL of tests/run.sh does not map the owner of /home/runner
+      # (mode 750), so beam.com could not open its own file by its path.
+      # A home that the user cannot write gets a new directory: the APE
+      # loader goes there.
       - name: Run
         run: |
           cat > "$RUNNER_TEMP/guest.sh" <<'EOF'
           set -u
           cd "$1"
           echo 1 > guest.status
+          if [ ! -w "${HOME:-/nonexistent}" ]; then
+              HOME=$(mktemp -d 2>/dev/null || mktemp -d "$PWD/.guest-home.XXXXXX")
+              export HOME
+          fi
+          echo "== user $(id -un), home $HOME"
           lsm=$(cat /sys/kernel/security/lsm)
           echo "== kernel $(uname -r), lsm: $lsm"
           case ",$lsm," in
@@ -997,7 +1008,7 @@ jobs:
           EOF
           vng --version
           rm -f guest.status
-          vng -r --network user --memory 8G --cpus 4 --rwdir="$PWD" \
+          vng -r --user "$(id -un)" --network user --memory 8G --cpus 4 --rwdir="$PWD" \
             --append "lsm=lockdown,capability,yama" \
             -- sh "$RUNNER_TEMP/guest.sh" "$PWD" || true
           echo "The status of the tests in the VM: $(cat guest.status 2>/dev/null || echo none)"
