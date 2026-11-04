@@ -414,7 +414,12 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
 4. **Run on ...**: the behavior tests ([`tests/run.sh`](../tests/run.sh),
    [`tests/run.ps1`](../tests/run.ps1)) and the benchmarks on Linux
    (x86_64, aarch64), macOS (arm64, x86_64), Windows, FreeBSD, NetBSD and
-   OpenBSD 7.3. See [`TESTING.md`](TESTING.md).
+   OpenBSD 7.3. See [`TESTING.md`](TESTING.md). **Run on Linux x86_64
+   with no Landlock** runs `tests/run.sh` in a VM of QEMU (virtme-ng)
+   with the kernel of the runner and `lsm=` with no `landlock`, as the
+   kernel of Apple `container`. `tests/run.sh` sees the warning of
+   `beam.com`, and it uses the column `linux-no-landlock` of
+   `tests/sandbox_claims.txt`.
 5. **Publish the edge binary**: after a merge to `main`, the prerelease
    `edge` gets the new `beam.com`.
 6. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag

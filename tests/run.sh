@@ -656,25 +656,37 @@ if [ -d examples ]; then
     # the result of this system. The directories of $IN and $OUT are new
     # for each line. The table is on the file descriptor 3, so that the
     # programs do not read it.
-    case $os-$(uname -m) in
-        linux-*) col=4 ;;
-        darwin-arm64) col=5 ;;
-        openbsd-*) col=7 ;;
-        *) col=8 ;;
+    # On Linux, a kernel with no Landlock (issue 171) has its own column:
+    # beam.com then prints a warning at the start of a sandbox.
+    landlock=1
+    if [ "$os" = linux ]; then
+        BEAM_COM_ALLOW=read=/etc BEAM_COM_VERBOSE=1 $runner "$dir/sandbox_none.com" > "$tmp.landlock" 2>&1
+        if grep -q 'the kernel has no Landlock' "$tmp.landlock"; then
+            landlock=0
+            echo "NOTE: this kernel has no Landlock"
+        fi
+        rm -f "$tmp.landlock"
+    fi
+    case $os-$(uname -m)-$landlock in
+        linux-*-1) col=4 ;;
+        linux-*-0) col=5 ;;
+        darwin-arm64-*) col=6 ;;
+        openbsd-*) col=8 ;;
+        *) col=9 ;;
     esac
     claims=$dir/claims
     self=$dir/sandbox_none.com
     tab=$(printf '\t')
     awk -F ' [|] ' -v c="$col" '$0 !~ /^#/ && NF > 0 {
-            if (NF != 8) { print "BAD\t" $0; next }
+            if (NF != 9) { print "BAD\t" $0; next }
             print $1 "\t" $2 "\t" $3 "\t" $c
         }' "$top/tests/sandbox_claims.txt" > "$tmp.claims"
     while IFS=$tab read -r claim allow action want <&3; do
         if [ "$claim" = BAD ]; then
-            echo "FAIL: tests/sandbox_claims.txt: a line without 8 fields: $allow"
+            echo "FAIL: tests/sandbox_claims.txt: a line without 9 fields: $allow"
             fail=1
             failed="$failed
-  tests/sandbox_claims.txt: a line without 8 fields"
+  tests/sandbox_claims.txt: a line without 9 fields"
             continue
         fi
         echo "--- claim: $claim"
@@ -752,7 +764,11 @@ time.sleep(120)' "$claims/in/srv.sock" &
     if [ "$os" = linux ]; then
         BEAM_COM_ALLOW='read=/etc;net'
         export BEAM_COM_ALLOW
-        check sandbox_none.com 'Landlock ABI [1-9]' read /etc/hosts
+        if [ "$landlock" = 1 ]; then
+            check sandbox_none.com 'Landlock ABI [1-9]' read /etc/hosts
+        else
+            check sandbox_none.com 'warning: the kernel has no Landlock@@read: ok' read /etc/hosts
+        fi
         # Without Landlock, the check of the paths in the calls of the C
         # library limits the paths (EACCES). The kernel here has Landlock,
         # so the link to /etc/hosts shows that the check of the C library

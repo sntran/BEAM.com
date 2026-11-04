@@ -923,13 +923,93 @@ jobs:
           cat bench.md
           { echo "### Benchmarks: ${{ matrix.name }}"; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"
 
+  # Linux with a kernel that has no Landlock (issue 171), as the kernel of
+  # Apple container: the kernel of the runner in a VM of QEMU (virtme-ng),
+  # with an lsm= list that leaves out landlock. tests/run.sh sees the
+  # warning of beam.com, and it uses the column linux-no-landlock of
+  # tests/sandbox_claims.txt. The VM has the files of the runner as a copy,
+  # and the checkout is writable.
+  test-no-landlock:
+    name: Run on Linux x86_64 with no Landlock
+    needs: [build, example-release]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: bin
+          merge-multiple: true
+
+      # QEMU with time limits, as in the job test-bsd. virtme-ng 1.42 from
+      # its wheel, with its SHA-256, and its two dependencies from Ubuntu.
+      - name: Install QEMU and virtme-ng
+        env:
+          VNG_WHEEL_SHA256: 99589f1f5d74249038fe3c52aad9d3c33cb82a2d9617997511d4489fc709a707
+        run: |
+          ok=0
+          for try in 1 2; do
+            if sudo timeout 120 apt-get update -q &&
+              sudo timeout 600 apt-get install -y -q -o Acquire::Retries=3 --no-install-recommends \
+                qemu-system-x86 busybox-static python3-venv python3-argcomplete python3-requests; then
+              ok=1
+              break
+            fi
+            echo "Try $try to install QEMU failed."
+            sleep 10
+          done
+          [ "$ok" = 1 ] || exit 1
+          w=virtme_ng-1.42-py3-none-any.whl
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$w" \
+            "https://files.pythonhosted.org/packages/d1/41/838216899c6b1af87b1f32823589619cb1ed95b29e45b616482f84b45988/$w"
+          echo "$VNG_WHEEL_SHA256  $RUNNER_TEMP/$w" | sha256sum -c -
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/vng"
+          "$RUNNER_TEMP/vng/bin/pip" install -q --no-deps "$RUNNER_TEMP/$w"
+          echo "$RUNNER_TEMP/vng/bin" >> "$GITHUB_PATH"
+          # KVM for the user of the job, and the kernel of the runner, which
+          # only root can read.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0644 "/boot/vmlinuz-$(uname -r)"
+
+      # The facts first: the security modules of the kernel in the VM, and
+      # the warning of beam.com. Then tests/run.sh. The VM writes the exit
+      # status of the tests in the checkout, and the job checks that file:
+      # a test that fails cannot pass because of the exit status of vng.
+      - name: Run
+        run: |
+          cat > "$RUNNER_TEMP/guest.sh" <<'EOF'
+          set -u
+          cd "$1"
+          echo 1 > guest.status
+          lsm=$(cat /sys/kernel/security/lsm)
+          echo "== kernel $(uname -r), lsm: $lsm"
+          case ",$lsm," in
+              *,landlock,*) echo "FAIL: the kernel in the VM has Landlock"; exit 1 ;;
+          esac
+          echo "== resolv.conf:"
+          cat /etc/resolv.conf
+          BEAM_COM_ALLOW=read=/etc BEAM_COM_VERBOSE=1 sh bin/beam.com --version 2>&1 | head -n 3
+          sh tests/run.sh bin
+          echo $? > guest.status
+          EOF
+          vng --version
+          rm -f guest.status
+          vng -r --network user --memory 8G --cpus 4 --rwdir="$PWD" \
+            --append "lsm=lockdown,capability,yama" \
+            -- sh "$RUNNER_TEMP/guest.sh" "$PWD" || true
+          echo "The status of the tests in the VM: $(cat guest.status 2>/dev/null || echo none)"
+          [ "$(cat guest.status 2>/dev/null)" = 0 ]
+
   # The beam.com of main at a fixed URL: the prerelease "edge", with its
   # SHA-256. Then the Deploy Hook of the Livebook Worker (the secret
   # LIVEBOOK_DEPLOY_HOOK, when it is set) builds wasm/livebook with it and
   # deploys it (Workers Builds, see wasm/livebook/build.sh).
   edge:
     name: Publish the edge binary
-    needs: [unit, models, one-file, page, test, test-bsd]
+    needs: [unit, models, one-file, page, test, test-bsd, test-no-landlock]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -1094,7 +1174,7 @@ jobs:
   # example-release, so their results count too.
   release:
     name: Publish the release
-    needs: [reuse, unit, models, example-release, one-file, pages-app, page, test, test-bsd]
+    needs: [reuse, unit, models, example-release, one-file, pages-app, page, test, test-bsd, test-no-landlock]
     if: >-
       !cancelled() &&
       ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
@@ -1103,7 +1183,7 @@ jobs:
         needs.models.result == 'success' && needs.example-release.result == 'success' &&
         needs.one-file.result == 'success' && needs.pages-app.result == 'success' &&
         needs.page.result == 'success' && needs.test.result == 'success' &&
-        needs.test-bsd.result == 'success'))
+        needs.test-bsd.result == 'success' && needs.test-no-landlock.result == 'success'))
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:

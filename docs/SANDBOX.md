@@ -234,7 +234,8 @@ wall. Know these limits before you depend on it:
   start. Native code that makes its own system calls, the helper
   programs and the programs of `--allow-run` do not go through that
   check, and it does not follow a link. The limits of the system calls
-  and of the network still apply. With `BEAM_COM_VERBOSE=1`, the program
+  and of the network still apply. As on Windows, a refused path and a
+  refused socket of IPv4 or IPv6 give `{error, eacces}`. With `BEAM_COM_VERBOSE=1`, the program
   prints the ABI version of Landlock.
 - Caution: on Windows, only the calls of the C library get the check of
   the paths and of the sockets. Native code that calls Windows itself
