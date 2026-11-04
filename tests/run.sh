@@ -687,9 +687,28 @@ if [ -d examples ]; then
         echo a > "$claims/in/a.txt"
         echo b > "$claims/in/sub/b.txt"
         echo a > "$claims/out/a.txt"
+        # $SOCK: a Unix socket that listens, so that a refused connection
+        # gets the error of the sandbox, not ENOENT.
+        sock_pid=
+        case $action in
+            *'$SOCK'*)
+                if command -v python3 >/dev/null; then
+                    python3 -c 'import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.listen(8)
+time.sleep(120)' "$claims/in/srv.sock" &
+                    sock_pid=$!
+                    i=0
+                    while [ ! -S "$claims/in/srv.sock" ] && [ $i -lt 50 ]; do
+                        sleep 0.1
+                        i=$((i + 1))
+                    done
+                fi ;;
+        esac
         allow=$(printf '%s' "$allow" | sed "s#\$IN#$claims/in#g; s#\$OUT#$claims/out#g")
         action=$(printf '%s' "$action" |
-            sed "s#\$IN#$claims/in#g; s#\$OUT#$claims/out#g; s#\$SELF#$self#g")
+            sed "s#\$IN#$claims/in#g; s#\$OUT#$claims/out#g; s#\$SELF#$self#g; s#\$SOCK#$claims/in/srv.sock#g")
         # shellcheck disable=SC2086 # The words of the action.
         set -- $action
         name=$1
@@ -698,6 +717,10 @@ if [ -d examples ]; then
         export BEAM_COM_ALLOW
         check sandbox_none.com "^$name: $want\$" "$@"
         unset BEAM_COM_ALLOW
+        if [ -n "$sock_pid" ]; then
+            kill "$sock_pid" 2>/dev/null
+            wait "$sock_pid" 2>/dev/null
+        fi
     done 3< "$tmp.claims"
     rm -rf "$claims" "$tmp.claims"
     # BEAM_COM_ALLOW: permissions for a program without them; a program

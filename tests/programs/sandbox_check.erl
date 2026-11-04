@@ -10,7 +10,9 @@
 %%   sandbox_check unixconnect PATH
 %%                              connect to a Unix socket with a path: ok
 %%                              also for enoent and econnrefused, because
-%%                              then the call reached the file system
+%%                              then the call reached the file system (for
+%%                              a path of 100 bytes or more, the last
+%%                              action: see unix_connect/1)
 %%   sandbox_check readn PATH   read 16 bytes of a file (for a device)
 %%   sandbox_check stat PATH    read the information of a file
 %%   sandbox_check list PATH    list a directory
@@ -156,19 +158,23 @@ rawopt() ->
     gen_tcp:close(L),
     Result.
 
-%% The connect uses the name of the socket in its directory: the address
-%% of a Unix socket has 108 bytes at most.
+%% The address of a Unix socket has 104 bytes at most on the BSDs and
+%% macOS. A longer path (a deep work directory) connects with the name in
+%% its directory, and the program stays in that directory: the change
+%% back can be refused (unveil() of OpenBSD hides the directories outside
+%% the rules), so use it as the last action.
+unix_connect(Path) when length(Path) < 100 ->
+    unix_result(gen_tcp:connect({local, Path}, 0, [local], 5000));
 unix_connect(Path) ->
-    {ok, Cwd} = file:get_cwd(),
-    ok = file:set_cwd(filename:dirname(Path)),
-    Result = gen_tcp:connect({local, filename:basename(Path)}, 0, [local], 5000),
-    ok = file:set_cwd(Cwd),
-    case Result of
-        {ok, S} -> gen_tcp:close(S);
-        {error, enoent} -> ok;
-        {error, econnrefused} -> ok;
+    case file:set_cwd(filename:dirname(Path)) of
+        ok -> unix_result(gen_tcp:connect({local, filename:basename(Path)}, 0, [local], 5000));
         Error -> Error
     end.
+
+unix_result({ok, S}) -> gen_tcp:close(S);
+unix_result({error, enoent}) -> ok;
+unix_result({error, econnrefused}) -> ok;
+unix_result(Error) -> Error.
 
 read_bytes(Path, N) ->
     case file:open(Path, [read, raw, binary]) of
