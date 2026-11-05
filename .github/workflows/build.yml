@@ -1150,10 +1150,9 @@ jobs:
         run: |
           cd bin
           sha256sum beam.com > beam.com.sha256
-          gh release delete edge --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh release create edge beam.com beam.com.sha256 --repo "$GITHUB_REPOSITORY" \
-            --prerelease --target "$GITHUB_SHA" --title edge \
-            --notes "beam.com of main at $GITHUB_SHA. The next merge replaces it. To check where it comes from: \`gh attestation verify beam.com --repo $GITHUB_REPOSITORY\`."
+          # The old files stay until the new files are in the release
+          # (scripts/publish_edge.sh).
+          sh ../scripts/publish_edge.sh beam.com beam.com.sha256
 
       # The published beam.com is the file that the check took. The same
       # check stops on a copy with one changed byte.

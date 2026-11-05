@@ -5,6 +5,9 @@ notes of its release.
 
 ## Unreleased
 
+- The publish of `edge` keeps the old `beam.com` until the new one is in
+  the release (`scripts/publish_edge.sh`). Before, the job deleted the
+  release first, and a failed upload left `edge` with no file.
 - `curl -fo beam.com https://mkfifo.com/beam.com` gives the default
   build (the `edge` file) at once. A browser gets the form, now at
   `https://mkfifo.com/beam.com?form`.

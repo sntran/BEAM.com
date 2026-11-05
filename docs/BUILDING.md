@@ -525,7 +525,10 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
    `beam.com`, and it uses the column `linux-no-landlock` of
    `tests/sandbox_claims.txt`.
 5. **Publish the edge binary**: after a merge to `main`, the prerelease
-   `edge` gets the new `beam.com`.
+   `edge` gets the new `beam.com` (`scripts/publish_edge.sh`). The new
+   files go in as `NAME.new` first, and take the names of the old files
+   only after the upload. Thus a failed upload keeps the old `beam.com`
+   in `edge`.
 6. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
    gets `beam.com`, `beam-emu.com`, the tarball of the npm package and
    `SHA256SUMS`, and npm gets the same tarball. A run of this job again
