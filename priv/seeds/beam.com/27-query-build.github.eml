@@ -1,0 +1,8 @@
+To: {{GITHUB_API}}/repos/{{GITHUB_REPO}}/actions/workflows/custom-build.yml/dispatches
+Authorization: <seal:Bearer {{GITHUB_TOKEN}}>
+Accept: application/vnd.github+json
+X-GitHub-Api-Version: 2022-11-28
+User-Agent: beam.com
+Content-Type: application/json
+
+{"ref": "{{GITHUB_REF}}", "inputs": {"url": "q.$(printf %s "$query" | sed -e '/^email:/d' -e '/^website:/d' | sort | sha256sum | cut -c1-32)", "query": "$(printf %s "$query" | sed -e '/^email:/d' -e '/^website:/d' | sort | tr '\n' '&')"}}

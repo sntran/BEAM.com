@@ -118,8 +118,22 @@ REPLY = re.compile(r"[A-Za-z0-9+/]{4,684}={0,2}")
 # The file is beam-u.URL.com, so the FIFO knows its name from the URL
 # alone. A build of a URL has the defaults of the form for each other
 # choice, and no email.
-URL = re.compile(r"(plus|only)((?:\.[a-z0-9_-]{1,32}){1,16})")
+#
+# A build of a query has the URL "q." and 32 hexadecimal characters: the
+# start of the SHA-256 of the lines of the query (the input query), as
+# the FIFO gives them (query_inputs()).
+URL = re.compile(r"(plus|only)((?:\.[a-z0-9_-]{1,32}){1,16})|q\.([0-9a-f]{32})")
 URL_PREFIX = "beam-u."
+# The query of a build: the fields of the query of GET /beam.com, one
+# "NAME: VALUE" for each field, with "&" after each one. The short names
+# are for a person or a script; the other names are the fields of the
+# form of the FIFO, so a GET of the form is also a query. The FIFO drops
+# the fields email and website, and sorts the lines.
+QUERY_SHORT = ("otp_version", "elixir_version", "apps", "omit", "hex", "rebar3", "jit",
+               "sqlite", "wasm", "nifs", "nifs ", "nifs+")
+QUERY_FORM = re.compile(r"otp|dnifs|dnif[1-3]|nif[1-8]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}")
+QUERY_VALUE = re.compile(r"[a-z0-9_.,+ -]{0,200}")
+QUERY_LINES = 60
 
 
 def fail(message):
@@ -164,12 +178,128 @@ def issue(body):
     }
 
 
-def url_inputs(url):
+# The inputs of a build of a URL or a query, before its choices: the
+# defaults of the form, and no email.
+URL_DEFAULTS = {
+    "INPUT_APPS": "", "INPUT_KEEP": "", "INPUT_HEX": "0", "INPUT_REBAR3": "0",
+    "INPUT_ELIXIR": "1", "INPUT_JIT": "1", "INPUT_SQLITE": "1", "INPUT_WASM": "1",
+    "INPUT_NIFS": "", "INPUT_OTP_VERSION": "", "INPUT_ELIXIR_VERSION": "",
+    "INPUT_REPLY": "",
+}
+
+
+def query_hash(lines):
+    """The name of a query in its URL: the first 32 characters of the
+    SHA-256 of its lines, each one with a line break after it, in the
+    sequence of the FIFO."""
+    text = "".join(f"{line}\n" for line in lines)
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+def query_inputs(digest, query):
+    """The inputs of workflow_dispatch of the build of a query (the input
+    query, with the hash DIGEST of its URL): the defaults of the form, and
+    the fields of the query. A field that is not there keeps its default."""
+    lines = [line for line in query.split("&") if line]
+    if not lines or len(lines) > QUERY_LINES:
+        fail(f"A query has 1 to {QUERY_LINES} fields")
+    if query_hash(lines) != digest:
+        fail("The query does not have the hash of its URL")
+    fields = []
+    for line in lines:
+        name, sep, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if not sep or not (name in QUERY_SHORT or QUERY_FORM.fullmatch(name)):
+            fail(f"Not a field of a query: {name[:40]!r}")
+        if not QUERY_VALUE.fullmatch(value):
+            fail(f"Not a value of the field {name}")
+        fields.append((name, value.strip()))
+
+    def values(name):
+        return [v for n, v in fields if n == name]
+
+    def one(name):
+        found = values(name)
+        if len(found) > 1:
+            fail(f"The field {name} is in the query more than one time")
+        return found[0] if found else None
+
+    def words(*names):
+        return " ".join(v for name in names for v in values(name)).replace(",", " ").split()
+
+    def checks(prefix, allowed=None):
+        """The values of the check boxes PREFIX_NAME of the form: each
+        one is NAME, or empty."""
+        out = []
+        for name, value in fields:
+            if name.startswith(prefix) and value:
+                if value != name[len(prefix):] or (allowed is not None and value not in allowed):
+                    fail(f"Not a value of the field {name}")
+                out.append(value)
+        return out
+
+    env = dict(URL_DEFAULTS)
+    for flag in ("hex", "rebar3", "jit", "sqlite", "wasm"):
+        value = one(flag)
+        if value is not None:
+            env["INPUT_" + flag.upper()] = value
+    otp = one("otp_version")
+    if otp:
+        env["INPUT_OTP_VERSION"] = otp
+    # As in the form: an empty elixir_version (or "none") is no Elixir.
+    elixir = one("elixir_version")
+    if elixir is not None:
+        env["INPUT_ELIXIR"] = ""
+        env["INPUT_ELIXIR_VERSION"] = "" if elixir == "none" else elixir
+    env["INPUT_APPS"] = " ".join(words("apps") + checks("a_"))
+    # The default applications: "otp=keep" and the check boxes k_NAME of
+    # the form, or the short field omit.
+    omit = words("omit")
+    if one("otp") is not None:
+        if one("otp") != "keep" or omit:
+            fail("The field otp is keep, with the fields k_NAME, and no field omit")
+        env["INPUT_KEEP"] = " ".join(["keep"] + checks("k_", OMITTABLE))
+    elif omit:
+        bad = [a for a in omit if a not in OMITTABLE]
+        if bad:
+            fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
+        env["INPUT_KEEP"] = " ".join(["keep"] + [a for a in OMITTABLE if a not in omit])
+    # The NIFs: nifs= gives only these, and nifs+= adds them to the default
+    # NIFs. The form sends dnifs=default, the default NIFs to keep, and
+    # the others.
+    only, plus = words("nifs"), words("nifs ", "nifs+")
+    chosen = [v for n, v in fields if re.fullmatch(r"nif[1-8]", n) and v]
+    kept = [v for n, v in fields if re.fullmatch(r"dnif[1-3]", n) and v]
+    if only and plus:
+        fail("A query has nifs= or nifs+=, not both")
+    # In the short fields, a part of vix also chooses vix, as in an issue.
+    # The form hides the parts when vix is off, so its fields do not.
+    for short in (only, plus):
+        if "vix" not in short and any(n in VIX_PARTS for n in short):
+            short.append("vix")
+    if one("dnifs") is not None:
+        if one("dnifs") != "default":
+            fail("Not a value of the field dnifs")
+        env["INPUT_NIFS"] = " ".join(["default"] + kept + chosen + only + plus)
+    elif kept:
+        fail("The fields dnif1 to dnif3 need dnifs=default")
+    elif only:
+        env["INPUT_NIFS"] = " ".join(["default"] + only + chosen)
+    else:
+        env["INPUT_NIFS"] = " ".join(plus + chosen)
+    return env
+
+
+def url_inputs(url, query=""):
     """The inputs of workflow_dispatch of the build of URL: the defaults
-    of the form, and the NIFs of URL."""
+    of the form, and the NIFs of URL, or the fields of QUERY."""
     found = URL.fullmatch(url)
     if not found:
         fail(f"Not the choices of a URL: {url[:100]!r}")
+    if found.group(3):
+        return query_inputs(found.group(3), query)
+    if query:
+        fail("Only a URL q.HASH has a query")
     names = found.group(2)[1:].split(".")
     if names != sorted(set(names)):
         fail("The names of the NIFs of a URL must be in the sequence of sort, each one time")
@@ -182,18 +312,13 @@ def url_inputs(url):
     if "vix" not in names and any(n in VIX_PARTS for n in names):
         fail("A part of vix needs vix")
     words = (["default"] if found.group(1) == "only" else []) + names
-    return {
-        "INPUT_APPS": "", "INPUT_KEEP": "", "INPUT_HEX": "0", "INPUT_REBAR3": "0",
-        "INPUT_ELIXIR": "1", "INPUT_JIT": "1", "INPUT_SQLITE": "1", "INPUT_WASM": "1",
-        "INPUT_NIFS": " ".join(words), "INPUT_OTP_VERSION": "", "INPUT_ELIXIR_VERSION": "",
-        "INPUT_REPLY": "",
-    }
+    return dict(URL_DEFAULTS, INPUT_NIFS=" ".join(words))
 
 
 def dispatch(env):
     # A build of a URL: its inputs come only from the URL.
     if env.get("INPUT_URL", ""):
-        env = dict(env, **url_inputs(env["INPUT_URL"]))
+        env = dict(env, **url_inputs(env["INPUT_URL"], env.get("INPUT_QUERY", "")))
 
     def flag(name):
         value = env.get("INPUT_" + name.upper(), "")

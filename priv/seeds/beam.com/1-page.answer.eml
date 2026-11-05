@@ -59,9 +59,9 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <main>
 <h1>Build a BEAM</h1>
 <p>Get a custom <a href="https://github.com/sntran/BEAM.com">beam.com</a>: Erlang/OTP and Elixir in one file that runs on Linux, macOS, Windows and the BSDs, with the parts that you choose.</p>
-<p class="muted">You need no GitHub account. We send a link to your email address. The link starts the build, and a second email gives you the file when it is ready (about 30 to 60 minutes). Each file stays available for 30 days. At most 10 new builds each day.</p>
+<p class="muted">You need no GitHub account. Choose, then select Download: the browser gets the file when its build is ready (about 2 to 3 minutes; at most 10). The address of the download is also a URL for <code>curl</code>. Or give your email address: we send a link that starts the build, and a second email gives you the file. Each file stays available for 30 days. At most 10 new builds each day.</p>
 
-<form method="post" action="/beam.com">
+<form method="get" action="/beam.com">
 <fieldset>
 <legend>Erlang/OTP</legend>
 <label for="otp_version">Version</label>
@@ -142,6 +142,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 </div>
 </fieldset>
 
+<p><button formnovalidate>Download</button></p>
 <fieldset>
 <legend>Your email address</legend>
 <label for="email">We send the link and the file only to this address.</label>
@@ -153,9 +154,9 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <p class="warn w-asn1">public_key and eldap need asn1. Keep asn1, or clear public_key and eldap.</p>
 <p class="warn w-rebar3">rebar3 needs inets and ssl. Keep inets and ssl, or choose No for rebar3.</p>
 <p class="warn w-hex">Hex needs inets and ssl. Keep inets and ssl, or choose No for Hex.</p>
-<button>Send me the link</button>
+<button formmethod="post">Send me the link</button>
 </form>
-<p class="muted">A program or CI can get a build with one request, with no email: <code class="nw">curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'</code> gives the default NIFs and rusty_csv, and <code>?nifs=rusty_csv</code> gives only rusty_csv. The request waits for the build, about 2 to 3 minutes.</p>
+<p class="muted">A program or CI gets the file with one request: <code class="nw">curl -fo beam.com https://mkfifo.com/beam.com</code> gives the default build at once. Each choice is a field of the query: <code>otp_version</code>, <code>elixir_version</code> (empty: no Elixir), <code>apps</code>, <code>omit</code> (default applications to leave out), <code>hex</code>, <code>rebar3</code>, <code>jit</code>, <code>sqlite</code>, <code>wasm</code> (0 or 1), and <code>nifs+=</code> (the default NIFs and these) or <code>nifs=</code> (only these). For example <code class="nw">curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&amp;apps=mnesia&amp;nifs+=vix'</code>. The request waits for the build. <code>?nifs+=vix,rusty_csv,ex_pdfium</code> alone needs no build.</p>
 <p class="muted">This page is a FIFO of <a href="https://mkfifo.com/">mkfifo.com</a>. The build runs on GitHub Actions from the main branch of BEAM.com. A member of the repository can also ask for a build with <a href="https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml">an issue</a>.</p>
 </main>
 </body>

@@ -1,0 +1,7 @@
+To: -
+Status: 400
+Cache-Control: no-store
+
+Not a query of a build. Each field is one time, with a value of a-z, 0-9, _ . , + - and spaces:
+otp_version, elixir_version (empty or none: no Elixir), apps, omit (default OTP applications to leave out), hex, rebar3, jit, sqlite, wasm (0 or 1), and nifs= (only these NIFs) or nifs+= (the default NIFs and these). The form of https://mkfifo.com/beam.com?form also gives its fields.
+For example: curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&nifs+=vix'
