@@ -28,6 +28,12 @@ Usage:
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
     Sends the result to the FIFO beam.com: ready, failed or refused.
+  custom_build.py mark REASON
+    For a build of a URL (the input url): puts a text with the reason in
+    the release, so the FIFO stops its waits for the day (url_mark()).
+  custom_build.py cleanup-urls
+    Deletes the files of the builds of a URL: the next request of a URL
+    builds the source of now.
 
 The files are the assets of the prerelease RELEASE of the repository: a
 person with no GitHub account can download them. The requests to GitHub
@@ -106,6 +112,14 @@ FLAGS = ("hex", "rebar3", "elixir", "jit", "sqlite", "wasm")
 # The encrypted address of the requester: Base64 of a secretbox of
 # mkfifo.com (24 bytes of nonce, 16 of tag, and the address).
 REPLY = re.compile(r"[A-Za-z0-9+/]{4,684}={0,2}")
+# A build of a URL (the input url, from the FIFO beam.com): "plus" (the
+# default NIFs and these NIFs) or "only" (only these NIFs), then the
+# names of the NIFs in the sequence of sort, each one after a ".".
+# The file is beam-u.URL.com, so the FIFO knows its name from the URL
+# alone. A build of a URL has the defaults of the form for each other
+# choice, and no email.
+URL = re.compile(r"(plus|only)((?:\.[a-z0-9_-]{1,32}){1,16})")
+URL_PREFIX = "beam-u."
 
 
 def fail(message):
@@ -150,7 +164,37 @@ def issue(body):
     }
 
 
+def url_inputs(url):
+    """The inputs of workflow_dispatch of the build of URL: the defaults
+    of the form, and the NIFs of URL."""
+    found = URL.fullmatch(url)
+    if not found:
+        fail(f"Not the choices of a URL: {url[:100]!r}")
+    names = found.group(2)[1:].split(".")
+    if names != sorted(set(names)):
+        fail("The names of the NIFs of a URL must be in the sequence of sort, each one time")
+    known = set(NIFS) | set(DEFAULT_NIFS) | set(VIX_PARTS)
+    bad = [n for n in names if n not in known]
+    if bad:
+        fail(f"Not NIFs that a build can use: {', '.join(bad)}")
+    # The form drops a part of vix without vix. A URL names its file, so
+    # the build refuses it.
+    if "vix" not in names and any(n in VIX_PARTS for n in names):
+        fail("A part of vix needs vix")
+    words = (["default"] if found.group(1) == "only" else []) + names
+    return {
+        "INPUT_APPS": "", "INPUT_KEEP": "", "INPUT_HEX": "0", "INPUT_REBAR3": "0",
+        "INPUT_ELIXIR": "1", "INPUT_JIT": "1", "INPUT_SQLITE": "1", "INPUT_WASM": "1",
+        "INPUT_NIFS": " ".join(words), "INPUT_OTP_VERSION": "", "INPUT_ELIXIR_VERSION": "",
+        "INPUT_REPLY": "",
+    }
+
+
 def dispatch(env):
+    # A build of a URL: its inputs come only from the URL.
+    if env.get("INPUT_URL", ""):
+        env = dict(env, **url_inputs(env["INPUT_URL"]))
+
     def flag(name):
         value = env.get("INPUT_" + name.upper(), "")
         if value not in ("0", "1"):
@@ -379,7 +423,13 @@ def github(path, method="GET", data=None, content_type=None, base=None):
 
 def asset_name():
     """The name of the file in the release: beam-KEY16.com or
-    beam-emu-KEY16.com, with the first 16 characters of KEY."""
+    beam-emu-KEY16.com, with the first 16 characters of KEY. The file of
+    a build of a URL is beam-u.URL.com."""
+    url = os.environ.get("URL", "")
+    if url:
+        if not URL.fullmatch(url):
+            fail("Not the choices of a URL")
+        return f"{URL_PREFIX}{url}.com"
     if not re.fullmatch(r"[0-9a-f]{64}", os.environ.get("KEY", "")):
         fail("No KEY")
     stem = {"beam.com": "beam", "beam-emu.com": "beam-emu"}.get(os.environ.get("OUT_NAME"))
@@ -444,21 +494,43 @@ def cleanup(now=None, days=30):
 
 def put(file):
     """Puts FILE in the release with the name of asset_name()."""
+    with open(file, "rb") as f:
+        upload(asset_name(), f.read(), "application/octet-stream")
+
+
+def upload(name, data, content_type):
+    """Puts DATA in the release as NAME, when no file has that name."""
     found = release(create=True)
-    name = asset_name()
     for a in found["assets"]:
         if a["name"] == name:
             return
-    with open(file, "rb") as f:
-        data = f.read()
-    upload = found["upload_url"].split("{", 1)[0]
-    github(
-        "?name=" + urllib.parse.quote(name),
-        "POST",
-        data,
-        "application/octet-stream",
-        base=upload,
-    )
+    base = found["upload_url"].split("{", 1)[0]
+    github("?name=" + urllib.parse.quote(name), "POST", data, content_type, base=base)
+
+
+def url_mark(reason, now=None):
+    """Puts beam-u.URL.DAY.txt in the release, with the reason why the
+    build of the URL did not run, and the link of the run. DAY is the day
+    of now (UTC), as the FIFO writes it with date -u +%Y%m%d: the FIFO
+    gives this text to the client in place of a new build, until the
+    next day."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    url = os.environ.get("URL", "")
+    if not URL.fullmatch(url):
+        fail("No URL")
+    run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    detail = os.environ.get("REFUSED_DETAIL", "")
+    text = f"The build did not run ({reason}). {detail}\nThe log of the run: {run}\n"
+    upload(f"{URL_PREFIX}{url}.{now.strftime('%Y%m%d')}.txt", text.encode(), "text/plain")
+
+
+def cleanup_urls():
+    """Deletes each file of a build of a URL, and each mark."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    for a in assets():
+        if a["name"].startswith(URL_PREFIX):
+            github(f"/repos/{repo}/releases/assets/{a['id']}", "DELETE")
+            print(f"deleted {a['name']}")
 
 
 def ahead(runs, number):
@@ -556,6 +628,12 @@ def main(argv):
     if command == "cleanup" and len(argv) == 2:
         cleanup()
         return
+    if command == "cleanup-urls" and len(argv) == 2:
+        cleanup_urls()
+        return
+    if command == "mark" and len(argv) == 3:
+        url_mark(argv[2])
+        return
     if command == "queue" and len(argv) == 2:
         reason = queue()
         if reason:
@@ -582,6 +660,11 @@ def main(argv):
         if "GITHUB_ENV" in os.environ and REPLY.fullmatch(reply):
             with open(os.environ["GITHUB_ENV"], "a") as f:
                 f.write(f"REPLY={reply}\n")
+        # The URL first too: the mark of a refusal has its name.
+        url = os.environ.get("INPUT_URL", "")
+        if "GITHUB_ENV" in os.environ and URL.fullmatch(url):
+            with open(os.environ["GITHUB_ENV"], "a") as f:
+                f.write(f"URL={url}\n")
         # A choice that is not possible: the requester gets the reason
         # (REFUSED=choice, and REFUSED_DETAIL with only safe characters).
         try:

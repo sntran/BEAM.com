@@ -66,9 +66,17 @@ on:
         description: The encrypted address of the requester (from the FIFO beam.com of mkfifo.com)
         type: string
         default: ""
+      url:
+        description: >-
+          A build of a URL of the FIFO beam.com, as plus.NIF.NIF or only.NIF (custom_build.py URL):
+          the defaults of the form and these NIFs, the file beam-u.URL.com, and no email.
+          The other inputs do not change it.
+        type: string
+        default: ""
 
 run-name: >-
-  ${{ github.event_name == 'workflow_dispatch' && 'Custom build from mkfifo.com/beam.com'
+  ${{ github.event_name == 'workflow_dispatch' && inputs.url != '' && format('Custom build of the URL {0}', inputs.url)
+  || github.event_name == 'workflow_dispatch' && 'Custom build from mkfifo.com/beam.com'
   || format('Custom build for issue {0}', github.event.issue.number) }}
 
 permissions:
@@ -81,10 +89,12 @@ permissions:
 
 # One build for each issue. Each run of beam.com has its own group:
 # the queue of scripts/custom_build.py keeps all the requests, where a
-# group keeps only one that waits.
+# group keeps only one that waits. A build of a URL has one group for
+# each URL: the FIFO asks again while the client waits, and the group
+# keeps the build that runs and one that waits (it finds the file).
 concurrency:
-  group: custom-build-${{ github.event.issue.number || format('run-{0}', github.run_id) }}
-  cancel-in-progress: true
+  group: custom-build-${{ github.event.issue.number || (inputs.url != '' && format('url-{0}', inputs.url)) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ inputs.url == '' }}
 
 # The step "Read the choices" sets OTP_VERSION and ELIXIR_VERSION, with
 # their commits.
@@ -131,6 +141,7 @@ jobs:
           INPUT_OTP_VERSION: ${{ inputs.otp_version }}
           INPUT_ELIXIR_VERSION: ${{ inputs.elixir_version }}
           INPUT_REPLY: ${{ inputs.reply }}
+          INPUT_URL: ${{ inputs.url }}
         # The text of the issue and the inputs are input of a user: they
         # only select known values (scripts/custom_build.py).
         run: |
@@ -425,8 +436,18 @@ jobs:
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
             --body "The build failed: $RUN (the log has the reason). The issue stays open."
 
+      # A build of a URL that did not run: a text with the reason goes in
+      # the release for the day, so the FIFO gives it to the client and
+      # does not ask for the build again.
+      - name: Mark the URL
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.url != '' && (env.REFUSED != '' || failure())
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/custom_build.py mark "${REFUSED:-failed}"
+
       # The FIFO beam.com: the result goes to the FIFO, with the encrypted
-      # address. The FIFO emails the link of the file, or the reason.
+      # address. The FIFO emails the link of the file, or the reason. A
+      # build of a URL has no address: notify prints "No FIFO to notify".
       - name: Answer the FIFO beam.com
         if: always() && github.event_name == 'workflow_dispatch'
         env:

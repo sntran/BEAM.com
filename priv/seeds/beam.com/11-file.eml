@@ -1,0 +1,3 @@
+To: beam.com/u/beam-u.:url((?:plus|only)(?:\.[a-z0-9_-]{1,32}){1,16}).com
+X-HTTP-Method-Override: ^GET$(cat beam.com/s/beam-u.$url.com)$
+Range: ^(?<range>[^\r\n]{0,256})$

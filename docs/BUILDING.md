@@ -282,6 +282,50 @@ when the build did not run. The file stays in the prerelease
   changes the address of the FIFO. The token of the workflow puts the
   files in the release, so no other key is necessary.
 
+### A build URL
+
+A program, a script or CI gets a custom build with one `GET`, with no
+email and no form:
+
+```sh
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'   # the default NIFs and rusty_csv
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix' # only rusty_csv and vix
+```
+
+- `nifs+=` adds the NIFs to the default NIFs, and `nifs=` gives only
+  these NIFs. The names have a comma between them, in each sequence:
+  `exqlite`, `bcrypt_elixir`, `argon2_elixir`, `picosat_elixir`, `vix`,
+  `vix-icc`, `vix-gif`, `vix-avif`, `vix-svg`, `rusty_csv` and
+  `ex_pdfium`. A different name gets `400` at once.
+- Each other choice is the default of the form: Erlang/OTP and Elixir
+  of `scripts/steps.sh`, each default OTP application, the JIT, SQLite
+  and WebAssembly, and no Hex and no rebar3.
+- The answer is the file, as a stream with its `Content-Length`. When
+  the file is not in the release yet, the request waits for its build,
+  in one connection: the FIFO starts the build and says "not yet" (a
+  `503` with `Retry-After: 15`), and mkfifo.com asks again (section
+  8.10 of the specification of mkfifo.com). With each part in the
+  store, a build takes about 2 to 3 minutes. The waits of one request
+  are at most 10 minutes. After that, the request fails, and a later
+  request gets the file when the build is complete.
+- The file is `beam-u.MODE.NAMES.com` in the prerelease `custom-builds`:
+  MODE is `plus` or `only`, and NAMES are the names in the sequence of
+  `sort`, each one time. Thus two URLs with the same NIFs get one file.
+  `custom-build-caches.yml` deletes these files after a push that
+  changes the source of a build, so the next request builds the source
+  of now.
+- A build that does not run (a refusal of the queue, the limit of each
+  day, or a failure) puts a text with the reason in the release for the
+  day: `beam-u.MODE.NAMES.DAY.txt`. The next requests of that day get it
+  with `422`, and start no build. The first request gets only an error.
+- A build of a URL counts in the limits of the form: one build at a
+  time, at most 3 that wait, and at most 10 new builds each day. The
+  workflow has one group of `concurrency` for each URL, so the requests
+  of a URL that wait start one build.
+- The envelopes are `9-url` to `20-url-bad` of
+  [`priv/seeds/beam.com/`](../priv/seeds/beam.com). The input `url` of
+  the workflow has the choices of the URL (`URL` of `custom_build.py`).
+
 ## The store of parts
 
 A part is the output of some steps of `scripts/steps.sh`, which a build

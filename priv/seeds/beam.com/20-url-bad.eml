@@ -1,0 +1,4 @@
+To: beam.com
+X-HTTP-Method-Override: ^GET$
+
+(?m)^nifs ?: (?!(?:exqlite|bcrypt_elixir|argon2_elixir|picosat_elixir|vix|vix-icc|vix-gif|vix-avif|vix-svg|rusty_csv|ex_pdfium)(?:,(?:exqlite|bcrypt_elixir|argon2_elixir|picosat_elixir|vix|vix-icc|vix-gif|vix-avif|vix-svg|rusty_csv|ex_pdfium)){0,15}$)
