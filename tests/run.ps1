@@ -419,6 +419,19 @@ if (Test-Path "examples") {
     }
 }
 
+# Native NIF objects (docs/NIFS.md), as in run.sh: load_nif/2 loads
+# priv/native_nif_check.x86_64.o from the zip of the program. On Windows the
+# loader also changes the TLS instructions of the object (the TLS slot of
+# the thread).
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*native_nif_check.com' @("tests/programs/native_nif_check", "--main", "native_nif_check", "-o", "$Dir/native_nif_check.com")
+    if (Test-Path (Join-Path $Dir "native_nif_check.com")) {
+        $env:BEAM_COM_NIF_DEBUG = "1"
+        Check "native_nif_check.com" 'nif_native: .*native_nif_check\.x86_64\.o@@native_nif_check: all [0-9]+ passed' @()
+        Remove-Item Env:BEAM_COM_NIF_DEBUG
+    }
+}
+
 # The interpreter: beam-emu.com (beam.com has the JIT).
 if (Test-Path (Join-Path $Dir "beam-emu.com")) {
     Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("--version")
