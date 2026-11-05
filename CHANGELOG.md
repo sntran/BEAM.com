@@ -5,6 +5,76 @@ notes of its release.
 
 ## Unreleased
 
+- Native NIF objects (`docs/NIFS.md`): `erlang:load_nif(PATH, Info)`
+  loads `PATH.x86_64.o` or `PATH.aarch64.o` from the zip of the program,
+  before a NIF in WebAssembly. The object is the NIF as `cosmocc -c`
+  compiles it (and `ld -r` joins it), with no change to its C code. It
+  runs at the speed of native code, on each system of the CPU. The
+  object can call each `enif_*` function and the functions of the libc
+  in `c_src/cosmo/beam_com_nif_libc.h`. Thread-local data works, with
+  each TLS model of C (cosmocc) and of Rust: the NIF of `rusty_csv` loads
+  as an object. C++ works: the object links the members of libc++ that it
+  needs, and the program gives libc++abi; the NIF of `ex_pdfium` (PDFium)
+  loads as an object. The loader removes the sections that the NIF does
+  not use, as `ld --gc-sections` does, and reads an object with more than
+  65,279 sections. `tests/programs/native_nif_check` runs on each system
+  in `tests/run.sh`.
+- The NIF of `vix` (libvips, glib, and the AVIF, GIF, ICC and SVG parts)
+  loads as a native NIF object. `scripts/nif_object.sh` makes the objects
+  of a NIF part of the store. `tests/programs/store_nif_check` runs vix,
+  rusty_csv and ex_pdfium as objects on each system of CI. The libc of
+  the objects has 253 more names (about 0.5 MB in `beam.com`).
+- `BEAM_COM_NIF_MAP=FILE`: the loader writes the address and the name of
+  each function of a native NIF object.
+- macOS arm64: the TLS of Rust in a native NIF object used `tpidr_el0`,
+  which is not the thread pointer of Cosmopolitan on XNU (the SVG part of
+  vix crashed). The loader changes each `mrs xN, tpidr_el0` of an object
+  to `mov xN, x28`. The aarch64 test objects now keep this instruction,
+  as the code of Rust does.
+- The NIF files of `beam.com` (`lib/beam_com/priv/nifs/APP-VSN`): a
+  package gets the native NIF objects of its directory in its priv
+  directory, in `beam.com DIR -o OUT`, in `make` of `elixir_make`, and in
+  the module `Rustler` of `beam.com`. The list of these packages comes
+  from the directory, so a `beam.com` assembled with more files needs no
+  other build: it builds the projects of vix, rusty_csv and ex_pdfium
+  from hex.pm with no static NIF of them. `beam.com --version` names
+  them ("NIF files").
+- The entry of a native NIF object can be its one global function
+  `NAME_nif_init`: Rustler loads `priv/native/libCRATE`.
+- `tests/cosmo/nif_needs.c`: each name that a native NIF object needs
+  and that the program does not have, in one run. CI checks the objects
+  of the store with it.
+- An assembled `beam.com` has the license texts of its NIF parts
+  (`licenses/pdfium` for ex_pdfium), as the static build has them, and
+  each program of it keeps them.
+- `beam.com DIR -o OUT` writes `mix.lock` as Mix writes it: the keys are
+  atoms, and each entry has the optional deps too. Before, a later
+  `mix deps.get` stopped: Hex read a name with `atom_to_binary/1`, and
+  checked the deps against the registry.
+- `scripts/assemble.erl`: a program and new files in its zip, as a server
+  can stream it: the bytes of the program up to its central directory,
+  the new entries, and a new central directory. The length is known
+  before the first byte. The tests run `store_nif_check` assembled in
+  this way on each system.
+- `beam.com --nif-include`: the headers also work for a native NIF object
+  of `cosmocc`, on x86_64 and aarch64.
+- `scripts/assemble.erl --parts` cuts the programs of each set of NIF
+  packages into segments: the bytes of the program up to its central
+  directory, the entries of each package, and one central directory for
+  each set. The segments of a set, one after the other, are the program.
+  A spec `PREFIX/=DIR` adds each file of a directory.
+- A build URL of `nifs+=` with only vix, rusty_csv, ex_pdfium and the
+  default NIFs gets its program at once, with no build: the FIFO
+  beam.com streams the segments of the `edge` program and the NIF
+  objects. The job `edge-parts` puts them in the prerelease
+  `program-parts` after each publish of `edge`. This answer has no
+  `Content-Length`. See "A build URL" in `docs/BUILDING.md`.
+- A build URL: `curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'`
+  gives a custom build with the default NIFs and rusty_csv, and
+  `?nifs=rusty_csv` gives only rusty_csv. The answer is the file as a
+  stream. When the file is not there yet, the request waits for its
+  build (about 2 to 3 minutes), with no email and no form. See "A build
+  URL" in `docs/BUILDING.md`.
 - macOS arm64: about 1 start in 300 of a program with a sandbox hung
   before ERTS started, with the CPU in use (#177). The APE loader mapped
   the program over regions of the malloc zone of libSystem, so a call of
@@ -913,7 +983,7 @@ on npm it has the dist-tag `next` (`npm install beam.com@next`).
   `.ex` files, applications, and rebar3 and Mix projects, with Hex
   packages, and with no Erlang installation. `mix`, `iex`, `elixir`,
   `elixirc` and `escript` are in the file.
-- Static NIFs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
+- Static nifs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
   exqlite), WebAssembly and WASI (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir.
 - NIF libraries in WebAssembly: when a NIF has no native library,

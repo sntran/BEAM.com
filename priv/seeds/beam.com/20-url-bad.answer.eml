@@ -1,0 +1,6 @@
+To: -
+Status: 400
+Cache-Control: no-store
+
+nifs+= adds NIFs to the default NIFs, and nifs= gives only these NIFs. The names, with a comma between them: exqlite, bcrypt_elixir, argon2_elixir, picosat_elixir, vix, vix-icc, vix-gif, vix-avif, vix-svg, rusty_csv, ex_pdfium.
+For example: curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'

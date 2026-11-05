@@ -515,6 +515,13 @@ defmodule BeamComTest do
       end
     end
 
+    # The NIF files of priv/nifs of this repository: lazy_html in
+    # WebAssembly. A program assembled from parts adds its native objects.
+    test "the packages with NIF files in the zip" do
+      {:ok, text} = output([~c"--version"])
+      assert text =~ ~r/^  NIF files   : .*lazy_html-0\.1\.13/m
+    end
+
     test "--version with arguments" do
       assert catch_throw(:beam_com.command([~c"--version", ~c"x"])) ==
                {:error, ~c"usage: ~ts --version", [~c"beam.com"]}

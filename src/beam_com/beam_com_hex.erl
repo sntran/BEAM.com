@@ -264,8 +264,9 @@ read_lock(File) ->
 
 %% mix.lock: %{"name": {:hex, :package, "vsn", "inner", managers, deps,
 %% "hexpm", "outer"}}, read with the Elixir parser as Mix reads it. Mix
-%% writes the keys as quoted atoms ("name": ...), and lock_text/2 writes
-%% them as strings ("name" => ...). Older versions of Hex wrote shorter
+%% writes the keys as quoted atoms ("name": ...), and so does
+%% lock_text/2. An older beam.com wrote them as strings ("name" => ...),
+%% which this function also reads, but Hex does not. Older versions of Hex wrote shorter
 %% entries, with no outer checksum or no checksum. Hex reads an element
 %% that is not there as nil (destructure in Hex.Utils.lock/1), and so
 %% does this function.
@@ -349,23 +350,33 @@ lock_text(Packages) ->
               {pkg_hash_ext, [{Name, iolist_to_binary(O)} || {Name, #{outer := O}} <- Sorted]}],
     io_lib:format("~tp.~n~tp.~n", [{<<"1.2.0">>, Entries}, Hashes]).
 
-%% The text of mix.lock, in the format of Mix (Kernel.inspect/2 of the
-%% map). The deps of an entry are the requirements of the package.
+%% The text of mix.lock, as Mix.Dep.Lock writes it: one line
+%% '  "name": ENTRY,' for each package, in the order of the names, with
+%% Kernel.inspect/2 of the entry. The keys are atoms: Hex reads the name
+%% of a package with atom_to_binary/1. The deps of an entry are all the
+%% requirements of the package (lock_reqs, with the optional ones), else
+%% reqs: Hex checks them against the registry.
 lock_text(mix, Packages) ->
-    Map = maps:from_list(
+    Entries = lists:sort(
             [{atom_to_binary(N),
               {hex, app_name(Pkg), list_to_binary(Vsn),
                string:lowercase(iolist_to_binary(I)),
                [binary_to_atom(T) || T <- Tools,
                                      lists:member(T, [<<"mix">>, <<"rebar3">>, <<"make">>])],
                [{DN, list_to_binary(DR), [{hex, app_name(DP)}, {repo, <<"hexpm">>},
-                                          {optional, false}]}
-                || {DN, DP, DR} <- Reqs],
+                                          {optional, Opt}]}
+                || {DN, DP, DR, Opt} <- [case R of
+                                             {_, _, _, _} -> R;
+                                             {A, B, C} -> {A, B, C, false}
+                                         end || R <- maps:get(lock_reqs, P, Reqs)]],
                <<"hexpm">>, string:lowercase(iolist_to_binary(O))}}
              || #{name := N, pkg := Pkg, vsn := Vsn, inner := I, outer := O,
-                  tools := Tools, reqs := Reqs} <- Packages]),
-    ['Elixir.Kernel':inspect(Map, [{pretty, true}, {limit, infinity},
-                                   {printable_limit, infinity}]), "\n"];
+                  tools := Tools, reqs := Reqs} = P <- Packages]),
+    ["%{\n",
+     [["  \"", Name, "\": ",
+       'Elixir.Kernel':inspect(Entry, [{limit, infinity}, {printable_limit, infinity}]), ",\n"]
+      || {Name, Entry} <- Entries],
+     "}\n"];
 lock_text(rebar, Packages) ->
     lock_text(Packages).
 
@@ -460,6 +471,7 @@ unpack_package(#{name := Name, pkg := Pkg, vsn := Vsn} = P, LibDir, Registry) ->
     Reqs = meta_requirements(Meta),
     P#{dir => Dir, inner => Inner, outer => sha256(Tar),
        requires => [N || {N, _, _} <- Reqs], reqs => Reqs,
+       lock_reqs => meta_requirements(Meta, all),
        tools => proplists:get_value(<<"build_tools">>, Meta, [])}.
 
 %% The outer checksum of a release: from the lock, else from the Hex API.
@@ -629,13 +641,19 @@ mix_only(_, _) ->
 %% package has at most ?MAX_REQUIREMENTS requirements.
 
 meta_requirements(Meta) ->
+    [{App, Pkg, Req} || {App, Pkg, Req, false} <- meta_requirements(Meta, all)].
+
+%% All the requirements, also the optional ones: [{AppName, Package,
+%% Requirement, Optional}]. mix.lock has each of them: Hex checks the
+%% deps of an entry against the registry.
+meta_requirements(Meta, all) ->
     Reqs = requirement_list(proplists:get_value(<<"requirements">>, Meta, [])),
     length(Reqs) =< ?MAX_REQUIREMENTS orelse
         throw({error, "a package has more than ~b requirements", [?MAX_REQUIREMENTS]}),
     [{app_name(proplists:get_value(<<"app">>, R, Pkg)), Pkg,
-      binary_to_list(proplists:get_value(<<"requirement">>, R))}
-     || {Pkg, R} <- Reqs,
-        proplists:get_value(<<"optional">>, R, false) =/= true].
+      binary_to_list(proplists:get_value(<<"requirement">>, R)),
+      proplists:get_value(<<"optional">>, R, false) =:= true}
+     || {Pkg, R} <- Reqs].
 
 app_name(Name) when is_binary(Name), byte_size(Name) =< 255 ->
     case re:run(Name, "^[a-z][a-z0-9_]*$", [{capture, none}]) of

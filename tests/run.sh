@@ -1651,6 +1651,151 @@ if [ -d examples ]; then
     fi
 fi
 
+# Native NIF objects (docs/NIFS.md): the application native_nif_check,
+# with priv/native_nif_check.x86_64.o and .aarch64.o in the zip of the
+# program. BEAM_COM_NIF_DEBUG names the object of the CPU that load_nif/2
+# loads.
+if [ -d examples ]; then
+    check beam.com 'wrote .*native_nif_check.com' tests/programs/native_nif_check \
+        --main native_nif_check -o "$dir/native_nif_check.com"
+    if [ -f "$dir/native_nif_check.com" ]; then
+        case $(uname -m) in
+            x86_64 | amd64 | AMD64) nif_file='native_nif_check\.x86_64\.o$' ;;
+            *) nif_file='native_nif_check\.aarch64\.o$' ;;
+        esac
+        BEAM_COM_NIF_DEBUG=1
+        export BEAM_COM_NIF_DEBUG
+        check native_nif_check.com "nif_native: .*$nif_file@@native_nif_check: all [0-9]* passed"
+        unset BEAM_COM_NIF_DEBUG
+    fi
+fi
+
+# assemble OUT BASE COUNT SPEC...: OUT from BASE and the COUNT files of
+# the specs (NAME=FILE, or PREFIX/=DIR for each file of DIR), with
+# scripts/assemble.erl.
+assemble() {
+    a_out=$1 a_base=$2 a_count=$3
+    shift 3
+    check beam.com "assemble: wrote .*${a_out##*/}: [0-9]* bytes, the length of the start; new files: $a_count\$" \
+        scripts/assemble.erl -- "$a_base" "$a_out" "$@"
+}
+
+# files DIR...: the count of the regular files of each DIR.
+files() {
+    echo $(($(find "$@" -type f | wc -l)))
+}
+
+# The NIFs of the store as native NIF objects: vix, rusty_csv and
+# ex_pdfium. store_nifs.tar.gz of CI (the job Build of build.yml) holds
+# their objects for each CPU, in the tree nifs/APP-VSN of a program, the
+# license texts in licenses/NAME, parts.txt and nif_needs.com.
+if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
+    store=$dir/store_nifs
+    rm -rf "${store:?}"
+    mkdir -p "$store"
+    tar -xzf "$dir/store_nifs.tar.gz" -C "$store"
+    case $(uname -m) in
+        x86_64 | amd64 | AMD64) cpu=x86_64 ;;
+        *) cpu=aarch64 ;;
+    esac
+    # The program has each name that the objects of this CPU need.
+    cp "$store/nif_needs.com" "$dir/nif_needs.com"
+    check nif_needs.com "libex_pdfium\.$cpu\.o: ok@@librustycsv\.$cpu\.o: ok@@vix\.$cpu\.o: ok" \
+        $(find "$store/nifs" -name "*.$cpu.o" | sort)
+    # store_nif_check, with the objects at the paths of the packages.
+    priv=tests/programs/store_nif_check/priv
+    rm -rf "$priv"
+    mkdir -p "$priv"
+    for d in "$store"/nifs/*/; do
+        cp -R "$d." "$priv/"
+    done
+    store_ok='store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+    check beam.com 'wrote .*store_nif_check.com' tests/programs/store_nif_check \
+        --main store_nif_check -o "$dir/store_nif_check.com"
+    if [ -f "$dir/store_nif_check.com" ]; then
+        check store_nif_check.com "$store_ok"
+    fi
+    # The same program, assembled by hand (scripts/assemble.erl): the
+    # program with no objects, and then the objects as new files of its
+    # zip, as a server streams it.
+    rm -rf "$dir/store_nif_base"
+    mkdir -p "$dir/store_nif_base"
+    cp -R tests/programs/store_nif_check/src "$dir/store_nif_base/"
+    check beam.com 'wrote .*store_nif_base.com' "$dir/store_nif_base" \
+        --main store_nif_check -o "$dir/store_nif_base.com"
+    assemble "$dir/store_nif_hand.com" "$dir/store_nif_base.com" "$(files "$priv")" \
+        "lib/store_nif_check-1.0.0/priv/=$priv"
+    if [ -f "$dir/store_nif_hand.com" ]; then
+        check store_nif_hand.com "$store_ok"
+    fi
+    # A beam.com assembled from parts: beam.com, and the objects as NIF
+    # files of beam_com (lib/beam_com/priv/nifs). It builds the Elixir
+    # programs of vix, rusty_csv and ex_pdfium from hex.pm, with no static
+    # NIF of them: the builder puts the objects in the priv directories of
+    # the packages.
+    # The license texts of the parts (PDFium) go into licenses/, as in the
+    # static build, and each program of this beam.com keeps them.
+    # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
+    specs= parts=
+    while read -r pkg spec; do
+        specs="$specs ${spec%%=*}=$store/${spec#*=}"
+        parts="$parts $pkg:${spec%%=*}=$store/${spec#*=}"
+    done < "$store/parts.txt"
+    assemble "$dir/beam_nifs.com" "$dir/beam.com" "$(files "$store/nifs" "$store/licenses")" $specs
+    # The same program from the segments that the FIFO beam.com streams
+    # (assemble.erl --parts): the segments of the list of a set, one after
+    # the other, are the bytes of the program of these packages. The
+    # program of rusty_csv alone has only its NIF files.
+    rm -rf "${dir:?}/program_parts"
+    check beam.com 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]* bytes' \
+        scripts/assemble.erl -- --parts "$dir/beam.com" "$dir/program_parts" 0123abc beam.com/p/ $parts
+    for set in ex_pdfium.rusty_csv.vix rusty_csv; do
+        rm -f "$dir/beam_p_$set.com"
+        [ -f "$dir/program_parts/beam-p.plus.$set.txt" ] || continue
+        sed 's|^beam\.com/p/||' "$dir/program_parts/beam-p.plus.$set.txt" | while read -r f; do
+            cat "$dir/program_parts/$f"
+        done > "$dir/beam_p_$set.com"
+        chmod +x "$dir/beam_p_$set.com"
+    done
+    if [ -f "$dir/beam_nifs.com" ] && [ -f "$dir/beam_p_ex_pdfium.rusty_csv.vix.com" ] &&
+       cmp "$dir/beam_nifs.com" "$dir/beam_p_ex_pdfium.rusty_csv.vix.com"; then
+        echo "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    else
+        echo "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        fail=1
+        failed="$failed
+  assemble.erl --parts: the segments are not the bytes of beam_nifs.com"
+    fi
+    if [ -f "$dir/beam_p_rusty_csv.com" ]; then
+        check beam_p_rusty_csv.com 'NIF files   : .*rusty_csv-' --version
+        if grep -q -e 'NIF files   : .*vix-' -e 'NIF files   : .*ex_pdfium-' "$tmp"; then
+            echo "FAIL: beam_p_rusty_csv.com has the NIF files of more packages"
+            fail=1
+            failed="$failed
+  beam_p_rusty_csv.com: the NIF files of more packages than rusty_csv"
+        fi
+    fi
+    if [ -f "$dir/beam_nifs.com" ]; then
+        check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' --version
+        check beam_nifs.com '^licenses: pdfium$' -noshell -eval \
+            'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().'
+        # check sets p: the loop has its own name.
+        for nif_prog in vix_check rusty_csv_check ex_pdfium_check; do
+            rm -rf "${dir:?}/$nif_prog"
+            cp -R "tests/programs/$nif_prog" "$dir/$nif_prog"
+            # A build compiles the package and its deps: more time.
+            limit=600
+            net_check beam_nifs.com "wrote .*$nif_prog.com" "$dir/$nif_prog" -o "$dir/$nif_prog.com"
+            limit=${LIMIT:-120}
+            if [ -f "$dir/$nif_prog.com" ]; then
+                check "$nif_prog.com" "^$nif_prog: ok"
+            fi
+        done
+    fi
+elif [ -d examples ]; then
+    echo "SKIP: store_nif_check.com (no $dir/store_nifs.tar.gz)"
+fi
+
 if [ -d examples ]; then
     # W^X: the JIT maps its code two times (executable, and writable),
     # so no page is writable and executable. On Linux, +JMsingle (one

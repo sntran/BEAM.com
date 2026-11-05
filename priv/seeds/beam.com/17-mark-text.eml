@@ -1,0 +1,2 @@
+To: beam.com/t/:file(beam-u\.[a-z0-9_.-]{1,600}\.txt)
+X-HTTP-Method-Override: ^GET$

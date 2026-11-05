@@ -224,6 +224,74 @@ jobs:
           path: build/cosmocc/bin/ape-x86_64.elf
           if-no-files-found: error
 
+      # The NIFs of the store as native NIF objects (docs/NIFS.md): the
+      # parts of vix, rusty_csv and ex_pdfium for the OTP of this build
+      # (their keys from scripts/steps.sh part_keys), and their objects
+      # from scripts/nif_object.sh, in the tree nifs/APP-VSN of a program
+      # (lib/beam_com/priv/nifs), with the license texts of a part
+      # (licenses-NAME, PDFium) in licenses/NAME, as the static build has
+      # them. parts.txt gives the files of each package, one line "PKG
+      # PREFIX/=DIR" for each directory, in the sequence of the packages,
+      # for scripts/assemble.erl. nif_needs.com (tests/cosmo/nif_needs.c)
+      # checks that the program has each name that the x86_64 objects
+      # need. The jobs test and test-bsd check the aarch64 objects, and
+      # run them (tests/run.sh). When the store has no part of a key (a
+      # recipe that changed), the step writes a warning, and there is no
+      # store_nifs.tar.gz.
+      - name: The NIF objects of the store
+        if: matrix.out == 'beam.com'
+        env:
+          PARTS_URL: https://github.com/${{ github.repository }}/releases/download/parts
+        run: |
+          out=build/store_nifs
+          rm -rf "$out" build/store_nifs.tar.gz
+          mkdir -p "$out/tree/nifs"
+          export EXTRA_NIFS="vix rusty_csv ex_pdfium" VIX_PARTS="avif gif icc svg"
+          sh scripts/steps.sh part_keys > "$out/keys"
+          sh scripts/steps.sh nif_recipes > "$out/recipes"
+          missing=
+          for p in $EXTRA_NIFS; do
+            set -- $(awk -v p="$p" '$1 == p' "$out/recipes")
+            vsn=$2 lib=$3 file=$4
+            key=$(awk -v n="nif-$p" '$1 == n { print $2 }' "$out/keys")
+            mkdir -p "$out/$p"
+            if [ -n "$key" ] && curl -fsSL --retry 3 -o "$out/$p.tar.xz" "$PARTS_URL/nif-$p-$key.tar.xz"; then
+              tar -xJf "$out/$p.tar.xz" -C "$out/$p"
+              sh scripts/nif_object.sh build/cosmocc "$lib" "$out/$p" "$out/tree/nifs/$p-$vsn" "$file"
+              echo "$p lib/beam_com/priv/nifs/$p-$vsn/=nifs/$p-$vsn" >> "$out/parts"
+              for l in "$out/$p"/licenses-*; do
+                [ -d "$l" ] || continue
+                name=${l##*/licenses-}
+                mkdir -p "$out/tree/licenses/$name"
+                cp "$l"/* "$out/tree/licenses/$name/"
+                echo "$p licenses/$name/=licenses/$name" >> "$out/parts"
+              done
+            else
+              echo "::warning::The store has no part nif-$p-$key: no native NIF object of $p"
+              missing=1
+            fi
+          done
+          if [ -z "$missing" ]; then
+            # cosmocc also writes nif_needs.aarch64.elf: the .com file has
+            # both CPUs, so only it goes into the tree.
+            build/cosmocc/bin/cosmocc -O2 -Wno-unused-function -I build/otp/erts/emulator/beam \
+              -o "$out/nif_needs.com" tests/cosmo/nif_needs.c
+            cp "$out/nif_needs.com" "$out/tree/nif_needs.com"
+            LC_ALL=C sort -s -k1,1 "$out/parts" > "$out/tree/parts.txt"
+            cat "$out/tree/parts.txt"
+            find "$out/tree/nifs" -name '*.x86_64.o' -exec "$out/tree/nif_needs.com" {} +
+            tar -czf build/store_nifs.tar.gz -C "$out/tree" .
+            find "$out/tree" -type f -exec ls -l {} +
+          fi
+
+      - name: Upload the NIF objects of the store
+        if: matrix.out == 'beam.com' && hashFiles('build/store_nifs.tar.gz') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store_nifs
+          path: build/store_nifs.tar.gz
+          if-no-files-found: error
+
       - name: Test
         timeout-minutes: 5
         run: BEAM_COM_VERBOSE=1 timeout 120 build/cosmocc/bin/make test
@@ -1109,6 +1177,114 @@ jobs:
       - name: Build the Livebook Worker again
         if: steps.newest.outputs.newest == 'true' && env.HOOK != ''
         run: curl -fsS -X POST "$HOOK" > /dev/null
+
+  # The segments of the programs of the build URLs with NIF objects
+  # (docs/BUILDING.md, "A build URL"): the edge beam.com that the job edge
+  # published, and the NIF objects of the store of this run, cut by
+  # scripts/assemble.erl --parts. They go to the prerelease program-parts,
+  # where the FIFO beam.com reads them. The segments go first, and then
+  # the lists: a list names only segments that are in the release. The
+  # step keeps the segments of the key before this key, for a stream that
+  # did not end, and deletes the older ones.
+  edge-parts:
+    name: Publish the parts of the build URLs
+    needs: edge
+    if: needs.edge.outputs.published == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    concurrency:
+      group: edge-parts
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: program-parts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: beam.com
+          path: bin
+
+      # The store can have no part of a key (a recipe that changed): then
+      # the run has no store_nifs, and the parts in the release stay.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        continue-on-error: true
+        with:
+          name: store_nifs
+          path: bin
+
+      - name: Cut the program into segments
+        run: |
+          if [ ! -f bin/store_nifs.tar.gz ]; then
+            echo "::warning::No store_nifs in this run: the parts in the release stay"
+            exit 0
+          fi
+          chmod +x bin/beam.com
+          mkdir -p store parts
+          tar -xzf bin/store_nifs.tar.gz -C store
+          set --
+          while read -r pkg spec; do
+            set -- "$@" "$pkg:${spec%%=*}=store/${spec#*=}"
+          done < store/parts.txt
+          key=$(printf %s "$GITHUB_SHA" | cut -c1-12)
+          bin/beam.com scripts/assemble.erl -- --parts bin/beam.com parts "$key" beam.com/p/ "$@"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Put the segments in the release
+        if: env.KEY != ''
+        run: |
+          gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "Program parts" \
+              --notes "The segments of the programs of the build URLs of the FIFO beam.com (docs/BUILDING.md, \"A build URL\"). This is not a release of BEAM.com." ||
+            gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" > /dev/null
+          for f in parts/beam-p."$KEY".*; do
+            gh release upload "$RELEASE" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+          for f in parts/beam-p.plus.*.txt; do
+            gh release upload "$RELEASE" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+          # The keys of the segments, the newest first: this key and the
+          # key before it stay.
+          gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[] | "\(.createdAt) \(.name)"' | sort -r > assets.txt
+          keep=$( { echo "$KEY"; awk '{ split($2, n, "."); if (n[1] == "beam-p" && n[2] != "plus") print n[2] }' assets.txt; } |
+            awk '!seen[$0]++' | head -n 2)
+          awk '{ print $2 }' assets.txt | while read -r name; do
+            case $name in
+              beam-p.plus.*.txt) [ -f "parts/$name" ] && continue ;;
+              beam-p.*) key=${name#beam-p.}; key=${key%%.*}
+                        printf '%s\n' "$keep" | grep -qx "$key" && continue ;;
+              *) continue ;;
+            esac
+            echo "delete $name"
+            gh release delete-asset "$RELEASE" "$name" --repo "$GITHUB_REPOSITORY" --yes
+          done
+
+      # Each segment in the release is the file of this run, and the
+      # segments of each list, one after the other, are a program that
+      # runs.
+      - name: Check the published parts
+        if: env.KEY != ''
+        run: |
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE"
+          mkdir -p check
+          for f in parts/*; do
+            curl -fsSL --retry 3 -o "check/${f#parts/}" "$base/${f#parts/}"
+            cmp "$f" "check/${f#parts/}"
+          done
+          for list in check/beam-p.plus.*.txt; do
+            set=${list#check/beam-p.plus.}
+            set=${set%.txt}
+            sed 's|^beam\.com/p/||' "$list" | while read -r f; do
+              cat "check/$f"
+            done > "check/$set.com"
+            chmod +x "check/$set.com"
+            echo "$set: $(check/"$set.com" --version | grep 'NIF files')"
+          done
 
   # pages-app.yml with the edge that the job edge published, as an app
   # repository calls it: the check of the provenance with a token that can

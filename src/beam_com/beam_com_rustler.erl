@@ -21,6 +21,12 @@
 %%     an error. With BEAM_COM_UNLINKED_NIFS=stub, the module compiles
 %%     with no on_load function, and each function of the NIF fails at
 %%     its first call (erlang:nif_error/1 of the module).
+%%   - A crate with native NIF objects in beam.com (beam_com_make:
+%%     file_nifs/0, priv/nifs/APP-VSN/native/libCRATE.ARCH.o): config/2
+%%     copies the files into the priv directory of the package, when they
+%%     are not there, and the on_load function loads
+%%     code:priv_dir(APP)/native/libCRATE. A linked crate wins: ERTS finds
+%%     a static NIF first.
 %%   - With the package rustler (in the deps of the project), its module
 %%     Rustler comes first in the code path. force_build/1 then sets
 %%     skip_compilation? for each linked crate: Rustler runs no cargo, and
@@ -56,6 +62,7 @@ force_build(Nifs) ->
     [{module, M} = code:ensure_loaded(M)
      || M <- ['Elixir.Rustler', ?MODULE, beam_com_make, beam_com]],
     persistent_term:put(?MODULE, Nifs),
+    persistent_term:put({?MODULE, priv}, beam_com_make:priv()),
     os:putenv(?FORCE_BUILD_ALL, "true"),
     lists:foreach(
       fun({App, Module, _Crate, _Vsn}) ->
@@ -102,15 +109,29 @@ config(Module, Opts) when is_list(Opts) ->
     App = proplists:get_value(otp_app, Opts),
     Crate = name(proplists:get_value(crate, Opts, App)),
     Nifs = persistent_term:get(?MODULE, beam_com_make:linked_nifs()),
-    case check(Crate, linked(Nifs), dep_version(App)) of
+    Linked = linked(Nifs),
+    Priv = persistent_term:get({?MODULE, priv}, beam_com_make:priv()),
+    Objects = [C || {A, _, _, _} = C <- linked(beam_com_make:file_nifs(Priv)),
+                    not lists:keymember(A, 1, Linked)],
+    Version = dep_version(App),
+    case check(Crate, Linked ++ Objects, Version) of
         ok ->
             LoadData = case proplists:get_value(load_data_fun, Opts) of
                            {M, F} when is_atom(M), is_atom(F) -> {{'.', [], [M, F]}, [], []};
                            undefined -> 'Elixir.Macro':escape(
                                           proplists:get_value(load_data, Opts, 0))
                        end,
-            Path = unicode:characters_to_list(
-                     [atom_to_binary(App), "/priv/native/lib", Crate]),
+            Native = unicode:characters_to_list(["native/lib", Crate]),
+            Path = case lists:keyfind(Crate, 3, Objects) of
+                       false ->
+                           unicode:characters_to_list([atom_to_binary(App), "/priv/", Native]);
+                       {_, _, _, Vsn} ->
+                           copy_objects(App, if Version =:= undefined -> Vsn; true -> Version end,
+                                        Priv),
+                           %% :filename.join(:code.priv_dir(App), Native), at the load.
+                           {{'.', [], [filename, join]}, [],
+                            [{{'.', [], [code, priv_dir]}, [], [App]}, Native]}
+                   end,
             {Path, LoadData};
         {error, Message} ->
             Text = iolist_to_binary(['Elixir.Kernel':inspect(Module), ": ", Message]),
@@ -128,6 +149,23 @@ config(Module, Opts) when is_list(Opts) ->
                                       "function of the NIF fails at its first call, set "
                                       ?UNLINKED "=stub"])))
             end
+    end.
+
+%% The native NIF objects of App in beam.com, in the priv directory of App
+%% while it compiles (beam_com_build puts them there too). A file that is
+%% there stays.
+copy_objects(App, Vsn, BeamComPriv) ->
+    case code:priv_dir(App) of
+        Priv when is_list(Priv) ->
+            [begin
+                 Path = filename:join(Priv, F),
+                 ok = filelib:ensure_dir(Path),
+                 ok = file:write_file(Path, Data)
+             end || {F, Data} <- beam_com_make:nif_files(App, Vsn, BeamComPriv),
+                    not filelib:is_regular(filename:join(Priv, F))],
+            ok;
+        {error, _} ->
+            ok
     end.
 
 %% The switch for a crate that is not linked: stub or error.

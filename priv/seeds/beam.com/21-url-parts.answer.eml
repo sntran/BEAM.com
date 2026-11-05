@@ -1,0 +1,4 @@
+To: -
+Content-Type: application/octet-stream
+
+$(cat beam.com/p/beam-p.$(printf %s $url | cut -d. -f1).$(printf %s $url | tr . '\n' | sed -e 1d -e 's/^vix-.*/vix/' -e '/^exqlite$/d' -e '/^bcrypt_elixir$/d' -e '/^argon2_elixir$/d' | sort -u | tr '\n' .)txt | xargs -d '\n' cat)

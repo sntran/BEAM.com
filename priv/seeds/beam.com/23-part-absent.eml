@@ -1,0 +1,2 @@
+To: beam.com/pn/:file(beam-p\.[a-z0-9_.-]{1,600})
+X-HTTP-Method-Override: ^GET$

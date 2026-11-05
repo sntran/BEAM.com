@@ -193,6 +193,7 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 #include "beam_com_libc.h"
 #include "beam_com_net.h"
 #include "beam_com_seatbelt.h"
+#include "beam_com_nif.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -2083,6 +2084,11 @@ void beam_com_main(int *argcp, char ***argvp)
 
     apply_sandbox(starts_with(name, "erl_child_setup") ||
                   starts_with(name, "inet_gethost") || starts_with(name, "epmd"));
+
+    /* Native NIF objects (c_src/cosmo/beam_com_nif.c): load_nif/2 tries
+     * PATH.ARCH.o before the NIF libraries in WebAssembly. After the
+     * constructors, which set the loader of WebAssembly. */
+    beam_com_nif_hook();
 
     if (starts_with(name, "erl_child_setup")) {
         exec_prepare();

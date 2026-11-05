@@ -5,6 +5,8 @@
 param([string]$Dir = ".")
 # An absolute path: some checks run in another directory.
 $Dir = (Resolve-Path $Dir).Path
+# The time limit of each check, in seconds (a slow build sets more).
+$script:Limit = 120
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -69,9 +71,9 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     $p.BeginOutputReadLine()
     $p.BeginErrorReadLine()
 
-    $timedOut = -not $p.WaitForExit(120000)
+    $timedOut = -not $p.WaitForExit($script:Limit * 1000)
     if ($timedOut) {
-        Write-Host "FAIL: $Name did not stop in 120 seconds. Processes:"
+        Write-Host "FAIL: $Name did not stop in $($script:Limit) seconds. Processes:"
         Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
             Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
         $p.Kill($true)
@@ -417,6 +419,138 @@ if (Test-Path "examples") {
         Check "nif_check.com" 'nif_wasm: .*nif_check\.wasm@@nif_check: all [0-9]+ passed' @()
         Remove-Item Env:BEAM_COM_NIF_DEBUG, Env:BEAM_COM_NIF_AOT
     }
+}
+
+# Native NIF objects (docs/NIFS.md), as in run.sh: load_nif/2 loads
+# priv/native_nif_check.x86_64.o from the zip of the program. On Windows the
+# loader also changes the TLS instructions of the object (the TLS slot of
+# the thread).
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*native_nif_check.com' @("tests/programs/native_nif_check", "--main", "native_nif_check", "-o", "$Dir/native_nif_check.com")
+    if (Test-Path (Join-Path $Dir "native_nif_check.com")) {
+        $env:BEAM_COM_NIF_DEBUG = "1"
+        Check "native_nif_check.com" 'nif_native: .*native_nif_check\.x86_64\.o@@native_nif_check: all [0-9]+ passed' @()
+        Remove-Item Env:BEAM_COM_NIF_DEBUG
+    }
+}
+
+# Assemble OUT BASE COUNT SPECS: OUT from BASE and the COUNT files of the
+# specs (NAME=FILE, or PREFIX/=DIR for each file of DIR), with
+# scripts/assemble.erl, as in tests/run.sh.
+function Assemble($Out, $Base, $Count, [string[]]$Specs) {
+    $leaf = Split-Path $Out -Leaf
+    Check "beam.com" "(?m)assemble: wrote .*$([regex]::Escape($leaf)): [0-9]+ bytes, the length of the start; new files: $Count\r?$" (@("scripts/assemble.erl", "--", $Base, $Out) + $Specs)
+}
+
+# The count of the regular files of each directory.
+function FileCount([string[]]$Dirs) {
+    return @(Get-ChildItem -Recurse -File $Dirs).Count
+}
+
+# The NIFs of the store as native NIF objects (tests/run.sh): vix,
+# rusty_csv and ex_pdfium, from store_nifs.tar.gz of CI, with
+# nif_needs.com.
+$StoreNifs = Join-Path $Dir "store_nifs.tar.gz"
+if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
+    $Store = Join-Path $Dir "store_nifs"
+    if (Test-Path $Store) { Remove-Item -Recurse -Force $Store }
+    New-Item -ItemType Directory -Force -Path $Store | Out-Null
+    tar -xzf $StoreNifs -C $Store
+    Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
+    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.x86_64.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
+    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok' $Objects
+    $Priv = "tests/programs/store_nif_check/priv"
+    if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
+    New-Item -ItemType Directory -Force -Path $Priv | Out-Null
+    # Each file of nifs/APP-VSN, at its path in priv/ (native/ of two
+    # packages goes into one directory).
+    Get-ChildItem -Directory (Join-Path $Store "nifs") | ForEach-Object {
+        $pkg = $_.FullName
+        Get-ChildItem -Recurse -File $pkg | ForEach-Object {
+            $to = Join-Path $Priv $_.FullName.Substring($pkg.Length + 1)
+            New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
+            Copy-Item -Force $_.FullName $to
+        }
+    }
+    $StoreOk = 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+    Check "beam.com" 'wrote .*store_nif_check.com' @("tests/programs/store_nif_check", "--main", "store_nif_check", "-o", "$Dir/store_nif_check.com")
+    if (Test-Path (Join-Path $Dir "store_nif_check.com")) {
+        Check "store_nif_check.com" $StoreOk @()
+    }
+    # The same program, assembled by hand (scripts/assemble.erl): the
+    # program with no objects, and then the objects as new files of its
+    # zip, as a server streams it.
+    $Base = Join-Path $Dir "store_nif_base"
+    if (Test-Path $Base) { Remove-Item -Recurse -Force $Base }
+    New-Item -ItemType Directory -Force -Path $Base | Out-Null
+    Copy-Item -Recurse "tests/programs/store_nif_check/src" $Base
+    Check "beam.com" 'wrote .*store_nif_base.com' @($Base, "--main", "store_nif_check", "-o", "$Dir/store_nif_base.com")
+    Assemble "$Dir/store_nif_hand.com" "$Dir/store_nif_base.com" (FileCount @($Priv)) @("lib/store_nif_check-1.0.0/priv/=$Priv")
+    if (Test-Path (Join-Path $Dir "store_nif_hand.com")) {
+        Check "store_nif_hand.com" $StoreOk @()
+    }
+    # A beam.com assembled from parts, and the Elixir programs of the
+    # three packages from hex.pm (tests/run.sh).
+    # The license texts of the parts (PDFium) go into licenses/.
+    # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
+    $Specs = @()
+    $PartSpecs = @()
+    foreach ($line in Get-Content (Join-Path $Store "parts.txt")) {
+        if (-not $line) { continue }
+        $pkg, $spec = $line -split ' ', 2
+        $name, $from = $spec -split '=', 2
+        $Specs += "$name=$(Join-Path $Store $from)"
+        $PartSpecs += "$($pkg):$name=$(Join-Path $Store $from)"
+    }
+    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" (FileCount @((Join-Path $Store "nifs"), (Join-Path $Store "licenses"))) $Specs
+    # The same program from the segments that the FIFO beam.com streams
+    # (tests/run.sh).
+    $Parts = Join-Path $Dir "program_parts"
+    if (Test-Path $Parts) { Remove-Item -Recurse -Force $Parts }
+    Check "beam.com" 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]+ bytes' (@("scripts/assemble.erl", "--", "--parts", "$Dir/beam.com", $Parts, "0123abc", "beam.com/p/") + $PartSpecs)
+    foreach ($set in @("ex_pdfium.rusty_csv.vix", "rusty_csv")) {
+        $joined = Join-Path $Dir "beam_p_$set.com"
+        if (Test-Path $joined) { Remove-Item -Force $joined }
+        $list = Join-Path $Parts "beam-p.plus.$set.txt"
+        if (-not (Test-Path $list)) { continue }
+        $outStream = [System.IO.File]::Create($joined)
+        try {
+            foreach ($url in Get-Content $list) {
+                $inStream = [System.IO.File]::OpenRead((Join-Path $Parts ($url -replace '^beam\.com/p/', '')))
+                try { $inStream.CopyTo($outStream) } finally { $inStream.Dispose() }
+            }
+        } finally { $outStream.Dispose() }
+    }
+    $Whole = Join-Path $Dir "beam_p_ex_pdfium.rusty_csv.vix.com"
+    if ((Test-Path (Join-Path $Dir "beam_nifs.com")) -and (Test-Path $Whole) -and
+        ((Get-FileHash (Join-Path $Dir "beam_nifs.com")).Hash -eq (Get-FileHash $Whole).Hash)) {
+        Write-Host "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    } else {
+        Write-Host "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        $script:fail = 1
+        $failures.Add("assemble.erl --parts: the segments are not the bytes of beam_nifs.com")
+    }
+    if (Test-Path (Join-Path $Dir "beam_p_rusty_csv.com")) {
+        Check "beam_p_rusty_csv.com" '(?m)NIF files   : .*rusty_csv-' @("--version")
+    }
+    if (Test-Path (Join-Path $Dir "beam_nifs.com")) {
+        Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' @("--version")
+        Check "beam_nifs.com" '(?m)^licenses: pdfium' @("-noshell", "-eval", 'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().')
+        foreach ($p in @("vix_check", "rusty_csv_check", "ex_pdfium_check")) {
+            $src = Join-Path $Dir $p
+            if (Test-Path $src) { Remove-Item -Recurse -Force $src }
+            Copy-Item -Recurse "tests/programs/$p" $src
+            # A build compiles the package and its deps: more time.
+            $script:Limit = 600
+            Check "beam_nifs.com" "wrote .*$p.com" @($src, "-o", "$Dir/$p.com") -Net
+            $script:Limit = 120
+            if (Test-Path (Join-Path $Dir "$p.com")) {
+                Check "$p.com" "(?m)^$($p): ok" @()
+            }
+        }
+    }
+} elseif (Test-Path "examples") {
+    Write-Host "SKIP: store_nif_check.com (no $StoreNifs)"
 }
 
 # The interpreter: beam-emu.com (beam.com has the JIT).

@@ -1098,8 +1098,17 @@ mix_dir(Dir, Options) ->
     %% NAME-VSN/ebin, as in Mix: code:priv_dir/1 then finds the
     %% application while its code compiles (vix loads its NIF then).
     Top = temp_dir("mix"),
-    Out = filename:join([Top, lists:flatten(io_lib:format("~ts-~ts", [Name, Vsn])), "ebin"]),
+    AppTop = filename:join(Top, lists:flatten(io_lib:format("~ts-~ts", [Name, Vsn]))),
+    Out = filename:join(AppTop, "ebin"),
     ok = filelib:ensure_path(Out),
+    %% The NIF files of the package in beam.com (beam_com_make), in its
+    %% priv directory before its code compiles: vix loads its NIF then.
+    NifFiles = beam_com_make:nif_files(Name, Vsn),
+    [begin
+         P = filename:join([AppTop, "priv", F]),
+         ok = filelib:ensure_dir(P),
+         ok = file:write_file(P, D)
+     end || {F, D} <- NifFiles],
     true = code:add_patha(Out),
     Beams = try
                 Report = case Options of
@@ -1136,10 +1145,10 @@ mix_dir(Dir, Options) ->
         ++ [{mod, M} || M <- [Get(mod, undefined)], M =/= undefined],
     PrivDir = filename:join(Dir, "priv"),
     {Priv0, PrivExec} = priv_files(PrivDir),
-    %% A package with a NIF library in WebAssembly in beam.com
-    %% (lazy_html): its files, as the make of beam.com copies them.
-    Priv = Priv0 ++ [F || {N, _} = F <- beam_com_make:wasm_nif_files(Name, Vsn),
-                          not lists:keymember(N, 1, Priv0)],
+    %% A package with NIF files in beam.com (a NIF library in
+    %% WebAssembly, or native NIF objects): its files, as the make of
+    %% beam.com copies them.
+    Priv = Priv0 ++ [F || {N, _} = F <- NifFiles, not lists:keymember(N, 1, Priv0)],
     Config = case maps:get(dep, Options, false) of
                  true -> [];
                  false -> [{"sys.config", C} || C <- [beam_com_elixir:sys_config(Dir)], C =/= none]

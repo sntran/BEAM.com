@@ -160,7 +160,8 @@ iex.com -S mix phx.server        # http://localhost:4000
   compiled NIF.
 - The version of these packages must be the version of their NIF in
   `beam.com` ("Linked NIFs" in `beam.com --version`): `beam.com` always
-  uses its NIF. With another version, `mix compile` stops with an error
+  uses its NIF. A package with native NIF objects in the zip of
+  `beam.com` ("NIF files", docs/NIFS.md) gets them in its priv directory. With another version, `mix compile` stops with an error
   that tells what to put in the deps of `mix.exs` (for example
   `{:exqlite, "0.41.0"}`).
 - The esbuild and tailwind watchers download their programs and run

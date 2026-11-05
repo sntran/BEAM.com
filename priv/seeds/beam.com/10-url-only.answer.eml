@@ -1,0 +1,4 @@
+To: -
+Content-Type: application/octet-stream
+
+$(cat beam.com/u/beam-u.only.$(printf %s $nifs | tr , '\n' | sort -u | tr '\n' .)com)
