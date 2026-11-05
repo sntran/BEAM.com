@@ -93,6 +93,10 @@ uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
   too. The initial values that are not zero go into the template of the
   thread data of the program: a system that refuses this change (OpenBSD
   can make the program immutable) refuses such an object.
+- On aarch64, the code of Rust reads the thread pointer from
+  `tpidr_el0`, and Cosmopolitan keeps it in `x28`. The loader changes
+  each `mrs xN, tpidr_el0` of an object to `mov xN, x28`, as cosmocc
+  does in the code of the program. On XNU, `tpidr_el0` is not `x28`.
 - C++ works: static constructors, exceptions (also across the frames of
   the object), `dynamic_cast`, function-local statics, and `thread_local`
   objects with destructors.

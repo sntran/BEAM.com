@@ -23,9 +23,11 @@ for f in native_nif_check native_nif_check_util native_nif_check_tls native_nif_
     cosmocc -O2 -Wall -I"$include" -c "$here/c_src/$f.c" -o "$f.o"
 done
 # The TLS models of Rust in assembly: cosmocc takes no .S file, so the
-# compiler of each CPU.
+# compiler of each CPU. On aarch64 the plain gcc of the toolchain: the
+# cosmo compiler (fixupobj) changes "mrs tpidr_el0" to "mov x28", and the
+# code of Rust keeps it, so the loader must change it (tls_morph).
 x86_64-unknown-cosmo-cc -c "$here/c_src/native_nif_check_tls.S" -o tls_asm.o
-aarch64-unknown-cosmo-cc -c "$here/c_src/native_nif_check_tls.S" -o .aarch64/tls_asm.o
+aarch64-linux-cosmo-gcc -nostdinc -c "$here/c_src/native_nif_check_tls.S" -o .aarch64/tls_asm.o
 cosmoc++ -O2 -Wall -c "$here/c_src/native_nif_check_cxx.cpp" -o native_nif_check_cxx.o
 lib=$(dirname "$(command -v cosmocc)")/..
 x86_64-linux-cosmo-ld -r -o nif.x86_64.o native_nif_check.o native_nif_check_util.o \

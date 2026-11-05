@@ -254,9 +254,11 @@ static int bcn_constructors = 1;
  * area in .tdata of the program: each new thread copies .tdata.
  *
  * The thread pointer is the TIB on x86_64 (%gs:0x30 in the code of
- * cosmocc), and x28 on aarch64 (the TIB + 1). Cosmopolitan does not set
- * tpidr_el0, but the code of Rust adds tpidr_el0 to the result of a TLS
- * descriptor: bcn_tlsdesc subtracts it. */
+ * cosmocc), and x28 on aarch64 (the TIB + 1). On aarch64, the code of
+ * Rust reads tpidr_el0 ("mrs xN, tpidr_el0"). The loader changes each of
+ * these instructions to "mov xN, x28" (tls_morph), as cosmocc does in the
+ * code of the program (fixupobj). tpidr_el0 equals x28 on Linux and on
+ * the BSDs, but not on XNU. */
 #ifndef BEAM_COM_NIF_TLS_SIZE
 #define BEAM_COM_NIF_TLS_SIZE 32768
 #endif
@@ -349,17 +351,16 @@ static void *bcn_tls_get_addr(const uint64_t *ti)
 
 #if defined(__aarch64__)
 /* The function of a TLS descriptor {bcn_tlsdesc, offset from x28}: it
- * gives the offset from tpidr_el0, and changes only x0. */
+ * gives the offset, and changes only x0. The code adds the thread
+ * pointer, which tls_morph made x28.
+ *
+ * Caution: do not use "mrs tpidr_el0" in this file. fixupobj of cosmocc
+ * changes it to "mov x28" in the program. */
 void bcn_tlsdesc(void);
 __asm__(".text\n"
         ".balign 16\n"
         "bcn_tlsdesc:\n"
         "\tldr x0, [x0, #8]\n"
-        "\tadd x0, x0, x28\n"
-        "\tstr x1, [sp, #-16]!\n"
-        "\tmrs x1, tpidr_el0\n"
-        "\tsub x0, x0, x1\n"
-        "\tldr x1, [sp], #16\n"
         "\tret\n");
 #endif
 
@@ -1727,6 +1728,19 @@ static void tls_morph(uint8_t *p, size_t n)
         p += 8;
     }
 }
+#elif defined(__aarch64__)
+/* The code of Rust reads the thread pointer with "mrs xN, tpidr_el0".
+ * cosmocc changes these instructions in the code of the program to
+ * "mov xN, x28" (fixupobj): this does the same in the code of a module,
+ * with the same pattern, on each system. */
+static void tls_morph(uint8_t *p, size_t n)
+{
+    uint32_t *w = (uint32_t *)(void *)p, *end = w + n / 4;
+
+    for (; w < end; w++)
+        if ((*w & ~31u) == 0xd53bd040u)            /* mrs xN, tpidr_el0 */
+            *w = 0xaa1c03e0u | (*w & 31u);         /* mov xN, x28 */
+}
 #endif
 
 /* BEAM_COM_NIF_MAP=FILE: the address and the name of each function of
@@ -1898,6 +1912,8 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
 #if defined(__x86_64__)
     if (l.tls_size)
         tls_morph(m->code, (size_t)off[0]);
+#elif defined(__aarch64__)
+    tls_morph(m->code, (size_t)off[0]);
 #endif
     if (l.jit)
         __jit_end();

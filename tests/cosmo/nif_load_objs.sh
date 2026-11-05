@@ -20,7 +20,8 @@ aarch64-linux-cosmo-ld -r -o objb.aarch64.o .aarch64/nif_load_obj_b.o
 # The TLS models of Rust in assembly: cosmocc takes no .S file, so the
 # compiler of each CPU.
 x86_64-unknown-cosmo-cc -c "$here/nif_load_tls_asm.S" -o tls_asm.x86_64.o
-aarch64-unknown-cosmo-cc -c "$here/nif_load_tls_asm.S" -o tls_asm.aarch64.o
+# The plain gcc keeps "mrs tpidr_el0", as the code of Rust has it.
+aarch64-linux-cosmo-gcc -nostdinc -c "$here/nif_load_tls_asm.S" -o tls_asm.aarch64.o
 x86_64-linux-cosmo-ld -r -o tls.x86_64.o nif_load_tls.o tls_asm.x86_64.o
 aarch64-linux-cosmo-ld -r -o tls.aarch64.o .aarch64/nif_load_tls.o tls_asm.aarch64.o
 cosmocc -O2 -ffunction-sections -fdata-sections -c "$here/nif_load_dead.c" -o nif_load_dead.o

@@ -26,6 +26,11 @@ notes of its release.
   the objects has 253 more names (about 0.5 MB in `beam.com`).
 - `BEAM_COM_NIF_MAP=FILE`: the loader writes the address and the name of
   each function of a native NIF object.
+- macOS arm64: the TLS of Rust in a native NIF object used `tpidr_el0`,
+  which is not the thread pointer of Cosmopolitan on XNU (the SVG part of
+  vix crashed). The loader changes each `mrs xN, tpidr_el0` of an object
+  to `mov xN, x28`. The aarch64 test objects now keep this instruction,
+  as the code of Rust does.
 - `scripts/assemble.erl`: a program and new files in its zip, as a server
   can stream it: the bytes of the program up to its central directory,
   the new entries, and a new central directory. The length is known
