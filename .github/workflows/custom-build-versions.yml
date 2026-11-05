@@ -16,12 +16,14 @@ on:
     branches: [main]
     paths:
       - scripts/custom_build.py
+      - tests/custom_build_test.py
       - patches/otp/**
       - patches/elixir/**
       - .github/workflows/custom-build-versions.yml
   pull_request:
     paths:
       - scripts/custom_build.py
+      - tests/custom_build_test.py
       - patches/otp/**
       - patches/elixir/**
       - .github/workflows/custom-build-versions.yml
@@ -51,6 +53,10 @@ jobs:
           persist-credentials: false
       # The defaults of scripts/steps.sh must be in the tables, with the
       # same commits.
+      # The fields of a query of the FIFO beam.com (GET /beam.com?QUERY).
+      - name: The tests of custom_build.py
+        run: python3 -I tests/custom_build_test.py
+
       - id: pairs
         run: |
           python3 -I scripts/custom_build.py versions > versions.json

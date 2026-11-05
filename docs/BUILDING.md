@@ -215,11 +215,12 @@ closes the issue. A custom build has the WebAssembly runtime too
 answer. It is built from `main`, and the answer names the commit.
 
 Without a GitHub account, use the form of
-[mkfifo.com/beam.com](https://mkfifo.com/beam.com). It sends a
-link with a one-time code to your email address, and the link starts the
-same workflow. A second email gives the link of the file, or the reason
-when the build did not run. The file stays in the prerelease
-`custom-builds` for 30 days, and the FIFO streams it.
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com?form). Download gives
+the file in the browser, when its build is ready (a build URL, below).
+Or the form sends a link with a one-time code to your email address, and
+the link starts the same workflow. A second email gives the link of the
+file, or the reason when the build did not run. The file stays in the
+prerelease `custom-builds` for 30 days, and the FIFO streams it.
 
 - The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
   envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
@@ -284,49 +285,77 @@ when the build did not run. The file stays in the prerelease
 
 ### A build URL
 
-A program, a script or CI gets a custom build with one `GET`, with no
-email and no form:
+A program, a script or CI gets a build with one `GET`, with no email and
+no form:
 
 ```sh
-curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'   # the default NIFs and rusty_csv
-curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix' # only rusty_csv and vix
+curl -fo beam.com https://mkfifo.com/beam.com                        # the default build
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'      # the default NIFs and rusty_csv
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix'   # only rusty_csv and vix
+curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&hex=1&nifs+=vix'
 ```
 
-- `nifs+=` adds the NIFs to the default NIFs, and `nifs=` gives only
-  these NIFs. The names have a comma between them, in each sequence:
-  `exqlite`, `bcrypt_elixir`, `argon2_elixir`, `picosat_elixir`, `vix`,
-  `vix-icc`, `vix-gif`, `vix-avif`, `vix-svg`, `rusty_csv` and
-  `ex_pdfium`. A different name gets `400` at once.
-- Each other choice is the default of the form: Erlang/OTP and Elixir
-  of `scripts/steps.sh`, each default OTP application, the JIT, SQLite
-  and WebAssembly, and no Hex and no rebar3.
-- The answer is the file, as a stream with its `Content-Length`. A URL
-  of `nifs+=` with only vix, rusty_csv, ex_pdfium and the default NIFs
-  gets a program of parts at once, with no build (below). When the file
-  is not in the release yet, the request waits for its build,
+- `GET /beam.com` with no query gives the file `beam.com` of the
+  prerelease `edge` (the default build of `main`), at once, with its
+  `Content-Length` and `Range`. A browser gets the form: a request whose
+  `Accept` names `text/html` gets a redirect to `/beam.com?form`.
+- Each choice is a field of the query. A field that is not there keeps
+  the default of the form. Each field is one time, and a value has only
+  `a-z`, `0-9`, `_`, `.`, `,`, `+`, `-` and spaces:
+
+  | Field | Value |
+  |---|---|
+  | `otp_version` | A version of Erlang/OTP of `OTP_VERSIONS` of `scripts/custom_build.py`. |
+  | `elixir_version` | A version of Elixir of `ELIXIR_VERSIONS`. Empty, or `none`: no Elixir. |
+  | `apps` | More OTP applications, with commas. |
+  | `omit` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools and tools. |
+  | `hex`, `rebar3`, `jit`, `sqlite`, `wasm` | `0` or `1`. |
+  | `nifs+` | NIFs to add to the default NIFs (exqlite, bcrypt_elixir and argon2_elixir). |
+  | `nifs` | Only these NIFs. A query has `nifs+` or `nifs`, not both. |
+
+  The names of the NIFs are `exqlite`, `bcrypt_elixir`, `argon2_elixir`,
+  `picosat_elixir`, `vix`, `vix-icc`, `vix-gif`, `vix-avif`, `vix-svg`,
+  `rusty_csv` and `ex_pdfium`. A part of vix also chooses vix. The fields
+  of the form are fields of the query too: Download of the form sends a
+  `GET` with them, so the address of the download is also a URL for
+  `curl`.
+- The answer is the file, as a stream with its `Content-Length`. When
+  the file is not in the release yet, the request waits for its build,
   in one connection: the FIFO starts the build and says "not yet" (a
   `503` with `Retry-After: 15`), and mkfifo.com asks again (section
   8.10 of the specification of mkfifo.com). With each part in the
   store, a build takes about 2 to 3 minutes. The waits of one request
   are at most 10 minutes. After that, the request fails, and a later
   request gets the file when the build is complete.
-- The file is `beam-u.MODE.NAMES.com` in the prerelease `custom-builds`:
-  MODE is `plus` or `only`, and NAMES are the names in the sequence of
-  `sort`, each one time. Thus two URLs with the same NIFs get one file.
+- A query of only `nifs+=` with vix, rusty_csv, ex_pdfium and the default
+  NIFs gets a program of parts at once, with no build (below).
+- The file of a query is `beam-u.q.HASH.com` in the prerelease
+  `custom-builds`. The FIFO drops the fields `email` and `website` of the
+  form, and sorts the lines of the other fields. HASH is the start of the
+  SHA-256 of these lines. Thus the same fields in a different sequence
+  get one file, but a field with its default value (`jit=1`) gives a
+  different file. The file of a query of only `nifs+=` or `nifs=` is
+  `beam-u.MODE.NAMES.com`: MODE is `plus` or `only`, and NAMES are the
+  names in the sequence of `sort`, each one time.
   `custom-build-caches.yml` deletes these files after a push that
   changes the source of a build, so the next request builds the source
   of now.
-- A build that does not run (a refusal of the queue, the limit of each
-  day, or a failure) puts a text with the reason in the release for the
-  day: `beam-u.MODE.NAMES.DAY.txt`. The next requests of that day get it
-  with `422`, and start no build. The first request gets only an error.
+- A field that the FIFO does not know, or a value with a different
+  character, gets `400` at once. The workflow checks the values
+  (`query_inputs` of `scripts/custom_build.py`): a value that is not
+  possible is a refusal of the build.
+- A build that does not run (a refusal, the limit of each day, or a
+  failure) puts a text with the reason in the release for the day:
+  `beam-u.URL.DAY.txt`. The next requests of that day get it with `422`,
+  and start no build. The first request gets only an error.
 - A build of a URL counts in the limits of the form: one build at a
   time, at most 3 that wait, and at most 10 new builds each day. The
   workflow has one group of `concurrency` for each URL, so the requests
   of a URL that wait start one build.
-- The envelopes are `9-url` to `24-part` of
+- The envelopes are `9-url` to `30-query-bad` of
   [`priv/seeds/beam.com/`](../priv/seeds/beam.com). The input `url` of
-  the workflow has the choices of the URL (`URL` of `custom_build.py`).
+  the workflow has the choices of the URL (`URL` of `custom_build.py`),
+  and the input `query` has the lines of a query.
 
 A program of parts is the `beam.com` of `edge` with the NIF objects of
 vix, rusty_csv and ex_pdfium as NIF files ([`NIFS.md`](NIFS.md), "A
