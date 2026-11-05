@@ -1,0 +1,3 @@
+To: {{GITHUB_WEB}}/{{GITHUB_REPO}}/releases/download/program-parts/$file
+X-HTTP-Method-Override: HEAD
+Reply-To: -

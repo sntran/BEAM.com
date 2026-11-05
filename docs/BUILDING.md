@@ -300,8 +300,10 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix' # only rusty_
 - Each other choice is the default of the form: Erlang/OTP and Elixir
   of `scripts/steps.sh`, each default OTP application, the JIT, SQLite
   and WebAssembly, and no Hex and no rebar3.
-- The answer is the file, as a stream with its `Content-Length`. When
-  the file is not in the release yet, the request waits for its build,
+- The answer is the file, as a stream with its `Content-Length`. A URL
+  of `nifs+=` with only vix, rusty_csv, ex_pdfium and the default NIFs
+  gets a program of parts at once, with no build (below). When the file
+  is not in the release yet, the request waits for its build,
   in one connection: the FIFO starts the build and says "not yet" (a
   `503` with `Retry-After: 15`), and mkfifo.com asks again (section
   8.10 of the specification of mkfifo.com). With each part in the
@@ -322,9 +324,38 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix' # only rusty_
   time, at most 3 that wait, and at most 10 new builds each day. The
   workflow has one group of `concurrency` for each URL, so the requests
   of a URL that wait start one build.
-- The envelopes are `9-url` to `20-url-bad` of
+- The envelopes are `9-url` to `24-part` of
   [`priv/seeds/beam.com/`](../priv/seeds/beam.com). The input `url` of
   the workflow has the choices of the URL (`URL` of `custom_build.py`).
+
+A program of parts is the `beam.com` of `edge` with the NIF objects of
+vix, rusty_csv and ex_pdfium as NIF files ([`NIFS.md`](NIFS.md), "A
+program assembled from parts"). It has no static NIF of them, and the
+builder gives the objects to the packages:
+
+- After each publish of `edge`, the job `edge-parts` of `build.yml` cuts
+  the program into segments with `scripts/assemble.erl --parts`. The
+  segments go to the prerelease `program-parts`: the bytes of `beam.com`
+  up to its zip directory, the entries of each package, and one zip
+  directory for each set of packages. A list `beam-p.plus.SET.txt` for
+  each set names its segments. The job keeps the segments of the edge
+  before, for a stream that did not end.
+- `21-url-parts` makes the name of the list from the names of the URL.
+  `vix-icc`, `vix-gif`, `vix-avif` and `vix-svg` are `vix`, because the
+  object of vix has each part. The default NIFs go away, because
+  `beam.com` has them. When the list is there, and no build of the URL is
+  in `custom-builds`, the answer is the segments of the list, one after
+  the other, as one stream.
+- This answer has no `Content-Length`: it is more than one file
+  (section 8.7 of the specification of mkfifo.com). When a segment
+  fails, mkfifo.com stops the answer with no end of the body, and `curl`
+  gives an error. The answer has no `Range`.
+- A build of the URL that is in `custom-builds` (a static build) wins,
+  with its `Content-Length`. A URL with a different NIF, such as
+  `picosat_elixir`, or with `nifs=`, gets a build, as before.
+- The program of parts is not the `edge` file, so `gh attestation verify`
+  does not accept it. Its first segment is the start of the `edge` file,
+  with the same bytes.
 
 ## The store of parts
 

@@ -1,2 +1,2 @@
 To: beam.com/u/beam-u.:url((?:plus|only)(?:\.[a-z0-9_-]{1,32}){1,16}).com
-X-HTTP-Method-Override: ^GET$(cat beam.com/n/beam-u.$url.com)$(cat beam.com/n/beam-u.$url.$(date -u +%Y%m%d).txt)$
+X-HTTP-Method-Override: ^GET$(cat beam.com/n/beam-u.$url.com)$(cat beam.com/n/beam-u.$url.$(date -u +%Y%m%d).txt)$(cat beam.com/pn/beam-p.$(printf %s $url | cut -d. -f1).$(printf %s $url | tr . '\n' | sed -e 1d -e 's/^vix-.*/vix/' -e '/^exqlite$/d' -e '/^bcrypt_elixir$/d' -e '/^argon2_elixir$/d' | sort -u | tr '\n' .)txt)$

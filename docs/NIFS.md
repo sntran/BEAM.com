@@ -174,7 +174,11 @@ program as a server can stream it:
 
 ```sh
 beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/LIB.x86_64.o=FILE ...
+beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/=DIR ...
 ```
+
+A spec `PREFIX/=DIR` adds each regular file of DIR, with the path
+`PREFIX/PATH`, in the sequence of the names.
 
 The license texts of a part (`licenses-pdfium` of ex_pdfium) go into
 `licenses/NAME` of OUT, as in the static build, and each program that
@@ -205,6 +209,29 @@ each request but a copy. The script writes the length first, then
 writes OUT with no seek, and then checks the length. The same inputs
 give the same bytes. The script does not support ZIP64: OUT has fewer
 than 65,535 entries and less than 4 GiB.
+
+A local entry has no offset, so the entries of one package are the
+same bytes in each program. Only the central directory changes with
+the set of packages. `--parts` cuts the programs of each set into
+segments, in DIR:
+
+```sh
+beam.com scripts/assemble.erl -- --parts BASE DIR KEY URL PKG:SPEC ...
+```
+
+- `beam-p.KEY.head`: the bytes of BASE up to its central directory.
+- `beam-p.KEY.PKG.part`: the local entries of the files of PKG.
+- `beam-p.KEY.SET.tail`: the central directory and the end record of
+  the program of the packages of SET.
+- `beam-p.plus.SET.txt`: the segments of SET, one on each line, after
+  the text URL.
+
+SET is each set of packages that is not empty: the names in the
+sequence of `sort`, with a dot between them. The segments of a list,
+one after the other, are the bytes of OUT with the specs of these
+packages, in that sequence. `tests/run.sh` compares the two. The FIFO
+beam.com streams them for a build URL ([`BUILDING.md`](BUILDING.md), "A
+build URL").
 
 Caution: a native NIF object runs in the VM with all of its rights, as
 a native NIF does. A crash of the object stops the VM. A NIF in

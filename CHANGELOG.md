@@ -58,8 +58,17 @@ notes of its release.
   this way on each system.
 - `beam.com --nif-include`: the headers also work for a native NIF object
   of `cosmocc`, on x86_64 and aarch64.
-
-
+- `scripts/assemble.erl --parts` cuts the programs of each set of NIF
+  packages into segments: the bytes of the program up to its central
+  directory, the entries of each package, and one central directory for
+  each set. The segments of a set, one after the other, are the program.
+  A spec `PREFIX/=DIR` adds each file of a directory.
+- A build URL of `nifs+=` with only vix, rusty_csv, ex_pdfium and the
+  default NIFs gets its program at once, with no build: the FIFO
+  beam.com streams the segments of the `edge` program and the NIF
+  objects. The job `edge-parts` puts them in the prerelease
+  `program-parts` after each publish of `edge`. This answer has no
+  `Content-Length`. See "A build URL" in `docs/BUILDING.md`.
 - A build URL: `curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'`
   gives a custom build with the default NIFs and rusty_csv, and
   `?nifs=rusty_csv` gives only rusty_csv. The answer is the file as a

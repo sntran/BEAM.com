@@ -1670,28 +1670,25 @@ if [ -d examples ]; then
     fi
 fi
 
-# assemble OUT BASE PREFIX DIR [PREFIX DIR]...: OUT from BASE and each
-# file of each DIR, as PREFIX/PATH in the zip (scripts/assemble.erl). A
-# function: "set --" changes only its own arguments.
+# assemble OUT BASE COUNT SPEC...: OUT from BASE and the COUNT files of
+# the specs (NAME=FILE, or PREFIX/=DIR for each file of DIR), with
+# scripts/assemble.erl.
 assemble() {
-    a_out=$1 a_base=$2
-    shift 2
-    a_specs=
-    while [ $# -ge 2 ]; do
-        for f in $(cd "$2" && find . -type f | sed 's|^\./||' | sort); do
-            a_specs="$a_specs $1/$f=$2/$f"
-        done
-        shift 2
-    done
-    set -- $a_specs
-    check beam.com "assemble: wrote .*${a_out##*/}: [0-9]* bytes, the length of the start; new files: $#" \
+    a_out=$1 a_base=$2 a_count=$3
+    shift 3
+    check beam.com "assemble: wrote .*${a_out##*/}: [0-9]* bytes, the length of the start; new files: $a_count\$" \
         scripts/assemble.erl -- "$a_base" "$a_out" "$@"
+}
+
+# files DIR...: the count of the regular files of each DIR.
+files() {
+    echo $(($(find "$@" -type f | wc -l)))
 }
 
 # The NIFs of the store as native NIF objects: vix, rusty_csv and
 # ex_pdfium. store_nifs.tar.gz of CI (the job Build of build.yml) holds
-# their objects for each CPU, in the tree nifs/APP-VSN of a program, and
-# nif_needs.com.
+# their objects for each CPU, in the tree nifs/APP-VSN of a program, the
+# license texts in licenses/NAME, parts.txt and nif_needs.com.
 if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     store=$dir/store_nifs
     rm -rf "${store:?}"
@@ -1726,8 +1723,8 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     cp -R tests/programs/store_nif_check/src "$dir/store_nif_base/"
     check beam.com 'wrote .*store_nif_base.com' "$dir/store_nif_base" \
         --main store_nif_check -o "$dir/store_nif_base.com"
-    assemble "$dir/store_nif_hand.com" "$dir/store_nif_base.com" \
-        lib/store_nif_check-1.0.0/priv "$priv"
+    assemble "$dir/store_nif_hand.com" "$dir/store_nif_base.com" "$(files "$priv")" \
+        "lib/store_nif_check-1.0.0/priv/=$priv"
     if [ -f "$dir/store_nif_hand.com" ]; then
         check store_nif_hand.com "$store_ok"
     fi
@@ -1738,8 +1735,46 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     # the packages.
     # The license texts of the parts (PDFium) go into licenses/, as in the
     # static build, and each program of this beam.com keeps them.
-    assemble "$dir/beam_nifs.com" "$dir/beam.com" lib/beam_com/priv/nifs "$store/nifs" \
-        licenses "$store/licenses"
+    # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
+    specs= parts=
+    while read -r pkg spec; do
+        specs="$specs ${spec%%=*}=$store/${spec#*=}"
+        parts="$parts $pkg:${spec%%=*}=$store/${spec#*=}"
+    done < "$store/parts.txt"
+    assemble "$dir/beam_nifs.com" "$dir/beam.com" "$(files "$store/nifs" "$store/licenses")" $specs
+    # The same program from the segments that the FIFO beam.com streams
+    # (assemble.erl --parts): the segments of the list of a set, one after
+    # the other, are the bytes of the program of these packages. The
+    # program of rusty_csv alone has only its NIF files.
+    rm -rf "${dir:?}/program_parts"
+    check beam.com 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]* bytes' \
+        scripts/assemble.erl -- --parts "$dir/beam.com" "$dir/program_parts" 0123abc beam.com/p/ $parts
+    for set in ex_pdfium.rusty_csv.vix rusty_csv; do
+        rm -f "$dir/beam_p_$set.com"
+        [ -f "$dir/program_parts/beam-p.plus.$set.txt" ] || continue
+        sed 's|^beam\.com/p/||' "$dir/program_parts/beam-p.plus.$set.txt" | while read -r f; do
+            cat "$dir/program_parts/$f"
+        done > "$dir/beam_p_$set.com"
+        chmod +x "$dir/beam_p_$set.com"
+    done
+    if [ -f "$dir/beam_nifs.com" ] && [ -f "$dir/beam_p_ex_pdfium.rusty_csv.vix.com" ] &&
+       cmp "$dir/beam_nifs.com" "$dir/beam_p_ex_pdfium.rusty_csv.vix.com"; then
+        echo "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    else
+        echo "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        fail=1
+        failed="$failed
+  assemble.erl --parts: the segments are not the bytes of beam_nifs.com"
+    fi
+    if [ -f "$dir/beam_p_rusty_csv.com" ]; then
+        check beam_p_rusty_csv.com 'NIF files   : .*rusty_csv-' --version
+        if grep -q -e 'NIF files   : .*vix-' -e 'NIF files   : .*ex_pdfium-' "$tmp"; then
+            echo "FAIL: beam_p_rusty_csv.com has the NIF files of more packages"
+            fail=1
+            failed="$failed
+  beam_p_rusty_csv.com: the NIF files of more packages than rusty_csv"
+        fi
+    fi
     if [ -f "$dir/beam_nifs.com" ]; then
         check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' --version
         check beam_nifs.com '^licenses: pdfium$' -noshell -eval \

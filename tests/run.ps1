@@ -434,21 +434,17 @@ if (Test-Path "examples") {
     }
 }
 
-# Assemble OUT BASE PREFIX DIR [PREFIX2 DIR2]: OUT from BASE and each
-# file of each DIR, as PREFIX/PATH in the zip (scripts/assemble.erl), as
-# in tests/run.sh.
-function Assemble($Out, $Base, $Prefix, $From, $Prefix2 = $null, $From2 = $null) {
-    $entries = @()
-    foreach ($pair in @(@($Prefix, $From), @($Prefix2, $From2))) {
-        if (-not $pair[0]) { continue }
-        $root = (Resolve-Path $pair[1]).Path
-        $entries += @(Get-ChildItem -Recurse -File $root | Sort-Object FullName | ForEach-Object {
-            $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-            "$($pair[0])/$rel=$($_.FullName)"
-        })
-    }
+# Assemble OUT BASE COUNT SPECS: OUT from BASE and the COUNT files of the
+# specs (NAME=FILE, or PREFIX/=DIR for each file of DIR), with
+# scripts/assemble.erl, as in tests/run.sh.
+function Assemble($Out, $Base, $Count, [string[]]$Specs) {
     $leaf = Split-Path $Out -Leaf
-    Check "beam.com" "assemble: wrote .*$([regex]::Escape($leaf)): [0-9]+ bytes, the length of the start; new files: $($entries.Count)" (@("scripts/assemble.erl", "--", $Base, $Out) + $entries)
+    Check "beam.com" "(?m)assemble: wrote .*$([regex]::Escape($leaf)): [0-9]+ bytes, the length of the start; new files: $Count\r?$" (@("scripts/assemble.erl", "--", $Base, $Out) + $Specs)
+}
+
+# The count of the regular files of each directory.
+function FileCount([string[]]$Dirs) {
+    return @(Get-ChildItem -Recurse -File $Dirs).Count
 }
 
 # The NIFs of the store as native NIF objects (tests/run.sh): vix,
@@ -489,14 +485,54 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     New-Item -ItemType Directory -Force -Path $Base | Out-Null
     Copy-Item -Recurse "tests/programs/store_nif_check/src" $Base
     Check "beam.com" 'wrote .*store_nif_base.com' @($Base, "--main", "store_nif_check", "-o", "$Dir/store_nif_base.com")
-    Assemble "$Dir/store_nif_hand.com" "$Dir/store_nif_base.com" "lib/store_nif_check-1.0.0/priv" $Priv
+    Assemble "$Dir/store_nif_hand.com" "$Dir/store_nif_base.com" (FileCount @($Priv)) @("lib/store_nif_check-1.0.0/priv/=$Priv")
     if (Test-Path (Join-Path $Dir "store_nif_hand.com")) {
         Check "store_nif_hand.com" $StoreOk @()
     }
     # A beam.com assembled from parts, and the Elixir programs of the
     # three packages from hex.pm (tests/run.sh).
     # The license texts of the parts (PDFium) go into licenses/.
-    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" "lib/beam_com/priv/nifs" (Join-Path $Store "nifs") "licenses" (Join-Path $Store "licenses")
+    # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
+    $Specs = @()
+    $PartSpecs = @()
+    foreach ($line in Get-Content (Join-Path $Store "parts.txt")) {
+        if (-not $line) { continue }
+        $pkg, $spec = $line -split ' ', 2
+        $name, $from = $spec -split '=', 2
+        $Specs += "$name=$(Join-Path $Store $from)"
+        $PartSpecs += "$($pkg):$name=$(Join-Path $Store $from)"
+    }
+    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" (FileCount @((Join-Path $Store "nifs"), (Join-Path $Store "licenses"))) $Specs
+    # The same program from the segments that the FIFO beam.com streams
+    # (tests/run.sh).
+    $Parts = Join-Path $Dir "program_parts"
+    if (Test-Path $Parts) { Remove-Item -Recurse -Force $Parts }
+    Check "beam.com" 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]+ bytes' (@("scripts/assemble.erl", "--", "--parts", "$Dir/beam.com", $Parts, "0123abc", "beam.com/p/") + $PartSpecs)
+    foreach ($set in @("ex_pdfium.rusty_csv.vix", "rusty_csv")) {
+        $joined = Join-Path $Dir "beam_p_$set.com"
+        if (Test-Path $joined) { Remove-Item -Force $joined }
+        $list = Join-Path $Parts "beam-p.plus.$set.txt"
+        if (-not (Test-Path $list)) { continue }
+        $outStream = [System.IO.File]::Create($joined)
+        try {
+            foreach ($url in Get-Content $list) {
+                $inStream = [System.IO.File]::OpenRead((Join-Path $Parts ($url -replace '^beam\.com/p/', '')))
+                try { $inStream.CopyTo($outStream) } finally { $inStream.Dispose() }
+            }
+        } finally { $outStream.Dispose() }
+    }
+    $Whole = Join-Path $Dir "beam_p_ex_pdfium.rusty_csv.vix.com"
+    if ((Test-Path (Join-Path $Dir "beam_nifs.com")) -and (Test-Path $Whole) -and
+        ((Get-FileHash (Join-Path $Dir "beam_nifs.com")).Hash -eq (Get-FileHash $Whole).Hash)) {
+        Write-Host "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    } else {
+        Write-Host "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        $script:fail = 1
+        $failures.Add("assemble.erl --parts: the segments are not the bytes of beam_nifs.com")
+    }
+    if (Test-Path (Join-Path $Dir "beam_p_rusty_csv.com")) {
+        Check "beam_p_rusty_csv.com" '(?m)NIF files   : .*rusty_csv-' @("--version")
+    }
     if (Test-Path (Join-Path $Dir "beam_nifs.com")) {
         Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' @("--version")
         Check "beam_nifs.com" '(?m)^licenses: pdfium' @("-noshell", "-eval", 'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().')
