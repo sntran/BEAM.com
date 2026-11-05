@@ -434,14 +434,19 @@ if (Test-Path "examples") {
     }
 }
 
-# Assemble OUT BASE PREFIX DIR: OUT from BASE and each .o file of DIR, as
-# PREFIX/PATH in the zip (scripts/assemble.erl), as in tests/run.sh.
-function Assemble($Out, $Base, $Prefix, $From) {
-    $root = (Resolve-Path $From).Path
-    $entries = @(Get-ChildItem -Recurse -File -Filter "*.o" $root | Sort-Object FullName | ForEach-Object {
-        $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
-        "$Prefix/$rel=$($_.FullName)"
-    })
+# Assemble OUT BASE PREFIX DIR [PREFIX2 DIR2]: OUT from BASE and each
+# file of each DIR, as PREFIX/PATH in the zip (scripts/assemble.erl), as
+# in tests/run.sh.
+function Assemble($Out, $Base, $Prefix, $From, $Prefix2 = $null, $From2 = $null) {
+    $entries = @()
+    foreach ($pair in @(@($Prefix, $From), @($Prefix2, $From2))) {
+        if (-not $pair[0]) { continue }
+        $root = (Resolve-Path $pair[1]).Path
+        $entries += @(Get-ChildItem -Recurse -File $root | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+            "$($pair[0])/$rel=$($_.FullName)"
+        })
+    }
     $leaf = Split-Path $Out -Leaf
     Check "beam.com" "assemble: wrote .*$([regex]::Escape($leaf)): [0-9]+ bytes, the length of the start; new files: $($entries.Count)" (@("scripts/assemble.erl", "--", $Base, $Out) + $entries)
 }
@@ -490,9 +495,11 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     }
     # A beam.com assembled from parts, and the Elixir programs of the
     # three packages from hex.pm (tests/run.sh).
-    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" "lib/beam_com/priv/nifs" (Join-Path $Store "nifs")
+    # The license texts of the parts (PDFium) go into licenses/.
+    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" "lib/beam_com/priv/nifs" (Join-Path $Store "nifs") "licenses" (Join-Path $Store "licenses")
     if (Test-Path (Join-Path $Dir "beam_nifs.com")) {
         Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' @("--version")
+        Check "beam_nifs.com" '(?m)^licenses: pdfium' @("-noshell", "-eval", 'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().')
         foreach ($p in @("vix_check", "rusty_csv_check", "ex_pdfium_check")) {
             $src = Join-Path $Dir $p
             if (Test-Path $src) { Remove-Item -Recurse -Force $src }

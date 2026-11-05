@@ -44,6 +44,13 @@ notes of its release.
 - `tests/cosmo/nif_needs.c`: each name that a native NIF object needs
   and that the program does not have, in one run. CI checks the objects
   of the store with it.
+- An assembled `beam.com` has the license texts of its NIF parts
+  (`licenses/pdfium` for ex_pdfium), as the static build has them, and
+  each program of it keeps them.
+- `beam.com DIR -o OUT` writes `mix.lock` as Mix writes it: the keys are
+  atoms, and each entry has the optional deps too. Before, a later
+  `mix deps.get` stopped: Hex read a name with `atom_to_binary/1`, and
+  checked the deps against the registry.
 - `scripts/assemble.erl`: a program and new files in its zip, as a server
   can stream it: the bytes of the program up to its central directory,
   the new entries, and a new central directory. The length is known

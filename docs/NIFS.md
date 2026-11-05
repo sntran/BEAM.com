@@ -176,7 +176,9 @@ program as a server can stream it:
 beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/LIB.x86_64.o=FILE ...
 ```
 
-With `beam.com` as BASE and the objects of the store as NIF files of
+The license texts of a part (`licenses-pdfium` of ex_pdfium) go into
+`licenses/NAME` of OUT, as in the static build, and each program that
+OUT builds keeps them. With `beam.com` as BASE and the objects of the store as NIF files of
 `beam.com`, OUT is a `beam.com` that builds a project with vix,
 rusty_csv or ex_pdfium from hex.pm, with no static NIF of them:
 

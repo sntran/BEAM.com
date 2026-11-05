@@ -311,14 +311,83 @@ defmodule BeamComHexTest do
 
       :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, pkgs))
 
+      # The keys are atoms, as Mix writes them: Hex reads the name of a
+      # package with atom_to_binary/1.
       assert {%{
-                "a" =>
+                a:
                   {:hex, :a_pkg, "1.0.0", "aa", [:rebar3, :make, :mix],
                    [{:b, "~> 0.2", [hex: :b, repo: "hexpm", optional: false]}], "hexpm", "bb"}
               }, _} = Code.eval_file(List.to_string(file))
 
+      assert {:ok,
+              "%{\n  \"a\": {:hex, :a_pkg, \"1.0.0\", \"aa\", [:rebar3, :make, :mix], " <>
+                "[{:b, \"~> 0.2\", [hex: :b, repo: \"hexpm\", optional: false]}], " <>
+                "\"hexpm\", \"bb\"},\n}\n"} == File.read(List.to_string(file))
+
       assert %{a: %{pkg: "a_pkg", vsn: ~c"1.0.0", inner: "aa", outer: "bb"}} ==
                :beam_com_hex.read_lock(:mix, file)
+    end
+
+    # Hex checks the deps of an entry against the registry: the optional
+    # deps must be there too (vix has the optional dep kino).
+    test "lock_text/2 of Mix: the optional deps", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      pkg = %{
+        name: :v,
+        pkg: "v",
+        vsn: ~c"1.0.0",
+        inner: "a",
+        outer: "b",
+        tools: ["mix"],
+        reqs: [{:m, "m", ~c"~> 0.8"}],
+        lock_reqs: [{:m, "m", ~c"~> 0.8", false}, {:k, "k", ~c"~> 0.7", true}]
+      }
+
+      :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, [pkg]))
+
+      assert {%{
+                v:
+                  {:hex, :v, "1.0.0", "a", [:mix],
+                   [
+                     {:m, "~> 0.8", [hex: :m, repo: "hexpm", optional: false]},
+                     {:k, "~> 0.7", [hex: :k, repo: "hexpm", optional: true]}
+                   ], "hexpm", "b"}
+              }, _} = Code.eval_file(List.to_string(file))
+    end
+
+    test "lock_text/2 of Mix: the names in order", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      pkg = fn n ->
+        %{
+          name: n,
+          pkg: Atom.to_string(n),
+          vsn: ~c"1.0.0",
+          inner: "a",
+          outer: "b",
+          tools: ["mix"],
+          reqs: []
+        }
+      end
+
+      :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, [pkg.(:zeta), pkg.(:alpha)]))
+      {:ok, text} = File.read(List.to_string(file))
+      assert [_, "  \"alpha\"" <> _, "  \"zeta\"" <> _, "}", ""] = String.split(text, "\n")
+    end
+
+    # A mix.lock of an older beam.com: string keys. Hex cannot read it, and
+    # this reader can.
+    test "read_lock/2 of string keys", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      :ok =
+        :file.write_file(
+          file,
+          ~s(%{"a" => {:hex, :a, "1.0.0", "AA", [:mix], [], "hexpm", "BB"}}\n)
+        )
+
+      assert %{a: %{pkg: "a", vsn: ~c"1.0.0"}} = :beam_com_hex.read_lock(:mix, file)
     end
   end
 

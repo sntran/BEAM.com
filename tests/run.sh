@@ -1670,15 +1670,20 @@ if [ -d examples ]; then
     fi
 fi
 
-# assemble OUT BASE PREFIX DIR: OUT from BASE and each file of DIR, as
-# PREFIX/PATH in the zip (scripts/assemble.erl). A function: "set --"
-# changes only its own arguments.
+# assemble OUT BASE PREFIX DIR [PREFIX DIR]...: OUT from BASE and each
+# file of each DIR, as PREFIX/PATH in the zip (scripts/assemble.erl). A
+# function: "set --" changes only its own arguments.
 assemble() {
-    a_out=$1 a_base=$2 a_prefix=$3 a_dir=$4
-    set --
-    for f in $(cd "$a_dir" && find . -type f -name '*.o' | sed 's|^\./||' | sort); do
-        set -- "$@" "$a_prefix/$f=$a_dir/$f"
+    a_out=$1 a_base=$2
+    shift 2
+    a_specs=
+    while [ $# -ge 2 ]; do
+        for f in $(cd "$2" && find . -type f | sed 's|^\./||' | sort); do
+            a_specs="$a_specs $1/$f=$2/$f"
+        done
+        shift 2
     done
+    set -- $a_specs
     check beam.com "assemble: wrote .*${a_out##*/}: [0-9]* bytes, the length of the start; new files: $#" \
         scripts/assemble.erl -- "$a_base" "$a_out" "$@"
 }
@@ -1731,9 +1736,14 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     # programs of vix, rusty_csv and ex_pdfium from hex.pm, with no static
     # NIF of them: the builder puts the objects in the priv directories of
     # the packages.
-    assemble "$dir/beam_nifs.com" "$dir/beam.com" lib/beam_com/priv/nifs "$store/nifs"
+    # The license texts of the parts (PDFium) go into licenses/, as in the
+    # static build, and each program of this beam.com keeps them.
+    assemble "$dir/beam_nifs.com" "$dir/beam.com" lib/beam_com/priv/nifs "$store/nifs" \
+        licenses "$store/licenses"
     if [ -f "$dir/beam_nifs.com" ]; then
         check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' --version
+        check beam_nifs.com '^licenses: pdfium$' -noshell -eval \
+            'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().'
         # check sets p: the loop has its own name.
         for nif_prog in vix_check rusty_csv_check ex_pdfium_check; do
             rm -rf "${dir:?}/$nif_prog"

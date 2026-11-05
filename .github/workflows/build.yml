@@ -228,7 +228,9 @@ jobs:
       # parts of vix, rusty_csv and ex_pdfium for the OTP of this build
       # (their keys from scripts/steps.sh part_keys), and their objects
       # from scripts/nif_object.sh, in the tree nifs/APP-VSN of a program
-      # (lib/beam_com/priv/nifs). nif_needs.com (tests/cosmo/nif_needs.c)
+      # (lib/beam_com/priv/nifs), with the license texts of a part
+      # (licenses-NAME, PDFium) in licenses/NAME, as the static build has
+      # them. nif_needs.com (tests/cosmo/nif_needs.c)
       # checks that the program has each name that the x86_64 objects
       # need. The jobs test and test-bsd check the aarch64 objects, and
       # run them (tests/run.sh). When the store has no part of a key (a
@@ -254,6 +256,11 @@ jobs:
             if [ -n "$key" ] && curl -fsSL --retry 3 -o "$out/$p.tar.xz" "$PARTS_URL/nif-$p-$key.tar.xz"; then
               tar -xJf "$out/$p.tar.xz" -C "$out/$p"
               sh scripts/nif_object.sh build/cosmocc "$lib" "$out/$p" "$out/tree/nifs/$p-$vsn" "$file"
+              for l in "$out/$p"/licenses-*; do
+                [ -d "$l" ] || continue
+                mkdir -p "$out/tree/licenses/${l##*/licenses-}"
+                cp "$l"/* "$out/tree/licenses/${l##*/licenses-}/"
+              done
             else
               echo "::warning::The store has no part nif-$p-$key: no native NIF object of $p"
               missing=1
