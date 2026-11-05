@@ -1729,6 +1729,27 @@ static void tls_morph(uint8_t *p, size_t n)
 }
 #endif
 
+/* BEAM_COM_NIF_MAP=FILE: the address and the name of each function of
+ * the object (STT_FUNC, in a live section), one on each line. A tool
+ * that has no symbols of the module (a sampler, a debugger) finds the
+ * names of its addresses in this file. */
+static void write_map(bcn_load_t *l)
+{
+    const char *path = getenv("BEAM_COM_NIF_MAP");
+    FILE *f;
+    size_t i;
+    if (!path || !*path || !(f = fopen(path, "a")))
+        return;
+    for (i = 1; i < l->nsyms; i++) {
+        const bcn_sym *s = &l->syms[i];
+        int x = sym_section(l, i);
+        if ((s->st_info & 15) == 2 && x >= 0 && l->secaddr[x] && s->st_name < l->strsize)
+            fprintf(f, "%016lx %lx %s\n", (unsigned long)(l->secaddr[x] + s->st_value),
+                    (unsigned long)s->st_size, l->strtab + s->st_name);
+    }
+    fclose(f);
+}
+
 struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn lookup,
                             char *error, size_t errsize)
 {
@@ -1925,6 +1946,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
     }
     if (l.tls_size && !tls_install(&l))
         goto out;
+    write_map(&l);
     if (bcn_constructors)
         run_constructors(&l);
     if (l.tls_size)
