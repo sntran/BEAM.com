@@ -481,6 +481,14 @@ version() ->
                                [lists:join(" ", [[atom_to_list(A), "-", V]
                                                  || {A, V} <- Nifs])])
      end,
+     %% The packages with NIF files in the zip (priv/nifs of beam_com): a
+     %% NIF library in WebAssembly, or native NIF objects.
+     case beam_com_make:file_nifs() of
+         [] -> [];
+         Files -> io_lib:format("  NIF files   : ~ts~n",
+                                [lists:join(" ", [[atom_to_list(A), "-", V]
+                                                  || {A, V} <- Files])])
+     end,
      io_lib:format("  Applications: ~ts~n",
                    [lists:join(" ", [[A, "-", V] || {A, V} <- lists:usort(Apps)])])].
 

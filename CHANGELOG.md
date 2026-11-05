@@ -31,6 +31,19 @@ notes of its release.
   vix crashed). The loader changes each `mrs xN, tpidr_el0` of an object
   to `mov xN, x28`. The aarch64 test objects now keep this instruction,
   as the code of Rust does.
+- The NIF files of `beam.com` (`lib/beam_com/priv/nifs/APP-VSN`): a
+  package gets the native NIF objects of its directory in its priv
+  directory, in `beam.com DIR -o OUT`, in `make` of `elixir_make`, and in
+  the module `Rustler` of `beam.com`. The list of these packages comes
+  from the directory, so a `beam.com` assembled with more files needs no
+  other build: it builds the projects of vix, rusty_csv and ex_pdfium
+  from hex.pm with no static NIF of them. `beam.com --version` names
+  them ("NIF files").
+- The entry of a native NIF object can be its one global function
+  `NAME_nif_init`: Rustler loads `priv/native/libCRATE`.
+- `tests/cosmo/nif_needs.c`: each name that a native NIF object needs
+  and that the program does not have, in one run. CI checks the objects
+  of the store with it.
 - `scripts/assemble.erl`: a program and new files in its zip, as a server
   can stream it: the bytes of the program up to its central directory,
   the new entries, and a new central directory. The length is known

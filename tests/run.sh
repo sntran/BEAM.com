@@ -1670,29 +1670,48 @@ if [ -d examples ]; then
     fi
 fi
 
-# assemble_store_nifs: store_nif_hand.com, from store_nif_base.com and
-# the objects in priv/ of store_nif_check (a function: "set --" changes
-# only its own arguments).
-assemble_store_nifs() {
+# assemble OUT BASE PREFIX DIR: OUT from BASE and each file of DIR, as
+# PREFIX/PATH in the zip (scripts/assemble.erl). A function: "set --"
+# changes only its own arguments.
+assemble() {
+    a_out=$1 a_base=$2 a_prefix=$3 a_dir=$4
     set --
-    for f in tests/programs/store_nif_check/priv/*.o; do
-        set -- "$@" "lib/store_nif_check-1.0.0/priv/${f##*/}=$f"
+    for f in $(cd "$a_dir" && find . -type f -name '*.o' | sed 's|^\./||' | sort); do
+        set -- "$@" "$a_prefix/$f=$a_dir/$f"
     done
-    check beam.com 'assemble: wrote .*store_nif_hand.com: [0-9]* bytes, the length of the start; new files: 6' \
-        scripts/assemble.erl -- "$dir/store_nif_base.com" "$dir/store_nif_hand.com" "$@"
+    check beam.com "assemble: wrote .*${a_out##*/}: [0-9]* bytes, the length of the start; new files: $#" \
+        scripts/assemble.erl -- "$a_base" "$a_out" "$@"
 }
 
 # The NIFs of the store as native NIF objects: vix, rusty_csv and
-# ex_pdfium. store_nifs.tar.gz of CI holds their objects for each CPU
-# (scripts/nif_object.sh, in the job Build of build.yml).
+# ex_pdfium. store_nifs.tar.gz of CI (the job Build of build.yml) holds
+# their objects for each CPU, in the tree nifs/APP-VSN of a program, and
+# nif_needs.com.
 if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
-    rm -rf tests/programs/store_nif_check/priv
-    mkdir -p tests/programs/store_nif_check/priv
-    tar -xzf "$dir/store_nifs.tar.gz" -C tests/programs/store_nif_check/priv
+    store=$dir/store_nifs
+    rm -rf "${store:?}"
+    mkdir -p "$store"
+    tar -xzf "$dir/store_nifs.tar.gz" -C "$store"
+    case $(uname -m) in
+        x86_64 | amd64 | AMD64) cpu=x86_64 ;;
+        *) cpu=aarch64 ;;
+    esac
+    # The program has each name that the objects of this CPU need.
+    cp "$store/nif_needs.com" "$dir/nif_needs.com"
+    check nif_needs.com "libex_pdfium\.$cpu\.o: ok@@librustycsv\.$cpu\.o: ok@@vix\.$cpu\.o: ok" \
+        $(find "$store/nifs" -name "*.$cpu.o" | sort)
+    # store_nif_check, with the objects at the paths of the packages.
+    priv=tests/programs/store_nif_check/priv
+    rm -rf "$priv"
+    mkdir -p "$priv"
+    for d in "$store"/nifs/*/; do
+        cp -R "$d." "$priv/"
+    done
+    store_ok='store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
     check beam.com 'wrote .*store_nif_check.com' tests/programs/store_nif_check \
         --main store_nif_check -o "$dir/store_nif_check.com"
     if [ -f "$dir/store_nif_check.com" ]; then
-        check store_nif_check.com 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+        check store_nif_check.com "$store_ok"
     fi
     # The same program, assembled by hand (scripts/assemble.erl): the
     # program with no objects, and then the objects as new files of its
@@ -1702,9 +1721,31 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     cp -R tests/programs/store_nif_check/src "$dir/store_nif_base/"
     check beam.com 'wrote .*store_nif_base.com' "$dir/store_nif_base" \
         --main store_nif_check -o "$dir/store_nif_base.com"
-    assemble_store_nifs
+    assemble "$dir/store_nif_hand.com" "$dir/store_nif_base.com" \
+        lib/store_nif_check-1.0.0/priv "$priv"
     if [ -f "$dir/store_nif_hand.com" ]; then
-        check store_nif_hand.com 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+        check store_nif_hand.com "$store_ok"
+    fi
+    # A beam.com assembled from parts: beam.com, and the objects as NIF
+    # files of beam_com (lib/beam_com/priv/nifs). It builds the Elixir
+    # programs of vix, rusty_csv and ex_pdfium from hex.pm, with no static
+    # NIF of them: the builder puts the objects in the priv directories of
+    # the packages.
+    assemble "$dir/beam_nifs.com" "$dir/beam.com" lib/beam_com/priv/nifs "$store/nifs"
+    if [ -f "$dir/beam_nifs.com" ]; then
+        check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' --version
+        # check sets p: the loop has its own name.
+        for nif_prog in vix_check rusty_csv_check ex_pdfium_check; do
+            rm -rf "${dir:?}/$nif_prog"
+            cp -R "tests/programs/$nif_prog" "$dir/$nif_prog"
+            # A build compiles the package and its deps: more time.
+            limit=600
+            net_check beam_nifs.com "wrote .*$nif_prog.com" "$dir/$nif_prog" -o "$dir/$nif_prog.com"
+            limit=${LIMIT:-120}
+            if [ -f "$dir/$nif_prog.com" ]; then
+                check "$nif_prog.com" "^$nif_prog: ok"
+            fi
+        done
     fi
 elif [ -d examples ]; then
     echo "SKIP: store_nif_check.com (no $dir/store_nifs.tar.gz)"

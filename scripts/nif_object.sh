@@ -1,9 +1,10 @@
 #!/bin/sh
 # Makes the native NIF objects of a NIF part of the store (docs/NIFS.md):
-# OUT/LIB.x86_64.o and OUT/LIB.aarch64.o, from DIR/LIB.a and
-# DIR/.aarch64/LIB.a. load_nif/2 loads them for "PATH/LIB".
+# OUT/FILE.x86_64.o and OUT/FILE.aarch64.o, from DIR/LIB.a and
+# DIR/.aarch64/LIB.a. load_nif/2 loads them for "PATH/FILE". FILE is LIB
+# when it is not given, and it can have a directory (native/libLIB).
 #
-#   sh scripts/nif_object.sh /path/to/cosmocc LIB DIR OUT
+#   sh scripts/nif_object.sh /path/to/cosmocc LIB DIR OUT [FILE]
 #
 # The archive of a part is the NIF as the static build links it: its
 # function LIB_nif_init, and the libraries that it needs. "ld -r" takes
@@ -12,11 +13,11 @@
 # LIB_nif_init, so its names do not collide with the names of the
 # program. The program gives the libc and libc++abi.
 set -eu
-C=$1 lib=$2 dir=$3 out=$4
+C=$1 lib=$2 dir=$3 out=$4 file=${5:-$2}
 init=${lib}_nif_init
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/nif_object.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$out"
+mkdir -p "$(dirname "$out/$file")"
 for cpu in x86_64 aarch64; do
     case $cpu in
         x86_64) a=$dir/$lib.a ;;
@@ -30,5 +31,5 @@ for cpu in x86_64 aarch64; do
     # An archive with no LIB_nif_init gives an object with no code.
     "$C/bin/$cpu-unknown-cosmo-nm" -g --defined-only "$tmp/$lib.$cpu.o" |
         grep -q " T $init\$" || { echo "nif_object: $a has no function $init" >&2; exit 1; }
-    mv "$tmp/$lib.$cpu.o" "$out/$lib.$cpu.o"
+    mv "$tmp/$lib.$cpu.o" "$out/$file.$cpu.o"
 done

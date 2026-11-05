@@ -1590,6 +1590,23 @@ elixir_part_key() (
     } | sha256sum | cut -d' ' -f1
 )
 
+# The NIF packages of this build as native NIF objects (docs/NIFS.md):
+# "PACKAGE VERSION LIB FILE" on each line. LIB.a is the archive of the NIF
+# part, and FILE is the object in the priv directory of the package, with
+# no suffix: LIB for an elixir_make package (vix), native/libLIB for a
+# crate of Rustler, where Rustler loads it. For the job Build of
+# build.yml.
+step_nif_recipes() (
+    for p in $(hex_nif_packages); do
+        set -- $(hex_nif_recipe "$p")
+        if [ -n "$(rust_nif_crate "$p")" ]; then
+            echo "$p $1 $3 native/lib$3"
+        else
+            echo "$p $1 $3 $3"
+        fi
+    done
+)
+
 # The key of each part of this build, one "NAME KEY" on each line (for
 # the logs of CI). It needs the steps otp and configure: the NIF keys read
 # the headers of the OTP tree.
@@ -2149,6 +2166,22 @@ step_test() {
             -o "$BUILD/nif_load_check.com" "$ROOT/tests/cosmo/nif_load_check.c"
         "$BUILD/nif_load_check.com" | tee "$BUILD/test.out"
         grep -q '^nif_load_check: ok$' "$BUILD/test.out"
+        # The names that a native NIF object needs (tests/cosmo/nif_needs.c),
+        # with the table of the program: none for native_nif_check, one for
+        # its object missing.x86_64.o. CI runs it on the NIF parts of the
+        # store (build.yml).
+        log "Checking the names that a native NIF object needs"
+        cosmocc -O2 -Wall -Wno-unused-function -I"$ERL_TOP/erts/emulator/beam" \
+            -o "$BUILD/nif_needs.com" "$ROOT/tests/cosmo/nif_needs.c"
+        priv=$ROOT/tests/programs/native_nif_check/priv
+        "$BUILD/nif_needs.com" "$priv/native_nif_check.x86_64.o" | tee "$BUILD/test.out"
+        grep -q ': ok$' "$BUILD/test.out"
+        if "$BUILD/nif_needs.com" "$priv/missing.x86_64.o" > "$BUILD/test.out"; then
+            echo "nif_needs: missing.x86_64.o gave no missing name" >&2
+            exit 1
+        fi
+        cat "$BUILD/test.out"
+        grep -q ': no no_such_function$' "$BUILD/test.out"
     fi
 }
 

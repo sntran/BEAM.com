@@ -7,6 +7,10 @@
  * Each name is only an address here: extern char bcn_sym_NAME, with the
  * assembler name NAME. The declarations need no types, and they do not
  * conflict with the headers that the build of ERTS includes in each file.
+ *
+ * With BEAM_COM_NIF_NAMES (tests/cosmo/nif_needs.c), the table holds the
+ * names only: each address is the text of its name, so the file needs no
+ * symbol of the program.
  */
 #include <stddef.h>
 
@@ -17,6 +21,13 @@ void *beam_com_nif_lookup(const char *name);
  * the compiler is GCC and the system is not Windows. _WIN32_ selects the
  * form with macros, which needs no types. */
 #define _WIN32_
+#if defined(BEAM_COM_NIF_NAMES)
+#define BCN_ADDR(NAME) #NAME
+#define BCN_IFUNC_ADDR(NAME) #NAME
+#define NIF_LIBC_IFUNC(NAME)
+#define NIF_LIBC(NAME)
+#else
+#define BCN_ADDR(NAME) &bcn_sym_##NAME
 #define ERL_NIF_API_FUNC_DECL(RET, NAME, ARGS) extern char bcn_sym_##NAME __asm__(#NAME)
 #include "erl_nif_api_funcs.h"
 #undef ERL_NIF_API_FUNC_DECL
@@ -24,13 +35,16 @@ void *beam_com_nif_lookup(const char *name);
 /* An IFUNC symbol of x86_64 (beam_com_nif_libc.h): the table holds a
  * jump to it, never its address. aarch64 has no IFUNC symbols. */
 #if defined(__x86_64__)
+#define BCN_IFUNC_ADDR(NAME) bcn_ifunc_##NAME
 #define NIF_LIBC_IFUNC(NAME)                                                                       \
     extern char bcn_ifunc_##NAME[] __asm__("bcn_ifunc_" #NAME);                                    \
     __asm__(".text\n.balign 16\nbcn_ifunc_" #NAME ":\n\tjmp " #NAME "\n");
 #else
+#define BCN_IFUNC_ADDR(NAME) &bcn_sym_##NAME
 #define NIF_LIBC_IFUNC(NAME) extern char bcn_sym_##NAME __asm__(#NAME);
 #endif
 #define NIF_LIBC(NAME) extern char bcn_sym_##NAME __asm__(#NAME);
+#endif
 #include "beam_com_nif_libc.h"
 #undef NIF_LIBC
 #undef NIF_LIBC_IFUNC
@@ -77,15 +91,11 @@ static void add(const char *name, const void *addr)
 static void fill(void)
 {
     size_t i, j, gap;
-#define ERL_NIF_API_FUNC_DECL(RET, NAME, ARGS) add(#NAME, &bcn_sym_##NAME)
+#define ERL_NIF_API_FUNC_DECL(RET, NAME, ARGS) add(#NAME, BCN_ADDR(NAME))
 #include "erl_nif_api_funcs.h"
 #undef ERL_NIF_API_FUNC_DECL
-#define NIF_LIBC(NAME) add(#NAME, &bcn_sym_##NAME);
-#if defined(__x86_64__)
-#define NIF_LIBC_IFUNC(NAME) add(#NAME, bcn_ifunc_##NAME);
-#else
-#define NIF_LIBC_IFUNC(NAME) add(#NAME, &bcn_sym_##NAME);
-#endif
+#define NIF_LIBC(NAME) add(#NAME, BCN_ADDR(NAME));
+#define NIF_LIBC_IFUNC(NAME) add(#NAME, BCN_IFUNC_ADDR(NAME));
 #include "beam_com_nif_libc.h"
 #undef NIF_LIBC
 #undef NIF_LIBC_IFUNC

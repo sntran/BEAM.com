@@ -73,9 +73,11 @@ have, as in a static link. With one global name (`objcopy
 uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
 9.6 MB of memory.
 
-- The entry of the object is `nif_init`, as for a dynamic library, or
-  `LIB_nif_init`, with `LIB` the name of the file
-  (`-DSTATIC_ERLANG_NIF_LIBNAME=LIB`).
+- The entry of the object is `LIB_nif_init`, with `LIB` the name of the
+  file (`-DSTATIC_ERLANG_NIF_LIBNAME=LIB`), else `nif_init`, as for a
+  dynamic library. Else it is the one global function `NAME_nif_init`
+  of the object: Rustler loads `priv/native/libCRATE`, and the object of
+  the store has `CRATE_nif_init`.
 - The object can call each `enif_*` function, and the functions of the
   libc in
   [`c_src/cosmo/beam_com_nif_libc.h`](../c_src/cosmo/beam_com_nif_libc.h):
@@ -112,13 +114,17 @@ with the function `LIB_nif_init` and the libraries that it needs.
 `scripts/nif_object.sh` makes the native NIF objects of such a part:
 
 ```sh
-sh scripts/nif_object.sh build/cosmocc vix DIR priv
+sh scripts/nif_object.sh build/cosmocc vix DIR nifs/vix-0.42.0
+sh scripts/nif_object.sh build/cosmocc rustycsv DIR nifs/rusty_csv-0.4.6 native/librustycsv
 ```
 
-It writes `priv/vix.x86_64.o` and `priv/vix.aarch64.o`. `ld -r -u
-LIB_nif_init` takes the members of the archive that the NIF needs, and
-the members of `libcxx.a` that they need. The object keeps one global
-name, `LIB_nif_init`.
+The first command writes `vix.x86_64.o` and `vix.aarch64.o`, the second
+`native/librustycsv.x86_64.o` and `.aarch64.o`: the paths where the
+packages load them. `ld -r -u LIB_nif_init` takes the members of the
+archive that the NIF needs, and the members of `libcxx.a` that they
+need. The object keeps one global name, `LIB_nif_init`.
+`scripts/steps.sh nif_recipes` gives the version, the library and the
+path of each package of `EXTRA_NIFS`.
 
 | NIF | Object (x86_64) | Memory | Load |
 |---|---|---|---|
@@ -129,6 +135,32 @@ name, `LIB_nif_init`.
 The libc of `beam_com_nif_libc.h` has each name that these objects
 need: for glib, also the sockets, `posix_spawn`, `iconv` and the
 resolver. These names add about 0.5 MB to `beam.com`.
+`tests/cosmo/nif_needs.c` (`nif_needs.com OBJECT...`) loads each object
+of its CPU with this table and with no constructors. It writes each
+name that the object needs and that the table does not have, all in one
+run. CI runs it on the objects of the store before a program loads
+them.
+
+### The NIF files of beam.com
+
+The directory `lib/beam_com/priv/nifs/APP-VSN` of the zip of `beam.com`
+holds files of the priv directory of the package `APP` of version
+`VSN`: a NIF library in WebAssembly (lazy_html), or native NIF objects.
+For example, `nifs/vix-0.42.0/vix.x86_64.o` and
+`nifs/rusty_csv-0.4.6/native/librustycsv.x86_64.o`. `beam.com --version`
+names these packages ("NIF files"). The list comes from the directory,
+so a `beam.com` with more files in its zip needs no other build:
+
+- `beam.com DIR -o OUT` (a Mix project) writes the files of each
+  package into its priv directory before its code compiles (vix loads
+  its NIF then), and puts them into OUT.
+- `beam.com mix compile`: `make` of `elixir_make` (vix) copies them into
+  `MIX_APP_PATH/priv`, and the module `Rustler` of `beam.com` (rusty_csv,
+  ex_pdfium) copies them into the priv directory of the package and
+  loads `code:priv_dir(APP)/native/libCRATE`.
+
+The version of the package must be a version of its directory. A
+linked NIF of the same package wins: ERTS finds a static NIF first.
 
 The NIF of vix sends each object that a resource destructor frees to
 the process `Elixir.Vix.Nif.Janitor`, as `Vix.Nif` starts it. Without
@@ -142,6 +174,17 @@ program as a server can stream it:
 
 ```sh
 beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/LIB.x86_64.o=FILE ...
+```
+
+With `beam.com` as BASE and the objects of the store as NIF files of
+`beam.com`, OUT is a `beam.com` that builds a project with vix,
+rusty_csv or ex_pdfium from hex.pm, with no static NIF of them:
+
+```sh
+beam.com scripts/assemble.erl -- beam.com beam-vix.com \
+  lib/beam_com/priv/nifs/vix-0.42.0/vix.x86_64.o=nifs/vix-0.42.0/vix.x86_64.o \
+  lib/beam_com/priv/nifs/vix-0.42.0/vix.aarch64.o=nifs/vix-0.42.0/vix.aarch64.o
+./beam-vix.com my_project -o my_project.com
 ```
 
 OUT has these parts, in this order:
@@ -511,7 +554,11 @@ renders a PDF document. For rusty_csv, it parses with the threads of
 rayon. Each NIF also runs in eight processes at the same time. Then the
 tests assemble the same program with `scripts/assemble.erl`: the program
 with no objects, and the six objects as new files. That program must
-give the same results.
+give the same results. Last, they assemble a `beam.com` with the six
+objects as its NIF files, and it builds and runs
+`tests/programs/vix_check`, `rusty_csv_check` and `ex_pdfium_check`
+(the packages from hex.pm). Before, `nif_needs.com` checks the objects
+of the CPU of the system.
 
 [`tests/programs/nif_check`](../tests/programs/nif_check) is an
 application with a NIF in C (`c_src/nif_check.c`, and

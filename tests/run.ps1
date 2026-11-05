@@ -5,6 +5,8 @@
 param([string]$Dir = ".")
 # An absolute path: some checks run in another directory.
 $Dir = (Resolve-Path $Dir).Path
+# The time limit of each check, in seconds (a slow build sets more).
+$script:Limit = 120
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -69,9 +71,9 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     $p.BeginOutputReadLine()
     $p.BeginErrorReadLine()
 
-    $timedOut = -not $p.WaitForExit(120000)
+    $timedOut = -not $p.WaitForExit($script:Limit * 1000)
     if ($timedOut) {
-        Write-Host "FAIL: $Name did not stop in 120 seconds. Processes:"
+        Write-Host "FAIL: $Name did not stop in $($script:Limit) seconds. Processes:"
         Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
             Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
         $p.Kill($true)
@@ -432,17 +434,47 @@ if (Test-Path "examples") {
     }
 }
 
+# Assemble OUT BASE PREFIX DIR: OUT from BASE and each .o file of DIR, as
+# PREFIX/PATH in the zip (scripts/assemble.erl), as in tests/run.sh.
+function Assemble($Out, $Base, $Prefix, $From) {
+    $root = (Resolve-Path $From).Path
+    $entries = @(Get-ChildItem -Recurse -File -Filter "*.o" $root | Sort-Object FullName | ForEach-Object {
+        $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+        "$Prefix/$rel=$($_.FullName)"
+    })
+    $leaf = Split-Path $Out -Leaf
+    Check "beam.com" "assemble: wrote .*$([regex]::Escape($leaf)): [0-9]+ bytes, the length of the start; new files: $($entries.Count)" (@("scripts/assemble.erl", "--", $Base, $Out) + $entries)
+}
+
 # The NIFs of the store as native NIF objects (tests/run.sh): vix,
-# rusty_csv and ex_pdfium, from store_nifs.tar.gz of CI.
+# rusty_csv and ex_pdfium, from store_nifs.tar.gz of CI, with
+# nif_needs.com.
 $StoreNifs = Join-Path $Dir "store_nifs.tar.gz"
 if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
+    $Store = Join-Path $Dir "store_nifs"
+    if (Test-Path $Store) { Remove-Item -Recurse -Force $Store }
+    New-Item -ItemType Directory -Force -Path $Store | Out-Null
+    tar -xzf $StoreNifs -C $Store
+    Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
+    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.x86_64.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
+    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok' $Objects
     $Priv = "tests/programs/store_nif_check/priv"
     if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
     New-Item -ItemType Directory -Force -Path $Priv | Out-Null
-    tar -xzf $StoreNifs -C $Priv
+    # Each file of nifs/APP-VSN, at its path in priv/ (native/ of two
+    # packages goes into one directory).
+    Get-ChildItem -Directory (Join-Path $Store "nifs") | ForEach-Object {
+        $pkg = $_.FullName
+        Get-ChildItem -Recurse -File $pkg | ForEach-Object {
+            $to = Join-Path $Priv $_.FullName.Substring($pkg.Length + 1)
+            New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
+            Copy-Item -Force $_.FullName $to
+        }
+    }
+    $StoreOk = 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
     Check "beam.com" 'wrote .*store_nif_check.com' @("tests/programs/store_nif_check", "--main", "store_nif_check", "-o", "$Dir/store_nif_check.com")
     if (Test-Path (Join-Path $Dir "store_nif_check.com")) {
-        Check "store_nif_check.com" 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed' @()
+        Check "store_nif_check.com" $StoreOk @()
     }
     # The same program, assembled by hand (scripts/assemble.erl): the
     # program with no objects, and then the objects as new files of its
@@ -452,10 +484,27 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     New-Item -ItemType Directory -Force -Path $Base | Out-Null
     Copy-Item -Recurse "tests/programs/store_nif_check/src" $Base
     Check "beam.com" 'wrote .*store_nif_base.com' @($Base, "--main", "store_nif_check", "-o", "$Dir/store_nif_base.com")
-    $Entries = Get-ChildItem "$Priv/*.o" | ForEach-Object { "lib/store_nif_check-1.0.0/priv/$($_.Name)=$($_.FullName)" }
-    Check "beam.com" 'assemble: wrote .*store_nif_hand.com: [0-9]+ bytes, the length of the start; new files: 6' (@("scripts/assemble.erl", "--", "$Dir/store_nif_base.com", "$Dir/store_nif_hand.com") + $Entries)
+    Assemble "$Dir/store_nif_hand.com" "$Dir/store_nif_base.com" "lib/store_nif_check-1.0.0/priv" $Priv
     if (Test-Path (Join-Path $Dir "store_nif_hand.com")) {
-        Check "store_nif_hand.com" 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed' @()
+        Check "store_nif_hand.com" $StoreOk @()
+    }
+    # A beam.com assembled from parts, and the Elixir programs of the
+    # three packages from hex.pm (tests/run.sh).
+    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" "lib/beam_com/priv/nifs" (Join-Path $Store "nifs")
+    if (Test-Path (Join-Path $Dir "beam_nifs.com")) {
+        Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' @("--version")
+        foreach ($p in @("vix_check", "rusty_csv_check", "ex_pdfium_check")) {
+            $src = Join-Path $Dir $p
+            if (Test-Path $src) { Remove-Item -Recurse -Force $src }
+            Copy-Item -Recurse "tests/programs/$p" $src
+            # A build compiles the package and its deps: more time.
+            $script:Limit = 600
+            Check "beam_nifs.com" "wrote .*$p.com" @($src, "-o", "$Dir/$p.com") -Net
+            $script:Limit = 120
+            if (Test-Path (Join-Path $Dir "$p.com")) {
+                Check "$p.com" "(?m)^$($p): ok" @()
+            }
+        }
     }
 } elseif (Test-Path "examples") {
     Write-Host "SKIP: store_nif_check.com (no $StoreNifs)"

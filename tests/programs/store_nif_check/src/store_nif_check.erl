@@ -1,10 +1,12 @@
 %% The NIFs of the store as native NIF objects (docs/NIFS.md): vix
 %% (libvips, glib, C++ and Rust), rusty_csv (Rust, thread-local data), and
-%% ex_pdfium (PDFium, C++). scripts/nif_object.sh makes priv/LIB.ARCH.o
-%% from the part of each NIF; tests/run.sh puts them in priv/ before the
-%% build. For each NIF with an object for this CPU, main/1 makes its
-%% module (the module of the package), loads the object, and runs the
-%% checks. It writes "store_nif_check: LIB ok" for each, and then
+%% ex_pdfium (PDFium, C++). scripts/nif_object.sh makes the objects from
+%% the part of each NIF, at the paths of the packages: priv/vix.ARCH.o,
+%% and priv/native/libCRATE.ARCH.o where Rustler loads it (with the entry
+%% CRATE_nif_init). tests/run.sh puts them in priv/ before the build. For
+%% each NIF with an object for this CPU, main/1 makes its module (the
+%% module of the package), loads the object, and runs the checks. It
+%% writes "store_nif_check: LIB ok" for each, and then
 %% "store_nif_check: all N passed".
 -module(store_nif_check).
 -export([main/1]).
@@ -14,14 +16,14 @@
 -define(PDF, 'Elixir.ExPdfium.Native').
 
 main(_) ->
-    Nifs = [{"vix", ?VIX, #{nif_logger_level => warning}, fun vix/0},
-            {"rustycsv", ?CSV, 0, fun csv/0},
-            {"ex_pdfium", ?PDF, 0, fun pdf/0}],
+    Nifs = [{"vix", "vix", ?VIX, #{nif_logger_level => warning}, fun vix/0},
+            {"rustycsv", "native/librustycsv", ?CSV, 0, fun csv/0},
+            {"ex_pdfium", "native/libex_pdfium", ?PDF, 0, fun pdf/0}],
     Arch = case erlang:system_info(system_architecture) of
                "aarch64" ++ _ -> "aarch64";
                _ -> "x86_64"
            end,
-    Results = [check(Lib, Mod, Info, Check, Arch) || {Lib, Mod, Info, Check} <- Nifs],
+    Results = [check(Lib, File, Mod, Info, Check, Arch) || {Lib, File, Mod, Info, Check} <- Nifs],
     case [R || R <- Results, R =:= failed] of
         [] ->
             N = length([R || R <- Results, R =:= ok]),
@@ -31,8 +33,8 @@ main(_) ->
             erlang:halt(1)
     end.
 
-check(Lib, Mod, Info, Check, Arch) ->
-    Path = filename:join(code:priv_dir(store_nif_check), Lib),
+check(Lib, File, Mod, Info, Check, Arch) ->
+    Path = filename:join(code:priv_dir(store_nif_check), File),
     case filelib:is_regular(Path ++ "." ++ Arch ++ ".o") of
         false ->
             io:format("store_nif_check: ~s not in priv~n", [Lib]),

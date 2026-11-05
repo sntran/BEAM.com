@@ -12,6 +12,7 @@ defmodule BeamComRustlerTest do
 
   setup do
     old = :persistent_term.get(:beam_com_rustler, :none)
+    old_priv = :persistent_term.get({:beam_com_rustler, :priv}, :none)
     old_force = System.get_env("RUSTLER_PRECOMPILED_FORCE_BUILD_ALL")
     old_unlinked = System.get_env("BEAM_COM_UNLINKED_NIFS")
     System.delete_env("BEAM_COM_UNLINKED_NIFS")
@@ -24,6 +25,11 @@ defmodule BeamComRustlerTest do
       case old do
         :none -> :persistent_term.erase(:beam_com_rustler)
         nifs -> :persistent_term.put(:beam_com_rustler, nifs)
+      end
+
+      case old_priv do
+        :none -> :persistent_term.erase({:beam_com_rustler, :priv})
+        priv -> :persistent_term.put({:beam_com_rustler, :priv}, priv)
       end
     end)
   end
@@ -63,6 +69,13 @@ defmodule BeamComRustlerTest do
       for m <- [Rustler, :beam_com_rustler, :beam_com_make, :beam_com] do
         assert {:file, _} = :code.is_loaded(m)
       end
+    end
+
+    # The native NIF objects are in the priv directory of beam_com, which
+    # is not in the code path while Mix compiles.
+    test "the priv directory of beam_com stays" do
+      :ok = :beam_com_rustler.force_build([])
+      assert :beam_com_make.priv() == :persistent_term.get({:beam_com_rustler, :priv})
     end
   end
 
@@ -158,6 +171,84 @@ defmodule BeamComRustlerTest do
     end
   end
 
+  # A crate with native NIF objects in priv/nifs of beam_com (a program
+  # assembled from parts): ex_pdfium. rusty_csv is linked, and has an
+  # object too.
+  describe "config/2 with native NIF objects" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      dir = String.to_charlist(tmp_dir)
+      priv = :filename.join(dir, ~c"priv")
+
+      write(
+        :filename.join([priv, ~c"nifs", ~c"ex_pdfium-0.6.0", ~c"native"]),
+        ~c"libex_pdfium.x86_64.o",
+        "pdf"
+      )
+
+      write(
+        :filename.join([priv, ~c"nifs", ~c"rusty_csv-0.4.6", ~c"native"]),
+        ~c"librustycsv.x86_64.o",
+        "csv"
+      )
+
+      :persistent_term.put(:beam_com_rustler, @linked)
+      :persistent_term.put({:beam_com_rustler, :priv}, priv)
+      %{dir: dir}
+    end
+
+    test "load_nif/2 gets the priv directory of the package at the load" do
+      path =
+        {{:., [], [:filename, :join]}, [],
+         [{{:., [], [:code, :priv_dir]}, [], [:ex_pdfium]}, ~c"native/libex_pdfium"]}
+
+      assert {path, 0} ==
+               :beam_com_rustler.config(ExPdfium.Native, otp_app: :ex_pdfium, crate: "ex_pdfium")
+
+      # The code of the path, in the module of the NIF.
+      assert Macro.to_string(path) ==
+               ":filename.join(:code.priv_dir(:ex_pdfium), ~c\"native/libex_pdfium\")"
+    end
+
+    test "the objects go into the priv directory of the package while it compiles", ctx do
+      ebin = :filename.join([ctx.dir, ~c"lib", ~c"ex_pdfium-0.6.0", ~c"ebin"])
+      :ok = :filelib.ensure_path(ebin)
+      true = :code.add_patha(ebin)
+
+      try do
+        object =
+          :filename.join([
+            ctx.dir,
+            ~c"lib",
+            ~c"ex_pdfium-0.6.0",
+            ~c"priv",
+            ~c"native",
+            ~c"libex_pdfium.x86_64.o"
+          ])
+
+        {_, 0} =
+          :beam_com_rustler.config(ExPdfium.Native, otp_app: :ex_pdfium, crate: "ex_pdfium")
+
+        assert {:ok, "pdf"} == :file.read_file(object)
+        # A file that is there stays.
+        :ok = :file.write_file(object, "built")
+
+        {_, 0} =
+          :beam_com_rustler.config(ExPdfium.Native, otp_app: :ex_pdfium, crate: "ex_pdfium")
+
+        assert {:ok, "built"} == :file.read_file(object)
+      after
+        :code.del_path(ebin)
+      end
+    end
+
+    test "a linked crate wins: ERTS finds the static NIF first" do
+      assert {~c"rusty_csv/priv/native/librustycsv", 0} ==
+               :beam_com_rustler.config(RustyCSV.Native, otp_app: :rusty_csv, crate: "rustycsv")
+    end
+  end
+
   describe "use Rustler" do
     test "the module of the NIF gets an on_load function that loads the NIF" do
       {:__block__, [], [assign | body]} =
@@ -193,6 +284,11 @@ defmodule BeamComRustlerTest do
 
       assert nil == Rustler.__info__(:struct)
     end
+  end
+
+  defp write(dir, name, content) do
+    :ok = :filelib.ensure_path(dir)
+    :ok = :file.write_file(:filename.join(dir, name), content)
   end
 
   defp restore_env(name, nil), do: System.delete_env(name)

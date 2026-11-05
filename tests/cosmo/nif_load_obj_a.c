@@ -153,3 +153,9 @@ int a_heap(void)
     free(p);
     return ok;
 }
+
+/* An entry name: with b_nif_init, the object has two (bcn_nif_init). */
+int a_nif_init(void)
+{
+    return 1;
+}

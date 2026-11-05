@@ -13,3 +13,9 @@ const char *b_name(void)
 {
     return "part b";
 }
+
+/* The one entry name of the object of part b (bcn_nif_init). */
+int b_nif_init(void)
+{
+    return 2;
+}

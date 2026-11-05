@@ -240,6 +240,10 @@ void __unw_remove_dynamic_fde(uintptr_t fde);
  * program for it turns the constructors off. */
 static int bcn_unwind = 1;
 static int bcn_constructors = 1;
+/* tests/cosmo/nif_needs.c: called for each symbol that the program does
+ * not have (not a weak one). The load goes on, with the address of this
+ * function for the symbol, so one load gives each missing name. */
+static void (*bcn_missing)(const char *name);
 #else
 #define bcn_unwind 1
 #define bcn_constructors 1
@@ -833,8 +837,16 @@ static int sym_addr(bcn_load_t *l, size_t i, uintptr_t *out)
         else if (!strcmp(name, "__tls_get_addr"))
             a = (uintptr_t)bcn_tls_get_addr;
         else if (!(a = (uintptr_t)l->lookup(name)) && (s->st_info >> 4) != BCN_STB_WEAK) {
-            l->resolved[i] = 2;
-            return fail(l, "the program has no symbol %s", name);
+#ifdef BEAM_COM_NIF_TEST
+            if (bcn_missing) {
+                bcn_missing(name);
+                a = (uintptr_t)bcn_missing;
+            } else
+#endif
+            {
+                l->resolved[i] = 2;
+                return fail(l, "the program has no symbol %s", name);
+            }
         }
     } else if (shndx == BCN_SHN_ABS) {
         a = (uintptr_t)s->st_value;
@@ -1985,6 +1997,24 @@ void *bcn_symbol(struct bcn_module *m, const char *name)
     return g ? (void *)g->addr : NULL;
 }
 
+/* The one global function whose name ends with "_nif_init", or NULL
+ * when the module has none or more than one. */
+void *bcn_nif_init(struct bcn_module *m)
+{
+    static const char suffix[] = "_nif_init";
+    size_t i, n, k = sizeof(suffix) - 1;
+    void *found = NULL;
+    for (i = 0; i < m->nglobals; i++) {
+        n = strlen(m->globals[i].name);
+        if (n > k && !strcmp(m->globals[i].name + n - k, suffix)) {
+            if (found)
+                return NULL;
+            found = (void *)m->globals[i].addr;
+        }
+    }
+    return found;
+}
+
 void bcn_range(struct bcn_module *m, uintptr_t *lo, uintptr_t *hi)
 {
     *lo = (uintptr_t)m->code;
@@ -2085,7 +2115,9 @@ static int read_whole(const char *path, uint8_t **bytes, size_t *size)
 /* PATH.ARCH.o, else the loader of WebAssembly. The entry of a native
  * object is the function LIB_nif_init of a static NIF
  * (STATIC_ERLANG_NIF_LIBNAME, LIB: the name of the file), else
- * nif_init. The code of the object stays: its constructors ran. */
+ * nif_init, else the one global function NAME_nif_init: Rustler loads
+ * priv/native/libCRATE, and the object of the store has CRATE_nif_init.
+ * The code of the object stays: its constructors ran. */
 static ErlNifEntry *native_open(const char *path, char *error, size_t size)
 {
     const char *native = getenv("BEAM_COM_NIF_NATIVE"), *base;
@@ -2116,8 +2148,10 @@ static ErlNifEntry *native_open(const char *path, char *error, size_t size)
     base = strrchr(path, '/');
     base = base ? base + 1 : path;
     snprintf(init, sizeof(init), "%s_nif_init", base);
-    if (!(fn = bcn_symbol(m, init)) && !(fn = bcn_symbol(m, "nif_init"))) {
-        snprintf(error, size, "%.300s: no function %.100s or nif_init", file, init);
+    if (!(fn = bcn_symbol(m, init)) && !(fn = bcn_symbol(m, "nif_init")) &&
+        !(fn = bcn_nif_init(m))) {
+        snprintf(error, size, "%.300s: no function %.100s, nif_init, or one other "
+                 "NAME_nif_init", file, init);
         return NULL;
     }
     if (nif_debug)

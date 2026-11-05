@@ -24,6 +24,9 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
 /* The address of the global symbol NAME of the module, or NULL. */
 void *bcn_symbol(struct bcn_module *m, const char *name);
 
+/* The one global function NAME_nif_init of the module, or NULL. */
+void *bcn_nif_init(struct bcn_module *m);
+
 /* The start and the end of the memory of the module (for the tests). */
 void bcn_range(struct bcn_module *m, uintptr_t *lo, uintptr_t *hi);
 

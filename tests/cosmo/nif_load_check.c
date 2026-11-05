@@ -305,6 +305,14 @@ int main(void)
         return 1;
     CHECK(bcn_symbol(m, "f_inc") == NULL); /* a local function */
     CHECK(bcn_symbol(m, "no_such_symbol") == NULL);
+    /* Two NAME_nif_init functions: no entry. One: that function. */
+    CHECK(bcn_nif_init(m) == NULL);
+    {
+        struct bcn_module *mb = bcn_load(objb, objbn, lookup, err, sizeof(err));
+        CHECK(mb != NULL);
+        if (mb)
+            CHECK(bcn_nif_init(mb) != NULL && bcn_nif_init(mb) == bcn_symbol(mb, "b_nif_init"));
+    }
 
     CHECK(a_constructors());
     for (x = 0; x < 9; x++)
