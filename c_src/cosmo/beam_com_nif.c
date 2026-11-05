@@ -48,8 +48,12 @@
 #include <unistd.h>
 #include <cosmo.h>
 #include <libc/dce.h>
+/* "cosmocc -MM" (the dependency files of ERTS) removes the macros of the
+ * CPU, and tls.h then stops with #error. */
+#if defined(__x86_64__) || defined(__aarch64__)
 #include <libc/thread/posixthread.internal.h>
 #include <libc/thread/tls.h>
+#endif
 
 /* ELF64, little-endian: only what the loader reads. */
 typedef struct {
