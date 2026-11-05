@@ -5,6 +5,9 @@ notes of its release.
 
 ## Unreleased
 
+- A build URL waits, and does not fail at once with 404, when a check of
+  the release gets another status than 2xx or 404 from GitHub for a
+  moment (the new envelope `31-u-not-yet` of the FIFO beam.com).
 - The publish of `edge` keeps the old `beam.com` until the new one is in
   the release (`scripts/publish_edge.sh`). Before, the job deleted the
   release first, and a failed upload left `edge` with no file.

@@ -352,7 +352,10 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   time, at most 3 that wait, and at most 10 new builds each day. The
   workflow has one group of `concurrency` for each URL, so the requests
   of a URL that wait start one build.
-- The envelopes are `9-url` to `30-query-bad` of
+- When a check of the release gets a status that is not 2xx and not 404
+  from GitHub for a moment, `31-u-not-yet` says "not yet", and
+  mkfifo.com asks again. Before, the request failed at once with 404.
+- The envelopes are `9-url` to `31-u-not-yet` of
   [`priv/seeds/beam.com/`](../priv/seeds/beam.com). The input `url` of
   the workflow has the choices of the URL (`URL` of `custom_build.py`),
   and the input `query` has the lines of a query.
