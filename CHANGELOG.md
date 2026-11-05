@@ -19,6 +19,18 @@ notes of its release.
   not use, as `ld --gc-sections` does, and reads an object with more than
   65,279 sections. `tests/programs/native_nif_check` runs on each system
   in `tests/run.sh`.
+- The NIF of `vix` (libvips, glib, and the AVIF, GIF, ICC and SVG parts)
+  loads as a native NIF object. `scripts/nif_object.sh` makes the objects
+  of a NIF part of the store. `tests/programs/store_nif_check` runs vix,
+  rusty_csv and ex_pdfium as objects on each system of CI. The libc of
+  the objects has 253 more names (about 0.5 MB in `beam.com`).
+- `BEAM_COM_NIF_MAP=FILE`: the loader writes the address and the name of
+  each function of a native NIF object.
+- `scripts/assemble.erl`: a program and new files in its zip, as a server
+  can stream it: the bytes of the program up to its central directory,
+  the new entries, and a new central directory. The length is known
+  before the first byte. The tests run `store_nif_check` assembled in
+  this way on each system.
 - `beam.com --nif-include`: the headers also work for a native NIF object
   of `cosmocc`, on x86_64 and aarch64.
 

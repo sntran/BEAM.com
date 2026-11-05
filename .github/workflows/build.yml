@@ -224,6 +224,50 @@ jobs:
           path: build/cosmocc/bin/ape-x86_64.elf
           if-no-files-found: error
 
+      # The NIFs of the store as native NIF objects (docs/NIFS.md): the
+      # parts of vix, rusty_csv and ex_pdfium for the OTP of this build
+      # (their keys from scripts/steps.sh part_keys), and their objects
+      # from scripts/nif_object.sh. The jobs test and test-bsd run them
+      # (tests/run.sh, store_nif_check). When the store has no part of a
+      # key (a recipe that changed), the step writes a warning, and there
+      # is no store_nifs.tar.gz.
+      - name: The NIF objects of the store
+        if: matrix.out == 'beam.com'
+        env:
+          PARTS_URL: https://github.com/${{ github.repository }}/releases/download/parts
+        run: |
+          out=build/store_nifs
+          rm -rf "$out" build/store_nifs.tar.gz
+          mkdir -p "$out/objects"
+          EXTRA_NIFS="vix rusty_csv ex_pdfium" VIX_PARTS="avif gif icc svg" \
+            sh scripts/steps.sh part_keys > "$out/keys"
+          missing=
+          # The package, and the name of its library in the part.
+          for p in "vix vix" "rusty_csv rustycsv" "ex_pdfium ex_pdfium"; do
+            set -- $p
+            key=$(awk -v n="nif-$1" '$1 == n { print $2 }' "$out/keys")
+            mkdir -p "$out/$1"
+            if [ -n "$key" ] && curl -fsSL --retry 3 -o "$out/$1.tar.xz" "$PARTS_URL/nif-$1-$key.tar.xz"; then
+              tar -xJf "$out/$1.tar.xz" -C "$out/$1"
+              sh scripts/nif_object.sh build/cosmocc "$2" "$out/$1" "$out/objects"
+            else
+              echo "::warning::The store has no part nif-$1-$key: no native NIF object of $1"
+              missing=1
+            fi
+          done
+          if [ -z "$missing" ]; then
+            tar -czf build/store_nifs.tar.gz -C "$out/objects" .
+            ls -l "$out/objects" build/store_nifs.tar.gz
+          fi
+
+      - name: Upload the NIF objects of the store
+        if: matrix.out == 'beam.com' && hashFiles('build/store_nifs.tar.gz') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store_nifs
+          path: build/store_nifs.tar.gz
+          if-no-files-found: error
+
       - name: Test
         timeout-minutes: 5
         run: BEAM_COM_VERBOSE=1 timeout 120 build/cosmocc/bin/make test

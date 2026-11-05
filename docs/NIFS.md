@@ -100,6 +100,63 @@ uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
 `BEAM_COM_NIF_DEBUG=1` writes `nif_native: FILE` for each object that
 loads. `BEAM_COM_NIF_NATIVE=0` turns the loader off.
 
+### The NIFs of the store
+
+The store of parts (docs/BUILDING.md) has the NIF of each package of
+`EXTRA_NIFS` as the static build links it: `LIB.a` and `.aarch64/LIB.a`,
+with the function `LIB_nif_init` and the libraries that it needs.
+`scripts/nif_object.sh` makes the native NIF objects of such a part:
+
+```sh
+sh scripts/nif_object.sh build/cosmocc vix DIR priv
+```
+
+It writes `priv/vix.x86_64.o` and `priv/vix.aarch64.o`. `ld -r -u
+LIB_nif_init` takes the members of the archive that the NIF needs, and
+the members of `libcxx.a` that they need. The object keeps one global
+name, `LIB_nif_init`.
+
+| NIF | Object (x86_64) | Memory | Load |
+|---|---|---|---|
+| `vix` 0.42.0 (libvips 8.18, glib, AVIF, GIF, ICC, SVG) | 31 MB | 17.8 MB | 300 ms |
+| `ex_pdfium` 0.6.0 (PDFium) | 26 MB | 9.6 MB | 140 ms |
+| `rusty_csv` 0.4.6 | 1.8 MB | | 15 ms |
+
+The libc of `beam_com_nif_libc.h` has each name that these objects
+need: for glib, also the sockets, `posix_spawn`, `iconv` and the
+resolver. These names add about 0.5 MB to `beam.com`.
+
+The NIF of vix sends each object that a resource destructor frees to
+the process `Elixir.Vix.Nif.Janitor`, as `Vix.Nif` starts it. Without
+this process, the destructor makes new resources with no end.
+
+### A program assembled from parts
+
+A program with native NIF objects needs no compiler and no link: it is
+a program and new files in its zip. `scripts/assemble.erl` makes such a
+program as a server can stream it:
+
+```sh
+beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/LIB.x86_64.o=FILE ...
+```
+
+OUT has these parts, in this order:
+
+1. The bytes of BASE up to its central directory, with no change. The
+   executable headers and the offsets of the entries of BASE stay
+   correct.
+2. A local entry for each new file, with its deflated bytes.
+3. The central directory of BASE, and an entry for each new file.
+4. A new end record.
+
+The sizes of the parts give the length of OUT before the first byte. So
+a server that keeps BASE and the deflated files (with their CRC-32) can
+send OUT with a `Content-Length`, from the first byte, with no work for
+each request but a copy. The script writes the length first, then
+writes OUT with no seek, and then checks the length. The same inputs
+give the same bytes. The script does not support ZIP64: OUT has fewer
+than 65,535 entries and less than 4 GiB.
+
 Caution: a native NIF object runs in the VM with all of its rights, as
 a native NIF does. A crash of the object stops the VM. A NIF in
 WebAssembly cannot do this.
@@ -415,6 +472,10 @@ the compiled module of a Worker, and after a snapshot and its restore.
   error of an AOT file that did not load, and the `enif_*` functions
   that the module imports but `beam.com` does not give.
 - `BEAM_COM_NIF_AOT=0`: `beam.com` does not use the AOT files.
+- `BEAM_COM_NIF_MAP=FILE`: the loader of native NIF objects adds a line
+  to FILE for each function of an object that it loads: the address,
+  the size, and the name. A sampler or a debugger that does not know the
+  object finds the names of its addresses in this file.
 
 ## The test
 
@@ -434,6 +495,19 @@ static, and the destructor of a `thread_local` object. `tests/run.sh` builds it 
 it on each system. `tests/cosmo/nif_load_check.c` (in `step_test` of
 `scripts/steps.sh`) checks the loader with no ERTS: the relocations of
 both CPUs, the errors, and 3,000 broken objects.
+
+[`tests/programs/store_nif_check`](../tests/programs/store_nif_check)
+loads the NIFs of the store as native NIF objects: vix, rusty_csv and
+ex_pdfium. The job Build of CI makes their objects from the parts of the
+build (`store_nifs.tar.gz`), and `tests/run.sh` and `tests/run.ps1` put
+them in `priv/` and run the program on each system. For vix, it encodes
+and decodes JPEG, PNG, WebP, AVIF and GIF, loads an SVG, resizes, and
+makes a thumbnail. For ex_pdfium, it makes, saves, opens, reads and
+renders a PDF document. For rusty_csv, it parses with the threads of
+rayon. Each NIF also runs in eight processes at the same time. Then the
+tests assemble the same program with `scripts/assemble.erl`: the program
+with no objects, and the six objects as new files. That program must
+give the same results.
 
 [`tests/programs/nif_check`](../tests/programs/nif_check) is an
 application with a NIF in C (`c_src/nif_check.c`, and

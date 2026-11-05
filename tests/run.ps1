@@ -432,6 +432,35 @@ if (Test-Path "examples") {
     }
 }
 
+# The NIFs of the store as native NIF objects (tests/run.sh): vix,
+# rusty_csv and ex_pdfium, from store_nifs.tar.gz of CI.
+$StoreNifs = Join-Path $Dir "store_nifs.tar.gz"
+if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
+    $Priv = "tests/programs/store_nif_check/priv"
+    if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
+    New-Item -ItemType Directory -Force -Path $Priv | Out-Null
+    tar -xzf $StoreNifs -C $Priv
+    Check "beam.com" 'wrote .*store_nif_check.com' @("tests/programs/store_nif_check", "--main", "store_nif_check", "-o", "$Dir/store_nif_check.com")
+    if (Test-Path (Join-Path $Dir "store_nif_check.com")) {
+        Check "store_nif_check.com" 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed' @()
+    }
+    # The same program, assembled by hand (scripts/assemble.erl): the
+    # program with no objects, and then the objects as new files of its
+    # zip, as a server streams it.
+    $Base = Join-Path $Dir "store_nif_base"
+    if (Test-Path $Base) { Remove-Item -Recurse -Force $Base }
+    New-Item -ItemType Directory -Force -Path $Base | Out-Null
+    Copy-Item -Recurse "tests/programs/store_nif_check/src" $Base
+    Check "beam.com" 'wrote .*store_nif_base.com' @($Base, "--main", "store_nif_check", "-o", "$Dir/store_nif_base.com")
+    $Entries = Get-ChildItem "$Priv/*.o" | ForEach-Object { "lib/store_nif_check-1.0.0/priv/$($_.Name)=$($_.FullName)" }
+    Check "beam.com" 'assemble: wrote .*store_nif_hand.com: [0-9]+ bytes, the length of the start; new files: 6' (@("scripts/assemble.erl", "--", "$Dir/store_nif_base.com", "$Dir/store_nif_hand.com") + $Entries)
+    if (Test-Path (Join-Path $Dir "store_nif_hand.com")) {
+        Check "store_nif_hand.com" 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed' @()
+    }
+} elseif (Test-Path "examples") {
+    Write-Host "SKIP: store_nif_check.com (no $StoreNifs)"
+}
+
 # The interpreter: beam-emu.com (beam.com has the JIT).
 if (Test-Path (Join-Path $Dir "beam-emu.com")) {
     Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("--version")

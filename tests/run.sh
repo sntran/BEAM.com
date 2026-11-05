@@ -1670,6 +1670,46 @@ if [ -d examples ]; then
     fi
 fi
 
+# assemble_store_nifs: store_nif_hand.com, from store_nif_base.com and
+# the objects in priv/ of store_nif_check (a function: "set --" changes
+# only its own arguments).
+assemble_store_nifs() {
+    set --
+    for f in tests/programs/store_nif_check/priv/*.o; do
+        set -- "$@" "lib/store_nif_check-1.0.0/priv/${f##*/}=$f"
+    done
+    check beam.com 'assemble: wrote .*store_nif_hand.com: [0-9]* bytes, the length of the start; new files: 6' \
+        scripts/assemble.erl -- "$dir/store_nif_base.com" "$dir/store_nif_hand.com" "$@"
+}
+
+# The NIFs of the store as native NIF objects: vix, rusty_csv and
+# ex_pdfium. store_nifs.tar.gz of CI holds their objects for each CPU
+# (scripts/nif_object.sh, in the job Build of build.yml).
+if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
+    rm -rf tests/programs/store_nif_check/priv
+    mkdir -p tests/programs/store_nif_check/priv
+    tar -xzf "$dir/store_nifs.tar.gz" -C tests/programs/store_nif_check/priv
+    check beam.com 'wrote .*store_nif_check.com' tests/programs/store_nif_check \
+        --main store_nif_check -o "$dir/store_nif_check.com"
+    if [ -f "$dir/store_nif_check.com" ]; then
+        check store_nif_check.com 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+    fi
+    # The same program, assembled by hand (scripts/assemble.erl): the
+    # program with no objects, and then the objects as new files of its
+    # zip, as a server streams it.
+    rm -rf "$dir/store_nif_base"
+    mkdir -p "$dir/store_nif_base"
+    cp -R tests/programs/store_nif_check/src "$dir/store_nif_base/"
+    check beam.com 'wrote .*store_nif_base.com' "$dir/store_nif_base" \
+        --main store_nif_check -o "$dir/store_nif_base.com"
+    assemble_store_nifs
+    if [ -f "$dir/store_nif_hand.com" ]; then
+        check store_nif_hand.com 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+    fi
+elif [ -d examples ]; then
+    echo "SKIP: store_nif_check.com (no $dir/store_nifs.tar.gz)"
+fi
+
 if [ -d examples ]; then
     # W^X: the JIT maps its code two times (executable, and writable),
     # so no page is writable and executable. On Linux, +JMsingle (one
