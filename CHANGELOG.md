@@ -5,6 +5,9 @@ notes of its release.
 
 ## Unreleased
 
+- The publish of `edge` keeps the old `beam.com` until the new one is in
+  the release (`scripts/publish_edge.sh`). Before, the job deleted the
+  release first, and a failed upload left `edge` with no file.
 - Native NIF objects (`docs/NIFS.md`): `erlang:load_nif(PATH, Info)`
   loads `PATH.x86_64.o` or `PATH.aarch64.o` from the zip of the program,
   before a NIF in WebAssembly. The object is the NIF as `cosmocc -c`
