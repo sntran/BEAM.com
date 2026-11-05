@@ -13,6 +13,9 @@
  *     Cosmopolitan that change with the system). So the module goes near
  *     the program: below 2 GB on x86_64, and within 4 GB of the program
  *     on aarch64.
+ *   - Only the sections that the NIF uses go into memory (bcn_gc), as
+ *     "ld --gc-sections" finds them. A C++ object brings the members of
+ *     libc++ that it uses, and the table gives libc++abi.
  *   - Each symbol that the object does not define comes from the table
  *     of the program (beam_com_nif_syms.c): the functions enif_* and the
  *     functions and the values of the libc that NIFs use. A call that a
@@ -102,6 +105,8 @@ typedef struct {
 #define BCN_SHF_ALLOC 0x2
 #define BCN_SHF_EXECINSTR 0x4
 #define BCN_SHF_TLS 0x400
+#define BCN_SHF_LINK_ORDER 0x80
+#define BCN_SHF_GNU_RETAIN 0x200000
 
 #define BCN_SHN_UNDEF 0
 #define BCN_SHN_LORESERVE 0xff00
@@ -231,10 +236,13 @@ void __unw_remove_dynamic_fde(uintptr_t fde);
 
 #ifdef BEAM_COM_NIF_TEST
 /* The test of broken objects turns it off: libunwind reads the records
- * with no checks of their contents. */
+ * with no checks of their contents. A test that loads an object with no
+ * program for it turns the constructors off. */
 static int bcn_unwind = 1;
+static int bcn_constructors = 1;
 #else
 #define bcn_unwind 1
+#define bcn_constructors 1
 #endif
 
 /* Thread-local data.
@@ -377,7 +385,7 @@ typedef struct {
     const uint8_t *bytes;
     size_t size;
     const bcn_shdr *sh;
-    unsigned nsec;
+    unsigned nsec, shstrndx;
     const bcn_sym *syms;
     size_t nsyms;
     const char *strtab;
@@ -407,7 +415,21 @@ typedef struct {
     size_t ntls_slots;
     void **seen;             /* the threads that got the initial values */
     size_t nseen, seen_cap;
+    /* The sections that the module needs (bcn_gc): 1 live, 0 dead. */
+    unsigned char *live;
+    /* For each RELA section of .eh_frame: 1 for a relocation of the
+     * record of a dead function, which the loader does not apply. */
+    unsigned char **eh_skip;
+    /* For each .eh_frame section: the start of each record, and 1 for a
+     * live record. */
+    struct bcn_eh_records *eh_records;
 } bcn_load_t;
+
+struct bcn_eh_records {
+    size_t n;
+    uint64_t *start;
+    unsigned char *live;
+};
 
 /* A GOT slot of a TLS relocation: one slot of an offset from the thread
  * pointer (KIND 0), or two slots (KIND 1: a TLS descriptor on aarch64, the
@@ -465,7 +487,7 @@ static uint32_t sym_shndx(bcn_load_t *l, size_t i)
 
 /* A section that goes into memory, and its group: 0 the code, 1 the
  * constants, 2 the data. -1: not in memory. */
-static int sec_group(const bcn_shdr *s)
+static int sec_group_of(const bcn_shdr *s)
 {
     /* A TLS section is in the TLS image, not in a mapping. */
     if (!(s->sh_flags & BCN_SHF_ALLOC) || s->sh_size == 0 || (s->sh_flags & BCN_SHF_TLS))
@@ -475,6 +497,12 @@ static int sec_group(const bcn_shdr *s)
     if (s->sh_flags & BCN_SHF_WRITE)
         return 2;
     return 1;
+}
+
+/* The group of the section I, or -1 for a dead section (bcn_gc). */
+static int sec_group(bcn_load_t *l, unsigned i)
+{
+    return l->live[i] ? sec_group_of(&l->sh[i]) : -1;
 }
 
 /* A string table in the file that ends with a zero byte. */
@@ -497,11 +525,17 @@ static int check_object(bcn_load_t *l)
         return fail(l, "not a relocatable object (ld -r)");
     if (eh->e_machine != BCN_MACHINE)
         return fail(l, "an object of a different CPU (machine %u)", eh->e_machine);
-    if (eh->e_shentsize != sizeof(bcn_shdr) || eh->e_shnum == 0 || eh->e_shoff > l->size ||
-        (uint64_t)eh->e_shnum * sizeof(bcn_shdr) > l->size - eh->e_shoff)
+    if (eh->e_shentsize != sizeof(bcn_shdr) || eh->e_shoff > l->size ||
+        l->size - eh->e_shoff < sizeof(bcn_shdr))
         return fail(l, "bad section headers");
     l->sh = (const bcn_shdr *)(l->bytes + eh->e_shoff);
-    l->nsec = eh->e_shnum;
+    /* More than 65279 sections (a large C++ object): the count is in the
+     * sh_size of section 0, and the index of the names in its sh_link. */
+    l->nsec = eh->e_shnum ? eh->e_shnum
+              : l->sh[0].sh_size <= UINT32_MAX ? (unsigned)l->sh[0].sh_size : 0;
+    l->shstrndx = eh->e_shstrndx == BCN_SHN_XINDEX ? l->sh[0].sh_link : eh->e_shstrndx;
+    if (l->nsec == 0 || (uint64_t)l->nsec * sizeof(bcn_shdr) > l->size - eh->e_shoff)
+        return fail(l, "bad section headers");
     /* First the bounds of each section, then the tables in them. */
     for (i = 0; i < l->nsec; i++) {
         const bcn_shdr *s = &l->sh[i];
@@ -518,7 +552,7 @@ static int check_object(bcn_load_t *l)
         if (s->sh_type == BCN_SHT_REL)
             return fail(l, "REL relocations are not supported (only RELA)");
     }
-    if (eh->e_shstrndx >= l->nsec || !is_strtab(&l->sh[eh->e_shstrndx], l->bytes))
+    if (l->shstrndx >= l->nsec || !is_strtab(&l->sh[l->shstrndx], l->bytes))
         return fail(l, "bad section names");
     for (i = 0; i < l->nsec; i++) {
         const bcn_shdr *s = &l->sh[i];
@@ -551,11 +585,10 @@ static int check_object(bcn_load_t *l)
 
 static const char *sec_name(bcn_load_t *l, unsigned i)
 {
-    const bcn_ehdr *eh = (const bcn_ehdr *)l->bytes;
     const bcn_shdr *names;
-    if (eh->e_shstrndx >= l->nsec)
+    if (l->shstrndx >= l->nsec)
         return "";
-    names = &l->sh[eh->e_shstrndx];
+    names = &l->sh[l->shstrndx];
     if (l->sh[i].sh_name >= names->sh_size)
         return "";
     return (const char *)(l->bytes + names->sh_offset + l->sh[i].sh_name);
@@ -667,13 +700,15 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
         const bcn_shdr *r = &l->sh[i];
         const bcn_rela *rel;
         size_t n;
-        if (r->sh_type != BCN_SHT_RELA || sec_group(&l->sh[r->sh_info]) < 0)
+        if (r->sh_type != BCN_SHT_RELA || sec_group(l, r->sh_info) < 0)
             continue;
         rel = (const bcn_rela *)(l->bytes + r->sh_offset);
         n = r->sh_size / sizeof(bcn_rela);
         for (j = 0; j < n; j++) {
             uint32_t type = (uint32_t)rel[j].r_info;
             size_t s = (size_t)(rel[j].r_info >> 32);
+            if (l->eh_skip[i] && l->eh_skip[i][j])
+                continue;
             if (s >= l->nsyms)
                 return fail(l, "a relocation names symbol %zu of %zu", s, l->nsyms);
             if (is_got_reloc(type) && !l->got[s])
@@ -1237,6 +1272,218 @@ __attribute__((unused)) static int eh_frame_ok(const uint8_t *p, size_t size)
     return eh_frame_walk(p, size, NULL, &n);
 }
 
+/* The sections that the module needs, as "ld --gc-sections" finds them:
+ * the sections of the global symbols (a NIF object of the build keeps only
+ * its init function global), the constructors, SHF_GNU_RETAIN, the notes,
+ * and the sections with a C name (__start_ and __stop_); then each section
+ * that a relocation of a live section names. A section with
+ * SHF_LINK_ORDER (__patchable_function_entries of each function) is live
+ * when the section of its sh_link is live. A record of .eh_frame marks
+ * its targets (its LSDA) only when its function is live, and the loader
+ * applies no relocation of a dead record. So a dead function can name a
+ * symbol that the program does not have, as in a static link. */
+static int is_c_name(const char *s)
+{
+    if (!*s)
+        return 0;
+    for (; *s; s++)
+        if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9') || *s == '_'))
+            return 0;
+    return 1;
+}
+
+/* The section that defines the symbol I, or -1. */
+static int sym_section(bcn_load_t *l, size_t i)
+{
+    uint32_t x = sym_shndx(l, i);
+    return x != BCN_SHN_UNDEF && x < l->nsec ? (int)x : -1;
+}
+
+/* The record of R that holds the offset OFF. */
+static size_t eh_record_of(const struct bcn_eh_records *r, uint64_t off)
+{
+    size_t lo = 0, hi = r->n;
+    while (hi - lo > 1) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (r->start[mid] <= off)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+
+/* The records of the .eh_frame section E: the start of each one. A
+ * record of a broken section ends the list (eh_frame_walk refuses the
+ * section later). */
+static int eh_records_of(bcn_load_t *l, unsigned e)
+{
+    const uint8_t *p = l->bytes + l->sh[e].sh_offset;
+    size_t size = l->sh[e].sh_type == BCN_SHT_NOBITS ? 0 : (size_t)l->sh[e].sh_size, pos = 0, n = 0;
+    struct bcn_eh_records *r = &l->eh_records[e];
+
+    while (pos + 4 <= size) {
+        uint32_t len = get32(p + pos);
+        if (len == 0 || len == 0xffffffffu || len > size - pos - 4)
+            break;
+        n++;
+        pos += 4 + (size_t)len;
+    }
+    r->start = calloc(n ? n : 1, sizeof(*r->start));
+    r->live = calloc(n ? n : 1, 1);
+    if (!r->start || !r->live)
+        return fail(l, "no memory");
+    for (pos = 0, r->n = 0; r->n < n; r->n++) {
+        r->start[r->n] = pos;
+        pos += 4 + (size_t)get32(p + pos);
+    }
+    return 1;
+}
+
+static int bcn_gc(bcn_load_t *l)
+{
+    unsigned *stack = malloc((l->nsec + 1) * sizeof(*stack)), top = 0, i;
+    int *rela_first = malloc((l->nsec + 1) * sizeof(int)), *rela_next = malloc((l->nsec + 1) * sizeof(int));
+    int changed, ok = 0;
+    size_t j;
+
+    l->live = calloc(l->nsec, 1);
+    l->eh_skip = calloc(l->nsec, sizeof(*l->eh_skip));
+    l->eh_records = calloc(l->nsec, sizeof(*l->eh_records));
+    if (!stack || !rela_first || !rela_next || !l->live || !l->eh_skip || !l->eh_records) {
+        fail(l, "no memory");
+        goto out;
+    }
+#define BCN_MARK(x)                                                                                \
+    do {                                                                                           \
+        unsigned m_ = (unsigned)(x);                                                               \
+        if (!l->live[m_]) {                                                                        \
+            l->live[m_] = 1;                                                                       \
+            stack[top++] = m_;                                                                     \
+        }                                                                                          \
+    } while (0)
+    for (i = 0; i < l->nsec; i++)
+        rela_first[i] = -1;
+    for (i = l->nsec; i-- > 0;)
+        if (l->sh[i].sh_type == BCN_SHT_RELA) {
+            rela_next[i] = rela_first[l->sh[i].sh_info];
+            rela_first[l->sh[i].sh_info] = (int)i;
+        }
+    for (i = 0; i < l->nsec; i++) {
+        const bcn_shdr *t = &l->sh[i];
+        const char *name = sec_name(l, i);
+        if (!(t->sh_flags & BCN_SHF_ALLOC) || (t->sh_flags & BCN_SHF_LINK_ORDER))
+            continue;
+        if (!strcmp(name, ".eh_frame")) {
+            /* Live, but only its live records mark. */
+            l->live[i] = 1;
+            if (!eh_records_of(l, i))
+                goto out;
+            continue;
+        }
+        if (t->sh_type == BCN_SHT_INIT_ARRAY || t->sh_type == BCN_SHT_FINI_ARRAY ||
+            t->sh_type == BCN_SHT_PREINIT_ARRAY || t->sh_type == 7 /* SHT_NOTE */ ||
+            !strncmp(name, ".init_array", 11) || !strncmp(name, ".fini_array", 11) ||
+            !strncmp(name, ".preinit_array", 14) || !strncmp(name, ".ctors", 6) ||
+            !strncmp(name, ".dtors", 6) || (t->sh_flags & BCN_SHF_GNU_RETAIN) || is_c_name(name))
+            BCN_MARK(i);
+    }
+    for (j = 1; j < l->nsyms; j++) {
+        int bind = l->syms[j].st_info >> 4, x = sym_section(l, j);
+        if ((bind == BCN_STB_GLOBAL || bind == BCN_STB_WEAK) && x >= 0)
+            BCN_MARK(x);
+    }
+    do {
+        changed = 0;
+        while (top) {
+            unsigned sec = stack[--top];
+            int r;
+            for (r = rela_first[sec]; r >= 0; r = rela_next[r]) {
+                const bcn_rela *rel = (const bcn_rela *)(l->bytes + l->sh[r].sh_offset);
+                size_t n = l->sh[r].sh_size / sizeof(bcn_rela);
+                for (j = 0; j < n; j++) {
+                    size_t si = (size_t)(rel[j].r_info >> 32);
+                    int x = si < l->nsyms ? sym_section(l, si) : -1;
+                    if (x >= 0)
+                        BCN_MARK(x);
+                }
+            }
+        }
+        /* The records of .eh_frame: a CIE is live, and an FDE is live
+         * when the section of its function (the target of its pc_begin,
+         * at its offset 8) is live. */
+        for (i = 0; i < l->nsec; i++) {
+            struct bcn_eh_records *er = &l->eh_records[i];
+            const uint8_t *p = l->bytes + l->sh[i].sh_offset;
+            int r;
+            if (!er->start)
+                continue;
+            for (r = rela_first[i]; r >= 0; r = rela_next[r]) {
+                const bcn_rela *rel = (const bcn_rela *)(l->bytes + l->sh[r].sh_offset);
+                size_t n = l->sh[r].sh_size / sizeof(bcn_rela);
+                for (j = 0; j < n; j++) {
+                    size_t si = (size_t)(rel[j].r_info >> 32), k;
+                    int x = si < l->nsyms ? sym_section(l, si) : -1;
+                    if (!er->n || rel[j].r_offset < er->start[0])
+                        continue;
+                    k = eh_record_of(er, rel[j].r_offset);
+                    if (!er->live[k] && (get32(p + er->start[k] + 4) == 0 ||
+                                         (rel[j].r_offset == er->start[k] + 8 && x >= 0 && l->live[x]))) {
+                        er->live[k] = 1;
+                        changed = 1;
+                    }
+                }
+                /* The targets of the live records: a second loop, so
+                 * a record that the first loop made live marks too. */
+                for (j = 0; j < n; j++) {
+                    size_t si = (size_t)(rel[j].r_info >> 32), k;
+                    int x = si < l->nsyms ? sym_section(l, si) : -1;
+                    if (!er->n || rel[j].r_offset < er->start[0] || x < 0)
+                        continue;
+                    k = eh_record_of(er, rel[j].r_offset);
+                    if (er->live[k] && !l->live[x]) {
+                        BCN_MARK(x);
+                        changed = 1;
+                    }
+                }
+            }
+        }
+        /* The sections with SHF_LINK_ORDER of the live sections. */
+        for (i = 0; i < l->nsec; i++)
+            if ((l->sh[i].sh_flags & BCN_SHF_ALLOC) && (l->sh[i].sh_flags & BCN_SHF_LINK_ORDER) &&
+                !l->live[i] && l->sh[i].sh_link < l->nsec && l->live[l->sh[i].sh_link]) {
+                BCN_MARK(i);
+                changed = 1;
+            }
+    } while (changed || top);
+#undef BCN_MARK
+    /* The relocations of the dead records. */
+    for (i = 0; i < l->nsec; i++) {
+        const bcn_shdr *r = &l->sh[i];
+        struct bcn_eh_records *er;
+        const bcn_rela *rel;
+        size_t n;
+        if (r->sh_type != BCN_SHT_RELA || !l->eh_records[r->sh_info].start)
+            continue;
+        er = &l->eh_records[r->sh_info];
+        rel = (const bcn_rela *)(l->bytes + r->sh_offset);
+        n = r->sh_size / sizeof(bcn_rela);
+        if (!(l->eh_skip[i] = calloc(n ? n : 1, 1))) {
+            fail(l, "no memory");
+            goto out;
+        }
+        for (j = 0; j < n; j++)
+            l->eh_skip[i][j] = er->n && rel[j].r_offset >= er->start[0] &&
+                               !er->live[eh_record_of(er, rel[j].r_offset)];
+    }
+    ok = 1;
+out:
+    free(stack);
+    free(rela_first);
+    free(rela_next);
+    return ok;
+}
+
 /* The priority of an .init_array section: .init_array.N runs before
  * .init_array, in the order of N. */
 static unsigned long init_priority(const char *name, const char *prefix)
@@ -1349,6 +1596,18 @@ static int keep_globals(bcn_load_t *l, struct bcn_module *m)
 
 static void free_load(bcn_load_t *l)
 {
+    unsigned i;
+    if (l->eh_skip)
+        for (i = 0; i < l->nsec; i++)
+            free(l->eh_skip[i]);
+    if (l->eh_records)
+        for (i = 0; i < l->nsec; i++) {
+            free(l->eh_records[i].start);
+            free(l->eh_records[i].live);
+        }
+    free(l->eh_skip);
+    free(l->eh_records);
+    free(l->live);
     free(l->tlssym);
     free(l->tls_secoff);
     free(l->tls_image);
@@ -1512,7 +1771,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
         fail(&l, "no memory");
         goto out;
     }
-    if (!count_slots(&l, &common_size))
+    if (!bcn_gc(&l) || !count_slots(&l, &common_size))
         goto out;
 
     /* The TLS image: the TLS sections, and the part of beam_com_nif_tls
@@ -1520,7 +1779,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
     for (i = 0; i < l.nsec; i++) {
         const bcn_shdr *t = &l.sh[i];
         size_t a = t->sh_addralign ? (size_t)t->sh_addralign : 1;
-        if (!(t->sh_flags & BCN_SHF_ALLOC) || !(t->sh_flags & BCN_SHF_TLS) || !t->sh_size)
+        if (!l.live[i] || !(t->sh_flags & BCN_SHF_ALLOC) || !(t->sh_flags & BCN_SHF_TLS) || !t->sh_size)
             continue;
         l.tls_size = align_up(l.tls_size, a);
         l.tls_secoff[i] = l.tls_size;
@@ -1549,7 +1808,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
         }
         for (i = 0; i < l.nsec; i++) {
             const bcn_shdr *t = &l.sh[i];
-            if (!(t->sh_flags & BCN_SHF_ALLOC) || !(t->sh_flags & BCN_SHF_TLS) || !t->sh_size)
+            if (!l.live[i] || !(t->sh_flags & BCN_SHF_ALLOC) || !(t->sh_flags & BCN_SHF_TLS) || !t->sh_size)
                 continue;
             l.secaddr[i] = (uintptr_t)(l.tls_image + l.tls_secoff[i]);
             if (t->sh_type != BCN_SHT_NOBITS)
@@ -1559,7 +1818,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
 
     /* The layout: the offset of each section in its group. */
     for (i = 0; i < l.nsec; i++) {
-        int g = sec_group(&l.sh[i]);
+        int g = sec_group(&l, i);
         if (g < 0)
             continue;
         off[g] = align_up(off[g], l.sh[i].sh_addralign ? l.sh[i].sh_addralign : 1);
@@ -1588,7 +1847,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
     if (l.jit)
         __jit_begin();
     for (i = 0; i < l.nsec; i++) {
-        int g = sec_group(&l.sh[i]);
+        int g = sec_group(&l, i);
         if (g < 0)
             continue;
         l.secaddr[i] = group_base[g] + secoff[i];
@@ -1604,7 +1863,8 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
         rel = (const bcn_rela *)(bytes + r->sh_offset);
         n = r->sh_size / sizeof(bcn_rela);
         for (j = 0; j < n; j++)
-            if (!relocate(&l, &l.sh[r->sh_info], l.secaddr[r->sh_info], &rel[j]))
+            if (!(l.eh_skip[i] && l.eh_skip[i][j]) &&
+                !relocate(&l, &l.sh[r->sh_info], l.secaddr[r->sh_info], &rel[j]))
                 break;
         if (j < n)
             break;
@@ -1638,7 +1898,7 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
             /* Each FDE goes to libunwind alone: its walk of a whole
              * section does not stop at the end of the list. */
             const uint8_t *eh = (const uint8_t *)l.secaddr[i];
-            size_t n, k;
+            size_t n, k, base;
             uintptr_t *fdes;
             if (!eh_frame_walk(eh, l.sh[i].sh_size, NULL, &n)) {
                 fail(&l, "the unwind table (.eh_frame) is broken");
@@ -1651,16 +1911,22 @@ struct bcn_module *bcn_load(const uint8_t *bytes, size_t size, bcn_lookup_fn loo
             }
             m->fdes = fdes;
             eh_frame_walk(eh, l.sh[i].sh_size, fdes + m->nfdes, &n);
-            for (k = 0; k < n; k++) {
-                fdes[m->nfdes + k] += l.secaddr[i];
-                __unw_add_dynamic_fde(fdes[m->nfdes + k]);
+            for (k = 0, base = m->nfdes; k < n; k++) {
+                const struct bcn_eh_records *er = &l.eh_records[i];
+                uintptr_t off = fdes[base + k];
+                /* The record of a dead function has no relocations. */
+                if (er->n && !er->live[eh_record_of(er, off)])
+                    continue;
+                fdes[m->nfdes] = off + l.secaddr[i];
+                __unw_add_dynamic_fde(fdes[m->nfdes]);
+                m->nfdes++;
             }
-            m->nfdes += n;
         }
     }
     if (l.tls_size && !tls_install(&l))
         goto out;
-    run_constructors(&l);
+    if (bcn_constructors)
+        run_constructors(&l);
     if (l.tls_size)
         tls_write_threads(&l, 1);
     ok = 1;

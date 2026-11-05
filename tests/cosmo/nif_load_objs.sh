@@ -23,6 +23,11 @@ x86_64-unknown-cosmo-cc -c "$here/nif_load_tls_asm.S" -o tls_asm.x86_64.o
 aarch64-unknown-cosmo-cc -c "$here/nif_load_tls_asm.S" -o tls_asm.aarch64.o
 x86_64-linux-cosmo-ld -r -o tls.x86_64.o nif_load_tls.o tls_asm.x86_64.o
 aarch64-linux-cosmo-ld -r -o tls.aarch64.o .aarch64/nif_load_tls.o tls_asm.aarch64.o
+cosmocc -O2 -ffunction-sections -fdata-sections -c "$here/nif_load_dead.c" -o nif_load_dead.o
+x86_64-linux-cosmo-ld -r -o dead.x86_64.r nif_load_dead.o
+aarch64-linux-cosmo-ld -r -o dead.aarch64.r .aarch64/nif_load_dead.o
+x86_64-unknown-cosmo-objcopy --keep-global-symbol=dead_live dead.x86_64.r dead.x86_64.o
+aarch64-unknown-cosmo-objcopy --keep-global-symbol=dead_live dead.aarch64.r dead.aarch64.o
 x86_64-linux-cosmo-ld -r -o tlsbig.x86_64.o nif_load_tls_big.o
 aarch64-linux-cosmo-ld -r -o tlsbig.aarch64.o .aarch64/nif_load_tls_big.o
 
@@ -40,5 +45,7 @@ emit() {
     emit tls_x86_64 tls.x86_64.o
     emit tls_aarch64 tls.aarch64.o
     emit tlsbig_x86_64 tlsbig.x86_64.o
+    emit dead_x86_64 dead.x86_64.o
+    emit dead_aarch64 dead.aarch64.o
     emit tlsbig_aarch64 tlsbig.aarch64.o
 } > nif_load_objs.h

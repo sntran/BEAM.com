@@ -6,11 +6,13 @@
 -export([add/2, echo/1, upcase/1, iolist/1, map_keys/1, mul/2, counter_new/0,
          counter_add/2, dtor_count/0, watch/1, unwatch/1, send_self/1, raise/1,
          dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, code/1,
-         info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0]).
+         info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0,
+         cxx/0, cxx_dirty/0, cxx_thread/0]).
 -nifs([add/2, echo/1, upcase/1, iolist/1, map_keys/1, mul/2, counter_new/0,
        counter_add/2, dtor_count/0, watch/1, unwatch/1, send_self/1, raise/1,
        dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, code/1,
-       info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0]).
+       info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0,
+       cxx/0, cxx_dirty/0, cxx_thread/0]).
 -on_load(init/0).
 
 init() ->
@@ -48,6 +50,9 @@ tls_check() -> erlang:nif_error(not_loaded).
 tls_check_dirty() -> erlang:nif_error(not_loaded).
 tls_check_io() -> erlang:nif_error(not_loaded).
 tls_thread() -> erlang:nif_error(not_loaded).
+cxx() -> erlang:nif_error(not_loaded).
+cxx_dirty() -> erlang:nif_error(not_loaded).
+cxx_thread() -> erlang:nif_error(not_loaded).
 
 main(_) ->
     case run() of
@@ -100,6 +105,11 @@ run() ->
          {tls_dirty, fun() -> tls_many(fun tls_check_dirty/0) end, [0]},
          {tls_dirty_io, fun() -> tls_many(fun tls_check_io/0) end, [0]},
          {tls_threads, fun() -> lists:usort([tls_thread() || _ <- lists:seq(1, 20)]) end, [0]},
+         {cxx, fun() -> lists:usort([cxx() || _ <- lists:seq(1, 10)]) end, [0]},
+         {cxx_dirty, fun() -> tls_many(fun cxx_dirty/0) end, [0]},
+         {cxx_parallel, fun() -> tls_many(fun cxx/0) end, [0]},
+         %% The thread_local object of each new thread: one destructor.
+         {cxx_thread, fun() -> lists:usort([cxx_thread() || _ <- lists:seq(1, 5)]) end, [{0, 1}]},
          {other_module, fun other_module/0, {[bad_lib], true, 3}},
          {broken, fun() -> refused("broken") end, {load_failed, true}},
          {missing, fun() -> refused("missing") end, {load_failed, true}},

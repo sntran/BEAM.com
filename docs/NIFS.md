@@ -50,6 +50,29 @@ Then `erlang:load_nif("priv/my_nif", 0)` loads `priv/my_nif.x86_64.o` or
 `priv/my_nif.aarch64.o`. The same object works on each system of
 `beam.com` with that CPU: Linux, macOS, Windows, and the BSDs.
 
+A NIF in C++ links the members of `libcxx.a` (libc++) that it needs into
+its object, and keeps one global name. The program gives the object
+libc++abi: the exceptions, `__gxx_personality_v0`, the type info, and
+`operator new`. So the process has one exception runtime:
+
+```sh
+cosmoc++ -O2 -I"$include" -c c_src/my_nif.cpp -o my_nif.o
+lib=$(dirname "$(command -v cosmocc)")/..
+x86_64-linux-cosmo-ld -r -o nif.o my_nif.o "$lib/x86_64-linux-cosmo/lib/libcxx.a"
+x86_64-unknown-cosmo-objcopy --keep-global-symbol=nif_init nif.o priv/my_nif.x86_64.o
+aarch64-linux-cosmo-ld -r -o nif64.o .aarch64/my_nif.o "$lib/aarch64-linux-cosmo/lib/libcxx.a"
+aarch64-unknown-cosmo-objcopy --keep-global-symbol=nif_init nif64.o priv/my_nif.aarch64.o
+```
+
+The loader removes the sections that no live section names, as
+`ld --gc-sections` does. The roots are the sections of the global
+symbols, the constructors, and the sections with C names. So a function
+that the NIF never reaches can name a symbol that the program does not
+have, as in a static link. With one global name (`objcopy
+--keep-global-symbol`), the loader keeps only the code that the NIF
+uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
+9.6 MB of memory.
+
 - The entry of the object is `nif_init`, as for a dynamic library, or
   `LIB_nif_init`, with `LIB` the name of the file
   (`-DSTATIC_ERLANG_NIF_LIBNAME=LIB`).
@@ -70,8 +93,9 @@ Then `erlang:load_nif("priv/my_nif", 0)` loads `priv/my_nif.x86_64.o` or
   too. The initial values that are not zero go into the template of the
   thread data of the program: a system that refuses this change (OpenBSD
   can make the program immutable) refuses such an object.
-- Not yet: C++ with its own runtime. The load of such an object fails
-  with an error.
+- C++ works: static constructors, exceptions (also across the frames of
+  the object), `dynamic_cast`, function-local statics, and `thread_local`
+  objects with destructors.
 
 `BEAM_COM_NIF_DEBUG=1` writes `nif_native: FILE` for each object that
 loads. `BEAM_COM_NIF_NATIVE=0` turns the loader off.
@@ -89,7 +113,9 @@ computer. The two give the same hash.
 
 The NIF of `rusty_csv` (Rust) also loads as an object, from the object
 of its static NIF: `parse_string_parallel` parses 200,000 rows in 260 ms
-with the threads of rayon.
+with the threads of rayon. The NIF of `ex_pdfium` (Rust and PDFium in
+C++) loads as an object too, with libc++: it makes, opens, renders and
+reads PDF documents.
 
 The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 
@@ -402,7 +428,9 @@ load by an other module, a broken object, an object that needs a missing
 function, and an upgrade of the module. Its thread-local data
 (`native_nif_check_tls.c` and `.S`) has each TLS model of C and Rust: the
 first call on each scheduler, each dirty scheduler, and a new thread
-checks the initial values. `tests/run.sh` builds it and runs
+checks the initial values. Its C++ part (`native_nif_check_cxx.cpp`)
+checks the exceptions, `dynamic_cast`, the containers, a function-local
+static, and the destructor of a `thread_local` object. `tests/run.sh` builds it and runs
 it on each system. `tests/cosmo/nif_load_check.c` (in `step_test` of
 `scripts/steps.sh`) checks the loader with no ERTS: the relocations of
 both CPUs, the errors, and 3,000 broken objects.
@@ -429,8 +457,9 @@ grow by their modules.
   `main()` of `beam_com.c`) puts it before the loader of WebAssembly in
   the hook `erts_wasm_nif_open`.
 - `c_src/cosmo/beam_com_nif_syms.c`: the symbols that an object can use,
-  the `enif_*` functions of `erl_nif_api_funcs.h` and the list of
-  `beam_com_nif_libc.h`.
+  the `enif_*` functions of `erl_nif_api_funcs.h`, the list of
+  `beam_com_nif_libc.h`, and libc++abi (`beam_com_nif_cxx.h`, made by
+  `scripts/nif_cxx_names.sh` for the version of cosmocc).
 - `patches/otp/0003-wasm-nif.patch`: `erts_load_nif` calls the hook
   `erts_wasm_nif_open` before it opens a dynamic library, and the hook
   `erts_wasm_nif_close` with an entry of the first hook that it refuses

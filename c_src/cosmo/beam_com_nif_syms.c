@@ -1,8 +1,8 @@
 /*
  * BEAM.com: the table of the symbols of the program that a native NIF
  * object can use (beam_com_nif.c): each function enif_* of
- * erl_nif_api_funcs.h of this OTP, and the symbols of the libc of
- * beam_com_nif_libc.h.
+ * erl_nif_api_funcs.h of this OTP, the symbols of the libc of
+ * beam_com_nif_libc.h, and libc++abi (beam_com_nif_cxx.h).
  *
  * Each name is only an address here: extern char bcn_sym_NAME, with the
  * assembler name NAME. The declarations need no types, and they do not
@@ -21,16 +21,19 @@ void *beam_com_nif_lookup(const char *name);
 #include "erl_nif_api_funcs.h"
 #undef ERL_NIF_API_FUNC_DECL
 
+/* An IFUNC symbol of x86_64 (beam_com_nif_libc.h): the table holds a
+ * jump to it, never its address. aarch64 has no IFUNC symbols. */
+#if defined(__x86_64__)
+#define NIF_LIBC_IFUNC(NAME)                                                                       \
+    extern char bcn_ifunc_##NAME[] __asm__("bcn_ifunc_" #NAME);                                    \
+    __asm__(".text\n.balign 16\nbcn_ifunc_" #NAME ":\n\tjmp " #NAME "\n");
+#else
+#define NIF_LIBC_IFUNC(NAME) extern char bcn_sym_##NAME __asm__(#NAME);
+#endif
 #define NIF_LIBC(NAME) extern char bcn_sym_##NAME __asm__(#NAME);
-#define NIF_LIBC_IFUNC(NAME)
 #include "beam_com_nif_libc.h"
 #undef NIF_LIBC
 #undef NIF_LIBC_IFUNC
-
-/* The functions for the IFUNC symbols (beam_com_nif_libc.h): a call of
- * the symbol, never its address. */
-static char *nif_strcpy(char *d, const char *s) { return __builtin_strcpy(d, s); }
-static char *nif_strstr(const char *h, const char *n) { return __builtin_strstr(h, n); }
 
 struct nif_sym {
     const char *name;
@@ -69,26 +72,33 @@ static void add(const char *name, const void *addr)
     }
 }
 
-/* The table, sorted by name for the search (insertion sort: it runs one
- * time, on less than 1000 names). */
+/* The table, sorted by name for the search (a Shell sort: it runs one
+ * time, at the start, on about 2000 names). */
 static void fill(void)
 {
-    size_t i, j;
+    size_t i, j, gap;
 #define ERL_NIF_API_FUNC_DECL(RET, NAME, ARGS) add(#NAME, &bcn_sym_##NAME)
 #include "erl_nif_api_funcs.h"
 #undef ERL_NIF_API_FUNC_DECL
 #define NIF_LIBC(NAME) add(#NAME, &bcn_sym_##NAME);
-#define NIF_LIBC_IFUNC(NAME) add(#NAME, (const void *)nif_##NAME);
+#if defined(__x86_64__)
+#define NIF_LIBC_IFUNC(NAME) add(#NAME, bcn_ifunc_##NAME);
+#else
+#define NIF_LIBC_IFUNC(NAME) add(#NAME, &bcn_sym_##NAME);
+#endif
 #include "beam_com_nif_libc.h"
 #undef NIF_LIBC
 #undef NIF_LIBC_IFUNC
 #undef _WIN32_
-    for (i = 1; i < count; i++) {
-        struct nif_sym s = table[i];
-        for (j = i; j > 0 && strcmp_(table[j - 1].name, s.name) > 0; j--)
-            table[j] = table[j - 1];
-        table[j] = s;
-    }
+    for (gap = 1; gap < count / 3; gap = gap * 3 + 1)
+        ;
+    for (; gap > 0; gap /= 3)
+        for (i = gap; i < count; i++) {
+            struct nif_sym s = table[i];
+            for (j = i; j >= gap && strcmp_(table[j - gap].name, s.name) > 0; j -= gap)
+                table[j] = table[j - gap];
+            table[j] = s;
+        }
 }
 
 void *beam_com_nif_lookup(const char *name)

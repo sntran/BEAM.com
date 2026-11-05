@@ -15,6 +15,8 @@
 
 extern int util_calls;
 int tls_check_thread(void);
+int cxx_check(void);
+int cxx_dtors(void);
 const char *util_name(int i);
 extern long (*const util_ops[3])(long, long);
 
@@ -470,6 +472,33 @@ static ERL_NIF_TERM tls_thread(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv
     return enif_make_int(env, result);
 }
 
+/* C++ (native_nif_check_cxx.cpp): on a scheduler, and in a new thread,
+ * whose thread_local object has a destructor. */
+static ERL_NIF_TERM cxx(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    (void)argc;
+    (void)argv;
+    return enif_make_int(env, cxx_check());
+}
+
+static void *cxx_thread_main(void *arg)
+{
+    *(int *)arg = cxx_check();
+    return NULL;
+}
+
+static ERL_NIF_TERM cxx_thread(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    ErlNifTid tid;
+    int result = -1, before = cxx_dtors();
+    (void)argc;
+    (void)argv;
+    if (enif_thread_create("native_nif_check_cxx", &tid, cxx_thread_main, &result, NULL))
+        return enif_make_badarg(env);
+    enif_thread_join(tid, NULL);
+    return enif_make_tuple2(env, enif_make_int(env, result), enif_make_int(env, cxx_dtors() - before));
+}
+
 static ErlNifFunc funcs[] = {
     { "add", 2, add, 0 },
     { "echo", 1, echo, 0 },
@@ -496,6 +525,9 @@ static ErlNifFunc funcs[] = {
     { "tls_check_dirty", 0, tls_check, ERL_NIF_DIRTY_JOB_CPU_BOUND },
     { "tls_check_io", 0, tls_check, ERL_NIF_DIRTY_JOB_IO_BOUND },
     { "tls_thread", 0, tls_thread, 0 },
+    { "cxx", 0, cxx, 0 },
+    { "cxx_dirty", 0, cxx, ERL_NIF_DIRTY_JOB_CPU_BOUND },
+    { "cxx_thread", 0, cxx_thread, 0 },
 };
 
 ERL_NIF_INIT(native_nif_check, funcs, load, NULL, upgrade, NULL)

@@ -13,8 +13,12 @@ notes of its release.
   object can call each `enif_*` function and the functions of the libc
   in `c_src/cosmo/beam_com_nif_libc.h`. Thread-local data works, with
   each TLS model of C (cosmocc) and of Rust: the NIF of `rusty_csv` loads
-  as an object. C++ is not supported yet. `tests/programs/native_nif_check`
-  runs on each system in `tests/run.sh`.
+  as an object. C++ works: the object links the members of libc++ that it
+  needs, and the program gives libc++abi; the NIF of `ex_pdfium` (PDFium)
+  loads as an object. The loader removes the sections that the NIF does
+  not use, as `ld --gc-sections` does, and reads an object with more than
+  65,279 sections. `tests/programs/native_nif_check` runs on each system
+  in `tests/run.sh`.
 - `beam.com --nif-include`: the headers also work for a native NIF object
   of `cosmocc`, on x86_64 and aarch64.
 

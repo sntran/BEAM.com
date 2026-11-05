@@ -495,7 +495,8 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_fs.h "$ROOT"/c_src/cosmo/beam_com_seatbelt.c \
        "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ROOT"/c_src/cosmo/beam_com_nif.c \
        "$ROOT"/c_src/cosmo/beam_com_nif.h "$ROOT"/c_src/cosmo/beam_com_nif_syms.c \
-       "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ROOT"/c_src/cosmo/beam_com_nif_cxx.h \
+       "$ERL_TOP/erts/emulator/sys/unix/"
 }
 
 step_configure() {
@@ -2137,8 +2138,8 @@ step_test() {
             "$bin/$arch-linux-cosmo-nm" "$bin/../$arch-linux-cosmo/lib/libcosmo.a" 2>/dev/null |
                 awk '$2 == "i" { print $3 }'
         done | sort -u > "$BUILD/nif_ifunc.txt"
-        ifunc=$(sed -n 's/^NIF_LIBC(\(.*\))$/\1/p' "$ROOT/c_src/cosmo/beam_com_nif_libc.h" |
-            grep -xF -f "$BUILD/nif_ifunc.txt" || true)
+        ifunc=$(sed -n 's/^NIF_LIBC(\(.*\))$/\1/p' "$ROOT/c_src/cosmo/beam_com_nif_libc.h" \
+            "$ROOT/c_src/cosmo/beam_com_nif_cxx.h" | grep -xF -f "$BUILD/nif_ifunc.txt" || true)
         if [ -n "$ifunc" ]; then
             echo "IFUNC symbols in c_src/cosmo/beam_com_nif_libc.h (use NIF_LIBC_IFUNC):" $ifunc >&2
             exit 1

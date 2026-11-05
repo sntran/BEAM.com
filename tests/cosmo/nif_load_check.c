@@ -249,15 +249,15 @@ int main(void)
 {
 #if defined(__x86_64__)
     const unsigned char *obj = obj_x86_64, *other = obj_aarch64, *objb = objb_x86_64;
-    const unsigned char *tls = tls_x86_64, *tlsbig = tlsbig_x86_64;
-    size_t tlsbign = sizeof(tlsbig_x86_64);
+    const unsigned char *tls = tls_x86_64, *tlsbig = tlsbig_x86_64, *dead = dead_x86_64;
+    size_t tlsbign = sizeof(tlsbig_x86_64), deadn = sizeof(dead_x86_64);
     size_t objn = sizeof(obj_x86_64), othern = sizeof(obj_aarch64), objbn = sizeof(objb_x86_64);
     size_t tlsn = sizeof(tls_x86_64);
     uintptr_t limit = 0x80000000u;
 #else
     const unsigned char *obj = obj_aarch64, *other = obj_x86_64, *objb = objb_aarch64;
-    const unsigned char *tls = tls_aarch64, *tlsbig = tlsbig_aarch64;
-    size_t tlsbign = sizeof(tlsbig_aarch64);
+    const unsigned char *tls = tls_aarch64, *tlsbig = tlsbig_aarch64, *dead = dead_aarch64;
+    size_t tlsbign = sizeof(tlsbig_aarch64), deadn = sizeof(dead_aarch64);
     size_t objn = sizeof(obj_aarch64), othern = sizeof(obj_x86_64), objbn = sizeof(objb_aarch64);
     size_t tlsn = sizeof(tls_aarch64);
     uintptr_t limit = (uintptr_t)__executable_start + 0x100000000ull;
@@ -352,6 +352,24 @@ int main(void)
             "not a 64-bit little-endian ELF object");
     refused(other, othern, "an object of a different CPU");
     tls_checks(tls, tlsn, tlsbig, tlsbign);
+    /* The dead sections: the object loads with no dead_missing_* in the
+     * program, and its dead code and constants do not go into memory. */
+    m2 = bcn_load(dead, deadn, lookup, err, sizeof(err));
+    CHECK(m2 != NULL);
+    if (m2) {
+        int (*live)(int);
+        uintptr_t dlo, dhi;
+        CHECK((*(void **)&live = bcn_symbol(m2, "dead_live")) != NULL);
+        if (live)
+            CHECK(live(4) == 13);
+        bcn_range(m2, &dlo, &dhi);
+        /* One page of constants (.eh_frame), one of data: no page of the
+         * 200 KB of dead_table. */
+        CHECK(m2->data_size <= 2 * BCN_PAGE);
+        free_module(m2);
+    } else {
+        fprintf(stderr, "nif_load_check: the load of the object with dead sections failed: %s\n", err);
+    }
     missing_name = "host_add";
     refused(obj, objn, "the program has no symbol host_add");
     missing_name = NULL;
