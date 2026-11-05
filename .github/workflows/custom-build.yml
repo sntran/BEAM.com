@@ -70,7 +70,14 @@ on:
         description: >-
           A build of a URL of the FIFO beam.com, as plus.NIF.NIF or only.NIF (custom_build.py URL):
           the defaults of the form and these NIFs, the file beam-u.URL.com, and no email.
-          The other inputs do not change it.
+          Or q.HASH, with the input query. The other inputs do not change it.
+        type: string
+        default: ""
+      query:
+        description: >-
+          For the URL q.HASH: the fields of the query of GET /beam.com, each one as
+          "NAME: VALUE&", in the sequence of sort (custom_build.py query_inputs). HASH is
+          the start of their SHA-256.
         type: string
         default: ""
 
@@ -142,6 +149,7 @@ jobs:
           INPUT_ELIXIR_VERSION: ${{ inputs.elixir_version }}
           INPUT_REPLY: ${{ inputs.reply }}
           INPUT_URL: ${{ inputs.url }}
+          INPUT_QUERY: ${{ inputs.query }}
         # The text of the issue and the inputs are input of a user: they
         # only select known values (scripts/custom_build.py).
         run: |

@@ -80,9 +80,13 @@ an issue with the form
 [A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml).
 CI builds and tests the file with your choices, and puts it on the issue.
 Without a GitHub account, use the form of
-[mkfifo.com/beam.com](https://mkfifo.com/beam.com): it sends the
-link of the file to your email address. You need no toolchain. See "A
-custom build" in [`docs/BUILDING.md`](docs/BUILDING.md).
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com?form): it gives the
+file in the browser, or sends its link to your email address. A script
+gets the same file with one request, as
+`curl -fo beam.com 'https://mkfifo.com/beam.com?apps=mnesia&nifs+=vix'`,
+and `curl -fo beam.com https://mkfifo.com/beam.com` gives the default
+build. You need no toolchain. See "A custom build" and "A build URL" in
+[`docs/BUILDING.md`](docs/BUILDING.md).
 
 ## Quick start
 

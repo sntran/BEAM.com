@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- `curl -fo beam.com https://mkfifo.com/beam.com` gives the default
+  build (the `edge` file) at once. A browser gets the form, now at
+  `https://mkfifo.com/beam.com?form`.
+- Each choice of a custom build is a field of the query of the build
+  URL: `otp_version`, `elixir_version`, `apps`, `omit`, `hex`, `rebar3`,
+  `jit`, `sqlite`, `wasm`, and `nifs+` or `nifs`. For example
+  `?otp_version=29.1.2&apps=mnesia&nifs+=vix`. The request waits for the
+  build. The form sends a `GET` with its fields (Download), so its
+  download URL also works with `curl`; "Send me the link" stays. See "A
+  build URL" in `docs/BUILDING.md`.
 - Native NIF objects (`docs/NIFS.md`): `erlang:load_nif(PATH, Info)`
   loads `PATH.x86_64.o` or `PATH.aarch64.o` from the zip of the program,
   before a NIF in WebAssembly. The object is the NIF as `cosmocc -c`
