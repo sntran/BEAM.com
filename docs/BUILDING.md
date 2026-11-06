@@ -396,6 +396,46 @@ builder gives the objects to the packages:
   does not accept it. Its first segment is the start of the `edge` file,
   with the same bytes.
 
+### A fixed version of a build
+
+A build URL does not name a version of BEAM.com. Its file goes away 30
+days after its build, or after a push that changes the source of a
+build (`custom-build-caches.yml`). The next request then builds the
+source of `main` of that time, with the same name. To keep one version:
+
+1. Keep the file that you downloaded, for example in the cache of your
+   CI or in your own store of files. Do not download it again for each
+   run.
+2. Give each field in the query, at least `otp_version` and
+   `elixir_version`. A field that is not there takes the default of the
+   form at the time of the build, and the default can change.
+3. Keep the SHA-256 of the file, and check it. Each new build has the
+   file `NAME.sha256` next to it in the release, in the format of
+   `sha256sum`:
+
+   ```sh
+   curl -fsSL -o beam.com.sha256 \
+     https://github.com/sntran/BEAM.com/releases/download/custom-builds/beam-u.q.HASH.com.sha256
+   sed 's/ .*/  beam.com/' beam.com.sha256 | sha256sum -c -
+   ```
+
+   A different hash tells that the file is a new build.
+4. Check where the file comes from. Each new build has an attestation of
+   the workflow that built it:
+
+   ```sh
+   gh attestation verify beam.com --repo sntran/BEAM.com \
+     --signer-workflow sntran/BEAM.com/.github/workflows/custom-build.yml
+   ```
+
+   The job `attest` signs the file, and it runs no code of a build: the
+   job `build` runs the code of the NIFs and of their dependencies, and
+   it cannot sign. A file of a build before this change has no
+   attestation and no `.sha256` file.
+
+For a version that does not change, use a release of BEAM.com: its files
+stay, with `SHA256SUMS` and an attestation.
+
 ## The store of parts
 
 A part is the output of some steps of `scripts/steps.sh`, which a build

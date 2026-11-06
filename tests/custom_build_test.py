@@ -1,10 +1,12 @@
 """Tests of the builds of a query of scripts/custom_build.py (the FIFO
 beam.com: GET /beam.com?QUERY). Run: python3 -I tests/custom_build_test.py"""
 
+import datetime
 import hashlib
 import importlib.util
 import os
 import subprocess
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -128,6 +130,56 @@ class FormNames(unittest.TestCase):
         self.assertEqual(settings["NIFS_OMIT"], "bcrypt_elixir")
         self.assertEqual(settings["OTP_OMIT"],
                          " ".join(a for a in sorted(cb.OMITTABLE) if a not in ("asn1", "public_key")))
+
+
+class Release(unittest.TestCase):
+    def setUp(self):
+        self.saved = (cb.upload, cb.asset_name, cb.assets, os.environ.get("GITHUB_OUTPUT"))
+        self.uploads = []
+        cb.upload = lambda name, data, kind: self.uploads.append((name, data, kind))
+        cb.asset_name = lambda: "beam-u.q.0123.com"
+
+    def tearDown(self):
+        cb.upload, cb.asset_name, cb.assets, output = self.saved
+        if output is None:
+            os.environ.pop("GITHUB_OUTPUT", None)
+        else:
+            os.environ["GITHUB_OUTPUT"] = output
+
+    def test_put_gives_the_sha256_first_and_the_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            file, output = os.path.join(tmp, "beam.com"), os.path.join(tmp, "out")
+            with open(file, "wb") as f:
+                f.write(b"the file")
+            os.environ["GITHUB_OUTPUT"] = output
+            cb.put(file)
+            digest = hashlib.sha256(b"the file").hexdigest()
+            self.assertEqual(self.uploads, [
+                ("beam-u.q.0123.com.sha256", f"{digest}  beam-u.q.0123.com\n".encode(), "text/plain"),
+                ("beam-u.q.0123.com", b"the file", "application/octet-stream"),
+            ])
+            with open(output) as f:
+                self.assertEqual(f.read(), f"name=beam-u.q.0123.com\nsha256={digest}\n")
+            # The line of the .sha256 file passes sha256sum -c.
+            check = subprocess.run(["sha256sum", "-c", "-"], cwd=tmp, capture_output=True,
+                                   input=self.uploads[0][1].replace(b"beam-u.q.0123.com", b"beam.com"))
+            self.assertEqual(check.returncode, 0)
+
+    def test_put_with_no_github_output(self):
+        os.environ.pop("GITHUB_OUTPUT", None)
+        with tempfile.NamedTemporaryFile() as f:
+            cb.put(f.name)
+        self.assertEqual([u[0] for u in self.uploads], ["beam-u.q.0123.com.sha256", "beam-u.q.0123.com"])
+
+    def test_today_does_not_count_a_sha256_file(self):
+        now = datetime.datetime(2026, 11, 6, 12, tzinfo=datetime.timezone.utc)
+        cb.assets = lambda: [
+            {"name": "beam-u.q.0123.com", "created_at": "2026-11-06T01:00:00Z"},
+            {"name": "beam-u.q.0123.com.sha256", "created_at": "2026-11-06T01:00:00Z"},
+            {"name": "beam-u.q.4567.20261106.txt", "created_at": "2026-11-06T02:00:00Z"},
+            {"name": "beam-u.q.89ab.com", "created_at": "2026-11-05T23:00:00Z"},
+        ]
+        self.assertEqual(cb.today(now), 2)
 
 
 if __name__ == "__main__":

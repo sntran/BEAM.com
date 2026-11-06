@@ -5,6 +5,10 @@ notes of its release.
 
 ## Unreleased
 
+- Each new custom build has `NAME.sha256` next to it in the release
+  `custom-builds`, and an attestation of `custom-build.yml`. A separate
+  job signs the file, so the code of a build cannot sign. See "A fixed
+  version of a build" in `docs/BUILDING.md`.
 - A query of a build that is not ready gets `503` with `Retry-After: 15`
   at once, and does not wait for the build. `curl --retry` asks again,
   and a browser gets a page that loads again each 15 seconds and then
