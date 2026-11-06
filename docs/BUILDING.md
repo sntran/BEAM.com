@@ -324,7 +324,10 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   and the answer is `503` with `Retry-After: 15` at once. With each part
   in the store, a build takes about 2 to 3 minutes:
   - `curl --retry 40 -fo beam.com 'URL'` asks again after each
-    `Retry-After`, until the file is ready.
+    `Retry-After`, until the file is ready. 40 tries of 15 seconds are
+    10 minutes; a smaller count can end before the build. `curl`
+    retries only a timeout and the statuses 408, 429, 500, 502, 503 and
+    504: a `400` (not a query) or a `422` (a refused build) stops it.
   - A browser (Download of the form) gets a page with `Refresh: 15`. The
     page loads the same URL again each 15 seconds, and the download
     starts when the file is ready.
