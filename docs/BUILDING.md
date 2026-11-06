@@ -319,14 +319,21 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   of the form are fields of the query too: Download of the form sends a
   `GET` with them, so the address of the download is also a URL for
   `curl`.
-- The answer is the file, as a stream with its `Content-Length`. When
-  the file is not in the release yet, the request waits for its build,
-  in one connection: the FIFO starts the build and says "not yet" (a
-  `503` with `Retry-After: 15`), and mkfifo.com asks again (section
-  8.10 of the specification of mkfifo.com). With each part in the
-  store, a build takes about 2 to 3 minutes. The waits of one request
-  are at most 10 minutes. After that, the request fails, and a later
-  request gets the file when the build is complete.
+- When the file is in the release, the answer is the file, as a stream
+  with its `Content-Length`. When it is not, the FIFO starts the build,
+  and the answer is `503` with `Retry-After: 15` at once. With each part
+  in the store, a build takes about 2 to 3 minutes:
+  - `curl --retry 40 -fo beam.com 'URL'` asks again after each
+    `Retry-After`, until the file is ready.
+  - A browser (Download of the form) gets a page with `Refresh: 15`. The
+    page loads the same URL again each 15 seconds, and the download
+    starts when the file is ready.
+  - A build that the workflow refuses gives `422` with the reason, and
+    no new build until the next day (UTC).
+
+  The request does not wait for the build itself: on Cloudflare, a
+  request with no head after 60 seconds gets `504`, and a response with
+  no byte of its body ends after 100 seconds as if it were complete.
 - A query of only `nifs+=` with vix, rusty_csv, ex_pdfium and the default
   NIFs gets a program of parts at once, with no build (below).
 - The file of a query is `beam-u.q.HASH.com` in the prerelease

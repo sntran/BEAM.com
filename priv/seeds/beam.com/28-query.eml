@@ -1,4 +1,4 @@
 To: beam.com
-X-HTTP-Method-Override: ^GET$
+X-HTTP-Method-Override: ^GET$(cat beam.com/s/beam-u.q.$(printf %s "$query" | sed -e '/^email:/d' -e '/^website:/d' | sort | sha256sum | cut -c1-32).com)$
 
 (?s)\A(?!nifs ?: [^\n]*\n?\z)(?<query>(?:(?:otp_version|elixir_version|apps|omit|hex|rebar3|jit|sqlite|wasm|nifs ?|nifs\+|otp|dnifs|dnif[1-3]|nif[1-8]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}): [a-z0-9_.,+ -]{0,200}\n|(?:email|website): [^\n]{0,320}\n){1,60})\z
