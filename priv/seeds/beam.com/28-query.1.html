@@ -1,1 +1,1 @@
-<p>The answer of a query: the file of <code>beam.com/u</code>. When the build runs, <code>29-query-wait</code> says "not yet", and <code>cat</code> asks again. A refused build gives the mark (<code>13-mark</code>).</p>
+<p>A query of a build, when its file is in the release <code>custom-builds</code> (<code>beam.com/s</code>): the file of <code>beam.com/u</code>, at once. This answer never waits for a build (<code>33-query-not-yet</code> and <code>34-query-page</code> answer then): on Cloudflare, a request with no head after 60 seconds gets 504.</p>

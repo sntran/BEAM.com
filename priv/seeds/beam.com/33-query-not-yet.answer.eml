@@ -1,0 +1,7 @@
+To: -
+Status: 503
+Retry-After: 15
+Cache-Control: no-store
+
+The build of beam-u.q.$(printf %s "$query" | sed -e '/^email:/d' -e '/^website:/d' | sort | sha256sum | cut -c1-32).com is not complete. A build takes about 3 minutes. Ask again in 15 seconds.
+curl does this for you: curl --retry 40 -fo beam.com 'URL'

@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- A query of a build that is not ready gets `503` with `Retry-After: 15`
+  at once, and does not wait for the build. `curl --retry` asks again,
+  and a browser gets a page that loads again each 15 seconds and then
+  starts the download. A refused build gives `422` with the reason.
+  Before, the request waited, and on Cloudflare it got `504` after 60
+  seconds (the envelopes `32-query-refused`, `33-query-not-yet` and
+  `34-query-page` of the FIFO beam.com).
 - A build URL waits, and does not fail at once with 404, when a check of
   the release gets another status than 2xx or 404 from GitHub for a
   moment (the new envelope `31-u-not-yet` of the FIFO beam.com).
