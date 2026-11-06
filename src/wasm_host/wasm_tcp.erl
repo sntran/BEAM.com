@@ -744,6 +744,10 @@ info({wasm_host, <<"tcp_data">>, _, _}, #{rshut := true, wdone := true, hgone :=
     end,
     S1 = (gone(S))#{rst := true, pfin := true, eof := End},
     {noreply, wanted(input(S1))};
+%% Data that was on its way when that reset went: as Linux, no byte
+%% comes after the reset.
+info({wasm_host, <<"tcp_data">>, _, _}, #{rshut := true, wdone := true, rst := true} = S) ->
+    {noreply, S};
 info({wasm_host, <<"tcp_data">>, _, Data}, #{recv_cnt := C, recv_oct := O, recv_max := M} = S) ->
     {noreply, append(Data, S#{recv_cnt := C + 1, recv_oct := O + byte_size(Data),
                               recv_max := max(M, byte_size(Data))})};
