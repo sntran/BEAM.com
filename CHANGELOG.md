@@ -5,6 +5,10 @@ notes of its release.
 
 ## Unreleased
 
+- Each new custom build has `NAME.sha256` next to it in the release
+  `custom-builds`, and an attestation of `custom-build.yml`. A separate
+  job signs the file, so the code of a build cannot sign. See "A fixed
+  version of a build" in `docs/BUILDING.md`.
 - A query of only `nifs+=` or `nifs=` that needs a build also gets
   `503` with `Retry-After: 15` at once, and a browser gets the page that
   loads again (the envelopes `35-url-not-yet` and `36-url-page`). Before,

@@ -22,8 +22,11 @@ Usage:
     Elixir version except the pair of the defaults (the matrix of
     custom-build-versions.yml).
   custom_build.py exists     Status 0 when the release has the file of KEY.
-  custom_build.py today      The number of files of the release of today (UTC).
-  custom_build.py put FILE   Puts FILE in the release, as asset_name().
+  custom_build.py today      The number of files of the release of today (UTC),
+                             with no .sha256 file.
+  custom_build.py put FILE   Puts FILE in the release, as asset_name(), and
+    NAME.sha256 before it (the line of sha256sum). With GITHUB_OUTPUT, it
+    writes name= and sha256= for the job that attests the file.
   custom_build.py cleanup    Deletes the files that are older than 30 days.
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
@@ -603,7 +606,8 @@ def today(now=None):
     """The files that the release got today (UTC): the new builds."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     day = now.strftime("%Y-%m-%d")
-    return sum(1 for a in assets() if a["created_at"].startswith(day))
+    return sum(1 for a in assets()
+               if a["created_at"].startswith(day) and not a["name"].endswith(".sha256"))
 
 
 def cleanup(now=None, days=30):
@@ -618,9 +622,21 @@ def cleanup(now=None, days=30):
 
 
 def put(file):
-    """Puts FILE in the release with the name of asset_name()."""
+    """Puts FILE in the release with the name of asset_name(), and its
+    SHA-256 first, as NAME.sha256 in the format of sha256sum. Thus a
+    person can check the file, and see a new build after the cleanup.
+    The name and the hash also go to GITHUB_OUTPUT, for the job that
+    attests the file (custom-build.yml)."""
+    name = asset_name()
     with open(file, "rb") as f:
-        upload(asset_name(), f.read(), "application/octet-stream")
+        data = f.read()
+    digest = hashlib.sha256(data).hexdigest()
+    upload(name + ".sha256", f"{digest}  {name}\n".encode(), "text/plain")
+    upload(name, data, "application/octet-stream")
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a") as f:
+            f.write(f"name={name}\nsha256={digest}\n")
 
 
 def upload(name, data, content_type):
