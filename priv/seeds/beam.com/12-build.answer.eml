@@ -1,6 +1,5 @@
 To: -
 Status: 503
-Retry-After: 15
 Cache-Control: no-store
 
 The build of beam-u.$url.com runs. Ask again in 15 seconds.

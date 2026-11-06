@@ -9,6 +9,11 @@ notes of its release.
   `custom-builds`, and an attestation of `custom-build.yml`. A separate
   job signs the file, so the code of a build cannot sign. See "A fixed
   version of a build" in `docs/BUILDING.md`.
+- A query of only `nifs+=` or `nifs=` that needs a build also gets
+  `503` with `Retry-After: 15` at once, and a browser gets the page that
+  loads again (the envelopes `35-url-not-yet` and `36-url-page`). Before,
+  it waited in the VM, and on Cloudflare it got `504` after 60 seconds,
+  or `404` for a refused build, which stops `curl --retry`.
 - A query of a build that is not ready gets `503` with `Retry-After: 15`
   at once, and does not wait for the build. `curl --retry` asks again,
   and a browser gets a page that loads again each 15 seconds and then
