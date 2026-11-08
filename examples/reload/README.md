@@ -11,9 +11,13 @@ parts:
 - `reload_loop`: a process whose loop calls itself with a local call. It
   stays in the code that it runs, so the next version of its module
   waits for it.
+- `priv/hello.txt`, and `config_change/3` of `reload_app`, which counts
+  its calls.
+- `upgrade/`: the next `reload_server`, whose state is a map, and the
+  appup that changes the state with `code_change/3`.
 
 The program answers one command on each line on `127.0.0.1:RELOAD_PORT`
-(`hello`, `loop`, `move` and `status`).
+(`hello`, `state`, `loop`, `move`, `file` and `status`).
 
 ```sh
 beam.com examples/reload -o reload.com
@@ -37,4 +41,10 @@ examples/reload/check.sh build/beam.com
    old code.
 3. The command `move` makes the loop call the current code (version 2).
    Then version 3 loads.
-4. A copy of the file with `BEAM_COM_RELOAD=0` has no reload.
+4. The appup of `upgrade/`: `code_change/3` turns the count of
+   `reload_server` into a map, and the count stays.
+5. A new `priv/hello.txt`: the application moves to a copy in the cache,
+   and `config_change/3` runs one time.
+6. A beam at `lib/reload/ebin/` (no version) is not in the code path: it
+   does not load.
+7. A copy of the file with `BEAM_COM_RELOAD=0` has no reload.

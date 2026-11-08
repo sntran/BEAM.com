@@ -14,6 +14,7 @@ hello() ->
 init(Count) ->
     {ok, Count}.
 
+%% upgrade/reload_server.erl is the next version: its state is a map.
 handle_call(hello, _From, Count) ->
     {reply, {reload_text:version(), Count + 1}, Count + 1}.
 

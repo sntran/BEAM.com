@@ -4,7 +4,7 @@ defmodule BeamCom.MixProject do
   # beam.com as one Mix project:
   #
   # - src/APP/: the Erlang code of each OTP application of beam.com
-  #   (beam_com, beam_com_script, wasm, wasm_host);
+  #   (beam_com, beam_com_reload, beam_com_script, wasm, wasm_host);
   # - c_src/: the C code (cosmo/ for the native file, erts_wasm/ for the
   #   WebAssembly runtime, wasm/ for the NIF of WAMR);
   # - priv/wasm_host/: the JavaScript of the hosts of the WebAssembly runtime;

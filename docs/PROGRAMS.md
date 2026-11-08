@@ -314,8 +314,10 @@ its processes and their state stay.
 > (`SIGSEGV`). Write a new file and rename it: `zip` does this, and so
 > does `mv` of a new file.
 
-For a Mix project, build the release as for the first file, and then
-send only the code of your application:
+The files go into the zip at the paths of the file:
+`lib/APP-VSN/ebin/`, `lib/APP-VSN/priv/` and
+`releases/VSN/consolidated/` (the protocols of Elixir). `mix release`
+gives these paths:
 
 ```sh
 # On your computer, with the same beam.com as the file on the server.
@@ -327,10 +329,16 @@ scp code.tgz server:/srv/my_app/
 cd /srv/my_app && tar -xzf code.tgz && zip -qr my_app.com lib releases
 ```
 
+A release is not necessary. `mix compile` (or `erlc`) gives the same
+beams, in a directory with no version (`_build/prod/lib/my_app/ebin`):
+copy them to `lib/my_app-0.1.0/ebin/` before `zip`. Source files
+(`.erl`, `.ex`) do not load: compile them with the same OTP and Elixir as
+the file, for example with `beam.com mix compile` of the same
+`beam.com`.
+
 > **Caution:** do not put `releases/VSN/start.boot`, `sys.config` or
 > `vm.args` of `mix release` into the file. `beam.com DIR -o FILE`
-> changes them when it makes the file. Put only `lib/` and
-> `releases/VSN/consolidated/` (the protocols of Elixir) into it.
+> changes them when it makes the file.
 
 In one second, the program loads the new code, and its log has the
 line `beam.com: loaded the new code of MODULES`. The steps:
@@ -342,43 +350,104 @@ line `beam.com: loaded the new code of MODULES`. The steps:
    of its file (`-beam_com_exe`). It reads a new file when the file
    stays the same for one more check.
 3. It reads the zip of the new file as a plain file, and compares the
-   CRC-32 of each entry with the file before. Only the `.beam` files of
-   `lib/APP-VSN/ebin/` and `releases/VSN/consolidated/` load.
-4. A module loads only when its code is different (`module_info(md5)`).
+   CRC-32 of each entry with the file before.
+4. A changed beam loads only when its directory is in the code path of
+   the program: a restart reads the code from there. A beam at another
+   path (for example `lib/my_app/ebin/` with no version) does not load,
+   and the log names it.
+5. A module loads only when its code is different (`module_info(md5)`).
    A beam with the same code and other chunks (its docs) does not load
    again, so you can put the whole `ebin` directory into the file.
-5. The changed modules load together (`code:atomic_load/1`). A module
+6. The changed modules load together (`code:atomic_load/1`). A module
    with `-on_load` loads after the others.
-6. When a process still runs the old code of a module, the new code
+7. When a process still runs the old code of a module, the new code
    waits. The program tries again at each check, and it never kills a
    process. Its log names the modules that wait.
 
-A Phoenix LiveView page shows the new code at its next render, on the
-same WebSocket: the process of the LiveView keeps its assigns. In a
-test with Phoenix 1.8 and LiveView 1.2 on Linux, `mix release` took
-0.9 seconds, the code of the application was 48 KB, and `zip` took
-0.02 seconds. The open page showed the new text at its next event,
-with the same count and no new page load.
+### Processes with a new state: the appup
 
-These changes need a restart of the program:
+The steps above change the code, not the state of a process. A
+`gen_server` keeps its state, so a new state needs the instructions of
+OTP. Put `lib/APP-VSN/ebin/APP.appup` into the file with the beams:
 
-- A file other than these beams, for example in `priv/`. The log names
-  each one. The running program reads `priv/static` from the old file,
-  so a new template that names new asset files gets 404 for them until
-  the restart.
+```erlang
+{"0.1.0",
+ [{"0.1.0", [{update, my_server, {advanced, to_map}}]}],
+ []}.
+```
+
+The release keeps its version in such a deploy, so the entry is for the
+version that runs (`0.1.0`), or a regular expression that matches it
+(`<<"0\\.1\\..*">>`). The program uses the instructions of an appup
+that is new or changed in the new file, one time:
+
+| Instruction | Action |
+| --- | --- |
+| `{update, Mod, {advanced, Extra}}` | Each process of `Mod` stops (`sys:suspend/2`). The code loads, `Mod:code_change(OldVsn, State, Extra)` runs in each process, and the processes go on. `OldVsn` is the `vsn` attribute of the old code. |
+| `{update, Mod}`, `{update, Mod, soft}` | The same, with no `code_change/3`. |
+| `{update, Mod, supervisor}` | The supervisors of `Mod` read `init/1` again (the child specifications). |
+| `{load_module, Mod}`, `{add_module, Mod}` | A load, as with no appup. |
+| `{apply, {M, F, A}}` | A call after the load. |
+
+The forms with a timeout, a purge and the dependent modules are the
+same. A process of `Mod` is a `gen_server`, a `gen_statem` or a
+supervisor whose callback module is `Mod` (the initial call of
+`proc_lib`). Another instruction, for example a new application or
+`restart_new_emulator`, refuses the whole file: the old code stays, and
+the log gives the reason. `examples/reload/upgrade/` has an example.
+
+This is the code change of the release handling of OTP, without
+`release_handler`: the program does not write `releases/RELEASES`, and
+it does not add or remove applications.
+
+### New files of `priv/`
+
+`/zip` reads the old file, also for `priv/`. When the new file has new
+files in `lib/APP-VSN/priv/` of a running application, the program:
+
+1. copies the files of `lib/APP-VSN/` of the new file to the cache
+   directory (`BEAM_COM_CACHE`, else the cache directory of the user,
+   in `beam.com/reload/PID/`);
+2. moves the code path of the application there
+   (`code:replace_path/2`), so `code:priv_dir/1` and
+   `Application.app_dir/2` give the new files;
+3. calls `config_change/3` of the application module, after the new
+   code loads.
+
+A Phoenix app from `mix phx.new` has `config_change/3`: it calls
+`Endpoint.config_change/2`, which reads the static manifest again. Thus
+`mix phx.digest` and a new file give the new digest names in the pages,
+and `Plug.Static` serves the new files. The old digest names stay in
+`priv/static` (`phx.digest` keeps them), so an open page keeps its
+assets. The program removes its copies when it stops. A restart reads
+`/zip` again, with no copy.
+
+### What a test showed
+
+A test with Phoenix 1.8 and LiveView 1.2 on Linux:
+
+- `mix phx.digest` and `mix release` took 1.9 seconds. The code and the
+  assets of the application were 88 KB, and `zip` took 0.02 seconds.
+- The open page showed the new text of its LiveView at its next event,
+  with the same count, the same WebSocket and no new page load.
+- A new page load got the new digest name of `app.css`, and the new
+  file. The old digest name still gave 200.
+
+### What needs a restart
+
 - Another runtime: the bytes before the zip changed (the emulator, the
   NIFs in it). The program loads no module, and its log tells it.
-- A new application, a new child of a supervisor, the configuration,
-  or a NIF.
-- A process that needs its state in a new form. A `gen_server` keeps
-  its state: use `code_change/3` with `sys:change_code/4` in a remote
-  shell, or restart the program.
+- A file that is not a beam, an appup or a file of `priv/` of a running
+  application. The log names each one.
+- A new application, a new dependency, the configuration, or a NIF.
+- A new child of a supervisor: `{update, Mod, supervisor}` changes the
+  specifications, but it does not start the new child.
 
 Erlang keeps two versions of a module. A process that still runs the
 oldest version stops the next load of that module, until the process
 calls the new code (the load waits; the process does not stop).
 
-Settings and commands:
+### Settings
 
 - `BEAM_COM_RELOAD=MS` is the time between two checks (1000 when not
   set). `BEAM_COM_RELOAD=0` turns the reload off. `-beam_com_reload MS`
@@ -386,13 +455,12 @@ Settings and commands:
 - In a remote shell (`app.com remote`), `beam_com_reload:status()` gives
   the last result and the modules that wait, and
   `beam_com_reload:check()` checks the file now.
-- Compile the new code with the same OTP and Elixir as the file:
-  `beam.com mix release` of the same `beam.com` does this.
+- Each program has `lib/beam_com_reload/` (`src/beam_com_reload`), also a
+  release with its own `kernel` (see "Add your release"). `beam.com`
+  starts it after the boot, under `kernel_safe_sup`: an error of it never
+  stops the program. It needs no change of OTP.
 - Not on Windows: a running `.exe` cannot get a new file in its place.
   Not in the WebAssembly runtime (`WORKERS.md`).
-- A release with the `kernel` of another OTP installation (see "Add
-  your release") does not have the reload: it is in the `kernel` of
-  beam.com (`patches/otp/0005-reload.patch`).
 
 [`examples/reload`](../examples/reload) shows each case, and CI runs its
 `check.sh` on Linux.

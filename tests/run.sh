@@ -554,7 +554,8 @@ if [ -d examples ]; then
             cp -R examples/reload "$dir/"
             reload='^hello: v1 2$@@^status: .*last => {ok,\[reload_loop,reload_text\]}@@^hello: v2 3$'
             reload="$reload@@^loop: loop 1\$@@last => {waiting,\[reload_loop\]}@@^status: .*last => {ok,\[reload_loop\]}"
-            reload="$reload@@^after move: loop 2\$@@^off: no reload\$"
+            reload="$reload@@^after move: loop 2\$@@^state: #{count => 3,extra => to_map}\$@@^hello: v2 4\$"
+            reload="$reload@@^file: hello 2 changes 1\$@@^outside: v2 5\$@@^off: no reload\$"
             case $os in
                 linux) check reload/check.sh "$reload" "$dir/beam.com" ;;
                 *) probe reload/check.sh "$dir/beam.com" ;;

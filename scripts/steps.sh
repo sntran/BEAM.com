@@ -1958,6 +1958,13 @@ step_bundle() {
         "$ROOT"/src/beam_com_script/*.erl
     cp "$ROOT/src/beam_com_script/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
+    # The reload of new code in a program (beam_com_reload): each program
+    # keeps lib/beam_com_reload (no version, so that beam_com.c can find
+    # it), and beam_com.c starts it.
+    mkdir -p "$STAGE/lib/beam_com_reload/ebin"
+    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_reload/ebin" "$ROOT"/src/beam_com_reload/*.erl
+    cp "$ROOT/src/beam_com_reload/beam_com_reload.app.src" \
+       "$STAGE/lib/beam_com_reload/ebin/beam_com_reload.app"
 
     # The host of the WebAssembly runtime (--target wasm32): Erlang code
     # that a Worker release gets, and the files of the Workers. With

@@ -1,8 +1,28 @@
+defmodule BeamComReloadTest.App do
+  @moduledoc """
+  The application module of an application of the tests: config_change/3
+  tells the test process (the application env `test`).
+  """
+  use Application
+
+  def start(_type, _args), do: Supervisor.start_link([], strategy: :one_for_one)
+
+  # OTP calls it from another process (release_handler; here
+  # beam_com_reload), so the name of the application is fixed.
+  def config_change(changed, new, removed) do
+    send(
+      Application.fetch_env!(:beam_com_reload_tp, :test),
+      {:config_change, changed, new, removed}
+    )
+
+    :ok
+  end
+end
+
 defmodule BeamComReloadTest do
   @moduledoc """
   The tests of `:beam_com_reload`, the reload of new code from the file of
-  a running program (patches/otp/0005-reload.patch). The module is in the
-  kernel of the Erlang/OTP of the build.
+  a running program (docs/PROGRAMS.md, "New code in a running program").
 
   Each test writes a file as beam.com makes one: bytes before a zip whose
   offsets count from the start of the file (`:beam_com_zip`). A new
@@ -35,21 +55,7 @@ defmodule BeamComReloadTest do
     File.rename!(path <> ".new", path)
   end
 
-  # A module with v/0, and a process whose loop calls itself with a local
-  # call: it stays in its code until the message move.
-  defp beam(mod, version, opts \\ []) do
-    source = """
-    -module(#{mod}).
-    -export([v/0, start/0, loop/0]).
-    v() -> #{version}.
-    start() -> spawn(fun loop/0).
-    loop() ->
-        receive
-            {v, From} -> From ! {v, v()}, loop();
-            {move, From} -> From ! moved, #{mod}:loop()
-        end.
-    """
-
+  defp compile(source, opts \\ []) do
     {:ok, tokens, _} = :erl_scan.string(String.to_charlist(source))
 
     forms =
@@ -68,14 +74,71 @@ defmodule BeamComReloadTest do
         parsed
       end)
 
-    {:ok, ^mod, bin} = :compile.forms(forms, [:binary | opts])
+    {:ok, _mod, bin} = :compile.forms(forms, [:binary | opts])
     bin
   end
 
-  defp entry(mod, bin), do: {~c"lib/t-1.0.0/ebin/#{mod}.beam", bin}
+  # A module with v/0, and a process whose loop calls itself with a local
+  # call: it stays in its code until the message move.
+  defp beam(mod, version, opts \\ []) do
+    compile(
+      """
+      -module(#{mod}).
+      -export([v/0, start/0, loop/0]).
+      v() -> #{version}.
+      start() -> spawn(fun loop/0).
+      loop() ->
+          receive
+              {v, From} -> From ! {v, v()}, loop();
+              {move, From} -> From ! moved, #{mod}:loop()
+          end.
+      """,
+      opts
+    )
+  end
 
-  defp start(path) do
-    {:ok, pid} = :gen_server.start(:beam_com_reload, {String.to_charlist(path), 3_600_000}, [])
+  # A gen_server: version 1 keeps a count, version 2 a map, and its
+  # code_change/3 changes the state with Extra.
+  defp server(mod, 1) do
+    compile("""
+    -module(#{mod}).
+    -behaviour(gen_server).
+    -export([init/1, handle_call/3, handle_cast/2]).
+    init(N) -> {ok, N}.
+    handle_call(get, _From, N) -> {reply, {v1, N}, N}.
+    handle_cast(_, N) -> {noreply, N}.
+    """)
+  end
+
+  defp server(mod, 2) do
+    compile("""
+    -module(#{mod}).
+    -behaviour(gen_server).
+    -export([init/1, handle_call/3, handle_cast/2, code_change/3]).
+    init(N) -> {ok, \#{count => N}}.
+    handle_call(get, _From, S) -> {reply, {v2, S}, S}.
+    handle_cast(_, S) -> {noreply, S}.
+    code_change(OldVsn, N, Extra) when is_integer(N) -> {ok, \#{count => N, extra => Extra, old => OldVsn}}.
+    """)
+  end
+
+  defp entry(mod, bin, app \\ "t-1.0.0"), do: {~c"lib/#{app}/ebin/#{mod}.beam", bin}
+
+  @code_path [~c"/zip/lib/t-1.0.0/ebin", ~c"/zip/lib/a-1.0.0/ebin/"]
+
+  defp start(path, opts \\ %{}) do
+    opts =
+      Map.merge(
+        %{
+          path: String.to_charlist(path),
+          interval: 3_600_000,
+          code_path: fn -> @code_path end,
+          cache: String.to_charlist(Path.join(Path.dirname(path), "cache"))
+        },
+        opts
+      )
+
+    {:ok, pid} = :gen_server.start(:beam_com_reload, opts, [])
     on_exit(fn -> Process.exit(pid, :kill) end)
     pid
   end
@@ -104,33 +167,49 @@ defmodule BeamComReloadTest do
     a = :beam_com_reload_t_a
     forget([a, :beam_com_reload_t_b])
     path = Path.join(dir, "app.com")
-    put(path, file([entry(:beam_com_reload_t_a, beam(:beam_com_reload_t_a, 1))]))
+    put(path, file([entry(a, beam(a, 1))]))
     pid = start(path)
     assert check(pid) == :none
 
     put(
       path,
       file([
-        entry(:beam_com_reload_t_a, beam(:beam_com_reload_t_a, 2)),
+        entry(a, beam(a, 2)),
         entry(:beam_com_reload_t_b, beam(:beam_com_reload_t_b, 1)),
         {~c"lib/t-1.0.0/priv/static/app.css", "body {}"}
       ])
     )
 
-    assert check(pid) == {:ok, [:beam_com_reload_t_a, :beam_com_reload_t_b]}
+    assert check(pid) == {:ok, [a, :beam_com_reload_t_b]}
     assert apply(a, :v, []) == 2
-    assert :code.which(:beam_com_reload_t_a) == ~c"/zip/lib/t-1.0.0/ebin/beam_com_reload_t_a.beam"
+    assert :code.which(a) == ~c"/zip/lib/t-1.0.0/ebin/beam_com_reload_t_a.beam"
     # The same code, with other chunks (its debug information): no load.
     put(
       path,
       file([
-        entry(:beam_com_reload_t_a, beam(:beam_com_reload_t_a, 2, [:debug_info])),
+        entry(a, beam(a, 2, [:debug_info])),
         entry(:beam_com_reload_t_b, beam(:beam_com_reload_t_b, 1))
       ])
     )
 
     assert check(pid) == {:ok, []}
     assert :gen_server.call(pid, :status) == %{last: {:ok, []}, pending: []}
+  end
+
+  @tag :tmp_dir
+  test "a beam outside the code path does not load", %{tmp_dir: dir} do
+    mod = :beam_com_reload_t_e
+    forget([mod])
+    path = Path.join(dir, "app.com")
+    put(path, file([]))
+    pid = start(path)
+    # lib/t/ebin is not lib/t-1.0.0/ebin: a restart would not read it.
+    put(path, file([{~c"lib/t/ebin/#{mod}.beam", beam(mod, 1)}]))
+    assert check(pid) == {:ok, []}
+    refute :code.is_loaded(mod)
+    # A code path with a "/" at the end is the same directory.
+    put(path, file([entry(mod, beam(mod, 2), "a-1.0.0")]))
+    assert check(pid) == {:ok, [mod]}
   end
 
   @tag :tmp_dir
@@ -160,6 +239,200 @@ defmodule BeamComReloadTest do
     assert v(looper) == 2
   end
 
+  # A loaded application with the version 1.0.0, for the appup.
+  defp load_app(app, env \\ []) do
+    spec =
+      {:application, app,
+       [
+         vsn: ~c"1.0.0",
+         modules: [],
+         registered: [],
+         applications: [:kernel, :stdlib],
+         env: env
+       ]}
+
+    :ok = :application.load(spec)
+    on_exit(fn -> :application.unload(app) end)
+  end
+
+  defp appup(app, instructions) do
+    {~c"lib/#{app}-1.0.0/ebin/#{app}.appup",
+     :io_lib.format(~c"~p.~n", [{~c"1.0.0", [{~c"1.0.0", instructions}], []}])
+     |> IO.iodata_to_binary()}
+  end
+
+  @tag :tmp_dir
+  test "an appup with {update, Mod, {advanced, Extra}}: code_change/3 of each process",
+       %{tmp_dir: dir} do
+    app = :beam_com_reload_ta
+    mod = :beam_com_reload_t_s
+    forget([mod])
+    load_app(app)
+    path = Path.join(dir, "app.com")
+    put(path, file([]))
+
+    pid =
+      start(path, %{code_path: fn -> [~c"/zip/lib/beam_com_reload_ta-1.0.0/ebin"] end})
+
+    put(path, file([entry(mod, server(mod, 1), "beam_com_reload_ta-1.0.0")]))
+    assert check(pid) == {:ok, [mod]}
+    {:ok, server} = :gen_server.start(mod, 5, [])
+    on_exit(fn -> Process.exit(server, :kill) end)
+    assert :gen_server.call(server, :get) == {:v1, 5}
+    old = :proplists.get_value(:vsn, mod.module_info(:attributes))
+
+    put(
+      path,
+      file([
+        entry(mod, server(mod, 2), "beam_com_reload_ta-1.0.0"),
+        appup(app, [{:update, mod, {:advanced, :to_map}}, {:apply, {:erlang, :put, [:t, 1]}}])
+      ])
+    )
+
+    assert check(pid) == {:ok, [mod]}
+    assert :gen_server.call(server, :get) == {:v2, %{count: 5, extra: :to_map, old: old}}
+  end
+
+  @tag :tmp_dir
+  test "an appup with an instruction that a reload cannot do: no load", %{tmp_dir: dir} do
+    app = :beam_com_reload_tb
+    mod = :beam_com_reload_t_f
+    forget([mod])
+    load_app(app)
+    path = Path.join(dir, "app.com")
+    put(path, file([]))
+    pid = start(path, %{code_path: fn -> [~c"/zip/lib/beam_com_reload_tb-1.0.0/ebin"] end})
+
+    put(
+      path,
+      file([
+        entry(mod, beam(mod, 1), "beam_com_reload_tb-1.0.0"),
+        appup(app, [{:add_application, :x}])
+      ])
+    )
+
+    assert check(pid) == {:error, {:not_supported, {:add_application, :x}}}
+    refute :code.is_loaded(mod)
+  end
+
+  test "instructions: the forms of OTP that a reload can do" do
+    acc = {%{}, []}
+
+    assert :beam_com_reload.instructions(
+             [
+               {:update, :a},
+               {:update, :b, :soft},
+               {:update, :c, {:advanced, 1}},
+               {:update, :d, :supervisor},
+               {:update, :e, {:advanced, 2}, [:x]},
+               {:update, :f, 5000, :soft, :soft_purge, :soft_purge, []},
+               {:update, :g, :dynamic, :default, {:advanced, 3}, :brutal_purge, :soft_purge, []},
+               {:load_module, :h},
+               {:load_module, :i, [:x]},
+               {:load_module, :j, :soft_purge, :soft_purge, []},
+               {:add_module, :k},
+               {:add_module, :l, []},
+               {:apply, {:m, :f, [1]}}
+             ],
+             acc
+           ) ==
+             {:ok,
+              {%{
+                 a: :soft,
+                 b: :soft,
+                 c: {:advanced, 1},
+                 d: :supervisor,
+                 e: {:advanced, 2},
+                 f: :soft,
+                 g: {:advanced, 3}
+               }, [{:m, :f, [1]}]}}
+
+    for bad <- [
+          {:update, :a, :hard},
+          {:delete_module, :a},
+          :restart_new_emulator,
+          {:restart_application, :a},
+          {:apply, {:m, :f, :x}}
+        ] do
+      assert :beam_com_reload.instructions([bad], acc) == {:error, {:not_supported, bad}}
+    end
+  end
+
+  test "appup: the entry of the running version, or a regular expression" do
+    up = fn entries ->
+      :io_lib.format(~c"~p.", [{~c"2", entries, []}]) |> IO.iodata_to_binary()
+    end
+
+    i = [{:load_module, :a}]
+    assert :beam_com_reload.appup(:x, up.([{~c"1.0.0", i}]), ~c"1.0.0") == {:ok, i}
+    assert :beam_com_reload.appup(:x, up.([{"1\\.0\\..*", i}]), ~c"1.0.7") == {:ok, i}
+    assert :beam_com_reload.appup(:x, up.([{"1\\.0", i}]), ~c"1.0.7") == :none
+    assert :beam_com_reload.appup(:x, up.([{~c"0.9", i}]), ~c"1.0.0") == :none
+    assert :beam_com_reload.appup(:x, up.([]), :undefined) == :none
+    assert {:error, {:appup, :x, _}} = :beam_com_reload.appup(:x, "not a term", ~c"1")
+    assert {:error, {:appup, :x, _}} = :beam_com_reload.appup(:x, "{1, 2}.", ~c"1")
+    assert {:error, {:appup, :x, _}} = :beam_com_reload.appup(:x, up.([{~c"1", :x}]), ~c"1")
+  end
+
+  @tag :tmp_dir
+  test "new files in priv/: a copy in the cache, the code path, and config_change/3",
+       %{tmp_dir: dir} do
+    app = :beam_com_reload_tp
+    root = Path.join(dir, "zip")
+    ebin = Path.join(root, "lib/beam_com_reload_tp-1.0.0/ebin")
+    File.mkdir_p!(ebin)
+    true = :code.add_patha(String.to_charlist(ebin))
+    on_exit(fn -> :code.del_path(app) end)
+
+    spec =
+      {:application, app,
+       [
+         vsn: ~c"1.0.0",
+         modules: [],
+         registered: [],
+         applications: [:kernel, :stdlib],
+         mod: {BeamComReloadTest.App, []},
+         env: [test: self()]
+       ]}
+
+    :ok = :application.load(spec)
+    :ok = :application.start(app)
+
+    on_exit(fn ->
+      :application.stop(app)
+      :application.unload(app)
+    end)
+
+    priv = ~c"lib/beam_com_reload_tp-1.0.0/priv/static/app.css"
+    path = Path.join(dir, "app.com")
+    put(path, file([{priv, "v1"}]))
+    cache = Path.join(dir, "cache")
+
+    pid =
+      start(path, %{
+        root: String.to_charlist(root),
+        code_path: &:code.get_path/0,
+        cache: String.to_charlist(cache)
+      })
+
+    put(path, file([{priv, "v2"}]))
+    assert check(pid) == {:ok, []}
+    assert_receive {:config_change, [], [], []}, 5000
+    lib = to_string(:code.lib_dir(app))
+    assert String.starts_with?(lib, cache)
+    assert File.read!(Path.join(:code.priv_dir(app), "static/app.css")) == "v2"
+    # A second new file moves the application again, and removes the
+    # copy before.
+    put(path, file([{priv, "v3"}]))
+    assert check(pid) == {:ok, []}
+    assert_receive {:config_change, [], [], []}, 5000
+    assert File.read!(Path.join(:code.priv_dir(app), "static/app.css")) == "v3"
+    refute File.exists?(lib)
+    # The stop of the process removes its copies.
+    GenServer.stop(pid)
+    refute File.exists?(to_string(:code.lib_dir(app)))
+  end
+
   @tag :tmp_dir
   test "another runtime loads no module", %{tmp_dir: dir} do
     mod = :beam_com_reload_t_d
@@ -183,8 +456,16 @@ defmodule BeamComReloadTest do
     assert Process.alive?(pid)
   end
 
-  test "start_link gives ignore without the arguments of beam.com" do
-    assert :beam_com_reload.start_link() == :ignore
+  test "boot starts nothing without the arguments of beam.com" do
+    assert :beam_com_reload.boot() == :ok
+    assert Process.whereis(:beam_com_reload) == nil
+  end
+
+  test "interval: the last -beam_com_reload, and 0 for a bad value" do
+    assert :beam_com_reload.interval({:ok, [[~c"1000"], [~c"250"]]}) == 250
+    assert :beam_com_reload.interval({:ok, [[~c"x"]]}) == 0
+    assert :beam_com_reload.interval({:ok, [[~c"-5"]]}) == 0
+    assert :beam_com_reload.interval(:error) == 0
   end
 
   test "classify: the offset and a directory are not changes, a new file is" do

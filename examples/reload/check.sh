@@ -52,11 +52,17 @@ wait_for() {
     return 1
 }
 
-# Version N of some modules, compiled into $work/stage, and put into the
-# file of the program with zip (which writes a new file and renames it).
+# Put the files of $work/stage into the file of the program with zip
+# (which writes a new file and renames it).
+put() {
+    (cd "$work/stage" && zip -qr "$work/reload.com" .) || exit 1
+}
+
+# Version N of some modules, compiled into $work/stage/$ebin_dir (default
+# lib/reload-1.0.0/ebin), and put into the file of the program.
 version() {
     rm -rf "$work/stage"
-    ebin=$work/stage/lib/reload-1.0.0/ebin
+    ebin=$work/stage/${ebin_dir:-lib/reload-1.0.0/ebin}
     mkdir -p "$ebin"
     modules=$*
     for m in $modules; do
@@ -67,7 +73,7 @@ version() {
     (cd "$work" && $run "$beam_com" -noshell -eval "
         [{ok, _} = compile:file(M, [{outdir, \"$ebin\"}, debug_info]) || M <- string:lexemes(\"$modules\", \" \")],
         halt().") || exit 1
-    (cd "$work/stage" && zip -qr "$work/reload.com" lib) || exit 1
+    put
 }
 
 RELOAD_PORT=$port BEAM_COM_RELOAD=200 $run "$work/reload.com" > "$work/run.log" 2>&1 &
@@ -95,10 +101,44 @@ wait_for "$port" status 'last => {ok,\[reload_loop\]}' || exit 1
 echo "status: $(ask "$port" status)"
 echo "after move: $(ask "$port" loop)"
 
+# The appup of upgrade/: the next reload_server keeps a map, and
+# code_change/3 turns the count into the map. The count stays.
+rm -rf "$work/stage"
+ebin=$work/stage/lib/reload-1.0.0/ebin
+mkdir -p "$ebin"
+cp "$here/upgrade/reload.appup" "$ebin/"
+(cd "$work" && $run "$beam_com" -noshell -eval "
+    {ok, _} = compile:file(\"$here/upgrade/reload_server.erl\", [{outdir, \"$ebin\"}]),
+    halt().") || exit 1
+put
+wait_for "$port" state 'extra => to_map' || exit 1
+echo "state: $(ask "$port" state)"
+echo "hello: $(ask "$port" hello)"
+
+# A new file of priv/: the application moves to the cache, and
+# config_change/3 runs.
+rm -rf "$work/stage"
+mkdir -p "$work/stage/lib/reload-1.0.0/priv"
+printf 'hello 2\n' > "$work/stage/lib/reload-1.0.0/priv/hello.txt"
+put
+wait_for "$port" file '^hello 2 ' || exit 1
+echo "file: $(ask "$port" file)"
+
+# A beam at a path that is not in the code path (no version): a restart
+# would not read it, so it does not load.
+n=3 ebin_dir=lib/reload/ebin version reload_text
+i=0
+until grep -q "outside the code path" "$work/run.log"; do
+    i=$((i + 1)); [ $i -lt 100 ] || { echo "no line of the code path"; exit 1; }
+    sleep 0.2
+done
+echo "outside: $(ask "$port" hello)"
+
 # BEAM_COM_RELOAD=0: no reload.
 cp "$work/reload.com" "$work/off.com"
 RELOAD_PORT=$((port + 1)) BEAM_COM_RELOAD=0 $run "$work/off.com" > "$work/off.log" 2>&1 &
 pids="$pids $!"
 wait_for $((port + 1)) hello '^v2 1$' || exit 1
 echo "off: $(ask $((port + 1)) status)"
-grep -h "beam.com: loaded\|beam.com: new code" "$work/run.log"
+grep -h "beam.com: loaded\|beam.com: new code\|beam.com: new files\|outside the code path" "$work/run.log" |
+    sed "s|$work|WORK|g"

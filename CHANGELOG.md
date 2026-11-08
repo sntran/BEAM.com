@@ -7,13 +7,19 @@ notes of its release.
 
 - A program loads new code when a new file takes the place of its file,
   so a deploy can send only the changed code: `zip -r app.com
-  lib/my_app-0.1.0` on the server. The new process `beam_com_reload` of
-  kernel (`patches/otp/0005-reload.patch`) loads each module whose code
-  changed, together, and waits when a process still runs old code. The
-  processes and their state stay. Files of `priv/` and a new runtime
-  need a restart. `BEAM_COM_RELOAD=MS` sets the time between two checks,
-  and `BEAM_COM_RELOAD=0` turns it off. Not on Windows. See "New code in
-  a running program" in `docs/PROGRAMS.md`, and `examples/reload`.
+  lib/my_app-0.1.0` on the server. The process `beam_com_reload`
+  (`src/beam_com_reload`, in each program, with no change of OTP):
+  - loads each module whose code changed, together, from the code path
+    only, and waits when a process still runs old code;
+  - does the `update` instructions of a new appup, with `code_change/3`;
+  - for new files of `priv/`, moves the application to a copy in the
+    cache, and calls its `config_change/3` (the static manifest of a
+    Phoenix endpoint).
+
+  The processes and their state stay. A new runtime needs a restart.
+  `BEAM_COM_RELOAD=MS` sets the time between two checks, and
+  `BEAM_COM_RELOAD=0` turns it off. Not on Windows. See "New code in a
+  running program" in `docs/PROGRAMS.md`, and `examples/reload`.
 - A push that changes the source of a build does not delete the files of
   the build URLs. The job `urls` of `custom-build-caches.yml` builds
   each URL again whose key changed, and the new file replaces the old one

@@ -4,7 +4,7 @@
 %% README.md.
 -module(reload_app).
 -behaviour(application).
--export([start/2, stop/1, accept/1]).
+-export([start/2, stop/1, config_change/3, accept/1]).
 
 start(_Type, _Args) ->
     Port = list_to_integer(os:getenv("RELOAD_PORT", "18461")),
@@ -16,6 +16,12 @@ start(_Type, _Args) ->
     {ok, Server}.
 
 stop(_State) ->
+    ok.
+
+%% OTP calls it after an upgrade, and beam.com after new files of priv/:
+%% the count of the calls is in the env of the application.
+config_change(_Changed, _New, _Removed) ->
+    application:set_env(reload, changes, application:get_env(reload, changes, 0) + 1),
     ok.
 
 accept(Listen) ->
@@ -31,12 +37,18 @@ accept(Listen) ->
     gen_tcp:close(Socket).
 
 %% hello: the version of reload_text and the count, which stays in the
-%% state of reload_server. loop: the version of the code that reload_loop
-%% runs. move: reload_loop calls the current code. status: the state of
-%% the reload of beam.com.
+%% state of reload_server. state: the state of reload_server. loop: the
+%% version of the code that reload_loop runs. move: reload_loop calls the
+%% current code. file: priv/hello.txt, and the count of config_change/3.
+%% status: the state of the reload of beam.com.
 command(<<"hello">>) ->
     {Version, Count} = reload_server:hello(),
     io_lib:format("~ts ~w", [Version, Count]);
+command(<<"state">>) ->
+    io_lib:format("~w", [sys:get_state(reload_server)]);
+command(<<"file">>) ->
+    {ok, Text} = file:read_file(filename:join(code:priv_dir(reload), "hello.txt")),
+    io_lib:format("~ts changes ~w", [string:trim(Text), application:get_env(reload, changes, 0)]);
 command(<<"loop">>) ->
     io_lib:format("loop ~w", [reload_loop:version()]);
 command(<<"move">>) ->

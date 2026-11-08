@@ -1525,20 +1525,29 @@ static int read_release(struct arglist *out)
 }
 
 /*
- * The reload of new code in a program (beam_com_reload of kernel,
- * patches/otp/0005-reload.patch): "-beam_com_reload MS", the time between
- * two checks of the file. BEAM_COM_RELOAD=MS changes the time, and 0
- * turns it off; a later -beam_com_reload of the vm.args of the release
- * wins. Only for a program (a release or .args in its zip), not for the
- * tools of beam.com. Not on Windows: there a running file cannot get a
- * new file in its place.
+ * The reload of new code in a program (src/beam_com_reload, "New code in
+ * a running program" of docs/PROGRAMS.md): "-beam_com_reload MS", the
+ * time between two checks of the file, and the start of the process.
+ * BEAM_COM_RELOAD=MS changes the time, and 0 turns it off; a later
+ * -beam_com_reload of the vm.args of the release wins. Only for a program
+ * (a release or .args in its zip), not for the tools of beam.com. Not on
+ * Windows: there a running file cannot get a new file in its place.
+ *
+ * The -eval loads the module from its path, also in embedded mode, and
+ * an error of it never stops the boot. It runs after the boot script,
+ * and beam_com_reload:boot/0 starts the process under kernel_safe_sup.
  */
+#define BEAM_COM_RELOAD_EVAL \
+    "try code:load_abs(\"" BEAM_COM_ROOT "/lib/beam_com_reload/ebin/beam_com_reload\"), " \
+    "beam_com_reload:boot() catch _:_ -> ok end"
+
 static void reload_flag(struct arglist *out, int program)
 {
     const char *ms = getenv("BEAM_COM_RELOAD");
     size_t n;
 
-    if (!program || beam_com_is_windows())
+    if (!program || beam_com_is_windows() ||
+        !file_exists(BEAM_COM_ROOT "/lib/beam_com_reload/ebin/beam_com_reload.beam"))
         return;
     if (!ms || !*ms)
         ms = "1000";
@@ -1548,6 +1557,8 @@ static void reload_flag(struct arglist *out, int program)
         ms = "0";
     push(out, "-beam_com_reload");
     push(out, (char *)ms);
+    push(out, "-eval");
+    push(out, BEAM_COM_RELOAD_EVAL);
 }
 
 static char *home_dir(void)

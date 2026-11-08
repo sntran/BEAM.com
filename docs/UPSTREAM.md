@@ -1468,12 +1468,13 @@ python3 -c 'import zipfile; z = zipfile.ZipFile("t.com", "a"); z.writestr("x.txt
 reads its central directory one time. The map stays for the life of
 the process, and a write into the file changes the bytes under it.
 
-**Workaround in BEAM.com.** `patches/otp/0005-reload.patch`: the process
-`beam_com_reload` of kernel watches the path of the file. When a new
-file is in its place, it reads that file as a plain file, and loads each
-changed module (`PROGRAMS.md`, "New code in a running program"). The
-docs tell people to write a new file and rename it, never to write into
-the file. The files of `priv/` still come from the old map.
+**Workaround in BEAM.com.** The process `beam_com_reload`
+(`src/beam_com_reload`) watches the path of the file. When a new file is
+in its place, it reads that file as a plain file, and loads each changed
+module. For new files of `priv/`, it copies the application to the cache
+directory and moves its code path there (`PROGRAMS.md`, "New code in a
+running program"). The docs tell people to write a new file and rename
+it, never to write into the file.
 
 **Possible upstream fix.** A check of the path of the program (inode
 and size) at an open of `/zip`, as `OpenZip()` of redbean
