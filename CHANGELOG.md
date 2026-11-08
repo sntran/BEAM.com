@@ -5,6 +5,21 @@ notes of its release.
 
 ## Unreleased
 
+- A push that changes the source of a build does not delete the files of
+  the build URLs. The job `urls` of `custom-build-caches.yml` builds
+  each URL again whose key changed, and the new file replaces the old one
+  when it is ready. Thus a request, for example of CI, gets the old file
+  at once and never waits. Before, a push deleted each file, also a push
+  that did not change a build, and the next request waited for a new
+  build. Each file of a URL now has `NAME.json`, with the key of its
+  build and its query. A change of only `scripts/custom_build.py` keeps
+  the key when the settings do not change. `custom-build-caches.yml`
+  runs after each push that changes the source of a build, and each day.
+- Each new custom build also goes to the prerelease of its month,
+  `kept-YYYYMM`, as `beam-SHA256.com`, and no job deletes it. A lock
+  names this URL and the SHA-256, so a new build of the same build URL
+  does not break the lock. `NAME.json` of each file gives the kept URL.
+  See "A fixed version of a build" in `docs/BUILDING.md`.
 - Each new custom build has `NAME.sha256` next to it in the release
   `custom-builds`, and an attestation of `custom-build.yml`. A separate
   job signs the file, so the code of a build cannot sign. See "A fixed
