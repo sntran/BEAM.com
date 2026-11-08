@@ -11,10 +11,12 @@ notes of its release.
   (`src/beam_com_reload`, in each program, with no change of OTP):
   - loads each module whose code changed, together, from the code path
     only, and waits when a process still runs old code;
-  - does the `update` instructions of a new appup, with `code_change/3`;
+  - does the `update` instructions of a new appup, with `code_change/3`,
+    and starts the new children of a supervisor after its update;
   - for new files of `priv/`, moves the application to a copy in the
     cache, and calls its `config_change/3` (the static manifest of a
-    Phoenix endpoint).
+    Phoenix endpoint). The copy before goes 60 seconds later, and the
+    start removes the copies of processes that do not run.
 
   The processes and their state stay. A new runtime needs a restart.
   `BEAM_COM_RELOAD=MS` sets the time between two checks, and

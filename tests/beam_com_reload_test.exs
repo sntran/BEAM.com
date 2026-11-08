@@ -412,7 +412,8 @@ defmodule BeamComReloadTest do
       start(path, %{
         root: String.to_charlist(root),
         code_path: &:code.get_path/0,
-        cache: String.to_charlist(cache)
+        cache: String.to_charlist(cache),
+        grace: 300
       })
 
     put(path, file([{priv, "v2"}]))
@@ -421,16 +422,101 @@ defmodule BeamComReloadTest do
     lib = to_string(:code.lib_dir(app))
     assert String.starts_with?(lib, cache)
     assert File.read!(Path.join(:code.priv_dir(app), "static/app.css")) == "v2"
-    # A second new file moves the application again, and removes the
-    # copy before.
+    # A second new file moves the application again. The copy before stays
+    # for the grace time (here 300 ms), and then goes.
     put(path, file([{priv, "v3"}]))
     assert check(pid) == {:ok, []}
     assert_receive {:config_change, [], [], []}, 5000
     assert File.read!(Path.join(:code.priv_dir(app), "static/app.css")) == "v3"
-    refute File.exists?(lib)
+    assert File.read!(Path.join(lib, "priv/static/app.css")) == "v2"
+    wait_until(fn -> not File.exists?(lib) end)
     # The stop of the process removes its copies.
     GenServer.stop(pid)
     refute File.exists?(to_string(:code.lib_dir(app)))
+  end
+
+  # A poll: at most 5 s, a step of 10 ms.
+  defp wait_until(fun, tries \\ 500) do
+    cond do
+      fun.() -> :ok
+      tries == 0 -> flunk("no result in 5 s")
+      true -> Process.sleep(10) && wait_until(fun, tries - 1)
+    end
+  end
+
+  @tag :tmp_dir
+  test "the start removes the copies of the processes that do not run", %{tmp_dir: dir} do
+    reload = Path.join(dir, "cache/reload")
+    # 4194305 is above the largest PID of Linux. A sleep of the test runs.
+    sleep = Port.open({:spawn_executable, System.find_executable("sleep")}, args: ["30"])
+    {:os_pid, running} = Port.info(sleep, :os_pid)
+    on_exit(fn -> System.cmd("kill", [to_string(running)]) end)
+
+    for name <- ["4194305", to_string(running), "x", System.pid()] do
+      File.mkdir_p!(Path.join([reload, name, "1/lib"]))
+    end
+
+    path = Path.join(dir, "app.com")
+    put(path, file([]))
+    start(path)
+    refute File.exists?(Path.join(reload, "4194305"))
+    assert File.exists?(Path.join(reload, to_string(running)))
+    assert File.exists?(Path.join(reload, "x"))
+    # The directory of an earlier process with the same PID goes.
+    refute File.exists?(Path.join([reload, System.pid(), "1"]))
+  end
+
+  test "alive: the OS process of the test runs, and a PID above the largest one does not" do
+    assert :beam_com_reload.alive(String.to_charlist(System.pid()))
+    refute :beam_com_reload.alive(~c"4194305")
+  end
+
+  # A supervisor: version 1 has the child a, version 2 the children a
+  # and b. The children are Agents.
+  defp supervisor(mod, children) do
+    specs =
+      Enum.map_join(children, ", ", fn id ->
+        "#\{id => #{id}, start => {'Elixir.Agent', start_link, [fun() -> #{id} end]}}"
+      end)
+
+    compile("""
+    -module(#{mod}).
+    -behaviour(supervisor).
+    -export([init/1]).
+    init([]) -> {ok, {\#{strategy => one_for_one}, [#{specs}]}}.
+    """)
+  end
+
+  @tag :tmp_dir
+  test "an appup with {update, Mod, supervisor}: the new children start", %{tmp_dir: dir} do
+    app = :beam_com_reload_tc
+    mod = :beam_com_reload_t_sup
+    forget([mod])
+    load_app(app)
+    path = Path.join(dir, "app.com")
+    put(path, file([]))
+    pid = start(path, %{code_path: fn -> [~c"/zip/lib/beam_com_reload_tc-1.0.0/ebin"] end})
+    put(path, file([entry(mod, supervisor(mod, [:a]), "beam_com_reload_tc-1.0.0")]))
+    assert check(pid) == {:ok, [mod]}
+    {:ok, sup} = :supervisor.start_link(mod, [])
+    Process.unlink(sup)
+    on_exit(fn -> Process.exit(sup, :kill) end)
+    assert [{:a, a, :worker, _}] = :supervisor.which_children(sup)
+
+    put(
+      path,
+      file([
+        entry(mod, supervisor(mod, [:a, :b]), "beam_com_reload_tc-1.0.0"),
+        appup(app, [{:update, mod, :supervisor}])
+      ])
+    )
+
+    assert check(pid) == {:ok, [mod]}
+    children = :supervisor.which_children(sup)
+    # a keeps its process, and b runs.
+    assert {:a, ^a, :worker, _} = List.keyfind(children, :a, 0)
+    assert {:b, b, :worker, _} = List.keyfind(children, :b, 0)
+    assert is_pid(b) and Agent.get(b, & &1) == :b
   end
 
   @tag :tmp_dir

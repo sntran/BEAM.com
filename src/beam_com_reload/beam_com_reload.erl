@@ -37,7 +37,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -ifdef(TEST).
--export([index/1, classify/2, read_entry/2, instructions/2, appup/3, interval/1]).
+-export([index/1, classify/2, read_entry/2, instructions/2, appup/3, interval/1, alive/1]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -50,6 +50,9 @@
 -define(LOCAL, 16#04034b50).
 %% The longest wait for sys:suspend/2 and sys:change_code/5.
 -define(SYS_TIMEOUT, 5000).
+%% The wait before the delete of the copy before of a moved application:
+%% a request that found a path of that copy can still open its file.
+-define(GRACE, 60000).
 
 %% The start from beam.com (-eval of beam_com.c, after the boot): a
 %% temporary child of kernel_safe_sup, so an error of the reload never
@@ -85,8 +88,9 @@ interval(error) ->
     0.
 
 %% Opts: path, interval, and for the tests code_path (a fun that gives
-%% the code path), cache (the cache directory) and root (the directory of
-%% the zip in the code path, /zip).
+%% the code path), cache (the cache directory), root (the directory of
+%% the zip in the code path, /zip) and grace (the wait before the delete
+%% of an old copy, in ms).
 start_link(Opts) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, Opts, []).
 
@@ -100,14 +104,18 @@ check() ->
 
 init(#{path := Path, interval := Ms} = Opts) ->
     process_flag(trap_exit, true),
-    Cache = filename:join([maps:get(cache, Opts, cache_dir()), "reload", os:getpid()]),
-    %% A directory of an earlier process with the same OS process id.
+    Reload = filename:join(maps:get(cache, Opts, cache_dir()), "reload"),
+    Cache = filename:join(Reload, os:getpid()),
+    %% A directory of an earlier process with the same OS process id, and
+    %% the copies of processes that stopped with no terminate/2 (a kill).
     _ = file:del_dir_r(Cache),
+    sweep(Reload),
     State = #{path => Path, interval => Ms, stat => undefined, seen => undefined,
               index => #{}, prefix => undefined, pending => [], plan => #{},
               notify => [], last => none, moved => #{}, cache => Cache,
               code_path => maps:get(code_path, Opts, fun code:get_path/0),
-              root => maps:get(root, Opts, "/zip")},
+              root => maps:get(root, Opts, "/zip"),
+              grace => maps:get(grace, Opts, ?GRACE)},
     {ok, case snapshot(Path) of
              {ok, Stat, Index, Prefix} ->
                  tick(State#{stat := Stat, seen := Stat, index := Index, prefix := Prefix});
@@ -127,6 +135,9 @@ handle_cast(_Msg, State) ->
 
 handle_info(tick, State) ->
     {noreply, tick(safe_run(State))};
+handle_info({delete, Dir}, State) ->
+    _ = file:del_dir_r(Dir),
+    {noreply, State};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
@@ -134,6 +145,50 @@ handle_info(_Msg, State) ->
 terminate(_Reason, #{cache := Cache}) ->
     _ = file:del_dir_r(Cache),
     ok.
+
+%% Delete each directory reload/PID of a process that does not run. A
+%% directory whose process may run stays.
+sweep(Reload) ->
+    Own = os:getpid(),
+    case file:list_dir(Reload) of
+        {ok, Names} ->
+            [file:del_dir_r(filename:join(Reload, N))
+             || N <- Names, N =/= Own, N =/= "", lists:all(fun(C) -> C >= $0 andalso C =< $9 end, N),
+                not alive(N)];
+        {error, _} ->
+            []
+    end.
+
+%% True when the OS process Pid may run: on Linux /proc/Pid, else
+%% kill -0 Pid, with no shell. When kill does not start (for example in
+%% a sandbox), the process may run.
+alive(Pid) ->
+    case filelib:is_dir("/proc/self") of
+        true ->
+            filelib:is_dir("/proc/" ++ Pid);
+        false ->
+            case os:find_executable("kill") of
+                false ->
+                    true;
+                Kill ->
+                    try open_port({spawn_executable, Kill},
+                                  [{args, ["-0", Pid]}, exit_status, stderr_to_stdout]) of
+                        Port -> exit_status(Port) =:= 0
+                    catch
+                        _:_ -> true
+                    end
+            end
+    end.
+
+exit_status(Port) ->
+    receive
+        {Port, {exit_status, Status}} -> Status;
+        {Port, {data, _}} -> exit_status(Port)
+    after 5000 ->
+            %% No answer: the process may run.
+            try port_close(Port) catch _:_ -> ok end,
+            0
+    end.
 
 cache_dir() ->
     case os:getenv("BEAM_COM_CACHE") of
@@ -455,6 +510,9 @@ load(#{pending := Pending, plan := Plan} = State) ->
     OldVsns = maps:map(fun(Mod, _) -> old_vsn(Mod) end, Updates),
     Procs = [{P, Mod, Change} || {Mod, Change} <- maps:to_list(Updates),
                                  P <- processes(Mod, Change)],
+    %% The children of each supervisor before its code change: a call, so
+    %% before the suspend.
+    Before = [{P, child_ids(P)} || {P, _, supervisor} <- Procs],
     Suspended = [S || {P, _, _} = S <- Procs, suspend(P)],
     %% code_change/3 runs only after a load, and each process goes on.
     Result = try
@@ -472,6 +530,7 @@ load(#{pending := Pending, plan := Plan} = State) ->
             ?LOG_NOTICE("beam.com: loaded the new code of ~ts", [names(Loaded)]),
             Failed =:= [] orelse
                 ?LOG_WARNING("beam.com: cannot load the new code of ~tp", [Failed]),
+            [start_new_children(P, Ids) || {P, Ids} <- Before],
             [apply_mfa(MFA) || MFA <- maps:get(applies, Plan, [])],
             config_changes(State#{pending := [], plan := #{}, last := {ok, Loaded}});
         {error, Errors} ->
@@ -501,6 +560,35 @@ load_code(Pending) ->
                 false ->
                     {error, Errors}
             end
+    end.
+
+child_ids(Sup) ->
+    try supervisor:which_children(Sup) of
+        Children -> [Id || {Id, _, _, _} <- Children]
+    catch
+        _:_ -> []
+    end.
+
+%% After {update, Mod, supervisor}, the supervisor has the specification
+%% of each new child of init/1, with no process (supervisor:code_change/3
+%% of OTP). Start each new child, as at the start of the supervisor. A
+%% child that is not new, and has no process, stays as it is (for example
+%% a transient child that stopped). A child that init/1 no longer gives
+%% goes on: stop it with an apply of supervisor:terminate_child/2.
+start_new_children(Sup, Before) ->
+    New = [Id || {Id, undefined, _, _} <- try supervisor:which_children(Sup) catch _:_ -> [] end,
+                 not lists:member(Id, Before)],
+    [case restart_child(Sup, Id) of
+         {ok, _} -> ?LOG_NOTICE("beam.com: started the new child ~tp of ~p", [Id, Sup]);
+         {ok, _, _} -> ?LOG_NOTICE("beam.com: started the new child ~tp of ~p", [Id, Sup]);
+         Error -> ?LOG_WARNING("beam.com: cannot start the new child ~tp of ~p: ~tp",
+                               [Id, Sup, Error])
+     end || Id <- New],
+    ok.
+
+restart_child(Sup, Id) ->
+    try supervisor:restart_child(Sup, Id)
+    catch Class:Reason -> {Class, Reason}
     end.
 
 %% The version of the old code, for code_change/3: the vsn attribute.
@@ -619,10 +707,15 @@ move_app(Fd, Dir, #{cache := Cache, moved := Moved, index := Index, path := Path
              || N <- Names],
             ok = filelib:ensure_path(filename:join(To, "ebin")),
             true = code:replace_path(App, filename:join(To, "ebin")),
-            %% The copy before: CACHE/N/lib/APP-VSN.
+            %% The copy before (CACHE/N/lib/APP-VSN) goes after the grace
+            %% time: a request that found one of its paths can still read
+            %% the file.
             case maps:get(Dir, Moved, none) of
-                none -> ok;
-                Before -> _ = file:del_dir_r(filename:dirname(filename:dirname(Before)))
+                none ->
+                    ok;
+                Before ->
+                    erlang:send_after(maps:get(grace, State), self(),
+                                      {delete, filename:dirname(filename:dirname(Before))})
             end,
             ?LOG_NOTICE("beam.com: new files of ~w from ~ts, in ~ts", [App, Path, To]),
             {ok, App, State#{moved := Moved#{Dir => To}}};

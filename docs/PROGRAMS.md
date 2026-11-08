@@ -385,7 +385,7 @@ that is new or changed in the new file, one time:
 | --- | --- |
 | `{update, Mod, {advanced, Extra}}` | Each process of `Mod` stops (`sys:suspend/2`). The code loads, `Mod:code_change(OldVsn, State, Extra)` runs in each process, and the processes go on. `OldVsn` is the `vsn` attribute of the old code. |
 | `{update, Mod}`, `{update, Mod, soft}` | The same, with no `code_change/3`. |
-| `{update, Mod, supervisor}` | The supervisors of `Mod` read `init/1` again (the child specifications). |
+| `{update, Mod, supervisor}` | The supervisors of `Mod` read `init/1` again (the child specifications), and each new child starts. A child keeps its process. A child that `init/1` no longer gives goes on. |
 | `{load_module, Mod}`, `{add_module, Mod}` | A load, as with no appup. |
 | `{apply, {M, F, A}}` | A call after the load. |
 
@@ -400,6 +400,21 @@ This is the code change of the release handling of OTP, without
 `release_handler`: the program does not write `releases/RELEASES`, and
 it does not add or remove applications.
 
+`{update, Mod, supervisor}` calls `Mod:init/1` with the arguments of the
+first start. So it gives new children only to a supervisor module with
+its own `init/1` (`use Supervisor`). `Supervisor.start_link(children,
+opts)` of `MyApp.Application` gives the list as the arguments, and the
+code change gets the old list again. For such a supervisor, start the
+new child with an `apply`:
+
+```erlang
+{apply, {'Elixir.Supervisor', start_child, ['Elixir.MyApp.Supervisor', 'Elixir.MyApp.Cache']}}
+```
+
+Stop a child that you removed in the same way, with
+`supervisor:terminate_child/2` and `supervisor:delete_child/2`: the
+program does not stop running work by itself.
+
 ### New files of `priv/`
 
 `/zip` reads the old file, also for `priv/`. When the new file has new
@@ -412,15 +427,19 @@ files in `lib/APP-VSN/priv/` of a running application, the program:
    (`code:replace_path/2`), so `code:priv_dir/1` and
    `Application.app_dir/2` give the new files;
 3. calls `config_change/3` of the application module, after the new
-   code loads.
+   code loads;
+4. deletes the copy before of that application 60 seconds later: a
+   request that found a path in it can still read the file.
 
 A Phoenix app from `mix phx.new` has `config_change/3`: it calls
 `Endpoint.config_change/2`, which reads the static manifest again. Thus
 `mix phx.digest` and a new file give the new digest names in the pages,
 and `Plug.Static` serves the new files. The old digest names stay in
 `priv/static` (`phx.digest` keeps them), so an open page keeps its
-assets. The program removes its copies when it stops. A restart reads
-`/zip` again, with no copy.
+assets. The program removes its copies when it stops. At its start, it
+also removes the copies of the processes that do not run (for example a
+process that a `kill -9` stopped): the directories `reload/PID/` of the
+cache.
 
 ### What a test showed
 
@@ -433,6 +452,15 @@ A test with Phoenix 1.8 and LiveView 1.2 on Linux:
 - A new page load got the new digest name of `app.css`, and the new
   file. The old digest name still gave 200.
 
+### A restart
+
+A restart runs the file as it is now: each file that `zip` put into it
+is in `/zip`, so the program needs no copy and no appup. A restart also
+gives the code that a reload could not give: a module that still waited,
+a beam outside the code path, or a `code_change/3` that failed. The
+appup does not run at a restart, because each process starts with a new
+state.
+
 ### What needs a restart
 
 - Another runtime: the bytes before the zip changed (the emulator, the
@@ -440,8 +468,6 @@ A test with Phoenix 1.8 and LiveView 1.2 on Linux:
 - A file that is not a beam, an appup or a file of `priv/` of a running
   application. The log names each one.
 - A new application, a new dependency, the configuration, or a NIF.
-- A new child of a supervisor: `{update, Mod, supervisor}` changes the
-  specifications, but it does not start the new child.
 
 Erlang keeps two versions of a module. A process that still runs the
 oldest version stops the next load of that module, until the process
