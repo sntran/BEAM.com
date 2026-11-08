@@ -26,11 +26,13 @@ Usage:
                              build of a URL, and its NAME.json names KEY.
   custom_build.py today      The number of new builds of the release of today
                              (UTC): no .sha256, .json or .new file.
-  custom_build.py put FILE   Puts FILE in the release, as asset_name(), and
-    NAME.sha256 before it (the line of sha256sum). For a build of a URL,
-    the new file replaces the old one, and NAME.json comes after it, with
-    KEY and the query. With GITHUB_OUTPUT, it writes name= and sha256= for
-    the job that attests the file.
+  custom_build.py put FILE   Puts FILE in the release of kept files of the
+    month, as beam-SHA256.com (keep()). Then it puts FILE in the release,
+    as asset_name(), with NAME.sha256 before it (the line of sha256sum),
+    and NAME.json after it, with KEY, the query, the SHA-256 and the kept
+    URL. For a build of a URL, the new files replace the old ones. With
+    GITHUB_OUTPUT, it writes name= and sha256= for the job that attests
+    the file.
   custom_build.py cleanup    Deletes the files that are older than 30 days.
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
@@ -85,6 +87,12 @@ SIDE_FILES = (".sha256", ".json", ".new")
 # The prerelease of the files. The check of the newest release of BEAM.com
 # takes only the tags v0.1.0 and later, as the prerelease edge.
 RELEASE = "custom-builds"
+# The prereleases of the kept files: each new build also goes to the
+# prerelease of its month (UTC), kept-YYYYMM, as beam-SHA256.com. No job
+# deletes them, so a lock that names the bytes always finds them. One
+# release for each month: GitHub permits 1,000 files in one release, and
+# a month has at most 31 * DAILY new builds.
+KEPT = "kept-"
 
 NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
 # The NIFs of the default build (with Elixir; exqlite also needs SQLite),
@@ -593,27 +601,36 @@ def asset_name():
     return f"{stem}-{os.environ['KEY'][:16]}.com"
 
 
-def release(create=False):
-    """The prerelease RELEASE of the custom builds, or None. With create,
-    a new one when it is not there."""
+def release(create=False, tag=RELEASE):
+    """The prerelease TAG (RELEASE, or a release of kept files), or None.
+    With create, a new one when it is not there."""
     repo = os.environ["GITHUB_REPOSITORY"]
     try:
-        return github(f"/repos/{repo}/releases/tags/{RELEASE}")
+        return github(f"/repos/{repo}/releases/tags/{tag}")
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
     if not create:
         return None
+    if tag == RELEASE:
+        name = "Custom builds"
+        text = ("The files of the custom builds of the FIFO beam.com of mkfifo.com "
+                "(docs/BUILDING.md). Each file is beam-KEY.com, beam-emu-KEY.com or "
+                "beam-u.URL.com, and goes away after 30 days. This is not a release of "
+                "BEAM.com.")
+    else:
+        name = f"Kept custom builds of {tag[len(KEPT):len(KEPT) + 4]}-{tag[len(KEPT) + 4:]}"
+        text = ("Each new custom build of this month (UTC), as beam-SHA256.com: SHA256 is "
+                "the SHA-256 of the file. No job deletes these files, so a lock can name "
+                "them (docs/BUILDING.md, \"A fixed version of a build\"). This is not a "
+                "release of BEAM.com.")
     body = {
-        "tag_name": RELEASE,
+        "tag_name": tag,
         "target_commitish": os.environ.get("GITHUB_SHA", "main"),
-        "name": "Custom builds",
+        "name": name,
         "prerelease": True,
-        "body": (
-            "The files of the custom builds of the FIFO beam.com of mkfifo.com "
-            "(docs/BUILDING.md). Each file is beam-KEY.com or beam-emu-KEY.com, "
-            "and goes away after 30 days. This is not a release of BEAM.com."
-        ),
+        "make_latest": "false",
+        "body": text,
     }
     return github(
         f"/repos/{repo}/releases", "POST", json.dumps(body).encode(), "application/json"
@@ -648,6 +665,17 @@ def cleanup(now=None, days=30):
             print(f"deleted {a['name']}")
 
 
+def keep(data, digest, now=None):
+    """Puts DATA in the release of kept files of this month, as
+    beam-DIGEST.com, when no file has that name. Gives its URL."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    tag = KEPT + now.strftime("%Y%m")
+    name = f"beam-{digest}.com"
+    upload(name, data, "application/octet-stream", tag=tag)
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    return f"{server}/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{name}"
+
+
 def put(file):
     """Puts FILE in the release with the name of asset_name(), and its
     SHA-256 first, as NAME.sha256 in the format of sha256sum. Thus a
@@ -655,31 +683,35 @@ def put(file):
     The name and the hash also go to GITHUB_OUTPUT, for the job that
     attests the file (custom-build.yml).
 
+    The same bytes go first to the release of kept files (keep()), with a
+    name that never changes. NAME.json names that URL.
+
     The file of a build of a URL replaces the old file of the URL, after
     a change of the source (rebuild_urls()). NAME.json comes last, with
-    KEY, the commit and the query: a build that stops before it has the
-    old KEY, so the next rebuild_urls() builds the URL again."""
+    KEY, the commit, the query, the SHA-256 and the kept URL: a build that
+    stops before it has the old KEY, so the next rebuild_urls() builds the
+    URL again."""
     name = asset_name()
     with open(file, "rb") as f:
         data = f.read()
     digest = hashlib.sha256(data).hexdigest()
+    kept = keep(data, digest)
     store = replace if os.environ.get("URL") else upload
     store(name + ".sha256", f"{digest}  {name}\n".encode(), "text/plain")
     store(name, data, "application/octet-stream")
-    if os.environ.get("URL"):
-        facts = {"key": os.environ["KEY"], "commit": os.environ.get("GITHUB_SHA", ""),
-                 "query": os.environ.get("INPUT_QUERY", "")}
-        store(name + ".json", json.dumps(facts, sort_keys=True).encode() + b"\n",
-              "application/json")
+    info = {"key": os.environ.get("KEY", ""), "commit": os.environ.get("GITHUB_SHA", ""),
+            "query": os.environ.get("INPUT_QUERY", ""), "sha256": digest, "kept": kept}
+    store(name + ".json", json.dumps(info, sort_keys=True).encode() + b"\n",
+          "application/json")
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a") as f:
             f.write(f"name={name}\nsha256={digest}\n")
 
 
-def upload(name, data, content_type):
-    """Puts DATA in the release as NAME, when no file has that name."""
-    found = release(create=True)
+def upload(name, data, content_type, tag=RELEASE):
+    """Puts DATA in the release TAG as NAME, when no file has that name."""
+    found = release(create=True, tag=tag)
     for a in found["assets"]:
         if a["name"] == name:
             return

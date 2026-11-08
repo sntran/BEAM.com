@@ -220,7 +220,9 @@ the file in the browser, when its build is ready (a build URL, below).
 Or the form sends a link with a one-time code to your email address, and
 the link starts the same workflow. A second email gives the link of the
 file, or the reason when the build did not run. The file stays in the
-prerelease `custom-builds` for 30 days, and the FIFO streams it.
+prerelease `custom-builds` for 30 days, and the FIFO streams it. The
+same bytes also stay in the prerelease `kept-YYYYMM`, with no end (see
+[A fixed version of a build](#a-fixed-version-of-a-build)).
 
 - The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
   envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
@@ -350,7 +352,8 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   `beam-u.MODE.NAMES.com`: MODE is `plus` or `only`, and NAMES are the
   names in the sequence of `sort`, each one time.
 - `NAME.json` next to the file of a URL holds the key of its build, the
-  commit, and the lines of its query. After a push that changes the
+  commit, the lines of its query, its SHA-256, and the URL of its kept
+  file (see [A fixed version of a build](#a-fixed-version-of-a-build)). After a push that changes the
   source of a build, the job `urls` of `custom-build-caches.yml` builds
   each URL again whose key changed, one at a time
   (`custom_build.py rebuild-urls`):
@@ -415,30 +418,44 @@ builder gives the objects to the packages:
 
 ### A fixed version of a build
 
-A build URL does not name a version of BEAM.com. Its file goes away 30
-days after its build. After a push that changes the source of a build,
-a new build of `main` replaces the file, with the same name
-(`custom-build-caches.yml`). To keep one version:
+A build URL does not name a version of BEAM.com. It names the choices,
+and the file of a URL can change:
 
-1. Keep the file that you downloaded, for example in the cache of your
-   CI or in your own store of files. Do not download it again for each
-   run.
-2. Give each field in the query, at least `otp_version` and
-   `elixir_version`. A field that is not there takes the default of the
-   form at the time of the build, and the default can change.
-3. Keep the SHA-256 of the file, and check it. Each new build has the
-   file `NAME.sha256` next to it in the release, in the format of
-   `sha256sum`:
+- After a push that changes the source of a build, a new build of
+  `main` replaces the file, with the same name
+  (`custom-build-caches.yml`).
+- The file goes away 30 days after its build, also when its key did not
+  change. The next request then makes a new build. A new build of the
+  same key does not have the same bytes.
+
+So a lock names the bytes, not the URL. Each new build also goes to the
+prerelease of its month (UTC), `kept-YYYYMM`, as `beam-SHA256.com`.
+SHA256 is the SHA-256 of the file. No job deletes these files. To lock
+one version:
+
+1. Get the build one time with the build URL (`curl --retry 40`, above).
+2. Read the kept URL in `NAME.json` next to the file of the URL. Its
+   key `kept` is the URL of the same bytes, and `sha256` is their
+   SHA-256:
 
    ```sh
-   curl -fsSL -o beam.com.sha256 \
-     https://github.com/sntran/BEAM.com/releases/download/custom-builds/beam-u.q.HASH.com.sha256
-   sed 's/ .*/  beam.com/' beam.com.sha256 | sha256sum -c -
+   curl -fsSL https://github.com/sntran/BEAM.com/releases/download/custom-builds/beam-u.q.HASH.com.json
+   # {"commit": "...", "kept": "https://github.com/sntran/BEAM.com/releases/download/kept-202611/beam-SHA256.com", "key": "...", "query": "...", "sha256": "SHA256"}
    ```
 
-   A different hash tells that the file is a new build.
+3. In the lock, put the kept URL and the SHA-256. Each run of your CI
+   downloads the kept URL, and checks the hash:
+
+   ```sh
+   curl -fsSL -o beam.com https://github.com/sntran/BEAM.com/releases/download/kept-202611/beam-SHA256.com
+   echo "SHA256  beam.com" | sha256sum -c -
+   ```
+
+   The name holds the hash, so the bytes of a kept URL never change.
+   Use the build URL only to make a new build, and lock that build in the
+   same way.
 4. Check where the file comes from. Each new build has an attestation of
-   the workflow that built it:
+   the workflow that built it, and the kept file has the same bytes:
 
    ```sh
    gh attestation verify beam.com --repo sntran/BEAM.com \
@@ -447,11 +464,19 @@ a new build of `main` replaces the file, with the same name
 
    The job `attest` signs the file, and it runs no code of a build: the
    job `build` runs the code of the NIFs and of their dependencies, and
-   it cannot sign. A file of a build before this change has no
-   attestation and no `.sha256` file.
+   it cannot sign.
 
-For a version that does not change, use a release of BEAM.com: its files
-stay, with `SHA256SUMS` and an attestation.
+- Give each field in the query, at least `otp_version` and
+  `elixir_version`. A field that is not there takes the default of the
+  form at the time of the build, and the default can change.
+- A build before the kept files has no kept file, and a build before
+  the attestation has no `.sha256` file and no attestation. Lock a new
+  build.
+- One release holds each month, because GitHub permits 1,000 files in
+  one release. A month has at most 310 new builds.
+
+A release of BEAM.com also has files that stay, with `SHA256SUMS` and an
+attestation.
 
 ## The store of parts
 

@@ -136,19 +136,26 @@ class FormNames(unittest.TestCase):
 
 class Release(unittest.TestCase):
     def setUp(self):
-        self.saved = (cb.upload, cb.asset_name, cb.assets, os.environ.get("GITHUB_OUTPUT"))
+        self.saved = (cb.upload, cb.asset_name, cb.assets, cb.keep, os.environ.get("URL"),
+                      os.environ.get("GITHUB_OUTPUT"))
         self.uploads = []
+        self.kept = []
         cb.upload = lambda name, data, kind: self.uploads.append((name, data, kind))
-        cb.asset_name = lambda: "beam-u.q.0123.com"
+        cb.keep = lambda data, digest: self.kept.append((data, digest)) or "https://kept/x"
+        cb.asset_name = lambda: "beam-0123456789abcdef.com"
+        os.environ.pop("URL", None)
 
     def tearDown(self):
-        cb.upload, cb.asset_name, cb.assets, output = self.saved
+        cb.upload, cb.asset_name, cb.assets, cb.keep, url, output = self.saved
+        if url is not None:
+            os.environ["URL"] = url
         if output is None:
             os.environ.pop("GITHUB_OUTPUT", None)
         else:
             os.environ["GITHUB_OUTPUT"] = output
 
-    def test_put_gives_the_sha256_first_and_the_outputs(self):
+    def test_put_keeps_the_file_then_gives_the_sha256_first_and_the_outputs(self):
+        name = "beam-0123456789abcdef.com"
         with tempfile.TemporaryDirectory() as tmp:
             file, output = os.path.join(tmp, "beam.com"), os.path.join(tmp, "out")
             with open(file, "wb") as f:
@@ -156,22 +163,28 @@ class Release(unittest.TestCase):
             os.environ["GITHUB_OUTPUT"] = output
             cb.put(file)
             digest = hashlib.sha256(b"the file").hexdigest()
-            self.assertEqual(self.uploads, [
-                ("beam-u.q.0123.com.sha256", f"{digest}  beam-u.q.0123.com\n".encode(), "text/plain"),
-                ("beam-u.q.0123.com", b"the file", "application/octet-stream"),
+            self.assertEqual(self.kept, [(b"the file", digest)])
+            self.assertEqual(self.uploads[:2], [
+                (f"{name}.sha256", f"{digest}  {name}\n".encode(), "text/plain"),
+                (name, b"the file", "application/octet-stream"),
             ])
+            self.assertEqual(self.uploads[2][0::2], (f"{name}.json", "application/json"))
+            info = cb.json.loads(self.uploads[2][1])
+            self.assertEqual((info["sha256"], info["kept"]), (digest, "https://kept/x"))
             with open(output) as f:
-                self.assertEqual(f.read(), f"name=beam-u.q.0123.com\nsha256={digest}\n")
+                self.assertEqual(f.read(), f"name={name}\nsha256={digest}\n")
             # The line of the .sha256 file passes sha256sum -c.
             check = subprocess.run(["sha256sum", "-c", "-"], cwd=tmp, capture_output=True,
-                                   input=self.uploads[0][1].replace(b"beam-u.q.0123.com", b"beam.com"))
+                                   input=self.uploads[0][1].replace(name.encode(), b"beam.com"))
             self.assertEqual(check.returncode, 0)
 
     def test_put_with_no_github_output(self):
         os.environ.pop("GITHUB_OUTPUT", None)
         with tempfile.NamedTemporaryFile() as f:
             cb.put(f.name)
-        self.assertEqual([u[0] for u in self.uploads], ["beam-u.q.0123.com.sha256", "beam-u.q.0123.com"])
+        self.assertEqual([u[0] for u in self.uploads], [
+            "beam-0123456789abcdef.com.sha256", "beam-0123456789abcdef.com",
+            "beam-0123456789abcdef.com.json"])
 
     def test_today_does_not_count_a_sha256_file(self):
         now = datetime.datetime(2026, 11, 6, 12, tzinfo=datetime.timezone.utc)
@@ -194,9 +207,9 @@ def asset(name, number, created="2026-11-06T01:00:00Z"):
 class Saved(unittest.TestCase):
     """Keeps the functions and the variables that a test changes."""
     NAMES = ("upload", "replace", "asset_name", "assets", "release", "github", "facts",
-             "today", "source", "url_key", "stale_urls")
+             "today", "source", "url_key", "stale_urls", "keep")
     VARIABLES = ("GITHUB_OUTPUT", "GITHUB_REPOSITORY", "GITHUB_SHA", "URL", "KEY",
-                 "INPUT_QUERY")
+                 "INPUT_QUERY", "GITHUB_SERVER_URL")
 
     def setUp(self):
         self.saved = {n: getattr(cb, n) for n in self.NAMES}
@@ -252,6 +265,7 @@ class Put(Saved):
     def test_a_url_replaces_its_files_and_puts_its_facts_last(self):
         stored = []
         cb.replace = lambda name, data, kind: stored.append((name, data, kind))
+        cb.keep = lambda data, digest: "https://kept/x"
         cb.upload = lambda *args: self.fail("upload for a URL")
         cb.asset_name = lambda: "beam-u.q.0123.com"
         os.environ.update(URL="q.0123", KEY="k" * 64, GITHUB_SHA="c" * 40, INPUT_QUERY="jit: 0&")
@@ -262,7 +276,8 @@ class Put(Saved):
             "beam-u.q.0123.com.sha256", "beam-u.q.0123.com", "beam-u.q.0123.com.json"])
         self.assertEqual(stored[2][2], "application/json")
         self.assertEqual(cb.json.loads(stored[2][1]),
-                         {"key": "k" * 64, "commit": "c" * 40, "query": "jit: 0&"})
+                         {"key": "k" * 64, "commit": "c" * 40, "query": "jit: 0&", "kept": "https://kept/x",
+                          "sha256": hashlib.sha256(b"").hexdigest()})
 
 
 class Replace(Saved):
@@ -435,6 +450,39 @@ class Rebuild(Saved):
         self.rebuild()
         self.assertGreater(self.time[0], cb.REBUILD_SECONDS)
         self.assertLess(self.time[0], cb.REBUILD_SECONDS + 60)
+
+
+class Keep(Saved):
+    def test_keep_puts_the_bytes_in_the_release_of_the_month(self):
+        uploads = []
+        cb.upload = lambda name, data, kind, tag="": uploads.append((name, data, kind, tag))
+        os.environ["GITHUB_SERVER_URL"] = "https://github.com"
+        now = datetime.datetime(2026, 11, 8, 3, tzinfo=datetime.timezone.utc)
+        url = cb.keep(b"x", "d" * 64, now)
+        self.assertEqual(uploads, [(f"beam-{'d' * 64}.com", b"x", "application/octet-stream",
+                                    "kept-202611")])
+        self.assertEqual(url, f"https://github.com/o/r/releases/download/kept-202611/beam-{'d' * 64}.com")
+
+    def test_a_new_release_of_kept_files(self):
+        def answer(method, path):
+            if method == "GET":
+                raise cb.urllib.error.HTTPError(path, 404, "Not Found", {}, None)
+            return {"assets": []}
+        self.answer = answer
+        cb.release(create=True, tag="kept-202611")
+        method, path, data = self.calls[-1]
+        body = cb.json.loads(data)
+        self.assertEqual((method, path), ("POST", "/repos/o/r/releases"))
+        self.assertEqual((body["tag_name"], body["name"], body["prerelease"], body["make_latest"]),
+                         ("kept-202611", "Kept custom builds of 2026-11", True, "false"))
+        self.assertIn("No job deletes these files", body["body"])
+
+    def test_no_job_deletes_a_kept_file(self):
+        """The cleanups read only the release RELEASE."""
+        self.assertEqual(cb.release.__defaults__, (False, cb.RELEASE))
+        for name in ("custom-build.yml", "custom-build-caches.yml"):
+            with open(os.path.join(HERE, "..", ".github", "workflows", name)) as f:
+                self.assertNotIn(cb.KEPT, f.read())
 
 
 if __name__ == "__main__":
