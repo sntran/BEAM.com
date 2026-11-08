@@ -245,7 +245,9 @@ prerelease `custom-builds` for 30 days, and the FIFO streams it.
   gets the link at once, with no build. The key of the file is the
   SHA-256 of the choices and of the source of the build (`source()` of
   `custom_build.py`). A commit that changes only the documents, the
-  tests, the workflows or the envelopes of the FIFO keeps the key.
+  tests, the workflows or the envelopes of the FIFO keeps the key. The
+  key has the settings that `custom_build.py` makes, but not the file
+  itself: a change of that file that keeps the settings keeps the key.
 - A new build takes most of its work from the store of parts (see
   [The store of parts](#the-store-of-parts)): the built OTP, Elixir and
   each NIF. With each part in the store, a build takes a few minutes.
@@ -269,9 +271,9 @@ prerelease `custom-builds` for 30 days, and the FIFO streams it.
     [`custom-build-caches.yml`](../.github/workflows/custom-build-caches.yml)
     builds a custom build with all the parts of `vix`, `ex_pdfium` and
     `rusty_csv`. It fills the store and these caches for the default
-    versions. It runs after a merge that changes their inputs, and two
-    times each week, because GitHub removes a cache that no run reads
-    for 7 days.
+    versions. It runs after a push that changes the source of a build,
+    and each day, because GitHub removes a cache that no run reads for 7
+    days. Then it builds the build URLs again (below).
   - A pull request only reads the caches, so its copies do not push out
     the caches of `main` from the 10 GB of the repository. The log of
     `custom-build-caches.yml` shows the use of the 10 GB and the largest
@@ -347,9 +349,21 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   different file. The file of a query of only `nifs+=` or `nifs=` is
   `beam-u.MODE.NAMES.com`: MODE is `plus` or `only`, and NAMES are the
   names in the sequence of `sort`, each one time.
-  `custom-build-caches.yml` deletes these files after a push that
-  changes the source of a build, so the next request builds the source
-  of now.
+- `NAME.json` next to the file of a URL holds the key of its build, the
+  commit, and the lines of its query. After a push that changes the
+  source of a build, the job `urls` of `custom-build-caches.yml` builds
+  each URL again whose key changed, one at a time
+  (`custom_build.py rebuild-urls`):
+  - The old file stays until the new build is ready. Then the new file
+    replaces it, with its `.sha256` file. A request of the URL never
+    waits for this build.
+  - The job starts a new build only while the release has fewer than 5
+    new builds of the day, so people always have 5 builds of the 10 of
+    each day. The run of the next day builds the other URLs.
+  - A new build that fails puts no mark, and the old file stays. The
+    next run tries again.
+  - A file of a query from before `NAME.json` has no lines of its query,
+    so it stays until the cleanup of 30 days.
 - A field that the FIFO does not know, or a value with a different
   character, gets `400` at once. The workflow checks the values
   (`query_inputs` of `scripts/custom_build.py`): a value that is not
@@ -402,9 +416,9 @@ builder gives the objects to the packages:
 ### A fixed version of a build
 
 A build URL does not name a version of BEAM.com. Its file goes away 30
-days after its build, or after a push that changes the source of a
-build (`custom-build-caches.yml`). The next request then builds the
-source of `main` of that time, with the same name. To keep one version:
+days after its build. After a push that changes the source of a build,
+a new build of `main` replaces the file, with the same name
+(`custom-build-caches.yml`). To keep one version:
 
 1. Keep the file that you downloaded, for example in the cache of your
    CI or in your own store of files. Do not download it again for each

@@ -22,11 +22,15 @@ Usage:
     Elixir version except the pair of the defaults (the matrix of
     custom-build-versions.yml).
   custom_build.py exists     Status 0 when the release has the file of KEY.
-  custom_build.py today      The number of files of the release of today (UTC),
-                             with no .sha256 file.
+  custom_build.py current    Status 0 when the release has the file of a
+                             build of a URL, and its NAME.json names KEY.
+  custom_build.py today      The number of new builds of the release of today
+                             (UTC): no .sha256, .json or .new file.
   custom_build.py put FILE   Puts FILE in the release, as asset_name(), and
-    NAME.sha256 before it (the line of sha256sum). With GITHUB_OUTPUT, it
-    writes name= and sha256= for the job that attests the file.
+    NAME.sha256 before it (the line of sha256sum). For a build of a URL,
+    the new file replaces the old one, and NAME.json comes after it, with
+    KEY and the query. With GITHUB_OUTPUT, it writes name= and sha256= for
+    the job that attests the file.
   custom_build.py cleanup    Deletes the files that are older than 30 days.
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
@@ -34,9 +38,14 @@ Usage:
   custom_build.py mark REASON
     For a build of a URL (the input url): puts a text with the reason in
     the release, so the FIFO stops its waits for the day (url_mark()).
-  custom_build.py cleanup-urls
-    Deletes the files of the builds of a URL: the next request of a URL
-    builds the source of now.
+  custom_build.py rebuild-urls COMMIT
+    For each file of a build of a URL whose KEY at COMMIT is not the KEY
+    of its NAME.json: starts a new build of the URL, and waits for its
+    end. The old file stays until the new one replaces it
+    (rebuild_urls()).
+  custom_build.py delete-marks
+    Deletes each mark of a build of a URL (url_mark()): after a push, a
+    build that did not run can run again.
 
 The files are the assets of the prerelease RELEASE of the repository: a
 person with no GitHub account can download them. The requests to GitHub
@@ -61,6 +70,18 @@ import urllib.request
 QUEUE = 3
 DAILY = 10
 WAIT_SECONDS = 180 * 60
+# A new build of the URLs after a change of the source starts only while
+# the release has fewer than REBUILD_DAILY new builds of today. Thus the
+# requests of people always have DAILY - REBUILD_DAILY new builds or more.
+REBUILD_DAILY = 5
+# The wait of rebuild_urls() for one build: the queue and the timeout of
+# the job build of custom-build.yml. NEW_RUN_SECONDS is the wait for the
+# run of a dispatch to show in the list of the runs.
+REBUILD_SECONDS = 250 * 60
+NEW_RUN_SECONDS = 10 * 60
+# The files next to the file of a build: its SHA-256, the facts of a
+# build of a URL, and a file that is not in its place yet (replace()).
+SIDE_FILES = (".sha256", ".json", ".new")
 # The prerelease of the files. The check of the newest release of BEAM.com
 # takes only the tags v0.1.0 and later, as the prerelease edge.
 RELEASE = "custom-builds"
@@ -91,9 +112,14 @@ ELIXIR_VERSIONS = {
 # The paths of the repository that do not change the file of a build:
 # the documents, the tests, the workflows, the Mix project of the tests,
 # and the envelopes of the FIFO. A change of another path makes a new
-# KEY.
+# KEY. The paths-ignore of custom-build-caches.yml has the same paths,
+# except this file.
 NOT_SOURCE = (".github", ".formatter.exs", ".gitignore", "docs", "examples", "js", "lib",
               "mix.exs", "mix.lock", "package.json", "priv/seeds", "specs", "tests")
+# This file only makes the settings of a build, and KEY has the settings.
+# So a change of this file that does not change the settings keeps KEY,
+# and keeps each file of a build of a URL.
+NOT_SOURCE_FILES = ("scripts/custom_build.py",)
 # The default OTP applications that a build can leave out (OTP_OMIT of
 # scripts/steps.sh), and the applications that need them. The other
 # default applications (kernel, stdlib, sasl, compiler and crypto) are
@@ -514,15 +540,16 @@ def source(commit, git=None):
         listing = git("ls-tree", commit, "--", folder + "/") if folder else git("ls-tree", commit)
         for line in listing.splitlines():
             meta, _, name = line.partition("\t")
-            if name in NOT_SOURCE or ("/" not in name and name.endswith(".md")):
+            if (name in NOT_SOURCE or name in NOT_SOURCE_FILES
+                    or ("/" not in name and name.endswith(".md"))):
                 continue
-            if any(n.startswith(name + "/") for n in NOT_SOURCE):
+            if any(n.startswith(name + "/") for n in NOT_SOURCE + NOT_SOURCE_FILES):
                 yield from walk(name)
             else:
                 yield f"{meta.split()[2]} {name}"
 
     lines = list(walk(""))
-    if not any(line.endswith(" scripts") for line in lines):
+    if not any(line.endswith(" scripts") or " scripts/" in line for line in lines):
         fail(f"No source at the commit {commit}")
     return "".join(f"{line}\n" for line in lines)
 
@@ -607,7 +634,7 @@ def today(now=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     day = now.strftime("%Y-%m-%d")
     return sum(1 for a in assets()
-               if a["created_at"].startswith(day) and not a["name"].endswith(".sha256"))
+               if a["created_at"].startswith(day) and not a["name"].endswith(SIDE_FILES))
 
 
 def cleanup(now=None, days=30):
@@ -626,13 +653,24 @@ def put(file):
     SHA-256 first, as NAME.sha256 in the format of sha256sum. Thus a
     person can check the file, and see a new build after the cleanup.
     The name and the hash also go to GITHUB_OUTPUT, for the job that
-    attests the file (custom-build.yml)."""
+    attests the file (custom-build.yml).
+
+    The file of a build of a URL replaces the old file of the URL, after
+    a change of the source (rebuild_urls()). NAME.json comes last, with
+    KEY, the commit and the query: a build that stops before it has the
+    old KEY, so the next rebuild_urls() builds the URL again."""
     name = asset_name()
     with open(file, "rb") as f:
         data = f.read()
     digest = hashlib.sha256(data).hexdigest()
-    upload(name + ".sha256", f"{digest}  {name}\n".encode(), "text/plain")
-    upload(name, data, "application/octet-stream")
+    store = replace if os.environ.get("URL") else upload
+    store(name + ".sha256", f"{digest}  {name}\n".encode(), "text/plain")
+    store(name, data, "application/octet-stream")
+    if os.environ.get("URL"):
+        facts = {"key": os.environ["KEY"], "commit": os.environ.get("GITHUB_SHA", ""),
+                 "query": os.environ.get("INPUT_QUERY", "")}
+        store(name + ".json", json.dumps(facts, sort_keys=True).encode() + b"\n",
+              "application/json")
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a") as f:
@@ -647,6 +685,61 @@ def upload(name, data, content_type):
             return
     base = found["upload_url"].split("{", 1)[0]
     github("?name=" + urllib.parse.quote(name), "POST", data, content_type, base=base)
+
+
+def replace(name, data, content_type):
+    """Puts DATA in the release as NAME, in place of the file with that
+    name. The new file goes in as NAME.new, and gets the name NAME after
+    the delete of the old file. Thus the old file stays until the new file
+    is in the release, and a request finds no file only for a moment."""
+    found = release(create=True)
+    by_name = {a["name"]: a for a in found["assets"]}
+    if name not in by_name:
+        upload(name, data, content_type)
+        return
+    repo = os.environ["GITHUB_REPOSITORY"]
+    if name + ".new" in by_name:
+        github(f"/repos/{repo}/releases/assets/{by_name[name + '.new']['id']}", "DELETE")
+    base = found["upload_url"].split("{", 1)[0]
+    new = github("?name=" + urllib.parse.quote(name + ".new"), "POST", data, content_type,
+                 base=base)
+    github(f"/repos/{repo}/releases/assets/{by_name[name]['id']}", "DELETE")
+    github(f"/repos/{repo}/releases/assets/{new['id']}", "PATCH",
+           json.dumps({"name": name}).encode(), "application/json")
+
+
+def facts(asset, read=None):
+    """The decoded NAME.json of ASSET (None: no file), or {} when it is
+    not a JSON object. The release is public, so the request has no
+    token: a redirect does not take the token to another host."""
+    if not asset:
+        return {}
+    read = read or (lambda url: urllib.request.urlopen(url, timeout=60).read(65537))
+    data = read(asset["browser_download_url"])
+    try:
+        found = json.loads(data) if len(data) <= 65536 else None
+    except ValueError:
+        found = None
+    return found if isinstance(found, dict) else {}
+
+
+def current():
+    """True when the release has the file of asset_name(), and its
+    NAME.json names KEY: the file of a build of a URL is of the source
+    of now."""
+    name = asset_name()
+    by_name = {a["name"]: a for a in assets()}
+    if name not in by_name:
+        return False
+    return facts(by_name.get(name + ".json")).get("key") == os.environ.get("KEY")
+
+
+def url_key(url, query, source_text):
+    """The KEY of a new build of URL (with QUERY for a URL q.HASH) of the
+    source SOURCE_TEXT (source()), as the step "Read the choices" of
+    custom-build.yml makes it."""
+    env = settings(dispatch({"INPUT_URL": url, "INPUT_QUERY": query}))
+    return key(env, source_text)
 
 
 def url_mark(reason, now=None):
@@ -665,13 +758,87 @@ def url_mark(reason, now=None):
     upload(f"{URL_PREFIX}{url}.{now.strftime('%Y%m%d')}.txt", text.encode(), "text/plain")
 
 
-def cleanup_urls():
-    """Deletes each file of a build of a URL, and each mark."""
+MARK = re.compile(re.escape(URL_PREFIX) + r"(?:" + URL.pattern + r")\.[0-9]{8}\.txt")
+
+
+def delete_marks():
+    """Deletes each mark of a build of a URL (url_mark()). The files of
+    the builds stay."""
     repo = os.environ["GITHUB_REPOSITORY"]
     for a in assets():
-        if a["name"].startswith(URL_PREFIX):
+        if MARK.fullmatch(a["name"]):
             github(f"/repos/{repo}/releases/assets/{a['id']}", "DELETE")
             print(f"deleted {a['name']}")
+
+
+def stale_urls(found, source_text, read=None):
+    """The URL and the query of each file of a build of a URL in FOUND
+    (the files of the release) whose NAME.json does not name the KEY of a
+    build of the source SOURCE_TEXT. A file of a URL q.HASH with no query
+    in NAME.json (a build before NAME.json) stays as it is, until the
+    cleanup of 30 days."""
+    by_name = {a["name"]: a for a in found}
+    out = []
+    for name in sorted(by_name):
+        url = name[len(URL_PREFIX):-len(".com")] if name.startswith(URL_PREFIX) else ""
+        if not (name.endswith(".com") and URL.fullmatch(url)):
+            continue
+        known = facts(by_name.get(name + ".json"), read)
+        query = known.get("query", "") if isinstance(known.get("query", ""), str) else ""
+        if url.startswith("q.") and not query:
+            print(f"{name}: no query in {name}.json, so no new build")
+            continue
+        try:
+            new = url_key(url, query, source_text)
+        except SystemExit as error:
+            print(f"{name}: no new build ({str(error)[:200]})")
+            continue
+        if known.get("key") != new:
+            out.append((url, query))
+    return out
+
+
+def run_of(runs, title, since):
+    """The run with the title TITLE that started at SINCE or later, or
+    None."""
+    found = [r for r in runs if r["display_title"] == title and r["created_at"] >= since]
+    return min(found, key=lambda r: r["run_number"]) if found else None
+
+
+def rebuild_urls(commit, sleep=time.sleep, clock=time.monotonic, now=None):
+    """Starts a new build of each URL of stale_urls(), one at a time, and
+    waits for its end. The run has the input rebuild: it builds only when
+    the file of the URL is not of its source, and its new file replaces
+    the old one (put()). Thus a request of the URL gets the old file until
+    the new one is there, and never waits. The loop stops at
+    REBUILD_DAILY new builds of today: the next run of the workflow (each
+    day) does the rest."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
+    runs = (f"/repos/{repo}/actions/workflows/custom-build.yml/runs"
+            "?event=workflow_dispatch&per_page=100")
+    for url, query in stale_urls(assets(), source(commit)):
+        if today() >= REBUILD_DAILY:
+            print(f"{REBUILD_DAILY} new builds today: the other URLs wait for the next run")
+            return
+        # One minute before now: the clock of GitHub can be a bit late.
+        since = (now() - datetime.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = {"ref": "main", "inputs": {"url": url, "query": query, "rebuild": "1"}}
+        github(f"/repos/{repo}/actions/workflows/custom-build.yml/dispatches", "POST",
+               json.dumps(body).encode(), "application/json")
+        print(f"started a new build of {url}")
+        title = f"Rebuild of the URL {url}"
+        start = clock()
+        while True:
+            sleep(30)
+            run = run_of(github(runs)["workflow_runs"], title, since)
+            if run and run["status"] == "completed":
+                print(f"{url}: {run['conclusion']} ({run['html_url']})")
+                break
+            limit = REBUILD_SECONDS if run else NEW_RUN_SECONDS
+            if clock() - start > limit:
+                print(f"{url}: no end of the run, so the next URL")
+                break
 
 
 def ahead(runs, number):
@@ -769,8 +936,15 @@ def main(argv):
     if command == "cleanup" and len(argv) == 2:
         cleanup()
         return
-    if command == "cleanup-urls" and len(argv) == 2:
-        cleanup_urls()
+    if command == "current" and len(argv) == 2:
+        sys.exit(0 if current() else 1)
+    if command == "delete-marks" and len(argv) == 2:
+        delete_marks()
+        return
+    if command == "rebuild-urls" and len(argv) == 3:
+        if not re.fullmatch(r"[0-9a-f]{40}", argv[2]):
+            fail(f"Not a commit: {argv[2]!r}")
+        rebuild_urls(argv[2])
         return
     if command == "mark" and len(argv) == 3:
         url_mark(argv[2])

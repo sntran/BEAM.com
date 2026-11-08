@@ -80,9 +80,17 @@ on:
           the start of their SHA-256.
         type: string
         default: ""
+      rebuild:
+        description: >-
+          1 for a new build of a URL after a change of the source (custom-build-caches.yml):
+          no build when beam-u.URL.com.json names the KEY of now, and the new file replaces
+          the old one. A build that fails puts no mark.
+        type: string
+        default: "0"
 
 run-name: >-
-  ${{ github.event_name == 'workflow_dispatch' && inputs.url != '' && format('Custom build of the URL {0}', inputs.url)
+  ${{ github.event_name == 'workflow_dispatch' && inputs.url != '' && inputs.rebuild == '1' && format('Rebuild of the URL {0}', inputs.url)
+  || github.event_name == 'workflow_dispatch' && inputs.url != '' && format('Custom build of the URL {0}', inputs.url)
   || github.event_name == 'workflow_dispatch' && 'Custom build from mkfifo.com/beam.com'
   || format('Custom build for issue {0}', github.event.issue.number) }}
 
@@ -98,7 +106,8 @@ permissions:
 # the queue of scripts/custom_build.py keeps all the requests, where a
 # group keeps only one that waits. A build of a URL has one group for
 # each URL: the FIFO asks again while the client waits, and the group
-# keeps the build that runs and one that waits (it finds the file).
+# keeps the build that runs and one that waits (it finds the file). A
+# rebuild of a URL is in the group of the URL too.
 concurrency:
   group: custom-build-${{ github.event.issue.number || (inputs.url != '' && format('url-{0}', inputs.url)) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ inputs.url == '' }}
@@ -177,13 +186,16 @@ jobs:
 
       # The FIFO beam.com: a file with the same choices of the same commit is
       # in the release already. The files of more than 30 days go away.
+      # A rebuild of a URL looks for a file with the KEY of now
+      # (beam-u.URL.com.json).
       - name: Find a build with the same choices
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          FIND: ${{ inputs.rebuild == '1' && 'current' || 'exists' }}
         run: |
           python3 -I scripts/custom_build.py cleanup
-          if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
+          if python3 -I scripts/custom_build.py "$FIND"; then echo REUSE=1 >> "$GITHUB_ENV"; fi
 
       # The FIFO beam.com: one build at a time, in the sequence of the
       # requests, at most 3 that wait, and at most 10 new builds each day.
@@ -193,9 +205,10 @@ jobs:
         timeout-minutes: 185
         env:
           GH_TOKEN: ${{ github.token }}
+          FIND: ${{ inputs.rebuild == '1' && 'current' || 'exists' }}
         run: |
           python3 -I scripts/custom_build.py queue
-          if python3 -I scripts/custom_build.py exists; then echo REUSE=1 >> "$GITHUB_ENV"; fi
+          if python3 -I scripts/custom_build.py "$FIND"; then echo REUSE=1 >> "$GITHUB_ENV"; fi
 
       - name: Cache cosmocc
         if: env.REUSE != '1' && env.REFUSED == ''
@@ -402,12 +415,14 @@ jobs:
               echo "The store did not take $(basename "$f") (it can be there already)"
           done
 
-      # The file, and NAME.sha256 before it.
+      # The file, and NAME.sha256 before it. For a URL, NAME.json after
+      # it, with KEY and the query (custom_build.py put).
       - name: Put the file in the release
         id: put
         if: github.event_name == 'workflow_dispatch' && env.REUSE != '1' && env.REFUSED == ''
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_QUERY: ${{ inputs.query }}
         run: python3 -I scripts/custom_build.py put "build/$OUT_NAME"
 
       - name: Upload
@@ -453,9 +468,10 @@ jobs:
 
       # A build of a URL that did not run: a text with the reason goes in
       # the release for the day, so the FIFO gives it to the client and
-      # does not ask for the build again.
+      # does not ask for the build again. A rebuild puts no mark: the
+      # old file stays, and the next rebuild tries again.
       - name: Mark the URL
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.url != '' && (env.REFUSED != '' || failure())
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.url != '' && inputs.rebuild != '1' && (env.REFUSED != '' || failure())
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I scripts/custom_build.py mark "${REFUSED:-failed}"
