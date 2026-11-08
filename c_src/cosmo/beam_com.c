@@ -1524,6 +1524,32 @@ static int read_release(struct arglist *out)
     return 1;
 }
 
+/*
+ * The reload of new code in a program (beam_com_reload of kernel,
+ * patches/otp/0005-reload.patch): "-beam_com_reload MS", the time between
+ * two checks of the file. BEAM_COM_RELOAD=MS changes the time, and 0
+ * turns it off; a later -beam_com_reload of the vm.args of the release
+ * wins. Only for a program (a release or .args in its zip), not for the
+ * tools of beam.com. Not on Windows: there a running file cannot get a
+ * new file in its place.
+ */
+static void reload_flag(struct arglist *out, int program)
+{
+    const char *ms = getenv("BEAM_COM_RELOAD");
+    size_t n;
+
+    if (!program || beam_com_is_windows())
+        return;
+    if (!ms || !*ms)
+        ms = "1000";
+    /* Only 1 to 9 digits; another value turns the reload off. */
+    n = strspn(ms, "0123456789");
+    if (ms[n] || n > 9)
+        ms = "0";
+    push(out, "-beam_com_reload");
+    push(out, (char *)ms);
+}
+
 static char *home_dir(void)
 {
     char *home = getenv("HOME");
@@ -2065,6 +2091,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, certs = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode, make_mode;
+    int program = 0;
     const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
@@ -2285,6 +2312,7 @@ void beam_com_main(int *argcp, char ***argvp)
     } else {
         has_release = read_release(&file);
         has_args = read_zip_args(&file);
+        program = has_release || has_args;
     }
     if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) && !has_release && !has_args) {
         /* The command line of beam.com (run, -o, --help, --version), when
@@ -2394,6 +2422,7 @@ void beam_com_main(int *argcp, char ***argvp)
      * beam_com_exe) (for example to start it again in erl mode). */
     push(&all, "-beam_com_exe");
     push(&all, GetProgramExecutableName());
+    reload_flag(&all, program);
     push(&all, "--");
     for (i = 0; i < certs.n; i++)
         push(&all, certs.v[i]);

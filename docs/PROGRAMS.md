@@ -301,6 +301,102 @@ leave the shell with Ctrl-G then `q`, or with Ctrl-C two times.
 The graphical `observer` needs `wx`, which is not in `beam.com`; start
 it in an Erlang installation and connect to the node, or use the shell.
 
+## New code in a running program
+
+A program loads new code when a new file takes the place of its file.
+You do not send the full file again: put only the changed files into it
+with `zip`, on the server. The program loads each changed module, and
+its processes and their state stay.
+
+> **Caution:** do not write into the file of a running program, for
+> example with `cp new.com app.com`, `scp` to the same name, or
+> `zip -g`. The program maps its file, and a change in place can stop it
+> (`SIGSEGV`). Write a new file and rename it: `zip` does this, and so
+> does `mv` of a new file.
+
+For a Mix project, build the release as for the first file, and then
+send only the code of your application:
+
+```sh
+# On your computer, with the same beam.com as the file on the server.
+MIX_ENV=prod beam.com mix release --overwrite
+cd _build/prod/rel/my_app
+tar -czf code.tgz lib/my_app-0.1.0 releases/0.1.0/consolidated
+scp code.tgz server:/srv/my_app/
+# On the server: put the files into the file that runs.
+cd /srv/my_app && tar -xzf code.tgz && zip -qr my_app.com lib releases
+```
+
+> **Caution:** do not put `releases/VSN/start.boot`, `sys.config` or
+> `vm.args` of `mix release` into the file. `beam.com DIR -o FILE`
+> changes them when it makes the file. Put only `lib/` and
+> `releases/VSN/consolidated/` (the protocols of Elixir) into it.
+
+In one second, the program loads the new code, and its log has the
+line `beam.com: loaded the new code of MODULES`. The steps:
+
+1. `zip` writes a new file and renames it into the place of the old
+   one. The program keeps the old file open, and `/zip` reads from it,
+   as before.
+2. Each second, the program compares the inode, the size and the time
+   of its file (`-beam_com_exe`). It reads a new file when the file
+   stays the same for one more check.
+3. It reads the zip of the new file as a plain file, and compares the
+   CRC-32 of each entry with the file before. Only the `.beam` files of
+   `lib/APP-VSN/ebin/` and `releases/VSN/consolidated/` load.
+4. A module loads only when its code is different (`module_info(md5)`).
+   A beam with the same code and other chunks (its docs) does not load
+   again, so you can put the whole `ebin` directory into the file.
+5. The changed modules load together (`code:atomic_load/1`). A module
+   with `-on_load` loads after the others.
+6. When a process still runs the old code of a module, the new code
+   waits. The program tries again at each check, and it never kills a
+   process. Its log names the modules that wait.
+
+A Phoenix LiveView page shows the new code at its next render, on the
+same WebSocket: the process of the LiveView keeps its assigns. In a
+test with Phoenix 1.8 and LiveView 1.2 on Linux, `mix release` took
+0.9 seconds, the code of the application was 48 KB, and `zip` took
+0.02 seconds. The open page showed the new text at its next event,
+with the same count and no new page load.
+
+These changes need a restart of the program:
+
+- A file other than these beams, for example in `priv/`. The log names
+  each one. The running program reads `priv/static` from the old file,
+  so a new template that names new asset files gets 404 for them until
+  the restart.
+- Another runtime: the bytes before the zip changed (the emulator, the
+  NIFs in it). The program loads no module, and its log tells it.
+- A new application, a new child of a supervisor, the configuration,
+  or a NIF.
+- A process that needs its state in a new form. A `gen_server` keeps
+  its state: use `code_change/3` with `sys:change_code/4` in a remote
+  shell, or restart the program.
+
+Erlang keeps two versions of a module. A process that still runs the
+oldest version stops the next load of that module, until the process
+calls the new code (the load waits; the process does not stop).
+
+Settings and commands:
+
+- `BEAM_COM_RELOAD=MS` is the time between two checks (1000 when not
+  set). `BEAM_COM_RELOAD=0` turns the reload off. `-beam_com_reload MS`
+  in the `vm.args` of the release does the same.
+- In a remote shell (`app.com remote`), `beam_com_reload:status()` gives
+  the last result and the modules that wait, and
+  `beam_com_reload:check()` checks the file now.
+- Compile the new code with the same OTP and Elixir as the file:
+  `beam.com mix release` of the same `beam.com` does this.
+- Not on Windows: a running `.exe` cannot get a new file in its place.
+  Not in the WebAssembly runtime (`WORKERS.md`).
+- A release with the `kernel` of another OTP installation (see "Add
+  your release") does not have the reload: it is in the `kernel` of
+  beam.com (`patches/otp/0005-reload.patch`).
+
+[`examples/reload`](../examples/reload) shows each case, and CI runs its
+`check.sh` on Linux.
+
 ## Add your release
 
 Make a normal OTP release **without ERTS**, for OTP 29, and add its

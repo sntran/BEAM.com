@@ -547,6 +547,19 @@ if [ -d examples ]; then
             linux) check bluegreen/check.sh "$bluegreen" "$dir/beam.com" ;;
             *) probe bluegreen/check.sh "$dir/beam.com" 18451 5000 ;;
         esac
+        # New code in a running program (examples/reload): zip puts new
+        # modules into its file, and the program loads them. It needs zip
+        # (Info-ZIP). A probe on the systems other than Linux.
+        if command -v zip > /dev/null; then
+            cp -R examples/reload "$dir/"
+            reload='^hello: v1 2$@@^status: .*last => {ok,\[reload_loop,reload_text\]}@@^hello: v2 3$'
+            reload="$reload@@^loop: loop 1\$@@last => {waiting,\[reload_loop\]}@@^status: .*last => {ok,\[reload_loop\]}"
+            reload="$reload@@^after move: loop 2\$@@^off: no reload\$"
+            case $os in
+                linux) check reload/check.sh "$reload" "$dir/beam.com" ;;
+                *) probe reload/check.sh "$dir/beam.com" ;;
+            esac
+        fi
         runner=$saved_runner
     fi
     # A run: the executable in the cache, with the arguments after "--"

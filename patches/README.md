@@ -35,6 +35,7 @@ order, with `git apply`.
 | `0002-jit.patch` | `erts/configure*`, `make/autoconf/otp.m4`, `erts/emulator/Makefile.in`, `asmjit`, `beam/jit/` | A fat JIT: both backends, selected at compile time for each CPU half and at run time for macOS. | O13, O14, C22 |
 | `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hooks for NIF libraries in WebAssembly (an open, and a close of an entry that ERTS refuses), and `erl_nif.h` for `__wasm__` (not Emscripten). `wasm/erts/build.sh` applies it too. | O24 |
 | `0004-sandbox-resolver.patch` | `lib/kernel/src/inet_config.erl` | With `BEAM_COM_DNS`, the resolver of the sandbox with a host list is the only name server (`--allow-net=HOST,...`). | O27 |
+| `0005-reload.patch` | `lib/kernel/src/beam_com_reload.erl` (new), `kernel.erl`, `kernel.app.src`, `Makefile` | The reload of new code from a new file in the place of the file of a program, under `kernel_safe_sup`, with `-beam_com_reload MS` of beam.com. | C52 |
 
 ## Elixir (`patches/elixir/`)
 

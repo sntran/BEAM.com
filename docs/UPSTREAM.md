@@ -1446,6 +1446,40 @@ outside the ranges of the malloc of macOS. A reproducer: a loop of
 starts of an APE program that calls `sandbox_init()` of libSystem, and
 `vmmap` of a process that hangs.
 
+### C52. /zip maps the file one time, and a change in place stops the program
+
+**Status:** 4.0.2 (`libc/runtime/zipos-*.c`), Linux x86_64. Not a bug
+of the design: the zip file system reads its own file one time.
+
+**Symptom.** A running program does not see a new entry that `zip` puts
+into its file: `zip` writes a new file and renames it, and `/zip` still
+reads the old file. When a tool writes into the same file (Python
+`zipfile` with mode `a`), the next `file:list_dir("/zip")` of the
+program stops it with `SIGSEGV` in `readdir_zipos`.
+
+```sh
+cp beam.com t.com
+./t.com -noshell -eval 'timer:sleep(3000), io:format("~p~n", [file:list_dir("/zip")]), halt().' &
+sleep 1
+python3 -c 'import zipfile; z = zipfile.ZipFile("t.com", "a"); z.writestr("x.txt", "x"); z.close()'
+```
+
+**Cause.** The first use of `/zip` maps the file of the program and
+reads its central directory one time. The map stays for the life of
+the process, and a write into the file changes the bytes under it.
+
+**Workaround in BEAM.com.** `patches/otp/0005-reload.patch`: the process
+`beam_com_reload` of kernel watches the path of the file. When a new
+file is in its place, it reads that file as a plain file, and loads each
+changed module (`PROGRAMS.md`, "New code in a running program"). The
+docs tell people to write a new file and rename it, never to write into
+the file. The files of `priv/` still come from the old map.
+
+**Possible upstream fix.** A check of the path of the program (inode
+and size) at an open of `/zip`, as `OpenZip()` of redbean
+(`tool/net/redbean.c`) does at a reload: a new map for the new file,
+and the old map stays for the files that are open.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
