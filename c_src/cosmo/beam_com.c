@@ -2102,7 +2102,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, certs = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode, make_mode;
-    int program = 0;
+    int is_program = 0;
     const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
@@ -2323,7 +2323,7 @@ void beam_com_main(int *argcp, char ***argvp)
     } else {
         has_release = read_release(&file);
         has_args = read_zip_args(&file);
-        program = has_release || has_args;
+        is_program = has_release || has_args;
     }
     if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) && !has_release && !has_args) {
         /* The command line of beam.com (run, -o, --help, --version), when
@@ -2433,7 +2433,7 @@ void beam_com_main(int *argcp, char ***argvp)
      * beam_com_exe) (for example to start it again in erl mode). */
     push(&all, "-beam_com_exe");
     push(&all, GetProgramExecutableName());
-    reload_flag(&all, program);
+    reload_flag(&all, is_program);
     push(&all, "--");
     for (i = 0; i < certs.n; i++)
         push(&all, certs.v[i]);
