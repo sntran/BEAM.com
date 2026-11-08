@@ -11,7 +11,8 @@
 set -u
 [ $# -ge 1 ] || { echo "usage: $0 BEAM_COM [PORT]" >&2; exit 2; }
 command -v zip > /dev/null || { echo "$0: zip (Info-ZIP) is not installed" >&2; exit 2; }
-beam_com=$1 port=${2:-18461}
+# An absolute path: the steps below run beam.com in other directories.
+beam_com=$(cd "$(dirname "$1")" && pwd)/$(basename "$1") port=${2:-18461}
 run=${RUNNER:-sh}
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
