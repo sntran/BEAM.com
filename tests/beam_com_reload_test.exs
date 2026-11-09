@@ -196,6 +196,25 @@ defmodule BeamComReloadTest do
     assert :gen_server.call(pid, :status) == %{last: {:ok, []}, pending: []}
   end
 
+  # A second "beam.com DIR -o FILE" changes .wasm/.release.json, which
+  # only the WebAssembly runtime reads.
+  @tag :tmp_dir
+  test "a new file of releases/ gets a notice, and a new file of .wasm/ does not",
+       %{tmp_dir: dir} do
+    path = Path.join(dir, "app.com")
+    put(path, file([{~c"releases/1/sys.config", "[]."}, {~c".wasm/.release.json", "{}"}]))
+    pid = start(path)
+
+    put(
+      path,
+      file([{~c"releases/1/sys.config", "[{a, []}]."}, {~c".wasm/.release.json", ~s({"a":1})}])
+    )
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert check(pid) == {:ok, []} end)
+    assert log =~ "has new files that a restart uses: releases/1/sys.config"
+    refute log =~ ".wasm/.release.json"
+  end
+
   @tag :tmp_dir
   test "a beam outside the code path does not load", %{tmp_dir: dir} do
     mod = :beam_com_reload_t_e

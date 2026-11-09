@@ -335,17 +335,25 @@ cd /srv/my_app && mkdir -p stage && tar -xzf code.tgz -C stage
 (cd stage && zip -qr ../my_app.com lib)
 ```
 
-`beam.com DIR -o FILE` does not run `config/runtime.exs` or Mix
-aliases yet ([`ELIXIR.md`](ELIXIR.md)), so a Phoenix app from
-`mix phx.new` uses `mix release` (as
-[`examples/phoenix_demo`](../examples/phoenix_demo) does). Its release
-directory has the same paths:
+For a Phoenix app, `beam.com . -o new.com` makes the release with Mix
+("Phoenix in one file" in [`ELIXIR.md`](ELIXIR.md)). Take
+`lib/my_app-0.1.0` and `releases/0.1.0/consolidated` from it in the same
+way. The release directory of `mix release` (with `include_erts:
+false`) has the same paths.
+
+When the source is on the server, build over the file that runs:
 
 ```sh
-MIX_ENV=prod beam.com mix release --overwrite
-cd _build/prod/rel/my_app
-tar -czf code.tgz lib/my_app-0.1.0 releases/0.1.0/consolidated
+cd /srv/my_app/src && beam.com . -o ../my_app.com
 ```
+
+The builder writes a new file and renames it into the place of the old
+one, as `zip` does, so the program loads the changed code. Two builds of
+the same code give the same bytes: the builder strips the compile
+information and the debug information of the beams, as `mix release`
+does. Thus only the changed modules and files are new in the new file.
+The new file must come from the same `beam.com`, because a new runtime
+needs a restart.
 
 A release is not necessary for the beams. `mix compile` (or `erlc`)
 gives the same code, in a directory with no version

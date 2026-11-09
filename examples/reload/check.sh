@@ -82,11 +82,23 @@ pids="$pids $!"
 wait_for "$port" hello '^v1 1$' || exit 1
 echo "hello: $(ask "$port" hello)"
 
+# A second build of the source over the running file: the builder writes
+# a new file and renames it, as zip does, and the program loads the one
+# module that changed (docs/PROGRAMS.md). status does not change the
+# count of hello.
+sed 's/^version() -> "v1"\./version() -> "v0"./' "$here/src/reload_text.erl" > "$work/reload/src/reload_text.erl"
+$run "$beam_com" "$work/reload" -o "$work/reload.com" > "$work/build2.log" 2>&1 || {
+    cat "$work/build2.log"
+    exit 1
+}
+wait_for "$port" status 'last => {ok,\[reload_text\]}' || exit 1
+echo "build: $(ask "$port" status)"
+
 # Version 2 of reload_text and reload_loop. reload_server has the same
 # code (with its debug information now): it does not load again, and its
 # state stays.
 n=2 version reload_text reload_loop reload_server
-wait_for "$port" status 'last => {ok,' || exit 1
+wait_for "$port" status 'last => {ok,\[reload_loop,reload_text\]}' || exit 1
 echo "status: $(ask "$port" status)"
 echo "hello: $(ask "$port" hello)"
 # The loop of reload_loop still runs version 1, now the old code.

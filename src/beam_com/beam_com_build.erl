@@ -1402,12 +1402,17 @@ closure([App | Rest], Base, Name, Done) ->
     end.
 
 %% The files of the program application in the zip.
+%% The beams are stripped, as "mix release" strips them (strip/1): the
+%% compile info and the debug info have the paths of the build (a new
+%% temporary directory each time). Thus a second build of the same code
+%% gives the same bytes, and the reload of a running program
+%% (beam_com_reload) reads only the beams that changed.
 app_files(#{name := Name, vsn := Vsn, props := Props, beams := Beams,
             priv := Priv}) ->
     Dir = "lib/" ++ atom_to_list(Name) ++ "-" ++ Vsn,
     [{Dir ++ "/ebin/" ++ atom_to_list(Name) ++ ".app",
       io_lib:format("~tp.~n", [{application, Name, Props}])}]
-        ++ [{Dir ++ "/ebin/" ++ atom_to_list(M) ++ ".beam", Beam}
+        ++ [{Dir ++ "/ebin/" ++ atom_to_list(M) ++ ".beam", strip(Beam)}
             || {M, Beam} <- Beams]
         ++ [{Dir ++ "/priv/" ++ File, Data} || {File, Data} <- Priv].
 

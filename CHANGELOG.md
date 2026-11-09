@@ -17,6 +17,12 @@ notes of its release.
   installs it, as `mix local.hex` does. `--tool mix-release` uses Mix for
   each Mix project, and `--tool mix` keeps the builder of a plain Mix
   project. See "Phoenix in one file" in `docs/ELIXIR.md`.
+- `beam.com DIR -o FILE` over the file of a running program updates it:
+  the builder writes a new file and renames it, and the program loads the
+  changed code. The builder strips the beams of the program and of its
+  deps, as `mix release` does, so two builds of the same code give the
+  same bytes, and the new file has only the changed modules. The reload
+  gives no notice for a new file of `.wasm/`.
 - With no `git` program, the git deps of an `https` URL come with the git
   client of beam.com (`beam_com_git`, `beam_com_git_scm`): version 2 of
   the git protocol over HTTPS, the commit of `mix.lock` with depth 1, and

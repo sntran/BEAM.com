@@ -148,6 +148,12 @@ does (`strip_beams`). It keeps the chunks that the loader uses, the line
 numbers (for stack traces) and the attributes. A program is about 7.7 MB
 smaller, and it starts as fast as before ([`BENCHMARKS.md`](BENCHMARKS.md)).
 
+The builder also strips the beams that it compiles, of the program and
+of its deps. Their compile information and debug information have the
+paths of the build, with a new temporary directory each time. Without
+them, two builds of the same code give the same bytes, and the reload of
+a running program (`beam_com_reload`) reads only the beams that changed.
+
 ## JIT, and the interpreter (`beam-emu.com`)
 
 `beam.com` runs Erlang code with BeamAsm, the JIT of OTP, in one fat
