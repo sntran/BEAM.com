@@ -187,8 +187,10 @@ steps(Config) ->
     hex_deps(Config) andalso hex(),
     %% deps.get also installs rebar3 for a dep that rebar3 builds.
     run("deps.get", []),
+    %% Before compile: compile removes the code paths of the
+    %% applications that are not deps (beam_com_hex, inets).
+    windows_assets(os:type(), Config),
     run("compile", []),
-    windows_assets(os:type()),
     has_alias(Config, 'assets.deploy') andalso run("assets.deploy", []),
     run("release", ["--overwrite", "--quiet"]).
 
@@ -199,18 +201,18 @@ steps(Config) ->
 %% program itself), and esbuild gets the path of esbuild.exe from npm,
 %% because esbuild has no setting for the target. Cosmopolitan runs
 %% only x86-64 programs on Windows.
-windows_assets({_, windows}) ->
+windows_assets({_, windows}, Config) ->
     Get = fun(App, Key) -> application:get_env(App, Key, undefined) end,
-    Loaded = fun(Module) -> code:ensure_loaded(Module) =:= {module, Module} end,
-    lists:foreach(fun windows_asset/1, asset_tools(Get, Loaded));
-windows_assets(_Os) ->
+    Deps = [Name || {Name, _} <- dep_opts(proplists:get_value(deps, Config, []))],
+    lists:foreach(fun windows_asset/1, asset_tools(Get, Deps));
+windows_assets(_Os, _Config) ->
     ok.
 
 windows_asset(tailwind) ->
     io:format("beam.com: tailwind for Windows (target windows-x64.exe)~n"),
     set_env(tailwind, target, <<"windows-x64.exe">>);
 windows_asset(esbuild) ->
-    Version = binary_to_list('Elixir.Esbuild':configured_version()),
+    Version = unicode:characters_to_list(application:get_env(esbuild, version, <<>>)),
     Path = esbuild_exe(Version, filename:absname("_build"), fun beam_com_hex:http/5),
     io:format("beam.com: esbuild for Windows: ~ts~n", [Path]),
     set_env(esbuild, path, unicode:characters_to_binary(Path)).
@@ -218,13 +220,14 @@ windows_asset(esbuild) ->
 set_env(App, Key, Value) ->
     application:set_env(App, Key, Value, [{persistent, true}]).
 
-%% The packages of the project (Loaded: its module is in the code path)
-%% that get a program for Windows: only a package with no target and no
-%% path in its config (Get).
-asset_tools(Get, Loaded) ->
-    [tailwind || Loaded('Elixir.Tailwind'), Get(tailwind, target) =:= undefined,
+%% The deps of mix.exs (Deps) that get a program for Windows: tailwind
+%% with no target and no path in its config (Get), and esbuild with a
+%% version and no path.
+asset_tools(Get, Deps) ->
+    [tailwind || lists:member(tailwind, Deps), Get(tailwind, target) =:= undefined,
                  Get(tailwind, path) =:= undefined]
-        ++ [esbuild || Loaded('Elixir.Esbuild'), Get(esbuild, path) =:= undefined].
+        ++ [esbuild || lists:member(esbuild, Deps), Get(esbuild, path) =:= undefined,
+                       Get(esbuild, version) =/= undefined].
 
 %% The esbuild.exe of the package @esbuild/win32-x64 of npm, at
 %% Dir/esbuild-win32-x64-VERSION.exe: the path. A second build uses the

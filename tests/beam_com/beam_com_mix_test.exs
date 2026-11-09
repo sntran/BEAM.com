@@ -74,28 +74,34 @@ defmodule BeamComMixTest do
     refute :beam_com_mix.has_alias([], :"assets.deploy")
   end
 
-  test "asset_tools: tailwind and esbuild of the project with no target and no path" do
-    loaded = fn _module -> true end
-    none = fn _app, _key -> :undefined end
-    assert [:tailwind, :esbuild] == :beam_com_mix.asset_tools(none, loaded)
-    assert [] == :beam_com_mix.asset_tools(none, fn _module -> false end)
+  test "asset_tools: tailwind and esbuild of mix.exs with no target and no path" do
+    deps = [:phoenix, :tailwind, :esbuild]
+
+    version = fn
+      :esbuild, :version -> "0.25.4"
+      _app, _key -> :undefined
+    end
+
+    assert [:tailwind, :esbuild] == :beam_com_mix.asset_tools(version, deps)
+    assert [] == :beam_com_mix.asset_tools(version, [:phoenix])
+    assert [:tailwind] == :beam_com_mix.asset_tools(fn _app, _key -> :undefined end, deps)
 
     assert [:esbuild] ==
              :beam_com_mix.asset_tools(
                fn
                  :tailwind, :target -> "windows-x64.exe"
-                 _app, _key -> :undefined
+                 app, key -> version.(app, key)
                end,
-               loaded
+               deps
              )
 
     assert [] ==
              :beam_com_mix.asset_tools(
                fn
                  _app, :path -> "/p"
-                 _app, _key -> :undefined
+                 app, key -> version.(app, key)
                end,
-               loaded
+               deps
              )
   end
 
