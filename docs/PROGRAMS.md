@@ -316,24 +316,39 @@ its processes and their state stay.
 
 The files go into the zip at the paths of the file:
 `lib/APP-VSN/ebin/`, `lib/APP-VSN/priv/` and
-`releases/VSN/consolidated/` (the protocols of Elixir). `mix release`
-gives these paths:
+`releases/VSN/consolidated/` (the protocols of Elixir). The new file of
+a build gives these paths. For a project that `beam.com DIR -o FILE`
+builds, build the new version in the same way, and take only the
+directory of your application from it:
 
 ```sh
 # On your computer, with the same beam.com as the file on the server.
+beam.com . -o new.com
+unzip -q new.com 'lib/my_app-*' -d stage
+tar -czf code.tgz -C stage lib
+scp code.tgz server:/srv/my_app/
+# On the server: put the files into the file that runs.
+cd /srv/my_app && mkdir -p stage && tar -xzf code.tgz -C stage
+(cd stage && zip -qr ../my_app.com lib)
+```
+
+`beam.com DIR -o FILE` does not run `config/runtime.exs` or Mix
+aliases yet ([`ELIXIR.md`](ELIXIR.md)), so a Phoenix app from
+`mix phx.new` uses `mix release` (as
+[`examples/phoenix_demo`](../examples/phoenix_demo) does). Its release
+directory has the same paths:
+
+```sh
 MIX_ENV=prod beam.com mix release --overwrite
 cd _build/prod/rel/my_app
 tar -czf code.tgz lib/my_app-0.1.0 releases/0.1.0/consolidated
-scp code.tgz server:/srv/my_app/
-# On the server: put the files into the file that runs.
-cd /srv/my_app && tar -xzf code.tgz && zip -qr my_app.com lib releases
 ```
 
-A release is not necessary. `mix compile` (or `erlc`) gives the same
-beams, in a directory with no version (`_build/prod/lib/my_app/ebin`):
-copy them to `lib/my_app-0.1.0/ebin/` before `zip`. Source files
-(`.erl`, `.ex`) do not load: compile them with the same OTP and Elixir as
-the file, for example with `beam.com mix compile` of the same
+A release is not necessary for the beams. `mix compile` (or `erlc`)
+gives the same code, in a directory with no version
+(`_build/prod/lib/my_app/ebin`): copy it to `lib/my_app-0.1.0/ebin/`
+before `zip`. Source files (`.erl`, `.ex`) do not load: compile them
+with the same OTP and Elixir as the file, for example with the same
 `beam.com`.
 
 > **Caution:** do not put `releases/VSN/start.boot`, `sys.config` or
