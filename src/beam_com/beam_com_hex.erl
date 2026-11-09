@@ -32,7 +32,7 @@
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
          rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
          unpack/3, unpack/4, resolve/3, fetch/5, http_get/2, read_limited/2,
-         registry/0, consult/1, meta_requirements/1]).
+         registry/0, consult/1, meta_requirements/1, locked/2]).
 -endif.
 
 -define(API, "https://hex.pm/api").
@@ -78,7 +78,7 @@ fetch(Dir, LibDir, Deps, Format, Registry) ->
     Lock = read_lock(Format, LockFile),
     Locked = [N || {N, _, _} <- Deps, is_map_key(N, Lock)],
     {Chosen, Resolved} = case length(Locked) =:= length(Deps) of
-                             true -> {from_lock(Lock), false};
+                             true -> {from_lock(locked(Deps, Lock)), false};
                              false -> {resolve(Deps, Lock, Registry), true}
                          end,
     Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
@@ -305,8 +305,24 @@ mix_entry(Name, Entry) ->
     Get = fun(N) when N =< tuple_size(Entry) -> element(N, Entry);
              (_) -> nil
           end,
-    #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
-      inner => lock_hash(Name, Get(4)), outer => lock_hash(Name, Get(8))}.
+    Entry1 = #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
+               inner => lock_hash(Name, Get(4)), outer => lock_hash(Name, Get(8))},
+    case lock_deps(Get(6)) of
+        none -> Entry1;
+        Deps -> Entry1#{deps => Deps}
+    end.
+
+%% The deps of an entry of mix.lock that are not optional:
+%% [{name, requirement, opts}]. none for another form.
+lock_deps(Deps) when is_list(Deps) ->
+    try
+        [N || {N, _Req, Opts} <- Deps, is_atom(N),
+              proplists:get_value(optional, Opts, false) =/= true]
+    catch
+        error:_ -> none
+    end;
+lock_deps(_) ->
+    none.
 
 lock_hash(_Name, nil) -> undefined;
 lock_hash(_Name, Hash) when is_binary(Hash) -> Hash;
@@ -338,7 +354,29 @@ lock_map(Entries, Rest) ->
        end || {Name, Source, Level} <- Entries]).
 
 from_lock(Lock) ->
-    maps:map(fun(Name, P) -> P#{name => Name} end, Lock).
+    maps:map(fun(Name, P) -> (maps:remove(deps, P))#{name => Name} end, Lock).
+
+%% The entries of the lock that Deps need: Deps, and the deps of their
+%% entries in mix.lock. Mix also locks the deps only for :dev or :test
+%% (phoenix_live_reload), and a program does not get them. A lock with
+%% no deps in an entry (rebar.lock: rebar3 locks only the deps of the
+%% default profile) gives all its entries.
+locked(Deps, Lock) ->
+    case lists:all(fun(P) -> is_map_key(deps, P) end, maps:values(Lock)) of
+        true -> maps:with(reached([N || {N, _, _} <- Deps], Lock, #{}), Lock);
+        false -> Lock
+    end.
+
+reached([], _Lock, Seen) ->
+    maps:keys(Seen);
+reached([N | Rest], Lock, Seen) when is_map_key(N, Seen) ->
+    reached(Rest, Lock, Seen);
+reached([N | Rest], Lock, Seen) ->
+    Next = case Lock of
+               #{N := #{deps := D}} -> D;
+               _ -> []
+           end,
+    reached(Next ++ Rest, Lock, Seen#{N => true}).
 
 %% The text of rebar.lock (the format of rebar3), from the unpacked
 %% packages.
@@ -796,7 +834,11 @@ skip([C | Rest]) when C =:= $\s; C =:= $\t; C =:= $\n; C =:= $\r -> skip(Rest);
 skip([$% | Rest]) -> skip(lists:dropwhile(fun(C) -> C =/= $\n end, Rest));
 skip(Chars) -> Chars.
 
-%% The packages in the order to compile them.
+%% The packages in the order to compile them: a package after the
+%% packages that it needs, and also after its optional deps that the
+%% build has, as Mix does. The code of a package can check an optional
+%% dep at compile time: ecto_sql defines Ecto.Adapters.Postgres.Connection
+%% only when postgrex compiled first.
 order(Packages) ->
     ByName = maps:from_list([{N, P} || #{name := N} = P <- Packages]),
     Sorted = lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Packages),
@@ -810,8 +852,9 @@ visit(N, ByName, {Order, Seen} = Acc) ->
         _ ->
             case ByName of
                 #{N := #{requires := R} = P} ->
+                    Optional = [D || {D, _, _, true} <- maps:get(lock_reqs, P, [])],
                     {O1, S1} = lists:foldl(fun(D, A) -> visit(D, ByName, A) end,
-                                           {Order, Seen#{N => true}}, R),
+                                           {Order, Seen#{N => true}}, R ++ Optional),
                     {[P | O1], S1};
                 _ -> Acc
             end

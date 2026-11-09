@@ -239,10 +239,29 @@ defmodule BeamComHexTest do
       assert %{
                a: %{pkg: "a", vsn: ~c"1.0.0", inner: none, outer: none},
                b: %{pkg: "b", vsn: ~c"1.0.0", inner: "BB", outer: none},
-               c: %{pkg: "c", vsn: ~c"1.0.0", inner: "CC", outer: none},
-               d: %{pkg: "d_pkg", vsn: ~c"1.0.0", inner: "DD", outer: none},
-               e: %{pkg: "e", vsn: ~c"1.0.0", inner: "EE", outer: none}
+               c: %{pkg: "c", vsn: ~c"1.0.0", inner: "CC", outer: none, deps: []},
+               d: %{pkg: "d_pkg", vsn: ~c"1.0.0", inner: "DD", outer: none, deps: []},
+               e: %{pkg: "e", vsn: ~c"1.0.0", inner: "EE", outer: none, deps: []}
              } == :beam_com_hex.read_lock(:mix, file)
+    end
+
+    # Mix also locks the deps only for :dev or :test. A build gets the
+    # entries that its deps reach, not the optional ones. With an entry
+    # that has no deps (an older mix.lock, or rebar.lock), it gets all.
+    test "locked/2: the entries that the deps reach" do
+      lock = %{
+        app: %{pkg: "app", deps: [:lib]},
+        lib: %{pkg: "lib", deps: [:base]},
+        base: %{pkg: "base", deps: []},
+        dev_only: %{pkg: "dev_only", deps: [:base]},
+        other: %{pkg: "other", deps: []}
+      }
+
+      deps = [{:app, "app", ~c"~> 1.0"}]
+      assert [:app, :base, :lib] == Enum.sort(Map.keys(:beam_com_hex.locked(deps, lock)))
+
+      assert [:app, :base, :dev_only, :lib, :other] ==
+               Enum.sort(Map.keys(:beam_com_hex.locked(deps, %{lock | other: %{pkg: "other"}})))
     end
 
     test "read_lock/2: a bad checksum and an entry that is not Hex", %{dir: dir} do
@@ -286,8 +305,20 @@ defmodule BeamComHexTest do
       assert "" ==
                capture_io(:stderr, fn ->
                  assert %{
-                          jason: %{pkg: "jason", vsn: ~c"1.4.4", inner: "AA", outer: "BB"},
-                          my_app: %{pkg: "my_pkg", vsn: ~c"0.1.0", inner: "CC", outer: "DD"}
+                          jason: %{
+                            pkg: "jason",
+                            vsn: ~c"1.4.4",
+                            inner: "AA",
+                            outer: "BB",
+                            deps: []
+                          },
+                          my_app: %{
+                            pkg: "my_pkg",
+                            vsn: ~c"0.1.0",
+                            inner: "CC",
+                            outer: "DD",
+                            deps: []
+                          }
                         } == :beam_com_hex.read_lock(:mix, file)
                end)
     end
@@ -324,7 +355,7 @@ defmodule BeamComHexTest do
                 "[{:b, \"~> 0.2\", [hex: :b, repo: \"hexpm\", optional: false]}], " <>
                 "\"hexpm\", \"bb\"},\n}\n"} == File.read(List.to_string(file))
 
-      assert %{a: %{pkg: "a_pkg", vsn: ~c"1.0.0", inner: "aa", outer: "bb"}} ==
+      assert %{a: %{pkg: "a_pkg", vsn: ~c"1.0.0", inner: "aa", outer: "bb", deps: [:b]}} ==
                :beam_com_hex.read_lock(:mix, file)
     end
 
@@ -709,7 +740,31 @@ defmodule BeamComHexTest do
           ["rebar3"]
         )
 
+      # aopt needs zopt only when zopt is in the build (an optional
+      # dep): the names sort the other way.
+      aopt =
+        HexFixture.package(
+          "aopt",
+          ~c"1.0.0",
+          app_files("aopt", ~c"1.0.0", [], ~c"f() -> aopt.\n"),
+          [{"zopt", ~c">= 1.0.0", :optional}],
+          ["rebar3"]
+        )
+
+      zopt =
+        HexFixture.package(
+          "zopt",
+          ~c"1.0.0",
+          app_files("zopt", ~c"1.0.0", [], ~c"f() -> zopt.\n"),
+          [],
+          [
+            "rebar3"
+          ]
+        )
+
       pkgs = [
+        {"aopt", ~c"1.0.0", [{"zopt", ~c">= 1.0.0", :optional}], aopt},
+        {"zopt", ~c"1.0.0", [], zopt},
         {"alpha", ~c"1.0.0", [], b.(~c"9.9.9")},
         {"alpha", ~c"1.1.0", [{"beta", ~c">= 0.2.0"}], a11},
         {"alpha", ~c"2.0.0", [], b.(~c"9.9.9")},
@@ -792,6 +847,20 @@ defmodule BeamComHexTest do
       :ok = :file.write_file(cache, "changed")
       _ = fetch_quiet(app, lib.(3))
       assert ~c"/repo/tarballs/beta-0.2.0.tar" == List.last(HexFixture.requests(pid))
+    end
+
+    # As Mix does: ecto_sql compiles after postgrex when the build has
+    # postgrex, because the code of ecto_sql checks it at compile time.
+    test "an optional dep in the build compiles first", %{dir: dir, lib: lib} do
+      both = :filename.join(dir, ~c"both")
+      :ok = :filelib.ensure_path(both)
+      :ok = :file.write_file(:filename.join(both, ~c"rebar.config"), "{deps, [aopt, zopt]}.\n")
+      assert [:zopt, :aopt] == for(%{name: n} <- fetch_quiet(both, lib.(4)), do: n)
+      # Without zopt in the deps, the build does not get it.
+      one = :filename.join(dir, ~c"one")
+      :ok = :filelib.ensure_path(one)
+      :ok = :file.write_file(:filename.join(one, ~c"rebar.config"), "{deps, [aopt]}.\n")
+      assert [:aopt] == for(%{name: n} <- fetch_quiet(one, lib.(5)), do: n)
     end
 
     test "a package that is not on the server", %{dir: dir, lib: lib} do

@@ -17,6 +17,13 @@ notes of its release.
   installs it, as `mix local.hex` does. `--tool mix-release` uses Mix for
   each Mix project, and `--tool mix` keeps the builder of a plain Mix
   project. See "Phoenix in one file" in `docs/ELIXIR.md`.
+- The builder of a plain Mix project compiles a package after its
+  optional deps that the build has, as Mix does. Before, `ecto_sql`
+  could compile before `postgrex`, and the program stopped at its start:
+  "could not find Ecto.Adapters.Postgres.Connection".
+- With a `mix.lock` that Mix wrote, the builder takes only the entries
+  that the deps of the program reach. Before, it also compiled the deps
+  only for `:dev` or `:test` of the lock, such as `phoenix_live_reload`.
 - A program loads new code when a new file takes the place of its file,
   so a deploy can send only the changed code: `zip -r app.com
   lib/my_app-0.1.0` on the server. The process `beam_com_reload`
