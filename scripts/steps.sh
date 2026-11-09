@@ -490,6 +490,7 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_inet_gethost.c "$ROOT"/c_src/cosmo/beam_com_epmd.h \
        "$ROOT"/c_src/cosmo/beam_com_epmd.c "$ROOT"/c_src/cosmo/beam_com_epmd_srv.c \
        "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
+       "$ROOT"/c_src/cosmo/beam_com_agent.c \
        "$ROOT"/c_src/cosmo/beam_com_libc.h "$ROOT"/c_src/cosmo/beam_com_net.c \
        "$ROOT"/c_src/cosmo/beam_com_net.h "$ROOT"/c_src/cosmo/beam_com_fs.c \
        "$ROOT"/c_src/cosmo/beam_com_fs.h "$ROOT"/c_src/cosmo/beam_com_seatbelt.c \
@@ -1745,7 +1746,8 @@ step_multicall() {
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
-    objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_net.o $objdir/beam_com_fs.o"
+    objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_agent.o $objdir/beam_com_net.o"
+    objs="$objs $objdir/beam_com_fs.o"
     objs="$objs $objdir/beam_com_seatbelt.o $objdir/beam_com_nif.o $objdir/beam_com_nif_syms.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"

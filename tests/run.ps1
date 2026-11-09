@@ -661,6 +661,30 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
     }
 }
 
+# The SSH agent of Windows OpenSSH: the git client connects to its named
+# pipe through ssh_agent_bridge (c_src/cosmo/beam_com_agent.c). The check
+# starts the service ssh-agent (a runner of CI is an administrator), and
+# adds a new key without a passphrase.
+if ((Test-Path "examples") -and (Get-Service ssh-agent -ErrorAction SilentlyContinue)) {
+    $agentReady = $false
+    try {
+        Set-Service ssh-agent -StartupType Manual -ErrorAction Stop
+        Start-Service ssh-agent -ErrorAction Stop
+        $agentReady = $true
+    } catch {
+        Write-Host "SKIP: ssh_agent_check: the service ssh-agent does not start ($_)"
+    }
+    if ($agentReady) {
+        $key = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_agent_key"
+        Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+        & ssh-keygen.exe -q -t ed25519 -N ([string]::Empty) -C beam_com_agent_check -f $key
+        & ssh-add.exe $key 2>&1 | Write-Host
+        Check "beam.com" 'ssh_agent_check: [0-9]+ keys, the key signs' @("escript", "tests/programs/ssh_agent_check.escript", '\\.\pipe\openssh-ssh-agent', "$key.pub")
+        & ssh-add.exe -d $key 2>&1 | Write-Host
+        Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+    }
+}
+
 # SQLite (in beam.com).
 $sqlite = 'sqlite: version 3@@sqlite: json \["alpha","beta","gamma"\]@@sqlite: 3 rows in '
 if (Test-Path "examples") {

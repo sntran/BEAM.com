@@ -206,6 +206,7 @@ extern int inet_gethost_main(int argc, char **argv);
 extern int epmd_main(int argc, char **argv);
 extern int beam_com_inotifywait_main(int argc, char **argv);
 extern int beam_com_mac_listener_main(int argc, char **argv);
+extern int beam_com_ssh_agent_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -2278,6 +2279,12 @@ void beam_com_main(int *argcp, char ***argvp)
     if (argc > 1 && strcmp(argv[1], "mac_listener") == 0 && file_exists(BEAM_COM_TOOL) &&
         !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
         exit(beam_com_mac_listener_main(argc - 1, argv + 1));
+
+    /* ssh_agent_bridge: the connection of the git client to an SSH agent,
+     * a named pipe on Windows (c_src/cosmo/beam_com_agent.c). The git
+     * client starts it as /zip/bin/ssh_agent_bridge. */
+    if (starts_with(name, "ssh_agent_bridge"))
+        exit(beam_com_ssh_agent_main(argc, argv));
 
     /* make: the program that make_link() makes, for elixir_make. It runs
      * beam_com_make (the commands of beam.com, below). */

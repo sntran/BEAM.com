@@ -8,9 +8,14 @@
 %%   IdentityFile, IdentitiesOnly, IdentityAgent, UserKnownHostsFile and
 %%   HostKeyAlias. A host with ProxyJump or ProxyCommand needs the ssh
 %%   program.
-%% - The keys: the SSH agent (SSH_AUTH_SOCK, ssh_agent of OTP), and the
-%%   key files (IdentityFile, else id_ed25519, id_ecdsa and id_rsa). A key
-%%   file with a passphrase works through the agent only.
+%% - The keys: the SSH agent, and the key files (IdentityFile, else
+%%   id_ed25519, id_ecdsa and id_rsa). A key file with a passphrase works
+%%   through the agent only. The agent is IdentityAgent, else
+%%   SSH_AUTH_SOCK, a Unix socket. On Windows with no SSH_AUTH_SOCK, it is
+%%   the agent of Windows OpenSSH, the named pipe
+%%   \\.\pipe\openssh-ssh-agent. Erlang cannot open a named pipe, so the
+%%   helper program ssh_agent_bridge of beam.com connects to it
+%%   (c_src/cosmo/beam_com_agent.c).
 %% - The host key must be in known_hosts (also a hashed name). An unknown
 %%   host is an error, with the fingerprint of its key; the client asks
 %%   no question and writes no file.
@@ -25,12 +30,17 @@
 
 -ifdef(TEST).
 -export([parse_url/1, config/3, match_host/2, known/3, key_algs/1, rounds/1, quote/1,
-         v0_refs/1, private_key/1, next_pkt/1]).
+         v0_refs/1, private_key/1, next_pkt/1, agent_keys/1, agent_call/2, identities/1,
+         signature/1, default_agent/2, agent/2]).
 -endif.
 
 -define(TIMEOUT, 120000).
 -define(CONNECT_TIMEOUT, 30000).
 -define(MAX_ROUNDS, 4).
+-define(AGENT_TIMEOUT, 10000).
+%% The agent of Windows OpenSSH.
+-define(WINDOWS_AGENT, "\\\\.\\pipe\\openssh-ssh-agent").
+-define(BRIDGE, "/zip/bin/ssh_agent_bridge").
 
 %% True for an SSH URL of git: ssh://[user@]host[:port]/path, and the
 %% form of scp, [user@]host:path.
@@ -307,7 +317,7 @@ rounds(Keys) ->
                 [], [{K, algs(K, B)} || {K, B} <- Keys, algs(K, B) =/= []]).
 
 %% An agent of OpenSSH signs with rsa-sha2-256 when the client asks for
-%% each of the two RSA algorithms (ssh_agent asks for both).
+%% each of the two RSA algorithms (sign/3 asks for both).
 algs({agent, _}, B) ->
     case key_algs(B) of
         ['rsa-sha2-512' | _] -> ['rsa-sha2-256'];
@@ -355,11 +365,17 @@ user_key(Alg, Opts) ->
         none -> {error, enoent}
     end.
 
-%% A signature of the agent, for a key of the agent.
+%% A signature of the agent, for a key of the agent. The flags ask for
+%% rsa-sha2-256 and rsa-sha2-512, as ssh_agent of OTP does (other keys
+%% do not use them).
 sign(Blob, Data, Opts) ->
     P = proplists:get_value(key_cb_private, Opts),
-    ssh_agent:sign(Blob, Data, [{key_cb_private, [{socket_path, proplists:get_value(agent, P)},
-                                                  {timeout, ?TIMEOUT}]}]).
+    Request = <<13, (byte_size(Blob)):32, Blob/binary, (byte_size(Data)):32, Data/binary,
+                6:32>>,
+    case signature(agent_call(proplists:get_value(agent, P), Request)) of
+        {ok, Sig} -> Sig;
+        error -> error(agent_sign_failed)
+    end.
 
 note(P, Note) ->
     proplists:get_value(owner, P) ! {?MODULE, proplists:get_value(ref, P), Note}.
@@ -410,13 +426,14 @@ settings(Url, Opts) ->
                         Fs -> [expand(F, Tokens) || F <- Fs, string:lowercase(F) =/= "none"]
                     end,
     Only = string:lowercase(hd(maps:get("identitiesonly", C, ["no"]))) =:= "yes",
-    Agent = case maps:get("identityagent", C, none) of
-                none -> maps:get(agent, Opts, os:getenv("SSH_AUTH_SOCK", ""));
-                ["none"] -> "";
-                [A] when A =:= "SSH_AUTH_SOCK"; A =:= "$SSH_AUTH_SOCK" ->
-                    maps:get(agent, Opts, os:getenv("SSH_AUTH_SOCK", ""));
-                [A] -> expand(A, Tokens)
-            end,
+    Agent0 = case maps:get("identityagent", C, none) of
+                 none -> default_agent(Opts, os:type());
+                 ["none"] -> "";
+                 [A] when A =:= "SSH_AUTH_SOCK"; A =:= "$SSH_AUTH_SOCK" ->
+                     default_agent(Opts, os:type());
+                 [A] -> expand(A, Tokens)
+             end,
+    Agent = agent(Agent0, Opts),
     {Files, Locked} = lists:foldl(
                         fun(F, {Ks, Ls}) ->
                                 case file:read_file(F) of
@@ -455,17 +472,100 @@ home() ->
         H -> H
     end.
 
+%% The agent of SSH_AUTH_SOCK (or the option agent, for the tests). On
+%% Windows, an empty SSH_AUTH_SOCK gives the agent of Windows OpenSSH.
+default_agent(Opts, Os) ->
+    case {maps:get(agent, Opts, os:getenv("SSH_AUTH_SOCK", "")), Os} of
+        {"", {_, windows}} -> ?WINDOWS_AGENT;
+        {Agent, _} -> Agent
+    end.
+
+%% The agent of the connection: "" (none), the path of a Unix socket, or
+%% {bridge, Program, Agent} for a named pipe of Windows ("\\.\pipe\NAME"
+%% or "//./pipe/NAME"). The option agent_bridge (for the tests) names a
+%% program for each agent.
+agent("", _Opts) ->
+    "";
+agent(Agent, #{agent_bridge := Program}) ->
+    {bridge, Program, Agent};
+agent(Agent, _Opts) ->
+    case string:lowercase(lists:sublist(Agent, 9)) of
+        [S1, S2, $., S3, $p, $i, $p, $e, S4]
+          when S1 =:= S2, S2 =:= S3, S3 =:= S4, S1 =:= $\\ orelse S1 =:= $/ ->
+            {bridge, ?BRIDGE, Agent};
+        _ -> Agent
+    end.
+
 %% The keys of the agent: [Blob]. No agent, or an agent that does not
 %% answer, gives none.
-agent_keys("") ->
-    [];
-agent_keys(Socket) ->
-    try ssh_agent:send({ssh_agent_identities_request}, [{socket_path, Socket},
-                                                        {timeout, 10000}]) of
-        {ssh_agent_identities_response, Keys} ->
-            [element(2, K) || K <- Keys];
-        _ -> []
-    catch _:_ -> []
+agent_keys(Agent) ->
+    identities(agent_call(Agent, <<11>>)).
+
+identities({ok, <<12, N:32, Keys/binary>>}) ->
+    identities(Keys, N, []);
+identities(_) ->
+    [].
+
+identities(<<>>, 0, Blobs) ->
+    lists:reverse(Blobs);
+identities(<<L:32, Blob:L/binary, C:32, _Comment:C/binary, Rest/binary>>, N, Blobs) when N > 0 ->
+    identities(Rest, N - 1, [Blob | Blobs]);
+identities(_, _, _) ->
+    [].
+
+%% The signature blob of an answer SSH_AGENT_SIGN_RESPONSE.
+signature({ok, <<14, L:32, Sig:L/binary>>}) ->
+    case Sig of
+        <<FL:32, _Format:FL/binary, BL:32, Blob:BL/binary>> -> {ok, Blob};
+        _ -> error
+    end;
+signature(_) ->
+    error.
+
+%% One request to the agent: {ok, Answer} or error. A message of the
+%% agent protocol has its length (4 bytes) before it: {packet, 4}.
+agent_call("", _Request) ->
+    error;
+agent_call({bridge, Program, Agent}, Request) ->
+    try open_port({spawn_executable, Program},
+                  [{args, [Agent]}, {packet, 4}, binary, exit_status, use_stdio]) of
+        Port ->
+            %% No exit signal to the process of the connection.
+            unlink(Port),
+            Port ! {self(), {command, Request}},
+            Answer = receive
+                         {Port, {data, Data}} -> {ok, Data};
+                         {Port, {exit_status, _}} -> error
+                     after ?AGENT_TIMEOUT -> error
+                     end,
+            try port_close(Port) catch error:_ -> ok end,
+            flush_port(Port),
+            Answer
+    catch error:_ -> error
+    end;
+agent_call(Socket, Request) ->
+    %% A path that is too long for a socket exits with badarg.
+    try gen_tcp:connect({local, Socket}, 0, [binary, {packet, 4}, {active, false}],
+                        ?AGENT_TIMEOUT) of
+        {ok, S} ->
+            Answer = case gen_tcp:send(S, Request) of
+                         ok -> case gen_tcp:recv(S, 0, ?AGENT_TIMEOUT) of
+                                   {ok, Data} -> {ok, Data};
+                                   {error, _} -> error
+                               end;
+                         {error, _} -> error
+                     end,
+            gen_tcp:close(S),
+            Answer;
+        {error, _} ->
+            error
+    catch exit:badarg ->
+            error
+    end.
+
+flush_port(Port) ->
+    receive {Port, _} -> flush_port(Port)
+    after 0 -> ok
     end.
 
 %% Connect, run git-upload-pack, and give Fun the version of the server:

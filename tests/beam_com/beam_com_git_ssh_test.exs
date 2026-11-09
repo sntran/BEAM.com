@@ -191,6 +191,100 @@ defmodule BeamComGitSshTest do
     end
   end
 
+  describe "the agent" do
+    test "default_agent: SSH_AUTH_SOCK, else the agent of Windows OpenSSH on Windows" do
+      pipe = ~c"\\\\.\\pipe\\openssh-ssh-agent"
+      assert pipe == :beam_com_git_ssh.default_agent(%{agent: ~c""}, {:unix, :windows})
+      assert ~c"/s" == :beam_com_git_ssh.default_agent(%{agent: ~c"/s"}, {:unix, :windows})
+      assert ~c"" == :beam_com_git_ssh.default_agent(%{agent: ~c""}, {:unix, :linux})
+    end
+
+    test "agent: a named pipe of Windows goes through ssh_agent_bridge" do
+      bridge = ~c"/zip/bin/ssh_agent_bridge"
+      assert ~c"" == :beam_com_git_ssh.agent(~c"", %{agent_bridge: ~c"/b"})
+      assert ~c"/tmp/s" == :beam_com_git_ssh.agent(~c"/tmp/s", %{})
+
+      for pipe <- [~c"\\\\.\\pipe\\a", ~c"//./PIPE/a"] do
+        assert {:bridge, ^bridge, ^pipe} = :beam_com_git_ssh.agent(pipe, %{})
+      end
+
+      assert ~c"\\\\.\\pipe/a" == :beam_com_git_ssh.agent(~c"\\\\.\\pipe/a", %{})
+
+      assert {:bridge, ~c"/b", ~c"/tmp/s"} ==
+               :beam_com_git_ssh.agent(~c"/tmp/s", %{agent_bridge: ~c"/b"})
+    end
+
+    test "identities and signature: the answers of the agent" do
+      keys = <<12, 2::32, 1::32, "a", 1::32, "x", 2::32, "bb", 0::32>>
+      assert ["a", "bb"] == :beam_com_git_ssh.identities({:ok, keys})
+      assert [] == :beam_com_git_ssh.identities({:ok, <<12, 3::32, 1::32, "a", 0::32>>})
+      assert [] == :beam_com_git_ssh.identities({:ok, <<5>>})
+      assert [] == :beam_com_git_ssh.identities(:error)
+
+      sig = <<11::32, "ssh-ed25519", 3::32, "sig">>
+
+      assert {:ok, "sig"} ==
+               :beam_com_git_ssh.signature({:ok, <<14, byte_size(sig)::32, sig::binary>>})
+
+      assert :error == :beam_com_git_ssh.signature({:ok, <<14, 3::32, "sig">>})
+      assert :error == :beam_com_git_ssh.signature({:ok, <<5>>})
+      assert :error == :beam_com_git_ssh.signature(:error)
+    end
+
+    test "agent_call: no agent, a socket with no agent, a bridge that fails", ctx do
+      assert :error == :beam_com_git_ssh.agent_call(~c"", <<11>>)
+      none = String.to_charlist(Path.join(ctx.tmp_dir, "no_agent"))
+      assert :error == :beam_com_git_ssh.agent_call(none, <<11>>)
+      missing = String.to_charlist(Path.join(ctx.tmp_dir, "no_program"))
+      assert :error == :beam_com_git_ssh.agent_call({:bridge, missing, none}, <<11>>)
+      false_ = String.to_charlist(System.find_executable("false"))
+      assert :error == :beam_com_git_ssh.agent_call({:bridge, false_, none}, <<11>>)
+      assert [] == :beam_com_git_ssh.agent_keys({:bridge, false_, none})
+    end
+
+    test "agent_keys and sign: the agent on a socket, also through ssh_agent_bridge" do
+      {key, _} = SshFixture.user_key()
+      # A short path: a Unix socket has at most 107 bytes.
+      sock = Path.join(System.tmp_dir!(), "beam_com_agent_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm(sock) end)
+      SshFixture.Agent.start(sock, [key])
+      blob = :ssh_file.encode(SshFixture.public(key), :ssh2_pubkey)
+
+      agents =
+        [String.to_charlist(sock)] ++
+          for b <- [bridge()], b != nil, do: {:bridge, b, String.to_charlist(sock)}
+
+      for agent <- agents do
+        assert [blob] == :beam_com_git_ssh.agent_keys(agent)
+        sig = :beam_com_git_ssh.sign(blob, "data", key_cb_private: [agent: agent])
+        assert :public_key.verify("data", :none, sig, SshFixture.public(key))
+      end
+
+      assert_raise ErlangError, fn ->
+        :beam_com_git_ssh.sign("other", "data", key_cb_private: [agent: ~c""])
+      end
+    end
+  end
+
+  # The program ssh_agent_bridge: BEAM_COM_AGENT_BRIDGE (a build of
+  # c_src/cosmo/beam_com_agent.c), else the helper of the beam.com of the
+  # tests when the file has one, else nil.
+  defp bridge do
+    case System.get_env("BEAM_COM_AGENT_BRIDGE") do
+      nil ->
+        with {:ok, [[exe]]} <- :init.get_argument(:beam_com_exe),
+             {:ok, bin} <- File.read(exe),
+             {_, _} <- :binary.match(bin, "usage: ssh_agent_bridge AGENT") do
+          ~c"/zip/bin/ssh_agent_bridge"
+        else
+          _ -> nil
+        end
+
+      path ->
+        String.to_charlist(path)
+    end
+  end
+
   describe "the protocol" do
     test "next_pkt: lines, specials, and a part" do
       assert {"ab", "rest"} == :beam_com_git_ssh.next_pkt("0006abrest")
@@ -318,6 +412,12 @@ defmodule BeamComGitSshTest do
       """)
 
       assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out2"))
+
+      # The same through ssh_agent_bridge, as for the agent of Windows.
+      if b = bridge() do
+        opts = put_in(opts, [:ssh, :agent_bridge], b)
+        assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out3"))
+      end
     end
 
     test "a host that is not known, or a revoked key", ctx do
