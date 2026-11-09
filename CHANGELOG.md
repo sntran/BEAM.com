@@ -16,7 +16,9 @@ notes of its release.
   - for new files of `priv/`, moves the application to a copy in the
     cache, and calls its `config_change/3` (the static manifest of a
     Phoenix endpoint). The copy before goes 60 seconds later, and the
-    start removes the copies of processes that do not run.
+    first check removes the copies of processes that do not run.
+  - adds no time to the start of a program: the start does only a stat
+    and an open of the file.
 
   The processes and their state stay. A new runtime needs a restart.
   `BEAM_COM_RELOAD=MS` sets the time between two checks, and

@@ -451,10 +451,12 @@ A Phoenix app from `mix phx.new` has `config_change/3`: it calls
 `mix phx.digest` and a new file give the new digest names in the pages,
 and `Plug.Static` serves the new files. The old digest names stay in
 `priv/static` (`phx.digest` keeps them), so an open page keeps its
-assets. The program removes its copies when it stops. At its start, it
-also removes the copies of the processes that do not run (for example a
-process that a `kill -9` stopped): the directories `reload/PID/` of the
-cache.
+assets. The program removes its copies when it stops. At its first
+check (one interval after its start), it also removes the copies of the
+processes that do not run (for example a process that a `kill -9`
+stopped): the directories `reload/PID/` of the cache. The start itself
+does only a stat and an open of the file, so a program starts as fast
+as with no reload.
 
 ### What a test showed
 
