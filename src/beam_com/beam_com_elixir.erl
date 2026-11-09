@@ -10,8 +10,8 @@
 %%   sys.config (Config.Reader).
 -module(beam_com_elixir).
 
--export([available/0, script/1, is_mix/1, mix_project/1, in_project/2, compile/3,
-         sys_config/1]).
+-export([available/0, script/1, is_mix/1, mix_project/1, mix_config/1, in_project/2,
+         compile/3, sys_config/1]).
 
 -ifdef(TEST).
 -export([mix_deps/1]).
@@ -94,6 +94,17 @@ is_mix(Dir) ->
 %% [{Name, Package, Requirement}].
 mix_project(Dir) ->
     with_project(Dir, fun mix_project/2).
+
+%% The project/0 of mix.exs as it is, with the deps of each source
+%% (beam_com_mix).
+mix_config(Dir) ->
+    with_project(Dir, fun(File, Project) ->
+                              try Project:project()
+                              catch C:R:S ->
+                                      throw({error, "~ts: ~ts",
+                                             [File, 'Elixir.Exception':format(C, R, S)]})
+                              end
+                      end).
 
 %% Fun() with the Mix project of Dir on the project stack of Mix, as Mix
 %% compiles a package: the code of a package can read

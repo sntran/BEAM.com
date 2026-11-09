@@ -39,11 +39,12 @@ systems.
 
 ### Programs
 
-- Git dependencies (`{git, URL, {ref, R}}` in `rebar.config`,
-  `git:`/`github:` in `mix.exs`), with the lock entries of rebar3 and
-  Mix.
-- `config/runtime.exs` and `priv/static` in `beam.com INPUT -o OUTPUT`,
-  for a Phoenix app in one file.
+- Git dependencies (`{git, URL, {ref, R}}` in `rebar.config`), with the
+  lock entries of rebar3. For `mix.exs`, Mix gets them now (see "Phoenix
+  in one file" in `ELIXIR.md`), with the `git` program.
+- A git dep of a public repository over HTTPS with no `git` program: the
+  smart HTTP protocol of git, with a check of each object against the
+  commit of `mix.lock`.
 - `mix release` with `include_erts: true`, and the options of the Elixir
   scripts that change the `erl` command (`--erl`).
 - The file watcher on Windows.

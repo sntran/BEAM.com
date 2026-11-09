@@ -27,7 +27,7 @@
          base_kind/1, check_base/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
-         with_extract/2, compile_all/2, first_names/1]).
+         with_extract/2, compile_all/2, first_names/1, mix_release/2, why/1]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -59,17 +59,66 @@ run(#{input := Input0, apps := ExtraApps} = Opts0) ->
     Wasm0 andalso maps:get(edge, Opts0, true) =:= false andalso
         throw({error, "--no-edge is for native files, not for --target wasm32", []}),
     Opts = edge_file(Opts0),
-    Wasm = maps:get(target, Opts, none) =:= ?WASM,
     check_edge_only(Opts),
     Input = string:trim(slashes(Input0, os:type()), trailing, "/\\"),
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
+    case mix_release(Input, Opts) of
+        none ->
+            build_dir(Input, Output, Opts, ExtraApps, Base, Root);
+        {Out, Release} ->
+            try build_dir(Release, Output, Opts, ExtraApps, Base, Root)
+            after
+                file:del_dir_r(Out)
+            end
+    end.
+
+build_dir(Input, Output, Opts, ExtraApps, Base, Root) ->
+    Wasm = maps:get(target, Opts, none) =:= ?WASM,
     case {Wasm, beam_com_wasm:release_dir(Input, Root)} of
         {_, false} -> build_input(Input, Output, Opts, ExtraApps, Base, Root);
         {true, Rel} -> beam_com_wasm:write(Output, Rel, Opts#{root => Root});
         {false, Rel} -> release_exe(Input, Output, Opts, Rel, Root)
     end.
+
+%% A Mix project that only Mix can build (beam_com_mix:reasons/1), or
+%% any Mix project with --tool mix-release: Mix makes its release in a
+%% new directory Out, and the build reads the release. none for the
+%% other inputs, and with --tool mix or --tool rebar.
+mix_release(Input, Opts) ->
+    Mix = filelib:is_dir(Input) andalso beam_com_elixir:is_mix(Input),
+    Reasons = case {Mix, maps:get(tool, Opts, auto)} of
+                  {false, mix_release} ->
+                      throw({error, "~ts: --tool mix-release needs a Mix project (mix.exs)",
+                             [Input]});
+                  {true, mix_release} -> [tool];
+                  {true, auto} ->
+                      case tool(Input, Opts) of
+                          mix -> beam_com_mix:reasons(Input);
+                          rebar -> []
+                      end;
+                  _ -> []
+              end,
+    case Reasons of
+        [] ->
+            none;
+        _ ->
+            io:format("~ts: Mix gets the deps of ~ts and makes its release (~ts)~n",
+                      [beam_com:name(), Input, why(Reasons)]),
+            Out = temp_dir("mix_release"),
+            {Out, beam_com_mix:release(Input, #{out => Out})}
+    end.
+
+why(Reasons) ->
+    lists:join(", ", [case R of
+                          tool -> "--tool mix-release";
+                          runtime_exs -> "config/runtime.exs";
+                          {deps, Deps} -> ["deps that are not Hex packages: ",
+                                           lists:join(" ", [atom_to_list(D) || D <- Deps])];
+                          compilers -> "the compilers of mix.exs";
+                          'assets.deploy' -> "the alias assets.deploy"
+                      end || R <- Reasons]).
 
 %% --target wasm32 with -o FILE.com: the file of a native build with only
 %% its edge part (edge_only), and no native program. Another OUTPUT is the

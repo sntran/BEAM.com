@@ -990,6 +990,21 @@ if [ -d examples ]; then
         examples/greeter_ex -o "$dir/greeter_ex.com"
     [ -f "$dir/greeter_ex.com" ] && check greeter_ex.com "$greeter_ex"
     rm -f examples/greeter_ex/mix.lock
+    # A Mix project with config/runtime.exs: Mix makes the release
+    # (beam_com_mix), and the program reads config/runtime.exs at its
+    # start. It has no deps, so it needs no network.
+    limit_saved=$limit
+    limit=600
+    check beam.com 'Mix gets the deps of tests/programs/runtime_check and makes its release (config/runtime.exs)@@wrote .*runtime_check.com@@applications: .*runtime_check' \
+        tests/programs/runtime_check -o "$dir/runtime_check.com"
+    limit=$limit_saved
+    rm -rf tests/programs/runtime_check/_build
+    if [ -f "$dir/runtime_check.com" ]; then
+        RUNTIME_CHECK_GREETING="hello from config/runtime.exs"
+        export RUNTIME_CHECK_GREETING
+        check runtime_check.com 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs'
+        unset RUNTIME_CHECK_GREETING
+    fi
 fi
 
 # The tools: escript, and mix, iex, elixir and elixirc, as a first
@@ -1192,6 +1207,42 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
         kill "$phx" 2>/dev/null
         pkill -f "^sleep 300$" 2>/dev/null
         wait "$phx" 2>/dev/null
+        # The same app in one file, with no Mix task first: Mix makes the
+        # release (beam_com_mix), for config/runtime.exs, the git deps
+        # (heroicons, daisyui), the compilers and assets.deploy.
+        net_check beam.com 'Mix gets the deps of \. and makes its release (config/runtime.exs, deps that are not Hex packages: heroicons daisyui@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix' \
+            . -o "$dir/hello.com"
+        if [ -f "$dir/hello.com" ]; then
+            chmod +x "$dir/hello.com"
+            echo "==> hello.com"
+            PHX_SERVER=true PORT=4124 DATABASE_PATH="$work/hello_prod.db" \
+                SECRET_KEY_BASE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+                $runner "$dir/hello.com" > "$tmp.phx" 2>&1 &
+            phx=$!
+            served=
+            i=0
+            while [ $i -lt 60 ]; do
+                sleep 1
+                i=$((i + 1))
+                if curl -s http://127.0.0.1:4124/ 2>/dev/null | grep -q 'Phoenix Framework'; then
+                    served=yes
+                    break
+                fi
+            done
+            grep -v '^ *$' "$tmp.phx" | head -20
+            css=$(curl -s http://127.0.0.1:4124/ 2>/dev/null | sed -n 's/.*href="\(\/assets\/css\/app-[^"]*\)".*/\1/p' | head -n 1)
+            if [ -n "$served" ] && [ -n "$css" ] &&
+               [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:4124$css")" = 200 ]; then
+                echo "PASS: hello.com serves the start page and $css (after $i s)"
+            else
+                echo "FAIL: hello.com did not serve the start page and its digested CSS"
+                fail=1
+                failed="$failed
+  hello.com: no start page or digested CSS on http://127.0.0.1:4124/"
+            fi
+            kill "$phx" 2>/dev/null
+            wait "$phx" 2>/dev/null
+        fi
     fi
     cd "$here"
     rm -f "$dir/mix" "$dir/escript" "$dir/mix.com" "$dir/iex.com"

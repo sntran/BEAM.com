@@ -85,7 +85,7 @@ defmodule BeamComTest do
           {"--pledge is --allow-* now", [~c"a", ~c"--pledge", ~c"inet"],
            {:error, ~c"unknown option ~ts", [~c"--pledge"]}},
           {"an unknown tool", [~c"d", ~c"--tool", ~c"make"],
-           {:error, ~c"--tool is rebar or mix, not ~ts", [~c"make"]}}
+           {:error, ~c"--tool is rebar, mix or mix-release, not ~ts", [~c"make"]}}
         ] do
       test name do
         assert catch_throw(opts(unquote(Macro.escape(args)))) == unquote(Macro.escape(thrown))
@@ -149,6 +149,10 @@ defmodule BeamComTest do
 
     test "--tool rebar" do
       assert %{tool: :rebar} = opts([~c"d", ~c"--tool", ~c"rebar"])
+    end
+
+    test "--tool mix-release" do
+      assert %{tool: :mix_release} = opts([~c"d", ~c"--tool", ~c"mix-release"])
     end
 
     for option <- [~c"--main", ~c"--tool", ~c"--extract-priv", ~c"--cacerts"] do

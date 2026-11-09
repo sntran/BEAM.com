@@ -38,9 +38,17 @@ beam.com hello.ex -- Alice             # or run it
   with `compiler` (which Elixir needs at run time), makes a program
   1.9 MB larger than the same program in Erlang, and its start about
   40 ms slower ([`BENCHMARKS.md`](BENCHMARKS.md)).
-- **Not supported:** umbrella projects, `config/runtime.exs`, protocol
-  consolidation (protocols work, but their dispatch is not optimized),
-  and Mix tasks or aliases.
+- **A Mix project that needs Mix**: for a project with
+  `config/runtime.exs`, a dep that is not a Hex package (`git:`,
+  `github:`, `path:`), `:compilers` in `project/0`, or the alias
+  `assets.deploy`, the builder does not compile the project itself.
+  Mix gets the deps, compiles the project, runs `assets.deploy`, and
+  makes a release. Then the builder makes the file from that release.
+  A new Phoenix app has all four. See "Phoenix in one file" below.
+- In the builder of a plain Mix project, protocols are not consolidated
+  (protocols work, but their dispatch is not optimized). A release of
+  Mix consolidates them.
+- **Not supported:** umbrella projects.
 
 [`examples/greeter_ex`](../examples/greeter_ex) is a Mix project with jason
 (a Hex package in Elixir) and `config/config.exs`;
@@ -191,6 +199,68 @@ form). With the network, the check of the tools also compiles `exqlite`,
 `bcrypt_elixir` and `argon2_elixir` in a small project (on all the
 platforms but NetBSD and Windows), checks that no NIF file was built or downloaded, and uses
 esqlite and exqlite in one VM.
+
+## Phoenix in one file
+
+`beam.com DIR -o FILE` makes one file from a Phoenix app. Run no Mix
+task first:
+
+```sh
+mix.com phx.new hello            # or an app of your own
+cd hello
+beam.com . -o hello.com
+PHX_SERVER=true SECRET_KEY_BASE=... DATABASE_URL=... ./hello.com
+```
+
+A project with `config/runtime.exs`, a dep that is not a Hex package,
+`:compilers` in `project/0`, or the alias `assets.deploy` needs Mix
+itself. A new Phoenix app has all four. For such a project, the builder
+writes one line with the reasons. Then a child `beam.com` runs Mix, in
+the directory of the project and with your environment:
+
+1. `loadconfig` and `deps.get`. Mix gets the git deps (for example
+   `heroicons` and `daisyui`) with the `git` program, with your keys of
+   SSH and your proxy. It installs rebar3 when a dep needs it.
+2. `compile`, with the compilers of `mix.exs` (the colocated hooks of
+   Phoenix LiveView).
+3. `assets.deploy`, when `mix.exs` has this alias: tailwind, esbuild
+   and `phx.digest`. Tailwind and esbuild get their programs over the
+   network, the first time.
+4. `release`, with `include_erts: false` and a temporary directory.
+   `mix.exs` does not change: the child adds these two options to each
+   release with `Mix.Project.in_project/4`, and the other options of
+   the release stay. A release consolidates the protocols and keeps
+   `config/runtime.exs`, which the program reads at each start.
+
+The builder then makes the file from the release, as for
+`beam.com _build/prod/rel/NAME -o FILE`, and removes the temporary
+directory.
+
+- The environment is `MIX_ENV`, or `prod` when it is not set.
+- Mix writes `deps/`, `_build/`, `mix.lock` and the digested files of
+  `priv/static` in the project, as `mix release` does. A second build
+  uses them again, so it is faster.
+- When the deps need Hex and no Hex is loaded, the child installs it, as
+  `mix local.hex` does (in `MIX_HOME`). A custom build with Hex in its
+  zip needs no installation.
+- The child reads no standard input. A question of Mix gets the answer
+  "no", so the build stops and does not wait.
+- `--tool mix-release` makes the release with Mix for each Mix project.
+  `--tool mix` keeps the builder of a plain Mix project, also for a
+  project with `config/runtime.exs`.
+- The new code of a running program (see "New code in a running
+  program" in [`PROGRAMS.md`](PROGRAMS.md)) works the same with a file
+  of this build: `lib/hello-0.1.0/` has the code and `priv/static`.
+- Not on Windows: Mix cannot run the programs of a build there (git,
+  tailwind, esbuild).
+- Today, a git dep needs the `git` program on the computer of the
+  build.
+
+CI builds the app of "Phoenix from source" this way on Linux, and the
+file must serve the start page and its digested CSS.
+[`tests/programs/runtime_check`](../tests/programs/runtime_check) is a
+small Mix project with `config/runtime.exs` and no deps. CI builds and
+runs it on each platform but Windows.
 
 ## The file watcher
 

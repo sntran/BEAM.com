@@ -5,6 +5,18 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com DIR -o FILE` makes one file from a Phoenix app, with no Mix
+  task first. A Mix project with `config/runtime.exs`, a dep that is not
+  a Hex package (git, github, path), `:compilers`, or the alias
+  `assets.deploy` needs Mix itself. For it, a child `beam.com`
+  (`beam_com_mix`) runs Mix in the project, with the environment of the
+  user: `deps.get`, `compile`, `assets.deploy`, and `release` with
+  `include_erts: false`. Then the builder makes the file from the
+  release. The release consolidates the protocols, and the program reads
+  `config/runtime.exs` at each start. When the deps need Hex, the child
+  installs it, as `mix local.hex` does. `--tool mix-release` uses Mix for
+  each Mix project, and `--tool mix` keeps the builder of a plain Mix
+  project. See "Phoenix in one file" in `docs/ELIXIR.md`.
 - A program loads new code when a new file takes the place of its file,
   so a deploy can send only the changed code: `zip -r app.com
   lib/my_app-0.1.0` on the server. The process `beam_com_reload`

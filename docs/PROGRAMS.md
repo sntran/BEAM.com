@@ -13,7 +13,7 @@ beam.com [FLAGS] INPUT -o OUTPUT           # make the executable OUTPUT
 
 FLAGS: [-a APP]... [--allow-read[=PATH,...]] [--allow-write[=PATH,...]]
        [--allow-net[=HOST,...]] [--allow-run[=PROGRAM,...]] [--allow-all]
-       [--target TARGET] [--main MODULE] [--tool rebar|mix]
+       [--target TARGET] [--main MODULE] [--tool rebar|mix|mix-release]
        [--extract-priv APP]... [--cacerts FILE]
 ```
 
@@ -159,6 +159,9 @@ module), and the program halts with status 0 when `main/1` returns (127
 on an exception), as for one `.erl` file. `vm.args` gets
 `-s beam_com_script main MODULE`. A directory with both `rebar.config`
 and `mix.exs` is built as a rebar3 project; `--tool mix` selects Mix.
+A Mix project that needs Mix itself (for example a Phoenix app) gets a
+release from Mix, and `--tool mix-release` asks for it (see "Phoenix in
+one file" in [`ELIXIR.md`](ELIXIR.md)).
 
 **`priv` files as real files.** Code reads `priv` from the zip
 (`code:priv_dir/1` is in `/zip`), which works for `file:read_file/1`,

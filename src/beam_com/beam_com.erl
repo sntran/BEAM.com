@@ -296,8 +296,10 @@ build_options(["--main", Module | Rest], Opts) ->
     build_options(Rest, Opts#{main => list_to_atom(Module)});
 build_options(["--tool", Tool | Rest], Opts) when Tool =:= "rebar"; Tool =:= "mix" ->
     build_options(Rest, Opts#{tool => list_to_atom(Tool)});
+build_options(["--tool", "mix-release" | Rest], Opts) ->
+    build_options(Rest, Opts#{tool => mix_release});
 build_options(["--tool", Tool | _], _Opts) ->
-    throw({error, "--tool is rebar or mix, not ~ts", [Tool]});
+    throw({error, "--tool is rebar, mix or mix-release, not ~ts", [Tool]});
 build_options(["--extract-priv", App | Rest], Opts) ->
     build_options(Rest, Opts#{extract_priv => maps:get(extract_priv, Opts, []) ++ [list_to_atom(App)]});
 build_options(["--no-edge" | Rest], Opts) ->
@@ -424,9 +426,11 @@ help([]) ->
      "            an application whose priv files are copied to real files at\n"
      "            the first start (for other programs that read them);\n"
      "            automatic when priv has an executable file\n"
-     "  --tool rebar|mix\n"
+     "  --tool rebar|mix|mix-release\n"
      "            the layout of a directory with both rebar.config and mix.exs\n"
-     "            (default: rebar)\n"
+     "            (default: rebar); mix-release: Mix gets the deps and makes\n"
+     "            the release (the default for a Mix project with\n"
+     "            config/runtime.exs, git deps, compilers or assets.deploy)\n"
      "\n"
      "A run builds the executable in the cache of ", Name, " (BEAM_COM_CACHE, else\n"
      "~/.cache/beam.com), again when the data of a file of INPUT changes, and\n"
