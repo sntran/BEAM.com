@@ -7,7 +7,7 @@ program gives its exit status to the forker port. os.erl: with
 See C16 of docs/UPSTREAM.md.
 
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index 9b43418..52f954c 100644
+index 9b43418..f760f0b 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
 @@ -118,6 +118,9 @@ typedef struct driver_data {
@@ -35,19 +35,23 @@ index 9b43418..52f954c 100644
  #endif
  static ErlDrvSSizeT spawn_control(ErlDrvData, unsigned int, char *,
                                    ErlDrvSizeT, char **, ErlDrvSizeT);
-@@ -244,7 +255,11 @@ struct erl_drv_entry spawn_driver_entry = {
+@@ -244,9 +255,15 @@ struct erl_drv_entry spawn_driver_entry = {
      NULL,
      NULL,
      spawn_control,
 +#ifdef __COSMOPOLITAN__
 +    spawn_timeout_nt,
++    NULL,
++    fd_ready_async, /* the writes of spawn_start_nt (Windows) */
 +#else
+     NULL,
+     NULL,
      NULL,
 +#endif
      NULL,
      NULL,
      NULL,
-@@ -408,6 +423,9 @@ create_driver_data(ErlDrvPort port_num,
+@@ -408,6 +425,9 @@ create_driver_data(ErlDrvPort port_num,
      driver_data->busy = 0;
      driver_data->high_watermark = opts->high_watermark;
      driver_data->low_watermark = opts->low_watermark;
@@ -57,7 +61,7 @@ index 9b43418..52f954c 100644
      
      return driver_data;
  }
-@@ -491,6 +509,8 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -491,6 +511,8 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
       * not allowed, see forker_start), port programs cannot be started.
       * Fail the port instead of writing to a forker that is not there
       * (ERTS_DUMP_EXIT). */
@@ -66,7 +70,7 @@ index 9b43418..52f954c 100644
      if (beam_com_no_forker) {
          errno = beam_com_no_forker;
          return ERL_DRV_ERROR_ERRNO;
-@@ -748,6 +768,226 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -748,6 +770,230 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
  #undef CMD_LINE_PREFIX_STR_SZ
  }
  
@@ -140,8 +144,8 @@ index 9b43418..52f954c 100644
 +        erts_atomic_add_nob(&sys_misc_mem_sz, -sizeof(ErtsSysFdData));
 +        dd->ifd = NULL;
 +    }
-+    if (dd->ofd && (dd->ofd->fd < 0 || driver_sizeq(port_num) > 0))
-+        /* Select to close the fd (fd < 0), or to write the queue. */
++    if (dd->ofd && dd->ofd->fd < 0)
++        /* Select to close the fd. The writes go through fd_async. */
 +        driver_select(port_num, abs(dd->ofd->fd), ERL_DRV_WRITE|ERL_DRV_USE, 1);
 +    erl_drv_set_os_pid(port_num, dd->pid);
 +    erl_drv_init_ack(port_num, (ErlDrvData)dd);
@@ -185,8 +189,12 @@ index 9b43418..52f954c 100644
 +        errno = EMFILE;
 +        return ERL_DRV_ERROR_ERRNO;
 +    }
++    /* Only the read end is non-blocking. A non-blocking write to a pipe of
++     * Cosmopolitan on Windows that does not fit in the pipe buffer (4 KiB)
++     * is cancelled with EAGAIN, also when a part of it went into the pipe.
++     * So the port writes with blocking writes in an async thread (the
++     * "blocking" mode of the fd driver). */
 +    SET_NONBLOCKING(ifd[0]);
-+    SET_NONBLOCKING(ofd[1]);
 +
 +    if (opts->spawn_type == ERTS_SPAWN_EXECUTABLE) {
 +        if (access(beam_com_exec_path(name), X_OK) != 0) {
@@ -249,7 +257,7 @@ index 9b43418..52f954c 100644
 +
 +    dd = create_driver_data(port_num, ifd[0], ofd[1], opts->packet_bytes,
 +                            DO_WRITE | DO_READ, opts->exit_status,
-+                            0, 0, opts);
++                            0, do_write, opts);
 +    dd->beam_com_pid = pid;
 +    if (!do_read)
 +        dd->ifd->fd *= -1;
@@ -293,7 +301,53 @@ index 9b43418..52f954c 100644
  static ErlDrvSSizeT spawn_control(ErlDrvData e, unsigned int cmd, char *buf,
                                    ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen)
  {
-@@ -1297,6 +1537,17 @@ static void ready_input(ErlDrvData e, ErlDrvEvent ready_fd)
+@@ -1061,6 +1307,14 @@ static void stop(ErlDrvData ev)
+     ErtsSysDriverData* dd = (ErtsSysDriverData*)ev;
+     ErlDrvPort prt = dd->port_num;
+ 
++#ifdef __COSMOPOLITAN__
++    if (dd->blocking) {
++        erts_free(ERTS_ALC_T_SYS_BLOCKING, dd->blocking);
++        erts_atomic_add_nob(&sys_misc_mem_sz, -sizeof(ErtsSysBlocking));
++        dd->blocking = NULL;
++    }
++#endif
++
+     if (dd->ifd) {
+         nbio_stop_fd(prt, dd->ifd, 0);
+         driver_select(prt, abs(dd->ifd->fd), ERL_DRV_USE, 0);  /* close(ifd); */
+@@ -1179,6 +1433,30 @@ static void output(ErlDrvData e, char* buf, ErlDrvSizeT len)
+     put_int32(len, lb);
+     lbp = lb + (4-pb);
+ 
++#ifdef __COSMOPOLITAN__
++    if (dd->blocking) {
++        /* BEAM.com: a program of spawn_start_nt (Windows). The async
++         * thread writes the queue with blocking writes (fd_async), and
++         * fd_ready_async removes the written bytes from it. */
++        driver_pdl_lock(dd->blocking->pdl);
++        qsz = driver_sizeq(ix);
++        if (qsz == (ErlDrvSizeT) -1) {
++            driver_pdl_unlock(dd->blocking->pdl);
++            driver_failure_posix(ix, EINVAL);
++            return;
++        }
++        driver_enq(ix, lbp, pb);
++        driver_enq(ix, buf, len);
++        driver_pdl_unlock(dd->blocking->pdl);
++        if (qsz == 0)
++            driver_async(ix, &dd->blocking->pkey, fd_async, dd, NULL);
++        qsz += len + pb;
++        if (!dd->busy && qsz >= dd->high_watermark)
++            set_busy_port(ix, (dd->busy = !0));
++        return;
++    }
++#endif
++
+     qsz = driver_sizeq(ix);
+     if (qsz) {
+         if (qsz == (ErlDrvSizeT) -1) {
+@@ -1297,6 +1575,17 @@ static void ready_input(ErlDrvData e, ErlDrvEvent ready_fd)
  
      ASSERT(abs(dd->ifd->fd) == ready_fd);
  
@@ -311,7 +365,7 @@ index 9b43418..52f954c 100644
      if (dd->pid == 0) {
          /* the pid is sent from erl_child_setup. spawn driver only. */
          ErtsSysForkerProto proto;
-@@ -1628,8 +1879,16 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1628,8 +1917,16 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
       * child that holds our stdout/stderr. Keep the forker port so that the
       * rest of the boot is unchanged, but do not start the child. */
      if (beam_com_is_windows()) {
@@ -329,7 +383,7 @@ index 9b43418..52f954c 100644
          return (ErlDrvData)port_num;
      }
  #endif
-@@ -1901,6 +2160,18 @@ static ErlDrvSSizeT forker_control(ErlDrvData e, unsigned int cmd, char *buf,
+@@ -1901,6 +2198,18 @@ static ErlDrvSSizeT forker_control(ErlDrvData e, unsigned int cmd, char *buf,
      if (cmd != ERTS_FORKER_DRV_CONTROL_MAGIC_NUMBER)
          return -1;
  

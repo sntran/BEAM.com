@@ -8,7 +8,7 @@
 %%
 %% For each channel, one line:
 %%
-%%   peer CHANNEL: release R, sum 6, own code true, error boom, bytes 1000000
+%%   peer CHANNEL: release R, sum 6, own code true, error boom, bytes 1000000, sent 1000000
 %%
 %% Then the exit status of a port program, and the output of os:cmd/1
 %% (a shell: on Windows, the sh of Git for Windows in PATH):
@@ -59,6 +59,9 @@ check(Exe, Channel) ->
     Error = try peer:call(Peer, erlang, error, [boom]) catch error:E -> E end,
     %% A large reply goes through the channel in many parts.
     Bytes = byte_size(peer:call(Peer, binary, copy, [<<"x">>, 1000000], 60000)),
+    %% A large request goes to the node in many parts (on Windows, more
+    %% than the 4 KiB of the buffer of a pipe).
+    Sent = peer:call(Peer, erlang, byte_size, [binary:copy(<<"y">>, 1000000)], 60000),
     ok = peer:stop(Peer),
-    io:format("peer ~s: release ~s, sum ~b, own code ~p, error ~p, bytes ~b~n",
-              [Channel, Release, Sum, Own, Error, Bytes]).
+    io:format("peer ~s: release ~s, sum ~b, own code ~p, error ~p, bytes ~b, sent ~b~n",
+              [Channel, Release, Sum, Own, Error, Bytes, Sent]).

@@ -199,7 +199,7 @@ if (Test-Path "examples") {
     # exit status of a port program, and os:cmd/1 with the sh of Git.
     Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
     if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
-        $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000'
+        $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
         Check "peer_check.b.com" "(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$@@(?m)^exit status 3`$@@(?m)^cmd hello`$" @()
     }
     # A run: the executable in the cache, with the arguments after "--"
