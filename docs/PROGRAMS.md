@@ -178,6 +178,19 @@ The same client gets the git deps of Mix with no `git` program (see
 - **Keys.** The SSH agent of `SSH_AUTH_SOCK` (a key that only the agent
   has, for example of a password manager), and the key files:
   `IdentityFile`, else `~/.ssh/id_ed25519`, `id_ecdsa` and `id_rsa`.
+- **The agent on Windows.** With no `SSH_AUTH_SOCK`, the client uses the
+  agent of Windows OpenSSH, the named pipe `\\.\pipe\openssh-ssh-agent`.
+  Start the service and add your key once:
+
+  ```powershell
+  Set-Service ssh-agent -StartupType Automatic   # as an administrator
+  Start-Service ssh-agent
+  ssh-add $HOME\.ssh\id_ed25519
+  ```
+
+  `IdentityAgent` or `SSH_AUTH_SOCK` can name another pipe. Erlang
+  cannot open a named pipe (C55 of [`UPSTREAM.md`](UPSTREAM.md)), so
+  the helper program `ssh_agent_bridge` of `beam.com` connects to it.
 - **A key with a passphrase.** The client asks no question. Add the key
   to the agent (`ssh-add`). The error names each key file with a
   passphrase.
@@ -193,8 +206,8 @@ The same client gets the git deps of Mix with no `git` program (see
   must allow other commits (`uploadpack.allowReachableSHA1InWant`).
 - **Not supported.** `ProxyJump` and `ProxyCommand`, `GIT_SSH_COMMAND`
   and `GIT_SSH` (they name a program), the keys of a FIDO token
-  (`sk-*`, which the `ssh` application does not have), and an agent on
-  Windows (a named pipe). Use the `git` program for these.
+  (`sk-*`, which the `ssh` application does not have). Use the `git`
+  program for these.
 
 [`examples/hexweb`](../examples/hexweb) uses cowboy (with cowlib and
 ranch) and jsx: it starts a web server and gets JSON from it. CI builds

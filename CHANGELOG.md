@@ -34,6 +34,12 @@ notes of its release.
   the `sh` in `PATH`.
 - On Windows, a Phoenix build gets the tailwind and esbuild programs for
   Windows, when the config gives no target and no path for them.
+- On Windows, the git client uses the SSH agent of Windows OpenSSH
+  (`\\.\pipe\openssh-ssh-agent`) when `SSH_AUTH_SOCK` is not set. The
+  helper program `ssh_agent_bridge` connects to the named pipe (C55).
+- CI builds a new Phoenix app on Windows with `beam.com . -o FILE`, and
+  gets the start page and the digested CSS of the file. It also checks
+  the SSH agent of Windows OpenSSH.
 - On Windows, a relative symbolic link to a directory works (C54). Before,
   `mix release` copied no `priv` of the app, because `stat()` of the
   link `_build/prod/lib/APP/priv` gave `EACCES`.

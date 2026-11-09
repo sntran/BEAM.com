@@ -1591,6 +1591,30 @@ of the target, and Cosmopolitan then makes a link to a directory.
 `GetFileAttributes()` on the directory of the link joined with the
 target.
 
+### C55. The path functions change the name of a named pipe
+
+**Status:** HEAD (`libc/calls/mkntpath.c`). Seen on Windows Server 2025
+(x86_64).
+
+**Symptom.** `open("\\\\.\\pipe\\openssh-ssh-agent", O_RDWR)` gives
+`ENOENT`, also with the form `//./pipe/openssh-ssh-agent`, while the
+agent of Windows OpenSSH runs. `file:open/2` of Erlang gives
+`{error, enoent}`.
+
+**Cause.** `__mkntpath2()` gives the path to `__normntpath()`, which
+removes each `.` part ("/./"). Thus `\\.\pipe\NAME` becomes
+`\\pipe\NAME`, and `CreateFile()` gets a UNC path of a server named
+`pipe`. The form `\\?\pipe\NAME` is not a pipe.
+
+**Workaround in BEAM.com.** The git client starts the helper program
+`ssh_agent_bridge` (`c_src/cosmo/beam_com_agent.c`). It opens the pipe
+with `CreateFile()` of Windows, and copies the messages of the agent
+between the pipe and its standard I/O.
+
+**Possible upstream fix.** In `__mkntpath2()`, keep a path that starts
+with `\\.\` or `//./` (a device path of Win32) as it is, as the code
+already does for `\\?\`.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

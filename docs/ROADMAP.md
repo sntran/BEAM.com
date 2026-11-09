@@ -43,11 +43,8 @@ systems.
   SSH"): `ProxyJump` through a channel `direct-tcpip` of the `ssh`
   application, and a question for the passphrase of a key file when the
   build runs in a terminal.
-- Windows: the SSH agent of Windows OpenSSH (a named pipe,
-  `\\.\pipe\openssh-ssh-agent`) for git over SSH; and non-blocking
-  writes to a pipe of Cosmopolitan (C16), so that the writes to the port
-  programs need no async thread.
-- A Phoenix app (tailwind, esbuild) built on Windows, in CI.
+- Windows: non-blocking writes to a pipe of Cosmopolitan (C16), so that
+  the writes to the port programs need no async thread.
 - `mix release` with `include_erts: true`, and the options of the Elixir
   scripts that change the `erl` command (`--erl`).
 - The file watcher on Windows.
