@@ -17,6 +17,9 @@ notes of its release.
   installs it, as `mix local.hex` does. `--tool mix-release` uses Mix for
   each Mix project, and `--tool mix` keeps the builder of a plain Mix
   project. See "Phoenix in one file" in `docs/ELIXIR.md`.
+- `docs/DEPLOY.md`: deploy a Phoenix app to a Linux server, with a build
+  on the server or in CI. On Windows, a Mix project that needs Mix now
+  stops with a clear error: Windows has no port programs yet (C16).
 - `beam.com DIR -o FILE` over the file of a running program updates it:
   the builder writes a new file and renames it, and the program loads the
   changed code. The builder strips the beams of the program and of its

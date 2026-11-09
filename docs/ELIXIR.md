@@ -252,8 +252,10 @@ directory.
 - The new code of a running program (see "New code in a running
   program" in [`PROGRAMS.md`](PROGRAMS.md)) works the same with a file
   of this build: `lib/hello-0.1.0/` has the code and `priv/static`.
-- Not on Windows: Mix cannot run the programs of a build there (git,
-  tailwind, esbuild).
+- Not on Windows: Mix cannot run the programs of a build there (the
+  child `beam.com`, git, tailwind, esbuild), because `beam.com` has no
+  port programs on Windows yet (C16 of [`UPSTREAM.md`](UPSTREAM.md)).
+  The builder stops with an error.
 - With no `git` program in `PATH`, the git client of `beam.com`
   (`beam_com_git`) gets each git dep of an `https` URL, also `github:`.
   It speaks version 2 of the git protocol over HTTPS, with your proxy,
@@ -265,7 +267,10 @@ directory.
   `mix.lock` stays the same. `BEAM_COM_GIT=http` uses it also when
   `git` is in `PATH`.
 - A git dep of another URL (`git@`, `ssh://`), and `submodules: true`,
-  need the `git` program.
+  need the `git` program. Git over SSH with the `ssh` application of OTP
+  is in [`ROADMAP.md`](ROADMAP.md).
+- To deploy the file to a server, from the server itself or from CI, see
+  [`DEPLOY.md`](DEPLOY.md).
 
 CI builds the app of "Phoenix from source" this way on Linux, with the
 git client of `beam.com` for its git deps, and the file must serve the

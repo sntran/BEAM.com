@@ -340,6 +340,9 @@ if (Test-Path "examples") {
         Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
     }
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+    # A project that needs Mix (config/runtime.exs): the Mix steps are port
+    # programs, and Windows has none yet (C16 of docs/UPSTREAM.md).
+    Check "beam.com" 'needs Mix \(config/runtime.exs\), and Windows has no port programs yet' @("tests/programs/runtime_check", "-o", "$Dir/runtime_check.com") 1
 }
 
 # The tools (see tests/run.sh), as the first argument of beam.com, and

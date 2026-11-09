@@ -100,9 +100,14 @@ mix_release(Input, Opts) ->
                       end;
                   _ -> []
               end,
-    case Reasons of
-        [] ->
+    case {Reasons, os:type()} of
+        {[], _} ->
             none;
+        {_, {win32, _}} ->
+            %% The child of beam_com_mix is a port program, and Windows has
+            %% none yet (C16 of docs/UPSTREAM.md).
+            throw({error, "~ts needs Mix (~ts), and Windows has no port programs yet: "
+                   "build it on Linux, macOS or a BSD", [Input, why(Reasons)]});
         _ ->
             io:format("~ts: Mix gets the deps of ~ts and makes its release (~ts)~n",
                       [beam_com:name(), Input, why(Reasons)]),

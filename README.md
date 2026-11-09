@@ -352,7 +352,8 @@ the Erlang shell in your browser is at
 | File | What |
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |
-| [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, the file watcher. |
+| [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, Phoenix in one file, the file watcher. |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Deploy a Phoenix app to a Linux server: a build on the server or in CI, systemd, migrations, new code with no restart, and what needs a restart. |
 | [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages: `app.com` with the npm package, Durable Objects, Ecto SQLite, HTTP through `fetch()`, snapshots, tenants, static sites (`--page`), and limits. |
 | [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md) | The documentation as notebooks that run in your browser: a tour of beam.com, the WebAssembly VM, the anatomy of the file, WebAssembly programs, hosts and storage, networking, and building programs. |
 | [`docs/LIBRARIES.md`](docs/LIBRARIES.md) | Crypto and TLS, SQLite, and WebAssembly in Erlang code. |

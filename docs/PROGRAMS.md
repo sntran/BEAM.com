@@ -355,6 +355,9 @@ does. Thus only the changed modules and files are new in the new file.
 The new file must come from the same `beam.com`, because a new runtime
 needs a restart.
 
+[`DEPLOY.md`](DEPLOY.md) has the whole deploy of a Phoenix app: systemd,
+the migrations, and a build in CI.
+
 A release is not necessary for the beams. `mix compile` (or `erlc`)
 gives the same code, in a directory with no version
 (`_build/prod/lib/my_app/ebin`): copy it to `lib/my_app-0.1.0/ebin/`
