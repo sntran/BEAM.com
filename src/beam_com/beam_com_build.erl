@@ -103,7 +103,7 @@ mix_release(Input, Opts) ->
     case {Reasons, os:type()} of
         {[], _} ->
             none;
-        {_, {win32, _}} ->
+        {_, {_, windows}} ->
             %% The child of beam_com_mix is a port program, and Windows has
             %% none yet (C16 of docs/UPSTREAM.md).
             throw({error, "~ts needs Mix (~ts), and Windows has no port programs yet: "
