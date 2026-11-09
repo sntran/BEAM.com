@@ -271,6 +271,10 @@ dir=$top_dir runner=$top_runner
 rmdir "$empty"
 check beam.com 'run INPUT (default: the project in this directory)' --help
 check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" --version
+# The architecture is the CPU and the system where the file runs (O28 of
+# docs/UPSTREAM.md), not the one text of configure.
+case $(uname -m) in arm64|aarch64) cpu=aarch64 ;; amd64|x86_64) cpu=x86_64 ;; *) cpu=$(uname -m) ;; esac
+check beam.com "^arch: $cpu-[a-z]*-$os" -noshell -eval 'io:format("arch: ~ts~n", [erlang:system_info(system_architecture)]), halt().'
 check_status 1 beam.com 'nosuch: not a .erl, .ex or .exs file, or a directory' nosuch
 check_status 1 beam.com 'there is no command build: use "beam.com INPUT -o OUTPUT"' build
 check_status 1 beam.com 'the arguments of the program come after "--"' x.erl y

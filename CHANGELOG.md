@@ -17,6 +17,12 @@ notes of its release.
   installs it, as `mix local.hex` does. `--tool mix-release` uses Mix for
   each Mix project, and `--tool mix` keeps the builder of a plain Mix
   project. See "Phoenix in one file" in `docs/ELIXIR.md`.
+- `erlang:system_info(system_architecture)` gives the CPU and the system
+  where the file runs, for example `aarch64-unknown-linux-gnu` or
+  `aarch64-apple-darwin`. Before, it was `x86_64-pc-linux-gnu` on each
+  CPU and each system, and the tailwind and esbuild packages of Phoenix
+  downloaded x86_64 programs on Linux aarch64 (O28 of
+  `docs/UPSTREAM.md`).
 - The builder of a plain Mix project compiles a package after its
   optional deps that the build has, as Mix does. Before, `ecto_sql`
   could compile before `postgrex`, and the program stopped at its start:

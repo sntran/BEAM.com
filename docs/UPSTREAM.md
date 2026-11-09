@@ -2238,6 +2238,35 @@ each address, also when Erlang code changes the name servers.
 **Possible upstream fix.** None needed. An environment variable for the
 name servers, as `ERL_INETRC` is for the file, would do the same.
 
+### O28. system_architecture is the text of configure
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/erl_bif_info.c`). Not a bug
+of OTP: an APE file runs on two CPUs and on six systems.
+
+**Symptom.** `erlang:system_info(system_architecture)` gives
+`ERLANG_ARCHITECTURE`, the text of `configure`. BEAM.com runs
+`configure` one time, for x86_64 Linux, and cosmocc compiles each file
+again for the aarch64 half. Thus the text is `x86_64-pc-linux-gnu` on
+each CPU and each system. Packages read it to choose a native program.
+On Linux aarch64, the `tailwind` and `esbuild` packages of Phoenix
+download the x86_64 programs, and they do not start:
+
+```
+ape error: _build/tailwind-linux-x64-4.3.3: couldn't find ELF header with AARCH64 machine type
+```
+
+On macOS arm64, the x86_64 programs run with Rosetta 2.
+
+**Workaround in BEAM.com.** `patches/otp/0005-architecture.patch`: with
+Cosmopolitan, the text comes from the CPU half (`__aarch64__`) and from
+the system at run time (`IsXnu()`, `IsFreebsd()`, `IsOpenbsd()`,
+`IsNetbsd()`): `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-freebsd`,
+`x86_64-unknown-openbsd`, `x86_64-unknown-netbsd`. Linux x86_64 and
+Windows keep the text of `configure`.
+
+**Possible upstream fix.** None needed for a native build.
+
 ## Emscripten
 
 Seen with Emscripten 6.0.10, in the WebAssembly spike (docs/history/WASM-LOG.md,
