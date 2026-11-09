@@ -38,7 +38,9 @@ cloudflared() {
     esac
     curl -fsSL -o "$TMP/$f" \
         "https://github.com/cloudflare/cloudflared/releases/download/$CF_VERSION/$f" || return 1
-    got=$( (sha256sum "$TMP/$f" 2>/dev/null || shasum -a 256 "$TMP/$f") | cut -d' ' -f1)
+    # From standard input: with a file name that has a backslash (Windows),
+    # sha256sum puts a backslash before the hash.
+    got=$( (sha256sum < "$TMP/$f" 2>/dev/null || shasum -a 256 < "$TMP/$f") | cut -d' ' -f1)
     if [ "$got" != "$s" ]; then
         echo "remote ssh: the SHA-256 of $f is $got, not $s" >&2
         return 1

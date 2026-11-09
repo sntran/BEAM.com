@@ -1211,6 +1211,16 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
         kill "$phx" 2>/dev/null
         pkill -f "^sleep 300$" 2>/dev/null
         wait "$phx" 2>/dev/null
+        # The watchers of the server download tailwind and esbuild into
+        # _build, and the stop above can come before the chmod of a
+        # download. Then the file stays, and the next install skips it
+        # ("eacces" at the open of the port). Remove such a file.
+        for f in _build/tailwind-* _build/esbuild-*; do
+            if [ -f "$f" ] && [ ! -x "$f" ]; then
+                echo "remove $f: the stop of the server came before its chmod"
+                rm -f "$f"
+            fi
+        done
         # The same app in one file, with no Mix task first: Mix makes the
         # release (beam_com_mix), for config/runtime.exs, the git deps
         # (heroicons, daisyui), the compilers and assets.deploy. The git
