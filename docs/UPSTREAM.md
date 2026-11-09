@@ -385,14 +385,21 @@ forker port starts no `erl_child_setup`
   status to a pipe that the forker port reads. A native program exits
   with its code, not with a wait status (`code << 8`), and the thread
   converts it.
-- The write end of the pipe is blocking, and the port writes in the
-  async thread, as the fd driver does for an fd that cannot be
-  non-blocking. A pipe of Cosmopolitan on Windows has a buffer of 4 KiB
-  (`PIPE_BUF`, `libc/calls/pipe-nt.c`). A non-blocking write that does
-  not fit is cancelled with `EAGAIN` (`libc/calls/readwrite-nt.c`),
-  also when a part of it went into the pipe, and `poll()` reports a
-  write end as ready at once. In a test, 3000 bytes to `cat` came back
-  in 27 ms, and of 5000 bytes, only 40 came back in 20 s.
+- The write end of the pipe is non-blocking, as on Unix. A pipe of
+  Cosmopolitan on Windows has a buffer of 4 KiB (`PIPE_BUF`,
+  `libc/calls/pipe-nt.c`). A non-blocking write that does not fit is
+  cancelled with `EAGAIN` (`libc/calls/readwrite-nt.c`), also when a
+  reader waits and a part of the data went into the pipe: that data is
+  lost. And `poll()` and `select()` report a write end as ready at once,
+  also when the pipe is full. In a test, 3000 bytes to `cat` came back
+  in 27 ms, and of 5000 bytes, only 40 came back in 20 s. The wraps of
+  `write()`, `writev()` and `select()` in `c_src/cosmo/beam_com_pipe.c`
+  get the free space of the pipe with `NtQueryInformationFile()`
+  (`WriteQuotaAvailable`). A write gives at most that number of bytes to
+  Cosmopolitan, so it completes at once, and a full pipe gives `EAGAIN`.
+  `select()` does not report a full pipe: it waits in steps of 5 ms and
+  reports the pipe when it has space again. `tests/cosmo/pipe_check.c`
+  checks this on Windows; with no wraps, it fails.
 - `os.erl`: with `{unix, windows}`, `os:find_executable/1` tries the
   suffixes of Windows.
 
@@ -400,8 +407,10 @@ Names are still resolved with the DNS client of Erlang (no
 `inet_gethost`).
 
 **Possible upstream fix.** For a non-blocking write to a pipe on Windows,
-give the count of the bytes that went into the pipe (the result of
-`GetOverlappedResult()` after `CancelIoEx()`), not `EAGAIN`; and in
+write at most `WriteQuotaAvailable` bytes, or give the count of the
+bytes that went into the pipe (the result of `GetOverlappedResult()`
+after `CancelIoEx()`), not `EAGAIN`. In `poll()`, report the write end
+of a full pipe as not ready. In
 `commandv()`, try `.exe` and `.com` on Windows. Implement fd passing
 between Cosmopolitan processes (the fd table is already serialized for `execve()` in
 `_COSMO_FDS_V2`, and `DuplicateHandle()` can copy handles into a known

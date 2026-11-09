@@ -83,9 +83,8 @@ give the rule the file of your app, build a native file with `--target`
   path, or the form of Cosmopolitan (`/C/db/x.db`).
 - Windows: names are resolved with Erlang's DNS client (IPv4 name
   servers only), not with `inet_gethost`. `os:cmd/1` needs a `sh` in
-  `PATH`. The writes to a port program go through the async thread
-  (C16), so a program that does not read its input can stop the writes
-  to the other port programs.
+  `PATH`. While a port program does not read its input and its pipe is
+  full, the VM checks the pipe every 5 ms (C16).
 - WSL2: start an APE file with `sh`. The kernel gives an APE file that
   it starts itself to Windows (`WSLInterop`): `./beam.com`, and an APE
   file that a shell starts (`os:cmd("other.com")`). BEAM.com starts its

@@ -43,8 +43,6 @@ systems.
   SSH"): `ProxyJump` through a channel `direct-tcpip` of the `ssh`
   application, and a question for the passphrase of a key file when the
   build runs in a terminal.
-- Windows: non-blocking writes to a pipe of Cosmopolitan (C16), so that
-  the writes to the port programs need no async thread.
 - `mix release` with `include_erts: true`, and the options of the Elixir
   scripts that change the `erl` command (`--erl`).
 - The file watcher on Windows.

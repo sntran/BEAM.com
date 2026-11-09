@@ -25,8 +25,12 @@ notes of its release.
   `System.cmd/3`, `os:cmd/1` (with the `sh` of Git for Windows in
   `PATH`), and the Mix steps of `beam.com DIR -o FILE` work on Windows.
   `os:find_executable/1` tries `.exe`, `.com`, `.cmd` and `.bat` there.
-  The writes to a port program go through the async thread, because a
-  non-blocking write to a pipe of Cosmopolitan on Windows can lose data.
+  The writes to a port program are non-blocking, as on Unix. The wraps
+  of `write()`, `writev()` and `select()` (`c_src/cosmo/beam_com_pipe.c`)
+  write at most the free space of a pipe, because a larger non-blocking
+  write to a pipe of Cosmopolitan on Windows can lose data, and they do
+  not report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
+  them on Windows.
 - A `chown()` to the owner and the group that a file already has gives
   0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
 - On Windows, a script with `#!` runs as a port program: with the
