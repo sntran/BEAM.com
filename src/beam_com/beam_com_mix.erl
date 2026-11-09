@@ -157,10 +157,23 @@ build(Dir, Out) when is_list(Dir), is_list(Out) ->
     'Elixir.Mix':env(list_to_atom(os:getenv("MIX_ENV"))),
     'Elixir.Mix.Local':append_archives(),
     'Elixir.Mix.Local':append_paths(),
+    git_scm(os:getenv("BEAM_COM_GIT"), os:find_executable("git")),
     Releases = releases(App, proplists:get_value(releases, Config, []), Out),
     'Elixir.Mix.Project':in_project(App, unicode:characters_to_binary(Dir),
                                     [{releases, Releases}],
                                     fun(_Module) -> steps(Config) end).
+
+%% The git client of beam.com (beam_com_git_scm) gets the git deps of an
+%% https URL when PATH has no git, or with BEAM_COM_GIT=http. It comes
+%% before Mix.SCM.Git, which gets the other git deps.
+git_scm("http", _Git) ->
+    'Elixir.Mix.SCM':prepend(beam_com_git_scm);
+git_scm(_, false) ->
+    io:format("beam.com: no git program: the git deps of an https URL come with the "
+              "git client of beam.com~n"),
+    'Elixir.Mix.SCM':prepend(beam_com_git_scm);
+git_scm(_, _Git) ->
+    ok.
 
 %% The steps of "mix setup" and of a deploy: the config, the deps, the
 %% code, the assets (when the project has the alias assets.deploy), and

@@ -220,7 +220,8 @@ the directory of the project and with your environment:
 
 1. `loadconfig` and `deps.get`. Mix gets the git deps (for example
    `heroicons` and `daisyui`) with the `git` program, with your keys of
-   SSH and your proxy. It installs rebar3 when a dep needs it.
+   SSH and your proxy, or with the git client of `beam.com` (below). It
+   installs rebar3 when a dep needs it.
 2. `compile`, with the compilers of `mix.exs` (the colocated hooks of
    Phoenix LiveView).
 3. `assets.deploy`, when `mix.exs` has this alias: tailwind, esbuild
@@ -253,11 +254,22 @@ directory.
   of this build: `lib/hello-0.1.0/` has the code and `priv/static`.
 - Not on Windows: Mix cannot run the programs of a build there (git,
   tailwind, esbuild).
-- Today, a git dep needs the `git` program on the computer of the
-  build.
+- With no `git` program in `PATH`, the git client of `beam.com`
+  (`beam_com_git`) gets each git dep of an `https` URL, also `github:`.
+  It speaks version 2 of the git protocol over HTTPS, with your proxy,
+  and with the user and the password of the URL. It gets the commit of
+  `mix.lock` (or of `ref:`, `branch:` or `tag:`), with depth 1, and it
+  computes the name of each object, so the files are the files of that
+  commit. It writes only the objects of that commit, and `sparse:` gives
+  one directory of it. The lock entries are the entries of `git`, so
+  `mix.lock` stays the same. `BEAM_COM_GIT=http` uses it also when
+  `git` is in `PATH`.
+- A git dep of another URL (`git@`, `ssh://`), and `submodules: true`,
+  need the `git` program.
 
-CI builds the app of "Phoenix from source" this way on Linux, and the
-file must serve the start page and its digested CSS.
+CI builds the app of "Phoenix from source" this way on Linux, with the
+git client of `beam.com` for its git deps, and the file must serve the
+start page and its digested CSS.
 [`tests/programs/runtime_check`](../tests/programs/runtime_check) is a
 small Mix project with `config/runtime.exs` and no deps. CI builds and
 runs it on each platform but Windows.

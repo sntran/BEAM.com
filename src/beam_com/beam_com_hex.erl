@@ -26,7 +26,7 @@
 %%   contents.tar.gz at most ?MAX_CONTENTS bytes without compression.
 -module(beam_com_hex).
 
--export([fetch/2, fetch/4]).
+-export([fetch/2, fetch/4, http/5]).
 
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
@@ -919,12 +919,23 @@ env(Name, Default) ->
 %% before it comes. httpc does not limit the body of another status when
 %% it has no length: see O25 in docs/UPSTREAM.md.
 http_get(Url, Max) ->
+    http(get, Url, [{"accept", "application/json"}], none, Max).
+
+%% A request with the client of the builder: its own profile of httpc,
+%% the proxy of HTTPS_PROXY, the check of the certificate and of the
+%% host name, and at most Max bytes of body. Body: none (GET), or
+%% {ContentType, Data} (POST). The git client (beam_com_git) uses it too.
+http(Method, Url, Headers0, Body, Max) ->
     ok = start_http(),
     Tls = [{verify, verify_peer}, {cacerts, public_key:cacerts_get()},
            {customize_hostname_check,
             [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}],
-    Headers = [{"user-agent", "beam.com"}, {"accept", "application/json"}],
-    case httpc:request(get, {Url, Headers}, [{ssl, Tls}, {timeout, ?HTTP_TIMEOUT}],
+    Headers = [{"user-agent", "beam.com"} | Headers0],
+    Request = case Body of
+                  none -> {Url, Headers};
+                  {Type, Data} -> {Url, Headers, Type, Data}
+              end,
+    case httpc:request(Method, Request, [{ssl, Tls}, {timeout, ?HTTP_TIMEOUT}],
                        [{sync, false}, {stream, {self, once}}, {body_format, binary},
                         {max_body_size, Max}], beam_com) of
         {ok, Ref} -> body(Ref, Url, Max, undefined, 0, []);
