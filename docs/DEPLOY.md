@@ -235,9 +235,12 @@ For a restart with almost no failed request, see the spike
   [`PROGRAMS.md`](PROGRAMS.md). In CI, put the deploy key in the agent
   (for example with `webfactory/ssh-agent`) and the key of the host in
   `~/.ssh/known_hosts`.
-- **A Mix project on Windows.** The Mix steps start programs (the child
-  `beam.com`, git, tailwind, esbuild), and `beam.com` has no port
-  programs on Windows yet (C16 of [`UPSTREAM.md`](UPSTREAM.md)). The
-  builder stops with an error. Build the file on Linux, macOS or a BSD.
+- **A Phoenix app on Windows.** The Mix steps work on Windows (C16 of
+  [`UPSTREAM.md`](UPSTREAM.md)), and CI builds a Mix project with
+  `config/runtime.exs` there. The tailwind and esbuild packages choose
+  their Linux programs on Windows, because `os:type()` is
+  `{unix, windows}`. Thus the builder gives tailwind the target
+  `windows-x64.exe`, and esbuild the path of `esbuild.exe` from npm,
+  when your config gives no target and no path.
 - **NIFs.** A package with C code works only when `beam.com` has its NIF
   (see [`NIFS.md`](NIFS.md)).

@@ -385,7 +385,7 @@ the Erlang shell in your browser is at
 |---|---|
 | Linux x86_64 and aarch64, WSL2 | ✅ |
 | macOS arm64 and x86_64 | ✅ |
-| Windows x86_64 | ✅ (no port programs) |
+| Windows x86_64 | ✅ |
 | FreeBSD, NetBSD, OpenBSD 7.3 | ✅ |
 | OpenBSD 7.4 and later | ❌ (not supported by Cosmopolitan) |
 

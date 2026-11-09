@@ -107,9 +107,7 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - **Not supported:** the options of
   the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
   `--name`, `--cookie`, `--pipe-to`; give the flags of `erl` in
-  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`). On
-  Windows, there are no port programs: Mix tasks that start other
-  programs (rebar3, git) do not work.
+  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`).
 
 ### Make your own tools
 
@@ -186,8 +184,8 @@ iex.com -S mix phx.server        # http://localhost:4000
   code, need `make` and a C compiler, and a NIF that `beam.com` can load:
   a static NIF of a custom build, or a NIF library in WebAssembly
   (`priv/NAME.wasm`, see [`NIFS.md`](NIFS.md)).
-- Not on Windows (no port programs, so `elixir_make` cannot run) and
-  not on NetBSD (its kernel does not start an APE file by a link; set
+- Not tested on Windows (`elixir_make` needs `make` and a C compiler
+  there), and not on NetBSD (its kernel does not start an APE file by a link; set
   `MAKE` to a script that starts `beam.com` with the APE loader and
   `BEAM_COM_PROGRAM=make`).
 
@@ -252,10 +250,16 @@ directory.
 - The new code of a running program (see "New code in a running
   program" in [`PROGRAMS.md`](PROGRAMS.md)) works the same with a file
   of this build: `lib/hello-0.1.0/` has the code and `priv/static`.
-- Not on Windows: Mix cannot run the programs of a build there (the
-  child `beam.com`, git, tailwind, esbuild), because `beam.com` has no
-  port programs on Windows yet (C16 of [`UPSTREAM.md`](UPSTREAM.md)).
-  The builder stops with an error.
+- On Windows, the Mix steps run too: the spawn driver of `beam.com`
+  starts the child `beam.com`, git and the other programs with
+  `posix_spawn()` (C16 of [`UPSTREAM.md`](UPSTREAM.md)). CI builds and
+  runs `tests/programs/runtime_check` there. A script with `#!` as a
+  port program (for example `rebar3`) runs with the `escript` of
+  `beam.com`, or with the `sh` in `PATH`. tailwind and esbuild get their
+  programs for Windows: when the config gives no target and no path, the
+  builder sets the target `windows-x64.exe` of tailwind, and the path of
+  `esbuild.exe` of the npm package `@esbuild/win32-x64` (the version of
+  `config :esbuild`) in `_build`.
 - With no `git` program in `PATH`, the git client of `beam.com`
   (`beam_com_git`) gets each git dep of an `https` URL, also `github:`.
   It speaks version 2 of the git protocol over HTTPS, with your proxy,

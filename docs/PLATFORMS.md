@@ -35,10 +35,14 @@ WSL2: the WSL check of `tests/run.sh` makes an entry such as
 `WSLInterop` in a user namespace of Linux (Linux 6.7 or later), and
 runs the checks there.
 
-On Windows, `os:type()` is `{unix, windows}`, and port programs do not
-work: `open_port({spawn, ...})`, `os:cmd/1` and native name lookups
-fail with `enotsup` (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
-At start, BEAM.com therefore gives kernel an inetrc with the name servers
+On Windows, `os:type()` is `{unix, windows}`. The spawn driver starts a
+port program itself with `posix_spawn()`, because `erl_child_setup`
+cannot work there (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
+`os:find_executable/1` tries the suffixes of Windows (`.exe`, `.com`,
+`.cmd`, `.bat`). `open_port({spawn, Command})` and `os:cmd/1` run
+`sh -c` with the `sh` in `PATH`, for example the `sh` of Git for
+Windows, and give `enoent` with no `sh`.
+At start, BEAM.com gives kernel an inetrc with the name servers
 and the hosts file of Windows, so that names are resolved with Erlang's
 own DNS client (`ERL_INETRC` points at it; set `ERL_INETRC` yourself to
 use your own file), and it exports the trusted root certificates of
@@ -77,8 +81,11 @@ give the rule the file of your app, build a native file with `--target`
 - Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)
   as a relative path, because its Unix VFS runs there; give a relative
   path, or the form of Cosmopolitan (`/C/db/x.db`).
-- Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
-  are resolved with Erlang's DNS client, IPv4 name servers only).
+- Windows: names are resolved with Erlang's DNS client (IPv4 name
+  servers only), not with `inet_gethost`. `os:cmd/1` needs a `sh` in
+  `PATH`. The writes to a port program go through the async thread
+  (C16), so a program that does not read its input can stop the writes
+  to the other port programs.
 - WSL2: start an APE file with `sh`. The kernel gives an APE file that
   it starts itself to Windows (`WSLInterop`): `./beam.com`, and an APE
   file that a shell starts (`os:cmd("other.com")`). BEAM.com starts its

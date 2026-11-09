@@ -368,13 +368,42 @@ each port program to it with `sendmsg(SCM_RIGHTS)`. On Windows,
 forker child also kept the stdout/stderr pipes of `beam.exe` open, so the
 test hung after the program ended.
 
-**Workaround in BEAM.com.** On Windows (run-time test of `__hostos`), do
-not start the forker, and make `open_port({spawn, ...})` fail with
-`enotsup`. So `os:cmd/1` and native name lookups (`inet_gethost`) do not
-work on Windows yet.
+**Workaround in BEAM.com.** On Windows (run-time test of `__hostos`), the
+forker port starts no `erl_child_setup`
+(`patches/otp/0006-windows-spawn.patch`):
 
-**Possible upstream fix.** Implement fd passing between Cosmopolitan
-processes (the fd table is already serialized for `execve()` in
+- The spawn driver starts the program itself with `posix_spawn()`
+  (`beam_com_spawn_nt()` of `c_src/cosmo/beam_com.c`). The pipes of the
+  port have `O_CLOEXEC`, and the file actions give the ends of the child
+  as its fds 0, 1 and 2. A program of `/zip/bin` is a helper of the
+  file. `{spawn, Command}` runs `sh -c` with the `sh.exe` (else `sh`) in
+  `PATH`, because `posix_spawnp()` (`commandv()`) tries no `.exe`.
+- The pid is known at once, so no message "Go" comes on the output of
+  the program: the first event of the port (input, or a timer of 0 ms)
+  sends the ack of the open.
+- A thread for each program waits for its end, and writes the exit
+  status to a pipe that the forker port reads. A native program exits
+  with its code, not with a wait status (`code << 8`), and the thread
+  converts it.
+- The write end of the pipe is blocking, and the port writes in the
+  async thread, as the fd driver does for an fd that cannot be
+  non-blocking. A pipe of Cosmopolitan on Windows has a buffer of 4 KiB
+  (`PIPE_BUF`, `libc/calls/pipe-nt.c`). A non-blocking write that does
+  not fit is cancelled with `EAGAIN` (`libc/calls/readwrite-nt.c`),
+  also when a part of it went into the pipe, and `poll()` reports a
+  write end as ready at once. In a test, 3000 bytes to `cat` came back
+  in 27 ms, and of 5000 bytes, only 40 came back in 20 s.
+- `os.erl`: with `{unix, windows}`, `os:find_executable/1` tries the
+  suffixes of Windows.
+
+Names are still resolved with the DNS client of Erlang (no
+`inet_gethost`).
+
+**Possible upstream fix.** For a non-blocking write to a pipe on Windows,
+give the count of the bytes that went into the pipe (the result of
+`GetOverlappedResult()` after `CancelIoEx()`), not `EAGAIN`; and in
+`commandv()`, try `.exe` and `.com` on Windows. Implement fd passing
+between Cosmopolitan processes (the fd table is already serialized for `execve()` in
 `_COSMO_FDS_V2`, and `DuplicateHandle()` can copy handles into a known
 peer process). At minimum return `ENOTSUP`, not `EINVAL`.
 
@@ -1518,6 +1547,49 @@ SSH agent, and the tests use a long path for their agent.
 
 **Possible upstream fix.** For `AF_UNIX`, check only that the size has
 the family (`sizeof(sa_family_t)`), as `sockaddr2linux()` does.
+
+### C54. symlink() on Windows reads a relative target from the working directory
+
+**Status:** HEAD (`libc/calls/symlinkat-nt.c`). Seen on Windows Server
+2025 (x86_64).
+
+**Symptom.** `mix release` of a Phoenix app on Windows makes a release
+with no `priv` of the app, so the server gives 404 for each static
+file. `File.exists?("_build/prod/lib/hello/priv")` gives `false`, and
+`stat()` of the link gives `EACCES`. `dir` shows the link as
+`<SYMLINK>`, not `<SYMLINKD>`.
+
+**Cause.** Windows has two kinds of symbolic links: a link to a file and
+a link to a directory. A link to a file that points to a directory
+gives "access denied" when a program opens it. `sys_symlinkat_nt()`
+makes a link to a directory only when `GetFileAttributes()` of the
+target gives a directory. For a relative target, it calls
+`GetFileAttributes()` with the target as it is, so Windows reads it
+from the working directory, not from the directory of the link. Mix
+makes `_build/prod/lib/APP/priv` with the target `../../../../priv`
+from the directory of the project.
+
+```c
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(void) {
+  struct stat st;
+  mkdir("t", 0700); mkdir("t/priv", 0700); mkdir("t/lib", 0700);
+  symlink("../priv", "t/lib/priv");
+  printf("%d\n", stat("t/lib/priv", &st));  /* -1 on Windows; 0 on Linux */
+}
+```
+
+**Workaround in BEAM.com.** `__wrap_symlink()` and `__wrap_symlinkat()`
+of `c_src/cosmo/beam_com_fs.c` read a relative target from the
+directory of the link. When it is a directory, they add a `/` at the end
+of the target, and Cosmopolitan then makes a link to a directory.
+`readlink()` gives the target with the `/`.
+
+**Possible upstream fix.** For a relative target, call
+`GetFileAttributes()` on the directory of the link joined with the
+target.
 
 ## WAMR (WebAssembly Micro Runtime)
 

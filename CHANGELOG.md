@@ -18,8 +18,25 @@ notes of its release.
   each Mix project, and `--tool mix` keeps the builder of a plain Mix
   project. See "Phoenix in one file" in `docs/ELIXIR.md`.
 - `docs/DEPLOY.md`: deploy a Phoenix app to a Linux server, with a build
-  on the server or in CI. On Windows, a Mix project that needs Mix now
-  stops with a clear error: Windows has no port programs yet (C16).
+  on the server or in CI.
+- Port programs on Windows (C16 of `docs/UPSTREAM.md`). The spawn driver
+  starts the program itself with `posix_spawn()`, because
+  `erl_child_setup` cannot work there. Thus `open_port/2`, `peer`,
+  `System.cmd/3`, `os:cmd/1` (with the `sh` of Git for Windows in
+  `PATH`), and the Mix steps of `beam.com DIR -o FILE` work on Windows.
+  `os:find_executable/1` tries `.exe`, `.com`, `.cmd` and `.bat` there.
+  The writes to a port program go through the async thread, because a
+  non-blocking write to a pipe of Cosmopolitan on Windows can lose data.
+- A `chown()` to the owner and the group that a file already has gives
+  0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
+- On Windows, a script with `#!` runs as a port program: with the
+  `escript` of `beam.com` for an escript (such as `rebar3`), else with
+  the `sh` in `PATH`.
+- On Windows, a Phoenix build gets the tailwind and esbuild programs for
+  Windows, when the config gives no target and no path for them.
+- On Windows, a relative symbolic link to a directory works (C54). Before,
+  `mix release` copied no `priv` of the app, because `stat()` of the
+  link `_build/prod/lib/APP/priv` gave `EACCES`.
 - `beam.com DIR -o FILE` over the file of a running program updates it:
   the builder writes a new file and renames it, and the program loads the
   changed code. The builder strips the beams of the program and of its
