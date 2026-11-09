@@ -191,6 +191,8 @@ static int relay(struct agent *a, unsigned char *buf, int from_agent)
     return (from_agent ? fd_write(1, buf, 4 + len) : agent_write(a, buf, 4 + len)) < 0 ? -1 : 1;
 }
 
+int beam_com_ssh_agent_main(int argc, char **argv);
+
 int beam_com_ssh_agent_main(int argc, char **argv)
 {
     struct agent a;

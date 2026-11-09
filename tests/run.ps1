@@ -137,6 +137,12 @@ $patterns = @{
 $patterns["calc"] = '(?m)calc: 1 \+ 2 \* \(3 - 1\) - 8 / 4 = 3\r?$@@(?m)calc: asn1 ber 300980044245414d810103\r?$@@(?m)calc: asn1 decoded BEAM 3\r?$'
 $apps = @("greeter", "crypto_check", "tls_check")
 
+# The writes to a non-blocking pipe (c_src/cosmo/beam_com_pipe.c): the
+# build job of CI makes pipe_check.com with cosmocc.
+if (Test-Path (Join-Path $Dir "pipe_check.com")) {
+    Check "pipe_check.com" '(?m)^pipe_check: ok' @()
+}
+
 # The commands of the default beam.com.
 # With no input, beam.com runs the project in the current directory. The
 # top of the repository is a Mix project, so this check runs in an empty
@@ -200,7 +206,7 @@ if (Test-Path "examples") {
     Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
     if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
         $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
-        Check "peer_check.b.com" "(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$@@(?m)^exit status 3`$@@(?m)^cmd hello`$" @()
+        Check "peer_check.b.com" "(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$@@(?m)^exit status 3`$@@(?m)^cmd hello`$@@(?m)^slow reader 200000`$" @()
     }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).

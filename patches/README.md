@@ -36,7 +36,7 @@ order, with `git apply`.
 | `0003-wasm-nif.patch` | `erts/emulator/beam/erl_nif.c`, `erl_nif.h` | The hooks for NIF libraries in WebAssembly (an open, and a close of an entry that ERTS refuses), and `erl_nif.h` for `__wasm__` (not Emscripten). `wasm/erts/build.sh` applies it too. | O24 |
 | `0004-sandbox-resolver.patch` | `lib/kernel/src/inet_config.erl` | With `BEAM_COM_DNS`, the resolver of the sandbox with a host list is the only name server (`--allow-net=HOST,...`). | O27 |
 | `0005-architecture.patch` | `erts/emulator/beam/erl_bif_info.c` | `erlang:system_info(system_architecture)` gives the CPU and the system where the file runs. | O28 |
-| `0006-windows-spawn.patch` | `erts/emulator/sys/unix/sys_drivers.c` | On Windows, the spawn driver starts a port program with `posix_spawn()`, with no `erl_child_setup`, and a thread gives the exit status to the forker port. | C16 |
+| `0006-windows-spawn.patch` | `erts/emulator/sys/unix/sys_drivers.c` | On Windows, the spawn driver starts a port program with `posix_spawn()`, with no `erl_child_setup`, and a thread gives the exit status to the forker port. The write end of a port is non-blocking (with the wraps of `c_src/cosmo/beam_com_pipe.c`). | C16 |
 | | `lib/kernel/src/os.erl` | With `{unix, windows}`, `os:find_executable/1` tries the suffixes of Windows (`.exe`, `.com`, `.cmd`, `.bat`). | C16 |
 
 ## Elixir (`patches/elixir/`)

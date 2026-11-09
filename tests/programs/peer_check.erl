@@ -10,11 +10,14 @@
 %%
 %%   peer CHANNEL: release R, sum 6, own code true, error boom, bytes 1000000, sent 1000000
 %%
-%% Then the exit status of a port program, and the output of os:cmd/1
-%% (a shell: on Windows, the sh of Git for Windows in PATH):
+%% Then the exit status of a port program, the output of os:cmd/1 (a
+%% shell: on Windows, the sh of Git for Windows in PATH), and the bytes
+%% that a port program gets when it reads its input only after 1 s (the
+%% pipe stays full for that time):
 %%
 %%   exit status 3
 %%   cmd hello
+%%   slow reader 200000
 %%
 %% On Windows, the spawn driver starts the port programs itself, with
 %% posix_spawn() (docs/UPSTREAM.md, C16).
@@ -26,7 +29,29 @@ main(_) ->
     [check(Exe, Channel) || Channel <- [standard_io, tcp]],
     exit_status(Exe),
     io:format("cmd ~ts~n", [string:trim(os:cmd("echo hello"))]),
+    slow_reader(200000),
     ok.
+
+%% A port program that reads its input after 1 s, and counts N bytes.
+slow_reader(N) ->
+    %% dd with bs=1 reads exactly N bytes on each system (head -c is not
+    %% on each BSD). ERTS puts "exec " before the command, so the list of
+    %% commands goes to a new sh.
+    Port = open_port({spawn, "sh -c 'sleep 1; dd bs=1 count=" ++ integer_to_list(N)
+                      ++ " 2>/dev/null | wc -c'"},
+                     [binary, exit_status, use_stdio]),
+    port_command(Port, binary:copy(<<"z">>, N)),
+    Count = slow_output(Port, <<>>),
+    io:format("slow reader ~ts~n", [string:trim(Count)]).
+
+slow_output(Port, Acc) ->
+    receive
+        {Port, {data, Data}} -> slow_output(Port, <<Acc/binary, Data/binary>>);
+        {Port, {exit_status, _}} -> Acc
+    after 60000 ->
+            io:format("slow reader: no end in 60 s~n"),
+            erlang:halt(1)
+    end.
 
 %% The own file in erl mode, which stops with the status 3.
 exit_status(Exe) ->

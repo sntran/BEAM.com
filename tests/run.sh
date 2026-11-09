@@ -530,7 +530,7 @@ if [ -d examples ]; then
         tests/programs/peer_check.erl -o "$dir/peer_check.b.com"
     if [ -f "$dir/peer_check.b.com" ]; then
         peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
-        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$@@^exit status 3\$@@^cmd hello\$"
+        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$@@^exit status 3\$@@^cmd hello\$@@^slow reader 200000\$"
     fi
     # The blue-green spike (examples/bluegreen): an upgrade under load, and
     # three upgrades that the server refuses. Linux has a result; the other
