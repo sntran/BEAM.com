@@ -74,6 +74,61 @@ defmodule BeamComMixTest do
     refute :beam_com_mix.has_alias([], :"assets.deploy")
   end
 
+  test "asset_tools: tailwind and esbuild of the project with no target and no path" do
+    loaded = fn _module -> true end
+    none = fn _app, _key -> :undefined end
+    assert [:tailwind, :esbuild] == :beam_com_mix.asset_tools(none, loaded)
+    assert [] == :beam_com_mix.asset_tools(none, fn _module -> false end)
+
+    assert [:esbuild] ==
+             :beam_com_mix.asset_tools(
+               fn
+                 :tailwind, :target -> "windows-x64.exe"
+                 _app, _key -> :undefined
+               end,
+               loaded
+             )
+
+    assert [] ==
+             :beam_com_mix.asset_tools(
+               fn
+                 _app, :path -> "/p"
+                 _app, _key -> :undefined
+               end,
+               loaded
+             )
+  end
+
+  test "esbuild_exe: esbuild.exe of the npm tarball, and the file again", %{dir: dir} do
+    tgz = Path.join(dir, "e.tgz")
+    :ok = :erl_tar.create(tgz, [{~c"package/esbuild.exe", "MZ exe"}], [:compressed])
+    data = File.read!(tgz)
+    out = Path.join(dir, "_build") |> String.to_charlist()
+
+    http = fn :get, url, [], :none, _max ->
+      send(self(), {:url, url})
+      data
+    end
+
+    path = :beam_com_mix.esbuild_exe(~c"0.25.4", out, http)
+    assert path == Path.join(out, "esbuild-win32-x64-0.25.4.exe") |> String.to_charlist()
+    assert "MZ exe" == File.read!(path)
+    assert {:ok, %File.Stat{mode: mode}} = File.stat(path)
+    assert Bitwise.band(mode, 0o777) == 0o755
+
+    assert_receive {:url,
+                    ~c"https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.4.tgz"},
+                   5_000
+
+    assert path == :beam_com_mix.esbuild_exe(~c"0.25.4", out, fn _, _, _, _, _ -> flunk() end)
+
+    :ok = :erl_tar.create(tgz, [{~c"package/README.md", "no exe"}], [:compressed])
+    other = File.read!(tgz)
+
+    assert {:error, ~c"~ts: no package/esbuild.exe", [_url]} =
+             catch_throw(:beam_com_mix.esbuild_exe(~c"0.1.0", out, fn _, _, _, _, _ -> other end))
+  end
+
   test "releases: include_erts false and a directory in Out, for each release" do
     assert [app: [include_erts: false, path: "/out/app"]] ==
              :beam_com_mix.releases(:app, [], ~c"/out")

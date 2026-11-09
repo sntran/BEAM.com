@@ -20,8 +20,12 @@
 
 -export([reasons/1, release/2, child/0]).
 
+%% The tarball of @esbuild/win32-x64 has about 4 MB.
+-define(ESBUILD_MAX, 64 * 1024 * 1024).
+
 -ifdef(TEST).
--export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1]).
+-export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
+         asset_tools/2, esbuild_exe/3]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -184,8 +188,66 @@ steps(Config) ->
     %% deps.get also installs rebar3 for a dep that rebar3 builds.
     run("deps.get", []),
     run("compile", []),
+    windows_assets(os:type()),
     has_alias(Config, 'assets.deploy') andalso run("assets.deploy", []),
     run("release", ["--overwrite", "--quiet"]).
+
+%% On Windows, os:type() is {unix, windows}, so the Hex packages
+%% tailwind and esbuild choose their programs for Linux. For a package
+%% that the project does not configure, use the program for Windows:
+%% tailwind gets the target "windows-x64.exe" (it downloads that
+%% program itself), and esbuild gets the path of esbuild.exe from npm,
+%% because esbuild has no setting for the target. Cosmopolitan runs
+%% only x86-64 programs on Windows.
+windows_assets({_, windows}) ->
+    Get = fun(App, Key) -> application:get_env(App, Key, undefined) end,
+    Loaded = fun(Module) -> code:ensure_loaded(Module) =:= {module, Module} end,
+    lists:foreach(fun windows_asset/1, asset_tools(Get, Loaded));
+windows_assets(_Os) ->
+    ok.
+
+windows_asset(tailwind) ->
+    io:format("beam.com: tailwind for Windows (target windows-x64.exe)~n"),
+    set_env(tailwind, target, <<"windows-x64.exe">>);
+windows_asset(esbuild) ->
+    Version = binary_to_list('Elixir.Esbuild':configured_version()),
+    Path = esbuild_exe(Version, filename:absname("_build"), fun beam_com_hex:http/5),
+    io:format("beam.com: esbuild for Windows: ~ts~n", [Path]),
+    set_env(esbuild, path, unicode:characters_to_binary(Path)).
+
+set_env(App, Key, Value) ->
+    application:set_env(App, Key, Value, [{persistent, true}]).
+
+%% The packages of the project (Loaded: its module is in the code path)
+%% that get a program for Windows: only a package with no target and no
+%% path in its config (Get).
+asset_tools(Get, Loaded) ->
+    [tailwind || Loaded('Elixir.Tailwind'), Get(tailwind, target) =:= undefined,
+                 Get(tailwind, path) =:= undefined]
+        ++ [esbuild || Loaded('Elixir.Esbuild'), Get(esbuild, path) =:= undefined].
+
+%% The esbuild.exe of the package @esbuild/win32-x64 of npm, at
+%% Dir/esbuild-win32-x64-VERSION.exe: the path. A second build uses the
+%% file again. Http: the function of beam_com_hex:http/5.
+esbuild_exe(Version, Dir, Http) ->
+    Path = filename:join(Dir, "esbuild-win32-x64-" ++ Version ++ ".exe"),
+    filelib:is_regular(Path) orelse
+        begin
+            Url = "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-"
+                ++ Version ++ ".tgz",
+            Tgz = Http(get, Url, [], none, ?ESBUILD_MAX),
+            Exe = case erl_tar:extract({binary, Tgz},
+                                       [compressed, memory, {files, ["package/esbuild.exe"]}]) of
+                      {ok, [{_, Data}]} -> Data;
+                      _ -> throw({error, "~ts: no package/esbuild.exe", [Url]})
+                  end,
+            Temp = Path ++ ".new",
+            ok = filelib:ensure_dir(Path),
+            ok = file:write_file(Temp, Exe),
+            ok = file:change_mode(Temp, 8#755),
+            ok = file:rename(Temp, Path)
+        end,
+    Path.
 
 run(Task, Args) ->
     'Elixir.Mix.Task':run(list_to_binary(Task), [list_to_binary(A) || A <- Args]),
