@@ -445,7 +445,7 @@ defmodule BeamComReloadTest do
   end
 
   @tag :tmp_dir
-  test "the start removes the copies of the processes that do not run", %{tmp_dir: dir} do
+  test "the first check removes the copies of the processes that do not run", %{tmp_dir: dir} do
     reload = Path.join(dir, "cache/reload")
     # 4194305 is above the largest PID of Linux. A sleep of the test runs.
     sleep = Port.open({:spawn_executable, System.find_executable("sleep")}, args: ["30"])
@@ -458,7 +458,12 @@ defmodule BeamComReloadTest do
 
     path = Path.join(dir, "app.com")
     put(path, file([]))
-    start(path)
+    pid = start(path)
+    # The start does no sweep and reads no index: it runs before the
+    # program goes on.
+    assert File.exists?(Path.join(reload, "4194305"))
+    assert :sys.get_state(pid).index == :undefined
+    assert check(pid) == :none
     refute File.exists?(Path.join(reload, "4194305"))
     assert File.exists?(Path.join(reload, to_string(running)))
     assert File.exists?(Path.join(reload, "x"))

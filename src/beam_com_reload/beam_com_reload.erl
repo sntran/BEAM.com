@@ -78,11 +78,15 @@ boot() ->
     end.
 
 %% The last -beam_com_reload MS: a later value (the vm.args of the
-%% release) wins over the value of beam.com.
+%% release) wins over the value of beam.com. Do not use
+%% string:to_integer/1 here: its first call adds about 18 ms to the
+%% start of each program.
 interval({ok, Values}) ->
-    case string:to_integer(lists:last(lists:last(Values))) of
-        {Ms, ""} when Ms >= 0 -> Ms;
+    try list_to_integer(lists:last(lists:last(Values))) of
+        Ms when Ms >= 0 -> Ms;
         _ -> 0
+    catch
+        error:badarg -> 0
     end;
 interval(error) ->
     0.
@@ -102,27 +106,33 @@ status() ->
 check() ->
     gen_server:call(?MODULE, check, infinity).
 
+%% The start does only a stat and an open of the file, because it runs
+%% before the program goes on (the -eval of beam.com). The open file
+%% keeps the bytes of this file after zip renames a new file into its
+%% place, so the index and the runtime of this file are read only at the
+%% first change. The sweep of the cache occurs at the first check.
 init(#{path := Path, interval := Ms} = Opts) ->
     process_flag(trap_exit, true),
     Reload = filename:join(maps:get(cache, Opts, cache_dir()), "reload"),
-    Cache = filename:join(Reload, os:getpid()),
-    %% A directory of an earlier process with the same OS process id, and
-    %% the copies of processes that stopped with no terminate/2 (a kill).
-    _ = file:del_dir_r(Cache),
-    sweep(Reload),
     State = #{path => Path, interval => Ms, stat => undefined, seen => undefined,
-              index => #{}, prefix => undefined, pending => [], plan => #{},
-              notify => [], last => none, moved => #{}, cache => Cache,
+              index => undefined, prefix => undefined, base => undefined,
+              swept => false, reload => Reload,
+              pending => [], plan => #{},
+              notify => [], last => none, moved => #{},
+              cache => filename:join(Reload, os:getpid()),
               code_path => maps:get(code_path, Opts, fun code:get_path/0),
               root => maps:get(root, Opts, "/zip"),
               grace => maps:get(grace, Opts, ?GRACE)},
-    {ok, case snapshot(Path) of
-             {ok, Stat, Index, Prefix} ->
-                 tick(State#{stat := Stat, seen := Stat, index := Index, prefix := Prefix});
-             {error, Reason} ->
-                 ?LOG_WARNING("beam.com: no reload of new code: ~ts: ~tp", [Path, Reason]),
-                 State
-         end}.
+    {ok, tick(case {stat(Path), file:open(Path, [read, raw, binary])} of
+                  {{ok, Stat}, {ok, Fd}} ->
+                      State#{stat := Stat, seen := Stat, base := Fd};
+                  {{ok, Stat}, {error, Reason}} ->
+                      ?LOG_WARNING("beam.com: no reload of new code: ~ts: ~tp", [Path, Reason]),
+                      State#{stat := Stat, seen := Stat, index := #{}};
+                  {{error, Reason}, _} ->
+                      ?LOG_WARNING("beam.com: no reload of new code: ~ts: ~tp", [Path, Reason]),
+                      State#{index := #{}}
+              end)}.
 
 handle_call(status, _From, #{last := Last, pending := Pending} = State) ->
     {reply, #{last => Last, pending => [M || {M, _, _} <- Pending]}, State};
@@ -142,9 +152,45 @@ handle_info(_Msg, State) ->
     {noreply, State}.
 
 %% The copies of the cache are for this process only.
-terminate(_Reason, #{cache := Cache}) ->
+terminate(_Reason, #{cache := Cache} = State) ->
     _ = file:del_dir_r(Cache),
+    _ = close_base(State),
     ok.
+
+%% The copies of an earlier process with the same OS process id, and of
+%% the processes that stopped with no terminate/2 (a kill): one time, at
+%% the first check.
+clean(#{swept := true} = State) ->
+    State;
+clean(#{reload := Reload, cache := Cache} = State) ->
+    _ = file:del_dir_r(Cache),
+    _ = sweep(Reload),
+    State#{swept := true}.
+
+%% The index and the runtime of the file at the start, from its open
+%% file, before the first change uses them.
+base(#{index := undefined, base := Fd, path := Path} = State) ->
+    Result = try directory(Fd) of
+                 {ok, Index, DirOffset} -> {Index, prefix(Fd, Index, DirOffset)};
+                 {error, Reason} -> {error, Reason}
+             catch
+                 Class:Error -> {error, {Class, Error}}
+             end,
+    case Result of
+        {error, Why} ->
+            ?LOG_WARNING("beam.com: ~ts: ~tp", [Path, Why]),
+            close_base(State#{index := #{}});
+        {Index1, Prefix} ->
+            close_base(State#{index := Index1, prefix := Prefix})
+    end;
+base(State) ->
+    State.
+
+close_base(#{base := undefined} = State) ->
+    State;
+close_base(#{base := Fd} = State) ->
+    _ = file:close(Fd),
+    State#{base := undefined}.
 
 %% Delete each directory reload/PID of a process that does not run. A
 %% directory whose process may run stays.
@@ -218,8 +264,8 @@ safe_run(State) ->
 %% One check. A new file loads only when its stat did not change since
 %% the check before: a file that a program still writes waits. The
 %% modules that wait load first.
-run(#{path := Path, stat := Old, seen := Seen} = State0) ->
-    State = retry(State0),
+run(State0) ->
+    #{path := Path, stat := Old, seen := Seen} = State = retry(clean(State0)),
     case stat(Path) of
         {ok, Old} -> State#{seen := Old};
         {ok, New} when New =:= Seen -> update(New, State);
@@ -227,7 +273,8 @@ run(#{path := Path, stat := Old, seen := Seen} = State0) ->
         {error, _} -> State
     end.
 
-update(Stat, #{path := Path, index := Old, prefix := Prefix} = State0) ->
+update(Stat, State00) ->
+    #{path := Path, index := Old, prefix := Prefix} = State0 = base(State00),
     case snapshot(Path) of
         {ok, _, New, Prefix} ->
             State = State0#{stat := Stat, index := New},
