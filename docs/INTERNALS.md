@@ -23,7 +23,7 @@ files from there.
 | One file for | all the platforms and CPUs | one platform and CPU |
 | NIFs | the static NIFs in `beam.com`, and NIF libraries in WebAssembly ([`NIFS.md`](NIFS.md)) | any NIF of the release |
 | Files in `priv/` | read from the zip; copied to a cache directory only when they must be real files (see "Command line programs" in [`PROGRAMS.md`](PROGRAMS.md)) | normal files |
-| The zip | read-only at run time | normal files |
+| The zip | read-only at run time; a new file in its place gives new code, and new files of `priv/` go to the cache ([`PROGRAMS.md`](PROGRAMS.md)) | normal files |
 
 What BEAM.com writes, and removes:
 

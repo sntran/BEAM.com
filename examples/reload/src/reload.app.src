@@ -1,0 +1,7 @@
+{application, reload,
+ [{description, "New code from the file of a running program (BEAM.com)"},
+  {vsn, "1.0.0"},
+  {registered, [reload_server, reload_loop]},
+  {mod, {reload_app, []}},
+  {applications, [kernel, stdlib]},
+  {env, []}]}.

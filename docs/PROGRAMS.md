@@ -301,6 +301,213 @@ leave the shell with Ctrl-G then `q`, or with Ctrl-C two times.
 The graphical `observer` needs `wx`, which is not in `beam.com`; start
 it in an Erlang installation and connect to the node, or use the shell.
 
+## New code in a running program
+
+A program loads new code when a new file takes the place of its file.
+You do not send the full file again: put only the changed files into it
+with `zip`, on the server. The program loads each changed module, and
+its processes and their state stay.
+
+> **Caution:** do not write into the file of a running program, for
+> example with `cp new.com app.com`, `scp` to the same name, or
+> `zip -g`. The program maps its file, and a change in place can stop it
+> (`SIGSEGV`). Write a new file and rename it: `zip` does this, and so
+> does `mv` of a new file.
+
+The files go into the zip at the paths of the file:
+`lib/APP-VSN/ebin/`, `lib/APP-VSN/priv/` and
+`releases/VSN/consolidated/` (the protocols of Elixir). The new file of
+a build gives these paths. For a project that `beam.com DIR -o FILE`
+builds, build the new version in the same way, and take only the
+directory of your application from it:
+
+```sh
+# On your computer, with the same beam.com as the file on the server.
+beam.com . -o new.com
+unzip -q new.com 'lib/my_app-*' -d stage
+tar -czf code.tgz -C stage lib
+scp code.tgz server:/srv/my_app/
+# On the server: put the files into the file that runs.
+cd /srv/my_app && mkdir -p stage && tar -xzf code.tgz -C stage
+(cd stage && zip -qr ../my_app.com lib)
+```
+
+`beam.com DIR -o FILE` does not run `config/runtime.exs` or Mix
+aliases yet ([`ELIXIR.md`](ELIXIR.md)), so a Phoenix app from
+`mix phx.new` uses `mix release` (as
+[`examples/phoenix_demo`](../examples/phoenix_demo) does). Its release
+directory has the same paths:
+
+```sh
+MIX_ENV=prod beam.com mix release --overwrite
+cd _build/prod/rel/my_app
+tar -czf code.tgz lib/my_app-0.1.0 releases/0.1.0/consolidated
+```
+
+A release is not necessary for the beams. `mix compile` (or `erlc`)
+gives the same code, in a directory with no version
+(`_build/prod/lib/my_app/ebin`): copy it to `lib/my_app-0.1.0/ebin/`
+before `zip`. Source files (`.erl`, `.ex`) do not load: compile them
+with the same OTP and Elixir as the file, for example with the same
+`beam.com`.
+
+> **Caution:** do not put `releases/VSN/start.boot`, `sys.config` or
+> `vm.args` of `mix release` into the file. `beam.com DIR -o FILE`
+> changes them when it makes the file.
+
+In one second, the program loads the new code, and its log has the
+line `beam.com: loaded the new code of MODULES`. The steps:
+
+1. `zip` writes a new file and renames it into the place of the old
+   one. The program keeps the old file open, and `/zip` reads from it,
+   as before.
+2. Each second, the program compares the inode, the size and the time
+   of its file (`-beam_com_exe`). It reads a new file when the file
+   stays the same for one more check.
+3. It reads the zip of the new file as a plain file, and compares the
+   CRC-32 of each entry with the file before.
+4. A changed beam loads only when its directory is in the code path of
+   the program: a restart reads the code from there. A beam at another
+   path (for example `lib/my_app/ebin/` with no version) does not load,
+   and the log names it.
+5. A module loads only when its code is different (`module_info(md5)`).
+   A beam with the same code and other chunks (its docs) does not load
+   again, so you can put the whole `ebin` directory into the file.
+6. The changed modules load together (`code:atomic_load/1`). A module
+   with `-on_load` loads after the others.
+7. When a process still runs the old code of a module, the new code
+   waits. The program tries again at each check, and it never kills a
+   process. Its log names the modules that wait.
+
+### Processes with a new state: the appup
+
+The steps above change the code, not the state of a process. A
+`gen_server` keeps its state, so a new state needs the instructions of
+OTP. Put `lib/APP-VSN/ebin/APP.appup` into the file with the beams:
+
+```erlang
+{"0.1.0",
+ [{"0.1.0", [{update, my_server, {advanced, to_map}}]}],
+ []}.
+```
+
+The release keeps its version in such a deploy, so the entry is for the
+version that runs (`0.1.0`), or a regular expression that matches it
+(`<<"0\\.1\\..*">>`). The program uses the instructions of an appup
+that is new or changed in the new file, one time:
+
+| Instruction | Action |
+| --- | --- |
+| `{update, Mod, {advanced, Extra}}` | Each process of `Mod` stops (`sys:suspend/2`). The code loads, `Mod:code_change(OldVsn, State, Extra)` runs in each process, and the processes go on. `OldVsn` is the `vsn` attribute of the old code. |
+| `{update, Mod}`, `{update, Mod, soft}` | The same, with no `code_change/3`. |
+| `{update, Mod, supervisor}` | The supervisors of `Mod` read `init/1` again (the child specifications), and each new child starts. A child keeps its process. A child that `init/1` no longer gives goes on. |
+| `{load_module, Mod}`, `{add_module, Mod}` | A load, as with no appup. |
+| `{apply, {M, F, A}}` | A call after the load. |
+
+The forms with a timeout, a purge and the dependent modules are the
+same. A process of `Mod` is a `gen_server`, a `gen_statem` or a
+supervisor whose callback module is `Mod` (the initial call of
+`proc_lib`). Another instruction, for example a new application or
+`restart_new_emulator`, refuses the whole file: the old code stays, and
+the log gives the reason. `examples/reload/upgrade/` has an example.
+
+This is the code change of the release handling of OTP, without
+`release_handler`: the program does not write `releases/RELEASES`, and
+it does not add or remove applications.
+
+`{update, Mod, supervisor}` calls `Mod:init/1` with the arguments of the
+first start. So it gives new children only to a supervisor module with
+its own `init/1` (`use Supervisor`). `Supervisor.start_link(children,
+opts)` of `MyApp.Application` gives the list as the arguments, and the
+code change gets the old list again. For such a supervisor, start the
+new child with an `apply`:
+
+```erlang
+{apply, {'Elixir.Supervisor', start_child, ['Elixir.MyApp.Supervisor', 'Elixir.MyApp.Cache']}}
+```
+
+Stop a child that you removed in the same way, with
+`supervisor:terminate_child/2` and `supervisor:delete_child/2`: the
+program does not stop running work by itself.
+
+### New files of `priv/`
+
+`/zip` reads the old file, also for `priv/`. When the new file has new
+files in `lib/APP-VSN/priv/` of a running application, the program:
+
+1. copies the files of `lib/APP-VSN/` of the new file to the cache
+   directory (`BEAM_COM_CACHE`, else the cache directory of the user,
+   in `beam.com/reload/PID/`);
+2. moves the code path of the application there
+   (`code:replace_path/2`), so `code:priv_dir/1` and
+   `Application.app_dir/2` give the new files;
+3. calls `config_change/3` of the application module, after the new
+   code loads;
+4. deletes the copy before of that application 60 seconds later: a
+   request that found a path in it can still read the file.
+
+A Phoenix app from `mix phx.new` has `config_change/3`: it calls
+`Endpoint.config_change/2`, which reads the static manifest again. Thus
+`mix phx.digest` and a new file give the new digest names in the pages,
+and `Plug.Static` serves the new files. The old digest names stay in
+`priv/static` (`phx.digest` keeps them), so an open page keeps its
+assets. The program removes its copies when it stops. At its first
+check (one interval after its start), it also removes the copies of the
+processes that do not run (for example a process that a `kill -9`
+stopped): the directories `reload/PID/` of the cache. The start itself
+does only a stat and an open of the file, so a program starts as fast
+as with no reload.
+
+### What a test showed
+
+A test with Phoenix 1.8 and LiveView 1.2 on Linux:
+
+- `mix phx.digest` and `mix release` took 1.9 seconds. The code and the
+  assets of the application were 88 KB, and `zip` took 0.02 seconds.
+- The open page showed the new text of its LiveView at its next event,
+  with the same count, the same WebSocket and no new page load.
+- A new page load got the new digest name of `app.css`, and the new
+  file. The old digest name still gave 200.
+
+### A restart
+
+A restart runs the file as it is now: each file that `zip` put into it
+is in `/zip`, so the program needs no copy and no appup. A restart also
+gives the code that a reload could not give: a module that still waited,
+a beam outside the code path, or a `code_change/3` that failed. The
+appup does not run at a restart, because each process starts with a new
+state.
+
+### What needs a restart
+
+- Another runtime: the bytes before the zip changed (the emulator, the
+  NIFs in it). The program loads no module, and its log tells it.
+- A file that is not a beam, an appup or a file of `priv/` of a running
+  application. The log names each one.
+- A new application, a new dependency, the configuration, or a NIF.
+
+Erlang keeps two versions of a module. A process that still runs the
+oldest version stops the next load of that module, until the process
+calls the new code (the load waits; the process does not stop).
+
+### Settings
+
+- `BEAM_COM_RELOAD=MS` is the time between two checks (1000 when not
+  set). `BEAM_COM_RELOAD=0` turns the reload off. `-beam_com_reload MS`
+  in the `vm.args` of the release does the same.
+- In a remote shell (`app.com remote`), `beam_com_reload:status()` gives
+  the last result and the modules that wait, and
+  `beam_com_reload:check()` checks the file now.
+- Each program has `lib/beam_com_reload/` (`src/beam_com_reload`), also a
+  release with its own `kernel` (see "Add your release"). `beam.com`
+  starts it after the boot, under `kernel_safe_sup`: an error of it never
+  stops the program. It needs no change of OTP.
+- Not on Windows: a running `.exe` cannot get a new file in its place.
+  Not in the WebAssembly runtime (`WORKERS.md`).
+
+[`examples/reload`](../examples/reload) shows each case, and CI runs its
+`check.sh` on Linux.
+
 ## Add your release
 
 Make a normal OTP release **without ERTS**, for OTP 29, and add its

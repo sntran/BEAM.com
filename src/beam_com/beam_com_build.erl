@@ -1467,10 +1467,13 @@ has_docs(File) ->
 %% The entries of beam.com that the new executable keeps: everything
 %% except the releases, .args, and the applications that the release
 %% does not use. Of the applications, only ebin/ and priv/ are needed.
+%% Each program keeps lib/beam_com_reload, the reload of new code that
+%% beam.com starts (docs/PROGRAMS.md).
 keep(Apps, Base) ->
     Dirs = ["lib/" ++ atom_to_list(A) ++ "-" ++ maps:get(vsn, maps:get(A, Base))
             ++ "/" || A <- Apps],
     fun("lib/") -> true;
+       ("lib/beam_com_reload/" ++ _) -> true;
        ("lib/" ++ _ = Name) ->
             lists:any(fun(Dir) -> keep_app_file(Dir, Name) end, Dirs);
        ("releases/" ++ _) -> false;

@@ -1,0 +1,10 @@
+%% The reload of new code in a program (beam_com_reload). beam.com
+%% starts it with code:load_abs/1 from lib/beam_com_reload/ebin (no
+%% version, so that beam_com.c knows the path), under kernel_safe_sup:
+%% it is not an application of the release.
+{application, beam_com_reload,
+ [{description, "New code from a new file in the place of the file of a program"},
+  {vsn, "0.1.0"},
+  {modules, [beam_com_reload]},
+  {registered, [beam_com_reload]},
+  {applications, [kernel, stdlib]}]}.

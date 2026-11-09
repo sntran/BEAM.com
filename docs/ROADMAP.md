@@ -46,8 +46,11 @@ systems.
   for a Phoenix app in one file.
 - `mix release` with `include_erts: true`, and the options of the Elixir
   scripts that change the `erl` command (`--erl`).
-- The file watcher on Windows, and a reload of new code in a running
-  program when its file changes.
+- The file watcher on Windows.
+- New files of `priv/` in a running program from `/zip` itself, with no
+  copy in the cache (`PROGRAMS.md`, "New code in a running program"):
+  `/zip` of Cosmopolitan maps the file one time, at the start (C52 of
+  `UPSTREAM.md`).
 - The signature of the Hex registry: the Hex client checks the
   checksums of each package, but not yet the signed registry of
   repo.hex.pm.
