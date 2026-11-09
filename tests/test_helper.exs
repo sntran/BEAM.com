@@ -4,6 +4,9 @@
 # BEAM_COM_WASM_RUNTIME and Node.js 25 or later (tests/wasm_diff_test.exs).
 exclude = if System.find_executable("node"), do: [], else: [:node]
 
+# A test with the git-upload-pack program needs git.
+exclude = if System.find_executable("git"), do: exclude, else: [:git | exclude]
+
 exclude =
   if System.get_env("BEAM_COM_WASM_RUNTIME", "") == "", do: [:wasm_diff | exclude], else: exclude
 

@@ -1481,6 +1481,41 @@ and size) at an open of `/zip`, as `OpenZip()` of redbean
 (`tool/net/redbean.c`) does at a reload: a new map for the new file,
 and the old map stays for the files that are open.
 
+### C53. bind() refuses a Unix socket with a short path
+
+**Status:** HEAD (`libc/sock/bind.c`). Seen on Linux x86_64.
+
+**Symptom.** `gen_tcp:listen(0, [{ifaddr, {local, "/tmp/a.sock"}}])`
+gives `{error, einval}`. The same call with a path of 14 bytes or more
+works, and `gen_tcp:connect({local, Path}, 0, [])` works with each path.
+
+**Cause.** `bind()` accepts an address only when its size is at least
+`sizeof(struct sockaddr_in)` (16 bytes). For `AF_UNIX`, `inet_drv` of
+OTP gives `offsetof(struct sockaddr_un, sun_path)` plus the length of
+the path, as POSIX permits. Thus a path of 13 bytes or fewer gives
+`EINVAL`. `connect()` has no such check.
+
+```c
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+int main(void) {
+  struct sockaddr_un a = {AF_UNIX};
+  strcpy(a.sun_path, "/tmp/c53");
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int rc = bind(fd, (void *)&a, offsetof(struct sockaddr_un, sun_path) + 9);
+  printf("%d\n", rc);  /* -1 (EINVAL); 0 on glibc */
+}
+```
+
+**Workaround in BEAM.com.** None. The git client only connects to the
+SSH agent, and the tests use a long path for their agent.
+
+**Possible upstream fix.** For `AF_UNIX`, check only that the size has
+the family (`sizeof(sa_family_t)`), as `sockaddr2linux()` does.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

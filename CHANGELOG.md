@@ -31,9 +31,18 @@ notes of its release.
   client of beam.com (`beam_com_git`, `beam_com_git_scm`): version 2 of
   the git protocol over HTTPS, the commit of `mix.lock` with depth 1, and
   the name of each object computed from its data. `mix.lock` stays the
-  same as with git. `BEAM_COM_GIT=http` uses it also with git.
+  same as with git.
+- The git client of beam.com also speaks SSH (`beam_com_git_ssh`), with
+  the `ssh` application of OTP and no `ssh` program: `git@host:path` and
+  `ssh://` URLs, `~/.ssh/config` (`Host`, `Include`, `HostName`, `User`,
+  `Port`, `IdentityFile`, `IdentitiesOnly`, `IdentityAgent`, and more),
+  the keys of the SSH agent and of `~/.ssh`, and the check of the host
+  key in `known_hosts` (an unknown host stops the build, with its
+  fingerprint). It uses version 2 of the git protocol, else version 0.
+  `BEAM_COM_GIT=client` uses the client also when `git` is in `PATH`.
+  See "Git over SSH" in `docs/PROGRAMS.md`.
 - The builder of a rebar3 project gets the git deps of `rebar.config`
-  (`git` and `git_subdir`, of an `https` URL) with the same git client,
+  (`git` and `git_subdir`, of an `https` or SSH URL) with the same git client,
   and their deps. `rebar.lock` keeps the commit of each git dep, as
   rebar3 does. See "Git deps" in `docs/PROGRAMS.md`.
 - The builder reads a map in a term of a package, for example `#{}` as

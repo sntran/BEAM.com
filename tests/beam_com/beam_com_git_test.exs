@@ -421,9 +421,9 @@ defmodule BeamComGitTest do
               ~c"~ts: the server does not speak version 2 of the git protocol; install git", [_]} =
                catch_throw(:beam_com_git.resolve(@url, :head, %{http: v1}))
 
-      assert {:error, ~c"~ts: only an https URL works with no git program",
-              ["git@example.com:a/b.git"]} ==
-               catch_throw(:beam_com_git.url("git@example.com:a/b.git"))
+      assert {:error, ~c"~ts: only an https or SSH URL works with no git program",
+              ["git://example.com/a/b.git"]} ==
+               catch_throw(:beam_com_git.url("git://example.com/a/b.git"))
 
       assert {:error, ~c"~ts: not a commit: ~ts", [_, "main"]} =
                catch_throw(:beam_com_git.fetch(@url, "main", %{}))
@@ -461,15 +461,18 @@ defmodule BeamComGitTest do
       assert :head == :beam_com_git_scm.rev_spec(git: @url)
     end
 
-    test "accepts_options: an https URL, also of github; not another URL" do
+    test "accepts_options: an https or SSH URL, also of github; not another URL" do
       assert [_ | _] = opts = :beam_com_git_scm.accepts_options(:a, github: "org/repo", dest: "d")
       assert "https://github.com/org/repo.git" == opts[:git]
 
-      assert nil ==
+      assert [_ | _] =
                :beam_com_git_scm.accepts_options(:a,
                  git: "git@github.com:org/repo.git",
                  dest: "d"
                )
+
+      assert nil ==
+               :beam_com_git_scm.accepts_options(:a, git: "git://example.com/r.git", dest: "d")
 
       assert nil == :beam_com_git_scm.accepts_options(:a, path: "x", dest: "d")
     end

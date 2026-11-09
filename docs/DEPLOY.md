@@ -162,7 +162,7 @@ jobs:
 ```
 
 - The runner needs no `git`: with no `git` program, the git deps of an
-  `https` URL come with the git client of `beam.com`.
+  `https` or SSH URL come with the git client of `beam.com`.
 - The cache keeps the deps, the compiled code, and the programs of
   tailwind and esbuild.
 - The file runs on x86_64 and on aarch64, so one build serves both kinds
@@ -227,11 +227,14 @@ For a restart with almost no failed request, see the spike
 
 - **Umbrella projects.** The builder does not build an umbrella project,
   and the Mix steps need one application with `:app` in `mix.exs`.
-- **Git deps over SSH** (`git@host:org/repo.git`, `ssh://`). These need
-  the `git` program on the computer of the build. The `ssh` application
-  of OTP is in `beam.com`, so the git client can also speak SSH. That is
-  work for later: the keys of `~/.ssh`, the SSH agent, `known_hosts`, and
-  `~/.ssh/config` (see [`ROADMAP.md`](ROADMAP.md)).
+- **Some settings of SSH.** The git client of `beam.com` gets git deps
+  over SSH with the keys of `~/.ssh` and of the SSH agent, and checks
+  `known_hosts`. `ProxyJump`, `ProxyCommand`, `GIT_SSH_COMMAND` and the
+  keys of a FIDO token need the `git` and `ssh` programs, because these
+  settings start a program or need a device. See "Git over SSH" in
+  [`PROGRAMS.md`](PROGRAMS.md). In CI, put the deploy key in the agent
+  (for example with `webfactory/ssh-agent`) and the key of the host in
+  `~/.ssh/known_hosts`.
 - **A Mix project on Windows.** The Mix steps start programs (the child
   `beam.com`, git, tailwind, esbuild), and `beam.com` has no port
   programs on Windows yet (C16 of [`UPSTREAM.md`](UPSTREAM.md)). The

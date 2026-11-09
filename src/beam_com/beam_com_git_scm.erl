@@ -1,13 +1,13 @@
 %% A source of Mix (the callbacks of Mix.SCM) for the git deps of an
-%% https URL, with the git client of beam.com (beam_com_git) and no git
-%% program. The child of beam_com_mix puts it before Mix.SCM.Git when
-%% PATH has no git, or when BEAM_COM_GIT is "http".
+%% https or SSH URL, with the git client of beam.com (beam_com_git) and no
+%% git program. The child of beam_com_mix puts it before Mix.SCM.Git when
+%% PATH has no git, or when BEAM_COM_GIT is "client".
 %%
 %% It accepts the options of Mix.SCM.Git (git, github, ref, branch, tag,
 %% sparse, subdir, depth), and its lock entries are the entries of
 %% Mix.SCM.Git: {git, URL, COMMIT, OPTIONS}. Thus mix.lock is the same
-%% with git and with no git. A git dep of another URL (ssh, git@) goes
-%% to Mix.SCM.Git, which needs the git program.
+%% with git and with no git. A git dep of another URL (for example
+%% git://, or a path) goes to Mix.SCM.Git, which needs the git program.
 -module(beam_com_git_scm).
 
 -export(['fetchable?'/0, format/1, format_lock/1, accepts_options/2, 'checked_out?'/1,
@@ -34,9 +34,14 @@ accepts_options(App, Opts) ->
     case 'Elixir.Mix.SCM.Git':accepts_options(App, Opts) of
         nil -> nil;
         Accepted ->
-            case uri_string:parse(unicode:characters_to_list(proplists:get_value(git, Accepted))) of
+            Url = unicode:characters_to_list(proplists:get_value(git, Accepted)),
+            case uri_string:parse(Url) of
                 #{scheme := "https"} -> Accepted;
-                _ -> nil
+                _ ->
+                    case beam_com_git_ssh:is_ssh(Url) of
+                        true -> Accepted;
+                        false -> nil
+                    end
             end
     end.
 
@@ -85,7 +90,7 @@ checkout(Opts) ->
     catch
         throw:{error, Format, Args} ->
             'Elixir.Mix':raise(unicode:characters_to_binary(
-                                 io_lib:format("~ts (no git program, over HTTPS): " ++ Format,
+                                 io_lib:format("~ts (the git client of beam.com): " ++ Format,
                                                [proplists:get_value(dest, Opts) | Args])))
     end.
 

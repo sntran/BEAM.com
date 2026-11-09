@@ -164,13 +164,13 @@ build(Dir, Out) when is_list(Dir), is_list(Out) ->
                                     fun(_Module) -> steps(Config) end).
 
 %% The git client of beam.com (beam_com_git_scm) gets the git deps of an
-%% https URL when PATH has no git, or with BEAM_COM_GIT=http. It comes
-%% before Mix.SCM.Git, which gets the other git deps.
-git_scm("http", _Git) ->
+%% https or SSH URL when PATH has no git, or with BEAM_COM_GIT=client. It
+%% comes before Mix.SCM.Git, which gets the other git deps.
+git_scm("client", _Git) ->
     'Elixir.Mix.SCM':prepend(beam_com_git_scm);
 git_scm(_, false) ->
-    io:format("beam.com: no git program: the git deps of an https URL come with the "
-              "git client of beam.com~n"),
+    io:format("beam.com: no git program: the git deps of an https or SSH URL come with "
+              "the git client of beam.com~n"),
     'Elixir.Mix.SCM':prepend(beam_com_git_scm);
 git_scm(_, _Git) ->
     ok.

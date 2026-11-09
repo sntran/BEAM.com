@@ -1,5 +1,6 @@
-%% A git client over HTTPS, with no git program: the smart HTTP protocol
-%% of git, version 2 (ls-refs and fetch of git-upload-pack). It gets one
+%% A git client over HTTPS and SSH, with no git program: version 2 of the
+%% git protocol (ls-refs and fetch of git-upload-pack), over smart HTTP
+%% or as an SSH command (beam_com_git_ssh, which also speaks version 0). It gets one
 %% commit and the files of its tree, as "git fetch --depth 1" and "git
 %% checkout" do, for a git dep of Mix (beam_com_git_scm).
 %%
@@ -11,9 +12,11 @@
 -module(beam_com_git).
 
 -export([resolve/3, fetch/3, checkout/4]).
+%% For beam_com_git_ssh.
+-export([pkt/1, refs/1, pack_response/1]).
 
 -ifdef(TEST).
--export([pkt/1, pkts/1, advertisement/1, refs/1, pack_response/1, objects/1, apply_delta/2,
+-export([pkts/1, advertisement/1, objects/1, apply_delta/2,
          tree/1, commit_tree/1, zlib_end/2, safe_name/1, url/1]).
 -endif.
 
@@ -25,7 +28,7 @@
 %% The commit of Rev at the repository Url: Rev is a commit (40 hex
 %% digits), {branch, B}, {tag, T}, {ref, R}, or head. Opts: http, the
 %% function of the requests (beam_com_hex:http/5; another one for the
-%% tests).
+%% tests), and ssh, the settings of beam_com_git_ssh for the tests.
 resolve(Url, {ref, Ref}, Opts) when length(Ref) =:= 40 ->
     case is_sha(Ref) of
         true -> list_to_binary(Ref);
@@ -41,11 +44,16 @@ resolve(Url, head, Opts) ->
     resolve_refs(Url, ["HEAD"], Opts).
 
 resolve_refs(Url, Names, Opts) ->
-    capabilities(Url, Opts),
     Body = [pkt("command=ls-refs\n"), pkt("object-format=sha1\n"), <<"0001">>,
             pkt("peel\n"), pkt("symrefs\n")]
         ++ [pkt(["ref-prefix ", N, "\n"]) || N <- Names] ++ [<<"0000">>],
-    Refs = refs(pkts(upload_pack(Url, Body, ?MAX_REFS, Opts))),
+    Refs = case beam_com_git_ssh:is_ssh(Url) of
+               true ->
+                   beam_com_git_ssh:ls_refs(Url, Body, ?MAX_REFS, Opts);
+               false ->
+                   capabilities(Url, Opts),
+                   refs(pkts(upload_pack(Url, Body, ?MAX_REFS, Opts)))
+           end,
     case [Sha || N <- Names, {Name, Sha} <- Refs, Name =:= list_to_binary(N)] of
         [Sha | _] -> Sha;
         [] -> throw({error, "~ts: no ~ts", [redact(Url), hd(Names)]})
@@ -55,11 +63,17 @@ resolve_refs(Url, Names, Opts) ->
 %% Data}}, with only the commit and the objects of its tree.
 fetch(Url, Sha, Opts) ->
     is_sha(binary_to_list(Sha)) orelse throw({error, "~ts: not a commit: ~ts", [redact(Url), Sha]}),
-    capabilities(Url, Opts),
     Body = [pkt("command=fetch\n"), pkt("object-format=sha1\n"), <<"0001">>,
             pkt("no-progress\n"), pkt("ofs-delta\n"), pkt("deepen 1\n"),
             pkt(["want ", Sha, "\n"]), pkt("done\n"), <<"0000">>],
-    Objects = objects(pack_response(pkts(upload_pack(Url, Body, ?MAX_PACK, Opts)))),
+    Pack = case beam_com_git_ssh:is_ssh(Url) of
+               true ->
+                   beam_com_git_ssh:pack(Url, Sha, Body, Opts);
+               false ->
+                   capabilities(Url, Opts),
+                   pack_response(pkts(upload_pack(Url, Body, ?MAX_PACK, Opts)))
+           end,
+    Objects = objects(Pack),
     reachable(Sha, Objects).
 
 %% Write the files of the tree of the commit Sha in Dir, or of the
@@ -151,7 +165,7 @@ url(Url) ->
         #{scheme := "https", host := Host} = U when Host =/= "" ->
             string:trim(uri_string:recompose(maps:remove(userinfo, U)), trailing, "/");
         _ ->
-            throw({error, "~ts: only an https URL works with no git program", [redact(Url)]})
+            throw({error, "~ts: only an https or SSH URL works with no git program", [redact(Url)]})
     end.
 
 redact(Url) ->

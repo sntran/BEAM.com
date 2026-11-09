@@ -264,11 +264,13 @@ directory.
   computes the name of each object, so the files are the files of that
   commit. It writes only the objects of that commit, and `sparse:` gives
   one directory of it. The lock entries are the entries of `git`, so
-  `mix.lock` stays the same. `BEAM_COM_GIT=http` uses it also when
+  `mix.lock` stays the same. `BEAM_COM_GIT=client` uses it also when
   `git` is in `PATH`.
-- A git dep of another URL (`git@`, `ssh://`), and `submodules: true`,
-  need the `git` program. Git over SSH with the `ssh` application of OTP
-  is in [`ROADMAP.md`](ROADMAP.md).
+- With no `git` program, the same client also gets each git dep of an
+  SSH URL (`git@host:path`, `ssh://`), with the keys of `~/.ssh` and of
+  the SSH agent: see "Git over SSH" in [`PROGRAMS.md`](PROGRAMS.md).
+- A git dep of another URL (for example `git://`), and `submodules:
+  true`, need the `git` program.
 - To deploy the file to a server, from the server itself or from CI, see
   [`DEPLOY.md`](DEPLOY.md).
 

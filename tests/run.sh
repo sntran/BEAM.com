@@ -1215,9 +1215,9 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
         # release (beam_com_mix), for config/runtime.exs, the git deps
         # (heroicons, daisyui), the compilers and assets.deploy. The git
         # deps come again with the git client of beam.com
-        # (BEAM_COM_GIT=http), as on a computer with no git program.
+        # (BEAM_COM_GIT=client), as on a computer with no git program.
         rm -rf deps/heroicons deps/daisyui
-        BEAM_COM_GIT=http
+        BEAM_COM_GIT=client
         export BEAM_COM_GIT
         net_check beam.com 'Mix gets the deps of \. and makes its release (config/runtime.exs, deps that are not Hex packages: heroicons daisyui@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix' \
             . -o "$dir/hello.com"
@@ -1228,7 +1228,7 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
             echo "FAIL: the git client of beam.com did not get heroicons"
             fail=1
             failed="$failed
-  BEAM_COM_GIT=http: deps/heroicons is not a checkout of the git client of beam.com"
+  BEAM_COM_GIT=client: deps/heroicons is not a checkout of the git client of beam.com"
         fi
         if [ -f "$dir/hello.com" ]; then
             chmod +x "$dir/hello.com"

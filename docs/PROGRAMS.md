@@ -134,24 +134,25 @@ and compiled into the program, as rebar3 does, without rebar3:
   `warnings_as_errors`), and their warnings are not shown. A package
   can use the parse transforms and the headers (`include_lib`) of the
   packages that it needs.
-- **Not supported:** git deps over SSH, other sources, NIFs (C code)
+- **Not supported:** other sources (for example `hg`), NIFs (C code)
   and rebar3 plugins or hooks. Elixir packages (Mix) are supported: see
   [`ELIXIR.md`](ELIXIR.md).
 
 ### Git deps
 
 A dep of `rebar.config` can also come from a git repository of an
-`https` URL, in the forms of rebar3:
+`https` or SSH URL, in the forms of rebar3:
 
 ```erlang
 {deps, [{jsx, {git, "https://github.com/talentdeficit/jsx.git", {tag, "v3.1.0"}}},
-        {mylib, {git, "https://example.com/mylib.git", {branch, "main"}}},
+        {mylib, {git, "git@github.com:org/mylib.git", {branch, "main"}}},
         {other, {git_subdir, "https://example.com/mono.git", {ref, "1a2b3c4"}, "apps/other"}}]}.
 ```
 
 - The git client of `beam.com` (`beam_com_git`) gets the commit, with
-  no `git` program: version 2 of the git protocol over HTTPS, with depth
-  1. It computes the name of each object from its data.
+  no `git` program: version 2 of the git protocol over HTTPS or SSH,
+  with depth 1. It computes the name of each object from its data. See
+  "Git over SSH" below.
 - `rebar.lock` keeps the commit of each git dep, as rebar3 does:
   `{git, URL, {ref, SHA}}`. A build with the lock gets this commit, and
   does not ask the server for the branch or the tag.
@@ -160,6 +161,40 @@ A dep of `rebar.config` can also come from a git repository of an
 - The version of a git dep is the `vsn` of its `.app.src`. For the
   `vsn` `git`, it is the tag without `v`, else `0.0.0+git.` and the
   first 7 characters of the commit.
+
+### Git over SSH
+
+The git client speaks SSH with the `ssh` application of OTP, with no
+`ssh` program. It accepts `ssh://[user@]host[:port]/path` and the form
+of scp, `[user@]host:path` (for example `git@github.com:org/repo.git`).
+The same client gets the git deps of Mix with no `git` program (see
+"Phoenix in one file" in [`ELIXIR.md`](ELIXIR.md)).
+
+- **Settings.** It reads `~/.ssh/config` as `ssh` does, the first value
+  of each keyword: `Host`, `Match all`, `Include`, `HostName`, `User`,
+  `Port`, `IdentityFile`, `IdentitiesOnly`, `IdentityAgent`,
+  `UserKnownHostsFile` and `HostKeyAlias`. It does not read
+  `/etc/ssh/ssh_config`.
+- **Keys.** The SSH agent of `SSH_AUTH_SOCK` (a key that only the agent
+  has, for example of a password manager), and the key files:
+  `IdentityFile`, else `~/.ssh/id_ed25519`, `id_ecdsa` and `id_rsa`.
+- **A key with a passphrase.** The client asks no question. Add the key
+  to the agent (`ssh-add`). The error names each key file with a
+  passphrase.
+- **Host keys.** The key of the host must be in `~/.ssh/known_hosts`
+  (also a hashed name, and `[host]:port`), or in
+  `/etc/ssh/ssh_known_hosts`. For an unknown host, the build stops with
+  the fingerprint of its key. The client writes no file. A key with
+  `@revoked` stops the build.
+- **The protocol.** The client runs `git-upload-pack` on the server
+  with `GIT_PROTOCOL=version=2`. A server that refuses the variable (the
+  default of OpenSSH) speaks version 0, and the client uses it: the
+  commit must then be a branch or a tag of the server, or the server
+  must allow other commits (`uploadpack.allowReachableSHA1InWant`).
+- **Not supported.** `ProxyJump` and `ProxyCommand`, `GIT_SSH_COMMAND`
+  and `GIT_SSH` (they name a program), the keys of a FIDO token
+  (`sk-*`, which the `ssh` application does not have), and an agent on
+  Windows (a named pipe). Use the `git` program for these.
 
 [`examples/hexweb`](../examples/hexweb) uses cowboy (with cowlib and
 ranch) and jsx: it starts a web server and gets JSON from it. CI builds

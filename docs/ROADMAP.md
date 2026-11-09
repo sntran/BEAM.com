@@ -39,21 +39,10 @@ systems.
 
 ### Programs
 
-- Git deps over SSH with no `git` program, with the `ssh` application of
-  OTP (in `beam.com`): `git-upload-pack` as an SSH command, and version 2
-  of the protocol (`GIT_PROTOCOL`), else version 0. Each way that `ssh`
-  gives a key:
-  - the keys of `~/.ssh` (`id_ed25519`, `id_ecdsa`, `id_rsa`), also with
-    a passphrase in the formats that `ssh` reads;
-  - the SSH agent (`SSH_AUTH_SOCK`, `ssh_agent` of OTP), so a key that
-    only the agent has (for example of a password manager) also works.
-    The `ssh` application has no keys of a FIDO token (`sk-*`);
-  - the check of the host key against `~/.ssh/known_hosts`, and a clear
-    refusal of an unknown host (no question);
-  - a part of `~/.ssh/config`: `Host`, `HostName`, `User`, `Port`,
-    `IdentityFile` and `IdentitiesOnly`;
-  - `GIT_SSH_COMMAND` and `core.sshCommand` name a program, so with one of
-    them the build uses `git`.
+- More of git over SSH with no `git` program (`PROGRAMS.md`, "Git over
+  SSH"): `ProxyJump` through a channel `direct-tcpip` of the `ssh`
+  application, and a question for the passphrase of a key file when the
+  build runs in a terminal.
 - Port programs on Windows (C16 of `UPSTREAM.md`): start a program with
   no `erl_child_setup`, for example with `posix_spawn()` of Cosmopolitan.
   Then the Mix steps of a build also work on Windows.
