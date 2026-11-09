@@ -1955,11 +1955,30 @@ static const char *spawn_nt_sh(char *buf, size_t size)
     return NULL;
 }
 
+/* The interpreter of a script (a first line "#!"): 'e' for escript, 's'
+ * for another interpreter, or 0 for a program. Windows cannot start a
+ * script, for example the rebar3 that Mix runs. */
+static int spawn_nt_script(const char *path)
+{
+    char line[256];
+    FILE *f = fopen(path, "r");
+    int kind = 0;
+
+    if (!f)
+        return 0;
+    if (fgets(line, sizeof(line), f) && line[0] == '#' && line[1] == '!')
+        kind = strstr(line, "escript") ? 'e' : 's';
+    fclose(f);
+    return kind;
+}
+
 int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
                       const char *cwd, const char *wd, int in_fd, int out_fd,
                       int err_fd, int use_stdio, int *pid)
 {
     char sh[PATH_MAX];
+    struct arglist script = {0};
+    int kind;
     posix_spawn_file_actions_t fa;
     char *sh_argv[] = {"sh", "-c", (char *)cmd, NULL};
     const char *path = cmd;
@@ -1971,6 +1990,22 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
         env = helper_env(cmd, envp);
     } else if (!argv && !(path = spawn_nt_sh(sh, sizeof(sh)))) {
         return ENOENT;
+    } else if (argv && (kind = spawn_nt_script(cmd))) {
+        /* An escript runs with this file ("beam.com escript FILE ARGS"),
+         * another script with the sh in PATH ("sh FILE ARGS"). */
+        if (kind == 'e') {
+            path = GetProgramExecutableName();
+            push(&script, (char *)path);
+            push(&script, "escript");
+        } else if ((path = spawn_nt_sh(sh, sizeof(sh)))) {
+            push(&script, "sh");
+        } else {
+            return ENOENT;
+        }
+        push(&script, (char *)cmd);
+        for (size_t i = 1; argv[0] && argv[i]; i++)
+            push(&script, argv[i]);
+        argv = script.v;
     }
     if ((err = posix_spawn_file_actions_init(&fa)))
         return err;
@@ -1989,6 +2024,7 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     if (!err)
         err = posix_spawn(pid, path, &fa, NULL, argv ? argv : sh_argv, env);
     posix_spawn_file_actions_destroy(&fa);
+    free(script.v);
     return err;
 }
 
