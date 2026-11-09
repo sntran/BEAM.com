@@ -390,10 +390,17 @@ defmodule BeamComGitSshTest do
       src = Path.join(ctx.tmp_dir, "src")
       File.mkdir_p!(Path.join(src, "lib"))
       File.write!(Path.join(src, "lib/a.ex"), "A\n")
-      run = fn args -> {_, 0} = System.cmd(git, args, cd: src, stderr_to_stdout: true) end
+      # The runner of CI has no identity of git: the commit and the tag
+      # get one from the environment.
+      env = for k <- ~w(AUTHOR COMMITTER), v <- ~w(NAME EMAIL), do: {"GIT_#{k}_#{v}", "t"}
+
+      run = fn args ->
+        {_, 0} = System.cmd(git, args, cd: src, env: env, stderr_to_stdout: true)
+      end
+
       run.(["init", "-q", "-b", "main"])
       run.(["add", "."])
-      run.(["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "one"])
+      run.(["commit", "-q", "-m", "one"])
       run.(["tag", "-a", "v1", "-m", "v1"])
       {head, 0} = System.cmd(git, ["rev-parse", "HEAD"], cd: src)
 
