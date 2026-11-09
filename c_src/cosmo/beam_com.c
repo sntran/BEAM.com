@@ -1909,6 +1909,58 @@ int beam_com_exec_helper(const char *path, char *const argv[],
 }
 
 /*
+ * --- Windows: port programs with posix_spawn() (docs/UPSTREAM.md, C16) ---
+ *
+ * On Windows, erl_child_setup cannot work: Cosmopolitan cannot pass a file
+ * descriptor to another process (SCM_RIGHTS). The spawn driver of
+ * sys_drivers.c calls this function in the emulator itself. It starts the
+ * program with posix_spawn(), which gives the child only the descriptors
+ * that the file actions name and the descriptors with no O_CLOEXEC.
+ *
+ * cmd: the program (argv != NULL), or the command for "sh -c" (argv ==
+ * NULL; sh must be in PATH, for example the sh of Git for Windows). A
+ * program in /zip/bin is a helper of this file. cwd: the directory of the
+ * emulator; wd: the directory of the port (relative to cwd), or NULL.
+ * in_fd, out_fd: the ends of the pipes for the child, or -1. use_stdio: at
+ * fds 0 and 1, else at fds 3 and 4. err_fd: fd 2 of the child. Returns 0
+ * and the pid, or an errno value.
+ */
+int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
+                      const char *cwd, const char *wd, int in_fd, int out_fd,
+                      int err_fd, int use_stdio, int *pid)
+{
+    posix_spawn_file_actions_t fa;
+    char *sh_argv[] = {"sh", "-c", (char *)cmd, NULL};
+    const char *path = cmd;
+    char *const *env = envp;
+    int err;
+
+    if (argv && beam_com_is_zip(cmd)) {
+        path = GetProgramExecutableName();
+        env = helper_env(cmd, envp);
+    }
+    if ((err = posix_spawn_file_actions_init(&fa)))
+        return err;
+    /* The same order as erl_child_setup: chdir(cwd), then chdir(wd). A
+     * cwd that does not open is not an error there either. */
+    if (cwd && access(cwd, F_OK) == 0)
+        err = posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    if (!err && wd)
+        err = posix_spawn_file_actions_addchdir_np(&fa, wd);
+    if (!err && in_fd >= 0)
+        err = posix_spawn_file_actions_adddup2(&fa, in_fd, use_stdio ? 0 : 3);
+    if (!err && out_fd >= 0)
+        err = posix_spawn_file_actions_adddup2(&fa, out_fd, use_stdio ? 1 : 4);
+    if (!err && err_fd >= 0)
+        err = posix_spawn_file_actions_adddup2(&fa, err_fd, 2);
+    if (!err)
+        err = argv ? posix_spawn(pid, path, &fa, NULL, argv, env)
+                   : posix_spawnp(pid, "sh", &fa, NULL, sh_argv, env);
+    posix_spawn_file_actions_destroy(&fa);
+    return err;
+}
+
+/*
  * --- macOS arm64: posix_spawn() of libSystem (docs/UPSTREAM.md, C32) ---
  *
  * On XNU arm64, the APE loader gives Cosmopolitan its system calls, and

@@ -10,32 +10,33 @@
 %%
 %%   peer CHANNEL: release R, sum 6, own code true, error boom, bytes 1000000
 %%
-%% On Windows, beam.com has no port programs (open_port/2 with
-%% spawn_executable gives enotsup), so peer cannot start a node. There
-%% os:type() is {unix, windows}, because ERTS is the Unix build. The
-%% program checks that error and prints one line:
+%% Then the exit status of a port program, and the output of os:cmd/1
+%% (a shell: on Windows, the sh of Git for Windows in PATH):
 %%
-%%   peer: not supported on windows
+%%   exit status 3
+%%   cmd hello
+%%
+%% On Windows, the spawn driver starts the port programs itself, with
+%% posix_spawn() (docs/UPSTREAM.md, C16).
 -module(peer_check).
 -export([main/1]).
 
 main(_) ->
     {ok, [[Exe]]} = init:get_argument(beam_com_exe),
-    case os:type() of
-        {_, windows} -> windows(Exe);
-        _ -> [check(Exe, Channel) || Channel <- [standard_io, tcp]]
-    end,
+    [check(Exe, Channel) || Channel <- [standard_io, tcp]],
+    exit_status(Exe),
+    io:format("cmd ~ts~n", [string:trim(os:cmd("echo hello"))]),
     ok.
 
-%% peer:start/1, not start_link/1: the error comes back as a value. A
-%% result other than enotsup fails, so a change on Windows shows here.
-windows(Exe) ->
-    case peer:start(#{exec => {Exe, []}, env => [{"BEAM_COM_ERL", "1"}],
-                      connection => standard_io}) of
-        {error, {enotsup, _}} ->
-            io:format("peer: not supported on windows~n");
-        Other ->
-            io:format("peer: unexpected result on windows: ~p~n", [Other]),
+%% The own file in erl mode, which stops with the status 3.
+exit_status(Exe) ->
+    Port = open_port({spawn_executable, Exe},
+                     [exit_status, {args, ["-noshell", "-eval", "erlang:halt(3)."]},
+                      {env, [{"BEAM_COM_ERL", "1"}]}]),
+    receive
+        {Port, {exit_status, Status}} -> io:format("exit status ~b~n", [Status])
+    after 60000 ->
+            io:format("exit status: no status in 60 s~n"),
             erlang:halt(1)
     end.
 

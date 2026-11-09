@@ -194,11 +194,13 @@ if (Test-Path "examples") {
         Check "script_check.b.com" '(?m)^schedulers 1$' @("info")
         Remove-Item Env:ERL_FLAGS
     }
-    # The peer module of OTP. Windows has no port programs, so peer cannot
-    # start a node: the program checks that peer gives enotsup.
+    # The peer module of OTP: the program starts its own file in erl mode
+    # as a port program (posix_spawn(), C16 of docs/UPSTREAM.md), then the
+    # exit status of a port program, and os:cmd/1 with the sh of Git.
     Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
     if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
-        Check "peer_check.b.com" '(?m)^peer: not supported on windows$' @()
+        $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000'
+        Check "peer_check.b.com" "(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$@@(?m)^exit status 3`$@@(?m)^cmd hello`$" @()
     }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).
@@ -340,9 +342,15 @@ if (Test-Path "examples") {
         Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
     }
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
-    # A project that needs Mix (config/runtime.exs): the Mix steps are port
-    # programs, and Windows has none yet (C16 of docs/UPSTREAM.md).
-    Check "beam.com" 'needs Mix \(config/runtime.exs\), and Windows has no port programs yet' @("tests/programs/runtime_check", "-o", "$Dir/runtime_check.com") 1
+    # A project that needs Mix (config/runtime.exs): a child beam.com runs
+    # the Mix steps, as a port program (C16 of docs/UPSTREAM.md).
+    Check "beam.com" 'Mix gets the deps of tests/programs/runtime_check and makes its release \(config/runtime.exs\)@@wrote .*runtime_check.com@@applications: .*runtime_check' @("tests/programs/runtime_check", "-o", "$Dir/runtime_check.com")
+    Remove-Item "tests/programs/runtime_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dir "runtime_check.com")) {
+        $env:RUNTIME_CHECK_GREETING = "hello from config/runtime.exs"
+        Check "runtime_check.com" 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs' @()
+        Remove-Item Env:RUNTIME_CHECK_GREETING
+    }
 }
 
 # The tools (see tests/run.sh), as the first argument of beam.com, and
