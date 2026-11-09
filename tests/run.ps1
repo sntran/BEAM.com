@@ -355,7 +355,7 @@ if (Test-Path "examples") {
 
 # The tools (see tests/run.sh), as the first argument of beam.com, and
 # by the name of the file (mix.com, elixir.com: hard links to beam.com,
-# as a copy). No port programs here (so no Hex or rebar3).
+# as a copy).
 $escript = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_tools.escript"
 Set-Content -Path $escript -Encoding ascii -Value @(
     '#!/usr/bin/env escript',
@@ -368,6 +368,72 @@ Check "beam.com" '(?m)^55\r?$' @("elixir", "-e", "IO.puts(Enum.sum(1..10))")
 foreach ($t in @("mix", "elixir")) {
     New-Item -ItemType HardLink -Path (Join-Path $Dir "$t.com") -Target (Join-Path $Dir "beam.com") -Force | Out-Null
 }
+# Phoenix (see tests/run.sh): a new app with no database, in one file
+# with no Mix task first, and the start page and the digested CSS of the
+# file. On Windows, the builder chooses the programs of tailwind and
+# esbuild for Windows (beam_com_mix), git.exe gets the git deps, and
+# the release has the priv of the app through a link to a directory
+# (C54 of docs/UPSTREAM.md).
+function PhoenixCheck {
+    $phx = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_phx_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $phx | Out-Null
+    Push-Location $phx
+    Check "mix.com" 'hex' @("local.hex", "--force") -Net
+    Check "mix.com" 'phx_new' @("archive.install", "hex", "phx_new", "--force") -Net
+    Check "mix.com" 'creating hello/mix.exs' @("phx.new", "hello", "--no-ecto", "--no-install")
+    $out = Join-Path $Dir "hello.com"
+    if (Test-Path "hello") {
+        Set-Location hello
+        # Mix gets and compiles the deps, and downloads the asset programs.
+        $script:Limit = 900
+        Check "beam.com" ('Mix gets the deps of \. and makes its release \(config/runtime.exs, deps that are not Hex packages: heroicons daisyui' +
+            '@@tailwind for Windows \(target windows-x64.exe\)@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
+            '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net
+        $script:Limit = 120
+    }
+    Pop-Location
+    if (Test-Path $out) { PhoenixServe $out }
+    Remove-Item -Recurse -Force $phx -ErrorAction SilentlyContinue
+}
+
+# PhoenixServe FILE: start the release in FILE, and get its start page
+# and the digested CSS of the page. The endpoint of a new app listens on
+# the IPv6 address "::", and on Windows such a socket gets no IPv4
+# connection (IPV6_V6ONLY). Thus the check uses localhost (::1).
+function PhoenixServe($File) {
+    Write-Host "==> hello.com"
+    $exe = $File -replace '\.com$', '.exe'
+    Copy-Item $File $exe -Force
+    $env:PHX_SERVER = "true"
+    $env:PORT = "4124"
+    $env:SECRET_KEY_BASE = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    $log = "$exe.log"
+    $p = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+    Remove-Item Env:PHX_SERVER, Env:PORT, Env:SECRET_KEY_BASE
+    $page = $null
+    for ($i = 1; $i -le 60; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $r = Invoke-WebRequest -UseBasicParsing http://localhost:4124/ -TimeoutSec 5
+            if ($r.Content -match 'Phoenix Framework') { $page = $r.Content; break }
+        } catch { }
+    }
+    $css = if ($page) { [regex]::Match($page, '/assets/css/app-[0-9a-f]+\.css[^"]*').Value } else { "" }
+    $code = 0
+    if ($css) {
+        try { $code = (Invoke-WebRequest -UseBasicParsing "http://localhost:4124$css" -TimeoutSec 10).StatusCode } catch { }
+    }
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    if ($page -and $code -eq 200) {
+        Write-Host "PASS: hello.com serves the start page and $css (after $i s)"
+    } else {
+        Get-Content $log, "$log.err" -Tail 20 -ErrorAction SilentlyContinue | Write-Host
+        Write-Host "FAIL: hello.com did not serve the start page and its digested CSS"
+        $script:fail = 1
+        $script:failures.Add("hello.com: no start page or digested CSS on http://localhost:4124/ (CSS: '$css', status $code)")
+    }
+}
+
 if (Test-Path (Join-Path $Dir "elixir.com")) {
     Check "elixir.com" '(?m)^55\r?$' @("-e", "IO.puts(Enum.sum(1..10))")
     $work = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_mix_" + [System.Guid]::NewGuid().ToString("N"))
@@ -378,6 +444,7 @@ if (Test-Path (Join-Path $Dir "elixir.com")) {
     Check "mix.com" '2 passed' @("test")
     Pop-Location
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    if (Test-Path "examples") { PhoenixCheck }
     Remove-Item (Join-Path $Dir "mix.com"), (Join-Path $Dir "elixir.com") -ErrorAction SilentlyContinue
 }
 
