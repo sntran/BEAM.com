@@ -174,7 +174,10 @@ int __wrap_mkdir(const char *path, mode_t mode)
  * Windows, and the sandbox of Linux refuses it (no promise "chown"), so
  * the change of the mode or of the times after it failed (#172). So
  * chown(path, -1, -1) gives 0 when the path exists, else the error of
- * stat() (ENOENT, on which File.touch/1 makes the file). */
+ * stat() (ENOENT, on which File.touch/1 makes the file). The same for the
+ * owner and the group that the file already has: File.cp/3 of Elixir
+ * copies the owner of the source (a copy of the same user, for example
+ * in "mix release"). */
 int __real_chown(const char *path, uid_t owner, gid_t group);
 
 int __wrap_chown(const char *path, uid_t owner, gid_t group)
@@ -185,6 +188,9 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
         return -1;
     if (owner == (uid_t)-1 && group == (gid_t)-1)
         return stat(path, &st);
+    if (stat(path, &st) == 0 && (owner == (uid_t)-1 || owner == st.st_uid)
+        && (group == (gid_t)-1 || group == st.st_gid))
+        return 0;
     return __real_chown(path, owner, group);
 }
 
@@ -1925,10 +1931,35 @@ int beam_com_exec_helper(const char *path, char *const argv[],
  * fds 0 and 1, else at fds 3 and 4. err_fd: fd 2 of the child. Returns 0
  * and the pid, or an errno value.
  */
+/* The path of sh in PATH: sh.exe, else sh. posix_spawnp() of
+ * Cosmopolitan (commandv()) does not try the suffixes of Windows. */
+static const char *spawn_nt_sh(char *buf, size_t size)
+{
+    static const char *const names[] = {"sh.exe", "sh"};
+    const char *path = getenv("PATH"), *p, *end;
+    size_t len, i;
+
+    for (p = path ? path : ""; *p; p = *end ? end + 1 : end) {
+        end = strchrnul(p, ':');
+        len = end - p;
+        for (i = 0; len && i < sizeof(names) / sizeof(names[0]); i++) {
+            if (len + 1 + strlen(names[i]) + 1 > size)
+                continue;
+            memcpy(buf, p, len);
+            buf[len] = '/';
+            strcpy(buf + len + 1, names[i]);
+            if (access(buf, X_OK) == 0)
+                return buf;
+        }
+    }
+    return NULL;
+}
+
 int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
                       const char *cwd, const char *wd, int in_fd, int out_fd,
                       int err_fd, int use_stdio, int *pid)
 {
+    char sh[PATH_MAX];
     posix_spawn_file_actions_t fa;
     char *sh_argv[] = {"sh", "-c", (char *)cmd, NULL};
     const char *path = cmd;
@@ -1938,6 +1969,8 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     if (argv && beam_com_is_zip(cmd)) {
         path = GetProgramExecutableName();
         env = helper_env(cmd, envp);
+    } else if (!argv && !(path = spawn_nt_sh(sh, sizeof(sh)))) {
+        return ENOENT;
     }
     if ((err = posix_spawn_file_actions_init(&fa)))
         return err;
@@ -1954,8 +1987,7 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     if (!err && err_fd >= 0)
         err = posix_spawn_file_actions_adddup2(&fa, err_fd, 2);
     if (!err)
-        err = argv ? posix_spawn(pid, path, &fa, NULL, argv, env)
-                   : posix_spawnp(pid, "sh", &fa, NULL, sh_argv, env);
+        err = posix_spawn(pid, path, &fa, NULL, argv ? argv : sh_argv, env);
     posix_spawn_file_actions_destroy(&fa);
     return err;
 }

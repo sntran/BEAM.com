@@ -2,8 +2,9 @@ sys_drivers.c: port programs on Windows. Cosmopolitan cannot pass a file
 descriptor to another process on Windows, so erl_child_setup cannot work
 there. The spawn driver starts each program itself with posix_spawn()
 (beam_com_spawn_nt() of c_src/cosmo/beam_com.c), and a thread for each
-program gives its exit status to the forker port. See C16 of
-docs/UPSTREAM.md.
+program gives its exit status to the forker port. os.erl: with
+{unix, windows}, find_executable/1 tries the suffixes of Windows (.exe).
+See C16 of docs/UPSTREAM.md.
 
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
 index 9b43418..52f954c 100644
@@ -347,3 +348,17 @@ index 9b43418..52f954c 100644
      if (first_call) {
          /*
           * Do driver_select here when schedulers and their pollsets have started.
+diff --git a/lib/kernel/src/os.erl b/lib/kernel/src/os.erl
+index cdf35cb..ccd216f 100644
+--- a/lib/kernel/src/os.erl
++++ b/lib/kernel/src/os.erl
+@@ -511,6 +511,9 @@ reverse_element(List) ->
+ extensions() ->
+     case type() of
+ 	{win32, _} -> [".exe",".com",".cmd",".bat"];
++	%% BEAM.com: the Unix build of ERTS on Windows (Cosmopolitan). A
++	%% program there has the suffix of Windows.
++	{unix, windows} -> [".exe",".com",".cmd",".bat"];
+ 	{unix, _} -> [""]
+     end.
+ 

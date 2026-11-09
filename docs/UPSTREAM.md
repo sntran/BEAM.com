@@ -682,10 +682,13 @@ for `-1` and `-1`: 0 when the path exists, else the error of `stat()`
 (`ENOENT`, on which `File.touch/1` makes the file). It does this on each
 system: the sandbox of Linux has no promise `chown`, so the call failed
 there too, and `file:change_mode/2` and `file:change_time/2` failed with
-it (#172).
+it (#172). It also gives 0 for the owner and the group that the file
+already has: `File.cp/3` of Elixir copies the owner of the source, and
+`mix release` copies `config/runtime.exs` with it.
 
 **Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
-return 0 for `-1` and `-1` when the path exists.
+return 0 for `-1` and `-1`, and for the owner and the group of the file,
+when the path exists.
 
 ### C29. No `kqueue()` and `kevent()` for programs
 
