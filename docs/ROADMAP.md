@@ -39,11 +39,6 @@ systems.
 
 ### Programs
 
-- Git dependencies (`{git, URL, {ref, R}}` in `rebar.config`), with the
-  lock entries of rebar3 (`{git, URL, {ref, SHA}}` in `rebar.lock`). The
-  git client of the Mix deps (`beam_com_git`) can get them. For
-  `mix.exs`, Mix gets them now (see "Phoenix in one file" in
-  `ELIXIR.md`), also with no `git` program.
 - Git deps over SSH with no `git` program, with the `ssh` application of
   OTP (in `beam.com`): `git-upload-pack` as an SSH command, and version 2
   of the protocol (`GIT_PROTOCOL`), else version 0. Each way that `ssh`

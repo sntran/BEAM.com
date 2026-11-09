@@ -51,7 +51,7 @@ not inputs.
   `src/*.asn1`, `.asn` too; BER) are made into Erlang code first. The
   modules that other files name in `-behaviour` or as a
   `parse_transform` are compiled first, as rebar3 does. The `deps` of
-  `rebar.config` are Hex packages (see below). An application can also
+  `rebar.config` are Hex packages and git deps (see below). An application can also
   have an entry, as an escript: see "Command line programs" below.
 - **One Elixir file** (`.ex` or `.exs`) in which one module exports
   `main/1`, or **a Mix project** (`mix.exs`): see
@@ -134,9 +134,32 @@ and compiled into the program, as rebar3 does, without rebar3:
   `warnings_as_errors`), and their warnings are not shown. A package
   can use the parse transforms and the headers (`include_lib`) of the
   packages that it needs.
-- **Not supported:** git and other sources, NIFs (C code) and rebar3
-  plugins or hooks. Elixir packages (Mix) are supported: see
+- **Not supported:** git deps over SSH, other sources, NIFs (C code)
+  and rebar3 plugins or hooks. Elixir packages (Mix) are supported: see
   [`ELIXIR.md`](ELIXIR.md).
+
+### Git deps
+
+A dep of `rebar.config` can also come from a git repository of an
+`https` URL, in the forms of rebar3:
+
+```erlang
+{deps, [{jsx, {git, "https://github.com/talentdeficit/jsx.git", {tag, "v3.1.0"}}},
+        {mylib, {git, "https://example.com/mylib.git", {branch, "main"}}},
+        {other, {git_subdir, "https://example.com/mono.git", {ref, "1a2b3c4"}, "apps/other"}}]}.
+```
+
+- The git client of `beam.com` (`beam_com_git`) gets the commit, with
+  no `git` program: version 2 of the git protocol over HTTPS, with depth
+  1. It computes the name of each object from its data.
+- `rebar.lock` keeps the commit of each git dep, as rebar3 does:
+  `{git, URL, {ref, SHA}}`. A build with the lock gets this commit, and
+  does not ask the server for the branch or the tag.
+- The deps of a git dep (its `rebar.config`) are also fetched: Hex
+  packages and git deps.
+- The version of a git dep is the `vsn` of its `.app.src`. For the
+  `vsn` `git`, it is the tag without `v`, else `0.0.0+git.` and the
+  first 7 characters of the commit.
 
 [`examples/hexweb`](../examples/hexweb) uses cowboy (with cowlib and
 ranch) and jsx: it starts a web server and gets JSON from it. CI builds
@@ -348,10 +371,12 @@ cd /srv/my_app/src && beam.com . -o ../my_app.com
 ```
 
 The builder writes a new file and renames it into the place of the old
-one, as `zip` does, so the program loads the changed code. Two builds of
-the same code give the same bytes: the builder strips the compile
-information and the debug information of the beams, as `mix release`
-does. Thus only the changed modules and files are new in the new file.
+one, as `zip` does, so the program loads the changed code. The builder
+strips the compile information and the debug information of the beams,
+as `mix release` does, so two builds of the same code almost always give
+the same bytes. Thus only the changed modules and files are new in the
+new file. The Elixir compiler can give other bytes for some modules; the
+program then loads these modules again, with no change of behaviour.
 The new file must come from the same `beam.com`, because a new runtime
 needs a restart.
 

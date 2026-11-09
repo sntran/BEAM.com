@@ -23,14 +23,22 @@ notes of its release.
 - `beam.com DIR -o FILE` over the file of a running program updates it:
   the builder writes a new file and renames it, and the program loads the
   changed code. The builder strips the beams of the program and of its
-  deps, as `mix release` does, so two builds of the same code give the
-  same bytes, and the new file has only the changed modules. The reload
+  deps, as `mix release` does, and compiles with `deterministic`, so two
+  builds of the same code almost always give the same bytes, and the new
+  file has only the changed modules. The reload
   gives no notice for a new file of `.wasm/`.
 - With no `git` program, the git deps of an `https` URL come with the git
   client of beam.com (`beam_com_git`, `beam_com_git_scm`): version 2 of
   the git protocol over HTTPS, the commit of `mix.lock` with depth 1, and
   the name of each object computed from its data. `mix.lock` stays the
   same as with git. `BEAM_COM_GIT=http` uses it also with git.
+- The builder of a rebar3 project gets the git deps of `rebar.config`
+  (`git` and `git_subdir`, of an `https` URL) with the same git client,
+  and their deps. `rebar.lock` keeps the commit of each git dep, as
+  rebar3 does. See "Git deps" in `docs/PROGRAMS.md`.
+- The builder reads a map in a term of a package, for example `#{}` as
+  the requirements of `metadata.config`. Before, the build of a package
+  with a map stopped with "metadata.config is not a list of terms".
 - `erlang:system_info(system_architecture)` gives the CPU and the system
   where the file runs, for example `aarch64-unknown-linux-gnu` or
   `aarch64-apple-darwin`. Before, it was `x86_64-pc-linux-gnu` on each

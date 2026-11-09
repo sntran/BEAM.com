@@ -1348,8 +1348,11 @@ first_names(File) ->
         nomatch -> []
     end.
 
+%% deterministic: the beam has the base name of its source, not its path
+%% (a new temporary directory for each build of a dep). Thus two builds of
+%% the same code give the same bytes, also on two computers.
 compile(File, Opts) ->
-    case compile:file(File, [binary, report_errors | Opts]) of
+    case compile:file(File, [binary, report_errors, deterministic | Opts]) of
         {ok, Mod, Beam} -> {Mod, Beam};
         {ok, Mod, Beam, _Warnings} -> {Mod, Beam};
         _ -> throw({error, "~ts: compilation failed", [File]})

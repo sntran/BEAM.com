@@ -119,8 +119,8 @@ cd /srv/hello/src && git pull && beam.com . -o /srv/hello/hello.com
 - The builder writes a new file and renames it, so the program loads the
   changed modules about one second later. Its processes stay, and so do
   the LiveView sockets and their pages.
-- Two builds of the same code give the same bytes, so only the changed
-  modules and files are new.
+- Two builds of the same code almost always give the same bytes, so
+  only the changed modules and files are new.
 - Mix keeps `deps/` and `_build/` in `/srv/hello/src`, so the second
   build takes seconds.
 - For a change that needs a restart, run `sudo systemctl restart hello`
@@ -232,9 +232,6 @@ For a restart with almost no failed request, see the spike
   of OTP is in `beam.com`, so the git client can also speak SSH. That is
   work for later: the keys of `~/.ssh`, the SSH agent, `known_hosts`, and
   `~/.ssh/config` (see [`ROADMAP.md`](ROADMAP.md)).
-- **Git deps in `rebar.config`.** The builder of a rebar3 project gets
-  only Hex packages. The git client of `beam.com` can get them too, with
-  the lock entries of `rebar.lock`. That is work for later.
 - **A Mix project on Windows.** The Mix steps start programs (the child
   `beam.com`, git, tailwind, esbuild), and `beam.com` has no port
   programs on Windows yet (C16 of [`UPSTREAM.md`](UPSTREAM.md)). The

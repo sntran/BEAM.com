@@ -32,7 +32,8 @@
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
          rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
          unpack/3, unpack/4, resolve/3, fetch/5, http_get/2, read_limited/2,
-         registry/0, consult/1, meta_requirements/1, locked/2]).
+         registry/0, consult/1, meta_requirements/1, locked/2, git_deps/1, fetch_git/6,
+         git_vsn/3]).
 -endif.
 
 -define(API, "https://hex.pm/api").
@@ -61,7 +62,11 @@
 %% them (a package after the packages that it needs), as
 %% #{name := atom(), vsn := string(), dir := string()}.
 fetch(Dir, LibDir) ->
-    fetch(Dir, LibDir, rebar_deps(rebar_config(Dir)), rebar).
+    Terms = rebar_config(Dir),
+    case git_deps(Terms) of
+        [] -> fetch(Dir, LibDir, rebar_deps(Terms), rebar);
+        Git -> fetch_git(Dir, LibDir, rebar_deps(Terms), Git, registry(), #{})
+    end.
 
 %% The same with the deps of a Mix project (Format mix: mix.lock) or of
 %% rebar.config (rebar: rebar.lock).
@@ -98,10 +103,18 @@ rebar_config(Dir) ->
     end.
 
 %%% The deps of rebar.config: [{Name, Package, Requirement}], with Name
-%%% an atom, Package a binary and Requirement a string or any.
+%%% an atom, Package a binary and Requirement a string or any. The git
+%%% deps: [{Name, Url, Rev, SubDir}] (git_deps/1).
 
 rebar_deps(Terms) ->
-    [dep(D) || D <- proplists:get_value(deps, Terms, [])].
+    [D || {_, _, _} = D <- [dep(D) || D <- proplists:get_value(deps, Terms, [])]].
+
+%% The git deps of rebar.config, as rebar3 writes them: {Name, {git, Url}},
+%% {Name, {git, Url, {branch | tag | ref, R}}}, {Name, {git_subdir, Url,
+%% Ref, Dir}}, and the older forms with a version or options. Rev is
+%% {branch, B}, {tag, T}, {ref, R} or head (beam_com_git:resolve/3).
+git_deps(Terms) ->
+    [{N, U, R, S} || {git, N, U, R, S} <- [dep(D) || D <- proplists:get_value(deps, Terms, [])]].
 
 dep(Name) when is_atom(Name) -> {Name, atom_to_binary(Name), any};
 dep({Name, Req}) when is_atom(Name), is_list(Req); is_atom(Name), is_binary(Req) ->
@@ -110,11 +123,33 @@ dep({Name, {pkg, Pkg}}) when is_atom(Name) ->
     {Name, to_binary(Pkg), any};
 dep({Name, Req, {pkg, Pkg}}) when is_atom(Name) ->
     {Name, to_binary(Pkg), requirement(Name, Req)};
+dep({Name, {git, Url}}) when is_atom(Name) ->
+    git_dep(Name, Url, head, none);
+dep({Name, {git, Url, Ref}}) when is_atom(Name) ->
+    git_dep(Name, Url, Ref, none);
+dep({Name, {git, Url, Ref}, Opts}) when is_atom(Name), is_list(Opts) ->
+    git_dep(Name, Url, Ref, none);
+dep({Name, {git_subdir, Url, Ref, Sub}}) when is_atom(Name) ->
+    git_dep(Name, Url, Ref, Sub);
+dep({Name, Vsn, {git, Url, Ref}}) when is_atom(Name), is_list(Vsn) ->
+    git_dep(Name, Url, Ref, none);
+dep({Name, Vsn, {git, Url, Ref}, Opts}) when is_atom(Name), is_list(Vsn), is_list(Opts) ->
+    git_dep(Name, Url, Ref, none);
 dep(Dep) when is_tuple(Dep), is_atom(element(1, Dep)) ->
-    throw({error, "the dependency ~p is not a Hex package (only Hex "
-           "packages are supported, not git)", [element(1, Dep)]});
+    throw({error, "the dependency ~p is not a Hex package or a git dependency",
+           [element(1, Dep)]});
 dep(Dep) ->
     throw({error, "rebar.config: a bad dependency: ~p", [Dep]}).
+
+git_dep(Name, Url, Ref, Sub) ->
+    Rev = case Ref of
+              head -> head;
+              {T, R} when T =:= branch; T =:= tag; T =:= ref -> {T, unicode:characters_to_list(R)};
+              "" -> head;
+              _ -> throw({error, "~p: a bad git ref: ~tp", [Name, Ref]})
+          end,
+    {git, Name, unicode:characters_to_list(Url), Rev,
+     case Sub of none -> none; _ -> unicode:characters_to_list(Sub) end}.
 
 requirement(Name, Req) ->
     String = unicode:characters_to_list(Req),
@@ -348,10 +383,18 @@ lock_map(Entries, Rest) ->
                 #{pkg => Pkg, vsn => binary_to_list(Vsn), level => Level,
                   inner => proplists:get_value(Name, Inner),
                   outer => proplists:get_value(Name, Outer)}};
+           {git, Url, {ref, Ref}} ->
+               {binary_to_atom(Name), git_lock(Url, Ref, none, Level)};
+           {git_subdir, Url, {ref, Ref}, Sub} ->
+               {binary_to_atom(Name), git_lock(Url, Ref, unicode:characters_to_list(Sub), Level)};
            _ ->
                throw({error, "rebar.lock: ~ts is not a Hex package (only Hex "
                       "packages are supported)", [Name]})
        end || {Name, Source, Level} <- Entries]).
+
+git_lock(Url, Ref, Sub, Level) ->
+    #{git => unicode:characters_to_list(Url), ref => unicode:characters_to_binary(Ref),
+      sub => Sub, level => Level}.
 
 from_lock(Lock) ->
     maps:map(fun(Name, P) -> (maps:remove(deps, P))#{name => Name} end, Lock).
@@ -382,11 +425,19 @@ reached([N | Rest], Lock, Seen) ->
 %% packages.
 lock_text(Packages) ->
     Sorted = lists:keysort(1, [{atom_to_binary(N), P} || #{name := N} = P <- Packages]),
-    Entries = [{Name, {pkg, Pkg, list_to_binary(Vsn)}, Level}
-               || {Name, #{pkg := Pkg, vsn := Vsn, level := Level}} <- Sorted],
-    Hashes = [{pkg_hash, [{Name, iolist_to_binary(I)} || {Name, #{inner := I}} <- Sorted]},
-              {pkg_hash_ext, [{Name, iolist_to_binary(O)} || {Name, #{outer := O}} <- Sorted]}],
+    Entries = [{Name, lock_source(P), Level} || {Name, #{level := Level} = P} <- Sorted],
+    Hex = [E || {_, #{pkg := _}} = E <- Sorted],
+    Hashes = [{pkg_hash, [{Name, iolist_to_binary(I)} || {Name, #{inner := I}} <- Hex]},
+              {pkg_hash_ext, [{Name, iolist_to_binary(O)} || {Name, #{outer := O}} <- Hex]}],
     io_lib:format("~tp.~n~tp.~n", [{<<"1.2.0">>, Entries}, Hashes]).
+
+%% The source of an entry of rebar.lock, as rebar3 writes it.
+lock_source(#{git := Url, ref := Ref, sub := none}) ->
+    {git, Url, {ref, binary_to_list(Ref)}};
+lock_source(#{git := Url, ref := Ref, sub := Sub}) ->
+    {git_subdir, Url, {ref, binary_to_list(Ref)}, Sub};
+lock_source(#{pkg := Pkg, vsn := Vsn}) ->
+    {pkg, Pkg, list_to_binary(Vsn)}.
 
 %% The text of mix.lock, as Mix.Dep.Lock writes it: one line
 %% '  "name": ENTRY,' for each package, in the order of the names, with
@@ -451,6 +502,91 @@ levels(Names, L, Needs, Acc) ->
 resolve(Deps, Lock, Registry) ->
     Queue = [{Name, Pkg, Req, "rebar.config", true} || {Name, Pkg, Req} <- Deps],
     resolve(Queue, Lock, Registry, #{}).
+
+%%% The git deps of a rebar3 project (beam_com_git, over HTTPS): the
+%%% commit of rebar.lock, else of the ref of rebar.config. Each git dep
+%%% can have deps in its own rebar.config: its git deps come next, and
+%%% its Hex packages go to the resolution, as deps of the git dep.
+
+fetch_git(Dir, LibDir, HexDeps, GitDeps, Registry, GitOpts) ->
+    LockFile = filename:join(Dir, "rebar.lock"),
+    Lock0 = read_lock(rebar, LockFile),
+    GitLock = maps:filter(fun(_, P) -> is_map_key(git, P) end, Lock0),
+    Lock = maps:without(maps:keys(GitLock), Lock0),
+    {Git, SubHex0} = git_packages([{D, true} || D <- GitDeps], GitLock, LibDir, GitOpts, #{}, []),
+    Top = [N || {N, _, _} <- HexDeps],
+    SubHex = [D || {N, _, _, _} = D <- SubHex0, not lists:member(N, Top), not is_map_key(N, Git)],
+    Names = lists:usort(Top ++ [N || {N, _, _, _} <- SubHex]),
+    {Chosen, Resolved} =
+        case lists:all(fun(N) -> is_map_key(N, Lock) end, Names) of
+            true ->
+                %% All the Hex entries of the lock, as with no git deps
+                %% (rebar3 locks only the deps of the default profile).
+                {maps:map(fun(N, P) -> P#{top => lists:member(N, Top)} end, from_lock(Lock)),
+                 false};
+            false ->
+                Queue = [{N, P, R, "rebar.config", true} || {N, P, R} <- HexDeps]
+                    ++ [{N, P, R, From, false} || {N, P, R, From} <- SubHex],
+                {resolve(Queue, Lock, Registry, #{}), true}
+        end,
+    Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
+    GitList = maps:values(Git),
+    NoChecksum = [N || N := #{outer := undefined} <- Chosen],
+    Changed = Resolved orelse NoChecksum =/= [] orelse lists:any(fun(#{new := New}) -> New end, GitList)
+        orelse lists:sort(maps:keys(GitLock)) =/= lists:sort(maps:keys(Git)),
+    Changed andalso write_lock(rebar, LockFile, maps:merge(Chosen, Git), Unpacked ++ GitList),
+    order(Unpacked ++ GitList).
+
+git_packages([], _GitLock, _LibDir, _Opts, Acc, Hex) ->
+    {Acc, lists:reverse(Hex)};
+git_packages([{{Name, _, _, _}, Top} | Rest], GitLock, LibDir, Opts, Acc, Hex)
+  when is_map_key(Name, Acc) ->
+    #{Name := P} = Acc,
+    git_packages(Rest, GitLock, LibDir, Opts, Acc#{Name := P#{top := Top orelse maps:get(top, P)}}, Hex);
+git_packages([{{Name, Url, Rev, Sub}, Top} | Rest], GitLock, LibDir, Opts, Acc, Hex) ->
+    {Sha, New} = case GitLock of
+                     #{Name := #{git := Url, ref := Ref, sub := Sub}} -> {Ref, false};
+                     _ -> {beam_com_git:resolve(Url, Rev, Opts), true}
+                 end,
+    io:format("~ts: ~p from ~ts at ~ts~n", [beam_com:name(), Name, Url, Sha]),
+    Checkout = filename:join(LibDir, atom_to_list(Name) ++ "-git"),
+    _ = file:del_dir_r(Checkout),
+    ok = beam_com_git:checkout(beam_com_git:fetch(Url, Sha, Opts), Sha, Checkout, #{url => Url}),
+    AppDir = case Sub of
+                 none -> Checkout;
+                 _ -> filename:join(Checkout, Sub)
+             end,
+    Terms = rebar_config(AppDir),
+    SubHex = rebar_deps(Terms),
+    SubGit = git_deps(Terms),
+    P = #{name => Name, vsn => git_vsn(AppDir, Rev, Sha), dir => AppDir, git => Url, ref => Sha,
+          sub => Sub, top => Top, new => New,
+          requires => [N || {N, _, _} <- SubHex] ++ [N || {N, _, _, _} <- SubGit]},
+    From = atom_to_list(Name) ++ " (git)",
+    git_packages(Rest ++ [{G, false} || G <- SubGit], GitLock, LibDir, Opts, Acc#{Name => P},
+                 lists:reverse([{N, Pkg, Req, From} || {N, Pkg, Req} <- SubHex]) ++ Hex).
+
+%% The version of a git dep: the vsn of its .app.src when it is a text
+%% (not "git"), else the tag of rebar.config with no "v", else
+%% 0.0.0+git.COMMIT. A fetch of one commit has no history for "git
+%% describe" (vsn git).
+git_vsn(Dir, Rev, Sha) ->
+    Files = filelib:wildcard(filename:join([Dir, "src", "*.app.src"]))
+        ++ filelib:wildcard(filename:join([Dir, "ebin", "*.app"])),
+    Vsn = case Files of
+              [File | _] ->
+                  case file:consult(File) of
+                      {ok, [{application, _, Props}]} -> proplists:get_value(vsn, Props);
+                      _ -> undefined
+                  end;
+              [] -> undefined
+          end,
+    case {Vsn, Rev} of
+        {V, _} when is_list(V), V =/= [], V =/= "git" -> V;
+        {_, {tag, [$v | T]}} -> T;
+        {_, {tag, T}} -> T;
+        _ -> "0.0.0+git." ++ binary_to_list(binary:part(Sha, 0, 7))
+    end.
 
 resolve([], _Lock, _Registry, Chosen) ->
     Chosen;
@@ -702,8 +838,14 @@ app_name(Name) ->
     throw({error, "~tp is not an application name", [Name]}).
 
 %% Two layouts: [{Name, Props}] and [[{<<"name">>, Name} | Props]].
+%% The requirements of metadata.config: a list of {Name, Props} or of
+%% Props with a name, or (an older rebar3) a map of Name to Props, with
+%% the Props as a map or a list.
+requirement_list(Reqs) when is_map(Reqs) ->
+    requirement_list(lists:sort(maps:to_list(Reqs)));
 requirement_list(Reqs) ->
     [case R of
+         {Name, Props} when is_binary(Name), is_map(Props) -> {Name, maps:to_list(Props)};
          {Name, Props} when is_binary(Name) -> {Name, Props};
          Props when is_list(Props) -> {proplists:get_value(<<"name">>, Props), Props}
      end || R <- Reqs].
@@ -712,7 +854,7 @@ requirement_list(Reqs) ->
 %% is read without erl_scan: erl_scan makes an atom of each name, and a
 %% package could fill the atom table. This reader takes binaries
 %% (<<"text">> and <<"text"/utf8>>), strings, integers, lists, tuples,
-%% and only the atoms that exist already.
+%% maps (#{K => V}), and only the atoms that exist already.
 consult(Bin) ->
     Chars = case unicode:characters_to_list(Bin) of
                 L when is_list(L) -> L;
@@ -743,6 +885,7 @@ end_dot([C | _]) -> C =:= $\s orelse C =:= $\t orelse C =:= $\n orelse C =:= $\r
 term(Chars, Depth) when Depth < ?MAX_DEPTH ->
     case skip(Chars) of
         "<<" ++ Rest -> bin(skip(Rest));
+        "#{" ++ Rest -> map_pairs(Rest, Depth, #{});
         [$" | Rest] -> quoted(Rest, $", []);
         [$[ | Rest] -> seq(Rest, $], Depth, []);
         [${ | Rest] ->
@@ -761,6 +904,20 @@ term(Chars, Depth) when Depth < ?MAX_DEPTH ->
                             end,
             {Digits, Rest2} = lists:splitwith(fun(D) -> D >= $0 andalso D =< $9 end, Rest1),
             {Sign * list_to_integer(Digits), skip(Rest2)}
+    end.
+
+%% A map: K => V pairs with commas, up to "}".
+map_pairs(Chars, Depth, Acc) ->
+    case skip(Chars) of
+        [$} | Rest] when map_size(Acc) =:= 0 -> {Acc, skip(Rest)};
+        Rest ->
+            {K, Rest1} = term(Rest, Depth + 1),
+            "=>" ++ Rest2 = skip(Rest1),
+            {V, Rest3} = term(Rest2, Depth + 1),
+            case skip(Rest3) of
+                [$, | Rest4] -> map_pairs(Rest4, Depth, Acc#{K => V});
+                [$} | Rest4] -> {Acc#{K => V}, skip(Rest4)}
+            end
     end.
 
 %% A list or a tuple: terms with commas, up to the closing character.
