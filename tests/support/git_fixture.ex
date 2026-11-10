@@ -40,6 +40,43 @@ defmodule BeamCom.GitFixture do
     end
   end
 
+  @doc """
+  The program git_sha1dc, the SHA-1 check of the git client:
+  `BEAM_COM_SHA1DC` (a build of `c_src/cosmo/beam_com_sha1dc.c` with
+  `BEAM_COM_SHA1DC_MAIN`), else the helper of the `beam.com` of the tests
+  when the file has one, else nil. `tests/test_helper.exs` excludes the
+  tag `:sha1dc` when it is nil.
+  """
+  def sha1dc do
+    case System.get_env("BEAM_COM_SHA1DC") do
+      nil ->
+        with {:ok, [[exe]]} <- :init.get_argument(:beam_com_exe),
+             {:ok, bin} <- File.read(exe),
+             {_, _} <- :binary.match(bin, "usage: git_sha1dc") do
+          ~c"/zip/bin/git_sha1dc"
+        else
+          _ -> nil
+        end
+
+      path ->
+        String.to_charlist(path)
+    end
+  end
+
+  @doc """
+  The test vectors of `tests/programs/sha1dc_vectors.txt`: `[{name,
+  bytes}]`. Each pair of vectors is a SHA-1 collision.
+  """
+  def sha1dc_vectors do
+    for line <-
+          File.read!(Path.expand("../programs/sha1dc_vectors.txt", __DIR__))
+          |> String.split("\n", trim: true),
+        not String.starts_with?(line, "#") do
+      [name, hex] = String.split(line, " ")
+      {name, Base.decode16!(hex, case: :lower)}
+    end
+  end
+
   @doc "The name of a git object: the SHA-1 of its type, size and data."
   def name(type, data) do
     :crypto.hash(:sha, [to_string(type), " ", Integer.to_string(byte_size(data)), 0, data])

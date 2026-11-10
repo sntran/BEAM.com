@@ -445,6 +445,200 @@ defmodule BeamComGitTest do
     end
   end
 
+  describe "the SHA-1 check (git_sha1dc)" do
+    # A fake helper: a shell script in dir.
+    defp fake(dir, name, body) do
+      path = Path.join(dir, name)
+      File.write!(path, "#!/bin/sh\n" <> body <> "\n")
+      File.chmod!(path, 0o755)
+      String.to_charlist(path)
+    end
+
+    # An answer of the helper for a shell script: the length 21, the flag,
+    # and the digest, in octal escapes of printf.
+    defp answer(flag, digest) do
+      bytes = <<0, 0, 0, 21, flag>> <> digest
+
+      "printf '" <>
+        Enum.map_join(:binary.bin_to_list(bytes), &"\\#{Integer.to_string(&1, 8)}") <> "'"
+    end
+
+    # Wait for the first byte of the input, then run the commands.
+    defp after_input(commands), do: "dd bs=1 count=1 >/dev/null 2>&1\n" <> commands
+
+    # The ports of this process, and its messages: none after a check.
+    defp assert_clean do
+      assert [] == Enum.filter(Port.list(), &(Port.info(&1, :connected) == {:connected, self()}))
+      assert {:messages, []} == Process.info(self(), :messages)
+    end
+
+    defp blob_digest(data),
+      do: :crypto.hash(:sha, ["blob ", Integer.to_string(byte_size(data)), 0, data])
+
+    test "no helper: no check" do
+      assert :ok == :beam_com_git.check([{:blob, "x"}], %{})
+      assert :ok == :beam_com_git.check([{:blob, "x"}], %{sha1dc: :none})
+      %{pack: pack} = repo()
+      assert :beam_com_git.objects(pack) == :beam_com_git.objects(pack, %{sha1dc: :none})
+      assert_clean()
+    end
+
+    @tag :sha1dc
+    test "the helper: a good pack passes, and the vectors have the mark of an attack",
+         %{tmp_dir: dir} do
+      prog = BeamCom.GitFixture.sha1dc()
+      %{pack: pack} = r = repo()
+      assert :beam_com_git.objects(pack) == :beam_com_git.objects(pack, %{sha1dc: prog})
+
+      # The sizes at the edges of a block of SHA-1 (with the header of the
+      # object), and more than one part of the helper.
+      objects =
+        for n <- [0, 1, 40, 41, 42, 50, 51, 55, 56, 57, 63, 64, 65, 65_536, 200_000, 1_000_000],
+            do: {:blob, :binary.copy("a", n)}
+
+      assert :ok == :beam_com_git.check(objects ++ [{:commit, "c"}, {:tree, ""}], %{sha1dc: prog})
+      assert :ok == :beam_com_git.check([], %{sha1dc: prog})
+
+      # fetch/3 and the checkout, with the helper.
+      objects = :beam_com_git.fetch(@url, r.commit, %{http: server(r, self()), sha1dc: prog})
+      assert 7 == map_size(objects)
+      assert :ok == :beam_com_git.checkout(objects, r.commit, Path.join(dir, "out"), %{url: @url})
+      assert_receive {:get, _, _}, 5000
+      assert_receive {:post, _, _}, 5000
+
+      # The vectors, as the helper gets them: each one has the mark, and
+      # the safe hash mode gives a digest that is not the SHA-1.
+      vectors = BeamCom.GitFixture.sha1dc_vectors()
+      assert 4 == length(vectors)
+      port = Port.open({:spawn_executable, prog}, [{:packet, 4}, :binary, :exit_status])
+
+      for {_name, data} <- vectors ++ [{"empty", ""}, {"abc", "abc"}],
+          do: send(port, {self(), {:command, data}})
+
+      for {name, data} <- vectors do
+        assert_receive {^port, {:data, <<1, digest::binary-20>>}}, 5000, name
+        refute digest == :crypto.hash(:sha, data)
+      end
+
+      for data <- ["", "abc"] do
+        sum = :crypto.hash(:sha, data)
+        assert_receive {^port, {:data, <<0, ^sum::binary-20>>}}, 5000
+      end
+
+      Port.close(port)
+
+      # As git objects, the vectors have the header "blob 320", NUL first.
+      # The header changes the state of SHA-1 before the blocks of the
+      # collision, so these objects are no collision, and they pass.
+      assert :ok == :beam_com_git.check(for({_, d} <- vectors, do: {:blob, d}), %{sha1dc: prog})
+      assert_clean()
+    end
+
+    test "an object with the mark of an attack: the fetch stops, and the checkout writes nothing",
+         %{tmp_dir: dir} do
+      prog =
+        fake(
+          dir,
+          "attack",
+          after_input(answer(1, :binary.copy("A", 20)) <> "\nexec cat >/dev/null")
+        )
+
+      {_pack, commit} = repo = BeamCom.GitFixture.repo([{"lib/a.ex", "A\n"}])
+      http = BeamCom.GitFixture.server(repo, ["refs/tags/v1"])
+      first = BeamCom.GitFixture.name(:blob, "A\n")
+      out = Path.join(dir, "deps/a")
+
+      opts = [
+        git: @url,
+        checkout: out,
+        dest: Path.join(dir, "dest"),
+        lock: {:git, @url, commit, []}
+      ]
+
+      error =
+        assert_raise Mix.Error, fn ->
+          ExUnit.CaptureIO.with_io(fn ->
+            :beam_com_git_scm.checkout(opts, %{http: http, sha1dc: prog})
+          end)
+        end
+
+      assert error.message =~
+               "git: the object #{first} has the mark of a SHA-1 collision attack"
+
+      refute File.exists?(out)
+      refute File.exists?(Path.join(dir, "dest"))
+      assert_clean()
+    end
+
+    test "a helper with another digest, a bad answer, an exit, or no answer: an error",
+         %{tmp_dir: dir} do
+      data = "x"
+      name = Base.encode16(blob_digest(data), case: :lower)
+
+      cases = [
+        {"another", after_input(answer(0, :binary.copy("A", 20)) <> "\nexec cat >/dev/null"),
+         "git: the SHA-1 check gives another digest for the object #{name}"},
+        {"flag", after_input(answer(2, blob_digest(data)) <> "\nexec cat >/dev/null"),
+         "git: the SHA-1 check gives a bad answer"},
+        {"short", after_input("printf '\\0\\0\\0\\1\\0'\nexec cat >/dev/null"),
+         "git: the SHA-1 check gives a bad answer"},
+        {"exit", "exit 3", "git: the SHA-1 check stopped with the status 3"},
+        {"exit0", after_input("exit 0"), "git: the SHA-1 check stopped with the status 0"},
+        {"silent", "exec cat >/dev/null", "git: the SHA-1 check gives no answer in 300 ms"}
+      ]
+
+      for {file, script, message} <- cases do
+        opts = %{sha1dc: fake(dir, file, script), sha1dc_timeout: 300}
+
+        assert {:error, format, args} = catch_throw(:beam_com_git.check([{:blob, data}], opts))
+        assert message == IO.chardata_to_string(:io_lib.format(format, args)), file
+        assert_clean()
+      end
+
+      # The good answer passes.
+      good =
+        fake(dir, "good", after_input(answer(0, blob_digest(data)) <> "\nexec cat >/dev/null"))
+
+      assert :ok == :beam_com_git.check([{:blob, data}], %{sha1dc: good})
+      assert_clean()
+
+      missing = String.to_charlist(Path.join(dir, "missing"))
+
+      assert {:error, ~c"git: the SHA-1 check ~ts does not start: ~p", [^missing, :enoent]} =
+               catch_throw(:beam_com_git.check([{:blob, data}], %{sha1dc: missing}))
+
+      assert_clean()
+    end
+
+    test "a helper that reads nothing, with a full queue: the time limit closes the port",
+         %{tmp_dir: dir} do
+      # 8 MiB is more than the limit of a busy port (SHA1DC_BUSY): the
+      # second object waits for an answer.
+      prog = fake(dir, "sleep", "exec sleep 5")
+      big = :binary.copy("b", 8 * 1024 * 1024)
+
+      assert {:error, ~c"git: the SHA-1 check gives no answer in ~b ms", [300]} =
+               catch_throw(
+                 :beam_com_git.check([{:blob, big}, {:blob, big}], %{
+                   sha1dc: prog,
+                   sha1dc_timeout: 300
+                 })
+               )
+
+      assert_clean()
+    end
+
+    test "an error of the parse after the start of the helper closes the port", %{tmp_dir: dir} do
+      prog = fake(dir, "cat", "exec cat >/dev/null")
+      no_base = pack([{:obj, 3, "a"}, {:ref, String.duplicate("0", 40), delta("x", 1, "y")}])
+
+      assert {:error, ~c"git: a delta has no base", []} ==
+               catch_throw(:beam_com_git.objects(no_base, %{sha1dc: prog}))
+
+      assert_clean()
+    end
+  end
+
   describe "trees" do
     test "tree: the entries, and the names that stay in a directory" do
       sha = String.duplicate("ab", 20)

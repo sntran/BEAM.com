@@ -42,7 +42,7 @@ The steps, in order. The code of each step is in
 | `make` | `nifs`, `wasm` | Builds a small OTP: the emulator and the OTP applications. |
 | `elixir` | `make` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
 | `release` | `elixir` | Installs an OTP release tree, for its boot scripts. |
-| `multicall` | `release` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher, `ssh_agent_bridge`) and the static NIFs. |
+| `multicall` | `release` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher, `ssh_agent_bridge`, `git_sha1dc`) and the static NIFs. `git_sha1dc` includes the library in `c_src/cosmo/sha1dc/` (see its `README` for the source and the SHA-256 of each file). |
 | `wasm_runtime` | `multicall` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
 | `bundle` | `wasm_runtime` | Writes `build/beam.com`: the emulator and its zip. |
 | `test` | `bundle` | Runs `beam.com`, and builds and runs a program with it. |

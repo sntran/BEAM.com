@@ -219,6 +219,7 @@ extern int epmd_main(int argc, char **argv);
 extern int beam_com_inotifywait_main(int argc, char **argv);
 extern int beam_com_mac_listener_main(int argc, char **argv);
 extern int beam_com_ssh_agent_main(int argc, char **argv);
+extern int beam_com_sha1dc_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -2334,6 +2335,12 @@ void beam_com_main(int *argcp, char ***argvp)
      * client starts it as /zip/bin/ssh_agent_bridge. */
     if (starts_with(name, "ssh_agent_bridge"))
         exit(beam_com_ssh_agent_main(argc, argv));
+    /* git_sha1dc: the SHA-1 check of the git client, with the collision
+     * detection of git (c_src/cosmo/beam_com_sha1dc.c). The git client
+     * starts it as /zip/bin/git_sha1dc. No other helper name starts with
+     * "git_sha1dc", and "git_sha1dc" starts with no other helper name. */
+    if (starts_with(name, "git_sha1dc"))
+        exit(beam_com_sha1dc_main(argc, argv));
 
     /* make: the program that make_link() makes, for elixir_make. It runs
      * beam_com_make (the commands of beam.com, below). */

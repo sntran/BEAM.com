@@ -1094,6 +1094,12 @@ cat > "$tmp.escript" <<'ESCRIPT'
 main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).
 ESCRIPT
 check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
+# The SHA-1 check of the git client: the helper git_sha1dc in the file
+# (c_src/cosmo/beam_com_sha1dc.c) finds the SHA-1 collisions.
+if [ -d examples ]; then
+    check beam.com 'git_sha1dc_check: 4 vectors have the mark, the good objects pass' \
+        escript tests/programs/git_sha1dc_check.escript
+fi
 # A Unix socket with a short path (C53 of docs/UPSTREAM.md): bind() of
 # Cosmopolitan refuses an address of fewer than 16 bytes, and the wrap of
 # bind() (c_src/cosmo/beam_com_net.c) makes it longer. A server and a

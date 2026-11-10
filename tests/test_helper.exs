@@ -21,6 +21,10 @@ exclude =
 # the beam.com of the tests.
 exclude = if BeamCom.SshFixture.bridge(), do: exclude, else: [:agent_bridge | exclude]
 
+# The tag :sha1dc needs the program git_sha1dc (BeamCom.GitFixture.sha1dc/0):
+# BEAM_COM_SHA1DC, or the helper in the beam.com of the tests.
+exclude = if BeamCom.GitFixture.sha1dc(), do: exclude, else: [:sha1dc | exclude]
+
 # The tag :netns needs a user and network namespace (unshare -rn) and
 # python3 (tests/elixir_patches_test.exs).
 netns? =

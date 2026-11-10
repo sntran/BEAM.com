@@ -1,0 +1,35 @@
+sha1collisiondetection: SHA-1 with collision detection (sha1dc)
+
+These four files are the library of Marc Stevens and Dan Shumow, with no
+change. Git uses the same library for the names of its objects. The helper
+program git_sha1dc of beam.com (c_src/cosmo/beam_com_sha1dc.c) includes
+them, for the git client (src/beam_com/beam_com_git.erl).
+
+Source: https://github.com/cr-marcstevens/sha1collisiondetection
+Tag:    stable-v1.0.3 (commit 38096fc021ac5b8f8207c7e926f11feb6b5eb17c)
+Files:  lib/sha1.c, lib/sha1.h, lib/ubc_check.c, lib/ubc_check.h
+License: MIT License (licenses/sha1collisiondetection.txt, the file
+         LICENSE.txt of the tag)
+
+The SHA-256 of each file:
+
+25b61fc4027197645f10b373b2e0c0102aed5ac89f160b224e403c64302530a7  sha1.c
+2dcc3d4810ace03fd140b055606f10e664b3b7e2215def70b75f17ed75f0be36  sha1.h
+49d56a1d58072cb3c70143e7d5eb4b07a818f0ab4ea46d6a7c435bc027d0631d  ubc_check.c
+30593405deaebc153feb20fd6e261db4d2290673f25df892365c9be3a6637859  ubc_check.h
+9daac99c665ddc38fde6d7c91b9173c112d5e6c6e7e5f7d8bb8747c630efc83d  LICENSE.txt
+
+To check the files, get the tag and compare:
+
+  git clone --depth 1 --branch stable-v1.0.3 \
+      https://github.com/cr-marcstevens/sha1collisiondetection.git sha1dc
+  (cd sha1dc/lib && sha256sum sha1.c sha1.h ubc_check.c ubc_check.h)
+  sha256sum c_src/cosmo/sha1dc/*.c c_src/cosmo/sha1dc/*.h
+
+The later commits of the branch master change the detection of the byte
+order of big-endian CPUs, the access to unaligned data, and the names of
+macros. The detection of collisions is the same. beam_com_sha1dc.c sets
+SHA1DC_FORCE_LITTLEENDIAN: cosmocc makes code only for x86_64 and
+aarch64, and both are little-endian. Each part that beam_com_sha1dc.c
+gives to SHA1DCUpdate() starts at an aligned address, and each part
+except the last is a multiple of 64 bytes.

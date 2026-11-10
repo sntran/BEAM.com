@@ -500,7 +500,14 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ROOT"/c_src/cosmo/beam_com_nif.c \
        "$ROOT"/c_src/cosmo/beam_com_nif.h "$ROOT"/c_src/cosmo/beam_com_nif_syms.c \
        "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ROOT"/c_src/cosmo/beam_com_nif_cxx.h \
+       "$ROOT"/c_src/cosmo/beam_com_sha1dc.c \
        "$ERL_TOP/erts/emulator/sys/unix/"
+    # The library of beam_com_sha1dc.c (sha1collisiondetection), which it
+    # includes as sha1dc/sha1.c and sha1dc/ubc_check.c.
+    mkdir -p "$ERL_TOP/erts/emulator/sys/unix/sha1dc"
+    cp "$ROOT"/c_src/cosmo/sha1dc/sha1.c "$ROOT"/c_src/cosmo/sha1dc/sha1.h \
+       "$ROOT"/c_src/cosmo/sha1dc/ubc_check.c "$ROOT"/c_src/cosmo/sha1dc/ubc_check.h \
+       "$ERL_TOP/erts/emulator/sys/unix/sha1dc/"
 }
 
 step_configure() {
@@ -1358,7 +1365,7 @@ step_files() {
     case $1 in
         toolchain) echo "patches/cosmo/ape-m1.patch" ;;
         openssl|release) ;;
-        otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h" ;;
+        otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h c_src/cosmo/sha1dc" ;;
         configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
         sqlite) echo "patches/esqlite" ;;
         nifs) echo "scripts/libvips.sh patches/libvips c_src/vips native/vips_resvg
@@ -1750,7 +1757,7 @@ step_multicall() {
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
     objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_agent.o $objdir/beam_com_net.o"
-    objs="$objs $objdir/beam_com_fs.o $objdir/beam_com_pipe.o"
+    objs="$objs $objdir/beam_com_fs.o $objdir/beam_com_pipe.o $objdir/beam_com_sha1dc.o"
     objs="$objs $objdir/beam_com_seatbelt.o $objdir/beam_com_nif.o $objdir/beam_com_nif_syms.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"
@@ -1945,8 +1952,10 @@ step_bundle() {
 
     # The commands of beam.com (lib/beam_com has no version, so that
     # beam_com.c can find it), and the runner of one-file programs.
+    # BEAM_COM_SHA1DC: the file has the helper git_sha1dc, so the git
+    # client always checks the objects (beam_com_git).
     mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
-    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/src/beam_com/*.erl
+    "$ERL_TOP/bin/erlc" -DBEAM_COM_SHA1DC -o "$STAGE/lib/beam_com/ebin" "$ROOT"/src/beam_com/*.erl
     # The .app file gets the full version of OTP, and the Elixir packages
     # whose NIFs are linked ([{exqlite, "0.41.0"}, ...]).
     nifs=$(hex_nifs | awk '{printf "%s{%s, \"%s\"}", (NR > 1 ? ", " : ""), $1, $2}')
@@ -2116,6 +2125,7 @@ step_test() {
     # beam.com and the program keep the license texts (step_bundle).
     unzip -l "$OUT" | grep -q ' licenses/NOTICE$'
     unzip -l "$OUT" | grep -q ' licenses/otp/MIT.txt$'
+    unzip -l "$OUT" | grep -q ' licenses/sha1collisiondetection.txt$'
     unzip -l "$BUILD/hashsum.com" | grep -q ' licenses/LICENSE$'
     if [ "$WASM" = 1 ]; then
         "$OUT" "$ROOT/tests/programs/wasm_check.erl" -o "$BUILD/wasm_check.com"
@@ -2158,6 +2168,14 @@ step_test() {
         cosmocc -O2 -Wno-unused-function -o "$BUILD/pipe_check.com" "$ROOT/tests/cosmo/pipe_check.c"
         "$BUILD/pipe_check.com" | tee "$BUILD/test.out"
         grep -q '^pipe_check: ok$' "$BUILD/test.out"
+        # The SHA-1 check of the git client (c_src/cosmo/beam_com_sha1dc.c),
+        # with the vectors of the SHA-1 collisions. tests/run.sh and
+        # tests/run.ps1 run the helper of beam.com on each system.
+        log "Checking the SHA-1 check of the git client"
+        cosmocc -O2 -Wall -Wno-unused-function -o "$BUILD/sha1dc_check.com" \
+            "$ROOT/tests/cosmo/sha1dc_check.c"
+        "$BUILD/sha1dc_check.com" "$ROOT/tests/programs/sha1dc_vectors.txt" | tee "$BUILD/test.out"
+        grep -q '^sha1dc_check: ok$' "$BUILD/test.out"
         # The profile of the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
         log "Checking the profile of the sandbox of macOS"
         cosmocc -O2 -o "$BUILD/seatbelt_check.com" "$ROOT/tests/cosmo/seatbelt_check.c"
