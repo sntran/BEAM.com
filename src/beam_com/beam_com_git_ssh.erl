@@ -77,7 +77,7 @@ pack(Url, Sha, Body, Opts) ->
                     {Lines, S1} = request(S, Body, max_pack),
                     {beam_com_git:pack_response(Lines), S1};
                ({v0, Adv}, S) ->
-                    v0_pack(Url, Sha, Adv, S)
+                    v0_pack(maps:get(url, S), Sha, Adv, S)
             end).
 
 %%% The URL.
@@ -90,7 +90,9 @@ parse_url(Url0) ->
           when Host =/= "", (Scheme =:= "ssh" orelse Scheme =:= "git+ssh"
                              orelse Scheme =:= "ssh+git") ->
             {case U of
-                 #{userinfo := User} -> uri_string:percent_decode(User);
+                 %% SSH has no password in the URL: git gives it to ssh,
+                 %% which does not read it.
+                 #{userinfo := Info} -> uri_string:percent_decode(hd(string:split(Info, ":")));
                  _ -> none
              end,
              Host, maps:get(port, U, none),
@@ -415,8 +417,10 @@ note(P, Note) ->
 
 %% The settings of the URL: #{user, host, port, path, name, keys,
 %% agent, known, revoked, notes}.
-settings(Url, Opts) ->
-    {User0, Alias, Port0, Path} = case parse_url(Url) of
+settings(Url0, Opts) ->
+    %% The URL of the messages, with no password.
+    Url = beam_com_git:redact(Url0),
+    {User0, Alias, Port0, Path} = case parse_url(Url0) of
                                       none -> throw({error, "~ts: not an SSH URL", [Url]});
                                       Parsed -> Parsed
                                   end,
@@ -604,8 +608,9 @@ flush_port(Port) ->
 
 %% Connect, run git-upload-pack, and give Fun the version of the server:
 %% v2, or {v0, Advertisement}.
-session(Url, Opts, Fun) ->
-    S = settings(Url, maps:get(ssh, Opts, #{})),
+session(Url0, Opts, Fun) ->
+    S = settings(Url0, maps:get(ssh, Opts, #{})),
+    Url = beam_com_git:redact(Url0),
     {ok, _} = application:ensure_all_started(ssh),
     Conn = connect(Url, S),
     try

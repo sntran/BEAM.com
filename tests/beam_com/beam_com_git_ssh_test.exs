@@ -39,6 +39,11 @@ defmodule BeamComGitSshTest do
       end
 
       assert :beam_com_git_ssh.is_ssh("ssh://h/r")
+
+      # SSH has no password in the URL: the user stays, and the password
+      # goes.
+      assert {~c"git", ~c"h", :none, ~c"/r"} ==
+               :beam_com_git_ssh.parse_url("ssh://git:s3cret@h/r")
     end
 
     test "quote: single quotes, as git quotes the path" do
@@ -541,6 +546,12 @@ defmodule BeamComGitSshTest do
                catch_throw(:beam_com_git.resolve(url, :head, ctx.opts))
 
       assert List.to_string(msg) =~ "is not in known_hosts (~ts)"
+
+      # A password of the URL is not in the error.
+      secret = "ssh://git:s3cret@127.0.0.1:#{port}/r"
+
+      assert {:error, _, [~c"ssh://git:****@127.0.0.1:" ++ _, _, _]} =
+               catch_throw(:beam_com_git.resolve(secret, :head, ctx.opts))
 
       # Another key for the name: the error gives the fingerprint.
       other = :public_key.generate_key({:namedCurve, :ed25519})

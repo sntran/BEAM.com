@@ -606,7 +606,7 @@ git_packages([{{Name, Url, Rev, Sub}, Top} | Rest], GitLock, LibDir, Opts, Acc, 
                      #{Name := #{git := Url, ref := Ref, sub := Sub}} -> {Ref, false};
                      _ -> {beam_com_git:resolve(Url, Rev, Opts), true}
                  end,
-    io:format("~ts: ~p from ~ts at ~ts~n", [beam_com:name(), Name, Url, Sha]),
+    io:format("~ts: ~p from ~ts at ~ts~n", [beam_com:name(), Name, beam_com_git:redact(Url), Sha]),
     Checkout = filename:join(LibDir, atom_to_list(Name) ++ "-git"),
     _ = file:del_dir_r(Checkout),
     ok = beam_com_git:checkout(beam_com_git:fetch(Url, Sha, Opts), Sha, Checkout, #{url => Url}),

@@ -103,6 +103,9 @@ notes of its release.
     each key of the last round, and the error says that the client tries
     at most 4 keys of each type. The host key algorithms keep the order
     of OTP, so ed25519 comes before RSA.
+  - The log line of a git dep and the errors of Git over SSH show no
+    password and no token of the URL. An `ssh://` URL with a password
+    logs in with the user only.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

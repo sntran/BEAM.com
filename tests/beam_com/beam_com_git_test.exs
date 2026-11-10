@@ -596,6 +596,42 @@ defmodule BeamComGitTest do
 
       assert ~c"https://example.com/r.git" == :beam_com_git.url("https://me:x@example.com/r.git/")
     end
+
+    test "redact: no password and no token in a message" do
+      assert ~c"https://****:****@e.com/r.git" ==
+               :beam_com_git.redact("https://me:s3cret@e.com/r.git")
+
+      assert ~c"https://****:****@e.com/r.git" ==
+               :beam_com_git.redact("https://tok3n@e.com/r.git")
+
+      assert ~c"ssh://git:****@e.com/r" == :beam_com_git.redact("ssh://git:s3cret@e.com/r")
+      assert "ssh://git@e.com/r" == :beam_com_git.redact("ssh://git@e.com/r")
+      assert "git@e.com:r.git" == :beam_com_git.redact("git@e.com:r.git")
+      assert @url == :beam_com_git.redact(@url)
+    end
+
+    test "fetch_git of beam_com_hex: the log line has no password", %{tmp_dir: dir} do
+      repo =
+        BeamCom.GitFixture.repo([{"src/g.app.src", ~s({application, g, [{vsn, "1.0.0"}]}.\n)}])
+
+      url = ~c"https://me:s3cret@e.com/g.git"
+      config = [{:deps, [{:g, {:git, url, {:tag, ~c"v1"}}}]}]
+
+      {[%{name: :g}], out} =
+        ExUnit.CaptureIO.with_io(fn ->
+          :beam_com_hex.fetch_git(
+            String.to_charlist(dir),
+            String.to_charlist(Path.join(dir, "lib")),
+            [],
+            :beam_com_hex.git_deps(config),
+            %{},
+            %{http: BeamCom.GitFixture.server(repo, ["refs/tags/v1"])}
+          )
+        end)
+
+      assert out =~ "g from https://****:****@e.com/g.git at "
+      refute out =~ "s3cret"
+    end
   end
 
   describe "the source of Mix" do

@@ -11,7 +11,7 @@
 %% is the byte of the commit of mix.lock.
 -module(beam_com_git).
 
--export([resolve/3, fetch/3, checkout/4]).
+-export([resolve/3, fetch/3, checkout/4, redact/1]).
 %% For beam_com_git_ssh.
 -export([pkt/1, refs/1, pack_response/1]).
 
@@ -172,8 +172,16 @@ url(Url) ->
             throw({error, "~ts: only an https or SSH URL works with no git program", [redact(Url)]})
     end.
 
+%% The URL for a message: with no password. The user of an https URL
+%% can be a token, so it goes too. The user of an SSH URL stays.
 redact(Url) ->
     case uri_string:parse(unicode:characters_to_list(Url)) of
+        #{scheme := Scheme, userinfo := Info} = U
+          when Scheme =:= "ssh"; Scheme =:= "git+ssh"; Scheme =:= "ssh+git" ->
+            case string:split(Info, ":") of
+                [_] -> Url;
+                [User, _] -> uri_string:recompose(U#{userinfo := User ++ ":****"})
+            end;
         #{userinfo := _} = U -> uri_string:recompose(U#{userinfo := "****:****"});
         _ -> Url
     end.
