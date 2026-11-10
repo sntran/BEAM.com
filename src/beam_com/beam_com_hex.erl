@@ -602,6 +602,7 @@ git_packages([{{Name, _, _, _}, Top} | Rest], GitLock, LibDir, Opts, Acc, Hex)
     #{Name := P} = Acc,
     git_packages(Rest, GitLock, LibDir, Opts, Acc#{Name := P#{top := Top orelse maps:get(top, P)}}, Hex);
 git_packages([{{Name, Url, Rev, Sub}, Top} | Rest], GitLock, LibDir, Opts, Acc, Hex) ->
+    git_path(Name, Sub),
     {Sha, New} = case GitLock of
                      #{Name := #{git := Url, ref := Ref, sub := Sub}} -> {Ref, false};
                      _ -> {beam_com_git:resolve(Url, Rev, Opts), true}
@@ -623,6 +624,18 @@ git_packages([{{Name, Url, Rev, Sub}, Top} | Rest], GitLock, LibDir, Opts, Acc, 
     From = atom_to_list(Name) ++ " (git)",
     git_packages(Rest ++ [{G, false} || G <- SubGit], GitLock, LibDir, Opts, Acc#{Name => P},
                  lists:reverse([{N, Pkg, Req, From} || {N, Pkg, Req} <- SubHex]) ++ Hex).
+
+%% The name of a git dep and its subdirectory go into paths, also for a
+%% dep of a git dep: the name of an application, and a relative path in
+%% the checkout with no "..".
+git_path(Name, Sub) ->
+    re:run(atom_to_list(Name), "\\A[a-zA-Z][a-zA-Z0-9_]*\\z", [unicode, {capture, none}]) =:= match
+        orelse throw({error, "~tp: a bad name for a git dep", [Name]}),
+    Sub =:= none orelse
+        (Sub =/= "" andalso filename:pathtype(Sub) =:= relative
+         andalso not lists:member("..", filename:split(Sub))
+         andalso not lists:any(fun(C) -> C =:= $\\ orelse C =:= $: orelse C =:= 0 end, Sub))
+        orelse throw({error, "~tp: a bad subdirectory of a git dep: ~tp", [Name, Sub]}).
 
 %% The version of a git dep: the vsn of its .app.src when it is a text
 %% (not "git"), else the tag of rebar.config with no "v", else

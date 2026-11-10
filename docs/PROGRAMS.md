@@ -173,7 +173,9 @@ A dep of `rebar.config` can also come from a git repository of an
   `{git, URL, {ref, SHA}}`. A build with the lock gets this commit, and
   does not ask the server for the branch or the tag.
 - The deps of a git dep (its `rebar.config`) are also fetched: Hex
-  packages and git deps.
+  packages and git deps. The name of a git dep must be the name of an
+  application (letters, digits and `_`), and the directory of
+  `git_subdir` a relative path in the checkout with no `..`.
 - The version of a git dep is the `vsn` of its `.app.src`. For the
   `vsn` `git`, it is the tag without `v`, else `0.0.0+git.` and the
   first 7 characters of the commit.

@@ -873,6 +873,42 @@ defmodule BeamComGitTest do
                catch_throw(http.(~c"/slow", %{timeout: 600, idle: 5000}))
     end
 
+    test "fetch_git of beam_com_hex: the name and the subdirectory of a git dep",
+         %{tmp_dir: dir} do
+      repo = BeamCom.GitFixture.repo([{"apps/g/src/g.app.src", "{application, g, []}.\n"}])
+      http = BeamCom.GitFixture.server(repo, ["refs/tags/v1"])
+      # A directory next to the lib directory, which a bad name could name.
+      File.mkdir_p!(Path.join(dir, "x-git"))
+      File.write!(Path.join(dir, "x-git/keep"), "")
+
+      fetch = fn dep ->
+        ExUnit.CaptureIO.with_io(fn ->
+          :beam_com_hex.fetch_git(
+            String.to_charlist(dir),
+            String.to_charlist(Path.join(dir, "lib")),
+            [],
+            :beam_com_hex.git_deps([{:deps, [dep]}]),
+            %{},
+            %{http: http}
+          )
+        end)
+      end
+
+      url = ~c"https://e.com/g.git"
+
+      assert {:error, ~c"~tp: a bad name for a git dep", [:"../x"]} ==
+               catch_throw(fetch.({:"../x", {:git, url, {:tag, ~c"v1"}}}))
+
+      assert File.exists?(Path.join(dir, "x-git/keep"))
+
+      for sub <- [~c"../..", ~c"/etc", ~c"", ~c"apps\\g", ~c"C:/g", ~c"apps/../.."] do
+        assert {:error, ~c"~tp: a bad subdirectory of a git dep: ~tp", [:g, ^sub]} =
+                 catch_throw(fetch.({:g, {:git_subdir, url, {:tag, ~c"v1"}, sub}}))
+      end
+
+      assert {[%{name: :g}], _} = fetch.({:g, {:git_subdir, url, {:tag, ~c"v1"}, ~c"apps/g"}})
+    end
+
     test "redact: no password and no token in a message" do
       assert ~c"https://****:****@e.com/r.git" ==
                :beam_com_git.redact("https://me:s3cret@e.com/r.git")

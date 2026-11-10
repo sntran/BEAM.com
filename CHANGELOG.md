@@ -120,6 +120,9 @@ notes of its release.
     does. A short commit gives an error that asks for all its 40 hex
     digits. The docs showed a short commit as an example.
   - On Windows, `C:/repos/dep` is a path, not an SSH URL of the host `C`.
+  - The name of a git dep of a rebar3 project and its `git_subdir`
+    directory cannot name a path out of the lib directory or of the
+    checkout. Before, a dep of a git dep could name `../NAME`.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".
