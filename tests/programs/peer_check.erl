@@ -21,10 +21,15 @@
 %%
 %% Then, on Windows only, a native port program that waits in large reads
 %% (the free space of the write end of the pipe is then 0), and on each
-%% system a listen socket that a port program must not get:
+%% system a listen socket that a port program must not get,
+%% os:find_executable/1 (on Windows, with the suffix .exe), a "#!" script
+%% as a port program, and a port program with nouse_stdio (fds 3 and 4):
 %%
 %%   native reader true
 %%   closed listen socket refused
+%%   find executable true
+%%   script ok
+%%   nouse_stdio fd ping
 %%
 %% On Windows, the spawn driver starts the port programs itself, with
 %% posix_spawn() (docs/UPSTREAM.md, C16).
@@ -39,6 +44,9 @@ main(_) ->
     slow_reader(200000),
     native_reader(),
     closed_socket(Exe),
+    find_executable(),
+    script(Exe),
+    nouse_stdio(Exe),
     ok.
 
 %% The own file in erl mode as a port program: it evaluates CODE.
@@ -46,6 +54,17 @@ erl_port(Exe, Code, Options) ->
     open_port({spawn_executable, Exe},
               [binary, exit_status, {args, ["-noshell", "-eval", Code]},
                {env, [{"BEAM_COM_ERL", "1"}]} | Options]).
+
+%% Wait for the end of PORT, with its output.
+port_output(Port, Acc, What) ->
+    receive
+        {Port, {data, {eol, Data}}} -> port_output(Port, [Acc, Data, $\n], What);
+        {Port, {data, Data}} -> port_output(Port, [Acc, Data], What);
+        {Port, {exit_status, _}} -> iolist_to_binary(Acc)
+    after 60000 ->
+            io:format("~s: no end in 60 s~n", [What]),
+            erlang:halt(1)
+    end.
 
 %% On Windows: findstr.exe, a native program that waits in reads of 4 KiB
 %% or more, so the free space of the write end of its pipe is 0. It gets
@@ -93,6 +112,37 @@ closed_socket(Exe) ->
              end,
     port_close(Port),
     io:format("closed listen socket ~p~n", [Result]).
+
+%% On Windows, os:find_executable/1 tries the suffix .exe.
+find_executable() ->
+    Found = case os:type() of
+                {unix, windows} ->
+                    Path = os:find_executable("cmd"),
+                    is_list(Path) andalso lists:suffix(".exe", string:lowercase(Path));
+                _ ->
+                    is_list(os:find_executable("sh"))
+            end,
+    io:format("find executable ~p~n", [Found]).
+
+%% A "#!" script as a port program (on Windows, with the sh in PATH).
+script(Exe) ->
+    Path = filename:join(filename:dirname(Exe), "peer_check_script.sh"),
+    ok = file:write_file(Path, "#!/bin/sh\necho script $1\n"),
+    ok = file:change_mode(Path, 8#755),
+    Port = open_port({spawn_executable, Path}, [binary, exit_status, {args, ["ok"]}]),
+    Out = port_output(Port, [], "script"),
+    ok = file:delete(Path),
+    io:format("~ts~n", [string:trim(Out)]).
+
+%% A port program with nouse_stdio: its input is fd 3, its output fd 4.
+nouse_stdio(Exe) ->
+    Code = "P = open_port({fd, 3, 4}, [binary]),"
+        " receive {P, {data, D}} -> port_command(P, [<<\"fd \">>, D]) end,"
+        " halt().",
+    Port = erl_port(Exe, Code, [nouse_stdio]),
+    port_command(Port, <<"ping">>),
+    Out = port_output(Port, [], "nouse_stdio"),
+    io:format("nouse_stdio ~ts~n", [Out]).
 
 %% A port program that reads its input after 1 s, and counts N bytes.
 slow_reader(N) ->

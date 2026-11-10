@@ -297,13 +297,13 @@ if (Test-Path "examples") {
     # The peer module of OTP: the program starts its own file in erl mode
     # as a port program (posix_spawn(), C16 of docs/UPSTREAM.md), then the
     # exit status of a port program, os:cmd/1 with the sh of Git, findstr
-    # (a reader with large reads), and a listen socket that a port program
-    # must not get.
+    # (a reader with large reads), a listen socket that a port program
+    # must not get, the suffix .exe, a script and nouse_stdio.
     Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
     if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
         $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
         Check "peer_check.b.com" ("(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$@@(?m)^exit status 3`$@@(?m)^cmd hello`$@@(?m)^slow reader 200000`$" +
-            '@@(?m)^native reader true$@@(?m)^closed listen socket refused$') @()
+            '@@(?m)^native reader true$@@(?m)^closed listen socket refused$@@(?m)^find executable true$@@(?m)^script ok$@@(?m)^nouse_stdio fd ping$') @()
     }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).
