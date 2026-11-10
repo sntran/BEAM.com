@@ -132,7 +132,7 @@ $patterns = @{
         '@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0' +
         '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello')
     # "verify peer, N OS certificates": the roots of Windows were exported.
-    "tls_check" = 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
+    "tls_check" = 'ports: ok \(os:cmd\)@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
 }
 $patterns["calc"] = '(?m)calc: 1 \+ 2 \* \(3 - 1\) - 8 / 4 = 3\r?$@@(?m)calc: asn1 ber 300980044245414d810103\r?$@@(?m)calc: asn1 decoded BEAM 3\r?$'
 $apps = @("greeter", "crypto_check", "tls_check")
