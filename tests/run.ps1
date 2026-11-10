@@ -10,8 +10,31 @@ param([string]$Dir = ".")
 $Dir = (Resolve-Path $Dir).Path
 # The time limit of each check, in seconds (a slow build sets more).
 $script:Limit = 120
+# The time before CheckOnce starts to read the output (a slow reader).
+$script:ReadAfterMs = 0
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
+
+# The output of a check: the lines of the standard output and of the
+# standard error, in the order that the reader threads of .NET get them.
+# The events of Register-ObjectEvent -Action run only between the
+# statements of this script, so a part of a long output can stay in the
+# queue of events after the end of the program. This class runs on the
+# reader threads, and it knows the end of each stream (Data is null).
+Add-Type -TypeDefinition @"
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Threading;
+public class BeamComOutput {
+    public ConcurrentQueue<string> Lines = new ConcurrentQueue<string>();
+    CountdownEvent ends = new CountdownEvent(2);
+    void Add(object sender, DataReceivedEventArgs e) {
+        if (e.Data == null) ends.Signal(); else Lines.Enqueue(e.Data);
+    }
+    public void Attach(Process p) { p.OutputDataReceived += Add; p.ErrorDataReceived += Add; }
+    public bool WaitEnd(int ms) { return ends.Wait(ms); }
+}
+"@
 
 # Fail TEXT: a failed check, with TEXT in the list "Failed checks".
 function Fail($Text) {
@@ -147,14 +170,14 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     $psi.UseShellExecute = $false
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
-    $lines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-    $handler = { if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue($EventArgs.Data) } }
-    $o = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $handler -MessageData $lines
-    $e = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $handler -MessageData $lines
+    $output = [BeamComOutput]::new()
+    $output.Attach($p)
     $since = Get-Date
     [void]$p.Start()
     # stdin: a pipe at EOF, the same on each runner.
     $p.StandardInput.Close()
+    # A slow reader: the read starts after $script:ReadAfterMs.
+    if ($script:ReadAfterMs -gt 0) { Start-Sleep -Milliseconds $script:ReadAfterMs }
     $p.BeginOutputReadLine()
     $p.BeginErrorReadLine()
 
@@ -177,9 +200,12 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     }
     Start-Sleep -Seconds 1
     StopLeft $known $Name
-    Unregister-Event -SourceIdentifier $o.Name
-    Unregister-Event -SourceIdentifier $e.Name
-    $all = $lines.ToArray()
+    # The end of the output: the program and its processes stopped, so
+    # each write end of the pipes is closed.
+    if (-not $output.WaitEnd(30000)) {
+        Write-Host "NOTE: the output of $Name did not end in 30 s"
+    }
+    $all = $output.Lines.ToArray()
     $out = ($all -join "`n")
     $rc = if ($timedOut) { 124 } else { $p.ExitCode }
     # A long output is shortened in the log (the log of CI keeps only its
@@ -289,6 +315,12 @@ if (Test-Path "examples") {
         Check "script_check.b.com" 'exception exit: normal' @("exit") 127
         Check "script_check.b.com" 'halting 3' @("halt", "3") 3
         Check "script_check.b.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
+        # A long output in one write, and the same with a slow reader: the
+        # read starts after 3 s. Each line must arrive.
+        Check "script_check.b.com" '(?m)^line 1000000$@@(?m)^last line$' @("big", "1000000")
+        $script:ReadAfterMs = 3000
+        Check "script_check.b.com" '(?m)^line 1000000$@@(?m)^last line$' @("big", "1000000")
+        $script:ReadAfterMs = 0
         Check "script_check.b.com" 'returned' @("spawn")
         $env:ERL_FLAGS = "+S 1"
         Check "script_check.b.com" '(?m)^schedulers 1$' @("info")

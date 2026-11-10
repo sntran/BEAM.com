@@ -518,6 +518,17 @@ if [ -d examples ]; then
         fi
         unset BEAM_COM_CRASH_REPORTS
         check script_check.b.com '^line 100000$@@^last line$' big
+        # A slow reader of the standard output: it reads only after 3 s,
+        # and it must get each line.
+        slow=$($runner "$dir/script_check.b.com" big 1000000 2>/dev/null | (sleep 3; wc -l))
+        if [ "$slow" -eq 1000001 ] 2>/dev/null; then
+            echo "PASS: script_check.b.com big 1000000 with a slow reader"
+        else
+            echo "FAIL: script_check.b.com big 1000000 with a slow reader: $slow lines"
+            fail=1
+            failed="$failed
+  script_check.b.com big 1000000 with a slow reader: $slow lines (expected 1000001)"
+        fi
         check script_check.b.com 'returned' spawn
         ERL_FLAGS='+S 1'
         export ERL_FLAGS

@@ -9,6 +9,7 @@
 %%   halt N        erlang:halt(N) in main/1: status N
 %%   exit          exit(normal) in main/1: status 127
 %%   big           100000 lines, then return: all lines are written
+%%   big N         N lines in one write, then return: all lines are written
 %%   spawn         a linked process crashes after main/1 returns
 %%   info          print the number of schedulers (for ERL_FLAGS)
 %%   abort         erlang:halt(abort): the runtime aborts (SIGABRT), and
@@ -35,6 +36,10 @@ main(["exit"]) ->
     exit(normal);
 main(["big"]) ->
     [io:format("line ~b~n", [I]) || I <- lists:seq(1, 100000)],
+    io:format("last line~n");
+main(["big", N]) ->
+    io:put_chars([[<<"line ">>, integer_to_binary(I), $\n]
+                  || I <- lists:seq(1, list_to_integer(N))]),
     io:format("last line~n");
 main(["spawn"]) ->
     spawn(fun() -> receive after 100 -> exit(crash) end end),
