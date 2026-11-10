@@ -572,63 +572,63 @@ defmodule BeamComMixTest do
   # The child is this beam.com (the init argument beam_com_exe of
   # beam_com.c), with the code of this commit only in the beam.com of
   # the build (scripts/steps.sh unit).
+  # The tag :beam_com_exe needs the init argument beam_com_exe
+  # (tests/test_helper.exs): a test VM of beam.com.
   describe "release" do
     @describetag timeout: 600_000
+    @describetag :beam_com_exe
 
     setup do
-      case :init.get_argument(:beam_com_exe) do
-        {:ok, [[exe]]} -> %{exe: exe}
-        :error -> :ok
-      end
+      {:ok, [[exe]]} = :init.get_argument(:beam_com_exe)
+      %{exe: exe}
     end
 
     test "Mix makes a release with include_erts false and config/runtime.exs",
-         %{dir: dir} = context do
-      if exe = context[:exe] do
-        project = copy_project(dir)
-        out = :filename.join(dir, ~c"out")
-        :ok = :file.make_dir(out)
+         %{dir: dir, exe: exe} do
+      project = copy_project(dir)
+      out = :filename.join(dir, ~c"out")
+      :ok = :file.make_dir(out)
 
-        # A relative path, as in "beam.com . -o FILE": the child starts
-        # in the project.
-        relative = project |> Path.relative_to_cwd() |> String.to_charlist()
-        assert relative != project
+      # A relative path, as in "beam.com . -o FILE": the child starts
+      # in the project.
+      relative = project |> Path.relative_to_cwd() |> String.to_charlist()
+      assert relative != project
 
-        {rel, output} =
-          own_mix_paths(fn ->
-            with_io(fn -> :beam_com_mix.release(relative, %{out: out, exe: exe}) end)
-          end)
+      {rel, output} =
+        own_mix_paths(fn ->
+          with_io(fn -> :beam_com_mix.release(relative, %{out: out, exe: exe}) end)
+        end)
 
-        assert rel == :filename.join(out, ~c"runtime_check")
-        assert File.exists?(Path.join([rel, "releases", "0.1.0", "runtime.exs"]))
-        assert File.exists?(Path.join([rel, "lib", "runtime_check-0.1.0", "ebin"]))
-        assert [] == Path.wildcard(Path.join(rel, "erts-*"))
-        # Mix writes _build in the project, as "mix release" does.
-        assert File.dir?(Path.join([project, "_build", "prod"]))
-        refute output =~ "Hex"
-      end
+      assert rel == :filename.join(out, ~c"runtime_check")
+      assert File.exists?(Path.join([rel, "releases", "0.1.0", "runtime.exs"]))
+      assert File.exists?(Path.join([rel, "lib", "runtime_check-0.1.0", "ebin"]))
+      assert [] == Path.wildcard(Path.join(rel, "erts-*"))
+      # Mix writes _build in the project, as "mix release" does.
+      assert File.dir?(Path.join([project, "_build", "prod"]))
+      refute output =~ "Hex"
     end
 
-    test "an error of Mix: the exit status of the child", %{dir: dir} = context do
-      if exe = context[:exe] do
-        project = :filename.join(dir, ~c"bad")
+    test "an error of Mix: the exit status of the child", %{dir: dir, exe: exe} do
+      project = :filename.join(dir, ~c"bad")
+      out = :filename.join(dir, ~c"out")
+      :ok = :file.make_dir(out)
 
-        write(
-          project,
-          ~c"mix.exs",
-          "defmodule Bad.MixProject do\n  use Mix.Project\n" <>
-            "  def project, do: [app: :bad, version: \"0.1.0\", deps: [{:none, path: \"none\"}]]\nend\n"
-        )
+      write(
+        project,
+        ~c"mix.exs",
+        "defmodule Bad.MixProject do\n  use Mix.Project\n" <>
+          "  def project, do: [app: :bad, version: \"0.1.0\", deps: [{:none, path: \"none\"}]]\nend\n"
+      )
 
-        {{:error, format, [^project, status]}, output} =
-          own_mix_paths(fn ->
-            with_io(fn -> catch_throw(:beam_com_mix.release(project, %{out: dir, exe: exe})) end)
-          end)
+      {{:error, format, [^project, status]}, output} =
+        own_mix_paths(fn ->
+          with_io(fn -> catch_throw(:beam_com_mix.release(project, %{out: out, exe: exe})) end)
+        end)
 
-        assert format == ~c"~ts: Mix did not make a release (exit status ~p)"
-        assert status != 0
-        assert output =~ "beam.com: "
-      end
+      assert format == ~c"~ts: Mix did not make a release (exit status ~p)"
+      assert status != 0
+      assert output =~ "beam.com: "
+      refute File.exists?(out)
     end
   end
 

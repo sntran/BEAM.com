@@ -35,6 +35,10 @@ the tests.
 - `tests/beam_com/beam_com_git_ssh_test.exs`: a test of the git client
   with the `git-upload-pack` program of git. Without `git`, ExUnit skips
   it (the tag `git`).
+- The tests of the Mix release in `tests/beam_com/beam_com_mix_test.exs`
+  start a child `beam.com`. They need a test VM of `beam.com` (the init
+  argument `beam_com_exe`, as in `make unit`). Without it, ExUnit skips
+  them (the tag `beam_com_exe`).
 - StreamData properties, in the test file of their module. A property
   uses an independent oracle where one exists: the `Version` module of
   Elixir for the versions and the requirements of Hex, `io_lib`,

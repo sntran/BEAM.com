@@ -29,4 +29,11 @@ end
 
 exclude = if netns?, do: exclude, else: [:netns | exclude]
 
+# The tag :beam_com_exe needs a test VM of beam.com: the init argument
+# beam_com_exe names the executable (tests/beam_com/beam_com_mix_test.exs).
+exclude =
+  if match?({:ok, [[_]]}, :init.get_argument(:beam_com_exe)),
+    do: exclude,
+    else: [:beam_com_exe | exclude]
+
 ExUnit.start(exclude: exclude)
