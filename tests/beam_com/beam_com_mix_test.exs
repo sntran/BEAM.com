@@ -525,8 +525,8 @@ defmodule BeamComMixTest do
       assert :none == :beam_com_build.mix_release(dir, ~c"out.com", %{})
     end
 
-    # --main, -a, --extract-priv and the escript of mix.exs need the
-    # builder of a plain Mix project.
+    # --main, -a and the escript of mix.exs need the builder of a plain Mix
+    # project. A Mix release reads --extract-priv too.
     test "options of the plain builder", %{dir: dir} do
       write(dir, ~c"mix.exs", mix_exs("escript: [main_module: C.CLI]"))
       write(:filename.join(dir, ~c"config"), ~c"runtime.exs", "import Config\n")
@@ -545,8 +545,7 @@ defmodule BeamComMixTest do
       assert "" == warning.(%{quiet: true})
       write(dir, ~c"mix.exs", mix_exs("compilers: [:yecc] ++ Mix.compilers()"))
 
-      assert warning.(%{main: :m, apps: [:x], extract_priv: [:y]}) =~
-               "reads --main, -a, --extract-priv, so"
+      assert warning.(%{main: :m, apps: [:x], extract_priv: [:y]}) =~ "reads --main, -a, so"
 
       assert warning.(%{apps: [:x]}) =~ "config/runtime.exs, the compilers of mix.exs\n"
 

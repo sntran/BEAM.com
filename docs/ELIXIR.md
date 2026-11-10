@@ -258,8 +258,10 @@ directory.
   `--tool mix` keeps the builder of a plain Mix project, also for a
   project with `config/runtime.exs`.
 - A release of Mix has its own applications and no `main/1`. Thus only
-  the builder of a plain Mix project reads `--main`, `-a`,
-  `--extract-priv` and `escript: [main_module: M]`. With one of them,
+  the builder of a plain Mix project reads `--main`, `-a` and
+  `escript: [main_module: M]`. The release reads `--extract-priv` too
+  (see "priv files as real files" in [`PROGRAMS.md`](PROGRAMS.md)).
+  With one of them,
   a project whose only reasons are `config/runtime.exs` and
   `:compilers` gets the builder of a plain Mix project, with a warning:
   the program runs `M.main/1`, and it does not read

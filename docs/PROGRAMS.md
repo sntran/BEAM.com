@@ -359,12 +359,17 @@ systems, Windows too).
   it, or a tool that reads a data file of `priv`, needs the whole
   directory. The builder of a project (not a release) copies the `priv`
   directory of each application whose `priv` has an executable file, or
-  that `--extract-priv APP` names. The program copies that `priv`
-  directory at its first start to `CACHE/priv/HASH/APP-VSN/priv`
-  (read-only files; the executables stay executable), and
-  `code:priv_dir(APP)` is then that directory. The code stays in the
-  zip. `HASH` is from the files, so a new build gets a new directory,
-  and the next starts use the copy.
+  that `--extract-priv APP` names. For a Mix or rebar3 release
+  (`beam.com DIR -o FILE` with a release), only `--extract-priv APP`
+  does it: a program of the zip runs as it is, and a copy of a large
+  `priv` (the static files of Phoenix) costs time and disk at the first
+  start. The program copies that `priv` directory at its first start to
+  `CACHE/priv/HASH/APP-VSN/priv` (read-only files; the executables stay
+  executable), and `code:priv_dir(APP)` is then that directory. In a
+  release, the boot script runs the copy after the start of `stdlib`,
+  before the other applications start (`beam_com_script:extract/1`).
+  The code stays in the zip. `HASH` is from the files, so a new build
+  gets a new directory, and the next starts use the copy.
 
 **erl mode.** A program that starts a new Erlang VM (a peer node, a
 worker in a sandbox) can start its own file: each program has

@@ -158,6 +158,48 @@ defmodule BeamComBuildTest do
       assert [~c"lib/a-1.0/priv/x"] == :beam_com_build.release_programs(dir, files)
     end
 
+    # The boot script of --extract-priv: beam_com_script loads with the
+    # other modules, and runs after the start of stdlib.
+    test "boot_extract_test" do
+      stdlib = {:apply, {:application, :start_boot, [:stdlib, :permanent]}}
+
+      cmds = [
+        {:path, [~c"$ROOT/lib/kernel-1/ebin"]},
+        {:primLoad, [:code]},
+        {:progress, :modules_loaded},
+        {:apply, {:application, :start_boot, [:kernel, :permanent]}},
+        stdlib,
+        {:apply, {:application, :start_boot, [:app, :permanent]}}
+      ]
+
+      boot = ~c"releases/1.0/start.boot"
+      files = [{boot, :erlang.term_to_binary({:script, {~c"r", ~c"1.0"}, cmds})}, {~c"x", "x"}]
+      base = %{beam_com_script: %{vsn: ~c"0.2.0"}}
+      x = [{:app, ~c"1.0", ~c"0123456789abcdef", []}]
+      assert {files, [~c"a"]} == :beam_com_build.boot_extract(files, [~c"a"], ~c"1.0", [], base)
+
+      {[{^boot, data}, {~c"x", "x"}], changed} =
+        :beam_com_build.boot_extract(files, [~c"z", boot], ~c"1.0", x, base)
+
+      assert [boot, ~c"z"] == changed
+
+      assert {:script, {~c"r", ~c"1.0"},
+              [
+                {:path, [~c"$ROOT/lib/kernel-1/ebin"]},
+                {:primLoad, [:code]},
+                {:path, [~c"$ROOT/lib/beam_com_script-0.2.0/ebin"]},
+                {:primLoad, [:beam_com_script]},
+                {:progress, :modules_loaded},
+                {:apply, {:application, :start_boot, [:kernel, :permanent]}},
+                stdlib,
+                {:apply, {:beam_com_script, :extract, [x]}},
+                {:apply, {:application, :start_boot, [:app, :permanent]}}
+              ]} == :erlang.binary_to_term(data)
+
+      assert {:error, ~c"--extract-priv: ~ts has no beam_com_script", _} =
+               catch_throw(:beam_com_build.boot_extract(files, [], ~c"1.0", x, %{}))
+    end
+
     # The path of the running beam.com, else an error (a plain OTP).
     test "executable_test" do
       case :init.get_argument(:beam_com_exe) do
@@ -1442,9 +1484,11 @@ defmodule BeamComBuildTest do
     end
 
     # The programs of priv keep their execute bit in the zip (.programs
-    # lists them). A release copies no priv directory.
+    # lists them). --extract-priv: the boot script copies the priv of the
+    # application after the start of stdlib, with beam_com_script of the
+    # zip of beam.com. The edge part gets the boot script as it is.
     @tag timeout: 120_000
-    test "run/1 with a release: the programs of priv", %{dir: dir} do
+    test "run/1 with a release: the programs of priv, and --extract-priv", %{dir: dir} do
       {root, exe} = edge_prepare(dir)
       rel = mix_release(dir, [{:kernel, app_vsn(:kernel)}, {:stdlib, app_vsn(:stdlib)}])
       priv = :filename.join([rel, ~c"lib", ~c"myapp-1.0.0", ~c"priv"])
@@ -1459,7 +1503,7 @@ defmodule BeamComBuildTest do
         cmds
       end
 
-      # No copy of priv, and no beam_com_script.
+      # No --extract-priv: no copy of priv, and no beam_com_script.
       :ok = silent(fn -> :beam_com_build.run(opts) end)
       {:ok, bin} = :file.read_file(out)
       modes = zip_modes(bin)
@@ -1477,6 +1521,37 @@ defmodule BeamComBuildTest do
                  {:apply, {:beam_com_script, _, _}} = c <-
                    boot.(bin, ~c"releases/1.0.0/start.boot"),
                  do: c
+               )
+
+      # --extract-priv myapp.
+      :ok = silent(fn -> :beam_com_build.run(Map.put(opts, :extract_priv, [:myapp])) end)
+      {:ok, bin} = :file.read_file(out)
+      cmds = boot.(bin, ~c"releases/1.0.0/start.boot")
+
+      hash =
+        :beam_com_build.hash([
+          {~c"bin/tool", "#!/bin/sh\necho tool\n"},
+          {~c"data.txt", "data"}
+        ])
+
+      stdlib =
+        Enum.find_index(
+          cmds,
+          &(&1 == {:apply, {:application, :start_boot, [:stdlib, :permanent]}})
+        )
+
+      assert {:apply, {:beam_com_script, :extract, [[{:myapp, ~c"1.0.0", hash, [~c"bin/tool"]}]]}} ==
+               Enum.at(cmds, stdlib + 1)
+
+      assert ~c"lib/beam_com_script-0.1.0/ebin/beam_com_script.app" in :beam_com_zip.entries(bin)
+      edge = boot.(bin, ~c".wasm/releases/1.0.0/start.boot")
+      assert [] == for({:apply, {:beam_com_script, _, _}} = c <- edge, do: c)
+
+      # An application with no priv.
+      assert {:error, ~c"--extract-priv ~p: the release has no application ~p with a priv " ++ _,
+              [:kernel, :kernel]} =
+               catch_throw(
+                 silent(fn -> :beam_com_build.run(Map.put(opts, :extract_priv, [:kernel])) end)
                )
     end
 

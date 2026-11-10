@@ -33,7 +33,7 @@ What BEAM.com writes, and removes:
   of that version. A Linux system with the loader registered in
   `binfmt_misc` does not need this.
 - A program of a project whose `priv` has an executable file (or with
-  `--extract-priv`) copies that `priv` directory to
+  `--extract-priv`, also for a release) copies that `priv` directory to
   the user cache at its first start (see "Command line programs" in
   [`PROGRAMS.md`](PROGRAMS.md)). It stays there.
 - A program of the zip (a file of `/zip` with an execute bit) that runs

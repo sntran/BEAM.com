@@ -23,6 +23,11 @@ notes of its release.
   and `os:cmd/1` cannot run a program of the zip. See "priv files as
   real files" in `docs/PROGRAMS.md`, `docs/SANDBOX.md`, and C56 of
   `docs/UPSTREAM.md` (`fexecve()` of Cosmopolitan).
+- `--extract-priv APP` also works for a Mix or rebar3 release
+  (`beam.com DIR -o FILE`): the boot script copies the `priv` directory
+  of APP after the start of `stdlib`, and `code:priv_dir(APP)` is then
+  the copy. A release copies no other `priv` directory, and the builder
+  of a plain project keeps its rule.
 
 - `beam.com DIR -o FILE` makes one file from a Phoenix app, with no Mix
   task first. A Mix project with `config/runtime.exs`, a dep that is not

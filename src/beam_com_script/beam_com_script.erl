@@ -9,7 +9,7 @@
 -behaviour(application).
 -behaviour(supervisor).
 
--export([start/2, stop/1, main/1, init/1]).
+-export([start/2, stop/1, main/1, init/1, extract/1]).
 
 -ifdef(TEST).
 -export([extract/2]).
@@ -26,8 +26,7 @@ main([Module]) ->
 %% directories that other programs must read (see extract/2), and has an
 %% empty supervisor.
 start(_Type, boot) ->
-    Cache = cache_dir(),
-    [extract(Entry, Cache) || Entry <- application:get_env(beam_com_script, extract, [])],
+    extract(application:get_env(beam_com_script, extract, [])),
     supervisor:start_link(?MODULE, []);
 start(_Type, Module) ->
     {ok, spawn(fun() -> run(Module) end)}.
@@ -68,6 +67,15 @@ wait_for_boot() ->
 
 init([]) ->
     {ok, {#{}, []}}.
+
+%% The copies of the priv directories of Entries (see extract/2). The
+%% application calls it at its start. The boot script of a release with
+%% --extract-priv calls it after the start of stdlib, before the other
+%% applications start (beam_com_build:boot_extract/5).
+extract(Entries) ->
+    Cache = cache_dir(),
+    [extract(Entry, Cache) || Entry <- Entries],
+    ok.
 
 %% A priv directory as real files: other programs (sh, a port program,
 %% a tool that reads a data file) cannot read /zip. The builder lists

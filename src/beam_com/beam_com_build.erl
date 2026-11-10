@@ -28,7 +28,7 @@
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
          with_extract/2, compile_all/2, first_names/1, mix_release/3, why/1,
-         programs/1, release_programs/2]).
+         programs/1, release_programs/2, release_extract/3, boot_extract/5]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -88,9 +88,9 @@ build_dir(Input, Output, Opts, ExtraApps, Base, Root) ->
 %% new directory Out, and the build reads the release. none for the
 %% other inputs, and with --tool mix or --tool rebar.
 %%
-%% --main, -a, --extract-priv and the escript main_module of mix.exs are
-%% for the builder of a plain Mix project: a release of Mix has its own
-%% applications and no main/1. With them, the builder of a plain Mix
+%% --main, -a and the escript main_module of mix.exs are for the builder
+%% of a plain Mix project: a release of Mix has its own applications and
+%% no main/1. --extract-priv is for both (release_extract/3). With them, the builder of a plain Mix
 %% project makes the program when the reasons are only
 %% config/runtime.exs and :compilers (as before the Mix release), with
 %% a warning: the program does not read config/runtime.exs. With other
@@ -149,7 +149,6 @@ plain_options(Input, Opts) ->
     Escript = proplists:get_value(escript, beam_com_elixir:mix_config(Input), []),
     ["--main" || is_map_key(main, Opts)]
         ++ ["-a" || maps:get(apps, Opts, []) =/= []]
-        ++ ["--extract-priv" || is_map_key(extract_priv, Opts)]
         ++ ["the escript main_module of mix.exs"
             || is_list(Escript), proplists:get_value(main_module, Escript) =/= undefined].
 
@@ -276,7 +275,8 @@ write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root, Exec) -
 %% does not have, in the versions of the zip (beam_com_wasm:release_files/2
 %% checked them). A Mix release also gets the variables of its start
 %% script (native_release/3). The files of priv with an execute bit keep
-%% it in the zip (release_programs/2).
+%% it in the zip (release_programs/2), and --extract-priv copies the priv
+%% directories that it names at the start (boot_extract/5).
 release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files := Files0} = Rel,
             Root) ->
     check_base(Opts),
@@ -284,11 +284,15 @@ release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files :
     RelApps = rel_apps(Dir, Name, Vsn),
     InZip = [{A, V} || {A, V} <- RelApps,
                        not filelib:is_dir(filename:join([Dir, "lib", atom_to_list(A) ++ "-" ++ V, "ebin"]))],
-    Kept = [A || {A, _} <- InZip],
     ZipDirs = ["lib/" ++ atom_to_list(A) ++ "-" ++ V ++ "/" || {A, V} <- InZip],
     Own = [F || {P, _} = F <- Files0, not lists:prefix("tmp/", P),
                 not lists:any(fun(D) -> lists:prefix(D, P) end, ZipDirs)],
-    {Native, Changed} = native_release(Own, Kind, Rel),
+    Extract = release_extract(Own, maps:get(extract_priv, Opts, []), Dir),
+    %% The boot script calls beam_com_script, from the zip of beam.com.
+    Script = [beam_com_script || Extract =/= [], not lists:keymember(beam_com_script, 1, InZip)],
+    Kept = [A || {A, _} <- InZip] ++ Script,
+    {Native0, Changed0} = native_release(Own, Kind, Rel),
+    {Native, Changed} = boot_extract(Native0, Changed0, Vsn, Extract, Base0),
     Kind =:= mix andalso env_warning(Dir, Vsn, Opts),
     %% The runtime reads the files of the release as they are, and
     %% tmp/run.runtime.config of a Mix release (beam_com_wasm:meta/1).
@@ -363,6 +367,61 @@ executable(File) ->
         {ok, #file_info{type = regular, mode = Mode}} -> Mode band 8#111 =/= 0;
         _ -> false
     end.
+
+%% --extract-priv for a release: [{App, Vsn, Hash, Executables}] of the
+%% applications that it names, as extract/3 gives them for the builder of
+%% a plain project. A release does not copy each priv with an executable
+%% file, as that builder does: a program of the zip runs as it is (docs/
+%% PROGRAMS.md), and a copy of a large priv (the static files of Phoenix)
+%% costs time and disk at the first start.
+release_extract(Files, Named, Dir) ->
+    [release_extract_app(Files, App, Dir) || App <- lists:usort(Named)].
+
+release_extract_app(Files, App, Dir) ->
+    Prefix = "lib/" ++ atom_to_list(App) ++ "-",
+    Privs = [{V, F, iolist_to_binary(D)}
+             || {P, D} <- Files, lists:prefix(Prefix, P),
+                {V, "/priv/" ++ F} <- [lists:splitwith(fun(C) -> C =/= $/ end,
+                                                       lists:nthtail(length(Prefix), P))],
+                F =/= "", lists:last(F) =/= $/],
+    case Privs of
+        [] ->
+            throw({error, "--extract-priv ~p: the release has no application ~p with a priv "
+                   "directory", [App, App]});
+        [{Vsn, _, _} | _] ->
+            Priv = [{F, D} || {V, F, D} <- Privs, V =:= Vsn],
+            Lib = filename:join([Dir, "lib", atom_to_list(App) ++ "-" ++ Vsn, "priv"]),
+            {App, Vsn, hash(Priv), [F || {F, _} <- Priv, executable(filename:join(Lib, F))]}
+    end.
+
+%% The boot script of a release with --extract-priv: beam_com_script
+%% copies the priv directories after the start of stdlib, before the
+%% other applications start (beam_com_script:extract/1). In embedded
+%% mode, the boot loads beam_com_script with the other modules; in
+%% interactive mode, the code server finds it in /zip/lib.
+boot_extract(Files, Changed, _Vsn, [], _Base) ->
+    {Files, Changed};
+boot_extract(Files, Changed, Vsn, Extract, Base) ->
+    Script = case Base of
+                 #{beam_com_script := #{vsn := V}} -> V;
+                 _ -> throw({error, "--extract-priv: ~ts has no beam_com_script", [beam_com:name()]})
+             end,
+    Ebin = "$ROOT/lib/beam_com_script-" ++ Script ++ "/ebin",
+    Boot = "releases/" ++ Vsn ++ "/start.boot",
+    Stdlib = {apply, {application, start_boot, [stdlib, permanent]}},
+    Cmd = fun({progress, modules_loaded} = C) ->
+                  [{path, [Ebin]}, {primLoad, [beam_com_script]}, C];
+             (C) when C =:= Stdlib ->
+                  [C, {apply, {beam_com_script, extract, [Extract]}}];
+             (C) ->
+                  [C]
+          end,
+    Change = fun({P, D}) when P =:= Boot ->
+                     {script, Id, Cmds} = binary_to_term(iolist_to_binary(D)),
+                     {P, term_to_binary({script, Id, lists:flatmap(Cmd, Cmds)})};
+                (F) -> F
+             end,
+    {[Change(F) || F <- Files], lists:usort([Boot | Changed])}.
 
 %% The start script of a Mix release runs releases/VSN/env.sh, and a
 %% native file has no start script: a warning when env.sh has a line that
