@@ -172,7 +172,7 @@ A dep of `rebar.config` can also come from a git repository of an
 - `rebar.lock` keeps the commit of each git dep, as rebar3 does:
   `{git, URL, {ref, SHA}}`. A build with the lock gets this commit, and
   does not ask the server for the branch or the tag.
-- The deps of a git dep (its `rebar.config`) are also fetched: Hex
+- The builder also gets the deps of a git dep (its `rebar.config`): Hex
   packages and git deps. The name of a git dep must be the name of an
   application (letters, digits and `_`), and the directory of
   `git_subdir` a relative path in the checkout with no `..`.
@@ -473,7 +473,7 @@ the same bytes. Files that a step of the build writes with a new time
 are an exception: for example `priv/static/cache_manifest.json` of
 `phx.digest` in a Phoenix app. Thus only the changed modules and files are new in the
 new file. The Elixir compiler can give other bytes for some modules; the
-program then loads these modules again, with no change of behaviour.
+program then loads these modules again, with no change of behavior.
 The new file must come from the same `beam.com`, because a new runtime
 needs a restart.
 
