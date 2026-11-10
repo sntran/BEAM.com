@@ -1928,8 +1928,11 @@ int beam_com_exec_helper(const char *path, char *const argv[],
  * On Windows, erl_child_setup cannot work: Cosmopolitan cannot pass a file
  * descriptor to another process (SCM_RIGHTS). The spawn driver of
  * sys_drivers.c calls this function in the emulator itself. It starts the
- * program with posix_spawn(), which gives the child only the descriptors
- * that the file actions name and the descriptors with no O_CLOEXEC.
+ * program with posix_spawn(). That function gives the child the
+ * descriptors that the file actions name, and each descriptor with no
+ * O_CLOEXEC. The sockets and the files of the emulator have no O_CLOEXEC,
+ * so a file action closes each descriptor from 3 (see spawn_nt_closes()):
+ * the child gets only 0, 1 and 2 of the emulator and the named ends.
  *
  * cmd: the program (argv != NULL), or the command for "sh -c" (argv ==
  * NULL; sh must be in PATH, for example the sh of Git for Windows). A
@@ -1980,6 +1983,26 @@ static int spawn_nt_script(const char *path)
     return kind;
 }
 
+/*
+ * A close action for each descriptor of this process from 3. Before the
+ * dup2 actions, so that the ends of the pipes at 3 and 4 stay. The caller
+ * holds the lock of the descriptor table until posix_spawn() returns.
+ * Each new descriptor takes its slot with this lock (__reservefd()), so no
+ * descriptor can come between this list and the copy of the table in
+ * posix_spawn(). A reserved slot gets a close action too, because the
+ * thread that reserved it fills it in with no lock.
+ */
+static int spawn_nt_closes(posix_spawn_file_actions_t *fa)
+{
+    size_t fd;
+    int err = 0;
+
+    for (fd = 3; fd < g_fds.n && !err; fd++)
+        if (g_fds.p[fd].kind != kFdEmpty)
+            err = posix_spawn_file_actions_addclose(fa, (int)fd);
+    return err;
+}
+
 int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
                       const char *cwd, const char *wd, int in_fd, int out_fd,
                       int err_fd, int use_stdio, int *pid)
@@ -2023,6 +2046,9 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
         err = posix_spawn_file_actions_addchdir_np(&fa, cwd);
     if (!err && wd)
         err = posix_spawn_file_actions_addchdir_np(&fa, wd);
+    __fds_lock();
+    if (!err)
+        err = spawn_nt_closes(&fa);
     if (!err && in_fd >= 0)
         err = posix_spawn_file_actions_adddup2(&fa, in_fd, use_stdio ? 0 : 3);
     if (!err && out_fd >= 0)
@@ -2031,6 +2057,7 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
         err = posix_spawn_file_actions_adddup2(&fa, err_fd, 2);
     if (!err)
         err = posix_spawn(pid, path, &fa, NULL, argv ? argv : sh_argv, env);
+    __fds_unlock();
     posix_spawn_file_actions_destroy(&fa);
     free(script.v);
     return err;

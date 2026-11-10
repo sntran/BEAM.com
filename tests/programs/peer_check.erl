@@ -20,9 +20,11 @@
 %%   slow reader 200000
 %%
 %% Then, on Windows only, a native port program that waits in large reads
-%% (the free space of the write end of the pipe is then 0):
+%% (the free space of the write end of the pipe is then 0), and on each
+%% system a listen socket that a port program must not get:
 %%
 %%   native reader true
+%%   closed listen socket refused
 %%
 %% On Windows, the spawn driver starts the port programs itself, with
 %% posix_spawn() (docs/UPSTREAM.md, C16).
@@ -36,7 +38,14 @@ main(_) ->
     io:format("cmd ~ts~n", [string:trim(os:cmd("echo hello"))]),
     slow_reader(200000),
     native_reader(),
+    closed_socket(Exe),
     ok.
+
+%% The own file in erl mode as a port program: it evaluates CODE.
+erl_port(Exe, Code, Options) ->
+    open_port({spawn_executable, Exe},
+              [binary, exit_status, {args, ["-noshell", "-eval", Code]},
+               {env, [{"BEAM_COM_ERL", "1"}]} | Options]).
 
 %% On Windows: findstr.exe, a native program that waits in reads of 4 KiB
 %% or more, so the free space of the write end of its pipe is 0. It gets
@@ -69,6 +78,21 @@ native_lines(Port, I) ->
     after 60000 ->
             {no_line_in_60_s, I}
     end.
+
+%% A listen socket that closes after the start of a port program: a
+%% connection must then fail, so the port program has no copy of it.
+closed_socket(Exe) ->
+    {ok, Listen} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}]),
+    {ok, PortNumber} = inet:port(Listen),
+    Port = erl_port(Exe, "io:get_line(\"\"), halt().", []),
+    ok = gen_tcp:close(Listen),
+    Result = case gen_tcp:connect({127, 0, 0, 1}, PortNumber, [], 10000) of
+                 {error, econnrefused} -> refused;
+                 {ok, Socket} -> gen_tcp:close(Socket), accepted;
+                 {error, Reason} -> Reason
+             end,
+    port_close(Port),
+    io:format("closed listen socket ~p~n", [Result]).
 
 %% A port program that reads its input after 1 s, and counts N bytes.
 slow_reader(N) ->

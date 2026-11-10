@@ -378,6 +378,15 @@ forker port starts no `erl_child_setup`
   as its fds 0, 1 and 2. A program of `/zip/bin` is a helper of the
   file. `{spawn, Command}` runs `sh -c` with the `sh.exe` (else `sh`) in
   `PATH`, because `posix_spawnp()` (`commandv()`) tries no `.exe`.
+- `posix_spawn()` of Cosmopolitan gives the child each descriptor with
+  no `O_CLOEXEC` (`libc/proc/describefds.c`), and the sockets and the
+  files of ERTS have no `O_CLOEXEC`. On Unix, `erl_child_setup` closes
+  them. So `beam_com_spawn_nt()` adds a close action for each descriptor
+  from 3, before the actions of the pipes. It holds the lock of the
+  descriptor table (`__fds_lock()`) until `posix_spawn()` returns, so no
+  new descriptor can come in between. In a test, a listen socket of the
+  VM stayed open in a port program (`ping -n 15`) for 14 s after its
+  close; now a connection gets `econnrefused`.
 - The pid is known at once, so no message "Go" comes on the output of
   the program: the first event of the port (input, or a timer of 0 ms)
   sends the ack of the open.
@@ -431,6 +440,8 @@ write at most the free space of the pipe. Get it from the read end
 the write end is smaller while a reader waits. The count of
 `GetOverlappedResult()` after `CancelIoEx()` is not reliable for a
 pipe. In `poll()`, report the write end of a full pipe as not ready. In
+`posix_spawn()`, give a way to close each descriptor that the file
+actions do not name (as `posix_spawn_file_actions_addclosefrom_np()`). In
 `commandv()`, try `.exe` and `.com` on Windows. Implement fd passing
 between Cosmopolitan processes (the fd table is already serialized for `execve()` in
 `_COSMO_FDS_V2`, and `DuplicateHandle()` can copy handles into a known

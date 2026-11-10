@@ -35,6 +35,9 @@ notes of its release.
   waits in a read of 4 KiB or more, so the wraps get the free space from
   the read end of the pipe. Thus a write reaches a native program such
   as `python`, `git` or `findstr`.
+- On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
+  the ends of its pipes. Before, it also got each socket and file of the
+  VM, so a closed connection stayed open until the program stopped.
 - A `chown()` to the owner and the group that a file already has gives
   0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
 - On Windows, a script with `#!` runs as a port program: with the
