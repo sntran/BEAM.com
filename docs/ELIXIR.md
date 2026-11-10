@@ -45,9 +45,9 @@ beam.com hello.ex -- Alice             # or run it
   Mix gets the deps, compiles the project, runs `assets.deploy`, and
   makes a release. Then the builder makes the file from that release.
   A new Phoenix app has all four. See "Phoenix in one file" below.
-- In the builder of a plain Mix project, protocols are not consolidated
-  (protocols work, but their dispatch is not optimized). A release of
-  Mix consolidates them.
+- The builder of a plain Mix project does not consolidate the
+  protocols. The protocols work, but their dispatch is slower. A release
+  of Mix consolidates them.
 - **Not supported:** umbrella projects.
 
 [`examples/greeter_ex`](../examples/greeter_ex) is a Mix project with jason
@@ -171,8 +171,8 @@ iex.com -S mix phx.server        # http://localhost:4000
   that tells what to put in the deps of `mix.exs` (for example
   `{:exqlite, "0.41.0"}`).
 - The esbuild and tailwind watchers download their programs and run
-  them as ports, as they do with Elixir (not on Windows, which has no
-  port programs here).
+  them as ports, as they do with Elixir. CI does not test the watchers
+  on Windows.
 - Live reload works without `inotify-tools`: the tools set
   `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
   file watcher of the file (see "The file watcher"), on Linux and the
@@ -184,8 +184,8 @@ iex.com -S mix phx.server        # http://localhost:4000
   code, need `make` and a C compiler, and a NIF that `beam.com` can load:
   a static NIF of a custom build, or a NIF library in WebAssembly
   (`priv/NAME.wasm`, see [`NIFS.md`](NIFS.md)).
-- Not tested on Windows (`elixir_make` needs `make` and a C compiler
-  there), and not on NetBSD (its kernel does not start an APE file by a link; set
+- CI does not test these packages on Windows (`elixir_make` needs
+  `make` and a C compiler there), or on NetBSD (its kernel does not start an APE file by a link; set
   `MAKE` to a script that starts `beam.com` with the APE loader and
   `BEAM_COM_PROGRAM=make`).
 
@@ -247,19 +247,19 @@ directory.
 - `--tool mix-release` makes the release with Mix for each Mix project.
   `--tool mix` keeps the builder of a plain Mix project, also for a
   project with `config/runtime.exs`.
-- The new code of a running program (see "New code in a running
+- New code for a program that runs (see "New code in a running
   program" in [`PROGRAMS.md`](PROGRAMS.md)) works the same with a file
   of this build: `lib/hello-0.1.0/` has the code and `priv/static`.
 - On Windows, the Mix steps run too: the spawn driver of `beam.com`
   starts the child `beam.com`, git and the other programs with
   `posix_spawn()` (C16 of [`UPSTREAM.md`](UPSTREAM.md)). CI builds and
-  runs `tests/programs/runtime_check` there. A script with `#!` as a
+  runs `tests/programs/runtime_check` and a new Phoenix app there. A script with `#!` as a
   port program (for example `rebar3`) runs with the `escript` of
   `beam.com`, or with the `sh` in `PATH`. tailwind and esbuild get their
-  programs for Windows: when the config gives no target and no path, the
-  builder sets the target `windows-x64.exe` of tailwind, and the path of
-  `esbuild.exe` of the npm package `@esbuild/win32-x64` (the version of
-  `config :esbuild`) in `_build`.
+  programs for Windows. When the config gives no target and no path, the
+  builder sets the target `windows-x64.exe` of tailwind. It also sets the
+  path of `esbuild.exe` of the npm package `@esbuild/win32-x64` in
+  `_build`, with the version of `config :esbuild`.
 - With no `git` program in `PATH`, the git client of `beam.com`
   (`beam_com_git`) gets each git dep of an `https` URL, also `github:`.
   It speaks version 2 of the git protocol over HTTPS, with your proxy,
@@ -278,12 +278,13 @@ directory.
 - To deploy the file to a server, from the server itself or from CI, see
   [`DEPLOY.md`](DEPLOY.md).
 
-CI builds the app of "Phoenix from source" this way on Linux, with the
-git client of `beam.com` for its git deps, and the file must serve the
-start page and its digested CSS.
+CI builds the app of "Phoenix from source" this way on Linux. The git
+client of `beam.com` gets its git deps. On Windows, CI builds a new app
+with no database (`mix phx.new hello --no-ecto`). Each file must serve
+the start page and its digested CSS.
 [`tests/programs/runtime_check`](../tests/programs/runtime_check) is a
 small Mix project with `config/runtime.exs` and no deps. CI builds and
-runs it on each platform but Windows.
+runs it on each platform.
 
 ## The file watcher
 

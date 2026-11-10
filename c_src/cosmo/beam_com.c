@@ -1585,13 +1585,14 @@ static char *home_dir(void)
  * {unix, windows}, so kernel and public_key take their Unix code paths.
  * Two of them do not work on Windows without help:
  *
- * 1. Names. The native resolver (inet_gethost) is a port program, and
- *    there are no port programs on Windows. Kernel must use its own DNS
- *    client (inet_res), which needs name servers. Kernel would read them
- *    from /etc/resolv.conf, which does not exist. Worse, inet_db watches
- *    that file and *replaces* the name server list with the (empty)
- *    content of the missing file before every lookup, so name servers
- *    added with inet_db:add_ns/1 are lost and every lookup is nxdomain.
+ * 1. Names. BEAM.com does not use the native resolver (inet_gethost, a
+ *    port program) on Windows (C16 of docs/UPSTREAM.md). Kernel uses its
+ *    own DNS client (inet_res), which needs name servers. Kernel would
+ *    read them from /etc/resolv.conf, which does not exist. Worse,
+ *    inet_db watches that file and *replaces* the name server list
+ *    with the (empty) content of the missing file before every lookup,
+ *    so name servers added with inet_db:add_ns/1 are lost and every
+ *    lookup is nxdomain.
  *
  *    BEAM.com writes an inetrc file at start with {resolv_conf, ""} (stop
  *    watching the file), the Windows hosts file, and the name servers of
@@ -2531,9 +2532,8 @@ void beam_com_main(int *argcp, char ***argvp)
 
     /* The file of SSL_CERT_FILE for public_key (see cert_file()). */
     cert_file_setup(&init, &certs);
-    /* On Windows there are no port programs, and the native resolver
-     * (inet_gethost) is one: kernel halts the node when it cannot start
-     * it. Give kernel the name servers of Windows and public_key the
+    /* On Windows, kernel does not use the native resolver (inet_gethost).
+     * Give kernel the name servers of Windows and public_key the
      * certificates of Windows (see windows_setup()). */
     if (beam_com_is_windows())
         windows_setup(&init, &certs);

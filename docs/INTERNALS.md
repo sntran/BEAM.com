@@ -152,7 +152,7 @@ The builder also strips the beams that it compiles, of the program and
 of its deps. Their compile information and debug information have the
 paths of the build, with a new temporary directory each time. Without
 them, two builds of the same code almost always give the same bytes,
-and the reload of a running program (`beam_com_reload`) reads only the
+and the reload of a program that runs (`beam_com_reload`) reads only the
 beams that changed. The Erlang compiler gets the option `deterministic`.
 The Elixir compiler can give other bytes for some modules (for example
 in the tables of a module that a macro makes).
@@ -195,7 +195,7 @@ arguments and in a header that the compiler includes in each file
 | No reserve-then-commit `mmap` | On Windows, `mmap(MAP_FIXED)` in a `PROT_NONE` reservation fails, and ERTS stopped at boot. |
 | `FD_SETSIZE` when `sysconf(_SC_OPEN_MAX)` fails | It fails with `EINVAL` on Windows. |
 | Native `cmsghdr` layout in `sys_uds.c` | Cosmopolitan does not convert control messages for BSD and XNU, so no port program could start on macOS and the BSDs. |
-| No forker on Windows | Cosmopolitan cannot pass fds on Windows, so port programs fail with `enotsup` there. |
+| No forker on Windows | Cosmopolitan cannot pass fds on Windows. The spawn driver starts each port program itself with `posix_spawn()` (C16 of [`UPSTREAM.md`](UPSTREAM.md)). |
 | [`patches/otp/0001-cosmopolitan.patch`](../patches/otp/0001-cosmopolitan.patch) | The items above that need source changes, the multi-call hooks, the `_Float16` conversion, and `gethostbyname_r` in `erl_interface`. |
 | [`patches/otp/0002-jit.patch`](../patches/otp/0002-jit.patch) | The JIT with both backends in one fat file ([`JIT.md`](JIT.md)). |
 

@@ -30,14 +30,19 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 `beam.com . -o hello.com` makes the file (see "Phoenix in one file" in
 [`ELIXIR.md`](ELIXIR.md)). The file reads `config/runtime.exs` at each
-start, so it gets its settings from the environment, as a release of Mix:
+start, so it gets its settings from the environment, as a release of Mix.
+
+> **Caution:** put a comment of the environment file on its own line.
+> systemd reads `#` as a comment only at the start of a line, so a
+> comment after a value becomes a part of the value.
 
 ```sh
 # /srv/hello/env, with the mode 600
 PHX_SERVER=true
 PHX_HOST=hello.example.com
 PORT=4000
-SECRET_KEY_BASE=...        # mix phx.gen.secret
+# The output of mix phx.gen.secret:
+SECRET_KEY_BASE=...
 DATABASE_URL=ecto://USER:PASS@localhost/hello
 ```
 
@@ -102,9 +107,12 @@ The migrator runs at each start, so a new migration needs a restart.
 
 ## A: build on the server
 
-Put `beam.com` and the source on the server:
+Put `beam.com` and the source on the server. `curl` writes `beam.com`
+with no execute permission, so set it, and put the file in `PATH`:
 
 ```sh
+chmod +x beam.com
+sudo mv beam.com /usr/local/bin/
 git clone https://example.com/you/hello.git /srv/hello/src
 cd /srv/hello/src && beam.com . -o /srv/hello/hello.com
 sudo systemctl enable --now hello
@@ -236,11 +244,13 @@ For a restart with almost no failed request, see the spike
   (for example with `webfactory/ssh-agent`) and the key of the host in
   `~/.ssh/known_hosts`.
 - **A Phoenix app on Windows.** The Mix steps work on Windows (C16 of
-  [`UPSTREAM.md`](UPSTREAM.md)), and CI builds a Mix project with
-  `config/runtime.exs` there. The tailwind and esbuild packages choose
-  their Linux programs on Windows, because `os:type()` is
-  `{unix, windows}`. Thus the builder gives tailwind the target
-  `windows-x64.exe`, and esbuild the path of `esbuild.exe` from npm,
-  when your config gives no target and no path.
+  [`UPSTREAM.md`](UPSTREAM.md)). CI builds a new Phoenix app with no
+  database (`mix phx.new --no-ecto`) there, and the file serves its
+  start page. CI does not test a database or a dep with C code on
+  Windows: `elixir_make` needs `make` and a C compiler there. The
+  tailwind and esbuild packages choose their Linux programs on Windows,
+  because `os:type()` is `{unix, windows}`. Thus the builder gives
+  tailwind the target `windows-x64.exe`, and esbuild the path of
+  `esbuild.exe` from npm, when your config gives no target and no path.
 - **NIFs.** A package with C code works only when `beam.com` has its NIF
   (see [`NIFS.md`](NIFS.md)).

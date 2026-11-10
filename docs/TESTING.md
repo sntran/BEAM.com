@@ -32,6 +32,9 @@ the tests.
 - `tests/host_test.exs`: the tests of the JavaScript of the hosts
   (`tests/host/*.test.mjs`) with `node --test`. They need Node.js 20.6 or
   later. Without `node`, ExUnit skips them (the tag `node`).
+- `tests/beam_com/beam_com_git_ssh_test.exs`: a test of the git client
+  with the `git-upload-pack` program of git. Without `git`, ExUnit skips
+  it (the tag `git`).
 - StreamData properties, in the test file of their module. A property
   uses an independent oracle where one exists: the `Version` module of
   Elixir for the versions and the requirements of Hex, `io_lib`,
@@ -178,8 +181,8 @@ the programs that it builds, on each system, and check the output and
 the exit status of each one, with a time limit. They also check the
 errors of `beam.com INPUT -o OUTPUT` (the exit status and the message).
 A check that uses the network gets two more tries when it fails, after
-10 s and after 30 s, and the log shows each try. Both runners do this for the HTTPS
-request of `tls_check`, and `tests/run.sh` also does it for Hex and Mix.
+10 s and after 30 s, and the log shows each try. Both runners do this
+for the HTTPS request of `tls_check` and for Hex and Mix.
 
 ```sh
 tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
@@ -199,16 +202,21 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 | `tests/programs/jit_maps.erl` | No page of the JIT code is writable and executable. |
 | `tests/programs/elixir_check.ex` | A one-file Elixir program. |
 | `tests/programs/sqlite_check.erl` | SQLite: a database in memory and in a file. |
-| `tests/programs/crypto_check`, `tls_check` | Crypto (exact hash values), port programs, a local TLS 1.3 handshake, and a verified HTTPS request. Also as rebar3 releases in the zip. |
+| `tests/programs/crypto_check`, `tls_check` | Crypto (exact hash values), port programs (`os:cmd/1`, and `inet_gethost` except on Windows), a local TLS 1.3 handshake, and a verified HTTPS request. Also as rebar3 releases in the zip. |
+| `tests/programs/runtime_check` | A Mix project with `config/runtime.exs` and no deps: Mix makes its release (`beam_com_mix`), and the file reads the config at its start. On each system, also Windows. |
+| `erlang:system_info(system_architecture)` (`tests/run.sh`) | The CPU and the system where the file runs (O28 of [`UPSTREAM.md`](UPSTREAM.md)), not the text of `configure`. |
 | `tests/programs/calc` | A scanner, a parser and an ASN.1 module. |
 | `examples/*` | The examples: a release in the zip, Hex packages, a Mix project, a command line program, distributed Erlang and a remote shell, and `--target wasm32` (the build and its files; the Workers do not run in CI). |
 
 `tests/run.sh` also runs the tools of Elixir (`mix.com`, `iex.com`,
-`elixir.com`, `elixirc.com`, `escript`), a new Phoenix app with SQLite
-and `phx.gen.auth` (Linux, with the network), the file watchers, a
-check of WSL2 in a user namespace of Linux, and the blue-green spike
-(`examples/bluegreen/check.sh`: a check on Linux, a probe on the other
-Unix systems).
+`elixir.com`, `elixirc.com`, `escript`), and a new Phoenix app with
+SQLite and `phx.gen.auth` (Linux, with the network). It then builds the
+same app in one file with `beam.com . -o`, with the git client of
+`beam.com` for the git deps (`BEAM_COM_GIT=client`), and the file must
+serve the start page and its digested CSS. It also runs the file
+watchers, a check of WSL2 in a user namespace of Linux, and the
+blue-green spike (`examples/bluegreen/check.sh`: a check on Linux, a
+probe on the other Unix systems).
 
 When a program does not stop in its time limit, or a process stays after
 the tests, `tests/run.sh` writes the processes and their stacks: `sample`
