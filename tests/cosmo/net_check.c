@@ -13,6 +13,10 @@
 #define __real_socket socket
 #include "../../c_src/cosmo/beam_com_net.c"
 
+#include <sys/stat.h>
+#include <cosmo.h>
+#include "libc/dce.h"
+
 static int failures;
 
 #define CHECK(cond)                                                          \
@@ -345,9 +349,54 @@ static void check_random(void)
     }
 }
 
+/* bind() of a Unix socket with a short path (C53 of docs/UPSTREAM.md):
+ * the size of the address is the size of the path, as inet_drv of OTP
+ * gives it. The socket gets the path, with no other bytes. */
+static void check_unix_path(const char *name, int type)
+{
+    struct sockaddr_un un, got;
+    socklen_t len = offsetof(struct sockaddr_un, sun_path) + strlen(name);
+    socklen_t gotlen = sizeof(got);
+    struct stat st;
+    int fd = socket(AF_UNIX, type, 0);
+
+    CHECK(fd >= 0);
+    memset(&un, 0xff, sizeof(un)); /* No zero after the path. */
+    un.sun_family = AF_UNIX;
+    memcpy(un.sun_path, name, strlen(name));
+    unlink(name);
+    CHECK(__wrap_bind(fd, (struct sockaddr *)&un, len) == 0);
+    CHECK(stat(name, &st) == 0 && S_ISSOCK(st.st_mode));
+    memset(&got, 0, sizeof(got));
+    CHECK(getsockname(fd, (struct sockaddr *)&got, &gotlen) == 0);
+    CHECK(got.sun_family == AF_UNIX && strcmp(got.sun_path, name) == 0);
+    close(fd);
+    unlink(name);
+}
+
+static void check_unix(void)
+{
+    char dir[] = "/tmp/net_check.XXXXXX", old[4096];
+
+    if (IsWindows())
+        return;
+    CHECK(getcwd(old, sizeof(old)) != NULL);
+    CHECK(mkdtemp(dir) != NULL);
+    CHECK(chdir(dir) == 0);
+    net_on = 0;
+    check_unix_path("s", SOCK_STREAM);
+    check_unix_path("s", SOCK_DGRAM);
+    check_unix_path("s234567890123", SOCK_STREAM);   /* 13 bytes: 15 < 16. */
+    check_unix_path("s2345678901234", SOCK_STREAM);  /* 14 bytes: no copy. */
+    check_unix_path("s234567", SOCK_DGRAM);
+    CHECK(chdir(old) == 0);
+    CHECK(rmdir(dir) == 0);
+}
+
 int main(void)
 {
     check_rules();
+    check_unix();
     check_names();
     check_dns_name();
     check_chain();

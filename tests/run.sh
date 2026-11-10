@@ -1025,6 +1025,50 @@ cat > "$tmp.escript" <<'ESCRIPT'
 main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).
 ESCRIPT
 check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
+# A Unix socket with a short path (C53 of docs/UPSTREAM.md): bind() of
+# Cosmopolitan refuses an address of fewer than 16 bytes, and the wrap of
+# bind() (c_src/cosmo/beam_com_net.c) makes it longer. A server and a
+# client talk through a stream socket with a path of 1 byte and of 14
+# bytes, and through two datagram sockets.
+cat > "$tmp.unix.escript" <<'ESCRIPT'
+#!/usr/bin/env escript
+main(_) ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"),
+                        "unix_socket." ++ os:getpid()),
+    ok = file:make_dir(Dir),
+    ok = file:set_cwd(Dir),
+    Results = [stream("s"), stream("s2345678901234"), datagram("d", "e")],
+    [file:delete(F) || F <- ["s", "s2345678901234", "d", "e"]],
+    ok = file:del_dir(Dir),
+    io:format("unix socket: ~ts~n", [lists:join(", ", Results)]).
+
+stream(Path) ->
+    Result = try
+                 {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {ifaddr, {local, Path}}]),
+                 {ok, C} = gen_tcp:connect({local, Path}, 0, [binary, {active, false}]),
+                 {ok, A} = gen_tcp:accept(L, 5000),
+                 ok = gen_tcp:send(C, <<"hello">>),
+                 {ok, <<"hello">>} = gen_tcp:recv(A, 5, 5000),
+                 [gen_tcp:close(S) || S <- [C, A, L]],
+                 "ok"
+             catch error:{badmatch, Reason} -> io_lib:format("~p", [Reason])
+             end,
+    [Path, " ", Result].
+
+datagram(Path1, Path2) ->
+    Result = try
+                 {ok, S1} = gen_udp:open(0, [binary, {active, false}, {ifaddr, {local, Path1}}]),
+                 {ok, S2} = gen_udp:open(0, [binary, {active, false}, {ifaddr, {local, Path2}}]),
+                 ok = gen_udp:send(S2, {local, Path1}, 0, <<"hello">>),
+                 {ok, {_, _, <<"hello">>}} = gen_udp:recv(S1, 0, 5000),
+                 [gen_udp:close(S) || S <- [S1, S2]],
+                 "ok"
+             catch error:{badmatch, Reason} -> io_lib:format("~p", [Reason])
+             end,
+    ["datagram ", Result].
+ESCRIPT
+check beam.com '^unix socket: s ok, s2345678901234 ok, datagram ok$' escript "$tmp.unix.escript"
+rm -f "$tmp.unix.escript"
 check beam.com '^55$' elixir -e 'IO.puts(Enum.sum(1..10))'
 # The errno names of the BEAM on each system: ELOOP gave errno_40 on
 # Linux and errno_62 on macOS (C35 of docs/UPSTREAM.md).

@@ -1583,8 +1583,14 @@ int main(void) {
 }
 ```
 
-**Workaround in BEAM.com.** None. The git client only connects to the
-SSH agent, and the tests use a long path for their agent.
+**Workaround in BEAM.com.** For an `AF_UNIX` address of fewer than 16
+bytes with a path, the wrap of `bind()` (`c_src/cosmo/beam_com_net.c`)
+gives `bind()` a copy of 16 bytes with zeros after the path. The path
+ends at its first zero, so the socket gets the same path.
+`tests/cosmo/net_check.c` and `tests/run.sh` check it. An abstract
+address of Linux (a zero at the start of the path) with a name of 12
+bytes or fewer still gives `EINVAL`: there each byte is a part of the
+name, so a longer copy is another name.
 
 **Possible upstream fix.** For `AF_UNIX`, check only that the size has
 the family (`sizeof(sa_family_t)`), as `sockaddr2linux()` does.

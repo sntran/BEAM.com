@@ -52,6 +52,7 @@
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 #ifndef BEAM_COM_NET_TEST
@@ -390,13 +391,39 @@ int __wrap_connect(int fd, const struct sockaddr *sa, socklen_t len)
     return __real_connect(fd, sa, len);
 }
 
+/*
+ * bind() of Cosmopolitan refuses an address of fewer than 16 bytes
+ * (sizeof(struct sockaddr_in)) with EINVAL (C53 of docs/UPSTREAM.md).
+ * inet_drv of OTP gives an AF_UNIX address with the size of its path, so
+ * a path of 13 bytes or fewer has a smaller size. For such an address,
+ * bind() gets a copy of 16 bytes with zeros after the path: the path ends
+ * at the first zero. Not for an abstract address of Linux (a zero at the
+ * start of the path): there each byte is a part of the name.
+ */
+static int net_bind(int fd, const struct sockaddr *sa, socklen_t len)
+{
+    union {
+        struct sockaddr sa;
+        unsigned char bytes[sizeof(struct sockaddr_in)];
+    } pad;
+    size_t path = offsetof(struct sockaddr_un, sun_path);
+
+    if (sa && len > path && len < sizeof(pad) && sa->sa_family == AF_UNIX &&
+        ((const unsigned char *)sa)[path] != 0) {
+        memset(&pad, 0, sizeof(pad));
+        memcpy(&pad, sa, len);
+        return __real_bind(fd, &pad.sa, sizeof(pad));
+    }
+    return __real_bind(fd, sa, len);
+}
+
 int __wrap_bind(int fd, const struct sockaddr *sa, socklen_t len)
 {
     if (!net_check(sa, len, 1)) {
         errno = EACCES;
         return -1;
     }
-    return __real_bind(fd, sa, len);
+    return net_bind(fd, sa, len);
 }
 
 ssize_t __wrap_sendto(int fd, const void *buf, size_t n, int flags,
