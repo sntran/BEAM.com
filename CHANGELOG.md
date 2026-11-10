@@ -48,8 +48,12 @@ notes of its release.
   Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).
 - On Windows, the server of the pipe of the SSH agent can identify the
   client, but cannot act as the user (`SECURITY_IDENTIFICATION`).
-- A `chown()` to the owner and the group that a file already has gives
-  0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
+- A `chown()` that changes no owner and no group gives 0 also where the
+  system refuses it: on Windows, and in the sandbox (C28). `File.cp/3`
+  copies the owner, and it failed on Windows. Where the system permits
+  the call, `beam.com` gives the result of the system: Linux clears the
+  setuid and setgid bits of the file. Before, `beam.com` did not call
+  `chown()` for these calls on any system, so the bits stayed.
 - On Windows, a script with `#!` runs as a port program: with the
   `escript` of `beam.com` for an escript (such as `rebar3`), else with
   the `sh` in `PATH`.

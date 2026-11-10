@@ -379,6 +379,14 @@ if (Test-Path "examples") {
 if (Test-Path "examples") {
     Check "beam.com" 'wrote .*dns_fake.com' @("tests/programs/dns_fake.erl", "-o", "$Dir/dns_fake.com")
     Check "beam.com" 'wrote .*sandbox_none.com' @("tests/programs/sandbox_check.erl", "-o", "$Dir/sandbox_none.com")
+    # chown() to the owner that a file already has (C28 of
+    # docs/UPSTREAM.md): chown() of Cosmopolitan gives ENOSYS on Windows,
+    # and the wrap gives 0 for a call that changes no owner.
+    if (Test-Path (Join-Path $Dir "sandbox_none.com")) {
+        $ownerFile = Join-Path $Dir "owner_check.tmp"
+        Check "sandbox_none.com" 'write: ok@@owner: ok@@touch: ok@@done' @("write", $ownerFile, "owner", $ownerFile, "touch", $ownerFile)
+        Remove-Item $ownerFile -ErrorAction SilentlyContinue
+    }
     if ((Test-Path (Join-Path $Dir "dns_fake.com")) -and (Test-Path (Join-Path $Dir "sandbox_none.com"))) {
         $fakeExe = Join-Path $Dir "dns_fake.exe"
         Copy-Item (Join-Path $Dir "dns_fake.com") $fakeExe -Force

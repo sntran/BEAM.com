@@ -6,6 +6,15 @@
 %%   sandbox_check write PATH   write a file
 %%   sandbox_check chmod PATH   change the mode of a file (to 600)
 %%   sandbox_check touch PATH   change the times of a file
+%%   sandbox_check owner PATH   set the owner and the group that the file
+%%                              already has
+%%   sandbox_check setid PATH   give the file the mode 6755, set its owner
+%%                              again, and print the mode; then the same
+%%                              with a change of the times (-1 and -1 as
+%%                              the owner): "setid: owner 755, times 755"
+%%                              on Linux, which clears the setuid and
+%%                              setgid bits at each chown() (not in the
+%%                              sandbox: it refuses these bits)
 %%   sandbox_check unix         open a Unix datagram socket
 %%   sandbox_check unixconnect PATH
 %%                              connect to a Unix socket with a path: ok
@@ -65,6 +74,17 @@ run(["chmod", Path | Rest]) ->
 run(["touch", Path | Rest]) ->
     report(touch, file:change_time(Path, {{2026, 1, 1}, {0, 0, 0}})),
     run(Rest);
+run(["owner", Path | Rest]) ->
+    report(owner, same_owner(Path)),
+    run(Rest);
+run(["setid", Path | Rest]) ->
+    ok = file:change_mode(Path, 8#6755),
+    ok = same_owner(Path),
+    Owner = mode(Path),
+    ok = file:change_mode(Path, 8#6755),
+    ok = file:change_time(Path, {{2026, 1, 1}, {0, 0, 0}}),
+    io:format("setid: owner ~.8b, times ~.8b~n", [Owner, mode(Path)]),
+    run(Rest);
 run(["unix" | Rest]) ->
     report(unix, gen_udp:open(0, [local])),
     run(Rest);
@@ -123,6 +143,23 @@ run(["run", Program | Rest]) ->
     run(Rest);
 run([]) ->
     io:format("done~n").
+
+%% write_file_info/2 with the owner and the group of the file: only a
+%% chown() with no change.
+same_owner(Path) ->
+    case file:read_file_info(Path, [{time, posix}]) of
+        {ok, Info} ->
+            file:write_file_info(Path, {file_info, undefined, undefined, undefined,
+                                        undefined, undefined, undefined, undefined,
+                                        undefined, undefined, undefined, undefined,
+                                        element(13, Info), element(14, Info)});
+        Error ->
+            Error
+    end.
+
+mode(Path) ->
+    {ok, Info} = file:read_file_info(Path),
+    element(8, Info) band 8#7777.
 
 report(Action, {ok, _}) -> io:format("~s: ok~n", [Action]);
 report(Action, ok) -> io:format("~s: ok~n", [Action]);

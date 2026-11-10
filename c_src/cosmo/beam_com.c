@@ -176,34 +176,45 @@ int __wrap_mkdir(const char *path, mode_t mode)
 /* chown() with no change (UPSTREAM.md C28). The emulator is linked with
  * -Wl,--wrap=chown (build.sh). prim_file:write_file_info/3 (for example
  * file:change_mode/2, file:change_time/2 and File.touch/1 of Elixir)
- * always sets the owner, with -1 and -1 when the owner does not change,
- * which POSIX does not change. Cosmopolitan's chown() gives ENOSYS on
- * Windows, and the sandbox of Linux refuses it (no promise "chown"), so
- * the change of the mode or of the times after it failed (#172). So
- * chown(path, -1, -1) gives 0 when the path exists, else the error of
- * stat() (ENOENT, on which File.touch/1 makes the file). The same for the
- * owner and the group that the file already has: File.cp/3 of Elixir
- * copies the owner of the source (a copy of the same user, for example
- * in "mix release").
+ * always sets the owner, with -1 and -1 when the owner does not change.
+ * File.cp/3 of Elixir copies the owner of the source, for example in
+ * "mix release". Some systems refuse such a call, although it changes
+ * no owner:
  *
- * On each system: the sandbox of Linux refuses chown() too. On Linux, a
- * real chown() to the same owner clears the setuid and setgid bits; this
- * wrap keeps them. No owner changes, so no other user gets these bits,
- * and write_file_info/2 sets the mode after the owner. */
+ * - Cosmopolitan's chown() gives ENOSYS on Windows.
+ * - The sandbox of Linux refuses it (no promise "chown"), and Seatbelt
+ *   of macOS and unveil() of OpenBSD can refuse it.
+ *
+ * Then the change of the mode or of the times after it failed (#172).
+ *
+ * So the wrap calls the real chown() first: where the system permits
+ * the call, the result is that of the system. For example Linux clears
+ * the setuid and setgid bits of a file at each chown(), also with -1
+ * and -1. When the system refuses the call with ENOSYS, EPERM or EACCES,
+ * and the call changes no owner and no group, the wrap gives 0 when the
+ * path exists, else the error of stat() (ENOENT, on which File.touch/1
+ * makes the file). No owner changes, so the result of 0 gives no user a
+ * right. The setuid and setgid bits then stay. */
 int __real_chown(const char *path, uid_t owner, gid_t group);
 
 int __wrap_chown(const char *path, uid_t owner, gid_t group)
 {
     struct stat st;
+    int e;
 
     if (beam_com_fs_check(path, 1))
         return -1;
-    if (owner == (uid_t)-1 && group == (gid_t)-1)
-        return stat(path, &st);
-    if (stat(path, &st) == 0 && (owner == (uid_t)-1 || owner == st.st_uid)
-        && (group == (gid_t)-1 || group == st.st_gid))
+    if (__real_chown(path, owner, group) == 0)
         return 0;
-    return __real_chown(path, owner, group);
+    e = errno;
+    if (e != ENOSYS && e != EPERM && e != EACCES)
+        return -1;
+    if (stat(path, &st) != 0)
+        return -1;
+    if ((owner == (uid_t)-1 || owner == st.st_uid) && (group == (gid_t)-1 || group == st.st_gid))
+        return 0;
+    errno = e;
+    return -1;
 }
 
 /* memchr() and strncpy() that read no byte past their buffer (UPSTREAM.md

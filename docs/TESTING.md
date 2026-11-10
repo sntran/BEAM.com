@@ -218,7 +218,7 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 | `tests/programs/ssh_agent_check.escript` | Windows only (`tests/run.ps1`): the service `ssh-agent` of Windows OpenSSH with a new key, and the helper program `ssh_agent_bridge` on its named pipe. The keys of the agent, and a signature of the git client (`beam_com_git_ssh:sign/3`). |
 | Phoenix on Windows (`tests/run.ps1`) | A new app (`mix phx.new hello --no-ecto`) in one file with `beam.com . -o`: the tailwind and esbuild programs for Windows, the git deps, and `priv` through a link to a directory (C54). Then the file serves the start page and its digested CSS. |
 | `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, 1000000 lines in one write, also to a reader that starts to read after 3 s, `ERL_FLAGS`. |
-| `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. |
+| `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. Also `chown()` to the owner that a file already has (C28): on Linux the setuid and setgid bits go, as with the `chown()` of the system; in the sandbox of Linux and on Windows the call gives `ok`. |
 | `tests/programs/jit_maps.erl` | No page of the JIT code is writable and executable. |
 | `tests/programs/elixir_check.ex` | A one-file Elixir program. |
 | `tests/programs/sqlite_check.erl` | SQLite: a database in memory and in a file. |

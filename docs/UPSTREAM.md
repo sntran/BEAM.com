@@ -756,14 +756,26 @@ not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
 gives `ENOSYS` on Windows for all values.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c` gives,
-for `-1` and `-1`: 0 when the path exists, else the error of `stat()`
-(`ENOENT`, on which `File.touch/1` makes the file). It does this on each
-system: the sandbox of Linux has no promise `chown`, so the call failed
-there too, and `file:change_mode/2` and `file:change_time/2` failed with
-it (#172). It also gives 0 for the owner and the group that the file
-already has: `File.cp/3` of Elixir copies the owner of the source, and
-`mix release` copies `config/runtime.exs` with it.
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c`
+calls the real `chown()` first. Where the system permits the call, the
+result is that of the system: for example, Linux clears the setuid and
+setgid bits of the file. When the system refuses the call with
+`ENOSYS`, `EPERM` or `EACCES`, and the call changes no owner and no
+group, the wrap gives 0 when the path exists, else the error of
+`stat()` (`ENOENT`, on which `File.touch/1` makes the file). The
+refusals are:
+
+- `ENOSYS` of Cosmopolitan on Windows.
+- `EPERM` of the sandbox of Linux, which has no promise `chown`
+  (#172). Before the wrap, `file:change_mode/2` and
+  `file:change_time/2` failed with it.
+- The sandboxes of macOS (Seatbelt) and of OpenBSD (`unveil()`), which
+  can refuse the call too.
+
+`File.cp/3` of Elixir copies the owner of the source, and `mix release`
+copies `config/runtime.exs` with it. `tests/run.sh` checks the bits on
+Linux (`sandbox_check setid`) and the call in the sandbox, and
+`tests/run.ps1` checks the call on Windows.
 
 **Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
 return 0 for `-1` and `-1`, and for the owner and the group of the file,
