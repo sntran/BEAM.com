@@ -400,16 +400,18 @@ int beam_com_zip_cache_dir(char *out, size_t size)
     return 0;
 }
 
-/* mkdir -p with mode 0700 for each directory that it makes. */
+/* mkdir -p with mode 0700 for each directory that it makes. On Windows,
+ * "\\" is a separator too. */
 static void zip_make_dirs(char *path)
 {
-    char *p;
+    char *p, c;
 
     for (p = path + 1; *p; p++) {
-        if (*p == '/') {
+        if (*p == '/' || (IsWindows() && *p == '\\')) {
+            c = *p;
             *p = '\0';
             mkdir(path, 0700);
-            *p = '/';
+            *p = c;
         }
     }
     mkdir(path, 0700);
