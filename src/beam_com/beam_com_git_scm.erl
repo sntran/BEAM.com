@@ -14,7 +14,7 @@
          lock_status/1, 'equal?'/2, managers/1, checkout/1, update/1]).
 
 -ifdef(TEST).
--export([lock_opts/1, lock_rev/2, rev_spec/1, checkout_info/1]).
+-export([lock_opts/1, lock_rev/2, rev_spec/1, checkout_info/1, checkout/2]).
 -endif.
 
 'fetchable?'() ->
@@ -66,6 +66,10 @@ lock_status(Opts) ->
     end.
 
 checkout(Opts) ->
+    checkout(Opts, #{}).
+
+%% GitOpts: the options of beam_com_git (for the tests).
+checkout(Opts, GitOpts) ->
     Shell = 'Elixir.Mix':shell(),
     Shell:print_app(),
     Url = proplists:get_value(git, Opts),
@@ -73,10 +77,10 @@ checkout(Opts) ->
     _ = file:del_dir_r(Dir),
     try
         Rev = case lock_rev(proplists:get_value(lock, Opts), Opts) of
-                  nil -> beam_com_git:resolve(Url, rev_spec(Opts), #{});
+                  nil -> beam_com_git:resolve(Url, rev_spec(Opts), GitOpts);
                   Locked -> Locked
               end,
-        Objects = beam_com_git:fetch(Url, Rev, #{}),
+        Objects = beam_com_git:fetch(Url, Rev, GitOpts),
         ok = beam_com_git:checkout(Objects, Rev, Dir,
                                    #{url => Url,
                                      sparse => case proplists:get_value(sparse, Opts) of

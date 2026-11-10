@@ -1010,6 +1010,49 @@ defmodule BeamComGitTest do
       assert nil == :beam_com_git_scm.accepts_options(:a, path: "x", dest: "d")
     end
 
+    test "checkout/2: the ref of the options, else the commit of the lock", %{tmp_dir: dir} do
+      {_pack, commit} = repo = BeamCom.GitFixture.repo([{"lib/a.ex", "A\n"}])
+      test = self()
+
+      http = fn method, url, headers, body, max ->
+        if match?({_, b} when is_binary(b), body) and elem(body, 1) =~ "ls-refs",
+          do: send(test, :ls_refs)
+
+        BeamCom.GitFixture.server(repo, ["refs/tags/v1"]).(method, url, headers, body, max)
+      end
+
+      out = Path.join(dir, "deps/a")
+      dest = Path.join(dir, "dest")
+      opts = [git: @url, tag: "v1", checkout: out, dest: dest, lock: nil]
+
+      {lock, _} =
+        ExUnit.CaptureIO.with_io(fn -> :beam_com_git_scm.checkout(opts, %{http: http}) end)
+
+      assert {:git, @url, ^commit, [tag: "v1"]} = lock
+      assert_receive :ls_refs, 5000
+      assert "A\n" == File.read!(Path.join(out, "lib/a.ex"))
+      assert File.dir?(dest)
+      assert :beam_com_git_scm.checked_out?(opts)
+      assert :ok == :beam_com_git_scm.lock_status(Keyword.put(opts, :lock, lock))
+
+      # The commit of the lock: no list of refs.
+      ExUnit.CaptureIO.with_io(fn ->
+        :beam_com_git_scm.checkout(Keyword.put(opts, :lock, lock), %{http: http})
+      end)
+
+      refute_receive :ls_refs, 200
+    end
+
+    test "update/1: an error of the client is an error of Mix", %{tmp_dir: dir} do
+      # A lock with a commit that is not 40 hex digits: the client stops
+      # before a request.
+      opts = [git: @url, checkout: dir, dest: dir, lock: {:git, @url, "main", []}]
+
+      assert_raise Mix.Error, ~r/\(the git client of beam\.com\): .*not a commit: main/, fn ->
+        ExUnit.CaptureIO.with_io(fn -> :beam_com_git_scm.update(opts) end)
+      end
+    end
+
     test "checked_out?, lock_status, and the functions of Mix.SCM.Git", %{tmp_dir: dir} do
       opts = [git: @url, dest: dir, checkout: dir]
       refute :beam_com_git_scm.checked_out?(opts)
