@@ -183,7 +183,12 @@ int __wrap_mkdir(const char *path, mode_t mode)
  * stat() (ENOENT, on which File.touch/1 makes the file). The same for the
  * owner and the group that the file already has: File.cp/3 of Elixir
  * copies the owner of the source (a copy of the same user, for example
- * in "mix release"). */
+ * in "mix release").
+ *
+ * On each system: the sandbox of Linux refuses chown() too. On Linux, a
+ * real chown() to the same owner clears the setuid and setgid bits; this
+ * wrap keeps them. No owner changes, so no other user gets these bits,
+ * and write_file_info/2 sets the mode after the owner. */
 int __real_chown(const char *path, uid_t owner, gid_t group);
 
 int __wrap_chown(const char *path, uid_t owner, gid_t group)
