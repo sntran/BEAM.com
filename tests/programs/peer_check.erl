@@ -19,6 +19,13 @@
 %%   cmd hello
 %%   slow reader 200000
 %%
+%% Then the bytes that a port program gets when the VM halts right after a
+%% write of 4097 bytes, and the program reads only after 300 ms. On
+%% Windows, the pipe holds 4096 bytes, and 1 byte waits in the pipe at the
+%% halt (docs/UPSTREAM.md, C16):
+%%
+%%   halt reader 4097
+%%
 %% Then, on Windows only, a native port program that waits in large reads
 %% (the free space of the write end of the pipe is then 0), and on each
 %% system a listen socket that a port program must not get,
@@ -42,6 +49,7 @@ main(_) ->
     exit_status(Exe),
     io:format("cmd ~ts~n", [string:trim(os:cmd("echo hello"))]),
     slow_reader(200000),
+    halt_reader(Exe),
     native_reader(),
     closed_socket(Exe),
     find_executable(),
@@ -164,6 +172,39 @@ slow_output(Port, Acc) ->
     after 60000 ->
             io:format("slow reader: no end in 60 s~n"),
             erlang:halt(1)
+    end.
+
+%% A node that writes 4097 bytes to a port program and halts at once. The
+%% program reads its input after 300 ms, and writes the number of bytes to
+%% a file.
+halt_reader(Exe) ->
+    Dir = filename:dirname(Exe),
+    File = filename:join(Dir, "peer_check_halt.txt"),
+    _ = file:delete(File),
+    Code = lists:flatten(
+             io_lib:format("P = open_port({spawn, \"sh -c 'sleep 0.3; wc -c > peer_check_halt.txt'\"},"
+                           " [binary, use_stdio, {cd, ~p}]),"
+                           " port_command(P, binary:copy(<<\"h\">>, 4097)), halt().", [Dir])),
+    Port = erl_port(Exe, Code, []),
+    _ = port_output(Port, [], "halt reader"),
+    Count = halt_count(File, erlang:monotonic_time(millisecond) + 60000),
+    _ = file:delete(File),
+    io:format("halt reader ~ts~n", [Count]).
+
+%% The content of FILE when it has a complete line, or a text at the end
+%% of the time.
+halt_count(File, End) ->
+    case file:read_file(File) of
+        {ok, <<_, _/binary>> = Data} when binary_part(Data, byte_size(Data), -1) =:= <<"\n">> ->
+            string:trim(Data);
+        _ ->
+            case erlang:monotonic_time(millisecond) > End of
+                true ->
+                    <<"no count in 60 s">>;
+                false ->
+                    timer:sleep(10),
+                    halt_count(File, End)
+            end
     end.
 
 %% The own file in erl mode, which stops with the status 3.
