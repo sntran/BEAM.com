@@ -208,7 +208,7 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 | `tests/cosmo/pipe_check.c` | The wraps of `c_src/cosmo/beam_com_pipe.c`: on Windows, a write to a non-blocking pipe gives at most its free space, a full pipe takes 1 byte that waits and then gives `EAGAIN`, it is not writable for `select()` and uses no CPU, and 1 MB through the pipe arrives in order. Blocking readers with reads of 1, 4095, 4096 and 65536 bytes get all the data, the reader gets the byte that waits after the close of the write end, and a write after the close of the read end gives `EPIPE`. At the exit of a writer with a byte that waits, a reader that reads 300 ms late gets all of 4097 bytes, a reader that never reads holds the exit for 2 s at most, and with no byte that waits the exit does not wait. `scripts/steps.sh test` runs it on Linux (only the data); the build job of CI makes `pipe_check.com` for `tests/run.ps1`. |
 | `tests/programs/ssh_agent_check.escript` | Windows only (`tests/run.ps1`): the service `ssh-agent` of Windows OpenSSH with a new key, and the helper program `ssh_agent_bridge` on its named pipe. The keys of the agent, and a signature of the git client (`beam_com_git_ssh:sign/3`). |
 | Phoenix on Windows (`tests/run.ps1`) | A new app (`mix phx.new hello --no-ecto`) in one file with `beam.com . -o`: the tailwind and esbuild programs for Windows, the git deps, and `priv` through a link to a directory (C54). Then the file serves the start page and its digested CSS. |
-| `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS`. |
+| `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, 1000000 lines in one write, also to a reader that starts to read after 3 s, `ERL_FLAGS`. |
 | `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. |
 | `tests/programs/jit_maps.erl` | No page of the JIT code is writable and executable. |
 | `tests/programs/elixir_check.ex` | A one-file Elixir program. |
@@ -233,7 +233,11 @@ probe on the other Unix systems).
 
 `tests/run.ps1` needs PowerShell 7.3 or later. It keeps the tree of the
 processes that each check starts, and it stops and shows each one that
-still runs after the check. In CI (`GITHUB_ACTIONS`), a check of
+still runs after the check. It reads the output of a check on the reader
+threads of .NET, and it waits for the end of each stream (30 s at most).
+The events of `Register-ObjectEvent -Action` run only between the
+statements of the script. So after the end of a long output, a part of it
+stayed in the queue of events, and a check failed by chance. In CI (`GITHUB_ACTIONS`), a check of
 `tests/run.ps1` that cannot run, for example with no `pipe_check.com` or
 no service `ssh-agent`, is a failed check. The Phoenix checks of both
 scripts install the fixed `phx_new` 1.8.16, because a new version can

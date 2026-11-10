@@ -64,6 +64,11 @@ notes of its release.
 - CI builds a new Phoenix app on Windows with `beam.com . -o FILE`, and
   gets the start page and the digested CSS of the file. It also checks
   the SSH agent of Windows OpenSSH.
+- `tests/run.ps1` reads the output of a check on the reader threads of
+  .NET, and waits for the end of each stream. Before, it read the events
+  of PowerShell, and a part of a long output could stay in their queue:
+  the check "script_check.b.com big" failed by chance. A new check sends
+  1000000 lines to a reader that starts after 3 s.
 - `tests/run.ps1` needs PowerShell 7.3 or later. It stops each process
   that a check started and that still runs, and it removes the key and
   puts back the service `ssh-agent` at the end of its check. In CI, a
