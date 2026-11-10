@@ -22,7 +22,7 @@
  * message.
  *
  * The check is the library sha1collisiondetection of Marc Stevens and Dan
- * Shumow (c_src/sha1dc/, MIT License), the check of git. The program uses
+ * Shumow (c_src/cosmo/sha1dc/, MIT License), the check of git. The program uses
  * its defaults: the safe hash mode and the check of unavoidable bit
  * conditions (UBC) are on.
  *
