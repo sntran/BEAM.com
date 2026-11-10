@@ -52,6 +52,38 @@ defmodule BeamComMixTest do
                :beam_com_mix.reasons(dir, config)
     end
 
+    test "deps of an organization or of another Hex repository", %{dir: dir} do
+      config = [
+        app: :a,
+        deps: [
+          {:jason, "~> 1.4", repo: "hexpm"},
+          {:priv, "~> 1.0", organization: "acme"},
+          {:mine, "~> 1.0", repo: "my_repo"},
+          {:dev_priv, "~> 1.0", organization: "acme", only: :dev}
+        ]
+      ]
+
+      assert [{:repo, [:mine, :priv]}] == :beam_com_mix.reasons(dir, config)
+
+      # The lock: a package of an organization that a dep needs. A lock
+      # entry of a dep only for :dev is not a reason.
+      write(dir, ~c"mix.lock", """
+      %{
+        "dep_of_priv": {:hex, :dep_of_priv, "1.0.0", "aa", [:mix], [], "hexpm:acme", "bb"},
+        "dev_priv": {:hex, :dev_priv, "1.0.0", "aa", [:mix], [], "hexpm:acme", "bb"},
+        "jason": {:hex, :jason, "1.4.4", "aa", [:mix], [], "hexpm", "bb"},
+        "old": {:hex, :old, "1.0.0", "aa"},
+        "credo": {:git, "https://example.com/credo.git", "abc", []},
+      }
+      """)
+
+      deps = [{:jason, "~> 1.4"}, {:dev_priv, "~> 1.0", organization: "acme", only: :dev}]
+      assert [{:repo, [:dep_of_priv]}] == :beam_com_mix.reasons(dir, app: :a, deps: deps)
+
+      write(dir, ~c"mix.lock", "%{")
+      assert [] == :beam_com_mix.reasons(dir, app: :a, deps: [{:jason, "~> 1.4"}])
+    end
+
     test "reasons/1 reads mix.exs", %{dir: dir} do
       write(
         dir,
@@ -440,11 +472,13 @@ defmodule BeamComMixTest do
 
     test "why: the reasons in the line of the build" do
       assert "config/runtime.exs, deps that are not Hex packages: a b, " <>
+               "deps of a Hex repository other than hex.pm: p, " <>
                "the compilers of mix.exs, the alias assets.deploy, --tool mix-release" ==
                IO.iodata_to_binary(
                  :beam_com_build.why([
                    :runtime_exs,
                    {:deps, [:a, :b]},
+                   {:repo, [:p]},
                    :compilers,
                    :"assets.deploy",
                    :tool

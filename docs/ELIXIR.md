@@ -28,8 +28,8 @@ beam.com hello.ex -- Alice             # or run it
   `:registered` of `application/0`. The Erlang files are compiled
   first, then the Elixir files. `config/config.exs` becomes the
   `sys.config` of the release (with `Config.Reader`, env `:prod`).
-- **Deps** are Hex packages, in Erlang (rebar3, make) or in Elixir (Mix),
-  as for rebar3 projects (see "Hex packages" in
+- **Deps** are Hex packages of hex.pm, in Erlang (rebar3, make) or in
+  Elixir (Mix), as for rebar3 projects (see "Hex packages" in
   [`PROGRAMS.md`](PROGRAMS.md)), with `mix.lock` (in the
   format of Mix) in place of `rebar.lock`. Deps `only: :dev` or
   `:test` and `optional: true` are left out; `runtime: false` deps are
@@ -40,8 +40,10 @@ beam.com hello.ex -- Alice             # or run it
   40 ms slower ([`BENCHMARKS.md`](BENCHMARKS.md)).
 - **A Mix project that needs Mix**: for a project with
   `config/runtime.exs`, a dep that is not a Hex package (`git:`,
-  `github:`, `path:`), `:compilers` in `project/0`, or the alias
-  `assets.deploy`, the builder does not compile the project itself.
+  `github:`, `path:`), a dep of a Hex organization or of another Hex
+  repository (`organization:`, `repo:`, or such an entry in `mix.lock`),
+  `:compilers` in `project/0`, or the alias `assets.deploy`, the
+  builder does not compile the project itself.
   Mix gets the deps, compiles the project, runs `assets.deploy`, and
   makes a release. Then the builder makes the file from that release.
   A new Phoenix app has all four. See "Phoenix in one file" below.
@@ -211,8 +213,9 @@ PHX_SERVER=true SECRET_KEY_BASE=... DATABASE_URL=... ./hello.com
 ```
 
 A project with `config/runtime.exs`, a dep that is not a Hex package,
-`:compilers` in `project/0`, or the alias `assets.deploy` needs Mix
-itself. A new Phoenix app has all four. For such a project, the builder
+a dep of a Hex organization or of another Hex repository, `:compilers`
+in `project/0`, or the alias `assets.deploy` needs Mix itself. Mix uses
+your Hex client and your keys of Hex for a private package. A new Phoenix app has all four. For such a project, the builder
 writes one line with the reasons. Then a child `beam.com` runs Mix, in
 the directory of the project and with your environment:
 

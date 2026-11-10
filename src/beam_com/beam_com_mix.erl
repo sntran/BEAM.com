@@ -42,10 +42,16 @@ reasons(Dir) ->
     reasons(Dir, beam_com_elixir:mix_config(Dir)).
 
 reasons(Dir, Config) ->
-    Deps = [Name || {Name, Opts} <- dep_opts(proplists:get_value(deps, Config, [])),
-                    in_prod(Opts), not_hex(Opts)],
+    All = dep_opts(proplists:get_value(deps, Config, [])),
+    Deps = [Name || {Name, Opts} <- All, in_prod(Opts), not_hex(Opts)],
+    %% The own Hex client gets only packages of hex.pm. A lock entry of
+    %% another repository can be of a dep of a private package.
+    NotProd = [Name || {Name, Opts} <- All, not in_prod(Opts)],
+    Repo = lists:usort([Name || {Name, Opts} <- All, in_prod(Opts), other_repo(Opts)]
+                       ++ (lock_repos(Dir) -- NotProd)),
     [runtime_exs || filelib:is_regular(filename:join([Dir, "config", "runtime.exs"]))]
         ++ [{deps, Deps} || Deps =/= []]
+        ++ [{repo, Repo} || Repo =/= []]
         ++ [compilers || proplists:is_defined(compilers, Config)]
         ++ ['assets.deploy' || has_alias(Config, 'assets.deploy')].
 
@@ -488,6 +494,30 @@ in_env(Opts, Env) ->
     case proplists:get_value(only, Opts, Env) of
         Only when is_list(Only) -> lists:member(Env, Only);
         Only -> Only =:= Env
+    end.
+
+%% A Hex package of an organization, or of a repository other than
+%% hex.pm.
+other_repo(Opts) ->
+    proplists:is_defined(organization, Opts)
+        orelse lists:member(proplists:get_value(repo, Opts, <<"hexpm">>), [<<"hexpm">>, "hexpm"])
+        =:= false.
+
+%% The entries of mix.lock in Dir of a Hex repository other than hex.pm
+%% (the element 7 of an entry, for example "hexpm:acme"). A lock that
+%% Mix cannot read gives [], and the build gives the error.
+lock_repos(Dir) ->
+    try
+        {ok, Text} = file:read_file(filename:join(Dir, "mix.lock")),
+        {ok, Quoted} = 'Elixir.Code':string_to_quoted(Text, [{emit_warnings, false}]),
+        {Map, _} = 'Elixir.Code':eval_quoted(Quoted, []),
+        [case Name of
+             _ when is_atom(Name) -> Name;
+             _ -> binary_to_atom(Name)
+         end || Name := Entry <- Map, is_tuple(Entry), tuple_size(Entry) >= 7,
+                element(1, Entry) =:= hex, not lists:member(element(7, Entry), [<<"hexpm">>, nil])]
+    catch
+        _:_ -> []
     end.
 
 not_hex(Opts) ->

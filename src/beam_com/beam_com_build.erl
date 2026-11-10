@@ -116,6 +116,8 @@ why(Reasons) ->
                           runtime_exs -> "config/runtime.exs";
                           {deps, Deps} -> ["deps that are not Hex packages: ",
                                            lists:join(" ", [atom_to_list(D) || D <- Deps])];
+                          {repo, Deps} -> ["deps of a Hex repository other than hex.pm: ",
+                                           lists:join(" ", [atom_to_list(D) || D <- Deps])];
                           compilers -> "the compilers of mix.exs";
                           'assets.deploy' -> "the alias assets.deploy"
                       end || R <- Reasons]).

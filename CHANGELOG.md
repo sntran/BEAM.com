@@ -7,8 +7,9 @@ notes of its release.
 
 - `beam.com DIR -o FILE` makes one file from a Phoenix app, with no Mix
   task first. A Mix project with `config/runtime.exs`, a dep that is not
-  a Hex package (git, github, path), `:compilers`, or the alias
-  `assets.deploy` needs Mix itself. For it, a child `beam.com`
+  a Hex package (git, github, path), a dep of a Hex organization or of
+  another Hex repository, `:compilers`, or the alias `assets.deploy`
+  needs Mix itself. For it, a child `beam.com`
   (`beam_com_mix`) runs Mix in the project, with the environment of the
   user: `deps.get`, `compile`, `assets.deploy`, and `release` with
   `include_erts: false`. Then the builder makes the file from the
