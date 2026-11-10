@@ -2,13 +2,15 @@
  * The checks of c_src/cosmo/beam_com_pipe.c: the writes and select() of
  * a non-blocking pipe.
  *
- * - On Windows, a write gives at most the free space of the pipe, a full
- *   pipe gives EAGAIN and is not writable for select(), and the CPU stays
- *   free while the pipe is full.
+ * - On Windows, a write gives at most the free space of the pipe. To a
+ *   full pipe, a write gives 1 byte that waits in the pipe, then EAGAIN.
+ *   select() does not report the pipe while the byte waits, and the CPU
+ *   stays free.
  * - A blocking reader that waits in a read of 1, 4095, 4096 or 65536
  *   bytes gets all the data. On Windows, this reader makes the free space
- *   of the write end smaller, also to 0 for an empty pipe: the wraps use
- *   the query handle of the read end (beam_com_pipe_reader()).
+ *   of the write end smaller, also to 0 for an empty pipe.
+ * - After the close of the write end, the reader gets the byte that waits,
+ *   and then the end of the file.
  * - After the reader closes its end, a write gives EPIPE, also when
  *   another handle of the read end stays open until then.
  *
@@ -131,7 +133,6 @@ static void blocking_reader(size_t size, int late_ms)
 
     CHECK(pipe(fds) == 0);
     CHECK(fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0);
-    beam_com_pipe_reader(fds[1], fds[0]);
     r.fd = fds[0];
     r.size = size;
     r.late_ms = late_ms;
@@ -190,13 +191,16 @@ int main(void)
     CHECK(pipe(fds) == 0);
     CHECK(fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0);
     CHECK(fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0);
-    beam_com_pipe_reader(fds[1], fds[0]);
 
     if (IsWindows()) {
         /* Cosmopolitan makes a pipe of 4 KiB. */
         n = __wrap_write(fds[1], data, 10000);
         CHECK(n == 4096);
         sent = n > 0 ? n : 0;
+        /* One byte waits in the pipe, then EAGAIN. */
+        n = __wrap_write(fds[1], data + sent, 100);
+        CHECK(n == 1);
+        sent += n > 0 ? n : 0;
         CHECK(__wrap_write(fds[1], data + sent, 100) == -1 && errno == EAGAIN);
         full_pipe(fds[1]);
     }
@@ -224,16 +228,33 @@ int main(void)
         blocking_reader(sizes[i], 300);
     }
 
+    /* The close of the write end while a byte waits: the reader gets the
+     * byte, then the end of the file. */
+    if (IsWindows()) {
+        static unsigned char in[8192];
+        size_t got = 0;
+        CHECK(pipe(fds) == 0);
+        CHECK(fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0);
+        CHECK(__wrap_write(fds[1], data, 4096) == 4096);
+        CHECK(__wrap_write(fds[1], data + 4096, 100) == 1);
+        beam_com_pipe_forget(fds[1]);
+        close(fds[1]);
+        while ((n = read(fds[0], in + got, sizeof(in) - got)) > 0)
+            got += n;
+        CHECK(n == 0);
+        CHECK(got == 4097);
+        CHECK(memcmp(in, data, got) == 0);
+        close(fds[0]);
+    }
+
     /* The reader closes its end: EPIPE, for an empty and a full pipe,
-     * with and with no query handle. With a second handle of the read end
+     * also with a byte that waits. With a second handle of the read end
      * (dup()), the writes go on until its close. */
-    for (i = 0; i < 6; i++) {
+    for (i = 0; i < 4; i++) {
         int other = -1;
         CHECK(pipe(fds) == 0);
         CHECK(fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0);
         if (i >= 2)
-            beam_com_pipe_reader(fds[1], fds[0]);
-        if (i >= 4)
             CHECK((other = dup(fds[0])) >= 0);
         if (i & 1)
             while (__wrap_write(fds[1], data, 4096) > 0)

@@ -31,9 +31,9 @@ notes of its release.
   write to a pipe of Cosmopolitan on Windows can lose data, and they do
   not report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
   them on Windows. Windows gives a free space of 0 while the program
-  waits in a read of 4 KiB or more, so the wraps get the free space from
-  the read end of the pipe. Thus a write reaches a native program such
-  as `python`, `git` or `findstr`.
+  waits in a read of 4 KiB or more, so for 0 the wraps write 1 byte that
+  can wait in the pipe. Thus a write reaches a native program such as
+  `python`, `git` or `findstr`.
 - On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
   the ends of its pipes. Before, it also got each socket and file of the
   VM, so a closed connection stayed open until the program stopped.

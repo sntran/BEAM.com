@@ -14,31 +14,31 @@
  *
  * The wraps of write(), writev() and select() (PIPE_WRAPS of
  * scripts/steps.sh) fix both for the write end of a non-blocking pipe.
- * The free space of the pipe comes from NtQueryInformationFile().
- * write() and writev() write at most that number of bytes, so the
- * WriteFile() of Cosmopolitan completes at once, and they give EAGAIN for
- * a full pipe. select() does not report a full pipe: it waits in steps of
- * at most PIPE_STEP_MS, and reports the pipe when it has space again. On
- * the other systems, and for other files, the wraps only call the
- * functions of the libc.
+ * The free space of the pipe comes from NtQueryInformationFile()
+ * (WriteQuotaAvailable). write() and writev() write at most that number
+ * of bytes, so the WriteFile() of Cosmopolitan completes at once. On the
+ * other systems, and for other files, the wraps only call the functions
+ * of the libc.
  *
- * The free space of the write end (WriteQuotaAvailable) is not correct
- * when a reader waits: Windows subtracts the size of the read that waits.
+ * Windows subtracts the size of a read that waits from this free space.
  * A reader that waits for 4096 bytes or more on an empty pipe gives 0, as
- * a full pipe does. A write of 1 byte to find the difference is not safe:
- * Windows can cancel it after the reader took the byte, and then the
- * caller writes the byte again. So, as Cygwin, the spawn driver gives the
- * read end of the pipe of each port program to beam_com_pipe_reader().
- * It keeps a query handle of the read end, with FILE_READ_ATTRIBUTES
- * only. The free space is then InboundQuota - ReadDataAvailable of the
- * read end, which a read that waits does not change.
+ * a full pipe does. So, for the value 0, the wrap starts a write of 1
+ * byte with its own OVERLAPPED, and gives 1. To a reader that waits, this
+ * write completes at once, and the free space is correct again. To a full
+ * pipe, it waits in the pipe until the reader reads, as on Unix the data
+ * waits in the buffer of a pipe. The wrap never cancels it: Windows can
+ * cancel a write of a pipe after the reader took the byte, and report 0
+ * bytes, so the caller would write the byte two times. While the byte
+ * waits, a write gives EAGAIN, and select() does not report the pipe. It
+ * waits in steps of at most PIPE_STEP_MS, and reports the pipe when the
+ * write of the byte ends. So a full pipe uses no CPU.
  *
- * The query handle keeps the read end open. So when the handle count of
- * the read end is 1 (only the query handle), the wrap closes the query
- * handle, and the next write gives EPIPE. beam_com_pipe_forget() closes
- * it when the write end closes (__wrap_close() of beam_com.c). A pipe
- * with no query handle (for example the standard output of the emulator)
- * uses the free space of the write end.
+ * The close of the write end (__wrap_close() of beam_com.c calls
+ * beam_com_pipe_forget()) keeps a copy of the handle while the byte waits:
+ * a thread closes the copy after the end of the write. The reader thus
+ * gets the byte, and then the end of the file, as on Unix. The exit of
+ * the process cancels a write that waits: the reader does not get that
+ * byte.
  *
  * With BEAM_COM_PIPE_TEST, the file compiles for the test
  * tests/cosmo/pipe_check.c.
@@ -53,23 +53,27 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <cosmo.h>
 #include "libc/dce.h"
 #include "libc/intrin/fds.h"
-#include "libc/nt/enum/accessmask.h"
 #include "libc/nt/enum/fileinformationclass.h"
 #include "libc/nt/enum/filetype.h"
+#include "libc/nt/enum/wait.h"
+#include "libc/nt/errors.h"
+#include "libc/nt/events.h"
 #include "libc/nt/files.h"
-#include "libc/nt/enum/objectinformationclass.h"
 #include "libc/nt/nt/file.h"
-#include "libc/nt/ntdll.h"
 #include "libc/nt/runtime.h"
-#include "libc/nt/struct/objectbasicinformation.h"
+#include "libc/nt/struct/overlapped.h"
 #include "libc/nt/struct/filepipelocalinformation.h"
 #include "libc/nt/struct/iostatusblock.h"
+#include "libc/nt/synchronization.h"
 
 /* The longest wait of select() for a full pipe. */
 #define PIPE_STEP_MS 5
+/* The reads of the free space in one write(), at most. */
+#define PIPE_ROUNDS 4
 /* The parts of an iovec array that one writev() gives to the libc. */
 #define PIPE_IOV 64
 
@@ -81,164 +85,239 @@ int __real_select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
 ssize_t __wrap_write(int fd, const void *buf, size_t size);
 ssize_t __wrap_writev(int fd, const struct iovec *iov, int iovcnt);
 int __wrap_select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv);
-void beam_com_pipe_reader(int wfd, int rfd);
 void beam_com_pipe_forget(int fd);
 
-/* For each write end FD: its handle, and the query handle of its read
- * end. The lock guards the table, also while a query uses a handle. */
-static struct {
-    int64_t write;
-    int64_t query;
-} pipe_ends[FD_SETSIZE];
+/* A write of 1 byte that waits in a pipe. */
+struct pipe_byte {
+    struct NtOverlapped ov;
+    int64_t handle;
+    unsigned char byte;
+};
+
+/* For each fd: the write of 1 byte that waits, or NULL. The lock guards
+ * the table. */
+static struct pipe_byte *pipe_bytes[FD_SETSIZE];
 static pthread_mutex_t pipe_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* The write end of a pipe of Cosmopolitan on Windows. */
-static int pipe_write_end(int fd)
+static void pipe_byte_free(struct pipe_byte *b)
 {
+    CloseHandle(b->ov.hEvent);
+    free(b);
+}
+
+/* 1 while the write of 1 byte of FD waits. When it ended, the wrap frees
+ * it. With the pipe lock. */
+static int pipe_busy(int fd)
+{
+    struct pipe_byte *b;
+
+    if (fd < 0 || fd >= FD_SETSIZE || !(b = pipe_bytes[fd]))
+        return 0;
+    if (b->handle != g_fds.p[fd].handle) {
+        /* An old entry: the close of FD did not call the wrap. The write
+         * can still use the memory, so it stays. */
+        pipe_bytes[fd] = NULL;
+        return 0;
+    }
+    if (WaitForSingleObject(b->ov.hEvent, 0) == kNtWaitTimeout)
+        return 1;
+    /* The end of the write: also an error, for example a broken pipe. The
+     * next write then gets the error from the libc. */
+    pipe_bytes[fd] = NULL;
+    pipe_byte_free(b);
+    return 0;
+}
+
+/* The write of the first byte of BUF to the pipe FD with no free space: 1,
+ * or -1 and the error. With the pipe lock. */
+static ssize_t pipe_try_byte(int fd, const void *buf)
+{
+    struct pipe_byte *b;
+    int64_t h = g_fds.p[fd].handle;
+
+    if (fd >= FD_SETSIZE || !(b = calloc(1, sizeof(*b)))) {
+        errno = EAGAIN;
+        return -1;
+    }
+    if (!(b->ov.hEvent = CreateEvent(0, 1, 0, 0))) {
+        free(b);
+        errno = EAGAIN;
+        return -1;
+    }
+    b->handle = h;
+    b->byte = *(const unsigned char *)buf;
+    if (WriteFile(h, &b->byte, 1, 0, &b->ov)) {
+        pipe_byte_free(b); /* Done at once. */
+        return 1;
+    }
+    if (GetLastError() != kNtErrorIoPending) {
+        /* For example a broken pipe: the libc gives the error. */
+        pipe_byte_free(b);
+        return __real_write(fd, buf, 1);
+    }
+    pipe_bytes[fd] = b; /* The byte is in the pipe now. */
+    return 1;
+}
+
+/* The thread for a closed fd: it waits for the end of the write of its
+ * byte, then closes its copy of the handle. */
+static void *pipe_closer(void *arg)
+{
+    struct pipe_byte *b = arg;
+
+    WaitForSingleObject(b->ov.hEvent, -1u);
+    CloseHandle(b->handle);
+    pipe_byte_free(b);
+    return 0;
+}
+
+/* Before the close of FD: while its byte waits, a copy of the handle stays
+ * open until the end of the write. */
+void beam_com_pipe_forget(int fd)
+{
+    struct pipe_byte *b;
+    pthread_attr_t attr;
+    pthread_t t;
+    int64_t copy;
+
+    if (!IsWindows() || fd < 0 || fd >= FD_SETSIZE)
+        return;
+    pthread_mutex_lock(&pipe_lock);
+    if (!pipe_busy(fd)) {
+        pthread_mutex_unlock(&pipe_lock);
+        return;
+    }
+    b = pipe_bytes[fd];
+    pipe_bytes[fd] = NULL;
+    pthread_mutex_unlock(&pipe_lock);
+    if (!DuplicateHandle(GetCurrentProcess(), b->handle, GetCurrentProcess(),
+                         &copy, 0, 0, kNtDuplicateSameAccess))
+        return; /* The write can still use B, so it stays. */
+    b->handle = copy;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 65536);
+    if (pthread_create(&t, &attr, pipe_closer, b) != 0)
+        CloseHandle(copy); /* The write ends with the close; B stays. */
+    pthread_attr_destroy(&attr);
+}
+
+/* 1 when FD is the write end of a non-blocking pipe on Windows, with its
+ * free space in *quota. 0 for another file, and for a pipe that gives no
+ * free space (for example a broken pipe): the libc then gives the error. */
+static int pipe_quota(int fd, uint32_t *quota)
+{
+    struct NtFilePipeLocalInformation pi;
+    struct NtIoStatusBlock io;
     struct Fd *f;
 
     if (!IsWindows() || fd < 0 || (size_t)fd >= g_fds.n)
         return 0;
     f = g_fds.p + fd;
-    return f->kind == kFdFile && (f->flags & O_ACCMODE) == O_WRONLY &&
-           GetFileType(f->handle) == kNtFileTypePipe;
-}
-
-/* The pipe of WFD (the write end) and RFD (the read end): keep a query
- * handle of the read end. Before the close of RFD. */
-void beam_com_pipe_reader(int wfd, int rfd)
-{
-    int64_t query = 0;
-
-    if (!pipe_write_end(wfd) || wfd >= FD_SETSIZE || rfd < 0 ||
-        (size_t)rfd >= g_fds.n || g_fds.p[rfd].kind != kFdFile)
-        return;
-    if (!DuplicateHandle(GetCurrentProcess(), g_fds.p[rfd].handle,
-                         GetCurrentProcess(), &query, kNtFileReadAttributes,
-                         0, 0))
-        return; /* The free space of the write end. */
-    pthread_mutex_lock(&pipe_lock);
-    if (pipe_ends[wfd].query)
-        CloseHandle(pipe_ends[wfd].query);
-    pipe_ends[wfd].write = g_fds.p[wfd].handle;
-    pipe_ends[wfd].query = query;
-    pthread_mutex_unlock(&pipe_lock);
-}
-
-/* Before the close of FD. */
-void beam_com_pipe_forget(int fd)
-{
-    if (!IsWindows() || fd < 0 || fd >= FD_SETSIZE)
-        return;
-    pthread_mutex_lock(&pipe_lock);
-    if (pipe_ends[fd].query) {
-        CloseHandle(pipe_ends[fd].query);
-        pipe_ends[fd].query = 0;
-        pipe_ends[fd].write = 0;
-    }
-    pthread_mutex_unlock(&pipe_lock);
-}
-
-/* The free space of the pipe of the write end FD from its query handle:
- * 1, or 0 when FD has no query handle. With the pipe lock. */
-static int pipe_reader_space(int fd, int64_t handle, uint32_t *quota)
-{
-    struct NtFilePipeLocalInformation pi;
-    struct NtObjectBasicInformation ob;
-    struct NtIoStatusBlock io;
-    int64_t query;
-
-    if (fd >= FD_SETSIZE || !(query = pipe_ends[fd].query))
+    if (f->kind != kFdFile || !(f->flags & O_NONBLOCK) ||
+        (f->flags & O_ACCMODE) != O_WRONLY)
         return 0;
-    if (pipe_ends[fd].write != handle) {
-        /* An old entry (the close of FD did not call the wrap). */
-        CloseHandle(query);
-        pipe_ends[fd].query = 0;
+    if (GetFileType(f->handle) != kNtFileTypePipe)
         return 0;
-    }
-    memset(&ob, 0, sizeof(ob));
     memset(&pi, 0, sizeof(pi));
-    if (NtQueryObject((void *)query, kNtObjectBasicInformation, &ob,
-                      sizeof(ob), 0) != 0 || ob.HandleCount <= 1 ||
-        NtQueryInformationFile(query, &io, &pi, sizeof(pi),
-                               kNtFilePipeLocalInformation) != 0) {
-        /* No reader: the write end gives EPIPE when the read end closes. */
-        CloseHandle(query);
-        pipe_ends[fd].query = 0;
-        return 0;
-    }
-    *quota = pi.ReadDataAvailable < pi.InboundQuota
-                 ? pi.InboundQuota - pi.ReadDataAvailable : 0;
-    return 1;
-}
-
-/* 1 when FD is the write end of a non-blocking pipe on Windows, with its
- * free space in *quota: from the query handle of its read end, else from
- * the write end. 0 for another file, and for a pipe that gives no free
- * space (for example a broken pipe): the libc then gives the error. */
-static int pipe_quota(int fd, uint32_t *quota)
-{
-    struct NtFilePipeLocalInformation pi;
-    struct NtIoStatusBlock io;
-    int ok;
-
-    if (!pipe_write_end(fd) || !(g_fds.p[fd].flags & O_NONBLOCK))
-        return 0;
-    pthread_mutex_lock(&pipe_lock);
-    ok = pipe_reader_space(fd, g_fds.p[fd].handle, quota);
-    pthread_mutex_unlock(&pipe_lock);
-    if (ok)
-        return 1;
-    memset(&pi, 0, sizeof(pi));
-    if (NtQueryInformationFile(g_fds.p[fd].handle, &io, &pi, sizeof(pi),
+    if (NtQueryInformationFile(f->handle, &io, &pi, sizeof(pi),
                                kNtFilePipeLocalInformation) != 0)
         return 0;
     *quota = pi.WriteQuotaAvailable;
     return 1;
 }
 
+/* The first SKIP bytes of IOV are written: the next bytes, at most MAX,
+ * in at most PIPE_IOV parts in PART. The number of parts. */
+static int pipe_parts(const struct iovec *iov, int iovcnt, size_t skip,
+                      size_t max, struct iovec *part)
+{
+    int i, n = 0;
+
+    for (i = 0; i < iovcnt && max > 0 && n < PIPE_IOV; i++) {
+        if (iov[i].iov_len <= skip) {
+            skip -= iov[i].iov_len;
+            continue;
+        }
+        part[n].iov_base = (char *)iov[i].iov_base + skip;
+        part[n].iov_len = iov[i].iov_len - skip;
+        skip = 0;
+        if (part[n].iov_len > max)
+            part[n].iov_len = max;
+        max -= part[n].iov_len;
+        n++;
+    }
+    return n;
+}
+
+/* writev() of SIZE bytes (SIZE > 0) of IOV to the pipe FD, with its free
+ * space QUOTA. After a write, it reads the free space again, at most
+ * PIPE_ROUNDS times. */
+static ssize_t pipe_writev(int fd, const struct iovec *iov, int iovcnt,
+                           size_t size, uint32_t quota)
+{
+    struct iovec part[PIPE_IOV];
+    size_t done = 0;
+    ssize_t rc;
+    int round, n, busy;
+
+    pthread_mutex_lock(&pipe_lock);
+    busy = pipe_busy(fd);
+    pthread_mutex_unlock(&pipe_lock);
+    if (busy) {
+        errno = EAGAIN;
+        return -1;
+    }
+    for (round = 0; round < PIPE_ROUNDS && done < size; round++) {
+        if (round > 0 && !pipe_quota(fd, &quota))
+            break;
+        if (quota == 0 && done > 0)
+            break;
+        n = pipe_parts(iov, iovcnt, done, quota ? quota : 1, part);
+        if (n == 0)
+            break;
+        if (quota) {
+            rc = __real_writev(fd, part, n);
+        } else {
+            pthread_mutex_lock(&pipe_lock);
+            rc = pipe_try_byte(fd, part[0].iov_base);
+            busy = rc > 0 && pipe_bytes[fd];
+            pthread_mutex_unlock(&pipe_lock);
+        }
+        if (rc <= 0)
+            return done > 0 ? (ssize_t)done : rc;
+        done += rc;
+        if (quota == 0 && busy)
+            break; /* The byte waits in the pipe. */
+    }
+    return done;
+}
+
 ssize_t __wrap_write(int fd, const void *buf, size_t size)
 {
+    struct iovec iov;
     uint32_t quota;
 
     if (size == 0 || !pipe_quota(fd, &quota))
         return __real_write(fd, buf, size);
-    if (quota == 0) {
-        errno = EAGAIN;
-        return -1;
-    }
-    return __real_write(fd, buf, size < quota ? size : quota);
+    iov.iov_base = (void *)buf;
+    iov.iov_len = size;
+    return pipe_writev(fd, &iov, 1, size, quota);
 }
 
 ssize_t __wrap_writev(int fd, const struct iovec *iov, int iovcnt)
 {
-    struct iovec part[PIPE_IOV];
     uint32_t quota;
-    size_t left;
-    int i, n = 0;
+    size_t size = 0;
+    int i;
 
     if (iovcnt <= 0 || !pipe_quota(fd, &quota))
         return __real_writev(fd, iov, iovcnt);
-    /* The first QUOTA bytes, in at most PIPE_IOV parts. */
-    left = quota;
-    for (i = 0; i < iovcnt && left > 0 && n < PIPE_IOV; i++) {
-        if (iov[i].iov_len == 0)
-            continue;
-        part[n] = iov[i];
-        if (part[n].iov_len > left)
-            part[n].iov_len = left;
-        left -= part[n].iov_len;
-        n++;
-    }
-    if (n == 0) {
-        for (i = 0; i < iovcnt && iov[i].iov_len == 0; i++)
-            ;
-        if (i == iovcnt) /* No data: as the libc. */
-            return __real_writev(fd, iov, iovcnt);
-        errno = EAGAIN;
-        return -1;
-    }
-    return __real_writev(fd, part, n);
+    for (i = 0; i < iovcnt; i++)
+        size += iov[i].iov_len;
+    if (size == 0) /* No data: as the libc. */
+        return __real_writev(fd, iov, iovcnt);
+    return pipe_writev(fd, iov, iovcnt, size, quota);
 }
 
 static int64_t now_ms(void)
@@ -248,12 +327,25 @@ static int64_t now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* 1 when FD is the write end of a pipe with a byte that waits. */
+static int pipe_waits(int fd)
+{
+    uint32_t quota;
+    int busy;
+
+    if (!pipe_quota(fd, &quota))
+        return 0;
+    pthread_mutex_lock(&pipe_lock);
+    busy = pipe_busy(fd);
+    pthread_mutex_unlock(&pipe_lock);
+    return busy;
+}
+
 int __wrap_select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
 {
     fd_set held, r0, w0, e0;
     struct timeval step;
     int64_t end = 0, left;
-    uint32_t quota;
     int fd, nheld = 0, rc, more, lim;
 
     if (!IsWindows() || !w || nfds <= 0)
@@ -261,7 +353,7 @@ int __wrap_select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
     lim = nfds > FD_SETSIZE ? FD_SETSIZE : nfds;
     FD_ZERO(&held);
     for (fd = 0; fd < lim; fd++)
-        if (FD_ISSET(fd, w) && pipe_quota(fd, &quota) && quota == 0) {
+        if (FD_ISSET(fd, w) && pipe_waits(fd)) {
             FD_CLR(fd, w);
             FD_SET(fd, &held);
             nheld++;
@@ -292,7 +384,7 @@ int __wrap_select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
             return rc;
         more = 0;
         for (fd = 0; fd < lim; fd++)
-            if (FD_ISSET(fd, &held) && (!pipe_quota(fd, &quota) || quota > 0)) {
+            if (FD_ISSET(fd, &held) && !pipe_waits(fd)) {
                 FD_SET(fd, w);
                 more++;
             }

@@ -4,14 +4,12 @@ there. The spawn driver starts each program itself with posix_spawn()
 (beam_com_spawn_nt() of c_src/cosmo/beam_com.c), and a thread for each
 program gives its exit status to the forker port. The write end of a
 port is non-blocking, as on Unix (with the wraps of
-c_src/cosmo/beam_com_pipe.c). The driver gives the read end of the
-input pipe to beam_com_pipe_reader(), because the free space of the
-write end is 0 while the program waits in a large read. os.erl: with
+c_src/cosmo/beam_com_pipe.c). os.erl: with
 {unix, windows}, find_executable/1 tries the suffixes of Windows (.exe).
 See C16 of docs/UPSTREAM.md.
 
 diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
-index 9b43418..815fad0 100644
+index 9b43418..6e67477 100644
 --- a/erts/emulator/sys/unix/sys_drivers.c
 +++ b/erts/emulator/sys/unix/sys_drivers.c
 @@ -118,6 +118,9 @@ typedef struct driver_data {
@@ -70,7 +68,7 @@ index 9b43418..815fad0 100644
      if (beam_com_no_forker) {
          errno = beam_com_no_forker;
          return ERL_DRV_ERROR_ERRNO;
-@@ -748,6 +768,238 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
+@@ -748,6 +768,230 @@ static ErlDrvData spawn_start(ErlDrvPort port_num, char* name,
  #undef CMD_LINE_PREFIX_STR_SZ
  }
  
@@ -94,10 +92,6 @@ index 9b43418..815fad0 100644
 + *   forker port gives it to the spawn port, as for erl_child_setup.
 + */
 +#include <pthread.h>
-+
-+/* c_src/cosmo/beam_com_pipe.c: a query handle of the read end of the
-+ * input pipe of the program, for the free space of the pipe. */
-+void beam_com_pipe_reader(int wfd, int rfd) __attribute__((__weak__));
 +
 +struct spawn_wait_nt {
 +    int pid;
@@ -196,13 +190,9 @@ index 9b43418..815fad0 100644
 +    /* Non-blocking, as on Unix. A non-blocking write to a pipe of
 +     * Cosmopolitan on Windows that does not fit in the pipe can lose data,
 +     * and select() reports a full pipe as writable. The wraps of write(),
-+     * writev() and select() in c_src/cosmo/beam_com_pipe.c prevent both.
-+     * The free space of the write end is 0 while the program waits in a
-+     * large read, so the wraps read the free space from the read end. */
++     * writev() and select() in c_src/cosmo/beam_com_pipe.c prevent both. */
 +    SET_NONBLOCKING(ifd[0]);
 +    SET_NONBLOCKING(ofd[1]);
-+    if (beam_com_pipe_reader)
-+        beam_com_pipe_reader(ofd[1], ofd[0]);
 +
 +    if (opts->spawn_type == ERTS_SPAWN_EXECUTABLE) {
 +        if (access(beam_com_exec_path(name), X_OK) != 0) {
@@ -309,7 +299,7 @@ index 9b43418..815fad0 100644
  static ErlDrvSSizeT spawn_control(ErlDrvData e, unsigned int cmd, char *buf,
                                    ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen)
  {
-@@ -1297,6 +1549,17 @@ static void ready_input(ErlDrvData e, ErlDrvEvent ready_fd)
+@@ -1297,6 +1541,17 @@ static void ready_input(ErlDrvData e, ErlDrvEvent ready_fd)
  
      ASSERT(abs(dd->ifd->fd) == ready_fd);
  
@@ -327,7 +317,7 @@ index 9b43418..815fad0 100644
      if (dd->pid == 0) {
          /* the pid is sent from erl_child_setup. spawn driver only. */
          ErtsSysForkerProto proto;
-@@ -1628,8 +1891,16 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+@@ -1628,8 +1883,16 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
       * child that holds our stdout/stderr. Keep the forker port so that the
       * rest of the boot is unchanged, but do not start the child. */
      if (beam_com_is_windows()) {
@@ -345,7 +335,7 @@ index 9b43418..815fad0 100644
          return (ErlDrvData)port_num;
      }
  #endif
-@@ -1901,6 +2172,18 @@ static ErlDrvSSizeT forker_control(ErlDrvData e, unsigned int cmd, char *buf,
+@@ -1901,6 +2164,18 @@ static ErlDrvSSizeT forker_control(ErlDrvData e, unsigned int cmd, char *buf,
      if (cmd != ERTS_FORKER_DRV_CONTROL_MAGIC_NUMBER)
          return -1;
  
