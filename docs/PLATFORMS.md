@@ -43,6 +43,12 @@ cannot work there (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
 and the ends of its pipes, not the sockets and the files of the VM. `open_port({spawn, Command})` and `os:cmd/1` run
 `sh -c` with the `sh` in `PATH`, for example the `sh` of Git for
 Windows, and give `enoent` with no `sh`.
+The pipes of a port program are overlapped handles, as each pipe of
+Cosmopolitan. Windows PowerShell 5.1 (`powershell.exe`) starts no read
+on such an input with `[Console]::In` or `[Console]::OpenStandardInput()`.
+It does the same with any parent that gives it an overlapped pipe. In
+PowerShell 5.1, read the input with `$input`, or use PowerShell 7
+(`pwsh`): both work.
 At start, BEAM.com gives kernel an inetrc with the name servers
 and the hosts file of Windows, so that kernel resolves names with Erlang's
 own DNS client (`ERL_INETRC` points at it; set `ERL_INETRC` yourself to
