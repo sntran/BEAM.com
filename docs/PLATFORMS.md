@@ -43,7 +43,7 @@ cannot work there (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
 `sh -c` with the `sh` in `PATH`, for example the `sh` of Git for
 Windows, and give `enoent` with no `sh`.
 At start, BEAM.com gives kernel an inetrc with the name servers
-and the hosts file of Windows, so that names are resolved with Erlang's
+and the hosts file of Windows, so that kernel resolves names with Erlang's
 own DNS client (`ERL_INETRC` points at it; set `ERL_INETRC` yourself to
 use your own file), and it exports the trusted root certificates of
 Windows to a PEM file that `public_key:cacerts_get/0` reads
@@ -81,7 +81,7 @@ give the rule the file of your app, build a native file with `--target`
 - Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)
   as a relative path, because its Unix VFS runs there; give a relative
   path, or the form of Cosmopolitan (`/C/db/x.db`).
-- Windows: names are resolved with Erlang's DNS client (IPv4 name
+- Windows: kernel resolves names with Erlang's DNS client (IPv4 name
   servers only), not with `inet_gethost`. `os:cmd/1` needs a `sh` in
   `PATH`. While a port program does not read its input and its pipe is
   full, the VM checks the pipe every 5 ms (C16).

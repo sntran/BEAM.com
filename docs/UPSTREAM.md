@@ -403,13 +403,13 @@ forker port starts no `erl_child_setup`
 - `os.erl`: with `{unix, windows}`, `os:find_executable/1` tries the
   suffixes of Windows.
 
-Names are still resolved with the DNS client of Erlang (no
+Kernel still resolves names with the DNS client of Erlang (no
 `inet_gethost`).
 
 **Possible upstream fix.** For a non-blocking write to a pipe on Windows,
-write at most `WriteQuotaAvailable` bytes, or give the count of the
-bytes that went into the pipe (the result of `GetOverlappedResult()`
-after `CancelIoEx()`), not `EAGAIN`. In `poll()`, report the write end
+write at most `WriteQuotaAvailable` bytes. Another fix: give the count
+of the bytes that went into the pipe (the result of
+`GetOverlappedResult()` after `CancelIoEx()`), not `EAGAIN`. In `poll()`, report the write end
 of a full pipe as not ready. In
 `commandv()`, try `.exe` and `.com` on Windows. Implement fd passing
 between Cosmopolitan processes (the fd table is already serialized for `execve()` in

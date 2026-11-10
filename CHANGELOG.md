@@ -27,9 +27,9 @@ notes of its release.
   `os:find_executable/1` tries `.exe`, `.com`, `.cmd` and `.bat` there.
   The writes to a port program are non-blocking, as on Unix. The wraps
   of `write()`, `writev()` and `select()` (`c_src/cosmo/beam_com_pipe.c`)
-  write at most the free space of a pipe, because a larger non-blocking
-  write to a pipe of Cosmopolitan on Windows can lose data, and they do
-  not report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
+  write at most the free space of a pipe. A larger non-blocking write to
+  a pipe of Cosmopolitan on Windows can lose data. The wraps do not
+  report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
   them on Windows.
 - A `chown()` to the owner and the group that a file already has gives
   0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
@@ -47,7 +47,7 @@ notes of its release.
 - On Windows, a relative symbolic link to a directory works (C54). Before,
   `mix release` copied no `priv` of the app, because `stat()` of the
   link `_build/prod/lib/APP/priv` gave `EACCES`.
-- `beam.com DIR -o FILE` over the file of a running program updates it:
+- `beam.com DIR -o FILE` over the file of a program that runs updates it:
   the builder writes a new file and renames it, and the program loads the
   changed code. The builder strips the beams of the program and of its
   deps, as `mix release` does, and compiles with `deterministic`, so two
@@ -60,12 +60,12 @@ notes of its release.
   the name of each object computed from its data. `mix.lock` stays the
   same as with git.
 - The git client of beam.com also speaks SSH (`beam_com_git_ssh`), with
-  the `ssh` application of OTP and no `ssh` program: `git@host:path` and
-  `ssh://` URLs, `~/.ssh/config` (`Host`, `Include`, `HostName`, `User`,
-  `Port`, `IdentityFile`, `IdentitiesOnly`, `IdentityAgent`, and more),
-  the keys of the SSH agent and of `~/.ssh`, and the check of the host
-  key in `known_hosts` (an unknown host stops the build, with its
-  fingerprint). It uses version 2 of the git protocol, else version 0.
+  the `ssh` application of OTP and no `ssh` program. It takes
+  `git@host:path` and `ssh://` URLs, and it reads `~/.ssh/config`
+  (`Host`, `Include`, `HostName`, `User`, `Port`, `IdentityFile`,
+  `IdentitiesOnly`, `IdentityAgent`, and more). It uses the keys of the
+  SSH agent and of `~/.ssh`. It checks the host key in `known_hosts`:
+  an unknown host stops the build, with its fingerprint. It uses version 2 of the git protocol, else version 0.
   `BEAM_COM_GIT=client` uses the client also when `git` is in `PATH`.
   See "Git over SSH" in `docs/PROGRAMS.md`.
 - The builder of a rebar3 project gets the git deps of `rebar.config`

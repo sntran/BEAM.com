@@ -6,7 +6,7 @@
 %%   beam.com escript tests/programs/ssh_agent_check.escript AGENT PUBFILE [BRIDGE]
 %%
 %% AGENT is the named pipe, for example \\.\pipe\openssh-ssh-agent.
-%% BRIDGE is /zip/bin/ssh_agent_bridge when it is not given. The check
+%% The default BRIDGE is /zip/bin/ssh_agent_bridge. The check
 %% gets the keys of the agent, and then a signature of the git client.
 %% The last line is:
 %%
