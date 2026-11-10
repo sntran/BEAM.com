@@ -294,10 +294,38 @@ defmodule BeamComHexTest do
       assert {:error, ~c"mix.lock: ~ts has a bad checksum: ~tp", [:a, 12]} ==
                catch_throw(:beam_com_hex.read_lock(:mix, file))
 
+      git = {:git, "https://example.com/a.git", "abc", []}
       :ok = :file.write_file(file, ~s(%{"a": {:git, "https://example.com/a.git", "abc", []}}\n))
+      assert %{a: %{other: git, deps: []}} == :beam_com_hex.read_lock(:mix, file)
 
+      # Only an entry that the build needs must be of Hex.
       assert {:error, ~c"mix.lock: ~ts is not a Hex package (only Hex packages are supported)",
-              [:a]} == catch_throw(:beam_com_hex.read_lock(:mix, file))
+              [:a]} ==
+               catch_throw(:beam_com_hex.fetch(dir, dir, [{:a, "a", :any}], :mix, %{}))
+    end
+
+    # A package of a Hex organization (repo "hexpm:acme") or of another
+    # repository: the builder gets only packages of hex.pm, so a build
+    # that needs such an entry stops. It does not get a package of the
+    # same name from hex.pm.
+    test "read_lock/2: an entry of another Hex repository", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      :ok =
+        :file.write_file(file, """
+        %{
+          "p": {:hex, :p, "1.0.0", "AA", [:mix], [], "hexpm:acme", "BB"},
+          "q": {:hex, :q, "1.0.0", "AA", [:mix], [], "hexpm", "BB"},
+        }
+        """)
+
+      assert %{p: %{repo: "hexpm:acme", deps: []}, q: q} = :beam_com_hex.read_lock(:mix, file)
+      refute Map.has_key?(q, :repo)
+
+      assert {:error,
+              ~c"mix.lock: ~ts is a package of the Hex repository ~tp, not of hex.pm: use --tool mix-release",
+              [:p, "hexpm:acme"]} ==
+               catch_throw(:beam_com_hex.fetch(dir, dir, [{:p, "p", :any}], :mix, %{}))
     end
 
     test "the format of rebar3", %{lock: file} do
@@ -1169,6 +1197,64 @@ defmodule BeamComHexTest do
       before = length(HexFixture.requests(pid))
       {_, _} = with_io(fn -> :beam_com_hex.fetch(app, lib.(2), deps, :mix) end)
       assert before == length(HexFixture.requests(pid))
+    end
+
+    # The builder writes mix.lock again (an entry with no outer
+    # checksum). The entries that the build does not reach stay as they
+    # are: a dep only for :dev, and a git dep only for :dev.
+    test "mix.lock again: the entries of other deps stay", %{app: app, lib: lib, routes: routes} do
+      lock = :filename.join(app, ~c"mix.lock")
+      inner = :string.lowercase(inner_sum(routes, ~c"alpha-1.1.0"))
+      beta = :string.lowercase(inner_sum(routes, ~c"beta-0.2.0"))
+      dev = ~s(  "devonly": {:hex, :devonly, "1.0.0", "aa", [:mix], [], "hexpm", "bb"},\n)
+
+      credo =
+        ~s(  "credo": {:git, "https://example.com/credo.git", ) <>
+          ~s("0123456789abcdef0123456789abcdef01234567", [only: :dev]},\n)
+
+      :ok =
+        :file.write_file(lock, """
+        %{
+          "alpha": {:hex, :alpha, "1.1.0", "#{inner}", [:rebar3], [{:beta, ">= 0.2.0", [hex: :beta, repo: "hexpm", optional: false]}], "hexpm"},
+          "beta": {:hex, :beta, "0.2.0", "#{beta}", [:rebar3], [], "hexpm"},
+        #{credo}#{dev}}
+        """)
+
+      deps = [{:alpha, "alpha", ~c"~> 1.0"}]
+      {got, output} = with_io(fn -> :beam_com_hex.fetch(app, lib.(1), deps, :mix) end)
+      assert [:beta, :alpha] == for(%{name: n} <- got, do: n)
+      assert output =~ "wrote " <> List.to_string(lock)
+      {:ok, text} = :file.read_file(lock)
+      assert text =~ dev
+      assert text =~ credo
+
+      assert %{alpha: %{outer: outer}, devonly: %{outer: "bb"}, credo: %{other: {:git, _, _, _}}} =
+               :beam_com_hex.read_lock(:mix, lock)
+
+      assert outer == :string.lowercase(outer_sum(routes, ~c"alpha-1.1.0"))
+    end
+
+    # rebar.lock with a git entry, and rebar.config with no git dep:
+    # rebar3 does not use the entry, and the builder leaves it out.
+    test "rebar.lock with a git entry that rebar.config does not have", %{app: app, lib: lib} do
+      _ = fetch_quiet(app, lib.(1))
+      lock = :filename.join(app, ~c"rebar.lock")
+      {:ok, [{vsn, entries}, hashes]} = :file.consult(lock)
+
+      git =
+        {"g",
+         {:git, ~c"https://example.com/g.git",
+          {:ref, ~c"0123456789abcdef0123456789abcdef01234567"}}, 0}
+
+      :ok =
+        :file.write_file(
+          lock,
+          :io_lib.format(~c"~tp.~n~tp.~n", [{vsn, entries ++ [git]}, hashes])
+        )
+
+      {got, output} = with_io(fn -> :beam_com_hex.fetch(app, lib.(2)) end)
+      assert [:beta, :alpha] == for(%{name: n} <- got, do: n)
+      assert output =~ "rebar.lock: g is a git dependency that rebar.config does not have"
     end
 
     # The repository gives at most 32 MiB for a tarball.

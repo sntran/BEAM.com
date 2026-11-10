@@ -112,7 +112,12 @@ and compiled into the program, as rebar3 does, without rebar3:
   `rebar.lock` again, with both checksums and the same versions and
   levels, so the next build needs no request. The same rules apply to
   `mix.lock`, also to an entry that an older version of Hex wrote (with
-  no outer checksum, or with no checksum).
+  no outer checksum, or with no checksum). When the builder writes
+  `mix.lock` again, the entries of the deps that the build does not use
+  (for example the deps only for `:dev`, also git deps) stay as they
+  are. Only an entry that the build uses must be a Hex package of
+  hex.pm. A git entry of `rebar.lock` with no git dep in `rebar.config`
+  gives one line, and the builder leaves it out, as rebar3 does.
 - **Limits.** A tarball has at most 32 MiB, and its `contents.tar.gz` at
   most 256 MiB without compression: two times the limits of hex.pm (16
   MiB and 128 MiB). A download stops when it gets more than the limit,

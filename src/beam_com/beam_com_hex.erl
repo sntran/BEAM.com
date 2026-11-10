@@ -30,7 +30,7 @@
 
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
-         rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
+         rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2, lock_text/3,
          unpack/3, unpack/4, resolve/3, fetch/5, http_get/2, read_limited/2,
          registry/0, consult/1, meta_requirements/1, locked/2, git_deps/1, fetch_git/6,
          git_vsn/3]).
@@ -80,18 +80,47 @@ fetch(Dir, LibDir, Deps, Format, Registry) ->
                                       rebar -> "rebar.lock";
                                       mix -> "mix.lock"
                                   end),
-    Lock = read_lock(Format, LockFile),
+    Lock = without_git(Format, read_lock(Format, LockFile)),
     Locked = [N || {N, _, _} <- Deps, is_map_key(N, Lock)],
     {Chosen, Resolved} = case length(Locked) =:= length(Deps) of
                              true -> {from_lock(locked(Deps, Lock)), false};
                              false -> {resolve(Deps, Lock, Registry), true}
                          end,
+    check_lock(Chosen, Lock),
     Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
     %% The lock gets the checksums that the API gave, so that the next
     %% build checks the same tarballs with no request.
     NoChecksum = [N || N := #{outer := undefined} <- Chosen],
     (Resolved orelse NoChecksum =/= []) andalso write_lock(Format, LockFile, Chosen, Unpacked),
     order(Unpacked).
+
+%% rebar.lock with a git entry, and rebar.config with no git dep (else
+%% fetch/2 calls fetch_git/6): rebar3 does not use the entry, and the
+%% build leaves it out too.
+without_git(rebar, Lock) ->
+    Git = lists:sort([N || N := #{git := _} <- Lock]),
+    [io:format("~ts: rebar.lock: ~p is a git dependency that rebar.config does not have: "
+               "the build leaves it out~n", [beam_com:name(), N]) || N <- Git],
+    maps:without(Git, Lock);
+without_git(mix, Lock) ->
+    Lock.
+
+%% Each package of the build has an entry of hex.pm in mix.lock, or no
+%% entry.
+check_lock(Chosen, Lock) ->
+    lists:foreach(
+      fun(N) ->
+              case Lock of
+                  #{N := #{other := _}} ->
+                      throw({error, "mix.lock: ~ts is not a Hex package (only Hex "
+                             "packages are supported)", [N]});
+                  #{N := #{repo := Repo}} ->
+                      throw({error, "mix.lock: ~ts is a package of the Hex repository ~tp, "
+                             "not of hex.pm: use --tool mix-release", [N, Repo]});
+                  _ ->
+                      ok
+              end
+      end, lists:sort(maps:keys(Chosen))).
 
 rebar_config(Dir) ->
     case file:consult(filename:join(Dir, "rebar.config")) of
@@ -305,24 +334,21 @@ read_lock(File) ->
 %% entries, with no outer checksum or no checksum. Hex reads an element
 %% that is not there as nil (destructure in Hex.Utils.lock/1), and so
 %% does this function.
+%%
+%% An entry that is not a Hex package (git, path) gets the key other,
+%% and an entry of another Hex repository than hex.pm gets the key repo.
+%% fetch/5 stops only when the build needs such an entry
+%% (check_lock/2): Mix also locks the deps only for :dev or :test.
 read_lock(mix, File) ->
-    case file:read_file(File) of
-        {error, _} -> #{};
-        {ok, Text} ->
-            Opts = [{file, unicode:characters_to_binary(File)}, {emit_warnings, false}],
-            {ok, Quoted} = 'Elixir.Code':string_to_quoted(Text, Opts),
-            {Map, _} = 'Elixir.Code':eval_quoted(Quoted, [], Opts),
-            maps:from_list(
-              [case Entry of
-                   _ when is_tuple(Entry), tuple_size(Entry) >= 3,
-                          element(1, Entry) =:= hex, is_atom(element(2, Entry)),
-                          is_binary(element(3, Entry)) ->
-                       {lock_name(Name), mix_entry(Name, Entry)};
-                   _ ->
-                       throw({error, "mix.lock: ~ts is not a Hex package (only Hex "
-                              "packages are supported)", [Name]})
-               end || Name := Entry <- Map])
-    end;
+    maps:from_list(
+      [case Entry of
+           _ when is_tuple(Entry), tuple_size(Entry) >= 3,
+                  element(1, Entry) =:= hex, is_atom(element(2, Entry)),
+                  is_binary(element(3, Entry)) ->
+               {lock_name(Name), mix_entry(Name, Entry)};
+           _ ->
+               {lock_name(Name), #{other => Entry, deps => []}}
+       end || Name := Entry <- mix_lock_map(File)]);
 read_lock(rebar, File) ->
     case file:consult(File) of
         {ok, [{_LockVsn, Entries} | Rest]} -> lock_map(Entries, Rest);
@@ -333,6 +359,17 @@ read_lock(rebar, File) ->
             throw({error, "~ts: ~ts", [File, file:format_error(Reason)]})
     end.
 
+%% The map of mix.lock, as Mix reads it: #{} when there is no file.
+mix_lock_map(File) ->
+    case file:read_file(File) of
+        {error, _} -> #{};
+        {ok, Text} ->
+            Opts = [{file, unicode:characters_to_binary(File)}, {emit_warnings, false}],
+            {ok, Quoted} = 'Elixir.Code':string_to_quoted(Text, Opts),
+            {Map, _} = 'Elixir.Code':eval_quoted(Quoted, [], Opts),
+            Map
+    end.
+
 lock_name(Name) when is_atom(Name) -> Name;
 lock_name(Name) when is_binary(Name) -> binary_to_atom(Name).
 
@@ -340,8 +377,13 @@ mix_entry(Name, Entry) ->
     Get = fun(N) when N =< tuple_size(Entry) -> element(N, Entry);
              (_) -> nil
           end,
-    Entry1 = #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
+    Entry0 = #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
                inner => lock_hash(Name, Get(4)), outer => lock_hash(Name, Get(8))},
+    Entry1 = case Get(7) of
+                 nil -> Entry0;
+                 <<"hexpm">> -> Entry0;
+                 Repo -> Entry0#{repo => Repo}
+             end,
     case lock_deps(Get(6)) of
         none -> Entry1;
         Deps -> Entry1#{deps => Deps}
@@ -407,7 +449,7 @@ from_lock(Lock) ->
 locked(Deps, Lock) ->
     case lists:all(fun(P) -> is_map_key(deps, P) end, maps:values(Lock)) of
         true -> maps:with(reached([N || {N, _, _} <- Deps], Lock, #{}), Lock);
-        false -> Lock
+        false -> maps:filter(fun(_, P) -> not is_map_key(other, P) end, Lock)
     end.
 
 reached([], _Lock, Seen) ->
@@ -446,8 +488,15 @@ lock_source(#{pkg := Pkg, vsn := Vsn}) ->
 %% requirements of the package (lock_reqs, with the optional ones), else
 %% reqs: Hex checks them against the registry.
 lock_text(mix, Packages) ->
+    lock_text(mix, Packages, []);
+lock_text(rebar, Packages) ->
+    lock_text(Packages).
+
+%% The same, with the entries Kept ([{Name, Entry}]) of mix.lock as they
+%% are.
+lock_text(mix, Packages, Kept) ->
     Entries = lists:sort(
-            [{atom_to_binary(N),
+            Kept ++ [{atom_to_binary(N),
               {hex, app_name(Pkg), list_to_binary(Vsn),
                string:lowercase(iolist_to_binary(I)),
                [binary_to_atom(T) || T <- Tools,
@@ -465,15 +514,24 @@ lock_text(mix, Packages) ->
      [["  \"", Name, "\": ",
        'Elixir.Kernel':inspect(Entry, [{limit, infinity}, {printable_limit, infinity}]), ",\n"]
       || {Name, Entry} <- Entries],
-     "}\n"];
-lock_text(rebar, Packages) ->
-    lock_text(Packages).
+     "}\n"].
 
-%% With no resolution, each package keeps the level of rebar.lock.
+%% With no resolution, each package keeps the level of rebar.lock. The
+%% entries of mix.lock that the build does not use (the deps only for
+%% :dev or :test, git deps) stay as they are, as Mix keeps them.
 write_lock(Format, File, Chosen, Unpacked) ->
     Levels = levels(Chosen, Unpacked),
-    Text = lock_text(Format, [P#{level => maps:get(N, Levels, maps:get(level, P, 0))}
-                              || #{name := N} = P <- Unpacked]),
+    Packages = [P#{level => maps:get(N, Levels, maps:get(level, P, 0))}
+                || #{name := N} = P <- Unpacked],
+    Text = case Format of
+               mix ->
+                   Names = [N || #{name := N} <- Unpacked],
+                   lock_text(mix, Packages,
+                             [{atom_to_binary(lock_name(K)), E} || K := E <- mix_lock_map(File),
+                                                                   not lists:member(lock_name(K), Names)]);
+               rebar ->
+                   lock_text(rebar, Packages)
+           end,
     case file:write_file(File, Text) of
         ok -> io:format("~ts: wrote ~ts~n", [beam_com:name(), File]);
         {error, Reason} ->
