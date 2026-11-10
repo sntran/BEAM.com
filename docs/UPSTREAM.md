@@ -413,21 +413,22 @@ forker port starts no `erl_child_setup`
   `WriteQuotaAvailable`. A reader that waits for 4096 bytes or more on
   an empty pipe gives 0, as a full pipe does. Most native programs read
   so (`python`, `git`, `findstr`): no write reached them, and the halt
-  of the VM waited for the queue of the port. A write of 1 byte to find
-  the difference is not safe: Windows can cancel a write after the
-  reader took its byte, and `GetOverlappedResult()` then gives
+  of the VM waited for the queue of the port. So for the value 0, the
+  wrap starts a write of 1 byte with its own `OVERLAPPED`, and gives 1.
+  To a reader that waits, the write completes at once. To a full pipe,
+  the byte waits in the pipe until the reader reads; meanwhile a write
+  gives `EAGAIN`, and `select()` does not report the pipe. The wrap
+  never cancels this write: Windows can cancel a write after the reader
+  took its byte, and `GetOverlappedResult()` then gives
   `ERROR_OPERATION_ABORTED` and a count of 0. In a test of 128 KiB and
-  of 1 MiB, a byte came two times in each of 8 runs. So, as Cygwin does,
-  the spawn driver
-  gives the read end of the pipe of the program to
-  `beam_com_pipe_reader()`, which keeps a copy of its handle with
-  `FILE_READ_ATTRIBUTES` only. The free space is `InboundQuota -
-  ReadDataAvailable` of that handle, which a read that waits does not
-  change. The copy keeps the read end open, so when its handle count
-  (`NtQueryObject()`) is 1, the wrap closes it, and the next write gives
-  `EPIPE`. The close of the write end closes the copy too
-  (`__wrap_close()`). A pipe with no copy (for example the standard
-  output of the VM) still uses `WriteQuotaAvailable`.
+  of 1 MiB, a byte came two times in each of 8 runs. At the close of
+  the write end (`__wrap_close()`), a thread keeps a copy of the handle
+  until the write ends, so the reader gets the byte and then the end of
+  the file. The exit of the VM cancels a byte that waits. A copy of the
+  read end, as Cygwin keeps for its query of the free space, does not
+  work here: a query on it wakes a native reader that waits in a
+  synchronous `ReadFile()` on the overlapped handle, and that reader
+  then sees the end of the file.
 - `os.erl`: with `{unix, windows}`, `os:find_executable/1` tries the
   suffixes of Windows.
 
@@ -435,11 +436,11 @@ Kernel still resolves names with the DNS client of Erlang (no
 `inet_gethost`).
 
 **Possible upstream fix.** For a non-blocking write to a pipe on Windows,
-write at most the free space of the pipe. Get it from the read end
-(`InboundQuota - ReadDataAvailable`), because `WriteQuotaAvailable` of
-the write end is smaller while a reader waits. The count of
+write at most the free space of the pipe. `WriteQuotaAvailable` of the
+write end is smaller while a reader waits, and the count of
 `GetOverlappedResult()` after `CancelIoEx()` is not reliable for a
-pipe. In `poll()`, report the write end of a full pipe as not ready. In
+pipe. So keep a write that waits, as the wrap does, and do not cancel
+it. In `poll()`, report the write end of a full pipe as not ready. In
 `posix_spawn()`, give a way to close each descriptor that the file
 actions do not name (as `posix_spawn_file_actions_addclosefrom_np()`). In
 `commandv()`, try `.exe` and `.com` on Windows. Implement fd passing

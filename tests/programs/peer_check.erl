@@ -81,7 +81,8 @@ native_reader() ->
             port_command(Port, [io_lib:format("line ~6..0b~n", [I])
                                 || I <- lists:seq(1, 20000)]),
             Ok = native_lines(Port, 1),
-            port_close(Port),
+            %% The port is closed when the program stopped.
+            try port_close(Port) catch error:badarg -> ok end,
             io:format("native reader ~p~n", [Ok]);
         _ ->
             ok

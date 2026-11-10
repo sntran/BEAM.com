@@ -113,8 +113,9 @@ void __releasefd(int fd);
 void __zipos_drop(struct ZiposHandle *h);
 int sys_close(int fd);
 
-/* beam_com_pipe.c: the close of the query handle of a pipe. Weak: not
- * each program of this file has beam_com_pipe.o. */
+/* beam_com_pipe.c: at the close of a pipe, a byte that waits in it
+ * stays until the reader takes it. Weak: not each program of this file
+ * has beam_com_pipe.o. */
 void beam_com_pipe_forget(int fd) __attribute__((__weak__));
 
 static int close_pid;
