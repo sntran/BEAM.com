@@ -59,9 +59,12 @@ notes of its release.
 - `beam.com DIR -o FILE` over the file of a program that runs updates it:
   the builder writes a new file and renames it, and the program loads the
   changed code. The builder strips the beams of the program and of its
-  deps, as `mix release` does, and compiles with `deterministic`, so two
-  builds of the same code almost always give the same bytes, and the new
-  file has only the changed modules. The reload
+  deps, as `mix release` does, and compiles with `deterministic`. Thus
+  two builds of the same code almost always give the same bytes, and the
+  new file has only the changed modules. A file that a Mix step writes
+  with a new time (`cache_manifest.json` of `phx.digest`) is new at each
+  build, and a run takes the files of `priv/` that the build wrote from
+  after the build, so it does not build again. The reload
   gives no notice for a new file of `.wasm/`.
 - With no `git` program, the git deps of an `https` URL come with the git
   client of beam.com (`beam_com_git`, `beam_com_git_scm`): version 2 of

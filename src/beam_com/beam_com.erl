@@ -11,7 +11,7 @@
 
 -ifdef(TEST).
 -export([command/1, build_options/2, help/1, version/0, name/1, run_file/2,
-         is_project/1, nif_include/0, fresh/3, write_inputs/2, after_build/2,
+         is_project/1, nif_include/0, fresh/3, write_inputs/2, after_build/3,
          self_file/0]).
 -endif.
 
@@ -93,12 +93,13 @@ run(#{target := _}) ->
     throw({error, "--target makes a file for another system: use it with -o", []});
 run(#{input := Input} = Opts) ->
     File = run_file(Input, maps:without([input, args], Opts)),
+    Start = os:system_time(second),
     case fresh(File, Input, self_file()) of
         true -> ok;
         {false, Inputs} ->
             ok = filelib:ensure_dir(File),
             beam_com_build:run(Opts#{output => File, quiet => true}),
-            write_inputs(File, after_build(Inputs, Input))
+            write_inputs(File, after_build(Inputs, Input, Start))
     end,
     %% beam_com.c runs File at exit (execv): it names the file for its path.
     case os:getenv("BEAM_COM_RUN_FILE") of
@@ -219,13 +220,30 @@ file_hash(F, State) ->
 %% resolves the versions of the Hex packages (beam_com_hex). The entries
 %% of these two files come from after the build, so the next run does not
 %% build again for them.
-after_build({?INPUTS, Entries}, Input) ->
+%%
+%% The Mix steps of a Mix project (beam_com_mix) also write files in
+%% priv/: the assets of assets.deploy, and priv/static/cache_manifest.json
+%% of phx.digest, with a new time in it at each build. The entries of the
+%% files of priv/ that have a time of change at or after Start (the start
+%% of the run) also come from after the build. Thus a change of such a
+%% file during the build does not start a new build.
+after_build({?INPUTS, Entries}, Input, Start) ->
     Locks = [["rebar.lock"], ["mix.lock"]],
     New = [E || filelib:is_dir(Input), [Name] = Key <- Locks,
                 {{_, Meta, _, _} = E, _} <- inputs(filename:join(Input, Name), Key, #{}),
                 Meta =/= error],
-    {?INPUTS, lists:keysort(1, New ++ [E || {Key, _, _, _} = E <- Entries,
-                                            not lists:member(Key, Locks)])}.
+    Old = maps:from_list([{Key, E} || {Key, _, _, _} = E <- Entries]),
+    Mix = filelib:is_dir(Input) andalso filelib:is_regular(filename:join(Input, "mix.exs")),
+    Priv = [case {Meta, maps:find(Key, Old)} of
+                {{_, Time}, {ok, Before}} when Time < Start -> Before;
+                _ -> After
+            end || Mix, {{Key, Meta, _, _} = After, _} <- inputs(filename:join(Input, "priv"),
+                                                                  ["priv"], Old),
+                   Meta =/= error],
+    InPriv = fun(Key) -> Mix andalso hd(Key ++ [none]) =:= "priv" end,
+    {?INPUTS, lists:keysort(1, New ++ Priv
+                            ++ [E || {Key, _, _, _} = E <- Entries,
+                                     not lists:member(Key, Locks), not InPriv(Key)])}.
 
 %% The entries of FILE.inputs, or none. Other programs can write the
 %% cache, so this function reads the term with the option safe (no new

@@ -153,7 +153,9 @@ of its deps. Their compile information and debug information have the
 paths of the build, with a new temporary directory each time. Without
 them, two builds of the same code almost always give the same bytes,
 and the reload of a program that runs (`beam_com_reload`) reads only the
-beams that changed. The Erlang compiler gets the option `deterministic`.
+beams that changed. A file that a Mix step writes with a new time (for
+example `cache_manifest.json` of `phx.digest`) is new at each build. The
+Erlang compiler gets the option `deterministic`.
 The Elixir compiler can give other bytes for some modules (for example
 in the tables of a module that a macro makes).
 

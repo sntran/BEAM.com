@@ -128,7 +128,9 @@ cd /srv/hello/src && git pull && beam.com . -o /srv/hello/hello.com
   changed modules about one second later. Its processes stay, and so do
   the LiveView sockets and their pages.
 - Two builds of the same code almost always give the same bytes, so
-  only the changed modules and files are new.
+  only the changed modules and files are new. `phx.digest` writes
+  `priv/static/cache_manifest.json` with a new time at each build, so
+  this file is new each time.
 - Mix keeps `deps/` and `_build/` in `/srv/hello/src`, so the second
   build takes seconds.
 - For a change that needs a restart, run `sudo systemctl restart hello`

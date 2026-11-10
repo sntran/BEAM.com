@@ -36,7 +36,12 @@ the time of each file. A run reads a file again only when its size or
 its time changed, or when its time is less than 2 s before the time of
 its last hash. So a run with no change reads the data of no input, as
 before. The directories `_build`, `deps`, `.git` and `.elixir_ls` are
-not inputs.
+not inputs. The build itself writes `rebar.lock` and `mix.lock`, and the
+Mix steps write files in `priv/` (for example the assets and
+`cache_manifest.json` of a Phoenix app). A run keeps the data of these
+files from after the build, so the next run does not build again. A
+change of a file of `priv/` during the build thus does not start a new
+build.
 
 `INPUT` is one of these:
 
@@ -427,7 +432,9 @@ The builder writes a new file and renames it into the place of the old
 one, as `zip` does, so the program loads the changed code. The builder
 strips the compile information and the debug information of the beams,
 as `mix release` does, so two builds of the same code almost always give
-the same bytes. Thus only the changed modules and files are new in the
+the same bytes. Files that a step of the build writes with a new time
+are an exception: for example `priv/static/cache_manifest.json` of
+`phx.digest` in a Phoenix app. Thus only the changed modules and files are new in the
 new file. The Elixir compiler can give other bytes for some modules; the
 program then loads these modules again, with no change of behaviour.
 The new file must come from the same `beam.com`, because a new runtime
