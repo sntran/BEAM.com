@@ -16,13 +16,17 @@
 -export([pkt/1, refs/1, pack_response/1]).
 
 -ifdef(TEST).
--export([pkts/1, advertisement/1, objects/1, apply_delta/2,
-         tree/1, commit_tree/1, zlib_end/2, safe_name/1, url/1]).
+-export([pkts/1, advertisement/1, objects/1, objects/2, apply_delta/2, apply_delta/3,
+         tree/1, commit_tree/1, inflate/2, safe_name/1, url/1]).
 -endif.
 
 %% The limits of a response: the list of refs, and the pack.
 -define(MAX_REFS, 16 * 1024 * 1024).
 -define(MAX_PACK, 512 * 1024 * 1024).
+%% The limits of the objects of a pack: one object (also a delta and its
+%% result), and the sum of all the objects and the results of the deltas.
+-define(MAX_OBJECT, 256 * 1024 * 1024).
+-define(MAX_TOTAL, 1024 * 1024 * 1024).
 -define(SHA_RE, "^[0-9a-f]{40}$").
 
 %% The commit of Rev at the repository Url: Rev is a commit (40 hex
@@ -208,110 +212,194 @@ pack_response(Lines) ->
 %%% The pack.
 
 %% The objects of a pack: #{Name => {Type, Data}}. The pack ends with
-%% the SHA-1 of the bytes before it.
-objects(<<"PACK", Version:32, Count:32, _/binary>> = Pack)
+%% the SHA-1 of the bytes before it. Limits: object, the largest size of
+%% one object (also of a delta and its result), and total, the largest
+%% sum of the sizes of all the objects and the results of the deltas.
+objects(Pack) ->
+    objects(Pack, #{object => ?MAX_OBJECT, total => ?MAX_TOTAL}).
+
+objects(<<"PACK", Version:32, Count:32, _/binary>> = Pack, Limits)
   when Version =:= 2; Version =:= 3 ->
     Size = byte_size(Pack) - 20,
     Size >= 12 orelse throw({error, "git: a short pack", []}),
     <<Body:Size/binary, Sum:20/binary>> = Pack,
     crypto:hash(sha, Body) =:= Sum orelse throw({error, "git: the pack has a bad checksum", []}),
-    resolve_deltas(read_objects(Body, 12, Count, []));
-objects(_) ->
+    {Entries, Left} = read_objects(Body, 12, Count, [], Limits, maps:get(total, Limits)),
+    resolve_deltas(Entries, Limits, Left);
+objects(_, _Limits) ->
     throw({error, "git: not a pack", []}).
 
-read_objects(_Pack, _Pos, 0, Acc) ->
-    lists:reverse(Acc);
-read_objects(Pack, Pos, N, Acc) ->
+read_objects(_Pack, _Pos, 0, Acc, _Limits, Left) ->
+    {lists:reverse(Acc), Left};
+read_objects(Pack, Pos, N, Acc, Limits, Left) ->
     {Type, Size, P1} = header(Pack, Pos),
+    Left1 = take(Size, Limits, Left),
     {Base, P2} = case Type of
                      6 -> {Ofs, P} = offset(Pack, P1), {{ofs, Pos - Ofs}, P};
-                     7 -> <<_:P1/binary, Ref:20/binary, _/binary>> = Pack,
-                          {{ref, binary:encode_hex(Ref, lowercase)}, P1 + 20};
+                     7 -> {{ref, binary:encode_hex(bytes(Pack, P1, 20), lowercase)}, P1 + 20};
                      _ -> {none, P1}
                  end,
     {Data, Used} = inflate(binary_part(Pack, P2, byte_size(Pack) - P2), Size),
-    read_objects(Pack, P2 + Used, N - 1, [{Pos, Type, Base, Data} | Acc]).
+    read_objects(Pack, P2 + Used, N - 1, [{Pos, Type, Base, Data} | Acc], Limits, Left1).
+
+%% The rest of the total after an object of Size bytes.
+take(Size, #{object := Max}, _Left) when Size > Max ->
+    throw({error, "git: an object of ~b bytes is larger than the limit of ~b bytes", [Size, Max]});
+take(Size, #{total := Total}, Left) when Size > Left ->
+    throw({error, "git: the objects of the pack are larger than the limit of ~b bytes", [Total]});
+take(Size, _Limits, Left) ->
+    Left - Size.
+
+%% N bytes of the pack at Pos.
+bytes(Pack, Pos, N) when Pos + N =< byte_size(Pack) ->
+    binary_part(Pack, Pos, N);
+bytes(_Pack, _Pos, _N) ->
+    throw({error, "git: a short pack", []}).
+
+byte(Pack, Pos) ->
+    <<C>> = bytes(Pack, Pos, 1),
+    C.
 
 header(Pack, Pos) ->
-    <<_:Pos/binary, C, _/binary>> = Pack,
+    C = byte(Pack, Pos),
     size_bytes(Pack, Pos + 1, C band 16#80, C band 15, 4, (C bsr 4) band 7).
 
 size_bytes(_Pack, Pos, 0, Size, _Shift, Type) ->
     {Type, Size, Pos};
 size_bytes(Pack, Pos, _More, Size, Shift, Type) ->
-    <<_:Pos/binary, C, _/binary>> = Pack,
+    C = byte(Pack, Pos),
     size_bytes(Pack, Pos + 1, C band 16#80, Size bor ((C band 16#7f) bsl Shift), Shift + 7, Type).
 
 offset(Pack, Pos) ->
-    <<_:Pos/binary, C, _/binary>> = Pack,
+    C = byte(Pack, Pos),
     offset(Pack, Pos + 1, C band 16#80, C band 16#7f).
 
 offset(_Pack, Pos, 0, Ofs) ->
     {Ofs, Pos};
 offset(Pack, Pos, _More, Ofs) ->
-    <<_:Pos/binary, C, _/binary>> = Pack,
+    C = byte(Pack, Pos),
     offset(Pack, Pos + 1, C band 16#80, ((Ofs + 1) bsl 7) bor (C band 16#7f)).
 
 %% The data of the zlib stream at the start of Bin (Size bytes), and the
-%% number of bytes of the stream. zlib gives no count of the bytes that
-%% it used, so zlib_end/2 finds the end.
+%% number of bytes of the stream. The inflate stops when the data is
+%% larger than Size.
+%%
+%% zlib gives no count of the bytes that it used, but it keeps the bytes
+%% after the end of the stream, and the next inflate with them fails.
+%% Thus a pass that gives the input in steps finds the step with the
+%% end. The next pass gives the bytes before that step, then smaller
+%% steps in it, and the last pass gives one byte in each step. Each pass
+%% reads the stream one time, so the time is linear.
 inflate(Bin, Size) ->
     Z = zlib:open(),
     try
-        ok = zlib:inflateInit(Z),
-        Data = iolist_to_binary(inflate_all(Z, Bin)),
+        {Data, Step} = zpass(Z, Bin, 0, 4096, Size, keep),
+        Step =/= open orelse throw({error, "git: a short pack", []}),
         byte_size(Data) =:= Size orelse throw({error, "git: an object has a bad size", []}),
-        {Data, zlib_end(Bin, Data)}
+        {Data, zfast(Z, Bin, Step, Data, Size)}
     after
         zlib:close(Z)
     end.
 
-inflate_all(Z, Bin) ->
-    case zlib:safeInflate(Z, Bin) of
-        {continue, Out} -> [Out | inflate_all(Z, [])];
-        {finished, Out} -> Out;
+%% The stream ends with the Adler-32 of its data. The first copy of these
+%% four bytes in the step of the end is usually the end: one pass checks
+%% it. Else the smaller steps find the end.
+zfast(_Z, Bin, done, _Data, _Size) ->
+    byte_size(Bin);
+zfast(Z, Bin, From, Data, Size) ->
+    Start = max(0, From - 4),
+    Scope = {Start, min(From + 4096, byte_size(Bin)) - Start},
+    case binary:match(Bin, <<(erlang:adler32(Data)):32>>, [{scope, Scope}]) of
+        {P, 4} ->
+            case zpass(Z, binary_part(Bin, 0, P + 4), P + 4, 1, Size, count) of
+                {_, done} -> P + 4;
+                _ -> zend(Z, Bin, From, [32, 1], Size)
+            end;
+        nomatch ->
+            zend(Z, Bin, From, [32, 1], Size)
+    end.
+
+zend(_Z, Bin, done, _Steps, _Size) ->
+    byte_size(Bin);
+zend(Z, Bin, From, [Step | Steps], Size) ->
+    {_, Next} = zpass(Z, Bin, From, Step, Size, count),
+    is_integer(Next) orelse throw({error, "git: a bad zlib stream", []}),
+    zend(Z, Bin, Next, Steps, Size);
+zend(Z, Bin, End, [], Size) ->
+    %% The stream ends at End, or the byte at End is bad.
+    case zpass(Z, binary_part(Bin, 0, End), End, 1, Size, count) of
+        {_, done} -> End;
+        _ -> throw({error, "git: a bad zlib stream", []})
+    end.
+
+%% One pass: the bytes before From in one step, then steps of Step bytes.
+%% {Data, Pos}: the inflate failed in the step at Pos (Data: the data
+%% before the failure). {Data, done}: the stream ends at the end of Bin.
+%% {Data, open}: the stream does not end in Bin.
+zpass(Z, Bin, From, Step, Size, Keep) ->
+    %% error: an inflate after the end of the stream fails.
+    ok = zlib:inflateInit(Z, 15, error),
+    St = case zdrain(Z, binary_part(Bin, 0, From), {0, [], Size, Keep}) of
+             {ok, St0} -> St0;
+             {error, _} -> throw({error, "git: a bad zlib stream", []})
+         end,
+    zsteps(Z, Bin, From, Step, St).
+
+zsteps(Z, Bin, Pos, _Step, {_, Acc, _, _}) when Pos >= byte_size(Bin) ->
+    {iolist_to_binary(lists:reverse(Acc)), case zfinish(Z) of ok -> done; error -> open end};
+zsteps(Z, Bin, Pos, Step, St) ->
+    N = min(Step, byte_size(Bin) - Pos),
+    case zdrain(Z, binary_part(Bin, Pos, N), St) of
+        {ok, St1} -> zsteps(Z, Bin, Pos + N, Step, St1);
+        {error, {_, Acc, _, _}} -> _ = zfinish(Z), {iolist_to_binary(lists:reverse(Acc)), Pos}
+    end.
+
+%% The end of the inflate: ok when the stream ended with no input after
+%% it, else error. Then the next pass can start.
+zfinish(Z) ->
+    try zlib:inflateEnd(Z)
+    catch error:data_error -> error
+    end.
+
+%% Inflate the input, and all the data of it.
+zdrain(Z, Input, St) ->
+    try zlib:safeInflate(Z, Input) of
+        {continue, Out} -> zdrain(Z, [], zadd(Out, St));
+        {finished, Out} -> {ok, zadd(Out, St)};
         {need_dictionary, _, _} -> throw({error, "git: a zlib stream needs a dictionary", []})
+    catch error:data_error ->
+            {error, St}
     end.
 
-%% The length of the zlib stream at the start of Bin with the data Data:
-%% the stream ends with the Adler-32 of its data, so it ends after the
-%% first copy of these four bytes where the bytes before it give Data.
-%% The search stays in the bytes that a stream of Data can have.
-zlib_end(Bin, Data) ->
-    Limit = min(byte_size(Bin), byte_size(Data) + (byte_size(Data) div 16000 + 1) * 5 + 64),
-    Window = binary_part(Bin, 0, Limit),
-    Adler = <<(erlang:adler32(Data)):32>>,
-    Ends = [P + 4 || {P, 4} <- binary:matches(Window, Adler)],
-    case [E || E <- Ends, uncompress(binary_part(Bin, 0, E)) =:= Data] of
-        [End | _] -> End;
-        [] -> throw({error, "git: the end of a zlib stream is not found", []})
-    end.
-
-uncompress(Bin) ->
-    try zlib:uncompress(Bin)
-    catch error:_ -> error
-    end.
+zadd(Out, {Got, Acc, Size, Keep}) ->
+    Got1 = Got + iolist_size(Out),
+    Got1 =< Size orelse throw({error, "git: an object is larger than the size in its header", []}),
+    {Got1, case Keep of keep -> [Out | Acc]; count -> Acc end, Size, Keep}.
 
 %% The objects with their names, after the deltas, in one pass in the
 %% order of the pack: the base of an offset delta comes before it. A
 %% server sends the base of a ref delta first too (no thin pack).
-resolve_deltas(Entries) ->
-    {Named, _} =
+resolve_deltas(Entries, Limits, Left0) ->
+    {Named, _, _} =
         lists:foldl(
-          fun({Pos, T, Base, Data}, {Named, Done}) ->
+          fun({Pos, T, Base, Data}, {Named, Done, Left}) ->
                   {Type, Full} =
                       case {T, Base} of
                           {_, none} when T >= 1, T =< 4 -> {type(T), Data};
-                          {6, {ofs, BasePos}} -> delta(maps:find(BasePos, Done), Data);
-                          {7, {ref, Name}} -> delta(maps:find(Name, Named), Data);
+                          {6, {ofs, BasePos}} ->
+                              delta(maps:find(BasePos, Done), Data, Limits, Left);
+                          {7, {ref, Name}} -> delta(maps:find(Name, Named), Data, Limits, Left);
                           _ -> throw({error, "git: an object of an unknown type", []})
                       end,
-                  {Named#{name(Type, Full) => {Type, Full}}, Done#{Pos => {Type, Full}}}
-          end, {#{}, #{}}, Entries),
+                  Left1 = case Base of none -> Left; _ -> take(byte_size(Full), Limits, Left) end,
+                  {Named#{name(Type, Full) => {Type, Full}}, Done#{Pos => {Type, Full}}, Left1}
+          end, {#{}, #{}, Left0}, Entries),
     Named.
 
-delta({ok, {Type, Base}}, Delta) -> {Type, apply_delta(Base, Delta)};
-delta(error, _Delta) -> throw({error, "git: a delta has no base", []}).
+delta({ok, {Type, Base}}, Delta, Limits, Left) ->
+    {Type, apply_delta(Base, Delta, min(maps:get(object, Limits), Left))};
+delta(error, _Delta, _Limits, _Left) ->
+    throw({error, "git: a delta has no base", []}).
 
 type(1) -> commit;
 type(2) -> tree;
@@ -324,14 +412,19 @@ name(Type, Data) ->
                       lowercase).
 
 %% The new data of a delta: the size of the base, the size of the result,
-%% then copies from the base and new bytes.
+%% then copies from the base and new bytes. The result has at most Max
+%% bytes, and the copies stop at the size of the result.
 apply_delta(Base, Delta) ->
+    apply_delta(Base, Delta, ?MAX_OBJECT).
+
+apply_delta(Base, Delta, Max) ->
     {BaseSize, D1} = varint(Delta),
     BaseSize =:= byte_size(Base) orelse throw({error, "git: a delta of another base", []}),
     {Size, D2} = varint(D1),
-    Out = iolist_to_binary(delta_ops(Base, D2, [])),
-    byte_size(Out) =:= Size orelse throw({error, "git: a delta has a bad size", []}),
-    Out.
+    Size =< Max orelse
+        throw({error, "git: the result of a delta has ~b bytes, more than the limit of ~b bytes",
+               [Size, Max]}),
+    iolist_to_binary(delta_ops(Base, D2, Size, [])).
 
 varint(Bin) -> varint(Bin, 0, 0).
 
@@ -342,18 +435,23 @@ varint(<<C, Rest/binary>>, Shift, Acc) ->
 varint(<<>>, _, _) ->
     throw({error, "git: a short delta", []}).
 
-delta_ops(_Base, <<>>, Acc) ->
+%% Left: the bytes of the result that are not made yet.
+delta_ops(_Base, <<>>, 0, Acc) ->
     lists:reverse(Acc);
-delta_ops(Base, <<1:1, Bits:7, Rest/binary>>, Acc) ->
+delta_ops(_Base, <<>>, _Left, _Acc) ->
+    throw({error, "git: a delta has a bad size", []});
+delta_ops(Base, <<1:1, Bits:7, Rest/binary>>, Left, Acc) ->
     {Offset, R1} = delta_number(Bits band 16#0f, 4, Rest),
     {Size0, R2} = delta_number(Bits bsr 4, 3, R1),
     Size = case Size0 of 0 -> 16#10000; _ -> Size0 end,
     Offset + Size =< byte_size(Base) orelse throw({error, "git: a delta copies too much", []}),
-    delta_ops(Base, R2, [binary_part(Base, Offset, Size) | Acc]);
-delta_ops(Base, <<0:1, N:7, Rest/binary>>, Acc) when N > 0, byte_size(Rest) >= N ->
+    Size =< Left orelse throw({error, "git: a delta has a bad size", []}),
+    delta_ops(Base, R2, Left - Size, [binary_part(Base, Offset, Size) | Acc]);
+delta_ops(Base, <<0:1, N:7, Rest/binary>>, Left, Acc) when N > 0, byte_size(Rest) >= N ->
+    N =< Left orelse throw({error, "git: a delta has a bad size", []}),
     <<New:N/binary, R1/binary>> = Rest,
-    delta_ops(Base, R1, [New | Acc]);
-delta_ops(_Base, _, _Acc) ->
+    delta_ops(Base, R1, Left - N, [New | Acc]);
+delta_ops(_Base, _, _Left, _Acc) ->
     throw({error, "git: a bad delta", []}).
 
 %% The bytes of a copy: one byte for each bit of Mask (low bit first).

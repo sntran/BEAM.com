@@ -172,6 +172,11 @@ A dep of `rebar.config` can also come from a git repository of an
 - The version of a git dep is the `vsn` of its `.app.src`. For the
   `vsn` `git`, it is the tag without `v`, else `0.0.0+git.` and the
   first 7 characters of the commit.
+- **Limits.** The list of refs has at most 16 MiB, and the pack at most
+  512 MiB. One object of the pack (also a delta and its result) has at
+  most 256 MiB, and all the objects, with the results of the deltas, at
+  most 1 GiB. The client stops the inflate of an object at the size in
+  its header. A server that sends more stops the build.
 
 ### Git over SSH
 

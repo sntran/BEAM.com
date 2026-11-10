@@ -54,8 +54,8 @@ defmodule BeamComGitTest do
       <<byte_size(new)>> <> new
   end
 
-  # A pack of the entries {:obj, type, data}, {:ofs, index, delta} or
-  # {:ref, name, delta}, with its checksum.
+  # A pack of the entries {:obj, type, data}, {:ofs, index, delta},
+  # {:ref, name, delta} or {:raw, type, size, zlib}, with its checksum.
   defp pack(entries) do
     {body, _} =
       Enum.reduce(entries, {"PACK" <> <<2::32, length(entries)::32>>, []}, fn e, {acc, starts} ->
@@ -65,6 +65,9 @@ defmodule BeamComGitTest do
           case e do
             {:obj, type, data} ->
               header(type, byte_size(data)) <> :zlib.compress(data)
+
+            {:raw, type, size, z} ->
+              header(type, size) <> z
 
             {:ofs, i, d} ->
               header(6, byte_size(d)) <> ofs(pos - Enum.at(starts, i)) <> :zlib.compress(d)
@@ -278,14 +281,161 @@ defmodule BeamComGitTest do
       assert big == :beam_com_git.apply_delta(big, varint(0x10000) <> varint(0x10000) <> <<0x80>>)
     end
 
-    test "zlib_end: the stream ends before the bytes after it" do
-      for data <- ["", "a", :crypto.strong_rand_bytes(5000), :binary.copy("ab", 40_000)] do
+    test "inflate: the data and the end of a stream, before the bytes after it" do
+      big = :crypto.strong_rand_bytes(300_000)
+
+      for data <- ["", "a", :crypto.strong_rand_bytes(5000), :binary.copy("ab", 40_000), big],
+          trailing <- ["", "x", :binary.copy("trailing bytes", 1000)] do
         z = :zlib.compress(data)
-        assert byte_size(z) == :beam_com_git.zlib_end(z <> "trailing bytes", data)
+        assert {data, byte_size(z)} == :beam_com_git.inflate(z <> trailing, byte_size(data))
       end
 
-      assert {:error, ~c"git: the end of a zlib stream is not found", []} ==
-               catch_throw(:beam_com_git.zlib_end("not zlib", "x"))
+      # A stream that ends at the end of a step of the scan.
+      for size <- [4096, 4096 * 3, 64] do
+        z = stored(:binary.copy("q", size - 11))
+        assert size == byte_size(z)
+        assert {_, ^size} = :beam_com_git.inflate(z <> "next", size - 11)
+      end
+
+      assert {:error, ~c"git: a short pack", []} ==
+               catch_throw(
+                 :beam_com_git.inflate(binary_part(:zlib.compress(big), 0, 1000), 300_000)
+               )
+
+      assert {:error, ~c"git: an object has a bad size", []} ==
+               catch_throw(:beam_com_git.inflate(:zlib.compress("abc"), 4))
+
+      # A bad Adler-32 at the end of the stream: in the step of the data,
+      # and in the next step, after all the data.
+      z = :zlib.compress("abc")
+      bad = binary_part(z, 0, byte_size(z) - 1) <> <<0>>
+
+      assert {:error, ~c"git: an object has a bad size", []} ==
+               catch_throw(:beam_com_git.inflate(bad <> "more", 3))
+
+      z = stored(:binary.copy("r", 4089))
+      bad = binary_part(z, 0, byte_size(z) - 1) <> <<0>>
+
+      assert {:error, ~c"git: a bad zlib stream", []} ==
+               catch_throw(:beam_com_git.inflate(bad <> "more", 4089))
+    end
+
+    test "the objects of a pack, one after the other, with many sizes" do
+      blobs =
+        for n <- [0, 1, 63, 64, 65, 4095, 4096, 4097, 70_000], do: :crypto.strong_rand_bytes(n)
+
+      objects = :beam_com_git.objects(pack(for b <- blobs, do: {:obj, 3, b}))
+      assert map_size(objects) == length(blobs)
+      for b <- blobs, do: assert({:blob, b} == objects[name(:blob, b)])
+    end
+
+    # Data whose Adler-32 is also at each fourth byte of the data: a search
+    # for the four bytes of the end finds a copy at each fourth byte.
+    defp adler_data(n) do
+      m = 65_521
+      {at, bt} = {0x4142, 0x4344}
+      d0 = :binary.copy(<<bt::16, at::16>>, n)
+      a0 = Bitwise.band(:erlang.adler32(d0), 0xFFFF)
+      need = rem(at - a0 + m, m)
+      d1 = d0 <> :binary.copy(<<255>>, div(need, 255)) <> <<rem(need, 255)>>
+      a1 = :erlang.adler32(d1)
+      ^at = Bitwise.band(a1, 0xFFFF)
+      k = rem(rem(bt - Bitwise.bsr(a1, 16) + m, m) * inverse(at, m), m)
+      d = d1 <> <<0::size(8 * k)>>
+      <<^bt::16, ^at::16>> = <<:erlang.adler32(d)::32>>
+      d
+    end
+
+    defp inverse(x, m), do: :crypto.mod_pow(x, m - 2, m) |> :binary.decode_unsigned()
+
+    # A zlib stream of stored blocks (no compression).
+    defp stored(data) do
+      <<0x78, 0x01>> <> blocks(data) <> <<:erlang.adler32(data)::32>>
+    end
+
+    defp blocks(<<b::binary-size(65_535), rest::binary>>) when rest != "",
+      do: <<0, 65_535::16-little, 0::16-little>> <> b <> blocks(rest)
+
+    defp blocks(b),
+      do: <<1, byte_size(b)::16-little, Bitwise.bxor(byte_size(b), 0xFFFF)::16-little>> <> b
+
+    # The time of the scan is linear: the search of the end of a stream
+    # took 25 s for 442 KB, and more than the time limit of a test for
+    # this size.
+    test "the end of a stream with many copies of its Adler-32: no quadratic time" do
+      data = adler_data(400_000)
+      objects = :beam_com_git.objects(pack([{:raw, 3, byte_size(data), stored(data)}]))
+      assert {:blob, data} == objects[name(:blob, data)]
+    end
+
+    test "limits: an object larger than its header, the limit of one object and of all" do
+      # 16 MiB of zeros in a stream of 16 KiB, with a header of 1 byte.
+      z = :zlib.compress(<<0::size(16 * 1024 * 1024 * 8)>>)
+
+      assert {:error, ~c"git: an object is larger than the size in its header", []} ==
+               catch_throw(:beam_com_git.objects(pack([{:raw, 3, 1, z}])))
+
+      limits = %{object: 100, total: 250}
+      p = pack([{:obj, 3, :binary.copy("a", 101)}])
+
+      assert {:error, ~c"git: an object of ~b bytes is larger than the limit of ~b bytes",
+              [101, 100]} == catch_throw(:beam_com_git.objects(p, limits))
+
+      three = pack(for c <- ["a", "b", "c"], do: {:obj, 3, :binary.copy(c, 90)})
+
+      assert {:error, ~c"git: the objects of the pack are larger than the limit of ~b bytes",
+              [250]} == catch_throw(:beam_com_git.objects(three, limits))
+
+      # A small delta with a large result: 64 copies of the base of 100 bytes.
+      base = :binary.copy("b", 100)
+      bomb = varint(100) <> varint(6400) <> :binary.copy(<<0x90, 100>>, 64)
+
+      assert {:error,
+              ~c"git: the result of a delta has ~b bytes, more than the limit of ~b bytes",
+              [6400, 200]} ==
+               catch_throw(
+                 :beam_com_git.objects(pack([{:obj, 3, base}, {:ofs, 0, bomb}]), %{
+                   object: 200,
+                   total: 1000
+                 })
+               )
+
+      assert {:error,
+              ~c"git: the result of a delta has ~b bytes, more than the limit of ~b bytes",
+              [6400, 1000]} == catch_throw(:beam_com_git.apply_delta(base, bomb, 1000))
+
+      # The result of a delta counts in the total.
+      ok = varint(100) <> varint(100) <> <<0x90, 100>>
+      limits = %{object: 100, total: 300}
+      objects = :beam_com_git.objects(pack([{:obj, 3, base}, {:ofs, 0, ok}]), limits)
+      assert 1 == map_size(objects)
+
+      assert {:error,
+              ~c"git: the result of a delta has ~b bytes, more than the limit of ~b bytes",
+              [100, 92]} ==
+               catch_throw(
+                 :beam_com_git.objects(
+                   pack([{:obj, 3, base}, {:ofs, 0, ok}, {:ofs, 0, ok}]),
+                   limits
+                 )
+               )
+    end
+
+    test "a short pack with a good checksum" do
+      one = header(3, 1) <> :zlib.compress("x")
+
+      for {count, body} <- [
+            {5, one},
+            {1, <<0xB5>>},
+            {1, header(7, 1) <> :binary.copy(<<1>>, 10)},
+            {1, header(6, 1) <> <<0x80>>},
+            {1, header(3, 100) <> binary_part(:zlib.compress(:binary.copy("y", 100)), 0, 5)}
+          ] do
+        body = "PACK" <> <<2::32, count::32>> <> body
+
+        assert {:error, ~c"git: a short pack", []} ==
+                 catch_throw(:beam_com_git.objects(body <> :crypto.hash(:sha, body)))
+      end
     end
   end
 

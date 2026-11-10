@@ -84,6 +84,15 @@ notes of its release.
   (`git` and `git_subdir`, of an `https` or SSH URL) with the same git client,
   and their deps. `rebar.lock` keeps the commit of each git dep, as
   rebar3 does. See "Git deps" in `docs/PROGRAMS.md`.
+- Checks of the git client of beam.com:
+  - The limits of a pack: 256 MiB for one object, also for the result of
+    a delta, and 1 GiB for all the objects. The inflate of an object
+    stops at the size in its header. Before, a small pack could use all
+    the memory.
+  - The search for the end of each zlib stream of a pack takes linear
+    time. Before, a hostile object of some MiB could stop the build for
+    hours.
+  - A short pack with a good checksum gives the error "a short pack".
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".
