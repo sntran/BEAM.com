@@ -4,7 +4,7 @@
 # with Info-ZIP zip, which keeps the modes:
 #
 #   zipexec/prog  a copy of the check itself (an APE file, mode 0755)
-#   zipexec/echo  a copy of /bin/echo, when it is an ELF file (mode 0755)
+#   zipexec/sh    a copy of /bin/sh, when it is an ELF file (mode 0755)
 #   zipexec/data  a file with no execute bit (mode 0644)
 #
 #   tests/cosmo/zipexec_check.sh OUT
@@ -18,9 +18,9 @@ rm -rf "$stage"
 mkdir -p "$stage/zipexec"
 cp "$out/zipexec_check.com" "$stage/zipexec/prog"
 chmod 755 "$stage/zipexec/prog"
-if [ -f /bin/echo ] && [ "$(head -c 4 /bin/echo | od -An -c | tr -d ' ')" = '177ELF' ]; then
-    cp /bin/echo "$stage/zipexec/echo"
-    chmod 755 "$stage/zipexec/echo"
+if [ -f /bin/sh ] && [ "$(head -c 4 /bin/sh | od -An -c | tr -d ' ')" = '177ELF' ]; then
+    cp /bin/sh "$stage/zipexec/sh"
+    chmod 755 "$stage/zipexec/sh"
 fi
 printf 'data\n' > "$stage/zipexec/data"
 chmod 644 "$stage/zipexec/data"

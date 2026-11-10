@@ -327,9 +327,11 @@ static void check_cache(const char *self, const char *work)
 
 static void check_memfd(const char *work)
 {
-    const char *elf = NULL, *list[] = {"/bin/echo", "/usr/bin/echo"};
+    /* sh, not echo: the echo of uutils (Ubuntu 26.04) refuses to run when
+     * the name of /proc/self/exe is not the name of a tool. */
+    const char *elf = NULL, *list[] = {"/bin/sh", "/usr/bin/sh"};
     char text[256], path[PATH_MAX], proc[32];
-    char *argv[] = {"echo", "memfd", "ok", NULL};
+    char *argv[] = {"sh", "-c", "echo memfd ok", NULL};
     int fd, fds[2], pid, status, flags;
     size_t i;
     ssize_t n;
@@ -344,7 +346,7 @@ static void check_memfd(const char *work)
         if (access(list[i], X_OK) == 0)
             elf = list[i];
     if (!elf) {
-        printf("zipexec_check: no echo program: no check of the memfd\n");
+        printf("zipexec_check: no sh program: no check of the memfd\n");
         return;
     }
     fd = beam_com_zip_memfd(elf);
@@ -428,7 +430,7 @@ static void check_zip(const char *work)
 {
     char cache[256], out[PATH_MAX], msg[PATH_MAX + 256], text[256], proc[32], hex[65];
     char *child[] = {"prog", "--child", "zip", NULL};
-    char *echo[] = {"echo", "memfd", "zip", NULL};
+    char *sh[] = {"sh", "-c", "echo memfd zip", NULL};
     int fd, fds[2], pid, status, programs = 1;
     ssize_t n;
 
@@ -451,14 +453,14 @@ static void check_zip(const char *work)
     CHECK(run(out, child, text, sizeof(text)) == 0 && strcmp(text, "child zip\n") == 0);
     /* The second hash comes from memory. */
     CHECK(beam_com_zip_hash("/zip/zipexec/prog", hex) == 0 && strstr(out, hex) != NULL);
-    if (access("/zip/zipexec/echo", F_OK) == 0) {
+    if (access("/zip/zipexec/sh", F_OK) == 0) {
         programs++;
-        if (IsLinux() && (fd = beam_com_zip_memfd("/zip/zipexec/echo")) >= 0) {
+        if (IsLinux() && (fd = beam_com_zip_memfd("/zip/zipexec/sh")) >= 0) {
             CHECK(pipe(fds) == 0);
             if ((pid = fork()) == 0) {
                 dup2(fds[1], 1);
                 snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
-                __sys_execve(proc, echo, environ);
+                __sys_execve(proc, sh, environ);
                 _exit(127);
             }
             close(fds[1]);

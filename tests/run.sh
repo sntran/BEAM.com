@@ -1061,22 +1061,35 @@ if [ -d examples ]; then
         check runtime_check.com 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs'
         unset RUNTIME_CHECK_GREETING
     fi
-    # The programs of the zip: a copy of /bin/echo in priv/bin, in a Mix
-    # release (config/runtime.exs) and in a plain Mix project. On Linux,
+    # The programs of the zip: a small echo program that cc compiles here
+    # (not /bin/echo: the echo of uutils of Ubuntu 26.04 refuses a name
+    # that is not the name of a tool) in priv/bin, in a Mix release
+    # (config/runtime.exs) and in a plain Mix project. On Linux,
     # the program runs from a memfd, with no file in the cache. With
     # BEAM_COM_MEMFD=0, and on the other systems, it runs from its copy
     # CACHE/bin/SHA256/prog: one copy, the same file at the next run, and
     # one whole file for two runs at the same time. A cache directory that
     # other users can write, and a sandbox whose --allow-run does not name
     # the program, give an error and run nothing. The cache is in DIR.
-    if [ -f /bin/echo ]; then
+    zecho=$(cd "$dir" && pwd)/zip_echo
+    printf '%s\n' '#include <stdio.h>' \
+        'int main(int argc, char **argv) {' \
+        '    for (int i = 1; i < argc; i++) printf(i > 1 ? " %s" : "%s", argv[i]);' \
+        '    printf("\n");' \
+        '    return 0;' \
+        '}' > "$zecho.c"
+    rm -f "$zecho"
+    if ! cc -std=c99 -o "$zecho" "$zecho.c"; then
+        zip_fail "cc: no program for the check of the programs of the zip"
+    fi
+    if [ -x "$zecho" ]; then
         zcache=$(cd "$dir" && pwd)/zip-cache
         rm -rf "$zcache"
         BEAM_COM_CACHE=$zcache
         export BEAM_COM_CACHE
-        zip_programs zip_rel /bin/echo \
+        zip_programs zip_rel "$zecho" \
             'Mix gets the deps of .*zip_rel and makes its release (config/runtime.exs)@@wrote .*zip_rel.com'
-        zip_programs zip_plain /bin/echo 'wrote .*zip_plain.com' --tool mix
+        zip_programs zip_plain "$zecho" 'wrote .*zip_plain.com' --tool mix
         zline='zip_programs: zip port 0 hello zip (@@zip_programs: zip cmd 0 hello zip ('
         zprog=/zip/lib/zip_programs-0.1.0/priv/bin/prog
         if [ -f "$dir/zip_rel.com" ]; then
@@ -1138,6 +1151,7 @@ if [ -d examples ]; then
         unset BEAM_COM_CACHE
         rm -rf "$zcache" "$dir/zip_rel.com" "$dir/zip_plain.com"
     fi
+    rm -f "$zecho" "$zecho.c"
     # Run mode with a Mix project whose build writes a file in priv/: the
     # alias assets.deploy of tests/programs/rebuild_check writes a new
     # time, as phx.digest of Phoenix does. The second run must not build

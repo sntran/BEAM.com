@@ -325,7 +325,11 @@ systems, Windows too).
   `F_SEAL_SEAL`), and starts it through `/proc/self/fd/N`. Nothing goes
   to the disk. `/proc/self/exe` of the program is the memfd, so a program
   that reads its own file works: the tailwind program of Tailwind CSS 4
-  is one file of Bun, and `tests/run.sh` runs it from a memfd. When the
+  is one file of Bun, and `tests/run.sh` runs it from a memfd. The path
+  of `/proc/self/exe` is `/memfd:NAME (deleted)`, so a program that
+  needs that name (for example the multi-call tools of uutils, which
+  compare it with the name of the tool) does not run: start it with
+  `BEAM_COM_MEMFD=0` in the environment of the VM. When the
   kernel refuses (`vm.memfd_noexec=2`, an old kernel, no `/proc`), for
   a script or an APE file, in a sandbox, and with `BEAM_COM_MEMFD=0`,
   the program runs from its copy in the cache.
