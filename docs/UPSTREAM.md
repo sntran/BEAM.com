@@ -396,10 +396,10 @@ forker port starts no `erl_child_setup`
   converts it.
 - The write end of the pipe is non-blocking, as on Unix. A pipe of
   Cosmopolitan on Windows has a buffer of 4 KiB (`PIPE_BUF`,
-  `libc/calls/pipe-nt.c`). A non-blocking write that does not fit is
-  cancelled with `EAGAIN` (`libc/calls/readwrite-nt.c`), also when a
-  reader waits and a part of the data went into the pipe: that data is
-  lost. And `poll()` and `select()` report a write end as ready at once,
+  `libc/calls/pipe-nt.c`). Cosmopolitan cancels a non-blocking write
+  that does not fit, and gives `EAGAIN` (`libc/calls/readwrite-nt.c`).
+  It does this also when a reader waits and a part of the data went
+  into the pipe: that data is lost. And `poll()` and `select()` report a write end as ready at once,
   also when the pipe is full. In a test, 3000 bytes to `cat` came back
   in 27 ms, and of 5000 bytes, only 40 came back in 20 s. The wraps of
   `write()`, `writev()` and `select()` in `c_src/cosmo/beam_com_pipe.c`
