@@ -561,7 +561,7 @@ resolve(Deps, Lock, Registry) ->
     Queue = [{Name, Pkg, Req, "rebar.config", true} || {Name, Pkg, Req} <- Deps],
     resolve(Queue, Lock, Registry, #{}).
 
-%%% The git deps of a rebar3 project (beam_com_git, over HTTPS): the
+%%% The git deps of a rebar3 project (beam_com_git, over HTTPS or SSH): the
 %%% commit of rebar.lock, else of the ref of rebar.config. Each git dep
 %%% can have deps in its own rebar.config: its git deps come next, and
 %%% its Hex packages go to the resolution, as deps of the git dep.

@@ -420,16 +420,20 @@ note(P, Note) ->
 %%% The connection.
 
 %% The settings of the URL: #{user, host, port, path, name, keys,
-%% agent, known, revoked, notes}.
+%% agent, known, revoked, notes}. Opts (for the tests): dir (~/.ssh),
+%% agent, agent_bridge, local_user, global_known_hosts, getenv and
+%% timeout.
 settings(Url0, Opts) ->
     %% The URL of the messages, with no password.
     Url = beam_com_git:redact(Url0),
+    %% The option getenv is for the tests (the environment is global).
+    Getenv = maps:get(getenv, Opts, fun os:getenv/2),
     {User0, Alias, Port0, Path} = case parse_url(Url0) of
                                       none -> throw({error, "~ts: not an SSH URL", [Url]});
                                       Parsed -> Parsed
                                   end,
     [throw({error, "~ts: ~ts names a program, and beam.com cannot run it; install git",
-           [Url, V]}) || V <- ["GIT_SSH_COMMAND", "GIT_SSH"], os:getenv(V, "") =/= ""],
+           [Url, V]}) || V <- ["GIT_SSH_COMMAND", "GIT_SSH"], Getenv(V, "") =/= ""],
     Dir = maps:get(dir, Opts, filename:join(home(), ".ssh")),
     Read = fun(F) -> case file:read_file(F) of {ok, B} -> B; _ -> <<>> end end,
     Include = fun(Args) ->
@@ -493,7 +497,7 @@ settings(Url0, Opts) ->
     #{user => User, host => Host, port => Port, path => Path, name => Name,
       keys => Keys, agent => Agent, known => Known, revoked => Revoked,
       locked => [F || {F, B} <- Locked, not lists:member(B, AgentKeys)],
-      known_files => KnownFiles}.
+      known_files => KnownFiles, timeout => maps:get(timeout, Opts, ?TIMEOUT)}.
 
 port(Text, Url, Dir) ->
     case string:to_integer(Text) of
@@ -637,7 +641,8 @@ session(Url0, Opts, Fun) ->
         _ = ssh_connection:setenv(Conn, Ch, "GIT_PROTOCOL", "version=2", ?TIMEOUT),
         success = ok(Url, ssh_connection:exec(Conn, Ch, "git-upload-pack " ++ quote(maps:get(path, S)),
                                               ?TIMEOUT)),
-        St = #{conn => Conn, ch => Ch, buf => <<>>, url => Url, eof => false},
+        St = #{conn => Conn, ch => Ch, buf => <<>>, url => Url, eof => false,
+               timeout => maps:get(timeout, S)},
         {Adv, St1} = read_flush(St, 16 * 1024 * 1024),
         Version = case lists:member(<<"version 2">>, [string:trim(L, trailing, "\n")
                                                       || L <- Adv, is_binary(L)]) of
@@ -649,7 +654,15 @@ session(Url0, Opts, Fun) ->
         _ = ssh_connection:send_eof(Conn, Ch),
         Result
     after
-        ssh:close(Conn)
+        ssh:close(Conn),
+        flush_cm(Conn)
+    end.
+
+%% The messages of the channel after the end of the connection, for
+%% example {ssh_cm, Conn, {closed, 0}}, leave the mailbox of the caller.
+flush_cm(Conn) ->
+    receive {ssh_cm, Conn, _} -> flush_cm(Conn)
+    after 0 -> ok
     end.
 
 ok(_Url, success) -> success;
@@ -797,9 +810,9 @@ recv(#{conn := Conn, ch := Ch, buf := Buf, eof := false} = S) ->
         {ssh_cm, Conn, {exit_status, Ch, _}} -> recv(S);
         {ssh_cm, Conn, {eof, Ch}} -> S#{eof := true};
         {ssh_cm, Conn, {closed, Ch}} -> S#{eof := true}
-    after ?TIMEOUT ->
-            throw({error, "~ts: the SSH server sent nothing for ~b s", [maps:get(url, S),
-                                                                       ?TIMEOUT div 1000]})
+    after maps:get(timeout, S) ->
+            throw({error, "~ts: the SSH server sent nothing for ~b s",
+                   [maps:get(url, S), maps:get(timeout, S) div 1000]})
     end;
 recv(S) ->
     Err = string:trim(maps:get(err, S, <<>>)),

@@ -426,6 +426,49 @@ defmodule BeamComGitSshTest do
       assert_receive {:ssh_fixture, :exec, "git-upload-pack '/org/repo.git'",
                       {"GIT_PROTOCOL", "version=2"}},
                      5_000
+
+      # No message of the connection stays in the mailbox.
+      refute_receive {:ssh_cm, _, _}, 200
+    end
+
+    test "the errors of the channel: too large, no data, the end with stderr", ctx do
+      port = daemon(ctx, {:v2, ctx.repo, ["refs/tags/v1"]})
+      url = "ssh://git@127.0.0.1:#{port}/r"
+      body = fn _adv -> [:beam_com_git.pkt("command=ls-refs\n"), "0000"] end
+
+      assert {:error, ~c"~ts: the answer of the server is too large", [^url]} =
+               catch_throw(:beam_com_git_ssh.ls_refs(url, body, 10, ctx.opts))
+
+      port = daemon(ctx, {:silent})
+      url = "ssh://git@127.0.0.1:#{port}/r"
+
+      assert {:error, ~c"~ts: the SSH server sent nothing for ~b s", [^url, 1]} =
+               catch_throw(
+                 :beam_com_git.resolve(url, :head, put_in(ctx.opts, [:ssh, :timeout], 1000))
+               )
+
+      port = daemon(ctx, {:stderr, "fatal: no such repository\n"})
+      url = "ssh://git@127.0.0.1:#{port}/r"
+
+      assert {:error, ~c"~ts: the SSH server closed the channel~ts", [^url, text]} =
+               catch_throw(:beam_com_git.resolve(url, :head, ctx.opts))
+
+      assert IO.chardata_to_string(text) == ": fatal: no such repository"
+    end
+
+    test "version 0 with no side band, or with no shallow fetch", ctx do
+      {_pack, commit} = ctx.repo
+
+      for {caps, text} <- [
+            {"ofs-delta shallow", "with no side band"},
+            {"side-band-64k ofs-delta", "with no shallow fetch"}
+          ] do
+        port = daemon(ctx, {:v0, ctx.repo, ["refs/tags/v1"], caps})
+        url = "ssh://git@127.0.0.1:#{port}/r"
+        assert commit == :beam_com_git.resolve(url, {:tag, ~c"v1"}, ctx.opts)
+        assert {:error, format, [^url]} = catch_throw(:beam_com_git.fetch(url, commit, ctx.opts))
+        assert List.to_string(format) =~ text
+      end
     end
 
     test "version 0: the refs of the advertisement, want, deepen and done", ctx do
@@ -678,15 +721,18 @@ defmodule BeamComGitSshTest do
               [_, ~c"ProxyJump", _]} =
                catch_throw(:beam_com_git.resolve("j:r", :head, ctx.opts))
 
-      System.put_env("GIT_SSH_COMMAND", "ssh -i key")
-
-      try do
-        assert {:error, ~c"~ts: ~ts names a program, and beam.com cannot run it; install git",
-                [_, ~c"GIT_SSH_COMMAND"]} =
-                 catch_throw(:beam_com_git.resolve("h:r", :head, ctx.opts))
-      after
-        System.delete_env("GIT_SSH_COMMAND")
+      # The environment of the test: the option getenv (the environment of
+      # the VM is global, and the tests run at the same time).
+      getenv = fn
+        ~c"GIT_SSH_COMMAND", _ -> ~c"ssh -i key"
+        _, default -> default
       end
+
+      assert {:error, ~c"~ts: ~ts names a program, and beam.com cannot run it; install git",
+              [_, ~c"GIT_SSH_COMMAND"]} =
+               catch_throw(
+                 :beam_com_git.resolve("h:r", :head, put_in(ctx.opts, [:ssh, :getenv], getenv))
+               )
 
       assert {:error, ~c"~ts: not an SSH URL", _} =
                catch_throw(:beam_com_git_ssh.ls_refs("https://h/r", [], 1, ctx.opts))

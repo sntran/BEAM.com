@@ -10,6 +10,10 @@ defmodule BeamCom.SshFixture do
     server refuses the variable, as OpenSSH does by default).
   - `{:git, dir}`: the `git-upload-pack` program for the repository
     `dir`, and `{:git_v0, dir}` with no `GIT_PROTOCOL`.
+  - `{:v0, repo, refs, caps}`: version 0 with the capabilities `caps`.
+  - `{:silent}`: no answer to the exec.
+  - `{:stderr, text}`: `text` on the standard error, then the end of the
+    channel with the exit status 1.
 
   The daemon sends `{:ssh_fixture, :exec, command, env}` to the test.
   """
@@ -106,7 +110,18 @@ defmodule BeamCom.SshFixture do
   def handle_ssh_msg({:ssh_cm, conn, {:exec, ch, want, cmd}}, st) do
     :ssh_connection.reply_request(conn, want, :success, ch)
     send(st.owner, {:ssh_fixture, :exec, to_string(cmd), st.env})
-    {:ok, upload_pack(st.mode, %{st | phase: :start})}
+
+    case st.mode do
+      {:silent} ->
+        {:ok, st}
+
+      {:stderr, text} ->
+        :ssh_connection.send(conn, ch, 1, text)
+        finish(st, 1)
+
+      _ ->
+        {:ok, upload_pack(st.mode, %{st | phase: :start})}
+    end
   end
 
   def handle_ssh_msg({:ssh_cm, _conn, {:data, _ch, 0, data}}, %{port: port} = st)
@@ -149,21 +164,25 @@ defmodule BeamCom.SshFixture do
     %{st | port: port}
   end
 
-  defp upload_pack({version, {_pack, commit}, refs}, st) do
+  defp upload_pack({:v0, repo, refs, caps}, st), do: advertise(repo, refs, caps, st)
+
+  defp upload_pack({version, repo, refs}, st) do
     if version == :v2 and st.env == {"GIT_PROTOCOL", "version=2"} do
       reply(st, [pkt("version 2\n"), pkt("ls-refs\n"), pkt("fetch=shallow\n"), "0000"])
       %{st | phase: :v2}
     else
-      caps = "side-band-64k ofs-delta shallow no-progress"
-
-      reply(st, [
-        pkt("#{commit} HEAD\0#{caps}\n"),
-        for(r <- refs, do: pkt("#{commit} #{r}\n")),
-        "0000"
-      ])
-
-      %{st | phase: :wants}
+      advertise(repo, refs, "side-band-64k ofs-delta shallow no-progress", st)
     end
+  end
+
+  defp advertise({_pack, commit}, refs, caps, st) do
+    reply(st, [
+      pkt("#{commit} HEAD\0#{caps}\n"),
+      for(r <- refs, do: pkt("#{commit} #{r}\n")),
+      "0000"
+    ])
+
+    %{st | phase: :wants}
   end
 
   # The requests of the client, after each complete one.
