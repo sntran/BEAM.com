@@ -20,14 +20,20 @@
 
 -export([reasons/1, release/2, child/0]).
 
-%% The tarball of @esbuild/win32-x64 has about 4 MB.
+-define(NPM, "https://registry.npmjs.org").
+%% The metadata of one version of a package on npm has some KB.
+-define(NPM_META_MAX, 1024 * 1024).
+%% The tarball of @esbuild/win32-x64 has about 4 MB, and about 11 MB
+%% without compression (0.25.4).
 -define(ESBUILD_MAX, 64 * 1024 * 1024).
+-define(ESBUILD_UNPACKED, 128 * 1024 * 1024).
 %% The replacement of a byte that is not UTF-8 in the output of Mix.
 -define(BAD_CHAR, <<16#FFFD/utf8>>).
 
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
-         asset_tools/2, esbuild_exe/3, relay/1, status/1, watch_input/2]).
+         asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0,
+         windows_assets/2, relay/1, status/1, watch_input/2]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -256,11 +262,20 @@ steps(Config) ->
 %% tailwind gets the target "windows-x64.exe" (it downloads that
 %% program itself), and esbuild gets the path of esbuild.exe from npm,
 %% because esbuild has no setting for the target. Cosmopolitan runs
-%% only x86-64 programs on Windows.
+%% only x86-64 programs on Windows. Only the step assets.deploy runs
+%% these programs: with no such alias, or with a dep that is not in the
+%% environment of Mix, nothing changes, and nothing is downloaded.
 windows_assets({_, windows}, Config) ->
-    Get = fun(App, Key) -> application:get_env(App, Key, undefined) end,
-    Deps = [Name || {Name, _} <- dep_opts(proplists:get_value(deps, Config, []))],
-    lists:foreach(fun windows_asset/1, asset_tools(Get, Deps));
+    case has_alias(Config, 'assets.deploy') of
+        true ->
+            Get = fun(App, Key) -> application:get_env(App, Key, undefined) end,
+            Env = 'Elixir.Mix':env(),
+            Deps = [Name || {Name, Opts} <- dep_opts(proplists:get_value(deps, Config, [])),
+                            in_env(Opts, Env)],
+            lists:foreach(fun windows_asset/1, asset_tools(Get, Deps));
+        false ->
+            ok
+    end;
 windows_assets(_Os, _Config) ->
     ok.
 
@@ -285,28 +300,142 @@ asset_tools(Get, Deps) ->
         ++ [esbuild || lists:member(esbuild, Deps), Get(esbuild, path) =:= undefined,
                        Get(esbuild, version) =/= undefined].
 
-%% The esbuild.exe of the package @esbuild/win32-x64 of npm, at
+%% The esbuild.exe of the npm package for Windows x64 of esbuild, at
 %% Dir/esbuild-win32-x64-VERSION.exe: the path. A second build uses the
-%% file again. Http: the function of beam_com_hex:http/5.
+%% file again. Http: the function of beam_com_hex:http/5. The checks are
+%% the checks of Esbuild.NpmRegistry.fetch_package!/2 of the Hex package
+%% esbuild (0.8.0 and later), and some more (see esbuild_package/3).
 esbuild_exe(Version, Dir, Http) ->
+    esbuild_exe(Version, Dir, Http, #{keys => npm_keys(), unpacked => ?ESBUILD_UNPACKED}).
+
+esbuild_exe(Version, Dir, Http, Limits) ->
     Path = filename:join(Dir, "esbuild-win32-x64-" ++ Version ++ ".exe"),
-    filelib:is_regular(Path) orelse
-        begin
-            Url = "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-"
-                ++ Version ++ ".tgz",
-            Tgz = Http(get, Url, [], none, ?ESBUILD_MAX),
-            Exe = case erl_tar:extract({binary, Tgz},
-                                       [compressed, memory, {files, ["package/esbuild.exe"]}]) of
-                      {ok, [{_, Data}]} -> Data;
-                      _ -> throw({error, "~ts: no package/esbuild.exe", [Url]})
-                  end,
-            Temp = Path ++ ".new",
-            ok = filelib:ensure_dir(Path),
-            ok = file:write_file(Temp, Exe),
-            ok = file:change_mode(Temp, 8#755),
-            ok = file:rename(Temp, Path)
-        end,
+    filelib:is_regular(Path) orelse write_exe(Path, esbuild_package(Version, Http, Limits)),
     Path.
+
+%% The npm package of esbuild for Windows x64: @esbuild/win32-x64 since
+%% esbuild 0.16.0, else esbuild-windows-64.
+esbuild_name(Version) ->
+    Legacy = try
+                 [Major, Minor | _] = [list_to_integer(P) || P <- string:split(Version, ".", all)],
+                 {Major, Minor} < {0, 16}
+             catch
+                 error:_ -> false
+             end,
+    case Legacy of
+        true -> "esbuild-windows-64";
+        false -> "@esbuild/win32-x64"
+    end.
+
+%% esbuild.exe of the package. The metadata of the version on npm gives
+%% the integrity (the SHA-512 of the tarball) and the signatures of npm
+%% over "ID:INTEGRITY". The signature must be valid for a key of
+%% npm_keys/0, the ID must be the package and the version, and the
+%% tarball must have the SHA-512 of the integrity. Thus TLS is not the
+%% only check of the bytes. The tarball has at most ?ESBUILD_MAX bytes,
+%% and at most Unpacked bytes without compression: erl_tar keeps all
+%% the data in memory.
+esbuild_package(Version, Http, #{keys := Keys, unpacked := Unpacked}) ->
+    Name = esbuild_name(Version),
+    Url = ?NPM ++ "/" ++ Name ++ "/" ++ Version,
+    Meta = try json:decode(Http(get, Url, [], none, ?NPM_META_MAX))
+           catch error:_ -> throw({error, "~ts: the metadata is not JSON", [Url]})
+           end,
+    {Id, Integrity, Signatures, TarUrl} =
+        case Meta of
+            #{<<"_id">> := I, <<"dist">> := #{<<"integrity">> := In, <<"signatures">> := S,
+                                             <<"tarball">> := <<"https://", _/binary>> = T}}
+              when is_binary(I), is_binary(In), is_list(S) ->
+                {I, In, S, binary_to_list(T)};
+            _ ->
+                throw({error, "~ts: the metadata has no _id, integrity, signatures "
+                       "or https tarball", [Url]})
+        end,
+    Id =:= unicode:characters_to_binary(Name ++ "@" ++ Version) orelse
+        throw({error, "~ts: the metadata is for ~ts", [Url, Id]}),
+    verify_npm(Url, <<Id/binary, ":", Integrity/binary>>, Signatures, Keys),
+    Sum = case Integrity of
+              <<"sha512-", Base64/binary>> ->
+                  try base64:decode(Base64)
+                  catch error:_ -> throw({error, "~ts: a bad integrity: ~ts", [Url, Integrity]})
+                  end;
+              _ ->
+                  throw({error, "~ts: the integrity is not sha512: ~ts", [Url, Integrity]})
+          end,
+    Tgz = Http(get, TarUrl, [], none, ?ESBUILD_MAX),
+    crypto:hash(sha512, Tgz) =:= Sum orelse
+        throw({error, "~ts: the SHA-512 of the tarball is not the signed integrity", [TarUrl]}),
+    case erl_tar:extract({binary, gunzip(TarUrl, Tgz, Unpacked)},
+                         [memory, {files, ["package/esbuild.exe"]}]) of
+        {ok, [{_, Data}]} -> Data;
+        _ -> throw({error, "~ts: no package/esbuild.exe", [TarUrl]})
+    end.
+
+%% A signature of npm over Message, with a key of Keys: ok, else a throw.
+verify_npm(Url, Message, Signatures, Keys) ->
+    Known = [{maps:get(K, Keys), Sig} || #{<<"keyid">> := K, <<"sig">> := Sig} <- Signatures,
+                                         is_map_key(K, Keys), is_binary(Sig)],
+    Known =/= [] orelse
+        throw({error, "~ts: no signature of a known key of npm", [Url]}),
+    lists:any(fun({Key, Sig}) ->
+                      try public_key:verify(Message, sha256, base64:decode(Sig), Key)
+                      catch _:_ -> false
+                      end
+              end, Known) orelse
+        throw({error, "~ts: the signature of npm is not valid", [Url]}),
+    ok.
+
+%% The data of a gzip file, with at most Max bytes.
+gunzip(Url, Data, Max) ->
+    Z = zlib:open(),
+    try
+        ok = zlib:inflateInit(Z, 31),
+        inflate(Z, Data, Url, Max, 0, [])
+    catch
+        error:_ -> throw({error, "~ts: not a gzip file", [Url]})
+    after
+        zlib:close(Z)
+    end.
+
+inflate(Z, Data, Url, Max, Size, Parts) ->
+    {Status, Part} = zlib:safeInflate(Z, Data),
+    Size1 = Size + iolist_size(Part),
+    Size1 =< Max orelse
+        throw({error, "~ts: the tarball has more than ~b bytes without compression", [Url, Max]}),
+    case Status of
+        continue -> inflate(Z, <<>>, Url, Max, Size1, [Part | Parts]);
+        finished -> iolist_to_binary(lists:reverse([Part | Parts]))
+    end.
+
+%% Write the program at Path: a new file, then a rename.
+write_exe(Path, Exe) ->
+    Temp = Path ++ ".new",
+    Check = fun(ok, _File) -> ok;
+               ({error, Reason}, File) ->
+                    throw({error, "~ts: ~ts", [File, file:format_error(Reason)]})
+            end,
+    Check(filelib:ensure_dir(Path), filename:dirname(Path)),
+    Check(file:write_file(Temp, Exe), Temp),
+    Check(file:change_mode(Temp, 8#755), Temp),
+    Check(file:rename(Temp, Path), Path).
+
+%% The public keys of the npm registry, by key id. The source:
+%% https://registry.npmjs.org/-/npm/v1/keys, the same keys as @public_keys
+%% in lib/esbuild/npm_registry.ex of the Hex package esbuild. When npm
+%% adds a key, add it here from that URL: the key id, and the key in PEM.
+npm_keys() ->
+    maps:from_list(
+      [{Id, public_key:pem_entry_decode(hd(public_key:pem_decode(Pem)))}
+       || {Id, Pem} <- [{<<"SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA">>,
+                         <<"-----BEGIN PUBLIC KEY-----\n"
+                           "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE1Olb3zMAFFxXKHiIkQO5cJ3Yhl5i\n"
+                           "6UPp+IhuteBJbuHcA5UogKo0EWtlWwW6KSaKoTNEYL7JlCQiVnkhBktUgg==\n"
+                           "-----END PUBLIC KEY-----\n">>},
+                        {<<"SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U">>,
+                         <<"-----BEGIN PUBLIC KEY-----\n"
+                           "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY6Ya7W++7aUPzvMTrezH6Ycx3c+H\n"
+                           "OKYCcNGybJZSCJq/fd7Qa8uuAKtdIkUQtQiEKERhAmE5lMMJhP8OkDOa2g==\n"
+                           "-----END PUBLIC KEY-----\n">>}]]).
 
 run(Task, Args) ->
     'Elixir.Mix.Task':run(list_to_binary(Task), [list_to_binary(A) || A <- Args]),
@@ -353,9 +482,12 @@ dep_opts(Deps) ->
      end || D <- Deps].
 
 in_prod(Opts) ->
-    case proplists:get_value(only, Opts, prod) of
-        Only when is_list(Only) -> lists:member(prod, Only);
-        Only -> Only =:= prod
+    in_env(Opts, prod).
+
+in_env(Opts, Env) ->
+    case proplists:get_value(only, Opts, Env) of
+        Only when is_list(Only) -> lists:member(Env, Only);
+        Only -> Only =:= Env
     end.
 
 not_hex(Opts) ->

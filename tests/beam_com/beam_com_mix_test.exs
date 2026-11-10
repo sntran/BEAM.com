@@ -105,34 +105,186 @@ defmodule BeamComMixTest do
              )
   end
 
-  test "esbuild_exe: esbuild.exe of the npm tarball, and the file again", %{dir: dir} do
-    tgz = Path.join(dir, "e.tgz")
-    :ok = :erl_tar.create(tgz, [{~c"package/esbuild.exe", "MZ exe"}], [:compressed])
-    data = File.read!(tgz)
-    out = Path.join(dir, "_build") |> String.to_charlist()
+  describe "esbuild_exe" do
+    # A package of npm as the registry gives it: the metadata of the
+    # version, with the integrity and a signature over "ID:INTEGRITY",
+    # and the tarball. The key is a new key of the test.
+    setup %{dir: dir} do
+      key = :public_key.generate_key({:namedCurve, :secp256r1})
+      {:ECPrivateKey, _, _, params, point, _} = key
+      tgz = npm_tarball(dir, [{~c"package/esbuild.exe", "MZ exe"}])
 
-    http = fn :get, url, [], :none, _max ->
-      send(self(), {:url, url})
-      data
+      %{
+        key: key,
+        tgz: tgz,
+        limits: %{keys: %{"SHA256:test" => {{:ECPoint, point}, params}}, unpacked: 1_000_000},
+        out: Path.join(dir, "_build") |> String.to_charlist()
+      }
     end
 
-    path = :beam_com_mix.esbuild_exe(~c"0.25.4", out, http)
-    assert path == Path.join(out, "esbuild-win32-x64-0.25.4.exe") |> String.to_charlist()
-    assert "MZ exe" == File.read!(path)
-    assert {:ok, %File.Stat{mode: mode}} = File.stat(path)
-    assert Bitwise.band(mode, 0o777) == 0o755
+    test "esbuild.exe of a signed package, and the file again", c do
+      http = npm_http(npm_meta(c, "@esbuild/win32-x64", "0.25.4"), c.tgz)
+      path = :beam_com_mix.esbuild_exe(~c"0.25.4", c.out, http, c.limits)
+      assert path == Path.join(c.out, "esbuild-win32-x64-0.25.4.exe") |> String.to_charlist()
+      assert "MZ exe" == File.read!(path)
+      assert {:ok, %File.Stat{mode: mode}} = File.stat(path)
+      assert Bitwise.band(mode, 0o777) == 0o755
+      assert_received {:get, ~c"https://registry.npmjs.org/@esbuild/win32-x64/0.25.4", 1_048_576}
 
-    assert_receive {:url,
-                    ~c"https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.4.tgz"},
-                   5_000
+      assert_received {:get,
+                       ~c"https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.4.tgz",
+                       67_108_864}
 
-    assert path == :beam_com_mix.esbuild_exe(~c"0.25.4", out, fn _, _, _, _, _ -> flunk() end)
+      assert path == :beam_com_mix.esbuild_exe(~c"0.25.4", c.out, fn _, _, _, _, _ -> flunk() end)
+      refute File.exists?(path ++ ~c".new")
+    end
 
-    :ok = :erl_tar.create(tgz, [{~c"package/README.md", "no exe"}], [:compressed])
-    other = File.read!(tgz)
+    test "esbuild before 0.16.0: the package esbuild-windows-64", c do
+      http = npm_http(npm_meta(c, "esbuild-windows-64", "0.15.18"), c.tgz)
+      path = :beam_com_mix.esbuild_exe(~c"0.15.18", c.out, http, c.limits)
+      assert "MZ exe" == File.read!(path)
+      assert_received {:get, ~c"https://registry.npmjs.org/esbuild-windows-64/0.15.18", _}
+    end
 
-    assert {:error, ~c"~ts: no package/esbuild.exe", [_url]} =
-             catch_throw(:beam_com_mix.esbuild_exe(~c"0.1.0", out, fn _, _, _, _, _ -> other end))
+    test "a signature that is not valid, or of no known key", c do
+      meta = npm_meta(c, "@esbuild/win32-x64", "0.25.4")
+      [sig] = meta["dist"]["signatures"]
+      other = Base.encode64(:public_key.sign("another text", :sha256, c.key))
+
+      for {sigs, text} <- [
+            {[%{sig | "sig" => other}], ~c"~ts: the signature of npm is not valid"},
+            {[%{sig | "sig" => "not base64!"}], ~c"~ts: the signature of npm is not valid"},
+            {[%{sig | "keyid" => "SHA256:other"}], ~c"~ts: no signature of a known key of npm"},
+            {[], ~c"~ts: no signature of a known key of npm"}
+          ] do
+        meta = put_in(meta, ["dist", "signatures"], sigs)
+
+        assert {:error, ^text, [_]} =
+                 catch_throw(
+                   :beam_com_mix.esbuild_exe(~c"0.25.4", c.out, npm_http(meta, c.tgz), c.limits)
+                 )
+      end
+
+      # The real metadata of @esbuild/win32-x64 0.25.4 on npm, with the
+      # real keys of npm.
+      id = "@esbuild/win32-x64@0.25.4"
+
+      integrity =
+        "sha512-nOT2vZNw6hJ+z43oP1SPea/G/6AbN6X+bGNhNuq8NtRHy4wsMhw765IKLNmnjek7GvjWBYQ8Q5VBoYTFg9y1UQ=="
+
+      real = [
+        %{
+          "keyid" => "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+          "sig" =>
+            "MEUCIBu9dqofAKq4xtr/lFRugJQ+3P+RCP62/nhAjhpVaGLMAiEAzGnN+hQLvISnIANHqE37Mzwb1pkgu0iibSm4IkFJPyw="
+        }
+      ]
+
+      keys = :beam_com_mix.npm_keys()
+      assert 2 == map_size(keys)
+      assert :ok == :beam_com_mix.verify_npm(~c"u", id <> ":" <> integrity, real, keys)
+
+      assert {:error, ~c"~ts: the signature of npm is not valid", _} =
+               catch_throw(:beam_com_mix.verify_npm(~c"u", id <> ":" <> "x", real, keys))
+    end
+
+    test "metadata of another package, or with no integrity", c do
+      cases = [
+        {npm_meta(c, "@esbuild/win32-x64", "0.25.3"), ~c"~ts: the metadata is for ~ts"},
+        {%{"_id" => "x"},
+         ~c"~ts: the metadata has no _id, integrity, signatures or https tarball"},
+        {put_in(
+           npm_meta(c, "@esbuild/win32-x64", "0.25.4"),
+           ["dist", "tarball"],
+           "http://x/t.tgz"
+         ), ~c"~ts: the metadata has no _id, integrity, signatures or https tarball"},
+        {npm_meta(c, "@esbuild/win32-x64", "0.25.4", "sha1-AAAA"),
+         ~c"~ts: the integrity is not sha512: ~ts"},
+        {npm_meta(c, "@esbuild/win32-x64", "0.25.4", "sha512-!"), ~c"~ts: a bad integrity: ~ts"}
+      ]
+
+      for {meta, text} <- cases do
+        assert {:error, ^text, _} =
+                 catch_throw(
+                   :beam_com_mix.esbuild_exe(~c"0.25.4", c.out, npm_http(meta, c.tgz), c.limits)
+                 )
+      end
+
+      assert {:error, ~c"~ts: the metadata is not JSON", _} =
+               catch_throw(
+                 :beam_com_mix.esbuild_exe(
+                   ~c"0.25.4",
+                   c.out,
+                   fn _, _, _, _, _ -> "<html>" end,
+                   c.limits
+                 )
+               )
+    end
+
+    test "a tarball that is not the signed one, not gzip, too large, or with no esbuild.exe",
+         %{dir: dir} = c do
+      meta = npm_meta(c, "@esbuild/win32-x64", "0.25.4")
+
+      assert {:error, ~c"~ts: the SHA-512 of the tarball is not the signed integrity", _} =
+               catch_throw(
+                 :beam_com_mix.esbuild_exe(~c"0.25.4", c.out, npm_http(meta, "other"), c.limits)
+               )
+
+      tgzs = [
+        {"not gzip", ~c"~ts: not a gzip file"},
+        {npm_tarball(dir, [{~c"package/esbuild.exe", :binary.copy("x", 1_000_001)}]),
+         ~c"~ts: the tarball has more than ~b bytes without compression"},
+        {npm_tarball(dir, [{~c"package/README.md", "no exe"}]), ~c"~ts: no package/esbuild.exe"}
+      ]
+
+      for {tgz, text} <- tgzs do
+        meta = npm_meta(c, "@esbuild/win32-x64", "0.25.4", npm_integrity(tgz))
+
+        assert {:error, ^text, _} =
+                 catch_throw(
+                   :beam_com_mix.esbuild_exe(~c"0.25.4", c.out, npm_http(meta, tgz), c.limits)
+                 )
+      end
+
+      refute File.exists?(c.out)
+    end
+
+    test "a failed write", %{dir: dir} = c do
+      out = write(dir, ~c"file", "")
+      http = npm_http(npm_meta(c, "@esbuild/win32-x64", "0.25.4"), c.tgz)
+
+      dir = :filename.join(out, ~c"_build")
+
+      assert {:error, ~c"~ts: ~ts", [^dir, ~c"not a directory"]} =
+               catch_throw(
+                 :beam_com_mix.esbuild_exe(
+                   ~c"0.25.4",
+                   dir,
+                   http,
+                   c.limits
+                 )
+               )
+    end
+  end
+
+  test "windows_assets: only for the step assets.deploy and the deps of the environment" do
+    no_http = [deps: [{:esbuild, "~> 0.10"}, {:tailwind, "~> 0.3", only: :test}]]
+    on_exit(fn -> Application.delete_env(:tailwind, :target, persistent: true) end)
+    assert :ok == :beam_com_mix.windows_assets({:unix, :windows}, no_http)
+    assert :undefined == :application.get_env(:tailwind, :target)
+
+    config = [
+      aliases: ["assets.deploy": ["tailwind a"]],
+      deps: [{:esbuild, "~> 0.10", only: :dev}, {:tailwind, "~> 0.3", only: :test}]
+    ]
+
+    assert :ok == :beam_com_mix.windows_assets({:unix, :linux}, config)
+    assert :undefined == :application.get_env(:tailwind, :target)
+
+    assert capture_io(fn -> :ok = :beam_com_mix.windows_assets({:unix, :windows}, config) end) ==
+             "beam.com: tailwind for Windows (target windows-x64.exe)\n"
+
+    assert {:ok, "windows-x64.exe"} == :application.get_env(:tailwind, :target)
   end
 
   test "releases: include_erts false and a directory in Out, for each release" do
@@ -218,10 +370,13 @@ defmodule BeamComMixTest do
     test "watch_input: the end of the input stops the child" do
       {:ok, input} = StringIO.open("a line\nanother line\n")
       parent = self()
-      :ok = :beam_com_mix.watch_input(input, fn ->
-        send(parent, :halt)
-        :ok
-      end)
+
+      :ok =
+        :beam_com_mix.watch_input(input, fn ->
+          send(parent, :halt)
+          :ok
+        end)
+
       assert_received :halt
       assert {"", ""} == StringIO.contents(input)
     end
@@ -383,6 +538,40 @@ defmodule BeamComMixTest do
     project = :filename.join(dir, ~c"runtime_check")
     File.cp_r!(Path.expand("../programs/runtime_check", __DIR__), to_string(project))
     project
+  end
+
+  defp npm_tarball(dir, files) do
+    tgz = :filename.join(dir, ~c"e.tgz")
+    :ok = :erl_tar.create(tgz, files, [:compressed])
+    File.read!(tgz)
+  end
+
+  defp npm_integrity(tgz), do: "sha512-" <> Base.encode64(:crypto.hash(:sha512, tgz))
+
+  defp npm_meta(c, name, version, integrity \\ nil) do
+    integrity = integrity || npm_integrity(c.tgz)
+    id = "#{name}@#{version}"
+    sig = Base.encode64(:public_key.sign(id <> ":" <> integrity, :sha256, c.key))
+    base = name |> String.split("/") |> List.last()
+
+    %{
+      "_id" => id,
+      "dist" => %{
+        "integrity" => integrity,
+        "signatures" => [%{"keyid" => "SHA256:test", "sig" => sig}],
+        "tarball" => "https://registry.npmjs.org/#{name}/-/#{base}-#{version}.tgz"
+      }
+    }
+  end
+
+  # The function of :beam_com_hex.http/5: the metadata, then the tarball.
+  defp npm_http(meta, tgz) do
+    parent = self()
+
+    fn :get, url, [], :none, max ->
+      send(parent, {:get, url, max})
+      if List.to_string(url) =~ ~r/\.tgz$/, do: tgz, else: JSON.encode!(meta)
+    end
   end
 
   defp write(dir, name, content) do

@@ -252,5 +252,8 @@ For a restart with almost no failed request, see the spike
   because `os:type()` is `{unix, windows}`. Thus the builder gives
   tailwind the target `windows-x64.exe`, and esbuild the path of
   `esbuild.exe` from npm, when your config gives no target and no path.
+  The builder checks the signature of npm and the SHA-512 of
+  `esbuild.exe`, as the esbuild package does (see "Phoenix in one file"
+  in [`ELIXIR.md`](ELIXIR.md)).
 - **NIFs.** A package with C code works only when `beam.com` has its NIF
   (see [`NIFS.md`](NIFS.md)).

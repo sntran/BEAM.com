@@ -37,7 +37,10 @@ notes of its release.
   `escript` of `beam.com` for an escript (such as `rebar3`), else with
   the `sh` in `PATH`.
 - On Windows, a Phoenix build gets the tailwind and esbuild programs for
-  Windows, when the config gives no target and no path for them.
+  Windows, when the config gives no target and no path for them, and
+  `mix.exs` has the alias `assets.deploy`. The builder checks the
+  signature of npm and the SHA-512 of the esbuild package, as the esbuild
+  package of Hex does.
 - On Windows, the git client uses the SSH agent of Windows OpenSSH
   (`\\.\pipe\openssh-ssh-agent`) when `SSH_AUTH_SOCK` is not set. The
   helper program `ssh_agent_bridge` connects to the named pipe (C55).

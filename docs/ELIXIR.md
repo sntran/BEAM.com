@@ -264,7 +264,21 @@ directory.
   programs for Windows. When the config gives no target and no path, the
   builder sets the target `windows-x64.exe` of tailwind. It also sets the
   path of `esbuild.exe` of the npm package `@esbuild/win32-x64` in
-  `_build`, with the version of `config :esbuild`.
+  `_build`, with the version of `config :esbuild`. For esbuild before
+  0.16.0, the package is `esbuild-windows-64`. The builder does this only
+  when `mix.exs` has the alias `assets.deploy` and the dep is in the
+  environment of Mix.
+- The check of `esbuild.exe` is the check of the esbuild package: the
+  metadata of npm must have a valid signature of a key of npm over the
+  name, the version and the SHA-512 of the tarball, and the tarball
+  must have that SHA-512. The keys of npm are in `beam_com_mix.erl`.
+  Thus you trust the keys of npm, and the registry that signs. The
+  tarball has at most 64 MiB, and 128 MiB without compression. The
+  program of tailwind has only the checks of the tailwind package (TLS).
+- The builder does not know a step other than `assets.deploy` that runs
+  esbuild or tailwind, for example a compiler of `:compilers`. Such a
+  step gets the programs for Linux on Windows: give the `path` or the
+  `target` in the config.
 - With no `git` program in `PATH`, the git client of `beam.com`
   (`beam_com_git`) gets each git dep of an `https` URL, also `github:`.
   It speaks version 2 of the git protocol over HTTPS, with your proxy,
