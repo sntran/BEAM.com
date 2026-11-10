@@ -32,7 +32,7 @@
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
          rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2, lock_text/3,
          unpack/3, unpack/4, resolve/3, fetch/5, http_get/2, read_limited/2,
-         registry/0, consult/1, meta_requirements/1, locked/2, git_deps/1, fetch_git/6,
+         registry/0, consult/1, meta_requirements/1, proxy/1, locked/2, git_deps/1, fetch_git/6,
          git_vsn/3]).
 -endif.
 
@@ -1205,7 +1205,7 @@ set_proxy() ->
     case [P || V <- ["HTTPS_PROXY", "https_proxy"],
                P <- [os:getenv(V)], P =/= false, P =/= ""] of
         [Proxy | _] ->
-            #{host := Host, port := Port} = uri_string:parse(Proxy),
+            {Host, Port} = proxy(Proxy),
             NoProxy = ["localhost", "127.0.0.1"]
                 ++ [string:trim(H) || V <- ["NO_PROXY", "no_proxy"],
                                       L <- [os:getenv(V)], L =/= false,
@@ -1214,4 +1214,19 @@ set_proxy() ->
                                     {proxy, {{Host, Port}, NoProxy}}], beam_com);
         [] ->
             ok
+    end.
+
+%% The host and the port of a proxy URL. With no port, the port is the
+%% default of curl: 443 for https, else 1080. With no scheme
+%% ("host:3128"), the scheme is http.
+proxy(Proxy) ->
+    Url = case string:find(Proxy, "://") of
+              nomatch -> "http://" ++ Proxy;
+              _ -> Proxy
+          end,
+    case uri_string:parse(Url) of
+        #{host := Host, port := Port} when Host =/= "", is_integer(Port) -> {Host, Port};
+        #{scheme := "https", host := Host} when Host =/= "" -> {Host, 443};
+        #{host := Host} when Host =/= "" -> {Host, 1080};
+        _ -> throw({error, "HTTPS_PROXY: not a URL of a proxy: ~ts", [Proxy]})
     end.

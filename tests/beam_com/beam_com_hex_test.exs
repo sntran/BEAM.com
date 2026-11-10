@@ -828,6 +828,18 @@ defmodule BeamComHexTest do
     end
   end
 
+  # The proxy of HTTPS_PROXY, also with no port or no scheme.
+  test "proxy/1" do
+    assert {~c"proxy.example", 3128} == :beam_com_hex.proxy(~c"http://proxy.example:3128")
+    assert {~c"proxy.example", 3128} == :beam_com_hex.proxy(~c"proxy.example:3128")
+    assert {~c"proxy.example", 1080} == :beam_com_hex.proxy(~c"http://proxy.example")
+    assert {~c"proxy.example", 1080} == :beam_com_hex.proxy(~c"http://u:p@proxy.example/")
+    assert {~c"proxy.example", 443} == :beam_com_hex.proxy(~c"https://proxy.example")
+
+    assert {:error, ~c"HTTPS_PROXY: not a URL of a proxy: ~ts", [~c"http://"]} ==
+             catch_throw(:beam_com_hex.proxy(~c"http://"))
+  end
+
   describe "fetch_test_" do
     # The routes of the server: the packages alpha, beta and elixir_only.
     defp fetch_routes do

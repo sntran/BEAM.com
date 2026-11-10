@@ -136,7 +136,8 @@ and compiled into the program, as rebar3 does, without rebar3:
 - **Network.** HTTPS with `httpc`, verified with the certificates of
   the OS, or of the file of `SSL_CERT_FILE` when it is set (see "Crypto
   and TLS" in [`INTERNALS.md`](INTERNALS.md)). `HTTPS_PROXY` and
-  `NO_PROXY` are used. `HEX_API_URL` (default
+  `NO_PROXY` are used. A proxy with no port uses the port of curl: 443
+  for `https://`, else 1080. `HEX_API_URL` (default
   `https://hex.pm/api`) and `HEX_MIRROR` (default `https://repo.hex.pm`)
   select other servers.
 - **Build.** The packages are compiled in order (a package after the
