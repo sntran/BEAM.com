@@ -2013,11 +2013,12 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     char *sh_argv[] = {"sh", "-c", (char *)cmd, NULL};
     const char *path = cmd;
     char *const *env = envp;
+    char **henv = NULL;
     int err;
 
     if (argv && beam_com_is_zip(cmd)) {
         path = GetProgramExecutableName();
-        env = helper_env(cmd, envp);
+        env = henv = helper_env(cmd, envp);
     } else if (!argv && !(path = spawn_nt_sh(sh, sizeof(sh)))) {
         return ENOENT;
     } else if (argv && (kind = spawn_nt_script(cmd))) {
@@ -2059,6 +2060,14 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     __fds_unlock();
     posix_spawn_file_actions_destroy(&fa);
     free(script.v);
+    if (henv) {
+        /* helper_env() makes the list and its last entry (the name). */
+        size_t n = 0;
+        while (henv[n])
+            n++;
+        free(henv[n - 1]);
+        free(henv);
+    }
     return err;
 }
 
