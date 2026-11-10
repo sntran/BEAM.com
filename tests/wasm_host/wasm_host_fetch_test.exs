@@ -642,8 +642,11 @@ defmodule WasmHostFetchTest do
         send(pid, {:wasm_host, "tcp_data", %{"id" => "c9"}, data})
         bridge(native, pid, called)
 
+      # The client closes its socket after the response, so a late send
+      # (the close_notify of TLS) can find the port closed: then
+      # gen_tcp:send/2 gives {:error, :einval} or {:error, :closed}.
       {:host, %{"t" => "tcp_send", "id" => "c9"}, body} ->
-        :ok = :gen_tcp.send(native, body)
+        _ = :gen_tcp.send(native, body)
         bridge(native, pid, called)
 
       {:host, %{"t" => "fetch", "id" => id, "path" => "/x", "tls" => true}, _} ->

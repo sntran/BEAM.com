@@ -1,4 +1,4 @@
-To: https://api.github.com/repos/{{GITHUB_REPO}}/actions/workflows/custom-build.yml/dispatches
+To: {{GITHUB_API}}/repos/{{GITHUB_REPO}}/actions/workflows/custom-build.yml/dispatches
 Authorization: <seal:Bearer {{GITHUB_TOKEN}}>
 Accept: application/vnd.github+json
 X-GitHub-Api-Version: 2022-11-28

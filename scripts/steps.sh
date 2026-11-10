@@ -201,6 +201,9 @@ for f in open openat creat opendir readlink readlinkat unlink unlinkat rmdir ren
 done
 # getcwd() in the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
 MAC_WRAPS="-Wl,--wrap=getcwd"
+# The writes to a non-blocking pipe on Windows, and select() for such a
+# pipe (c_src/cosmo/beam_com_pipe.c).
+PIPE_WRAPS="-Wl,--wrap=write -Wl,--wrap=writev -Wl,--wrap=select"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -490,10 +493,21 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_inet_gethost.c "$ROOT"/c_src/cosmo/beam_com_epmd.h \
        "$ROOT"/c_src/cosmo/beam_com_epmd.c "$ROOT"/c_src/cosmo/beam_com_epmd_srv.c \
        "$ROOT"/c_src/cosmo/beam_com_epmd_cli.c "$ROOT"/c_src/cosmo/beam_com_watch.c \
+       "$ROOT"/c_src/cosmo/beam_com_agent.c "$ROOT"/c_src/cosmo/beam_com_pipe.c \
        "$ROOT"/c_src/cosmo/beam_com_libc.h "$ROOT"/c_src/cosmo/beam_com_net.c \
        "$ROOT"/c_src/cosmo/beam_com_net.h "$ROOT"/c_src/cosmo/beam_com_fs.c \
        "$ROOT"/c_src/cosmo/beam_com_fs.h "$ROOT"/c_src/cosmo/beam_com_seatbelt.c \
-       "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ERL_TOP/erts/emulator/sys/unix/"
+       "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ROOT"/c_src/cosmo/beam_com_nif.c \
+       "$ROOT"/c_src/cosmo/beam_com_nif.h "$ROOT"/c_src/cosmo/beam_com_nif_syms.c \
+       "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ROOT"/c_src/cosmo/beam_com_nif_cxx.h \
+       "$ROOT"/c_src/cosmo/beam_com_sha1dc.c \
+       "$ERL_TOP/erts/emulator/sys/unix/"
+    # The library of beam_com_sha1dc.c (sha1collisiondetection), which it
+    # includes as sha1dc/sha1.c and sha1dc/ubc_check.c.
+    mkdir -p "$ERL_TOP/erts/emulator/sys/unix/sha1dc"
+    cp "$ROOT"/c_src/cosmo/sha1dc/sha1.c "$ROOT"/c_src/cosmo/sha1dc/sha1.h \
+       "$ROOT"/c_src/cosmo/sha1dc/ubc_check.c "$ROOT"/c_src/cosmo/sha1dc/ubc_check.h \
+       "$ERL_TOP/erts/emulator/sys/unix/sha1dc/"
 }
 
 step_configure() {
@@ -1351,7 +1365,7 @@ step_files() {
     case $1 in
         toolchain) echo "patches/cosmo/ape-m1.patch" ;;
         openssl|release) ;;
-        otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h" ;;
+        otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h c_src/cosmo/sha1dc" ;;
         configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
         sqlite) echo "patches/esqlite" ;;
         nifs) echo "scripts/libvips.sh patches/libvips c_src/vips native/vips_resvg
@@ -1587,6 +1601,23 @@ elixir_part_key() (
     } | sha256sum | cut -d' ' -f1
 )
 
+# The NIF packages of this build as native NIF objects (docs/NIFS.md):
+# "PACKAGE VERSION LIB FILE" on each line. LIB.a is the archive of the NIF
+# part, and FILE is the object in the priv directory of the package, with
+# no suffix: LIB for an elixir_make package (vix), native/libLIB for a
+# crate of Rustler, where Rustler loads it. For the job Build of
+# build.yml.
+step_nif_recipes() (
+    for p in $(hex_nif_packages); do
+        set -- $(hex_nif_recipe "$p")
+        if [ -n "$(rust_nif_crate "$p")" ]; then
+            echo "$p $1 $3 native/lib$3"
+        else
+            echo "$p $1 $3 $3"
+        fi
+    done
+)
+
 # The key of each part of this build, one "NAME KEY" on each line (for
 # the logs of CI). It needs the steps otp and configure: the NIF keys read
 # the headers of the OTP tree.
@@ -1725,8 +1756,9 @@ step_multicall() {
     cd "$ERL_TOP/erts/emulator"
     objs="$objdir/beam_com.o $objdir/beam_com_child_setup.o $objdir/beam_com_inet_gethost.o"
     objs="$objs $objdir/beam_com_epmd.o $objdir/beam_com_epmd_srv.o $objdir/beam_com_epmd_cli.o"
-    objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_net.o $objdir/beam_com_fs.o"
-    objs="$objs $objdir/beam_com_seatbelt.o"
+    objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_agent.o $objdir/beam_com_net.o"
+    objs="$objs $objdir/beam_com_fs.o $objdir/beam_com_pipe.o $objdir/beam_com_sha1dc.o"
+    objs="$objs $objdir/beam_com_seatbelt.o $objdir/beam_com_nif.o $objdir/beam_com_nif_syms.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"
     build_cosmo_file unveil "$COSMO_UNVEIL_SHA256" "$objdir/beam_com_unveil.o"
@@ -1741,9 +1773,10 @@ step_multicall() {
     # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h, and the
     # wraps of NET_WRAPS (--allow-net=HOST,...) in beam_com_net.c, and
     # the wraps of FS_WRAPS (the paths on Windows) in beam_com_fs.c, and
-    # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c.
+    # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c,
+    # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS" \
         ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -1919,8 +1952,10 @@ step_bundle() {
 
     # The commands of beam.com (lib/beam_com has no version, so that
     # beam_com.c can find it), and the runner of one-file programs.
+    # BEAM_COM_SHA1DC: the file has the helper git_sha1dc, so the git
+    # client always checks the objects (beam_com_git).
     mkdir -p "$STAGE/lib/beam_com/ebin" "$STAGE/lib/beam_com_script-0.1.0/ebin"
-    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com/ebin" "$ROOT"/src/beam_com/*.erl
+    "$ERL_TOP/bin/erlc" -DBEAM_COM_SHA1DC -o "$STAGE/lib/beam_com/ebin" "$ROOT"/src/beam_com/*.erl
     # The .app file gets the full version of OTP, and the Elixir packages
     # whose NIFs are linked ([{exqlite, "0.41.0"}, ...]).
     nifs=$(hex_nifs | awk '{printf "%s{%s, \"%s\"}", (NR > 1 ? ", " : ""), $1, $2}')
@@ -1938,6 +1973,13 @@ step_bundle() {
         "$ROOT"/src/beam_com_script/*.erl
     cp "$ROOT/src/beam_com_script/beam_com_script.app.src" \
        "$STAGE/lib/beam_com_script-0.1.0/ebin/beam_com_script.app"
+    # The reload of new code in a program (beam_com_reload): each program
+    # keeps lib/beam_com_reload (no version, so that beam_com.c can find
+    # it), and beam_com.c starts it.
+    mkdir -p "$STAGE/lib/beam_com_reload/ebin"
+    "$ERL_TOP/bin/erlc" -o "$STAGE/lib/beam_com_reload/ebin" "$ROOT"/src/beam_com_reload/*.erl
+    cp "$ROOT/src/beam_com_reload/beam_com_reload.app.src" \
+       "$STAGE/lib/beam_com_reload/ebin/beam_com_reload.app"
 
     # The host of the WebAssembly runtime (--target wasm32): Erlang code
     # that a Worker release gets, and the files of the Workers. With
@@ -2083,6 +2125,7 @@ step_test() {
     # beam.com and the program keep the license texts (step_bundle).
     unzip -l "$OUT" | grep -q ' licenses/NOTICE$'
     unzip -l "$OUT" | grep -q ' licenses/otp/MIT.txt$'
+    unzip -l "$OUT" | grep -q ' licenses/sha1collisiondetection.txt$'
     unzip -l "$BUILD/hashsum.com" | grep -q ' licenses/LICENSE$'
     if [ "$WASM" = 1 ]; then
         "$OUT" "$ROOT/tests/programs/wasm_check.erl" -o "$BUILD/wasm_check.com"
@@ -2119,11 +2162,63 @@ step_test() {
         cosmocc -O2 -Wno-unused-function -o "$BUILD/fs_check.com" "$ROOT/tests/cosmo/fs_check.c"
         "$BUILD/fs_check.com" | tee "$BUILD/test.out"
         grep -q '^fs_check: ok$' "$BUILD/test.out"
+        # The writes to a non-blocking pipe (c_src/cosmo/beam_com_pipe.c).
+        # Here only the data; tests/run.ps1 runs the check on Windows.
+        log "Checking the writes to a non-blocking pipe"
+        cosmocc -O2 -Wno-unused-function -o "$BUILD/pipe_check.com" "$ROOT/tests/cosmo/pipe_check.c"
+        "$BUILD/pipe_check.com" | tee "$BUILD/test.out"
+        grep -q '^pipe_check: ok$' "$BUILD/test.out"
+        # The SHA-1 check of the git client (c_src/cosmo/beam_com_sha1dc.c),
+        # with the vectors of the SHA-1 collisions. tests/run.sh and
+        # tests/run.ps1 run the helper of beam.com on each system.
+        log "Checking the SHA-1 check of the git client"
+        cosmocc -O2 -Wall -Wno-unused-function -o "$BUILD/sha1dc_check.com" \
+            "$ROOT/tests/cosmo/sha1dc_check.c"
+        "$BUILD/sha1dc_check.com" "$ROOT/tests/programs/sha1dc_vectors.txt" | tee "$BUILD/test.out"
+        grep -q '^sha1dc_check: ok$' "$BUILD/test.out"
         # The profile of the sandbox of macOS (c_src/cosmo/beam_com_seatbelt.c).
         log "Checking the profile of the sandbox of macOS"
         cosmocc -O2 -o "$BUILD/seatbelt_check.com" "$ROOT/tests/cosmo/seatbelt_check.c"
         "$BUILD/seatbelt_check.com" | tee "$BUILD/test.out"
         grep -q '^seatbelt_check: ok$' "$BUILD/test.out"
+        # The loader of native NIF objects (c_src/cosmo/beam_com_nif.c),
+        # with its test objects for both CPUs. tests/run.sh loads a NIF
+        # object in a program on each system.
+        log "Checking the loader of native NIF objects"
+        # A NIF_LIBC name of the table must not be an IFUNC symbol of the
+        # libc (beam_com_nif_libc.h): its address breaks each call of it.
+        bin=$(dirname "$(command -v cosmocc)")
+        for arch in x86_64 aarch64; do
+            "$bin/$arch-linux-cosmo-nm" "$bin/../$arch-linux-cosmo/lib/libcosmo.a" 2>/dev/null |
+                awk '$2 == "i" { print $3 }'
+        done | sort -u > "$BUILD/nif_ifunc.txt"
+        ifunc=$(sed -n 's/^NIF_LIBC(\(.*\))$/\1/p' "$ROOT/c_src/cosmo/beam_com_nif_libc.h" \
+            "$ROOT/c_src/cosmo/beam_com_nif_cxx.h" | grep -xF -f "$BUILD/nif_ifunc.txt" || true)
+        if [ -n "$ifunc" ]; then
+            echo "IFUNC symbols in c_src/cosmo/beam_com_nif_libc.h (use NIF_LIBC_IFUNC):" $ifunc >&2
+            exit 1
+        fi
+        sh "$ROOT/tests/cosmo/nif_load_objs.sh" "$BUILD/nif_load"
+        cosmocc -O2 -Wall -Wno-unused-function -I"$BUILD/nif_load" \
+            -o "$BUILD/nif_load_check.com" "$ROOT/tests/cosmo/nif_load_check.c"
+        "$BUILD/nif_load_check.com" | tee "$BUILD/test.out"
+        grep -q '^nif_load_check: ok$' "$BUILD/test.out"
+        # The names that a native NIF object needs (tests/cosmo/nif_needs.c),
+        # with the table of the program: none for native_nif_check, one for
+        # its object missing.x86_64.o. CI runs it on the NIF parts of the
+        # store (build.yml).
+        log "Checking the names that a native NIF object needs"
+        cosmocc -O2 -Wall -Wno-unused-function -I"$ERL_TOP/erts/emulator/beam" \
+            -o "$BUILD/nif_needs.com" "$ROOT/tests/cosmo/nif_needs.c"
+        priv=$ROOT/tests/programs/native_nif_check/priv
+        "$BUILD/nif_needs.com" "$priv/native_nif_check.x86_64.o" | tee "$BUILD/test.out"
+        grep -q ': ok$' "$BUILD/test.out"
+        if "$BUILD/nif_needs.com" "$priv/missing.x86_64.o" > "$BUILD/test.out"; then
+            echo "nif_needs: missing.x86_64.o gave no missing name" >&2
+            exit 1
+        fi
+        cat "$BUILD/test.out"
+        grep -q ': no no_such_function$' "$BUILD/test.out"
     fi
 }
 

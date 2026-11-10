@@ -5,6 +5,317 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com DIR -o FILE` makes one file from a Phoenix app, with no Mix
+  task first. A Mix project with `config/runtime.exs`, a dep that is not
+  a Hex package (git, github, path), a dep of a Hex organization or of
+  another Hex repository, `:compilers`, or the alias `assets.deploy`
+  needs Mix itself. For it, a child `beam.com`
+  (`beam_com_mix`) runs Mix in the project, with the environment of the
+  user: `deps.get`, `compile`, `assets.deploy`, and `release` with
+  `include_erts: false`. Then the builder makes the file from the
+  release. The release consolidates the protocols, and the program reads
+  `config/runtime.exs` at each start. When the project has a dep, the child
+  installs Hex, as `mix local.hex` does. `--tool mix-release` uses Mix for
+  each Mix project, and `--tool mix` keeps the builder of a plain Mix
+  project. See "Phoenix in one file" in `docs/ELIXIR.md`.
+- `docs/DEPLOY.md`: deploy a Phoenix app to a Linux server, with a build
+  on the server or in CI.
+- Port programs on Windows (C16 of `docs/UPSTREAM.md`). The spawn driver
+  starts the program itself with `posix_spawn()`, because
+  `erl_child_setup` cannot work there. Thus `open_port/2`, `peer`,
+  `System.cmd/3`, `os:cmd/1` (with the `sh` of Git for Windows in
+  `PATH`), and the Mix steps of `beam.com DIR -o FILE` work on Windows.
+  `os:find_executable/1` tries `.exe`, `.com`, `.cmd` and `.bat` there.
+  The writes to a port program are non-blocking, as on Unix. The wraps
+  of `write()`, `writev()` and `select()` (`c_src/cosmo/beam_com_pipe.c`)
+  write at most the free space of a pipe. A larger non-blocking write to
+  a pipe of Cosmopolitan on Windows can lose data. The wraps do not
+  report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
+  them on Windows. Windows gives a free space of 0 while the program
+  waits in a read of 4 KiB or more, so for 0 the wraps write 1 byte that
+  can wait in the pipe. Thus a write reaches a native program such as
+  `python`, `git` or `findstr`. Windows cancels such a byte at the exit of
+  the process, so the exit of the VM waits at most 2 s for the bytes that
+  wait. A port program that reads late thus gets all the data, as on Unix.
+- On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
+  the ends of its pipes. Before, it also got each socket and file of the
+  VM, so a closed connection stayed open until the program stopped.
+- A Unix socket with a path of 13 bytes or fewer works for
+  `gen_tcp:listen/2` and `gen_udp:open/2` (`{ifaddr, {local, Path}}`).
+  Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).
+- A Unix socket with a path of 13 bytes or fewer works for
+  `gen_tcp:listen/2` and `gen_udp:open/2` (`{ifaddr, {local, Path}}`).
+  Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).
+- On Windows, the server of the pipe of the SSH agent can identify the
+  client, but cannot act as the user (`SECURITY_IDENTIFICATION`).
+- A `chown()` that changes no owner and no group gives 0 also where the
+  system refuses it: on Windows, and in the sandbox (C28). `File.cp/3`
+  copies the owner, and it failed on Windows. Where the system permits
+  the call, `beam.com` gives the result of the system: Linux clears the
+  setuid and setgid bits of the file. Before, `beam.com` did not call
+  `chown()` for these calls on any system, so the bits stayed.
+- On Windows, a script with `#!` runs as a port program: with the
+  `escript` of `beam.com` for an escript (such as `rebar3`), else with
+  the `sh` in `PATH`.
+- On Windows, a Phoenix build gets the tailwind and esbuild programs for
+  Windows, when the config gives no target and no path for them, and
+  `mix.exs` has the alias `assets.deploy`. The builder checks the
+  signature of npm and the SHA-512 of the esbuild package, as the esbuild
+  package of Hex does.
+- On Windows, the git client uses the SSH agent of Windows OpenSSH
+  (`\\.\pipe\openssh-ssh-agent`) when `SSH_AUTH_SOCK` is not set. The
+  helper program `ssh_agent_bridge` connects to the named pipe (C55).
+- CI builds a new Phoenix app on Windows with `beam.com . -o FILE`, and
+  gets the start page and the digested CSS of the file. It also checks
+  the SSH agent of Windows OpenSSH.
+- `tests/run.ps1` reads the output of a check on the reader threads of
+  .NET, and waits for the end of each stream. Before, it read the events
+  of PowerShell, and a part of a long output could stay in their queue:
+  the check "script_check.b.com big" failed by chance. A new check sends
+  1000000 lines to a reader that starts after 3 s.
+- `tests/run.ps1` needs PowerShell 7.3 or later. It stops each process
+  that a check started and that still runs, and it removes the key and
+  puts back the service `ssh-agent` at the end of its check. In CI, a
+  check that cannot run is a failed check. Both scripts install the
+  fixed `phx_new` 1.8.16.
+- On Windows, a relative symbolic link to a directory works (C54). Before,
+  `mix release` copied no `priv` of the app, because `stat()` of the
+  link `_build/prod/lib/APP/priv` gave `EACCES`.
+- `beam.com DIR -o FILE` over the file of a program that runs updates it:
+  the builder writes a new file and renames it, and the program loads the
+  changed code. The builder strips the beams of the program and of its
+  deps, as `mix release` does, and compiles with `deterministic`. Thus
+  two builds of the same code almost always give the same bytes, and the
+  new file has only the changed modules. A file that a Mix step writes
+  with a new time (`cache_manifest.json` of `phx.digest`) is new at each
+  build, and a run takes the files of `priv/` that the build wrote from
+  after the build, so it does not build again. The reload
+  gives no notice for a new file of `.wasm/`.
+- With no `git` program, the git deps of an `https` URL come with the git
+  client of beam.com (`beam_com_git`, `beam_com_git_scm`): version 2 of
+  the git protocol over HTTPS, the commit of `mix.lock` with depth 1, and
+  the name of each object computed from its data. `mix.lock` stays the
+  same as with git.
+- The git client of beam.com also speaks SSH (`beam_com_git_ssh`), with
+  the `ssh` application of OTP and no `ssh` program. It takes
+  `git@host:path` and `ssh://` URLs, and it reads `~/.ssh/config`
+  (`Host`, `Include`, `HostName`, `User`, `Port`, `IdentityFile`,
+  `IdentitiesOnly`, `IdentityAgent`, and more). It uses the keys of the
+  SSH agent and of `~/.ssh`. It checks the host key in `known_hosts`:
+  an unknown host stops the build, with its fingerprint. It uses version 2 of the git protocol, else version 0.
+  `BEAM_COM_GIT=client` uses the client also when `git` is in `PATH`.
+  See "Git over SSH" in `docs/PROGRAMS.md`.
+- The builder of a rebar3 project gets the git deps of `rebar.config`
+  (`git` and `git_subdir`, of an `https` or SSH URL) with the same git client,
+  and their deps. `rebar.lock` keeps the commit of each git dep, as
+  rebar3 does. See "Git deps" in `docs/PROGRAMS.md`.
+- Checks of the git client of beam.com:
+  - The limits of a pack: 256 MiB for one object, also for the result of
+    a delta, and 1 GiB for all the objects. The inflate of an object
+    stops at the size in its header. Before, a small pack could use all
+    the memory.
+  - The search for the end of each zlib stream of a pack takes linear
+    time. Before, a hostile object of some MiB could stop the build for
+    hours.
+  - A short pack with a good checksum gives the error "a short pack".
+  - An RSA key of the SSH agent logs in. The client asks the agent for
+    the RSA algorithm of the request (rsa-sha2-512 or rsa-sha2-256).
+    Before, the client never offered an RSA key of the agent.
+  - When the SSH agent does not sign with a key, the client tries the
+    next key, and the error names the key. A signature can take 60 s.
+    Before, the connection stopped with a stack trace after 10 s.
+  - Git over SSH starts a new round of keys only when the server refused
+    each key of the last round, and the error says that the client tries
+    at most 4 keys of each type. The host key algorithms keep the order
+    of OTP, so ed25519 comes before RSA.
+  - The log line of a git dep and the errors of Git over SSH show no
+    password and no token of the URL. An `ssh://` URL with a password
+    logs in with the user only.
+  - Git over HTTPS: a request can take one hour, and it stops after 120 s
+    with no data. Before, a pack that needed more than 60 s failed. The
+    client follows a redirect of `info/refs` itself, and sends the next
+    requests to the new URL. Before, they went to the old URL.
+  - The checkout refuses a tree with two entries of the same name (also
+    in another letter case), and each write follows no link. Before, a
+    link and a file of one name could write the file `.git`. A link
+    target with `\` or `:` is an error too.
+  - The names that Windows and macOS read as `.git` (`.git.`, `GIT~1`,
+    `.git::$INDEX_ALLOCATION`, and more) are errors in a tree.
+  - `{ref, NAME}` takes a tag before a branch of the same name, as git
+    does. A short commit gives an error that asks for all its 40 hex
+    digits. The docs showed a short commit as an example.
+  - On Windows, `C:/repos/dep` is a path, not an SSH URL of the host `C`.
+  - The name of a git dep of a rebar3 project and its `git_subdir`
+    directory cannot name a path out of the lib directory or of the
+    checkout. Before, a dep of a git dep could name `../NAME`.
+  - Clear errors in place of a crash: a pack with fewer objects than its
+    count, an unknown side band or an empty pkt-line in the pack, a file
+    error of the checkout, and a `Port` of `~/.ssh/config` that is not a
+    number. A `~/.ssh/config` or `known_hosts` file that is not UTF-8
+    gives its bytes, as for `ssh`.
+  - A request names the object format only when the server gives it, as
+    `git` does. A server older than git 2.28 refuses a capability that it
+    does not know. A repository of SHA-256 gives a clear error.
+  - The client checks each object of a pack with the SHA-1 collision
+    detection of git (sha1dc). The new helper program `git_sha1dc` of
+    beam.com (`c_src/cosmo/beam_com_sha1dc.c`) runs the library
+    sha1collisiondetection (MIT License, in `c_src/cosmo/sha1dc/`). An
+    object with the mark of a collision attack stops the build before
+    the checkout writes a file. The check always runs in beam.com. Before,
+    two different trees with a SHA-1 collision could have the name of one
+    locked commit. See "Git deps" in `docs/PROGRAMS.md`.
+- The builder reads a map in a term of a package, for example `#{}` as
+  the requirements of `metadata.config`. Before, the build of a package
+  with a map stopped with "metadata.config is not a list of terms".
+- `erlang:system_info(system_architecture)` gives the CPU and the system
+  where the file runs, for example `aarch64-unknown-linux-gnu` or
+  `aarch64-apple-darwin`. Before, it was `x86_64-pc-linux-gnu` on each
+  CPU and each system, and the tailwind and esbuild packages of Phoenix
+  downloaded x86_64 programs on Linux aarch64 (O28 of
+  `docs/UPSTREAM.md`).
+- The builder of a plain Mix project compiles a package after its
+  optional deps that the build has, as Mix does. Before, `ecto_sql`
+  could compile before `postgrex`, and the program stopped at its start:
+  "could not find Ecto.Adapters.Postgres.Connection".
+- With a `mix.lock` that Mix wrote, the builder takes only the entries
+  that the deps of the program reach. Before, it also compiled the deps
+  only for `:dev` or `:test` of the lock, such as `phoenix_live_reload`.
+- A program loads new code when a new file takes the place of its file,
+  so a deploy can send only the changed code: `zip -r app.com
+  lib/my_app-0.1.0` on the server. The process `beam_com_reload`
+  (`src/beam_com_reload`, in each program, with no change of OTP):
+  - loads each module whose code changed, together, from the code path
+    only, and waits when a process still runs old code;
+  - does the `update` instructions of a new appup, with `code_change/3`,
+    and starts the new children of a supervisor after its update;
+  - for new files of `priv/`, moves the application to a copy in the
+    cache, and calls its `config_change/3` (the static manifest of a
+    Phoenix endpoint). The copy before goes 60 seconds later, and the
+    first check removes the copies of processes that do not run.
+  - adds no time to the start of a program: the start does only a stat
+    and an open of the file.
+
+  The processes and their state stay. A new runtime needs a restart.
+  `BEAM_COM_RELOAD=MS` sets the time between two checks, and
+  `BEAM_COM_RELOAD=0` turns it off. Not on Windows. See "New code in a
+  running program" in `docs/PROGRAMS.md`, and `examples/reload`.
+- A push that changes the source of a build does not delete the files of
+  the build URLs. The job `urls` of `custom-build-caches.yml` builds
+  each URL again whose key changed, and the new file replaces the old one
+  when it is ready. Thus a request, for example of CI, gets the old file
+  at once and never waits. Before, a push deleted each file, also a push
+  that did not change a build, and the next request waited for a new
+  build. Each file of a URL now has `NAME.json`, with the key of its
+  build and its query. A change of only `scripts/custom_build.py` keeps
+  the key when the settings do not change. `custom-build-caches.yml`
+  runs after each push that changes the source of a build, and each day.
+- Each new custom build also goes to the prerelease of its month,
+  `kept-YYYYMM`, as `beam-SHA256.com`, and no job deletes it. A lock
+  names this URL and the SHA-256, so a new build of the same build URL
+  does not break the lock. `NAME.json` of each file gives the kept URL.
+  See "A fixed version of a build" in `docs/BUILDING.md`.
+- Each new custom build has `NAME.sha256` next to it in the release
+  `custom-builds`, and an attestation of `custom-build.yml`. A separate
+  job signs the file, so the code of a build cannot sign. See "A fixed
+  version of a build" in `docs/BUILDING.md`.
+- A query of only `nifs+=` or `nifs=` that needs a build also gets
+  `503` with `Retry-After: 15` at once, and a browser gets the page that
+  loads again (the envelopes `35-url-not-yet` and `36-url-page`). Before,
+  it waited in the VM, and on Cloudflare it got `504` after 60 seconds,
+  or `404` for a refused build, which stops `curl --retry`.
+- A query of a build that is not ready gets `503` with `Retry-After: 15`
+  at once, and does not wait for the build. `curl --retry` asks again,
+  and a browser gets a page that loads again each 15 seconds and then
+  starts the download. A refused build gives `422` with the reason.
+  Before, the request waited, and on Cloudflare it got `504` after 60
+  seconds (the envelopes `32-query-refused`, `33-query-not-yet` and
+  `34-query-page` of the FIFO beam.com).
+- A build URL waits, and does not fail at once with 404, when a check of
+  the release gets another status than 2xx or 404 from GitHub for a
+  moment (the new envelope `31-u-not-yet` of the FIFO beam.com).
+- The publish of `edge` keeps the old `beam.com` until the new one is in
+  the release (`scripts/publish_edge.sh`). Before, the job deleted the
+  release first, and a failed upload left `edge` with no file.
+- `curl -fo beam.com https://mkfifo.com/beam.com` gives the default
+  build (the `edge` file) at once. A browser gets the form, now at
+  `https://mkfifo.com/beam.com?form`.
+- Each choice of a custom build is a field of the query of the build
+  URL: `otp_version`, `elixir_version`, `apps`, `omit`, `hex`, `rebar3`,
+  `jit`, `sqlite`, `wasm`, and `nifs+` or `nifs`. For example
+  `?otp_version=29.1.2&apps=mnesia&nifs+=vix`. The request waits for the
+  build. The form sends a `GET` with its fields (Download), so its
+  download URL also works with `curl`; "Send me the link" stays. See "A
+  build URL" in `docs/BUILDING.md`.
+- Native NIF objects (`docs/NIFS.md`): `erlang:load_nif(PATH, Info)`
+  loads `PATH.x86_64.o` or `PATH.aarch64.o` from the zip of the program,
+  before a NIF in WebAssembly. The object is the NIF as `cosmocc -c`
+  compiles it (and `ld -r` joins it), with no change to its C code. It
+  runs at the speed of native code, on each system of the CPU. The
+  object can call each `enif_*` function and the functions of the libc
+  in `c_src/cosmo/beam_com_nif_libc.h`. Thread-local data works, with
+  each TLS model of C (cosmocc) and of Rust: the NIF of `rusty_csv` loads
+  as an object. C++ works: the object links the members of libc++ that it
+  needs, and the program gives libc++abi; the NIF of `ex_pdfium` (PDFium)
+  loads as an object. The loader removes the sections that the NIF does
+  not use, as `ld --gc-sections` does, and reads an object with more than
+  65,279 sections. `tests/programs/native_nif_check` runs on each system
+  in `tests/run.sh`.
+- The NIF of `vix` (libvips, glib, and the AVIF, GIF, ICC and SVG parts)
+  loads as a native NIF object. `scripts/nif_object.sh` makes the objects
+  of a NIF part of the store. `tests/programs/store_nif_check` runs vix,
+  rusty_csv and ex_pdfium as objects on each system of CI. The libc of
+  the objects has 253 more names (about 0.5 MB in `beam.com`).
+- `BEAM_COM_NIF_MAP=FILE`: the loader writes the address and the name of
+  each function of a native NIF object.
+- macOS arm64: the TLS of Rust in a native NIF object used `tpidr_el0`,
+  which is not the thread pointer of Cosmopolitan on XNU (the SVG part of
+  vix crashed). The loader changes each `mrs xN, tpidr_el0` of an object
+  to `mov xN, x28`. The aarch64 test objects now keep this instruction,
+  as the code of Rust does.
+- The NIF files of `beam.com` (`lib/beam_com/priv/nifs/APP-VSN`): a
+  package gets the native NIF objects of its directory in its priv
+  directory, in `beam.com DIR -o OUT`, in `make` of `elixir_make`, and in
+  the module `Rustler` of `beam.com`. The list of these packages comes
+  from the directory, so a `beam.com` assembled with more files needs no
+  other build: it builds the projects of vix, rusty_csv and ex_pdfium
+  from hex.pm with no static NIF of them. `beam.com --version` names
+  them ("NIF files").
+- The entry of a native NIF object can be its one global function
+  `NAME_nif_init`: Rustler loads `priv/native/libCRATE`.
+- `tests/cosmo/nif_needs.c`: each name that a native NIF object needs
+  and that the program does not have, in one run. CI checks the objects
+  of the store with it.
+- An assembled `beam.com` has the license texts of its NIF parts
+  (`licenses/pdfium` for ex_pdfium), as the static build has them, and
+  each program of it keeps them.
+- `beam.com DIR -o OUT` writes `mix.lock` as Mix writes it: the keys are
+  atoms, and each entry has the optional deps too. Before, a later
+  `mix deps.get` stopped: Hex read a name with `atom_to_binary/1`, and
+  checked the deps against the registry.
+- `scripts/assemble.erl`: a program and new files in its zip, as a server
+  can stream it: the bytes of the program up to its central directory,
+  the new entries, and a new central directory. The length is known
+  before the first byte. The tests run `store_nif_check` assembled in
+  this way on each system.
+- `beam.com --nif-include`: the headers also work for a native NIF object
+  of `cosmocc`, on x86_64 and aarch64.
+- `scripts/assemble.erl --parts` cuts the programs of each set of NIF
+  packages into segments: the bytes of the program up to its central
+  directory, the entries of each package, and one central directory for
+  each set. The segments of a set, one after the other, are the program.
+  A spec `PREFIX/=DIR` adds each file of a directory.
+- A build URL of `nifs+=` with only vix, rusty_csv, ex_pdfium and the
+  default NIFs gets its program at once, with no build: the FIFO
+  beam.com streams the segments of the `edge` program and the NIF
+  objects. The job `edge-parts` puts them in the prerelease
+  `program-parts` after each publish of `edge`. This answer has no
+  `Content-Length`. See "A build URL" in `docs/BUILDING.md`.
+- A build URL: `curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'`
+  gives a custom build with the default NIFs and rusty_csv, and
+  `?nifs=rusty_csv` gives only rusty_csv. The answer is the file as a
+  stream. When the file is not there yet, the request waits for its
+  build (about 2 to 3 minutes), with no email and no form. See "A build
+  URL" in `docs/BUILDING.md`.
 - The email of a custom build from mkfifo.com/beam.com also gives the
   link of the file in the prerelease `custom-builds` of GitHub. The bot
   protection of Cloudflare on mkfifo.com stopped the download of a CI
@@ -917,7 +1228,7 @@ on npm it has the dist-tag `next` (`npm install beam.com@next`).
   `.ex` files, applications, and rebar3 and Mix projects, with Hex
   packages, and with no Erlang installation. `mix`, `iex`, `elixir`,
   `elixirc` and `escript` are in the file.
-- Static NIFs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
+- Static nifs: `crypto` (OpenSSL 4.0.2), SQLite 3.53.4 (esqlite and
   exqlite), WebAssembly and WASI (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir.
 - NIF libraries in WebAssembly: when a NIF has no native library,

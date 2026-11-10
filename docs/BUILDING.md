@@ -42,7 +42,7 @@ The steps, in order. The code of each step is in
 | `make` | `nifs`, `wasm` | Builds a small OTP: the emulator and the OTP applications. |
 | `elixir` | `make` | Downloads and builds Elixir (nothing with `ELIXIR=0`). |
 | `release` | `elixir` | Installs an OTP release tree, for its boot scripts. |
-| `multicall` | `release` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher) and the static NIFs. |
+| `multicall` | `release` | Links the emulator again with the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`, the file watcher, `ssh_agent_bridge`, `git_sha1dc`) and the static NIFs. `git_sha1dc` includes the library in `c_src/cosmo/sha1dc/` (see its `README` for the source and the SHA-256 of each file). |
 | `wasm_runtime` | `multicall` | Builds the WebAssembly runtime with Emscripten (`wasm/erts/build.sh`). |
 | `bundle` | `wasm_runtime` | Writes `build/beam.com`: the emulator and its zip. |
 | `test` | `bundle` | Runs `beam.com`, and builds and runs a program with it. |
@@ -215,14 +215,17 @@ closes the issue. A custom build has the WebAssembly runtime too
 answer. It is built from `main`, and the answer names the commit.
 
 Without a GitHub account, use the form of
-[mkfifo.com/beam.com](https://mkfifo.com/beam.com). It sends a
-link with a one-time code to your email address, and the link starts the
-same workflow. A second email gives the link of the file, or the reason
-when the build did not run. The file stays in the prerelease
-`custom-builds` for 30 days, and the FIFO streams it. The email also
-gives the link of the file in the release of GitHub, for a script or CI:
-the bot protection of Cloudflare on mkfifo.com can stop a client that is
-not a browser.
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com?form). Download gives
+the file in the browser, when its build is ready (a build URL, below).
+Or the form sends a link with a one-time code to your email address, and
+the link starts the same workflow. A second email gives the link of the
+file, or the reason when the build did not run. The file stays in the
+prerelease `custom-builds` for 30 days, and the FIFO streams it. The
+email also gives the link of the file in the release of GitHub, for a
+script or CI: the bot protection of Cloudflare on mkfifo.com can stop a
+client that is not a browser. The same bytes also stay in the prerelease
+`kept-YYYYMM`, with no end (see
+[A fixed version of a build](#a-fixed-version-of-a-build)).
 
 - The form is a held FIFO of [mkfifo.com](https://mkfifo.com/): its
   envelopes are in [`priv/seeds/beam.com/`](../priv/seeds/beam.com).
@@ -247,7 +250,9 @@ not a browser.
   gets the link at once, with no build. The key of the file is the
   SHA-256 of the choices and of the source of the build (`source()` of
   `custom_build.py`). A commit that changes only the documents, the
-  tests, the workflows or the envelopes of the FIFO keeps the key.
+  tests, the workflows or the envelopes of the FIFO keeps the key. The
+  key has the settings that `custom_build.py` makes, but not the file
+  itself: a change of that file that keeps the settings keeps the key.
 - A new build takes most of its work from the store of parts (see
   [The store of parts](#the-store-of-parts)): the built OTP, Elixir and
   each NIF. With each part in the store, a build takes a few minutes.
@@ -271,9 +276,9 @@ not a browser.
     [`custom-build-caches.yml`](../.github/workflows/custom-build-caches.yml)
     builds a custom build with all the parts of `vix`, `ex_pdfium` and
     `rusty_csv`. It fills the store and these caches for the default
-    versions. It runs after a merge that changes their inputs, and two
-    times each week, because GitHub removes a cache that no run reads
-    for 7 days.
+    versions. It runs after a push that changes the source of a build,
+    and each day, because GitHub removes a cache that no run reads for 7
+    days. Then it builds the build URLs again (below).
   - A pull request only reads the caches, so its copies do not push out
     the caches of `main` from the 10 GB of the repository. The log of
     `custom-build-caches.yml` shows the use of the 10 GB and the largest
@@ -284,6 +289,197 @@ not a browser.
   the FIFO accepts an answer only with it. The variable `BEAM_FIFO_URL`
   changes the address of the FIFO. The token of the workflow puts the
   files in the release, so no other key is necessary.
+
+### A build URL
+
+A program, a script or CI gets a build with one `GET`, with no email and
+no form:
+
+```sh
+curl -fo beam.com https://mkfifo.com/beam.com                        # the default build
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'      # the default NIFs and rusty_csv
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix'   # only rusty_csv and vix
+curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&hex=1&nifs+=vix'
+```
+
+- `GET /beam.com` with no query gives the file `beam.com` of the
+  prerelease `edge` (the default build of `main`), at once, with its
+  `Content-Length` and `Range`. A browser gets the form: a request whose
+  `Accept` names `text/html` gets a redirect to `/beam.com?form`.
+- Each choice is a field of the query. A field that is not there keeps
+  the default of the form. Each field is one time, and a value has only
+  `a-z`, `0-9`, `_`, `.`, `,`, `+`, `-` and spaces:
+
+  | Field | Value |
+  |---|---|
+  | `otp_version` | A version of Erlang/OTP of `OTP_VERSIONS` of `scripts/custom_build.py`. |
+  | `elixir_version` | A version of Elixir of `ELIXIR_VERSIONS`. Empty, or `none`: no Elixir. |
+  | `apps` | More OTP applications, with commas. |
+  | `omit` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools and tools. |
+  | `hex`, `rebar3`, `jit`, `sqlite`, `wasm` | `0` or `1`. |
+  | `nifs+` | NIFs to add to the default NIFs (exqlite, bcrypt_elixir and argon2_elixir). |
+  | `nifs` | Only these NIFs. A query has `nifs+` or `nifs`, not both. |
+
+  The names of the NIFs are `exqlite`, `bcrypt_elixir`, `argon2_elixir`,
+  `picosat_elixir`, `vix`, `vix-icc`, `vix-gif`, `vix-avif`, `vix-svg`,
+  `rusty_csv` and `ex_pdfium`. A part of vix also chooses vix. The fields
+  of the form are fields of the query too: Download of the form sends a
+  `GET` with them, so the address of the download is also a URL for
+  `curl`.
+- When the file is in the release, the answer is the file, as a stream
+  with its `Content-Length`. When it is not, the FIFO starts the build,
+  and the answer is `503` with `Retry-After: 15` at once. With each part
+  in the store, a build takes about 2 to 3 minutes:
+  - `curl --retry 40 -fo beam.com 'URL'` asks again after each
+    `Retry-After`, until the file is ready. 40 tries of 15 seconds are
+    10 minutes; a smaller count can end before the build. `curl`
+    retries only a timeout and the statuses 408, 429, 500, 502, 503 and
+    504: a `400` (not a query) or a `422` (a refused build) stops it.
+  - A browser (Download of the form) gets a page with `Refresh: 15`. The
+    page loads the same URL again each 15 seconds, and the download
+    starts when the file is ready.
+  - A build that the workflow refuses gives `422` with the reason, and
+    no new build until the next day (UTC).
+
+  The request does not wait for the build itself: on Cloudflare, a
+  request with no head after 60 seconds gets `504`, and a response with
+  no byte of its body ends after 100 seconds as if it were complete.
+- A query of only `nifs+=` with vix, rusty_csv, ex_pdfium and the default
+  NIFs gets a program of parts at once, with no build (below).
+- The file of a query is `beam-u.q.HASH.com` in the prerelease
+  `custom-builds`. The FIFO drops the fields `email` and `website` of the
+  form, and sorts the lines of the other fields. HASH is the start of the
+  SHA-256 of these lines. Thus the same fields in a different sequence
+  get one file, but a field with its default value (`jit=1`) gives a
+  different file. The file of a query of only `nifs+=` or `nifs=` is
+  `beam-u.MODE.NAMES.com`: MODE is `plus` or `only`, and NAMES are the
+  names in the sequence of `sort`, each one time.
+- `NAME.json` next to the file of a URL holds the key of its build, the
+  commit, the lines of its query, its SHA-256, and the URL of its kept
+  file (see [A fixed version of a build](#a-fixed-version-of-a-build)). After a push that changes the
+  source of a build, the job `urls` of `custom-build-caches.yml` builds
+  each URL again whose key changed, one at a time
+  (`custom_build.py rebuild-urls`):
+  - The old file stays until the new build is ready. Then the new file
+    replaces it, with its `.sha256` file. A request of the URL never
+    waits for this build.
+  - The job starts a new build only while the release has fewer than 5
+    new builds of the day, so people always have 5 builds of the 10 of
+    each day. The run of the next day builds the other URLs.
+  - A new build that fails puts no mark, and the old file stays. The
+    next run tries again.
+  - A file of a query from before `NAME.json` has no lines of its query,
+    so it stays until the cleanup of 30 days.
+- A field that the FIFO does not know, or a value with a different
+  character, gets `400` at once. The workflow checks the values
+  (`query_inputs` of `scripts/custom_build.py`): a value that is not
+  possible is a refusal of the build.
+- A build that does not run (a refusal, the limit of each day, or a
+  failure) puts a text with the reason in the release for the day:
+  `beam-u.URL.DAY.txt`. The next requests of that day get it with `422`,
+  and start no build. The first request gets only an error.
+- A build of a URL counts in the limits of the form: one build at a
+  time, at most 3 that wait, and at most 10 new builds each day. The
+  workflow has one group of `concurrency` for each URL, so the requests
+  of a URL that wait start one build.
+- When a check of the release gets a status that is not 2xx and not 404
+  from GitHub for a moment, `31-u-not-yet` says "not yet", and
+  mkfifo.com asks again. Before, the request failed at once with 404.
+- The envelopes are `9-url` to `31-u-not-yet` of
+  [`priv/seeds/beam.com/`](../priv/seeds/beam.com). The input `url` of
+  the workflow has the choices of the URL (`URL` of `custom_build.py`),
+  and the input `query` has the lines of a query.
+
+A program of parts is the `beam.com` of `edge` with the NIF objects of
+vix, rusty_csv and ex_pdfium as NIF files ([`NIFS.md`](NIFS.md), "A
+program assembled from parts"). It has no static NIF of them, and the
+builder gives the objects to the packages:
+
+- After each publish of `edge`, the job `edge-parts` of `build.yml` cuts
+  the program into segments with `scripts/assemble.erl --parts`. The
+  segments go to the prerelease `program-parts`: the bytes of `beam.com`
+  up to its zip directory, the entries of each package, and one zip
+  directory for each set of packages. A list `beam-p.plus.SET.txt` for
+  each set names its segments. The job keeps the segments of the edge
+  before, for a stream that did not end.
+- `21-url-parts` makes the name of the list from the names of the URL.
+  `vix-icc`, `vix-gif`, `vix-avif` and `vix-svg` are `vix`, because the
+  object of vix has each part. The default NIFs go away, because
+  `beam.com` has them. When the list is there, and no build of the URL is
+  in `custom-builds`, the answer is the segments of the list, one after
+  the other, as one stream.
+- This answer has no `Content-Length`: it is more than one file
+  (section 8.7 of the specification of mkfifo.com). When a segment
+  fails, mkfifo.com stops the answer with no end of the body, and `curl`
+  gives an error. The answer has no `Range`.
+- A build of the URL that is in `custom-builds` (a static build) wins,
+  with its `Content-Length`. A URL with a different NIF, such as
+  `picosat_elixir`, or with `nifs=`, gets a build, as before.
+- The program of parts is not the `edge` file, so `gh attestation verify`
+  does not accept it. Its first segment is the start of the `edge` file,
+  with the same bytes.
+
+### A fixed version of a build
+
+A build URL does not name a version of BEAM.com. It names the choices,
+and the file of a URL can change:
+
+- After a push that changes the source of a build, a new build of
+  `main` replaces the file, with the same name
+  (`custom-build-caches.yml`).
+- The file goes away 30 days after its build, also when its key did not
+  change. The next request then makes a new build. A new build of the
+  same key does not have the same bytes.
+
+So a lock names the bytes, not the URL. Each new build also goes to the
+prerelease of its month (UTC), `kept-YYYYMM`, as `beam-SHA256.com`.
+SHA256 is the SHA-256 of the file. No job deletes these files. To lock
+one version:
+
+1. Get the build one time with the build URL (`curl --retry 40`, above).
+2. Read the kept URL in `NAME.json` next to the file of the URL. Its
+   key `kept` is the URL of the same bytes, and `sha256` is their
+   SHA-256:
+
+   ```sh
+   curl -fsSL https://github.com/sntran/BEAM.com/releases/download/custom-builds/beam-u.q.HASH.com.json
+   # {"commit": "...", "kept": "https://github.com/sntran/BEAM.com/releases/download/kept-202611/beam-SHA256.com", "key": "...", "query": "...", "sha256": "SHA256"}
+   ```
+
+3. In the lock, put the kept URL and the SHA-256. Each run of your CI
+   downloads the kept URL, and checks the hash:
+
+   ```sh
+   curl -fsSL -o beam.com https://github.com/sntran/BEAM.com/releases/download/kept-202611/beam-SHA256.com
+   echo "SHA256  beam.com" | sha256sum -c -
+   ```
+
+   The name holds the hash, so the bytes of a kept URL never change.
+   Use the build URL only to make a new build, and lock that build in the
+   same way.
+4. Check where the file comes from. Each new build has an attestation of
+   the workflow that built it, and the kept file has the same bytes:
+
+   ```sh
+   gh attestation verify beam.com --repo sntran/BEAM.com \
+     --signer-workflow sntran/BEAM.com/.github/workflows/custom-build.yml
+   ```
+
+   The job `attest` signs the file, and it runs no code of a build: the
+   job `build` runs the code of the NIFs and of their dependencies, and
+   it cannot sign.
+
+- Give each field in the query, at least `otp_version` and
+  `elixir_version`. A field that is not there takes the default of the
+  form at the time of the build, and the default can change.
+- A build before the kept files has no kept file, and a build before
+  the attestation has no `.sha256` file and no attestation. Lock a new
+  build.
+- One release holds each month, because GitHub permits 1,000 files in
+  one release. A month has at most 310 new builds.
+
+A release of BEAM.com also has files that stay, with `SHA256SUMS` and an
+attestation.
 
 ## The store of parts
 
@@ -424,7 +620,10 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
    `beam.com`, and it uses the column `linux-no-landlock` of
    `tests/sandbox_claims.txt`.
 5. **Publish the edge binary**: after a merge to `main`, the prerelease
-   `edge` gets the new `beam.com`.
+   `edge` gets the new `beam.com` (`scripts/publish_edge.sh`). The new
+   files go in as `NAME.new` first, and take the names of the old files
+   only after the upload. Thus a failed upload keeps the old `beam.com`
+   in `edge`.
 6. **Publish the release**: for a tag `vX.Y.Z`, the release of the tag
    gets `beam.com`, `beam-emu.com`, the tarball of the npm package and
    `SHA256SUMS`, and npm gets the same tarball. A run of this job again

@@ -1,0 +1,4 @@
+To: beam.com
+X-HTTP-Method-Override: ^GET$(cat beam.com/s/beam-u.plus.$(printf %s $nifs | tr , '\n' | sort -u | tr '\n' .)$(date -u +%Y%m%d).txt)$
+
+\Anifs : (?<nifs>(?:exqlite|bcrypt_elixir|argon2_elixir|picosat_elixir|vix|vix-icc|vix-gif|vix-avif|vix-svg|rusty_csv|ex_pdfium)(?:,(?:exqlite|bcrypt_elixir|argon2_elixir|picosat_elixir|vix|vix-icc|vix-gif|vix-avif|vix-svg|rusty_csv|ex_pdfium)){0,15})\n?\z

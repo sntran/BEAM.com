@@ -15,12 +15,15 @@
 %%   - A package with a linked NIF, of the same version: nothing to do.
 %%   - A package with a linked NIF, of another version: an error (the NIF
 %%     functions of the two versions can be different).
-%%   - A package with a NIF library in WebAssembly in beam.com
-%%     (?WASM_NIFS, with the files of priv/nifs/APP-VSN of beam_com, from
-%%     scripts/lazy_html.sh): make copies
-%%     the files into the priv directory of the package. load_nif/2 then
-%%     loads PATH.wasm or its AOT file (docs/NIFS.md). Of another version:
-%%     an error.
+%%   - A package with NIF files in beam.com: the directory
+%%     priv/nifs/APP-VSN of beam_com holds files of the priv directory of
+%%     the package. They are a NIF library in WebAssembly (lazy_html,
+%%     scripts/lazy_html.sh), or native NIF objects (LIB.x86_64.o and
+%%     LIB.aarch64.o, a program assembled from parts, docs/NIFS.md). make
+%%     copies the files into the priv directory of the package, and
+%%     load_nif/2 then loads them. Of another version: an error. The
+%%     list of these packages comes from the directory, so a program
+%%     with more files in its zip needs no other build.
 %%   - Another package: the make of PATH (gmake or make) runs, with the
 %%     same arguments. Without make, an error.
 %%
@@ -30,21 +33,20 @@
 %% tools of Elixir run force_build/0 at their start (beam_com.c).
 -module(beam_com_make).
 
--export([main/0, force_build/0, wasm_nif_files/2, linked_nifs/0]).
+-export([main/0, force_build/0, nif_files/2, nif_files/3, file_nifs/0, file_nifs/1,
+         priv/0, linked_nifs/0]).
 
 -ifdef(TEST).
--export([run/2, dep_version/1, force_build/1, wasm_nif_files/3, app_file_nifs/1]).
+-export([run/2, dep_version/1, force_build/1, app_file_nifs/1]).
 -endif.
 
-%% The packages whose NIF library in WebAssembly is in priv/nifs.
--define(WASM_NIFS, [{lazy_html, "0.1.13"}]).
-
 main() ->
+    Priv = priv(),
     Env = #{app_path => os:getenv("MIX_APP_PATH", ""),
             cwd => element(2, file:get_cwd()),
             nifs => nifs(),
-            wasm_nifs => ?WASM_NIFS,
-            priv => filename:join(code:lib_dir(beam_com), "priv"),
+            file_nifs => file_nifs(Priv),
+            priv => Priv,
             make => os:getenv("MAKE", "")},
     Status = try run(init:get_plain_arguments(), Env) of
                  ok -> 0;
@@ -65,9 +67,9 @@ run(Args, #{app_path := AppPath, cwd := Cwd, nifs := Nifs} = Env) ->
               "" -> filename:basename(Cwd);
               _ -> filename:basename(AppPath)
           end,
-    case lists:keyfind(list_to_atom(App), 1, maps:get(wasm_nifs, Env, [])) of
-        {_, Vsn} -> wasm_nif(Args, App, Vsn, Env);
-        false -> run(Args, App, Nifs, Env)
+    case [V || {A, V} <- maps:get(file_nifs, Env, []), atom_to_list(A) =:= App] of
+        [_ | _] = Vsns -> file_nif(Args, App, Vsns, Env);
+        [] -> run(Args, App, Nifs, Env)
     end.
 
 run(Args, App, Nifs, #{cwd := Cwd} = Env) ->
@@ -99,52 +101,84 @@ run(Args, App, Nifs, #{cwd := Cwd} = Env) ->
             end
     end.
 
-%% A package with a NIF library in WebAssembly in beam.com: "all" (or no
-%% target) copies its files into MIX_APP_PATH/priv, "clean" does nothing.
-wasm_nif(Args, App, Vsn, #{app_path := AppPath, cwd := Cwd, priv := Priv}) ->
-    case dep_version(Cwd) of
-        Other when is_list(Other), Other =/= Vsn ->
-            throw({error, "~ts ~ts has a NIF, and ~ts has the NIF library in WebAssembly "
-                   "of ~ts ~ts. Use ~ts ~ts (in the deps of mix.exs: {:~ts, \"~ts\"})",
-                   [App, Other, name(), App, Vsn, App, Vsn, App, Vsn]});
-        _ ->
-            ok
-    end,
+%% A package with NIF files in beam.com (Vsns: the versions in
+%% priv/nifs): "all" (or no target) copies its files into
+%% MIX_APP_PATH/priv, "clean" does nothing.
+file_nif(Args, App, Vsns, #{app_path := AppPath, cwd := Cwd, priv := Priv}) ->
+    Vsn = case dep_version(Cwd) of
+              Other when is_list(Other) ->
+                  case lists:member(Other, Vsns) of
+                      true -> Other;
+                      false -> throw({error, "~ts ~ts has a NIF, and ~ts has the NIF of ~ts "
+                                      "~ts. Use ~ts ~ts (in the deps of mix.exs: "
+                                      "{:~ts, \"~ts\"})",
+                                      [App, Other, name(), App, hd(Vsns), App, hd(Vsns),
+                                       App, hd(Vsns)]})
+                  end;
+              undefined ->
+                  hd(Vsns)
+          end,
     case lists:member("clean", Args) of
         true ->
             ok;
         false ->
             Dst = filename:join(case AppPath of "" -> Cwd; _ -> AppPath end, "priv"),
-            Files = case wasm_nif_files(list_to_atom(App), Vsn, Priv) of
+            Files = case nif_files(list_to_atom(App), Vsn, Priv) of
                         [_ | _] = Fs -> Fs;
-                        [] -> throw({error, "~ts: no NIF library of ~ts ~ts",
+                        [] -> throw({error, "~ts: no NIF files of ~ts ~ts",
                                      [filename:join([Priv, "nifs", App ++ "-" ++ Vsn]), App, Vsn]})
                     end,
-            ok = filelib:ensure_path(Dst),
-            [ok = file:write_file(filename:join(Dst, F), Data) || {F, Data} <- Files],
-            ok
+            write_files(Dst, Files)
     end.
 
-%% The files of the NIF library in WebAssembly of App in beam.com, for
-%% the version Vsn: [{Name, Data}], or [] for another package or version.
-%% beam_com_build adds them to the priv directory of App in a program.
-wasm_nif_files(App, Vsn) ->
-    case lists:keyfind(App, 1, ?WASM_NIFS) of
-        {_, Vsn} -> wasm_nif_files(App, Vsn, filename:join(code:lib_dir(beam_com), "priv"));
-        _ -> []
-    end.
+%% Writes the files [{Name, Data}] (Name can have directories) into Dir.
+write_files(Dir, Files) ->
+    [begin
+         Path = filename:join(Dir, F),
+         ok = filelib:ensure_dir(Path),
+         ok = file:write_file(Path, Data)
+     end || {F, Data} <- Files],
+    ok.
 
-wasm_nif_files(App, Vsn, Priv) ->
+%% The NIF files of App in beam.com, for the version Vsn: [{Name, Data}],
+%% with Name relative to the priv directory of App, or [] for another
+%% package or version. beam_com_build adds them to the priv directory of
+%% App in a program, and beam_com_rustler copies them.
+nif_files(App, Vsn) ->
+    nif_files(App, Vsn, priv()).
+
+nif_files(App, Vsn, Priv) ->
     Dir = filename:join([Priv, "nifs", atom_to_list(App) ++ "-" ++ Vsn]),
-    case file:list_dir(Dir) of
+    [{N, element(2, {ok, _} = file:read_file(filename:join(Dir, N)))}
+     || N <- lists:sort(filelib:wildcard("**", Dir)),
+        filelib:is_regular(filename:join(Dir, N))].
+
+%% The packages with NIF files in beam.com: [{App, Vsn}], from the names
+%% APP-VSN of the directories of priv/nifs.
+file_nifs() ->
+    file_nifs(priv()).
+
+file_nifs(Priv) ->
+    case file:list_dir(filename:join(Priv, "nifs")) of
         {ok, Names} ->
-            [{N, element(2, {ok, _} = file:read_file(filename:join(Dir, N)))}
-             || N <- lists:sort(Names)];
+            [{list_to_atom(A), V} || N <- lists:sort(Names),
+                                     [A, V] <- [string:split(N, "-")],
+                                     A =/= "", V =/= "",
+                                     filelib:is_dir(filename:join([Priv, "nifs", N]))];
         {error, _} ->
             []
     end.
 
-%% The env force_build of elixir_make, with each package of ?WASM_NIFS
+%% The priv directory of beam_com, also when beam_com is not loaded (it
+%% is in the code path). Mix removes beam_com from the code path before
+%% it compiles: beam_com_rustler keeps this directory from the start.
+priv() ->
+    case code:lib_dir(beam_com) of
+        Dir when is_list(Dir) -> filename:join(Dir, "priv");
+        {error, _} -> "/nonexistent"
+    end.
+
+%% The env force_build of elixir_make, with each package with NIF files
 %% and each linked NIF (a package such as vix gets a precompiled NIF
 %% without it), before Mix loads the configuration of the project.
 %% persistent: a later load of elixir_make keeps it. The same for the
@@ -152,7 +186,7 @@ wasm_nif_files(App, Vsn, Priv) ->
 force_build() ->
     Nifs = start_nifs(),
     beam_com_rustler:force_build(Nifs),
-    force_build(?WASM_NIFS ++ Nifs).
+    force_build(file_nifs() ++ Nifs).
 
 %% The linked NIFs ([{App, Vsn}]), also when beam_com is not loaded.
 linked_nifs() ->
@@ -183,12 +217,13 @@ app_file_nifs(File) when is_list(File) ->
 app_file_nifs(non_existing) ->
     [].
 
-force_build(WasmNifs) ->
+force_build(FileNifs) ->
     Old = case application:get_env(elixir_make, force_build) of
               {ok, L} when is_list(L) -> L;
               _ -> []
           end,
-    New = Old ++ [{A, true} || {A, _} <- WasmNifs, not lists:keymember(A, 1, Old)],
+    New = Old ++ [{A, true} || {A, _} <- lists:ukeysort(1, FileNifs),
+                              not lists:keymember(A, 1, Old)],
     application:set_env(elixir_make, force_build, New, [{persistent, true}]).
 
 %% The version of the package in the directory Dir: from

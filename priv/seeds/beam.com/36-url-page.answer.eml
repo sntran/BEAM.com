@@ -1,0 +1,21 @@
+To: -
+Status: 503
+Retry-After: 15
+Refresh: 15
+Cache-Control: no-store
+Content-Type: text/html; charset=utf-8
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The build of beam.com runs</title>
+<style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;line-height:1.5}code{overflow-wrap:anywhere}</style>
+</head>
+<body>
+<h1>The build of your beam.com runs</h1>
+<p>A build takes about 3 minutes. This page loads again each 15 seconds. When the build is complete, the download starts. Then you can close this page.</p>
+<p><a href="/beam.com?form">Back to the form</a></p>
+</body>
+</html>

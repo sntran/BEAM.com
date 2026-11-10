@@ -271,6 +271,10 @@ dir=$top_dir runner=$top_runner
 rmdir "$empty"
 check beam.com 'run INPUT (default: the project in this directory)' --help
 check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" --version
+# The architecture is the CPU and the system where the file runs (O28 of
+# docs/UPSTREAM.md), not the one text of configure.
+case $(uname -m) in arm64|aarch64) cpu=aarch64 ;; amd64|x86_64) cpu=x86_64 ;; *) cpu=$(uname -m) ;; esac
+check beam.com "^arch: $cpu-[a-z]*-$os" -noshell -eval 'io:format("arch: ~ts~n", [erlang:system_info(system_architecture)]), halt().'
 check_status 1 beam.com 'nosuch: not a .erl, .ex or .exs file, or a directory' nosuch
 check_status 1 beam.com 'there is no command build: use "beam.com INPUT -o OUTPUT"' build
 check_status 1 beam.com 'the arguments of the program come after "--"' x.erl y
@@ -514,6 +518,17 @@ if [ -d examples ]; then
         fi
         unset BEAM_COM_CRASH_REPORTS
         check script_check.b.com '^line 100000$@@^last line$' big
+        # A slow reader of the standard output: it reads only after 3 s,
+        # and it must get each line.
+        slow=$($runner "$dir/script_check.b.com" big 1000000 2>/dev/null | (sleep 3; wc -l))
+        if [ "$slow" -eq 1000001 ] 2>/dev/null; then
+            echo "PASS: script_check.b.com big 1000000 with a slow reader"
+        else
+            echo "FAIL: script_check.b.com big 1000000 with a slow reader: $slow lines"
+            fail=1
+            failed="$failed
+  script_check.b.com big 1000000 with a slow reader: $slow lines (expected 1000001)"
+        fi
         check script_check.b.com 'returned' spawn
         ERL_FLAGS='+S 1'
         export ERL_FLAGS
@@ -525,8 +540,8 @@ if [ -d examples ]; then
     check beam.com 'wrote .*peer_check.b.com' \
         tests/programs/peer_check.erl -o "$dir/peer_check.b.com"
     if [ -f "$dir/peer_check.b.com" ]; then
-        peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000'
-        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$"
+        peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
+        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$@@^exit status 3\$@@^cmd hello\$@@^slow reader 200000\$@@^halt reader 4097\$@@^closed listen socket refused\$@@^find executable true\$@@^script ok\$@@^nouse_stdio fd ping\$"
     fi
     # The blue-green spike (examples/bluegreen): an upgrade under load, and
     # three upgrades that the server refuses. Linux has a result; the other
@@ -547,6 +562,20 @@ if [ -d examples ]; then
             linux) check bluegreen/check.sh "$bluegreen" "$dir/beam.com" ;;
             *) probe bluegreen/check.sh "$dir/beam.com" 18451 5000 ;;
         esac
+        # New code in a running program (examples/reload): zip puts new
+        # modules into its file, and the program loads them. It needs zip
+        # (Info-ZIP). A probe on the systems other than Linux.
+        if command -v zip > /dev/null; then
+            cp -R examples/reload "$dir/"
+            reload='^hello: v1 2$@@^build: .*last => {ok,\[reload_text\]}@@^status: .*last => {ok,\[reload_loop,reload_text\]}@@^hello: v2 3$'
+            reload="$reload@@^loop: loop 1\$@@last => {waiting,\[reload_loop\]}@@^status: .*last => {ok,\[reload_loop\]}"
+            reload="$reload@@^after move: loop 2\$@@^state: #{count => 3,extra => to_map}\$@@^hello: v2 4\$"
+            reload="$reload@@^file: hello 2 changes 1\$@@^outside: v2 5\$@@^off: no reload\$"
+            case $os in
+                linux) check reload/check.sh "$reload" "$dir/beam.com" ;;
+                *) probe reload/check.sh "$dir/beam.com" ;;
+            esac
+        fi
         runner=$saved_runner
     fi
     # A run: the executable in the cache, with the arguments after "--"
@@ -763,20 +792,32 @@ time.sleep(120)' "$claims/in/srv.sock" &
     BEAM_COM_ALLOW=read
     check sandbox_net.com "$env" read /etc/hosts read "$dir/beam.com"
     unset BEAM_COM_ALLOW
-    # On Linux, write allows the change of the mode and of the times
-    # (chown with no change first, #172), and net allows a Unix socket.
+    # chown() to the owner that a file already has (C28 of
+    # docs/UPSTREAM.md): outside the sandbox, the result of the system.
+    # Linux clears the setuid and setgid bits at each chown().
+    rm -rf "$dir/sandbox-w"
+    mkdir "$dir/sandbox-w"
     if [ "$os" = linux ]; then
-        rm -rf "$dir/sandbox-w"
-        mkdir "$dir/sandbox-w"
+        check sandbox_none.com 'write: ok@@setid: owner 755, times 755@@done' \
+            write "$dir/sandbox-w/g" setid "$dir/sandbox-w/g"
+    else
+        check sandbox_none.com 'write: ok@@owner: ok@@touch: ok@@done' \
+            write "$dir/sandbox-w/g" owner "$dir/sandbox-w/g" touch "$dir/sandbox-w/g"
+    fi
+    # On Linux, write allows the change of the mode and of the times
+    # (chown with no change first, #172), the same owner again (the
+    # sandbox refuses chown()), and net allows a Unix socket.
+    if [ "$os" = linux ]; then
         BEAM_COM_ALLOW="write=$dir/sandbox-w;net"
         export BEAM_COM_ALLOW
-        check sandbox_none.com 'write: ok@@chmod: ok@@touch: ok@@unix: ok@@done' \
-            write "$dir/sandbox-w/f" chmod "$dir/sandbox-w/f" touch "$dir/sandbox-w/f" unix
+        check sandbox_none.com 'write: ok@@chmod: ok@@touch: ok@@owner: ok@@unix: ok@@done' \
+            write "$dir/sandbox-w/f" chmod "$dir/sandbox-w/f" touch "$dir/sandbox-w/f" \
+            owner "$dir/sandbox-w/f" unix
         BEAM_COM_ALLOW="write=$dir/sandbox-w"
         check sandbox_none.com 'unix: error eperm@@done' unix
         unset BEAM_COM_ALLOW
-        rm -rf "$dir/sandbox-w"
     fi
+    rm -rf "$dir/sandbox-w"
     # Landlock on Linux: the ABI with BEAM_COM_VERBOSE, and a warning on a
     # kernel without it (BEAM_COM_NO_LANDLOCK=1 acts as one, issue 171).
     if [ "$os" = linux ]; then
@@ -976,6 +1017,90 @@ if [ -d examples ]; then
         examples/greeter_ex -o "$dir/greeter_ex.com"
     [ -f "$dir/greeter_ex.com" ] && check greeter_ex.com "$greeter_ex"
     rm -f examples/greeter_ex/mix.lock
+    # A Mix project with config/runtime.exs: Mix makes the release
+    # (beam_com_mix), and the program reads config/runtime.exs at its
+    # start. It has no deps, so it needs no network.
+    limit_saved=$limit
+    limit=600
+    check beam.com 'Mix gets the deps of tests/programs/runtime_check and makes its release (config/runtime.exs)@@wrote .*runtime_check.com@@applications: .*runtime_check' \
+        tests/programs/runtime_check -o "$dir/runtime_check.com"
+    limit=$limit_saved
+    rm -rf tests/programs/runtime_check/_build
+    if [ -f "$dir/runtime_check.com" ]; then
+        RUNTIME_CHECK_GREETING="hello from config/runtime.exs"
+        export RUNTIME_CHECK_GREETING
+        check runtime_check.com 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs'
+        unset RUNTIME_CHECK_GREETING
+    fi
+    # Run mode with a Mix project whose build writes a file in priv/: the
+    # alias assets.deploy of tests/programs/rebuild_check writes a new
+    # time, as phx.digest of Phoenix does. The second run must not build
+    # again. A change of a source file builds again. The copy and the
+    # cache are in DIR, not in the repository and not in the home.
+    rm -rf "$dir/rebuild_check" "$dir/run-cache"
+    cp -R tests/programs/rebuild_check "$dir/"
+    BEAM_COM_CACHE=$dir/run-cache
+    export BEAM_COM_CACHE
+    limit_saved=$limit
+    limit=600
+    rebuild_line='Mix gets the deps of .*rebuild_check and makes its release (the alias assets.deploy)'
+    check beam.com "$rebuild_line@@^rebuild_check: v1\$" "$dir/rebuild_check"
+    if [ ! -f "$dir/rebuild_check/priv/static/stamp.txt" ]; then
+        echo "FAIL: the build of rebuild_check did not run its alias assets.deploy"
+        fail=1
+        failed="$failed
+  beam.com $dir/rebuild_check: no priv/static/stamp.txt"
+    fi
+    check beam.com '^rebuild_check: v1$' "$dir/rebuild_check"
+    if grep -q 'Mix gets the deps' "$tmp"; then
+        echo "FAIL: run mode built rebuild_check again with no change"
+        fail=1
+        failed="$failed
+  beam.com $dir/rebuild_check: built again with no change"
+    else
+        echo "PASS: run mode did not build rebuild_check again"
+    fi
+    cat > "$dir/rebuild_check/lib/rebuild_check.ex" <<'EOF'
+defmodule RebuildCheck do
+  @moduledoc "Writes one line, then stops the program (after a change)."
+  use Application
+
+  def start(_type, _args) do
+    IO.puts("rebuild_check: v2")
+    System.halt(0)
+  end
+end
+EOF
+    check beam.com "$rebuild_line@@^rebuild_check: v2\$" "$dir/rebuild_check"
+    limit=$limit_saved
+    unset BEAM_COM_CACHE
+    rm -rf "$dir/rebuild_check" "$dir/run-cache"
+    # A command line Mix project (escript main_module) with
+    # config/runtime.exs: the builder of a plain Mix project makes the
+    # file, with a warning, and the file runs main/1. With one more reason
+    # for Mix (--tool mix-release, or the alias assets.deploy), the build
+    # stops and writes no file.
+    rm -f "$dir/escript_check.com" "$dir/escript_never.com"
+    plain_line='only the builder of a plain Mix project reads'
+    check beam.com "warning: tests/programs/escript_check: $plain_line the escript main_module of mix.exs@@the program does not have config/runtime.exs@@wrote .*escript_check.com" \
+        tests/programs/escript_check -o "$dir/escript_check.com"
+    rm -rf tests/programs/escript_check/_build
+    if [ -f "$dir/escript_check.com" ]; then
+        check escript_check.com '^escript_check: args \["a", "b"\]$@@^escript_check: greeting none$' a b
+    fi
+    check_status 1 beam.com "$plain_line the escript main_module of mix.exs, and the project needs Mix (--tool mix-release)" \
+        tests/programs/escript_check --tool mix-release -o "$dir/escript_never.com"
+    check_status 1 beam.com "$plain_line --main, and the project needs Mix (the alias assets.deploy)" \
+        tests/programs/rebuild_check --main RebuildCheck -o "$dir/escript_never.com"
+    # A wrong build of rebuild_check writes _build and priv/ there.
+    rm -rf tests/programs/escript_check/_build tests/programs/rebuild_check/_build \
+        tests/programs/rebuild_check/priv
+    if [ -e "$dir/escript_never.com" ]; then
+        echo "FAIL: a build that stops wrote escript_never.com"
+        fail=1
+        failed="$failed
+  beam.com --tool mix-release or --main: wrote escript_never.com"
+    fi
 fi
 
 # The tools: escript, and mix, iex, elixir and elixirc, as a first
@@ -992,6 +1117,56 @@ cat > "$tmp.escript" <<'ESCRIPT'
 main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).
 ESCRIPT
 check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
+# The SHA-1 check of the git client: the helper git_sha1dc in the file
+# (c_src/cosmo/beam_com_sha1dc.c) finds the SHA-1 collisions.
+if [ -d examples ]; then
+    check beam.com 'git_sha1dc_check: 4 vectors have the mark, the good objects pass' \
+        escript tests/programs/git_sha1dc_check.escript
+fi
+# A Unix socket with a short path (C53 of docs/UPSTREAM.md): bind() of
+# Cosmopolitan refuses an address of fewer than 16 bytes, and the wrap of
+# bind() (c_src/cosmo/beam_com_net.c) makes it longer. A server and a
+# client talk through a stream socket with a path of 1 byte and of 14
+# bytes, and through two datagram sockets.
+cat > "$tmp.unix.escript" <<'ESCRIPT'
+#!/usr/bin/env escript
+main(_) ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"),
+                        "unix_socket." ++ os:getpid()),
+    ok = file:make_dir(Dir),
+    ok = file:set_cwd(Dir),
+    Results = [stream("s"), stream("s2345678901234"), datagram("d", "e")],
+    [file:delete(F) || F <- ["s", "s2345678901234", "d", "e"]],
+    ok = file:del_dir(Dir),
+    io:format("unix socket: ~ts~n", [lists:join(", ", Results)]).
+
+stream(Path) ->
+    Result = try
+                 {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {ifaddr, {local, Path}}]),
+                 {ok, C} = gen_tcp:connect({local, Path}, 0, [binary, {active, false}]),
+                 {ok, A} = gen_tcp:accept(L, 5000),
+                 ok = gen_tcp:send(C, <<"hello">>),
+                 {ok, <<"hello">>} = gen_tcp:recv(A, 5, 5000),
+                 [gen_tcp:close(S) || S <- [C, A, L]],
+                 "ok"
+             catch error:{badmatch, Reason} -> io_lib:format("~p", [Reason])
+             end,
+    [Path, " ", Result].
+
+datagram(Path1, Path2) ->
+    Result = try
+                 {ok, S1} = gen_udp:open(0, [binary, {active, false}, {ifaddr, {local, Path1}}]),
+                 {ok, S2} = gen_udp:open(0, [binary, {active, false}, {ifaddr, {local, Path2}}]),
+                 ok = gen_udp:send(S2, {local, Path1}, 0, <<"hello">>),
+                 {ok, {_, _, <<"hello">>}} = gen_udp:recv(S1, 0, 5000),
+                 [gen_udp:close(S) || S <- [S1, S2]],
+                 "ok"
+             catch error:{badmatch, Reason} -> io_lib:format("~p", [Reason])
+             end,
+    ["datagram ", Result].
+ESCRIPT
+check beam.com '^unix socket: s ok, s2345678901234 ok, datagram ok$' escript "$tmp.unix.escript"
+rm -f "$tmp.unix.escript"
 check beam.com '^55$' elixir -e 'IO.puts(Enum.sum(1..10))'
 # The errno names of the BEAM on each system: ELOOP gave errno_40 on
 # Linux and errno_62 on macOS (C35 of docs/UPSTREAM.md).
@@ -1116,7 +1291,9 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     export PATH
     cd "$work"
     net_check mix.com '' local.hex --force
-    net_check mix.com 'phx_new' archive.install hex phx_new --force
+    # A fixed phx_new: a new version can give other deps (the checks
+    # below name the git deps). Keep it equal to tests/run.ps1.
+    net_check mix.com 'phx_new' archive.install hex phx_new 1.8.16 --force
     check mix.com 'creating hello/mix.exs' phx.new hello --database sqlite3 --no-install
     linked_nifs
     if [ -d hello ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then
@@ -1178,6 +1355,66 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
         kill "$phx" 2>/dev/null
         pkill -f "^sleep 300$" 2>/dev/null
         wait "$phx" 2>/dev/null
+        # The watchers of the server download tailwind and esbuild into
+        # _build, and the stop above can come before the chmod of a
+        # download. Then the file stays, and the next install skips it
+        # ("eacces" at the open of the port). Remove such a file.
+        for f in _build/tailwind-* _build/esbuild-*; do
+            if [ -f "$f" ] && [ ! -x "$f" ]; then
+                echo "remove $f: the stop of the server came before its chmod"
+                rm -f "$f"
+            fi
+        done
+        # The same app in one file, with no Mix task first: Mix makes the
+        # release (beam_com_mix), for config/runtime.exs, the git deps
+        # (heroicons, daisyui), the compilers and assets.deploy. The git
+        # deps come again with the git client of beam.com
+        # (BEAM_COM_GIT=client), as on a computer with no git program.
+        rm -rf deps/heroicons deps/daisyui
+        BEAM_COM_GIT=client
+        export BEAM_COM_GIT
+        net_check beam.com 'Mix gets the deps of \. and makes its release (config/runtime.exs, deps that are not Hex packages: heroicons daisyui@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix' \
+            . -o "$dir/hello.com"
+        unset BEAM_COM_GIT
+        if [ -f deps/heroicons/.git/HEAD ] && [ ! -d deps/heroicons/.git/objects/pack ]; then
+            echo "PASS: the git client of beam.com got heroicons"
+        else
+            echo "FAIL: the git client of beam.com did not get heroicons"
+            fail=1
+            failed="$failed
+  BEAM_COM_GIT=client: deps/heroicons is not a checkout of the git client of beam.com"
+        fi
+        if [ -f "$dir/hello.com" ]; then
+            chmod +x "$dir/hello.com"
+            echo "==> hello.com"
+            PHX_SERVER=true PORT=4124 DATABASE_PATH="$work/hello_prod.db" \
+                SECRET_KEY_BASE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+                $runner "$dir/hello.com" > "$tmp.phx" 2>&1 &
+            phx=$!
+            served=
+            i=0
+            while [ $i -lt 60 ]; do
+                sleep 1
+                i=$((i + 1))
+                if curl -s http://127.0.0.1:4124/ 2>/dev/null | grep -q 'Phoenix Framework'; then
+                    served=yes
+                    break
+                fi
+            done
+            grep -v '^ *$' "$tmp.phx" | head -20
+            css=$(curl -s http://127.0.0.1:4124/ 2>/dev/null | sed -n 's/.*href="\(\/assets\/css\/app-[^"]*\)".*/\1/p' | head -n 1)
+            if [ -n "$served" ] && [ -n "$css" ] &&
+               [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:4124$css")" = 200 ]; then
+                echo "PASS: hello.com serves the start page and $css (after $i s)"
+            else
+                echo "FAIL: hello.com did not serve the start page and its digested CSS"
+                fail=1
+                failed="$failed
+  hello.com: no start page or digested CSS on http://127.0.0.1:4124/"
+            fi
+            kill "$phx" 2>/dev/null
+            wait "$phx" 2>/dev/null
+        fi
     fi
     cd "$here"
     rm -f "$dir/mix" "$dir/escript" "$dir/mix.com" "$dir/iex.com"
@@ -1649,6 +1886,151 @@ if [ -d examples ]; then
         check nif_check.com 'nif_wasm: .*nif_check\.wasm$@@nif_check: all [0-9]* passed'
         unset BEAM_COM_NIF_DEBUG BEAM_COM_NIF_AOT
     fi
+fi
+
+# Native NIF objects (docs/NIFS.md): the application native_nif_check,
+# with priv/native_nif_check.x86_64.o and .aarch64.o in the zip of the
+# program. BEAM_COM_NIF_DEBUG names the object of the CPU that load_nif/2
+# loads.
+if [ -d examples ]; then
+    check beam.com 'wrote .*native_nif_check.com' tests/programs/native_nif_check \
+        --main native_nif_check -o "$dir/native_nif_check.com"
+    if [ -f "$dir/native_nif_check.com" ]; then
+        case $(uname -m) in
+            x86_64 | amd64 | AMD64) nif_file='native_nif_check\.x86_64\.o$' ;;
+            *) nif_file='native_nif_check\.aarch64\.o$' ;;
+        esac
+        BEAM_COM_NIF_DEBUG=1
+        export BEAM_COM_NIF_DEBUG
+        check native_nif_check.com "nif_native: .*$nif_file@@native_nif_check: all [0-9]* passed"
+        unset BEAM_COM_NIF_DEBUG
+    fi
+fi
+
+# assemble OUT BASE COUNT SPEC...: OUT from BASE and the COUNT files of
+# the specs (NAME=FILE, or PREFIX/=DIR for each file of DIR), with
+# scripts/assemble.erl.
+assemble() {
+    a_out=$1 a_base=$2 a_count=$3
+    shift 3
+    check beam.com "assemble: wrote .*${a_out##*/}: [0-9]* bytes, the length of the start; new files: $a_count\$" \
+        scripts/assemble.erl -- "$a_base" "$a_out" "$@"
+}
+
+# files DIR...: the count of the regular files of each DIR.
+files() {
+    echo $(($(find "$@" -type f | wc -l)))
+}
+
+# The NIFs of the store as native NIF objects: vix, rusty_csv and
+# ex_pdfium. store_nifs.tar.gz of CI (the job Build of build.yml) holds
+# their objects for each CPU, in the tree nifs/APP-VSN of a program, the
+# license texts in licenses/NAME, parts.txt and nif_needs.com.
+if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
+    store=$dir/store_nifs
+    rm -rf "${store:?}"
+    mkdir -p "$store"
+    tar -xzf "$dir/store_nifs.tar.gz" -C "$store"
+    case $(uname -m) in
+        x86_64 | amd64 | AMD64) cpu=x86_64 ;;
+        *) cpu=aarch64 ;;
+    esac
+    # The program has each name that the objects of this CPU need.
+    cp "$store/nif_needs.com" "$dir/nif_needs.com"
+    check nif_needs.com "libex_pdfium\.$cpu\.o: ok@@librustycsv\.$cpu\.o: ok@@vix\.$cpu\.o: ok" \
+        $(find "$store/nifs" -name "*.$cpu.o" | sort)
+    # store_nif_check, with the objects at the paths of the packages.
+    priv=tests/programs/store_nif_check/priv
+    rm -rf "$priv"
+    mkdir -p "$priv"
+    for d in "$store"/nifs/*/; do
+        cp -R "$d." "$priv/"
+    done
+    store_ok='store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+    check beam.com 'wrote .*store_nif_check.com' tests/programs/store_nif_check \
+        --main store_nif_check -o "$dir/store_nif_check.com"
+    if [ -f "$dir/store_nif_check.com" ]; then
+        check store_nif_check.com "$store_ok"
+    fi
+    # The same program, assembled by hand (scripts/assemble.erl): the
+    # program with no objects, and then the objects as new files of its
+    # zip, as a server streams it.
+    rm -rf "$dir/store_nif_base"
+    mkdir -p "$dir/store_nif_base"
+    cp -R tests/programs/store_nif_check/src "$dir/store_nif_base/"
+    check beam.com 'wrote .*store_nif_base.com' "$dir/store_nif_base" \
+        --main store_nif_check -o "$dir/store_nif_base.com"
+    assemble "$dir/store_nif_hand.com" "$dir/store_nif_base.com" "$(files "$priv")" \
+        "lib/store_nif_check-1.0.0/priv/=$priv"
+    if [ -f "$dir/store_nif_hand.com" ]; then
+        check store_nif_hand.com "$store_ok"
+    fi
+    # A beam.com assembled from parts: beam.com, and the objects as NIF
+    # files of beam_com (lib/beam_com/priv/nifs). It builds the Elixir
+    # programs of vix, rusty_csv and ex_pdfium from hex.pm, with no static
+    # NIF of them: the builder puts the objects in the priv directories of
+    # the packages.
+    # The license texts of the parts (PDFium) go into licenses/, as in the
+    # static build, and each program of this beam.com keeps them.
+    # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
+    specs= parts=
+    while read -r pkg spec; do
+        specs="$specs ${spec%%=*}=$store/${spec#*=}"
+        parts="$parts $pkg:${spec%%=*}=$store/${spec#*=}"
+    done < "$store/parts.txt"
+    assemble "$dir/beam_nifs.com" "$dir/beam.com" "$(files "$store/nifs" "$store/licenses")" $specs
+    # The same program from the segments that the FIFO beam.com streams
+    # (assemble.erl --parts): the segments of the list of a set, one after
+    # the other, are the bytes of the program of these packages. The
+    # program of rusty_csv alone has only its NIF files.
+    rm -rf "${dir:?}/program_parts"
+    check beam.com 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]* bytes' \
+        scripts/assemble.erl -- --parts "$dir/beam.com" "$dir/program_parts" 0123abc beam.com/p/ $parts
+    for set in ex_pdfium.rusty_csv.vix rusty_csv; do
+        rm -f "$dir/beam_p_$set.com"
+        [ -f "$dir/program_parts/beam-p.plus.$set.txt" ] || continue
+        sed 's|^beam\.com/p/||' "$dir/program_parts/beam-p.plus.$set.txt" | while read -r f; do
+            cat "$dir/program_parts/$f"
+        done > "$dir/beam_p_$set.com"
+        chmod +x "$dir/beam_p_$set.com"
+    done
+    if [ -f "$dir/beam_nifs.com" ] && [ -f "$dir/beam_p_ex_pdfium.rusty_csv.vix.com" ] &&
+       cmp "$dir/beam_nifs.com" "$dir/beam_p_ex_pdfium.rusty_csv.vix.com"; then
+        echo "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    else
+        echo "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        fail=1
+        failed="$failed
+  assemble.erl --parts: the segments are not the bytes of beam_nifs.com"
+    fi
+    if [ -f "$dir/beam_p_rusty_csv.com" ]; then
+        check beam_p_rusty_csv.com 'NIF files   : .*rusty_csv-' --version
+        if grep -q -e 'NIF files   : .*vix-' -e 'NIF files   : .*ex_pdfium-' "$tmp"; then
+            echo "FAIL: beam_p_rusty_csv.com has the NIF files of more packages"
+            fail=1
+            failed="$failed
+  beam_p_rusty_csv.com: the NIF files of more packages than rusty_csv"
+        fi
+    fi
+    if [ -f "$dir/beam_nifs.com" ]; then
+        check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' --version
+        check beam_nifs.com '^licenses: pdfium$' -noshell -eval \
+            'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().'
+        # check sets p: the loop has its own name.
+        for nif_prog in vix_check rusty_csv_check ex_pdfium_check; do
+            rm -rf "${dir:?}/$nif_prog"
+            cp -R "tests/programs/$nif_prog" "$dir/$nif_prog"
+            # A build compiles the package and its deps: more time.
+            limit=600
+            net_check beam_nifs.com "wrote .*$nif_prog.com" "$dir/$nif_prog" -o "$dir/$nif_prog.com"
+            limit=${LIMIT:-120}
+            if [ -f "$dir/$nif_prog.com" ]; then
+                check "$nif_prog.com" "^$nif_prog: ok"
+            fi
+        done
+    fi
+elif [ -d examples ]; then
+    echo "SKIP: store_nif_check.com (no $dir/store_nifs.tar.gz)"
 fi
 
 if [ -d examples ]; then

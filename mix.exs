@@ -4,7 +4,7 @@ defmodule BeamCom.MixProject do
   # beam.com as one Mix project:
   #
   # - src/APP/: the Erlang code of each OTP application of beam.com
-  #   (beam_com, beam_com_script, wasm, wasm_host);
+  #   (beam_com, beam_com_reload, beam_com_script, wasm, wasm_host);
   # - c_src/: the C code (cosmo/ for the native file, erts_wasm/ for the
   #   WebAssembly runtime, wasm/ for the NIF of WAMR);
   # - priv/wasm_host/: the JavaScript of the hosts of the WebAssembly runtime;
@@ -45,7 +45,7 @@ defmodule BeamCom.MixProject do
     [extra_applications: extra_applications(Mix.env())]
   end
 
-  @applications [:logger, :compiler, :sasl, :crypto, :ssl, :inets, :public_key]
+  @applications [:logger, :compiler, :sasl, :crypto, :ssl, :inets, :public_key, :ssh]
 
   # Mix keeps only the applications of the project in the code path. The
   # tests need parsetools and asn1 (the generators of beam_com_build).

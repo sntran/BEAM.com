@@ -2,25 +2,136 @@
 # print. Run it from the top of the repository to also test
 # "beam.com INPUT -o OUTPUT".
 # Usage: tests/run.ps1 DIR
+# PowerShell 7.3 or later: an empty argument (ssh-keygen -N "") goes to a
+# native program only from 7.3.
+#Requires -Version 7.3
 param([string]$Dir = ".")
 # An absolute path: some checks run in another directory.
 $Dir = (Resolve-Path $Dir).Path
+# The time limit of each check, in seconds (a slow build sets more).
+$script:Limit = 120
+# The time before CheckOnce starts to read the output (a slow reader).
+$script:ReadAfterMs = 0
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
-# Check NAME PATTERN ARGUMENTS [EXPECT] [-Net]: run the program NAME of
-# DIR with ARGUMENTS, and check its exit status and its output
-# (CheckOnce). With -Net (as net_check of tests/run.sh), the check uses
-# the network: a failure gets two more tries, after 10 s and after 30 s,
-# and the log shows each try.
-function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0, [switch]$Net) {
+# The output of a check: the lines of the standard output and of the
+# standard error, in the order that the reader threads of .NET get them.
+# The events of Register-ObjectEvent -Action run only between the
+# statements of this script, so a part of a long output can stay in the
+# queue of events after the end of the program. This class runs on the
+# reader threads, and it knows the end of each stream (Data is null).
+Add-Type -TypeDefinition @"
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Threading;
+public class BeamComOutput {
+    public ConcurrentQueue<string> Lines = new ConcurrentQueue<string>();
+    CountdownEvent ends = new CountdownEvent(2);
+    void Add(object sender, DataReceivedEventArgs e) {
+        if (e.Data == null) ends.Signal(); else Lines.Enqueue(e.Data);
+    }
+    public void Attach(Process p) { p.OutputDataReceived += Add; p.ErrorDataReceived += Add; }
+    public bool WaitEnd(int ms) { return ends.Wait(ms); }
+}
+"@
+
+# Fail TEXT: a failed check, with TEXT in the list "Failed checks".
+function Fail($Text) {
+    Write-Host "FAIL: $Text"
+    $script:fail = 1
+    $script:failures.Add($Text)
+}
+
+# Skip TEXT: a check that cannot run here. In CI (GITHUB_ACTIONS), each
+# check must run, so a skip is a failed check. Skip gives no value, so
+# "if ((Test-Path X) -or (Skip ...))" runs the block only when X exists.
+function Skip($Text) {
+    if ($env:GITHUB_ACTIONS) { Fail "$Text (a skip is a failure in CI)" } else { Write-Host "SKIP: $Text" }
+}
+
+# The processes that a check started (Watch, Left): a map of process
+# IDs to their start times. Windows gives the ID of a process that ended
+# to a new process. Thus a process with a known ID and another start
+# time is not the known process, and Left does not give it.
+function Same($A, $B) { [math]::Abs(($A - $B).TotalSeconds) -lt 1 }
+
+# Watch ROOT TIME KNOWN: add to KNOWN the process ROOT (started at TIME),
+# and each live process that ROOT or a process of KNOWN started. A
+# process that ended takes its children out of the tree of Windows, so
+# a check calls Watch while it waits, and once more at its end.
+function Watch([int]$Root, [datetime]$Time, $Known) {
+    if (-not $Known.ContainsKey($Root)) { $Known[$Root] = $Time }
+    $live = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        ForEach-Object { $live[[int]$_.ProcessId] = $_ }
+    do {
+        $more = $false
+        foreach ($c in @($live.Values)) {
+            $id = [int]$c.ProcessId
+            $parent = [int]$c.ParentProcessId
+            if ($Known.ContainsKey($id) -or -not $Known.ContainsKey($parent)) { continue }
+            # A child starts after its parent.
+            if ($c.CreationDate -lt $Known[$parent].AddSeconds(-1)) { continue }
+            # The parent ID is now the ID of another process, and that
+            # process started this one.
+            $other = $live[$parent]
+            if ($other -and -not (Same $other.CreationDate $Known[$parent]) -and
+                $c.CreationDate -ge $other.CreationDate) { continue }
+            $Known[$id] = $c.CreationDate
+            $more = $true
+        }
+    } while ($more)
+}
+
+# Left KNOWN: the live processes of KNOWN.
+function Left($Known) {
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $Known.ContainsKey([int]$_.ProcessId) -and (Same $_.CreationDate $Known[[int]$_.ProcessId])
+    })
+}
+
+# StopLeft KNOWN NAME: stop the live processes of KNOWN, and show them.
+function StopLeft($Known, $Name) {
+    $left = Left $Known
+    if ($left.Count -gt 0) {
+        Write-Host "Processes of $Name that still run:"
+        $left | Format-Table ProcessId, ParentProcessId, Name, CreationDate -AutoSize | Out-String | Write-Host
+        $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# RemoveWork DIR: remove the work directory DIR of a check. A process
+# can keep a file open for a short time, so a failure gets more tries
+# for 10 s. Then it is a failed check.
+function RemoveWork($Path) {
+    $err = $null
+    for ($try = 1; $try -le 10; $try++) {
+        if (-not (Test-Path $Path)) { return }
+        try {
+            Remove-Item -Recurse -Force $Path -ErrorAction Stop
+            return
+        } catch {
+            $err = $_
+            Start-Sleep -Seconds 1
+        }
+    }
+    Fail "cannot remove ${Path}: $err"
+}
+
+# Check NAME PATTERN ARGUMENTS [EXPECT] [-Net] [-Tries N]: run the
+# program NAME of DIR with ARGUMENTS, and check its exit status and its
+# output (CheckOnce). With -Net (as net_check of tests/run.sh), the check
+# uses the network: a failure gets two more tries (N - 1 with -Tries),
+# after 10 s and after 30 s, and the log shows each try.
+function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0, [switch]$Net, [int]$Tries = 3) {
     for ($try = 1; ; $try++) {
         $script:pending = [System.Collections.Generic.List[string]]::new()
         CheckOnce $Name $Pattern $Arguments $Expect
         if ($script:pending.Count -eq 0) { return }
-        if ($Net -and $try -lt 3) {
+        if ($Net -and $try -lt $Tries) {
             $wait = $try * 20 - 10
-            Write-Host "RETRY: $Name uses the network: try $($try + 1) of 3 in $wait s"
+            Write-Host "RETRY: $Name uses the network: try $($try + 1) of $Tries in $wait s"
             Start-Sleep -Seconds $wait
             continue
         }
@@ -59,35 +170,42 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     $psi.UseShellExecute = $false
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
-    $lines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-    $handler = { if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue($EventArgs.Data) } }
-    $o = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $handler -MessageData $lines
-    $e = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $handler -MessageData $lines
+    $output = [BeamComOutput]::new()
+    $output.Attach($p)
+    $since = Get-Date
     [void]$p.Start()
     # stdin: a pipe at EOF, the same on each runner.
     $p.StandardInput.Close()
+    # A slow reader: the read starts after $script:ReadAfterMs.
+    if ($script:ReadAfterMs -gt 0) { Start-Sleep -Milliseconds $script:ReadAfterMs }
     $p.BeginOutputReadLine()
     $p.BeginErrorReadLine()
 
-    $timedOut = -not $p.WaitForExit(120000)
+    # Wait, and keep the tree of the processes that the check starts (a
+    # port program such as sh.exe, git.exe, tailwind or esbuild).
+    $started = try { $p.StartTime } catch { $since }
+    $known = @{}
+    $deadline = $since.AddSeconds($script:Limit)
+    $timedOut = $false
+    while (-not $p.WaitForExit(2000)) {
+        Watch $p.Id $started $known
+        if ((Get-Date) -ge $deadline) { $timedOut = $true; break }
+    }
+    Watch $p.Id $started $known
     if ($timedOut) {
-        Write-Host "FAIL: $Name did not stop in 120 seconds. Processes:"
-        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
-            Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
-        $p.Kill($true)
-        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
-            Stop-Process -Force -ErrorAction SilentlyContinue
+        Write-Host "FAIL: $Name did not stop in $($script:Limit) seconds. Processes:"
+        Left $known | Format-Table ProcessId, ParentProcessId, Name, CreationDate -AutoSize |
+            Out-String | Write-Host
+        try { $p.Kill($true) } catch { }
     }
     Start-Sleep -Seconds 1
-    $left = Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' }
-    if ($left) {
-        Write-Host "Processes still running after $Name stopped:"
-        $left | Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
-        $left | Stop-Process -Force -ErrorAction SilentlyContinue
+    StopLeft $known $Name
+    # The end of the output: the program and its processes stopped, so
+    # each write end of the pipes is closed.
+    if (-not $output.WaitEnd(30000)) {
+        Write-Host "NOTE: the output of $Name did not end in 30 s"
     }
-    Unregister-Event -SourceIdentifier $o.Name
-    Unregister-Event -SourceIdentifier $e.Name
-    $all = $lines.ToArray()
+    $all = $output.Lines.ToArray()
     $out = ($all -join "`n")
     $rc = if ($timedOut) { 124 } else { $p.ExitCode }
     # A long output is shortened in the log (the log of CI keeps only its
@@ -130,10 +248,20 @@ $patterns = @{
         '@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0' +
         '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello')
     # "verify peer, N OS certificates": the roots of Windows were exported.
-    "tls_check" = 'ports: not supported on windows@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
+    "tls_check" = 'ports: ok \(os:cmd\)@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
 }
 $patterns["calc"] = '(?m)calc: 1 \+ 2 \* \(3 - 1\) - 8 / 4 = 3\r?$@@(?m)calc: asn1 ber 300980044245414d810103\r?$@@(?m)calc: asn1 decoded BEAM 3\r?$'
 $apps = @("greeter", "crypto_check", "tls_check")
+
+# The writes to a non-blocking pipe (c_src/cosmo/beam_com_pipe.c), and the
+# pipe of the SSH agent (c_src/cosmo/beam_com_agent.c): the build job of CI
+# makes pipe_check.com and agent_check.com with cosmocc.
+if ((Test-Path (Join-Path $Dir "pipe_check.com")) -or (Skip "pipe_check.com: not in $Dir")) {
+    Check "pipe_check.com" '(?m)^pipe_check: ok' @()
+}
+if ((Test-Path (Join-Path $Dir "agent_check.com")) -or (Skip "agent_check.com: not in $Dir")) {
+    Check "agent_check.com" '(?m)^agent_check: ok' @()
+}
 
 # The commands of the default beam.com.
 # With no input, beam.com runs the project in the current directory. The
@@ -187,16 +315,27 @@ if (Test-Path "examples") {
         Check "script_check.b.com" 'exception exit: normal' @("exit") 127
         Check "script_check.b.com" 'halting 3' @("halt", "3") 3
         Check "script_check.b.com" '(?m)^line 100000$@@(?m)^last line$' @("big")
+        # A long output in one write, and the same with a slow reader: the
+        # read starts after 3 s. Each line must arrive.
+        Check "script_check.b.com" '(?m)^line 1000000$@@(?m)^last line$' @("big", "1000000")
+        $script:ReadAfterMs = 3000
+        Check "script_check.b.com" '(?m)^line 1000000$@@(?m)^last line$' @("big", "1000000")
+        $script:ReadAfterMs = 0
         Check "script_check.b.com" 'returned' @("spawn")
         $env:ERL_FLAGS = "+S 1"
         Check "script_check.b.com" '(?m)^schedulers 1$' @("info")
         Remove-Item Env:ERL_FLAGS
     }
-    # The peer module of OTP. Windows has no port programs, so peer cannot
-    # start a node: the program checks that peer gives enotsup.
+    # The peer module of OTP: the program starts its own file in erl mode
+    # as a port program (posix_spawn(), C16 of docs/UPSTREAM.md), then the
+    # exit status of a port program, os:cmd/1 with the sh of Git, findstr
+    # (a reader with large reads), a listen socket that a port program
+    # must not get, the suffix .exe, a script and nouse_stdio.
     Check "beam.com" 'wrote .*peer_check.b.com' @("tests/programs/peer_check.erl", "-o", "$Dir/peer_check.b.com")
     if (Test-Path (Join-Path $Dir "peer_check.b.com")) {
-        Check "peer_check.b.com" '(?m)^peer: not supported on windows$' @()
+        $peerLine = 'release [0-9]+, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
+        Check "peer_check.b.com" ("(?m)^peer standard_io: $peerLine`$@@(?m)^peer tcp: $peerLine`$@@(?m)^exit status 3`$@@(?m)^cmd hello`$@@(?m)^slow reader 200000`$@@(?m)^halt reader 4097`$" +
+            '@@(?m)^native reader true$@@(?m)^closed listen socket refused$@@(?m)^find executable true$@@(?m)^script ok$@@(?m)^nouse_stdio fd ping$') @()
     }
     # A run: the executable in the cache, with the arguments after "--"
     # and the exit status of the program (no port program: also here).
@@ -240,6 +379,14 @@ if (Test-Path "examples") {
 if (Test-Path "examples") {
     Check "beam.com" 'wrote .*dns_fake.com' @("tests/programs/dns_fake.erl", "-o", "$Dir/dns_fake.com")
     Check "beam.com" 'wrote .*sandbox_none.com' @("tests/programs/sandbox_check.erl", "-o", "$Dir/sandbox_none.com")
+    # chown() to the owner that a file already has (C28 of
+    # docs/UPSTREAM.md): chown() of Cosmopolitan gives ENOSYS on Windows,
+    # and the wrap gives 0 for a call that changes no owner.
+    if (Test-Path (Join-Path $Dir "sandbox_none.com")) {
+        $ownerFile = Join-Path $Dir "owner_check.tmp"
+        Check "sandbox_none.com" 'write: ok@@owner: ok@@touch: ok@@done' @("write", $ownerFile, "owner", $ownerFile, "touch", $ownerFile)
+        Remove-Item $ownerFile -ErrorAction SilentlyContinue
+    }
     if ((Test-Path (Join-Path $Dir "dns_fake.com")) -and (Test-Path (Join-Path $Dir "sandbox_none.com"))) {
         $fakeExe = Join-Path $Dir "dns_fake.exe"
         Copy-Item (Join-Path $Dir "dns_fake.com") $fakeExe -Force
@@ -338,11 +485,37 @@ if (Test-Path "examples") {
         Check "greeter_ex.com" 'greeter_ex: Hello from config/config.exs \(2\)@@greeter_ex: decoded 1\.' @()
     }
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
+    # A project that needs Mix (config/runtime.exs): a child beam.com runs
+    # the Mix steps, as a port program (C16 of docs/UPSTREAM.md).
+    # In CI the build takes about 5 s. The limit is for a slow runner
+    # (see the limits of PhoenixCheck).
+    $script:Limit = 300
+    Check "beam.com" 'Mix gets the deps of tests/programs/runtime_check and makes its release \(config/runtime.exs\)@@wrote .*runtime_check.com@@applications: .*runtime_check' @("tests/programs/runtime_check", "-o", "$Dir/runtime_check.com")
+    $script:Limit = 120
+    Remove-Item "tests/programs/runtime_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dir "runtime_check.com")) {
+        $env:RUNTIME_CHECK_GREETING = "hello from config/runtime.exs"
+        Check "runtime_check.com" 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs' @()
+        Remove-Item Env:RUNTIME_CHECK_GREETING
+    }
+    # A command line Mix project with config/runtime.exs (see tests/run.sh):
+    # the builder of a plain Mix project, a warning, and main/1. With
+    # --tool mix-release, the build stops and writes no file.
+    $plain = 'only the builder of a plain Mix project reads the escript main_module of mix.exs'
+    Remove-Item (Join-Path $Dir "escript_never.com") -ErrorAction SilentlyContinue
+    Check "beam.com" "warning: tests/programs/escript_check: $plain@@the program does not have config/runtime.exs@@wrote .*escript_check.com" @("tests/programs/escript_check", "-o", "$Dir/escript_check.com")
+    Remove-Item "tests/programs/escript_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dir "escript_check.com")) {
+        Check "escript_check.com" 'escript_check: args \["a", "b"\]@@escript_check: greeting none' @("a", "b")
+    }
+    Check "beam.com" "$plain, and the project needs Mix \(--tool mix-release\)" @("tests/programs/escript_check", "--tool", "mix-release", "-o", "$Dir/escript_never.com") 1
+    Remove-Item "tests/programs/escript_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dir "escript_never.com")) { Fail "beam.com --tool mix-release: wrote escript_never.com" }
 }
 
 # The tools (see tests/run.sh), as the first argument of beam.com, and
 # by the name of the file (mix.com, elixir.com: hard links to beam.com,
-# as a copy). No port programs here (so no Hex or rebar3).
+# as a copy).
 $escript = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_tools.escript"
 Set-Content -Path $escript -Encoding ascii -Value @(
     '#!/usr/bin/env escript',
@@ -355,6 +528,86 @@ Check "beam.com" '(?m)^55\r?$' @("elixir", "-e", "IO.puts(Enum.sum(1..10))")
 foreach ($t in @("mix", "elixir")) {
     New-Item -ItemType HardLink -Path (Join-Path $Dir "$t.com") -Target (Join-Path $Dir "beam.com") -Force | Out-Null
 }
+# Phoenix (see tests/run.sh): a new app with no database, in one file
+# with no Mix task first, and the start page and the digested CSS of the
+# file. On Windows, the builder chooses the programs of tailwind and
+# esbuild for Windows (beam_com_mix), git.exe gets the git deps, and
+# the release has the priv of the app through a link to a directory
+# (C54 of docs/UPSTREAM.md).
+function PhoenixCheck {
+    $phx = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_phx_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $phx | Out-Null
+    Push-Location $phx
+    Check "mix.com" 'hex' @("local.hex", "--force") -Net
+    # A fixed phx_new: a new version can give other deps (the pattern
+    # below names the git deps). Keep it equal to tests/run.sh.
+    Check "mix.com" 'phx_new' @("archive.install", "hex", "phx_new", "1.8.16", "--force") -Net
+    Check "mix.com" 'creating hello/mix.exs' @("phx.new", "hello", "--no-ecto", "--no-install")
+    $out = Join-Path $Dir "hello.com"
+    if (Test-Path "hello") {
+        Set-Location hello
+        # Mix gets and compiles the deps, and downloads the asset programs:
+        # about 5 minutes in CI. The limits fit in the time of the job
+        # (timeout-minutes of .github/workflows/build.yml): 2 tries of
+        # 10 minutes, and the other checks.
+        $script:Limit = 600
+        Check "beam.com" ('Mix gets the deps of \. and makes its release \(config/runtime.exs, deps that are not Hex packages: heroicons daisyui' +
+            '@@tailwind for Windows \(target windows-x64.exe\)@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
+            '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net -Tries 2
+        $script:Limit = 120
+    }
+    Pop-Location
+    if (Test-Path $out) { PhoenixServe $out }
+    RemoveWork $phx
+}
+
+# PhoenixServe FILE: start the release in FILE, and get its start page
+# and the digested CSS of the page. The endpoint of a new app listens on
+# the IPv6 address "::", and on Windows such a socket gets no IPv4
+# connection (IPV6_V6ONLY). Thus the check uses localhost (::1).
+function PhoenixServe($File) {
+    Write-Host "==> hello.com"
+    $exe = $File -replace '\.com$', '.exe'
+    Copy-Item $File $exe -Force
+    $env:PHX_SERVER = "true"
+    $env:PORT = "4124"
+    $env:SECRET_KEY_BASE = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    $log = "$exe.log"
+    $since = Get-Date
+    $p = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+    Remove-Item Env:PHX_SERVER, Env:PORT, Env:SECRET_KEY_BASE
+    $started = try { $p.StartTime } catch { $since }
+    $known = @{}
+    $page = $null
+    for ($i = 1; $i -le 60; $i++) {
+        Start-Sleep -Seconds 1
+        Watch $p.Id $started $known
+        try {
+            $r = Invoke-WebRequest -UseBasicParsing http://localhost:4124/ -TimeoutSec 5
+            if ($r.Content -match 'Phoenix Framework') { $page = $r.Content; break }
+        } catch { }
+    }
+    $css = if ($page) { [regex]::Match($page, '/assets/css/app-[0-9a-f]+\.css[^"]*').Value } else { "" }
+    $code = 0
+    if ($css) {
+        try { $code = (Invoke-WebRequest -UseBasicParsing "http://localhost:4124$css" -TimeoutSec 10).StatusCode } catch { }
+    }
+    # Stop the program and each process that it started.
+    Watch $p.Id $started $known
+    try { $p.Kill($true) } catch { }
+    [void]$p.WaitForExit(10000)
+    StopLeft $known "hello.com"
+    if ($page -and $code -eq 200) {
+        Write-Host "PASS: hello.com serves the start page and $css (after $i s)"
+    } else {
+        Get-Content $log, "$log.err" -Tail 20 -ErrorAction SilentlyContinue | Write-Host
+        Write-Host "FAIL: hello.com did not serve the start page and its digested CSS"
+        $script:fail = 1
+        $script:failures.Add("hello.com: no start page or digested CSS on http://localhost:4124/ (CSS: '$css', status $code)")
+    }
+    Remove-Item $exe, $log, "$log.err" -ErrorAction SilentlyContinue
+}
+
 if (Test-Path (Join-Path $Dir "elixir.com")) {
     Check "elixir.com" '(?m)^55\r?$' @("-e", "IO.puts(Enum.sum(1..10))")
     $work = Join-Path ([System.IO.Path]::GetTempPath()) ("beam_com_mix_" + [System.Guid]::NewGuid().ToString("N"))
@@ -365,6 +618,7 @@ if (Test-Path (Join-Path $Dir "elixir.com")) {
     Check "mix.com" '2 passed' @("test")
     Pop-Location
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    if (Test-Path "examples") { PhoenixCheck }
     Remove-Item (Join-Path $Dir "mix.com"), (Join-Path $Dir "elixir.com") -ErrorAction SilentlyContinue
 }
 
@@ -419,6 +673,138 @@ if (Test-Path "examples") {
     }
 }
 
+# Native NIF objects (docs/NIFS.md), as in run.sh: load_nif/2 loads
+# priv/native_nif_check.x86_64.o from the zip of the program. On Windows the
+# loader also changes the TLS instructions of the object (the TLS slot of
+# the thread).
+if (Test-Path "examples") {
+    Check "beam.com" 'wrote .*native_nif_check.com' @("tests/programs/native_nif_check", "--main", "native_nif_check", "-o", "$Dir/native_nif_check.com")
+    if (Test-Path (Join-Path $Dir "native_nif_check.com")) {
+        $env:BEAM_COM_NIF_DEBUG = "1"
+        Check "native_nif_check.com" 'nif_native: .*native_nif_check\.x86_64\.o@@native_nif_check: all [0-9]+ passed' @()
+        Remove-Item Env:BEAM_COM_NIF_DEBUG
+    }
+}
+
+# Assemble OUT BASE COUNT SPECS: OUT from BASE and the COUNT files of the
+# specs (NAME=FILE, or PREFIX/=DIR for each file of DIR), with
+# scripts/assemble.erl, as in tests/run.sh.
+function Assemble($Out, $Base, $Count, [string[]]$Specs) {
+    $leaf = Split-Path $Out -Leaf
+    Check "beam.com" "(?m)assemble: wrote .*$([regex]::Escape($leaf)): [0-9]+ bytes, the length of the start; new files: $Count\r?$" (@("scripts/assemble.erl", "--", $Base, $Out) + $Specs)
+}
+
+# The count of the regular files of each directory.
+function FileCount([string[]]$Dirs) {
+    return @(Get-ChildItem -Recurse -File $Dirs).Count
+}
+
+# The NIFs of the store as native NIF objects (tests/run.sh): vix,
+# rusty_csv and ex_pdfium, from store_nifs.tar.gz of CI, with
+# nif_needs.com.
+$StoreNifs = Join-Path $Dir "store_nifs.tar.gz"
+if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
+    $Store = Join-Path $Dir "store_nifs"
+    if (Test-Path $Store) { Remove-Item -Recurse -Force $Store }
+    New-Item -ItemType Directory -Force -Path $Store | Out-Null
+    tar -xzf $StoreNifs -C $Store
+    Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
+    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.x86_64.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
+    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok' $Objects
+    $Priv = "tests/programs/store_nif_check/priv"
+    if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
+    New-Item -ItemType Directory -Force -Path $Priv | Out-Null
+    # Each file of nifs/APP-VSN, at its path in priv/ (native/ of two
+    # packages goes into one directory).
+    Get-ChildItem -Directory (Join-Path $Store "nifs") | ForEach-Object {
+        $pkg = $_.FullName
+        Get-ChildItem -Recurse -File $pkg | ForEach-Object {
+            $to = Join-Path $Priv $_.FullName.Substring($pkg.Length + 1)
+            New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
+            Copy-Item -Force $_.FullName $to
+        }
+    }
+    $StoreOk = 'store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
+    Check "beam.com" 'wrote .*store_nif_check.com' @("tests/programs/store_nif_check", "--main", "store_nif_check", "-o", "$Dir/store_nif_check.com")
+    if (Test-Path (Join-Path $Dir "store_nif_check.com")) {
+        Check "store_nif_check.com" $StoreOk @()
+    }
+    # The same program, assembled by hand (scripts/assemble.erl): the
+    # program with no objects, and then the objects as new files of its
+    # zip, as a server streams it.
+    $Base = Join-Path $Dir "store_nif_base"
+    if (Test-Path $Base) { Remove-Item -Recurse -Force $Base }
+    New-Item -ItemType Directory -Force -Path $Base | Out-Null
+    Copy-Item -Recurse "tests/programs/store_nif_check/src" $Base
+    Check "beam.com" 'wrote .*store_nif_base.com' @($Base, "--main", "store_nif_check", "-o", "$Dir/store_nif_base.com")
+    Assemble "$Dir/store_nif_hand.com" "$Dir/store_nif_base.com" (FileCount @($Priv)) @("lib/store_nif_check-1.0.0/priv/=$Priv")
+    if (Test-Path (Join-Path $Dir "store_nif_hand.com")) {
+        Check "store_nif_hand.com" $StoreOk @()
+    }
+    # A beam.com assembled from parts, and the Elixir programs of the
+    # three packages from hex.pm (tests/run.sh).
+    # The license texts of the parts (PDFium) go into licenses/.
+    # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
+    $Specs = @()
+    $PartSpecs = @()
+    foreach ($line in Get-Content (Join-Path $Store "parts.txt")) {
+        if (-not $line) { continue }
+        $pkg, $spec = $line -split ' ', 2
+        $name, $from = $spec -split '=', 2
+        $Specs += "$name=$(Join-Path $Store $from)"
+        $PartSpecs += "$($pkg):$name=$(Join-Path $Store $from)"
+    }
+    Assemble "$Dir/beam_nifs.com" "$Dir/beam.com" (FileCount @((Join-Path $Store "nifs"), (Join-Path $Store "licenses"))) $Specs
+    # The same program from the segments that the FIFO beam.com streams
+    # (tests/run.sh).
+    $Parts = Join-Path $Dir "program_parts"
+    if (Test-Path $Parts) { Remove-Item -Recurse -Force $Parts }
+    Check "beam.com" 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]+ bytes' (@("scripts/assemble.erl", "--", "--parts", "$Dir/beam.com", $Parts, "0123abc", "beam.com/p/") + $PartSpecs)
+    foreach ($set in @("ex_pdfium.rusty_csv.vix", "rusty_csv")) {
+        $joined = Join-Path $Dir "beam_p_$set.com"
+        if (Test-Path $joined) { Remove-Item -Force $joined }
+        $list = Join-Path $Parts "beam-p.plus.$set.txt"
+        if (-not (Test-Path $list)) { continue }
+        $outStream = [System.IO.File]::Create($joined)
+        try {
+            foreach ($url in Get-Content $list) {
+                $inStream = [System.IO.File]::OpenRead((Join-Path $Parts ($url -replace '^beam\.com/p/', '')))
+                try { $inStream.CopyTo($outStream) } finally { $inStream.Dispose() }
+            }
+        } finally { $outStream.Dispose() }
+    }
+    $Whole = Join-Path $Dir "beam_p_ex_pdfium.rusty_csv.vix.com"
+    if ((Test-Path (Join-Path $Dir "beam_nifs.com")) -and (Test-Path $Whole) -and
+        ((Get-FileHash (Join-Path $Dir "beam_nifs.com")).Hash -eq (Get-FileHash $Whole).Hash)) {
+        Write-Host "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    } else {
+        Write-Host "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        $script:fail = 1
+        $failures.Add("assemble.erl --parts: the segments are not the bytes of beam_nifs.com")
+    }
+    if (Test-Path (Join-Path $Dir "beam_p_rusty_csv.com")) {
+        Check "beam_p_rusty_csv.com" '(?m)NIF files   : .*rusty_csv-' @("--version")
+    }
+    if (Test-Path (Join-Path $Dir "beam_nifs.com")) {
+        Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' @("--version")
+        Check "beam_nifs.com" '(?m)^licenses: pdfium' @("-noshell", "-eval", 'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().')
+        foreach ($p in @("vix_check", "rusty_csv_check", "ex_pdfium_check")) {
+            $src = Join-Path $Dir $p
+            if (Test-Path $src) { Remove-Item -Recurse -Force $src }
+            Copy-Item -Recurse "tests/programs/$p" $src
+            # A build compiles the package and its deps: more time.
+            $script:Limit = 600
+            Check "beam_nifs.com" "wrote .*$p.com" @($src, "-o", "$Dir/$p.com") -Net
+            $script:Limit = 120
+            if (Test-Path (Join-Path $Dir "$p.com")) {
+                Check "$p.com" "(?m)^$($p): ok" @()
+            }
+        }
+    }
+} elseif (Test-Path "examples") {
+    Write-Host "SKIP: store_nif_check.com (no $StoreNifs)"
+}
+
 # The interpreter: beam-emu.com (beam.com has the JIT).
 if (Test-Path (Join-Path $Dir "beam-emu.com")) {
     Check "beam-emu.com" 'Emulator    : emu@@OS type     : unix/windows' @("--version")
@@ -445,6 +831,56 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
         Check "beam-emu.com" 'wrote .*crypto_check.emu.com' @("tests/programs/crypto_check", "-o", "$Dir/crypto_check.emu.com")
         if (Test-Path (Join-Path $Dir "crypto_check.emu.com")) {
             Check "crypto_check.emu.com" $patterns["crypto_check"] @()
+        }
+    }
+}
+
+# The SHA-1 check of the git client: the helper git_sha1dc in the file
+# (c_src/cosmo/beam_com_sha1dc.c) finds the SHA-1 collisions.
+if (Test-Path "examples") {
+    Check "beam.com" 'git_sha1dc_check: 4 vectors have the mark, the good objects pass' @("escript", "tests/programs/git_sha1dc_check.escript")
+}
+
+# The SSH agent of Windows OpenSSH: the git client connects to its named
+# pipe through ssh_agent_bridge (c_src/cosmo/beam_com_agent.c). The check
+# starts the service ssh-agent (a runner of CI is an administrator), and
+# adds a new key without a passphrase. At its end, it removes the key and
+# puts back the start type and the state of the service.
+if (Test-Path "examples") {
+    $agent = Get-Service ssh-agent -ErrorAction SilentlyContinue
+    if (-not $agent) {
+        Skip "ssh_agent_check: there is no service ssh-agent"
+    } else {
+        $agentType = $agent.StartType
+        $agentRan = $agent.Status -eq 'Running'
+        $key = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_agent_key"
+        $keyAdded = $false
+        try {
+            $agentReady = $false
+            try {
+                if ($agentType -eq 'Disabled') { Set-Service ssh-agent -StartupType Manual -ErrorAction Stop }
+                Start-Service ssh-agent -ErrorAction Stop
+                $agentReady = $true
+            } catch {
+                Skip "ssh_agent_check: the service ssh-agent does not start ($_)"
+            }
+            if ($agentReady) {
+                Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+                & ssh-keygen.exe -q -t ed25519 -N ([string]::Empty) -C beam_com_agent_check -f $key
+                if ($LASTEXITCODE -ne 0) { throw "ssh-keygen exited with $LASTEXITCODE" }
+                # Before ssh-add: a stop after the add must also remove the key.
+                $keyAdded = $true
+                & ssh-add.exe $key 2>&1 | Write-Host
+                if ($LASTEXITCODE -ne 0) { throw "ssh-add exited with $LASTEXITCODE" }
+                Check "beam.com" 'ssh_agent_check: [0-9]+ keys, the key signs' @("escript", "tests/programs/ssh_agent_check.escript", '\\.\pipe\openssh-ssh-agent', "$key.pub")
+            }
+        } catch {
+            Fail "ssh_agent_check: $_"
+        } finally {
+            if ($keyAdded) { & ssh-add.exe -d $key 2>&1 | Write-Host }
+            Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+            if (-not $agentRan) { Stop-Service ssh-agent -ErrorAction SilentlyContinue }
+            if ($agentType -eq 'Disabled') { Set-Service ssh-agent -StartupType Disabled -ErrorAction SilentlyContinue }
         }
     }
 }

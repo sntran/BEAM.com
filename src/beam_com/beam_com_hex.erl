@@ -26,13 +26,14 @@
 %%   contents.tar.gz at most ?MAX_CONTENTS bytes without compression.
 -module(beam_com_hex).
 
--export([fetch/2, fetch/4]).
+-export([fetch/2, fetch/4, http/5, http/6]).
 
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
-         rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2,
+         rebar_deps/1, read_lock/1, read_lock/2, lock_text/1, lock_text/2, lock_text/3,
          unpack/3, unpack/4, resolve/3, fetch/5, http_get/2, read_limited/2,
-         registry/0, consult/1, meta_requirements/1]).
+         registry/0, consult/1, meta_requirements/1, proxy/1, locked/2, git_deps/1, fetch_git/6,
+         git_vsn/3]).
 -endif.
 
 -define(API, "https://hex.pm/api").
@@ -61,7 +62,11 @@
 %% them (a package after the packages that it needs), as
 %% #{name := atom(), vsn := string(), dir := string()}.
 fetch(Dir, LibDir) ->
-    fetch(Dir, LibDir, rebar_deps(rebar_config(Dir)), rebar).
+    Terms = rebar_config(Dir),
+    case git_deps(Terms) of
+        [] -> fetch(Dir, LibDir, rebar_deps(Terms), rebar);
+        Git -> fetch_git(Dir, LibDir, rebar_deps(Terms), Git, registry(), #{})
+    end.
 
 %% The same with the deps of a Mix project (Format mix: mix.lock) or of
 %% rebar.config (rebar: rebar.lock).
@@ -75,18 +80,47 @@ fetch(Dir, LibDir, Deps, Format, Registry) ->
                                       rebar -> "rebar.lock";
                                       mix -> "mix.lock"
                                   end),
-    Lock = read_lock(Format, LockFile),
+    Lock = without_git(Format, read_lock(Format, LockFile)),
     Locked = [N || {N, _, _} <- Deps, is_map_key(N, Lock)],
     {Chosen, Resolved} = case length(Locked) =:= length(Deps) of
-                             true -> {from_lock(Lock), false};
+                             true -> {from_lock(locked(Deps, Lock)), false};
                              false -> {resolve(Deps, Lock, Registry), true}
                          end,
+    check_lock(Chosen, Lock),
     Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
     %% The lock gets the checksums that the API gave, so that the next
     %% build checks the same tarballs with no request.
     NoChecksum = [N || N := #{outer := undefined} <- Chosen],
     (Resolved orelse NoChecksum =/= []) andalso write_lock(Format, LockFile, Chosen, Unpacked),
     order(Unpacked).
+
+%% rebar.lock with a git entry, and rebar.config with no git dep (else
+%% fetch/2 calls fetch_git/6): rebar3 does not use the entry, and the
+%% build leaves it out too.
+without_git(rebar, Lock) ->
+    Git = lists:sort([N || N := #{git := _} <- Lock]),
+    [io:format("~ts: rebar.lock: ~p is a git dependency that rebar.config does not have: "
+               "the build leaves it out~n", [beam_com:name(), N]) || N <- Git],
+    maps:without(Git, Lock);
+without_git(mix, Lock) ->
+    Lock.
+
+%% Each package of the build has an entry of hex.pm in mix.lock, or no
+%% entry.
+check_lock(Chosen, Lock) ->
+    lists:foreach(
+      fun(N) ->
+              case Lock of
+                  #{N := #{other := _}} ->
+                      throw({error, "mix.lock: ~ts is not a Hex package (only Hex "
+                             "packages are supported)", [N]});
+                  #{N := #{repo := Repo}} ->
+                      throw({error, "mix.lock: ~ts is a package of the Hex repository ~tp, "
+                             "not of hex.pm: use --tool mix-release", [N, Repo]});
+                  _ ->
+                      ok
+              end
+      end, lists:sort(maps:keys(Chosen))).
 
 rebar_config(Dir) ->
     case file:consult(filename:join(Dir, "rebar.config")) of
@@ -98,10 +132,18 @@ rebar_config(Dir) ->
     end.
 
 %%% The deps of rebar.config: [{Name, Package, Requirement}], with Name
-%%% an atom, Package a binary and Requirement a string or any.
+%%% an atom, Package a binary and Requirement a string or any. The git
+%%% deps: [{Name, Url, Rev, SubDir}] (git_deps/1).
 
 rebar_deps(Terms) ->
-    [dep(D) || D <- proplists:get_value(deps, Terms, [])].
+    [D || {_, _, _} = D <- [dep(D) || D <- proplists:get_value(deps, Terms, [])]].
+
+%% The git deps of rebar.config, as rebar3 writes them: {Name, {git, Url}},
+%% {Name, {git, Url, {branch | tag | ref, R}}}, {Name, {git_subdir, Url,
+%% Ref, Dir}}, and the older forms with a version or options. Rev is
+%% {branch, B}, {tag, T}, {ref, R} or head (beam_com_git:resolve/3).
+git_deps(Terms) ->
+    [{N, U, R, S} || {git, N, U, R, S} <- [dep(D) || D <- proplists:get_value(deps, Terms, [])]].
 
 dep(Name) when is_atom(Name) -> {Name, atom_to_binary(Name), any};
 dep({Name, Req}) when is_atom(Name), is_list(Req); is_atom(Name), is_binary(Req) ->
@@ -110,11 +152,33 @@ dep({Name, {pkg, Pkg}}) when is_atom(Name) ->
     {Name, to_binary(Pkg), any};
 dep({Name, Req, {pkg, Pkg}}) when is_atom(Name) ->
     {Name, to_binary(Pkg), requirement(Name, Req)};
+dep({Name, {git, Url}}) when is_atom(Name) ->
+    git_dep(Name, Url, head, none);
+dep({Name, {git, Url, Ref}}) when is_atom(Name) ->
+    git_dep(Name, Url, Ref, none);
+dep({Name, {git, Url, Ref}, Opts}) when is_atom(Name), is_list(Opts) ->
+    git_dep(Name, Url, Ref, none);
+dep({Name, {git_subdir, Url, Ref, Sub}}) when is_atom(Name) ->
+    git_dep(Name, Url, Ref, Sub);
+dep({Name, Vsn, {git, Url, Ref}}) when is_atom(Name), is_list(Vsn) ->
+    git_dep(Name, Url, Ref, none);
+dep({Name, Vsn, {git, Url, Ref}, Opts}) when is_atom(Name), is_list(Vsn), is_list(Opts) ->
+    git_dep(Name, Url, Ref, none);
 dep(Dep) when is_tuple(Dep), is_atom(element(1, Dep)) ->
-    throw({error, "the dependency ~p is not a Hex package (only Hex "
-           "packages are supported, not git)", [element(1, Dep)]});
+    throw({error, "the dependency ~p is not a Hex package or a git dependency",
+           [element(1, Dep)]});
 dep(Dep) ->
     throw({error, "rebar.config: a bad dependency: ~p", [Dep]}).
+
+git_dep(Name, Url, Ref, Sub) ->
+    Rev = case Ref of
+              head -> head;
+              {T, R} when T =:= branch; T =:= tag; T =:= ref -> {T, unicode:characters_to_list(R)};
+              "" -> head;
+              _ -> throw({error, "~p: a bad git ref: ~tp", [Name, Ref]})
+          end,
+    {git, Name, unicode:characters_to_list(Url), Rev,
+     case Sub of none -> none; _ -> unicode:characters_to_list(Sub) end}.
 
 requirement(Name, Req) ->
     String = unicode:characters_to_list(Req),
@@ -264,29 +328,27 @@ read_lock(File) ->
 
 %% mix.lock: %{"name": {:hex, :package, "vsn", "inner", managers, deps,
 %% "hexpm", "outer"}}, read with the Elixir parser as Mix reads it. Mix
-%% writes the keys as quoted atoms ("name": ...), and lock_text/2 writes
-%% them as strings ("name" => ...). Older versions of Hex wrote shorter
+%% writes the keys as quoted atoms ("name": ...), and so does
+%% lock_text/2. An older beam.com wrote them as strings ("name" => ...),
+%% which this function also reads, but Hex does not. Older versions of Hex wrote shorter
 %% entries, with no outer checksum or no checksum. Hex reads an element
 %% that is not there as nil (destructure in Hex.Utils.lock/1), and so
 %% does this function.
+%%
+%% An entry that is not a Hex package (git, path) gets the key other,
+%% and an entry of another Hex repository than hex.pm gets the key repo.
+%% fetch/5 stops only when the build needs such an entry
+%% (check_lock/2): Mix also locks the deps only for :dev or :test.
 read_lock(mix, File) ->
-    case file:read_file(File) of
-        {error, _} -> #{};
-        {ok, Text} ->
-            Opts = [{file, unicode:characters_to_binary(File)}, {emit_warnings, false}],
-            {ok, Quoted} = 'Elixir.Code':string_to_quoted(Text, Opts),
-            {Map, _} = 'Elixir.Code':eval_quoted(Quoted, [], Opts),
-            maps:from_list(
-              [case Entry of
-                   _ when is_tuple(Entry), tuple_size(Entry) >= 3,
-                          element(1, Entry) =:= hex, is_atom(element(2, Entry)),
-                          is_binary(element(3, Entry)) ->
-                       {lock_name(Name), mix_entry(Name, Entry)};
-                   _ ->
-                       throw({error, "mix.lock: ~ts is not a Hex package (only Hex "
-                              "packages are supported)", [Name]})
-               end || Name := Entry <- Map])
-    end;
+    maps:from_list(
+      [case Entry of
+           _ when is_tuple(Entry), tuple_size(Entry) >= 3,
+                  element(1, Entry) =:= hex, is_atom(element(2, Entry)),
+                  is_binary(element(3, Entry)) ->
+               {lock_name(Name), mix_entry(Name, Entry)};
+           _ ->
+               {lock_name(Name), #{other => Entry, deps => []}}
+       end || Name := Entry <- mix_lock_map(File)]);
 read_lock(rebar, File) ->
     case file:consult(File) of
         {ok, [{_LockVsn, Entries} | Rest]} -> lock_map(Entries, Rest);
@@ -297,6 +359,17 @@ read_lock(rebar, File) ->
             throw({error, "~ts: ~ts", [File, file:format_error(Reason)]})
     end.
 
+%% The map of mix.lock, as Mix reads it: #{} when there is no file.
+mix_lock_map(File) ->
+    case file:read_file(File) of
+        {error, _} -> #{};
+        {ok, Text} ->
+            Opts = [{file, unicode:characters_to_binary(File)}, {emit_warnings, false}],
+            {ok, Quoted} = 'Elixir.Code':string_to_quoted(Text, Opts),
+            {Map, _} = 'Elixir.Code':eval_quoted(Quoted, [], Opts),
+            Map
+    end.
+
 lock_name(Name) when is_atom(Name) -> Name;
 lock_name(Name) when is_binary(Name) -> binary_to_atom(Name).
 
@@ -304,8 +377,29 @@ mix_entry(Name, Entry) ->
     Get = fun(N) when N =< tuple_size(Entry) -> element(N, Entry);
              (_) -> nil
           end,
-    #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
-      inner => lock_hash(Name, Get(4)), outer => lock_hash(Name, Get(8))}.
+    Entry0 = #{pkg => atom_to_binary(Get(2)), vsn => binary_to_list(Get(3)),
+               inner => lock_hash(Name, Get(4)), outer => lock_hash(Name, Get(8))},
+    Entry1 = case Get(7) of
+                 nil -> Entry0;
+                 <<"hexpm">> -> Entry0;
+                 Repo -> Entry0#{repo => Repo}
+             end,
+    case lock_deps(Get(6)) of
+        none -> Entry1;
+        Deps -> Entry1#{deps => Deps}
+    end.
+
+%% The deps of an entry of mix.lock that are not optional:
+%% [{name, requirement, opts}]. none for another form.
+lock_deps(Deps) when is_list(Deps) ->
+    try
+        [N || {N, _Req, Opts} <- Deps, is_atom(N),
+              proplists:get_value(optional, Opts, false) =/= true]
+    catch
+        error:_ -> none
+    end;
+lock_deps(_) ->
+    none.
 
 lock_hash(_Name, nil) -> undefined;
 lock_hash(_Name, Hash) when is_binary(Hash) -> Hash;
@@ -331,49 +425,113 @@ lock_map(Entries, Rest) ->
                 #{pkg => Pkg, vsn => binary_to_list(Vsn), level => Level,
                   inner => proplists:get_value(Name, Inner),
                   outer => proplists:get_value(Name, Outer)}};
+           {git, Url, {ref, Ref}} ->
+               {binary_to_atom(Name), git_lock(Url, Ref, none, Level)};
+           {git_subdir, Url, {ref, Ref}, Sub} ->
+               {binary_to_atom(Name), git_lock(Url, Ref, unicode:characters_to_list(Sub), Level)};
            _ ->
                throw({error, "rebar.lock: ~ts is not a Hex package (only Hex "
                       "packages are supported)", [Name]})
        end || {Name, Source, Level} <- Entries]).
 
+git_lock(Url, Ref, Sub, Level) ->
+    #{git => unicode:characters_to_list(Url), ref => unicode:characters_to_binary(Ref),
+      sub => Sub, level => Level}.
+
 from_lock(Lock) ->
-    maps:map(fun(Name, P) -> P#{name => Name} end, Lock).
+    maps:map(fun(Name, P) -> (maps:remove(deps, P))#{name => Name} end, Lock).
+
+%% The entries of the lock that Deps need: Deps, and the deps of their
+%% entries in mix.lock. Mix also locks the deps only for :dev or :test
+%% (phoenix_live_reload), and a program does not get them. A lock with
+%% no deps in an entry (rebar.lock: rebar3 locks only the deps of the
+%% default profile) gives all its entries.
+locked(Deps, Lock) ->
+    case lists:all(fun(P) -> is_map_key(deps, P) end, maps:values(Lock)) of
+        true -> maps:with(reached([N || {N, _, _} <- Deps], Lock, #{}), Lock);
+        false -> maps:filter(fun(_, P) -> not is_map_key(other, P) end, Lock)
+    end.
+
+reached([], _Lock, Seen) ->
+    maps:keys(Seen);
+reached([N | Rest], Lock, Seen) when is_map_key(N, Seen) ->
+    reached(Rest, Lock, Seen);
+reached([N | Rest], Lock, Seen) ->
+    Next = case Lock of
+               #{N := #{deps := D}} -> D;
+               _ -> []
+           end,
+    reached(Next ++ Rest, Lock, Seen#{N => true}).
 
 %% The text of rebar.lock (the format of rebar3), from the unpacked
 %% packages.
 lock_text(Packages) ->
     Sorted = lists:keysort(1, [{atom_to_binary(N), P} || #{name := N} = P <- Packages]),
-    Entries = [{Name, {pkg, Pkg, list_to_binary(Vsn)}, Level}
-               || {Name, #{pkg := Pkg, vsn := Vsn, level := Level}} <- Sorted],
-    Hashes = [{pkg_hash, [{Name, iolist_to_binary(I)} || {Name, #{inner := I}} <- Sorted]},
-              {pkg_hash_ext, [{Name, iolist_to_binary(O)} || {Name, #{outer := O}} <- Sorted]}],
+    Entries = [{Name, lock_source(P), Level} || {Name, #{level := Level} = P} <- Sorted],
+    Hex = [E || {_, #{pkg := _}} = E <- Sorted],
+    Hashes = [{pkg_hash, [{Name, iolist_to_binary(I)} || {Name, #{inner := I}} <- Hex]},
+              {pkg_hash_ext, [{Name, iolist_to_binary(O)} || {Name, #{outer := O}} <- Hex]}],
     io_lib:format("~tp.~n~tp.~n", [{<<"1.2.0">>, Entries}, Hashes]).
 
-%% The text of mix.lock, in the format of Mix (Kernel.inspect/2 of the
-%% map). The deps of an entry are the requirements of the package.
+%% The source of an entry of rebar.lock, as rebar3 writes it.
+lock_source(#{git := Url, ref := Ref, sub := none}) ->
+    {git, Url, {ref, binary_to_list(Ref)}};
+lock_source(#{git := Url, ref := Ref, sub := Sub}) ->
+    {git_subdir, Url, {ref, binary_to_list(Ref)}, Sub};
+lock_source(#{pkg := Pkg, vsn := Vsn}) ->
+    {pkg, Pkg, list_to_binary(Vsn)}.
+
+%% The text of mix.lock, as Mix.Dep.Lock writes it: one line
+%% '  "name": ENTRY,' for each package, in the order of the names, with
+%% Kernel.inspect/2 of the entry. The keys are atoms: Hex reads the name
+%% of a package with atom_to_binary/1. The deps of an entry are all the
+%% requirements of the package (lock_reqs, with the optional ones), else
+%% reqs: Hex checks them against the registry.
 lock_text(mix, Packages) ->
-    Map = maps:from_list(
-            [{atom_to_binary(N),
+    lock_text(mix, Packages, []);
+lock_text(rebar, Packages) ->
+    lock_text(Packages).
+
+%% The same, with the entries Kept ([{Name, Entry}]) of mix.lock as they
+%% are.
+lock_text(mix, Packages, Kept) ->
+    Entries = lists:sort(
+            Kept ++ [{atom_to_binary(N),
               {hex, app_name(Pkg), list_to_binary(Vsn),
                string:lowercase(iolist_to_binary(I)),
                [binary_to_atom(T) || T <- Tools,
                                      lists:member(T, [<<"mix">>, <<"rebar3">>, <<"make">>])],
                [{DN, list_to_binary(DR), [{hex, app_name(DP)}, {repo, <<"hexpm">>},
-                                          {optional, false}]}
-                || {DN, DP, DR} <- Reqs],
+                                          {optional, Opt}]}
+                || {DN, DP, DR, Opt} <- [case R of
+                                             {_, _, _, _} -> R;
+                                             {A, B, C} -> {A, B, C, false}
+                                         end || R <- maps:get(lock_reqs, P, Reqs)]],
                <<"hexpm">>, string:lowercase(iolist_to_binary(O))}}
              || #{name := N, pkg := Pkg, vsn := Vsn, inner := I, outer := O,
-                  tools := Tools, reqs := Reqs} <- Packages]),
-    ['Elixir.Kernel':inspect(Map, [{pretty, true}, {limit, infinity},
-                                   {printable_limit, infinity}]), "\n"];
-lock_text(rebar, Packages) ->
-    lock_text(Packages).
+                  tools := Tools, reqs := Reqs} = P <- Packages]),
+    ["%{\n",
+     [["  \"", Name, "\": ",
+       'Elixir.Kernel':inspect(Entry, [{limit, infinity}, {printable_limit, infinity}]), ",\n"]
+      || {Name, Entry} <- Entries],
+     "}\n"].
 
-%% With no resolution, each package keeps the level of rebar.lock.
+%% With no resolution, each package keeps the level of rebar.lock. The
+%% entries of mix.lock that the build does not use (the deps only for
+%% :dev or :test, git deps) stay as they are, as Mix keeps them.
 write_lock(Format, File, Chosen, Unpacked) ->
     Levels = levels(Chosen, Unpacked),
-    Text = lock_text(Format, [P#{level => maps:get(N, Levels, maps:get(level, P, 0))}
-                              || #{name := N} = P <- Unpacked]),
+    Packages = [P#{level => maps:get(N, Levels, maps:get(level, P, 0))}
+                || #{name := N} = P <- Unpacked],
+    Text = case Format of
+               mix ->
+                   Names = [N || #{name := N} <- Unpacked],
+                   lock_text(mix, Packages,
+                             [{atom_to_binary(lock_name(K)), E} || K := E <- mix_lock_map(File),
+                                                                   not lists:member(lock_name(K), Names)]);
+               rebar ->
+                   lock_text(rebar, Packages)
+           end,
     case file:write_file(File, Text) of
         ok -> io:format("~ts: wrote ~ts~n", [beam_com:name(), File]);
         {error, Reason} ->
@@ -402,6 +560,104 @@ levels(Names, L, Needs, Acc) ->
 resolve(Deps, Lock, Registry) ->
     Queue = [{Name, Pkg, Req, "rebar.config", true} || {Name, Pkg, Req} <- Deps],
     resolve(Queue, Lock, Registry, #{}).
+
+%%% The git deps of a rebar3 project (beam_com_git, over HTTPS or SSH): the
+%%% commit of rebar.lock, else of the ref of rebar.config. Each git dep
+%%% can have deps in its own rebar.config: its git deps come next, and
+%%% its Hex packages go to the resolution, as deps of the git dep.
+
+fetch_git(Dir, LibDir, HexDeps, GitDeps, Registry, GitOpts) ->
+    LockFile = filename:join(Dir, "rebar.lock"),
+    Lock0 = read_lock(rebar, LockFile),
+    GitLock = maps:filter(fun(_, P) -> is_map_key(git, P) end, Lock0),
+    Lock = maps:without(maps:keys(GitLock), Lock0),
+    {Git, SubHex0} = git_packages([{D, true} || D <- GitDeps], GitLock, LibDir, GitOpts, #{}, []),
+    Top = [N || {N, _, _} <- HexDeps],
+    SubHex = [D || {N, _, _, _} = D <- SubHex0, not lists:member(N, Top), not is_map_key(N, Git)],
+    Names = lists:usort(Top ++ [N || {N, _, _, _} <- SubHex]),
+    {Chosen, Resolved} =
+        case lists:all(fun(N) -> is_map_key(N, Lock) end, Names) of
+            true ->
+                %% All the Hex entries of the lock, as with no git deps
+                %% (rebar3 locks only the deps of the default profile).
+                {maps:map(fun(N, P) -> P#{top => lists:member(N, Top)} end, from_lock(Lock)),
+                 false};
+            false ->
+                Queue = [{N, P, R, "rebar.config", true} || {N, P, R} <- HexDeps]
+                    ++ [{N, P, R, From, false} || {N, P, R, From} <- SubHex],
+                {resolve(Queue, Lock, Registry, #{}), true}
+        end,
+    Unpacked = [unpack_package(P, LibDir, Registry) || P <- maps:values(Chosen)],
+    GitList = maps:values(Git),
+    NoChecksum = [N || N := #{outer := undefined} <- Chosen],
+    Changed = Resolved orelse NoChecksum =/= [] orelse lists:any(fun(#{new := New}) -> New end, GitList)
+        orelse lists:sort(maps:keys(GitLock)) =/= lists:sort(maps:keys(Git)),
+    Changed andalso write_lock(rebar, LockFile, maps:merge(Chosen, Git), Unpacked ++ GitList),
+    order(Unpacked ++ GitList).
+
+git_packages([], _GitLock, _LibDir, _Opts, Acc, Hex) ->
+    {Acc, lists:reverse(Hex)};
+git_packages([{{Name, _, _, _}, Top} | Rest], GitLock, LibDir, Opts, Acc, Hex)
+  when is_map_key(Name, Acc) ->
+    #{Name := P} = Acc,
+    git_packages(Rest, GitLock, LibDir, Opts, Acc#{Name := P#{top := Top orelse maps:get(top, P)}}, Hex);
+git_packages([{{Name, Url, Rev, Sub}, Top} | Rest], GitLock, LibDir, Opts, Acc, Hex) ->
+    git_path(Name, Sub),
+    {Sha, New} = case GitLock of
+                     #{Name := #{git := Url, ref := Ref, sub := Sub}} -> {Ref, false};
+                     _ -> {beam_com_git:resolve(Url, Rev, Opts), true}
+                 end,
+    io:format("~ts: ~p from ~ts at ~ts~n", [beam_com:name(), Name, beam_com_git:redact(Url), Sha]),
+    Checkout = filename:join(LibDir, atom_to_list(Name) ++ "-git"),
+    _ = file:del_dir_r(Checkout),
+    ok = beam_com_git:checkout(beam_com_git:fetch(Url, Sha, Opts), Sha, Checkout, #{url => Url}),
+    AppDir = case Sub of
+                 none -> Checkout;
+                 _ -> filename:join(Checkout, Sub)
+             end,
+    Terms = rebar_config(AppDir),
+    SubHex = rebar_deps(Terms),
+    SubGit = git_deps(Terms),
+    P = #{name => Name, vsn => git_vsn(AppDir, Rev, Sha), dir => AppDir, git => Url, ref => Sha,
+          sub => Sub, top => Top, new => New,
+          requires => [N || {N, _, _} <- SubHex] ++ [N || {N, _, _, _} <- SubGit]},
+    From = atom_to_list(Name) ++ " (git)",
+    git_packages(Rest ++ [{G, false} || G <- SubGit], GitLock, LibDir, Opts, Acc#{Name => P},
+                 lists:reverse([{N, Pkg, Req, From} || {N, Pkg, Req} <- SubHex]) ++ Hex).
+
+%% The name of a git dep and its subdirectory go into paths, also for a
+%% dep of a git dep: the name of an application, and a relative path in
+%% the checkout with no "..".
+git_path(Name, Sub) ->
+    re:run(atom_to_list(Name), "\\A[a-zA-Z][a-zA-Z0-9_]*\\z", [unicode, {capture, none}]) =:= match
+        orelse throw({error, "~tp: a bad name for a git dep", [Name]}),
+    Sub =:= none orelse
+        (Sub =/= "" andalso filename:pathtype(Sub) =:= relative
+         andalso not lists:member("..", filename:split(Sub))
+         andalso not lists:any(fun(C) -> C =:= $\\ orelse C =:= $: orelse C =:= 0 end, Sub))
+        orelse throw({error, "~tp: a bad subdirectory of a git dep: ~tp", [Name, Sub]}).
+
+%% The version of a git dep: the vsn of its .app.src when it is a text
+%% (not "git"), else the tag of rebar.config with no "v", else
+%% 0.0.0+git.COMMIT. A fetch of one commit has no history for "git
+%% describe" (vsn git).
+git_vsn(Dir, Rev, Sha) ->
+    Files = filelib:wildcard(filename:join([Dir, "src", "*.app.src"]))
+        ++ filelib:wildcard(filename:join([Dir, "ebin", "*.app"])),
+    Vsn = case Files of
+              [File | _] ->
+                  case file:consult(File) of
+                      {ok, [{application, _, Props}]} -> proplists:get_value(vsn, Props);
+                      _ -> undefined
+                  end;
+              [] -> undefined
+          end,
+    case {Vsn, Rev} of
+        {V, _} when is_list(V), V =/= [], V =/= "git" -> V;
+        {_, {tag, [$v | T]}} -> T;
+        {_, {tag, T}} -> T;
+        _ -> "0.0.0+git." ++ binary_to_list(binary:part(Sha, 0, 7))
+    end.
 
 resolve([], _Lock, _Registry, Chosen) ->
     Chosen;
@@ -460,6 +716,7 @@ unpack_package(#{name := Name, pkg := Pkg, vsn := Vsn} = P, LibDir, Registry) ->
     Reqs = meta_requirements(Meta),
     P#{dir => Dir, inner => Inner, outer => sha256(Tar),
        requires => [N || {N, _, _} <- Reqs], reqs => Reqs,
+       lock_reqs => meta_requirements(Meta, all),
        tools => proplists:get_value(<<"build_tools">>, Meta, [])}.
 
 %% The outer checksum of a release: from the lock, else from the Hex API.
@@ -629,13 +886,19 @@ mix_only(_, _) ->
 %% package has at most ?MAX_REQUIREMENTS requirements.
 
 meta_requirements(Meta) ->
+    [{App, Pkg, Req} || {App, Pkg, Req, false} <- meta_requirements(Meta, all)].
+
+%% All the requirements, also the optional ones: [{AppName, Package,
+%% Requirement, Optional}]. mix.lock has each of them: Hex checks the
+%% deps of an entry against the registry.
+meta_requirements(Meta, all) ->
     Reqs = requirement_list(proplists:get_value(<<"requirements">>, Meta, [])),
     length(Reqs) =< ?MAX_REQUIREMENTS orelse
         throw({error, "a package has more than ~b requirements", [?MAX_REQUIREMENTS]}),
     [{app_name(proplists:get_value(<<"app">>, R, Pkg)), Pkg,
-      binary_to_list(proplists:get_value(<<"requirement">>, R))}
-     || {Pkg, R} <- Reqs,
-        proplists:get_value(<<"optional">>, R, false) =/= true].
+      binary_to_list(proplists:get_value(<<"requirement">>, R)),
+      proplists:get_value(<<"optional">>, R, false) =:= true}
+     || {Pkg, R} <- Reqs].
 
 app_name(Name) when is_binary(Name), byte_size(Name) =< 255 ->
     case re:run(Name, "^[a-z][a-z0-9_]*$", [{capture, none}]) of
@@ -646,8 +909,14 @@ app_name(Name) ->
     throw({error, "~tp is not an application name", [Name]}).
 
 %% Two layouts: [{Name, Props}] and [[{<<"name">>, Name} | Props]].
+%% The requirements of metadata.config: a list of {Name, Props} or of
+%% Props with a name, or (an older rebar3) a map of Name to Props, with
+%% the Props as a map or a list.
+requirement_list(Reqs) when is_map(Reqs) ->
+    requirement_list(lists:sort(maps:to_list(Reqs)));
 requirement_list(Reqs) ->
     [case R of
+         {Name, Props} when is_binary(Name), is_map(Props) -> {Name, maps:to_list(Props)};
          {Name, Props} when is_binary(Name) -> {Name, Props};
          Props when is_list(Props) -> {proplists:get_value(<<"name">>, Props), Props}
      end || R <- Reqs].
@@ -656,7 +925,7 @@ requirement_list(Reqs) ->
 %% is read without erl_scan: erl_scan makes an atom of each name, and a
 %% package could fill the atom table. This reader takes binaries
 %% (<<"text">> and <<"text"/utf8>>), strings, integers, lists, tuples,
-%% and only the atoms that exist already.
+%% maps (#{K => V}), and only the atoms that exist already.
 consult(Bin) ->
     Chars = case unicode:characters_to_list(Bin) of
                 L when is_list(L) -> L;
@@ -687,6 +956,7 @@ end_dot([C | _]) -> C =:= $\s orelse C =:= $\t orelse C =:= $\n orelse C =:= $\r
 term(Chars, Depth) when Depth < ?MAX_DEPTH ->
     case skip(Chars) of
         "<<" ++ Rest -> bin(skip(Rest));
+        "#{" ++ Rest -> map_pairs(Rest, Depth, #{});
         [$" | Rest] -> quoted(Rest, $", []);
         [$[ | Rest] -> seq(Rest, $], Depth, []);
         [${ | Rest] ->
@@ -705,6 +975,20 @@ term(Chars, Depth) when Depth < ?MAX_DEPTH ->
                             end,
             {Digits, Rest2} = lists:splitwith(fun(D) -> D >= $0 andalso D =< $9 end, Rest1),
             {Sign * list_to_integer(Digits), skip(Rest2)}
+    end.
+
+%% A map: K => V pairs with commas, up to "}".
+map_pairs(Chars, Depth, Acc) ->
+    case skip(Chars) of
+        [$} | Rest] when map_size(Acc) =:= 0 -> {Acc, skip(Rest)};
+        Rest ->
+            {K, Rest1} = term(Rest, Depth + 1),
+            "=>" ++ Rest2 = skip(Rest1),
+            {V, Rest3} = term(Rest2, Depth + 1),
+            case skip(Rest3) of
+                [$, | Rest4] -> map_pairs(Rest4, Depth, Acc#{K => V});
+                [$} | Rest4] -> {Acc#{K => V}, skip(Rest4)}
+            end
     end.
 
 %% A list or a tuple: terms with commas, up to the closing character.
@@ -778,7 +1062,11 @@ skip([C | Rest]) when C =:= $\s; C =:= $\t; C =:= $\n; C =:= $\r -> skip(Rest);
 skip([$% | Rest]) -> skip(lists:dropwhile(fun(C) -> C =/= $\n end, Rest));
 skip(Chars) -> Chars.
 
-%% The packages in the order to compile them.
+%% The packages in the order to compile them: a package after the
+%% packages that it needs, and also after its optional deps that the
+%% build has, as Mix does. The code of a package can check an optional
+%% dep at compile time: ecto_sql defines Ecto.Adapters.Postgres.Connection
+%% only when postgrex compiled first.
 order(Packages) ->
     ByName = maps:from_list([{N, P} || #{name := N} = P <- Packages]),
     Sorted = lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Packages),
@@ -792,8 +1080,9 @@ visit(N, ByName, {Order, Seen} = Acc) ->
         _ ->
             case ByName of
                 #{N := #{requires := R} = P} ->
+                    Optional = [D || {D, _, _, true} <- maps:get(lock_reqs, P, [])],
                     {O1, S1} = lists:foldl(fun(D, A) -> visit(D, ByName, A) end,
-                                           {Order, Seen#{N => true}}, R),
+                                           {Order, Seen#{N => true}}, R ++ Optional),
                     {[P | O1], S1};
                 _ -> Acc
             end
@@ -858,41 +1147,69 @@ env(Name, Default) ->
 %% before it comes. httpc does not limit the body of another status when
 %% it has no length: see O25 in docs/UPSTREAM.md.
 http_get(Url, Max) ->
+    http(get, Url, [{"accept", "application/json"}], none, Max).
+
+%% A request with the client of the builder: its own profile of httpc,
+%% the proxy of HTTPS_PROXY, the check of the certificate and of the
+%% host name, and at most Max bytes of body. Body: none (GET), or
+%% {ContentType, Data} (POST).
+http(Method, Url, Headers, Body, Max) ->
+    http(Method, Url, Headers, Body, Max, #{}).
+
+%% The same with options, for the git client (beam_com_git): timeout, the
+%% time limit of the complete request (ms); idle, the time limit with no
+%% data (ms); redirect, false to get {redirect, Location} for a redirect,
+%% in place of the response of the new URL.
+http(Method, Url, Headers0, Body, Max, Opts) ->
+    Timeout = maps:get(timeout, Opts, ?HTTP_TIMEOUT),
+    Idle = maps:get(idle, Opts, 2 * ?HTTP_TIMEOUT),
+    Redirect = maps:get(redirect, Opts, true),
     ok = start_http(),
     Tls = [{verify, verify_peer}, {cacerts, public_key:cacerts_get()},
            {customize_hostname_check,
             [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}],
-    Headers = [{"user-agent", "beam.com"}, {"accept", "application/json"}],
-    case httpc:request(get, {Url, Headers}, [{ssl, Tls}, {timeout, ?HTTP_TIMEOUT}],
+    Headers = [{"user-agent", "beam.com"} | Headers0],
+    Request = case Body of
+                  none -> {Url, Headers};
+                  {Type, Data} -> {Url, Headers, Type, Data}
+              end,
+    case httpc:request(Method, Request, [{ssl, Tls}, {timeout, Timeout}, {autoredirect, Redirect}],
                        [{sync, false}, {stream, {self, once}}, {body_format, binary},
                         {max_body_size, Max}], beam_com) of
-        {ok, Ref} -> body(Ref, Url, Max, undefined, 0, []);
+        {ok, Ref} -> body(Ref, Url, Max, undefined, 0, [], {Idle, Redirect});
         {error, Reason} -> throw({error, "~ts: ~p", [Url, Reason]})
     end.
 
-body(Ref, Url, Max, Handler, Size, Parts) ->
+body(Ref, Url, Max, Handler, Size, Parts, {Idle, Redirect} = O) ->
     receive
         {http, {Ref, stream_start, _Headers, Pid}} ->
             ok = httpc:stream_next(Pid),
-            body(Ref, Url, Max, Pid, Size, Parts);
+            body(Ref, Url, Max, Pid, Size, Parts, O);
         {http, {Ref, stream, Part}} when Size + byte_size(Part) =< Max ->
             ok = httpc:stream_next(Handler),
-            body(Ref, Url, Max, Handler, Size + byte_size(Part), [Part | Parts]);
+            body(Ref, Url, Max, Handler, Size + byte_size(Part), [Part | Parts], O);
         {http, {Ref, stream, _}} ->
             ok = httpc:cancel_request(Ref, beam_com),
             flush(Ref),
             too_large(Url, Max);
         {http, {Ref, stream_end, _Headers}} ->
             iolist_to_binary(lists:reverse(Parts));
+        {http, {Ref, {{_, Code, _}, Headers, _}}}
+          when not Redirect, Code >= 301, Code =< 308, Code =/= 304, Code =/= 305, Code =/= 306 ->
+            case proplists:get_value("location", Headers) of
+                undefined -> throw({error, "~ts: HTTP ~b with no location", [Url, Code]});
+                Location -> {redirect, Location}
+            end;
         {http, {Ref, {{_, 404, _}, _, _}}} -> throw({error, "~ts: not found", [Url]});
         {http, {Ref, {{_, Code, _}, _, _}}} -> throw({error, "~ts: HTTP ~b", [Url, Code]});
         {http, {Ref, {error, body_too_big}}} -> too_large(Url, Max);
         {http, {Ref, {error, {body_too_long, _}}}} -> too_large(Url, Max);
         {http, {Ref, {error, Reason}}} -> throw({error, "~ts: ~p", [Url, Reason]})
-    after 2 * ?HTTP_TIMEOUT ->
-            %% httpc answers at its timeout: this is only a guard.
+    after Idle ->
+            %% A server that sends no data.
             ok = httpc:cancel_request(Ref, beam_com),
-            throw({error, "~ts: ~p", [Url, timeout]})
+            flush(Ref),
+            throw({error, "~ts: no data for ~b s", [Url, Idle div 1000]})
     end.
 
 too_large(Url, Max) ->
@@ -918,7 +1235,7 @@ set_proxy() ->
     case [P || V <- ["HTTPS_PROXY", "https_proxy"],
                P <- [os:getenv(V)], P =/= false, P =/= ""] of
         [Proxy | _] ->
-            #{host := Host, port := Port} = uri_string:parse(Proxy),
+            {Host, Port} = proxy(Proxy),
             NoProxy = ["localhost", "127.0.0.1"]
                 ++ [string:trim(H) || V <- ["NO_PROXY", "no_proxy"],
                                       L <- [os:getenv(V)], L =/= false,
@@ -927,4 +1244,19 @@ set_proxy() ->
                                     {proxy, {{Host, Port}, NoProxy}}], beam_com);
         [] ->
             ok
+    end.
+
+%% The host and the port of a proxy URL. With no port, the port is the
+%% default of curl: 443 for https, else 1080. With no scheme
+%% ("host:3128"), the scheme is http.
+proxy(Proxy) ->
+    Url = case string:find(Proxy, "://") of
+              nomatch -> "http://" ++ Proxy;
+              _ -> Proxy
+          end,
+    case uri_string:parse(Url) of
+        #{host := Host, port := Port} when Host =/= "", is_integer(Port) -> {Host, Port};
+        #{scheme := "https", host := Host} when Host =/= "" -> {Host, 443};
+        #{host := Host} when Host =/= "" -> {Host, 1080};
+        _ -> throw({error, "HTTPS_PROXY: not a URL of a proxy: ~ts", [Proxy]})
     end.

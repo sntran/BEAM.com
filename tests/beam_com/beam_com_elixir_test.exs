@@ -164,6 +164,20 @@ defmodule BeamComElixirTest do
               ~c"the dependency ~p is not a Hex package (~p; only Hex packages are supported)",
               [:l, :path]} ==
                catch_throw(d.([{:l, [path: "../l"]}]))
+
+      # A package of an organization or of another repository is not a
+      # package of the same name on hex.pm.
+      text =
+        ~c"the dependency ~p is not a package of hex.pm (~p; only packages of hex.pm are supported, else use --tool mix-release)"
+
+      assert {:error, text, [:priv, :organization]} ==
+               catch_throw(d.([{:priv, "~> 1.0", organization: "acme"}]))
+
+      assert {:error, text, [:mine, :repo]} ==
+               catch_throw(d.([{:mine, "~> 1.0", repo: "my_repo"}]))
+
+      assert [{:pub, "pub", ~c"~> 1.0", true}] == d.([{:pub, "~> 1.0", repo: "hexpm"}])
+      assert [] == d.([{:dev, "~> 1.0", organization: "acme", only: :dev}])
     end
 
     @tag timeout: 60_000

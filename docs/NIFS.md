@@ -1,17 +1,25 @@
-# NIF libraries in WebAssembly
+# NIF libraries
 
 `beam.com` is one static file, so it cannot load a native NIF library
-(a `.so` or `.dll` file): ERTS has no `dlopen()` in it. It can load a
-NIF library that is compiled to WebAssembly. One `.wasm` file then
-works on all the systems and CPUs of `beam.com`.
+(a `.so` or `.dll` file): ERTS has no `dlopen()` in it. It can load two
+other kinds of NIF:
+
+- A native NIF object: the `.o` files of the NIF for x86_64 and aarch64,
+  from `cosmocc`. `beam.com` links the object into the running program,
+  so the NIF runs at the speed of native code. See "Native NIF objects"
+  below.
+- A NIF library that is compiled to WebAssembly. One `.wasm` file then
+  works on all the systems and CPUs of `beam.com`.
 
 When `erlang:load_nif(PATH, Info)` finds no static NIF for the module,
 it looks for these files, in this order:
 
-1. `PATH.x86_64.aot` or `PATH.aarch64.aot` (the CPU of the computer): an
-   AOT file, compiled to machine code. It runs at almost the speed of a
+1. `PATH.x86_64.o` or `PATH.aarch64.o` (the CPU of the computer): a
+   native NIF object.
+2. `PATH.x86_64.aot` or `PATH.aarch64.aot`: an AOT file, a WebAssembly
+   module compiled to machine code. It runs at almost the speed of a
    native NIF.
-2. `PATH.wasm`: the WebAssembly module. The interpreter of WAMR runs it.
+3. `PATH.wasm`: the WebAssembly module. The interpreter of WAMR runs it.
 
 The C code of the NIF does not change: the same `ERL_NIF_INIT`, the
 same `enif_*` functions. `beam.com INPUT -o OUTPUT` copies the files in
@@ -19,11 +27,228 @@ same `enif_*` functions. `beam.com INPUT -o OUTPUT` copies the files in
 reads them from the zip: nothing goes onto the disk.
 
 How you make the `.wasm` file is your choice: any C compiler for
-`wasm32-wasip1` works. This page shows Zig and wasi-sdk. For the speed
-of native code, a custom build of `beam.com` can link the NIF as a
-static NIF (see "Custom builds" in [`BUILDING.md`](BUILDING.md)).
+`wasm32-wasip1` works. This page shows Zig and wasi-sdk. A custom build
+of `beam.com` can also link the NIF as a static NIF (see "Custom builds"
+in [`BUILDING.md`](BUILDING.md)).
+
+## Native NIF objects
+
+A native NIF object is the NIF as `cosmocc` compiles it, with no link:
+`cosmocc -c` gives one object for x86_64 and one for aarch64
+(`.aarch64/`). For a NIF with more than one file, `ld -r` joins the
+objects of each CPU into one object:
+
+```sh
+include=$(beam.com --nif-include)
+cosmocc -O2 -I"$include" -c c_src/my_nif.c -o my_nif.o
+cosmocc -O2 -I"$include" -c c_src/util.c -o util.o
+x86_64-linux-cosmo-ld -r -o priv/my_nif.x86_64.o my_nif.o util.o
+aarch64-linux-cosmo-ld -r -o priv/my_nif.aarch64.o .aarch64/my_nif.o .aarch64/util.o
+```
+
+Then `erlang:load_nif("priv/my_nif", 0)` loads `priv/my_nif.x86_64.o` or
+`priv/my_nif.aarch64.o`. The same object works on each system of
+`beam.com` with that CPU: Linux, macOS, Windows, and the BSDs.
+
+A NIF in C++ links the members of `libcxx.a` (libc++) that it needs into
+its object, and keeps one global name. The program gives the object
+libc++abi: the exceptions, `__gxx_personality_v0`, the type info, and
+`operator new`. So the process has one exception runtime:
+
+```sh
+cosmoc++ -O2 -I"$include" -c c_src/my_nif.cpp -o my_nif.o
+lib=$(dirname "$(command -v cosmocc)")/..
+x86_64-linux-cosmo-ld -r -o nif.o my_nif.o "$lib/x86_64-linux-cosmo/lib/libcxx.a"
+x86_64-unknown-cosmo-objcopy --keep-global-symbol=nif_init nif.o priv/my_nif.x86_64.o
+aarch64-linux-cosmo-ld -r -o nif64.o .aarch64/my_nif.o "$lib/aarch64-linux-cosmo/lib/libcxx.a"
+aarch64-unknown-cosmo-objcopy --keep-global-symbol=nif_init nif64.o priv/my_nif.aarch64.o
+```
+
+The loader removes the sections that no live section names, as
+`ld --gc-sections` does. The roots are the sections of the global
+symbols, the constructors, and the sections with C names. So a function
+that the NIF never reaches can name a symbol that the program does not
+have, as in a static link. With one global name (`objcopy
+--keep-global-symbol`), the loader keeps only the code that the NIF
+uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
+9.6 MB of memory.
+
+- The entry of the object is `LIB_nif_init`, with `LIB` the name of the
+  file (`-DSTATIC_ERLANG_NIF_LIBNAME=LIB`), else `nif_init`, as for a
+  dynamic library. Else it is the one global function `NAME_nif_init`
+  of the object: Rustler loads `priv/native/libCRATE`, and the object of
+  the store has `CRATE_nif_init`.
+- The object can call each `enif_*` function, and the functions of the
+  libc in
+  [`c_src/cosmo/beam_com_nif_libc.h`](../c_src/cosmo/beam_com_nif_libc.h):
+  the strings, the memory, `stdio`, the math functions, the threads, the
+  time, and the files. A symbol that is not there stops the load, and the
+  error of `load_nif/2` names it.
+- The constructors of the object run at the load. A second `load_nif/2`
+  of the same file (an upgrade of the module) gives the same copy of the
+  object, as `dlopen()` does: its static data stays. The program keeps
+  the object until it stops.
+- Thread-local data works: `_Thread_local` of C, and the TLS of Rust
+  (`thread_local!`, and the threads of rayon). The program has one
+  static TLS area of 32 KiB for all the objects, and each thread has its
+  own copy. A thread that started before the load gets the initial values
+  too. The initial values that are not zero go into the template of the
+  thread data of the program: a system that refuses this change (OpenBSD
+  can make the program immutable) refuses such an object.
+- On aarch64, the code of Rust reads the thread pointer from
+  `tpidr_el0`, and Cosmopolitan keeps it in `x28`. The loader changes
+  each `mrs xN, tpidr_el0` of an object to `mov xN, x28`, as cosmocc
+  does in the code of the program. On XNU, `tpidr_el0` is not `x28`.
+- C++ works: static constructors, exceptions (also across the frames of
+  the object), `dynamic_cast`, function-local statics, and `thread_local`
+  objects with destructors.
+
+`BEAM_COM_NIF_DEBUG=1` writes `nif_native: FILE` for each object that
+loads. `BEAM_COM_NIF_NATIVE=0` turns the loader off.
+
+### The NIFs of the store
+
+The store of parts (docs/BUILDING.md) has the NIF of each package of
+`EXTRA_NIFS` as the static build links it: `LIB.a` and `.aarch64/LIB.a`,
+with the function `LIB_nif_init` and the libraries that it needs.
+`scripts/nif_object.sh` makes the native NIF objects of such a part:
+
+```sh
+sh scripts/nif_object.sh build/cosmocc vix DIR nifs/vix-0.42.0
+sh scripts/nif_object.sh build/cosmocc rustycsv DIR nifs/rusty_csv-0.4.6 native/librustycsv
+```
+
+The first command writes `vix.x86_64.o` and `vix.aarch64.o`, the second
+`native/librustycsv.x86_64.o` and `.aarch64.o`: the paths where the
+packages load them. `ld -r -u LIB_nif_init` takes the members of the
+archive that the NIF needs, and the members of `libcxx.a` that they
+need. The object keeps one global name, `LIB_nif_init`.
+`scripts/steps.sh nif_recipes` gives the version, the library and the
+path of each package of `EXTRA_NIFS`.
+
+| NIF | Object (x86_64) | Memory | Load |
+|---|---|---|---|
+| `vix` 0.42.0 (libvips 8.18, glib, AVIF, GIF, ICC, SVG) | 31 MB | 17.8 MB | 300 ms |
+| `ex_pdfium` 0.6.0 (PDFium) | 26 MB | 9.6 MB | 140 ms |
+| `rusty_csv` 0.4.6 | 1.8 MB | | 15 ms |
+
+The libc of `beam_com_nif_libc.h` has each name that these objects
+need: for glib, also the sockets, `posix_spawn`, `iconv` and the
+resolver. These names add about 0.5 MB to `beam.com`.
+`tests/cosmo/nif_needs.c` (`nif_needs.com OBJECT...`) loads each object
+of its CPU with this table and with no constructors. It writes each
+name that the object needs and that the table does not have, all in one
+run. CI runs it on the objects of the store before a program loads
+them.
+
+### The NIF files of beam.com
+
+The directory `lib/beam_com/priv/nifs/APP-VSN` of the zip of `beam.com`
+holds files of the priv directory of the package `APP` of version
+`VSN`: a NIF library in WebAssembly (lazy_html), or native NIF objects.
+For example, `nifs/vix-0.42.0/vix.x86_64.o` and
+`nifs/rusty_csv-0.4.6/native/librustycsv.x86_64.o`. `beam.com --version`
+names these packages ("NIF files"). The list comes from the directory,
+so a `beam.com` with more files in its zip needs no other build:
+
+- `beam.com DIR -o OUT` (a Mix project) writes the files of each
+  package into its priv directory before its code compiles (vix loads
+  its NIF then), and puts them into OUT.
+- `beam.com mix compile`: `make` of `elixir_make` (vix) copies them into
+  `MIX_APP_PATH/priv`, and the module `Rustler` of `beam.com` (rusty_csv,
+  ex_pdfium) copies them into the priv directory of the package and
+  loads `code:priv_dir(APP)/native/libCRATE`.
+
+The version of the package must be a version of its directory. A
+linked NIF of the same package wins: ERTS finds a static NIF first.
+
+The NIF of vix sends each object that a resource destructor frees to
+the process `Elixir.Vix.Nif.Janitor`, as `Vix.Nif` starts it. Without
+this process, the destructor makes new resources with no end.
+
+### A program assembled from parts
+
+A program with native NIF objects needs no compiler and no link: it is
+a program and new files in its zip. `scripts/assemble.erl` makes such a
+program as a server can stream it:
+
+```sh
+beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/LIB.x86_64.o=FILE ...
+beam.com scripts/assemble.erl -- BASE OUT lib/APP-VSN/priv/=DIR ...
+```
+
+A spec `PREFIX/=DIR` adds each regular file of DIR, with the path
+`PREFIX/PATH`, in the sequence of the names.
+
+The license texts of a part (`licenses-pdfium` of ex_pdfium) go into
+`licenses/NAME` of OUT, as in the static build, and each program that
+OUT builds keeps them. With `beam.com` as BASE and the objects of the store as NIF files of
+`beam.com`, OUT is a `beam.com` that builds a project with vix,
+rusty_csv or ex_pdfium from hex.pm, with no static NIF of them:
+
+```sh
+beam.com scripts/assemble.erl -- beam.com beam-vix.com \
+  lib/beam_com/priv/nifs/vix-0.42.0/vix.x86_64.o=nifs/vix-0.42.0/vix.x86_64.o \
+  lib/beam_com/priv/nifs/vix-0.42.0/vix.aarch64.o=nifs/vix-0.42.0/vix.aarch64.o
+./beam-vix.com my_project -o my_project.com
+```
+
+OUT has these parts, in this order:
+
+1. The bytes of BASE up to its central directory, with no change. The
+   executable headers and the offsets of the entries of BASE stay
+   correct.
+2. A local entry for each new file, with its deflated bytes.
+3. The central directory of BASE, and an entry for each new file.
+4. A new end record.
+
+The sizes of the parts give the length of OUT before the first byte. So
+a server that keeps BASE and the deflated files (with their CRC-32) can
+send OUT with a `Content-Length`, from the first byte, with no work for
+each request but a copy. The script writes the length first, then
+writes OUT with no seek, and then checks the length. The same inputs
+give the same bytes. The script does not support ZIP64: OUT has fewer
+than 65,535 entries and less than 4 GiB.
+
+A local entry has no offset, so the entries of one package are the
+same bytes in each program. Only the central directory changes with
+the set of packages. `--parts` cuts the programs of each set into
+segments, in DIR:
+
+```sh
+beam.com scripts/assemble.erl -- --parts BASE DIR KEY URL PKG:SPEC ...
+```
+
+- `beam-p.KEY.head`: the bytes of BASE up to its central directory.
+- `beam-p.KEY.PKG.part`: the local entries of the files of PKG.
+- `beam-p.KEY.SET.tail`: the central directory and the end record of
+  the program of the packages of SET.
+- `beam-p.plus.SET.txt`: the segments of SET, one on each line, after
+  the text URL.
+
+SET is each set of packages that is not empty: the names in the
+sequence of `sort`, with a dot between them. The segments of a list,
+one after the other, are the bytes of OUT with the specs of these
+packages, in that sequence. `tests/run.sh` compares the two. The FIFO
+beam.com streams them for a build URL ([`BUILDING.md`](BUILDING.md), "A
+build URL").
+
+Caution: a native NIF object runs in the VM with all of its rights, as
+a native NIF does. A crash of the object stops the VM. A NIF in
+WebAssembly cannot do this.
 
 ## Speed
+
+The NIF of `bcrypt_elixir` as a native NIF object runs at the speed of
+the same NIF as a static NIF: one hash with cost 12 took 241 to 243 ms
+as an object, and 237 to 269 ms as a static NIF, on one x86_64
+computer. The two give the same hash.
+
+The NIF of `rusty_csv` (Rust) also loads as an object, from the object
+of its static NIF: `parse_string_parallel` parses 200,000 rows in 260 ms
+with the threads of rayon. The NIF of `ex_pdfium` (Rust and PDFium in
+C++) loads as an object too, with libc++: it makes, opens, renders and
+reads PDF documents.
 
 The bcrypt NIF of `bcrypt_elixir`, one hash with cost 12, on x86_64:
 
@@ -323,8 +548,46 @@ the compiled module of a Worker, and after a snapshot and its restore.
   error of an AOT file that did not load, and the `enif_*` functions
   that the module imports but `beam.com` does not give.
 - `BEAM_COM_NIF_AOT=0`: `beam.com` does not use the AOT files.
+- `BEAM_COM_NIF_MAP=FILE`: the loader of native NIF objects adds a line
+  to FILE for each function of an object that it loads: the address,
+  the size, and the name. A sampler or a debugger that does not know the
+  object finds the names of its addresses in this file.
 
 ## The test
+
+[`tests/programs/native_nif_check`](../tests/programs/native_nif_check)
+is an application with a native NIF of two C files, its objects in
+`priv/`, and `build.sh`, which makes them. Its checks: the terms,
+binaries, maps, resources with destructors, monitors, a thread of
+`enif_thread_create` that sends messages, dirty NIFs, `enif_schedule_nif`,
+exceptions, the libc, a constructor, 32 processes at the same time, a
+load by an other module, a broken object, an object that needs a missing
+function, and an upgrade of the module. Its thread-local data
+(`native_nif_check_tls.c` and `.S`) has each TLS model of C and Rust: the
+first call on each scheduler, each dirty scheduler, and a new thread
+checks the initial values. Its C++ part (`native_nif_check_cxx.cpp`)
+checks the exceptions, `dynamic_cast`, the containers, a function-local
+static, and the destructor of a `thread_local` object. `tests/run.sh` builds it and runs
+it on each system. `tests/cosmo/nif_load_check.c` (in `step_test` of
+`scripts/steps.sh`) checks the loader with no ERTS: the relocations of
+both CPUs, the errors, and 3,000 broken objects.
+
+[`tests/programs/store_nif_check`](../tests/programs/store_nif_check)
+loads the NIFs of the store as native NIF objects: vix, rusty_csv and
+ex_pdfium. The job Build of CI makes their objects from the parts of the
+build (`store_nifs.tar.gz`), and `tests/run.sh` and `tests/run.ps1` put
+them in `priv/` and run the program on each system. For vix, it encodes
+and decodes JPEG, PNG, WebP, AVIF and GIF, loads an SVG, resizes, and
+makes a thumbnail. For ex_pdfium, it makes, saves, opens, reads and
+renders a PDF document. For rusty_csv, it parses with the threads of
+rayon. Each NIF also runs in eight processes at the same time. Then the
+tests assemble the same program with `scripts/assemble.erl`: the program
+with no objects, and the six objects as new files. That program must
+give the same results. Last, they assemble a `beam.com` with the six
+objects as its NIF files, and it builds and runs
+`tests/programs/vix_check`, `rusty_csv_check` and `ex_pdfium_check`
+(the packages from hex.pm). Before, `nif_needs.com` checks the objects
+of the CPU of the system.
 
 [`tests/programs/nif_check`](../tests/programs/nif_check) is an
 application with a NIF in C (`c_src/nif_check.c`, and
@@ -338,6 +601,19 @@ grow by their modules.
 
 ## How it works
 
+- `c_src/cosmo/beam_com_nif.c`: the loader of native NIF objects. It
+  checks the ELF object, maps its sections near the program (the code of
+  `cosmocc` uses addresses of 32 bits), does the relocations of x86_64
+  and aarch64, adds a stub for a call that is too far, gives each FDE of
+  `.eh_frame` to libunwind, and runs the constructors. Thread-local
+  data: the comment "Thread-local data" in the file. On macOS arm64 it
+  writes the code in `MAP_JIT` memory. `beam_com_nif_hook()` (from
+  `main()` of `beam_com.c`) puts it before the loader of WebAssembly in
+  the hook `erts_wasm_nif_open`.
+- `c_src/cosmo/beam_com_nif_syms.c`: the symbols that an object can use,
+  the `enif_*` functions of `erl_nif_api_funcs.h`, the list of
+  `beam_com_nif_libc.h`, and libc++abi (`beam_com_nif_cxx.h`, made by
+  `scripts/nif_cxx_names.sh` for the version of cosmocc).
 - `patches/otp/0003-wasm-nif.patch`: `erts_load_nif` calls the hook
   `erts_wasm_nif_open` before it opens a dynamic library, and the hook
   `erts_wasm_nif_close` with an entry of the first hook that it refuses

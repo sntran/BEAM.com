@@ -27,7 +27,7 @@
          base_kind/1, check_base/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
-         with_extract/2, compile_all/2, first_names/1]).
+         with_extract/2, compile_all/2, first_names/1, mix_release/3, why/1]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -59,17 +59,110 @@ run(#{input := Input0, apps := ExtraApps} = Opts0) ->
     Wasm0 andalso maps:get(edge, Opts0, true) =:= false andalso
         throw({error, "--no-edge is for native files, not for --target wasm32", []}),
     Opts = edge_file(Opts0),
-    Wasm = maps:get(target, Opts, none) =:= ?WASM,
     check_edge_only(Opts),
     Input = string:trim(slashes(Input0, os:type()), trailing, "/\\"),
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
+    case mix_release(Input, Output, Opts) of
+        none ->
+            build_dir(Input, Output, Opts, ExtraApps, Base, Root);
+        {Out, Release} ->
+            try build_dir(Release, Output, Opts, ExtraApps, Base, Root)
+            after
+                file:del_dir_r(Out)
+            end
+    end.
+
+build_dir(Input, Output, Opts, ExtraApps, Base, Root) ->
+    Wasm = maps:get(target, Opts, none) =:= ?WASM,
     case {Wasm, beam_com_wasm:release_dir(Input, Root)} of
         {_, false} -> build_input(Input, Output, Opts, ExtraApps, Base, Root);
         {true, Rel} -> beam_com_wasm:write(Output, Rel, Opts#{root => Root});
         {false, Rel} -> release_exe(Input, Output, Opts, Rel, Root)
     end.
+
+%% A Mix project that only Mix can build (beam_com_mix:reasons/1), or
+%% any Mix project with --tool mix-release: Mix makes its release in a
+%% new directory Out, and the build reads the release. none for the
+%% other inputs, and with --tool mix or --tool rebar.
+%%
+%% --main, -a, --extract-priv and the escript main_module of mix.exs are
+%% for the builder of a plain Mix project: a release of Mix has its own
+%% applications and no main/1. With them, the builder of a plain Mix
+%% project makes the program when the reasons are only
+%% config/runtime.exs and :compilers (as before the Mix release), with
+%% a warning: the program does not read config/runtime.exs. With other
+%% reasons, the build stops.
+%%
+%% The checks of the base file and of the directory of Output come
+%% before the Mix build, because the Mix build can take minutes.
+mix_release(Input, Output, Opts) ->
+    Mix = filelib:is_dir(Input) andalso beam_com_elixir:is_mix(Input),
+    Reasons = case {Mix, maps:get(tool, Opts, auto)} of
+                  {false, mix_release} ->
+                      throw({error, "~ts: --tool mix-release needs a Mix project (mix.exs)",
+                             [Input]});
+                  {true, mix_release} -> [tool];
+                  {true, auto} ->
+                      case tool(Input, Opts) of
+                          mix -> beam_com_mix:reasons(Input);
+                          rebar -> []
+                      end;
+                  _ -> []
+              end,
+    Plain = case Reasons of
+                [] -> [];
+                _ -> plain_options(Input, Opts)
+            end,
+    case {Reasons, Plain, Reasons -- [runtime_exs, compilers]} of
+        {[], _, _} ->
+            none;
+        {_, [_ | _], []} ->
+            maps:get(quiet, Opts, false) orelse
+                io:format(standard_error,
+                          "~ts: warning: ~ts: only the builder of a plain Mix project reads "
+                          "~ts, so the build makes no Mix release: the program does not have ~ts~n",
+                          [beam_com:name(), Input, lists:join(", ", Plain), why(Reasons)]),
+            none;
+        {_, [_ | _], _} ->
+            throw({error, "~ts: only the builder of a plain Mix project reads ~ts, and the "
+                   "project needs Mix (~ts): give the applications and the start of the "
+                   "program in mix.exs, as for a release of Mix",
+                   [Input, lists:join(", ", Plain), why(Reasons)]});
+        {_, [], _} ->
+            Wasm = maps:get(target, Opts, none) =:= ?WASM,
+            Wasm orelse check_base(Opts),
+            OutDir = filename:dirname(filename:absname(Output)),
+            Wasm orelse filelib:is_dir(OutDir) orelse
+                throw({error, "~ts: no such directory", [OutDir]}),
+            io:format("~ts: Mix gets the deps of ~ts and makes its release (~ts)~n",
+                      [beam_com:name(), Input, why(Reasons)]),
+            Out = temp_dir("mix_release"),
+            {Out, beam_com_mix:release(Input, #{out => Out})}
+    end.
+
+%% The options of the build (and the escript of mix.exs) that only the
+%% builder of a plain Mix project reads.
+plain_options(Input, Opts) ->
+    Escript = proplists:get_value(escript, beam_com_elixir:mix_config(Input), []),
+    ["--main" || is_map_key(main, Opts)]
+        ++ ["-a" || maps:get(apps, Opts, []) =/= []]
+        ++ ["--extract-priv" || is_map_key(extract_priv, Opts)]
+        ++ ["the escript main_module of mix.exs"
+            || is_list(Escript), proplists:get_value(main_module, Escript) =/= undefined].
+
+why(Reasons) ->
+    lists:join(", ", [case R of
+                          tool -> "--tool mix-release";
+                          runtime_exs -> "config/runtime.exs";
+                          {deps, Deps} -> ["deps that are not Hex packages: ",
+                                           lists:join(" ", [atom_to_list(D) || D <- Deps])];
+                          {repo, Deps} -> ["deps of a Hex repository other than hex.pm: ",
+                                           lists:join(" ", [atom_to_list(D) || D <- Deps])];
+                          compilers -> "the compilers of mix.exs";
+                          'assets.deploy' -> "the alias assets.deploy"
+                      end || R <- Reasons]).
 
 %% --target wasm32 with -o FILE.com: the file of a native build with only
 %% its edge part (edge_only), and no native program. Another OUTPUT is the
@@ -1098,8 +1191,17 @@ mix_dir(Dir, Options) ->
     %% NAME-VSN/ebin, as in Mix: code:priv_dir/1 then finds the
     %% application while its code compiles (vix loads its NIF then).
     Top = temp_dir("mix"),
-    Out = filename:join([Top, lists:flatten(io_lib:format("~ts-~ts", [Name, Vsn])), "ebin"]),
+    AppTop = filename:join(Top, lists:flatten(io_lib:format("~ts-~ts", [Name, Vsn]))),
+    Out = filename:join(AppTop, "ebin"),
     ok = filelib:ensure_path(Out),
+    %% The NIF files of the package in beam.com (beam_com_make), in its
+    %% priv directory before its code compiles: vix loads its NIF then.
+    NifFiles = beam_com_make:nif_files(Name, Vsn),
+    [begin
+         P = filename:join([AppTop, "priv", F]),
+         ok = filelib:ensure_dir(P),
+         ok = file:write_file(P, D)
+     end || {F, D} <- NifFiles],
     true = code:add_patha(Out),
     Beams = try
                 Report = case Options of
@@ -1136,10 +1238,10 @@ mix_dir(Dir, Options) ->
         ++ [{mod, M} || M <- [Get(mod, undefined)], M =/= undefined],
     PrivDir = filename:join(Dir, "priv"),
     {Priv0, PrivExec} = priv_files(PrivDir),
-    %% A package with a NIF library in WebAssembly in beam.com
-    %% (lazy_html): its files, as the make of beam.com copies them.
-    Priv = Priv0 ++ [F || {N, _} = F <- beam_com_make:wasm_nif_files(Name, Vsn),
-                          not lists:keymember(N, 1, Priv0)],
+    %% A package with NIF files in beam.com (a NIF library in
+    %% WebAssembly, or native NIF objects): its files, as the make of
+    %% beam.com copies them.
+    Priv = Priv0 ++ [F || {N, _} = F <- NifFiles, not lists:keymember(N, 1, Priv0)],
     Config = case maps:get(dep, Options, false) of
                  true -> [];
                  false -> [{"sys.config", C} || C <- [beam_com_elixir:sys_config(Dir)], C =/= none]
@@ -1285,8 +1387,11 @@ first_names(File) ->
         nomatch -> []
     end.
 
+%% deterministic: the beam has the base name of its source, not its path
+%% (a new temporary directory for each build of a dep). Thus two builds of
+%% the same code give the same bytes, also on two computers.
 compile(File, Opts) ->
-    case compile:file(File, [binary, report_errors | Opts]) of
+    case compile:file(File, [binary, report_errors, deterministic | Opts]) of
         {ok, Mod, Beam} -> {Mod, Beam};
         {ok, Mod, Beam, _Warnings} -> {Mod, Beam};
         _ -> throw({error, "~ts: compilation failed", [File]})
@@ -1344,12 +1449,17 @@ closure([App | Rest], Base, Name, Done) ->
     end.
 
 %% The files of the program application in the zip.
+%% The beams are stripped, as "mix release" strips them (strip/1): the
+%% compile info and the debug info have the paths of the build (a new
+%% temporary directory each time). Thus a second build of the same code
+%% gives the same bytes, and the reload of a running program
+%% (beam_com_reload) reads only the beams that changed.
 app_files(#{name := Name, vsn := Vsn, props := Props, beams := Beams,
             priv := Priv}) ->
     Dir = "lib/" ++ atom_to_list(Name) ++ "-" ++ Vsn,
     [{Dir ++ "/ebin/" ++ atom_to_list(Name) ++ ".app",
       io_lib:format("~tp.~n", [{application, Name, Props}])}]
-        ++ [{Dir ++ "/ebin/" ++ atom_to_list(M) ++ ".beam", Beam}
+        ++ [{Dir ++ "/ebin/" ++ atom_to_list(M) ++ ".beam", strip(Beam)}
             || {M, Beam} <- Beams]
         ++ [{Dir ++ "/priv/" ++ File, Data} || {File, Data} <- Priv].
 
@@ -1458,10 +1568,13 @@ has_docs(File) ->
 %% The entries of beam.com that the new executable keeps: everything
 %% except the releases, .args, and the applications that the release
 %% does not use. Of the applications, only ebin/ and priv/ are needed.
+%% Each program keeps lib/beam_com_reload, the reload of new code that
+%% beam.com starts (docs/PROGRAMS.md).
 keep(Apps, Base) ->
     Dirs = ["lib/" ++ atom_to_list(A) ++ "-" ++ maps:get(vsn, maps:get(A, Base))
             ++ "/" || A <- Apps],
     fun("lib/") -> true;
+       ("lib/beam_com_reload/" ++ _) -> true;
        ("lib/" ++ _ = Name) ->
             lists:any(fun(Dir) -> keep_app_file(Dir, Name) end, Dirs);
        ("releases/" ++ _) -> false;

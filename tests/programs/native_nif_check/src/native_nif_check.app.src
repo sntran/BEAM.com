@@ -1,0 +1,5 @@
+{application, native_nif_check,
+ [{description, "The test of the native NIF objects"},
+  {vsn, "1.0.0"},
+  {applications, [kernel, stdlib]},
+  {modules, []}]}.

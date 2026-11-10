@@ -1,0 +1,4 @@
+To: {{GITHUB_WEB}}/{{GITHUB_REPO}}/releases/download/custom-builds/beam-u.$url.com
+X-HTTP-Method-Override: GET
+Range: $range
+Reply-To: -

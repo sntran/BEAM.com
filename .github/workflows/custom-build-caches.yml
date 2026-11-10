@@ -21,27 +21,53 @@ name: Caches and parts of the custom builds
 # other parts of vix builds only libvips and the NIF (about 3 minutes).
 #
 # GitHub removes a cache that no run reads for 7 days. The schedule reads
-# each cache two times each week. When the store has each part, the build
-# takes about one minute.
+# each cache each day. When the store has each part, the build takes
+# about one minute.
+#
+# Then the job urls builds again each build URL of the FIFO beam.com
+# (beam-u.URL.com) whose source changed, with the parts of the store. The
+# old file stays until its new build replaces it, so a request never
+# waits for a build after a push.
+#
+# A push starts the workflow when it changes a path of the source of a
+# build: paths-ignore has the paths of NOT_SOURCE of
+# scripts/custom_build.py, and the Markdown files at the top
+# (tests/custom_build_test.py checks it). A push that changes only
+# scripts/custom_build.py starts it too, because that file makes the
+# settings of a build.
 on:
   push:
     branches: [main]
-    paths:
-      - scripts/libvips.sh
-      - patches/libvips/**
-      - c_src/vips/**
-      - scripts/pdfium.sh
-      - patches/pdfium/**
-      - patches/otp/**
-      - c_src/cosmo/**
-      - scripts/custom_build.py
-      - scripts/steps.sh
-      - scripts/rust_link.sh
-      - c_src/rust/**
-      - patches/elixir/**
-      - .github/workflows/custom-build-caches.yml
+    paths-ignore:
+      - "*.md"
+      - .github
+      - .github/**
+      - .formatter.exs
+      - .formatter.exs/**
+      - .gitignore
+      - .gitignore/**
+      - docs
+      - docs/**
+      - examples
+      - examples/**
+      - js
+      - js/**
+      - lib
+      - lib/**
+      - mix.exs
+      - mix.exs/**
+      - mix.lock
+      - mix.lock/**
+      - package.json
+      - package.json/**
+      - priv/seeds
+      - priv/seeds/**
+      - specs
+      - specs/**
+      - tests
+      - tests/**
   schedule:
-    - cron: "17 4 * * 1,4"
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -231,3 +257,38 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
             --jq '"\(.active_caches_count) caches, \(.active_caches_size_in_bytes / 1048576 | floor) MB"'
           gh cache list --repo "$GITHUB_REPOSITORY" --limit 40 --sort size_in_bytes --order desc
+
+  # The builds of a URL of the FIFO beam.com (beam-u.URL.com) of an older
+  # source: a new build of each one, one at a time, through
+  # custom-build.yml with the input rebuild. Each run builds only when the
+  # KEY of its source is not the KEY of beam-u.URL.com.json, and its new
+  # file replaces the old one. At most custom_build.py REBUILD_DAILY new
+  # builds of the day: the next run (each day) does the rest.
+  urls:
+    name: New builds of the URLs
+    needs: caches
+    runs-on: ubuntu-26.04
+    # The wait for each build of custom-build.yml.
+    timeout-minutes: 330
+    permissions:
+      # The delete of the marks.
+      contents: write
+      # The dispatch of custom-build.yml, and the list of its runs.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # A mark stops the builds of a URL for the day (custom_build.py
+      # url_mark). After a push, a build that did not run can run again.
+      - name: Delete the marks of the URLs
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/custom_build.py delete-marks
+
+      - name: Build the URLs again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/custom_build.py rebuild-urls "$GITHUB_SHA"

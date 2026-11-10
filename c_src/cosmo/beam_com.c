@@ -113,6 +113,11 @@ void __releasefd(int fd);
 void __zipos_drop(struct ZiposHandle *h);
 int sys_close(int fd);
 
+/* beam_com_pipe.c: at the close of a pipe, a byte that waits in it
+ * stays until the reader takes it. Weak: not each program of this file
+ * has beam_com_pipe.o. */
+void beam_com_pipe_forget(int fd) __attribute__((__weak__));
+
 static int close_pid;
 
 __attribute__((__constructor__)) static void close_init(void)
@@ -126,6 +131,8 @@ int __wrap_close(int fd)
     int rc;
 
     __fds_lock();
+    if (beam_com_pipe_forget)
+        beam_com_pipe_forget(fd);
     if (fd >= 0 && (size_t)fd < g_fds.n && g_fds.p[fd].kind == kFdZip &&
         !beam_com_is_windows() && getpid() == close_pid) {
         h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;
@@ -169,23 +176,45 @@ int __wrap_mkdir(const char *path, mode_t mode)
 /* chown() with no change (UPSTREAM.md C28). The emulator is linked with
  * -Wl,--wrap=chown (build.sh). prim_file:write_file_info/3 (for example
  * file:change_mode/2, file:change_time/2 and File.touch/1 of Elixir)
- * always sets the owner, with -1 and -1 when the owner does not change,
- * which POSIX does not change. Cosmopolitan's chown() gives ENOSYS on
- * Windows, and the sandbox of Linux refuses it (no promise "chown"), so
- * the change of the mode or of the times after it failed (#172). So
- * chown(path, -1, -1) gives 0 when the path exists, else the error of
- * stat() (ENOENT, on which File.touch/1 makes the file). */
+ * always sets the owner, with -1 and -1 when the owner does not change.
+ * File.cp/3 of Elixir copies the owner of the source, for example in
+ * "mix release". Some systems refuse such a call, although it changes
+ * no owner:
+ *
+ * - Cosmopolitan's chown() gives ENOSYS on Windows.
+ * - The sandbox of Linux refuses it (no promise "chown"), and Seatbelt
+ *   of macOS and unveil() of OpenBSD can refuse it.
+ *
+ * Then the change of the mode or of the times after it failed (#172).
+ *
+ * So the wrap calls the real chown() first: where the system permits
+ * the call, the result is that of the system. For example Linux clears
+ * the setuid and setgid bits of a file at each chown(), also with -1
+ * and -1. When the system refuses the call with ENOSYS, EPERM or EACCES,
+ * and the call changes no owner and no group, the wrap gives 0 when the
+ * path exists, else the error of stat() (ENOENT, on which File.touch/1
+ * makes the file). No owner changes, so the result of 0 gives no user a
+ * right. The setuid and setgid bits then stay. */
 int __real_chown(const char *path, uid_t owner, gid_t group);
 
 int __wrap_chown(const char *path, uid_t owner, gid_t group)
 {
     struct stat st;
+    int e;
 
     if (beam_com_fs_check(path, 1))
         return -1;
-    if (owner == (uid_t)-1 && group == (gid_t)-1)
-        return stat(path, &st);
-    return __real_chown(path, owner, group);
+    if (__real_chown(path, owner, group) == 0)
+        return 0;
+    e = errno;
+    if (e != ENOSYS && e != EPERM && e != EACCES)
+        return -1;
+    if (stat(path, &st) != 0)
+        return -1;
+    if ((owner == (uid_t)-1 || owner == st.st_uid) && (group == (gid_t)-1 || group == st.st_gid))
+        return 0;
+    errno = e;
+    return -1;
 }
 
 /* memchr() and strncpy() that read no byte past their buffer (UPSTREAM.md
@@ -193,12 +222,15 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 #include "beam_com_libc.h"
 #include "beam_com_net.h"
 #include "beam_com_seatbelt.h"
+#include "beam_com_nif.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
 extern int epmd_main(int argc, char **argv);
 extern int beam_com_inotifywait_main(int argc, char **argv);
 extern int beam_com_mac_listener_main(int argc, char **argv);
+extern int beam_com_ssh_agent_main(int argc, char **argv);
+extern int beam_com_sha1dc_main(int argc, char **argv);
 
 struct arglist {
     char **v;
@@ -1523,6 +1555,43 @@ static int read_release(struct arglist *out)
     return 1;
 }
 
+/*
+ * The reload of new code in a program (src/beam_com_reload, "New code in
+ * a running program" of docs/PROGRAMS.md): "-beam_com_reload MS", the
+ * time between two checks of the file, and the start of the process.
+ * BEAM_COM_RELOAD=MS changes the time, and 0 turns it off; a later
+ * -beam_com_reload of the vm.args of the release wins. Only for a program
+ * (a release or .args in its zip), not for the tools of beam.com. Not on
+ * Windows: there a running file cannot get a new file in its place.
+ *
+ * The -eval loads the module from its path, also in embedded mode, and
+ * an error of it never stops the boot. It runs after the boot script,
+ * and beam_com_reload:boot/0 starts the process under kernel_safe_sup.
+ */
+#define BEAM_COM_RELOAD_EVAL \
+    "try code:load_abs(\"" BEAM_COM_ROOT "/lib/beam_com_reload/ebin/beam_com_reload\"), " \
+    "beam_com_reload:boot() catch _:_ -> ok end"
+
+static void reload_flag(struct arglist *out, int program)
+{
+    const char *ms = getenv("BEAM_COM_RELOAD");
+    size_t n;
+
+    if (!program || beam_com_is_windows() ||
+        !file_exists(BEAM_COM_ROOT "/lib/beam_com_reload/ebin/beam_com_reload.beam"))
+        return;
+    if (!ms || !*ms)
+        ms = "1000";
+    /* Only 1 to 9 digits; another value turns the reload off. */
+    n = strspn(ms, "0123456789");
+    if (ms[n] || n > 9)
+        ms = "0";
+    push(out, "-beam_com_reload");
+    push(out, (char *)ms);
+    push(out, "-eval");
+    push(out, BEAM_COM_RELOAD_EVAL);
+}
+
 static char *home_dir(void)
 {
     char *home = getenv("HOME");
@@ -1540,13 +1609,14 @@ static char *home_dir(void)
  * {unix, windows}, so kernel and public_key take their Unix code paths.
  * Two of them do not work on Windows without help:
  *
- * 1. Names. The native resolver (inet_gethost) is a port program, and
- *    there are no port programs on Windows. Kernel must use its own DNS
- *    client (inet_res), which needs name servers. Kernel would read them
- *    from /etc/resolv.conf, which does not exist. Worse, inet_db watches
- *    that file and *replaces* the name server list with the (empty)
- *    content of the missing file before every lookup, so name servers
- *    added with inet_db:add_ns/1 are lost and every lookup is nxdomain.
+ * 1. Names. BEAM.com does not use the native resolver (inet_gethost, a
+ *    port program) on Windows (C16 of docs/UPSTREAM.md). Kernel uses its
+ *    own DNS client (inet_res), which needs name servers. Kernel would
+ *    read them from /etc/resolv.conf, which does not exist. Worse,
+ *    inet_db watches that file and *replaces* the name server list
+ *    with the (empty) content of the missing file before every lookup,
+ *    so name servers added with inet_db:add_ns/1 are lost and every
+ *    lookup is nxdomain.
  *
  *    BEAM.com writes an inetrc file at start with {resolv_conf, ""} (stop
  *    watching the file), the Windows hosts file, and the name servers of
@@ -1871,6 +1941,156 @@ int beam_com_exec_helper(const char *path, char *const argv[],
 }
 
 /*
+ * --- Windows: port programs with posix_spawn() (docs/UPSTREAM.md, C16) ---
+ *
+ * On Windows, erl_child_setup cannot work: Cosmopolitan cannot pass a file
+ * descriptor to another process (SCM_RIGHTS). The spawn driver of
+ * sys_drivers.c calls this function in the emulator itself. It starts the
+ * program with posix_spawn(). That function gives the child the
+ * descriptors that the file actions name, and each descriptor with no
+ * O_CLOEXEC. The sockets and the files of the emulator have no O_CLOEXEC,
+ * so a file action closes each descriptor from 3 (see spawn_nt_closes()):
+ * the child gets only 0, 1 and 2 of the emulator and the named ends.
+ *
+ * cmd: the program (argv != NULL), or the command for "sh -c" (argv ==
+ * NULL; sh must be in PATH, for example the sh of Git for Windows). A
+ * program in /zip/bin is a helper of this file. cwd: the directory of the
+ * emulator; wd: the directory of the port (relative to cwd), or NULL.
+ * in_fd, out_fd: the ends of the pipes for the child, or -1. use_stdio: at
+ * fds 0 and 1, else at fds 3 and 4. err_fd: fd 2 of the child. Returns 0
+ * and the pid, or an errno value.
+ */
+/* The path of sh in PATH: sh.exe, else sh. posix_spawnp() of
+ * Cosmopolitan (commandv()) does not try the suffixes of Windows. */
+static const char *spawn_nt_sh(char *buf, size_t size)
+{
+    static const char *const names[] = {"sh.exe", "sh"};
+    const char *path = getenv("PATH"), *p, *end;
+    size_t len, i;
+
+    for (p = path ? path : ""; *p; p = *end ? end + 1 : end) {
+        end = strchrnul(p, ':');
+        len = end - p;
+        for (i = 0; len && i < sizeof(names) / sizeof(names[0]); i++) {
+            if (len + 1 + strlen(names[i]) + 1 > size)
+                continue;
+            memcpy(buf, p, len);
+            buf[len] = '/';
+            strcpy(buf + len + 1, names[i]);
+            if (access(buf, X_OK) == 0)
+                return buf;
+        }
+    }
+    return NULL;
+}
+
+/* The interpreter of a script (a first line "#!"): 'e' for escript, 's'
+ * for another interpreter, or 0 for a program. Windows cannot start a
+ * script, for example the rebar3 that Mix runs. */
+static int spawn_nt_script(const char *path)
+{
+    char line[256];
+    FILE *f = fopen(path, "r");
+    int kind = 0;
+
+    if (!f)
+        return 0;
+    if (fgets(line, sizeof(line), f) && line[0] == '#' && line[1] == '!')
+        kind = strstr(line, "escript") ? 'e' : 's';
+    fclose(f);
+    return kind;
+}
+
+/*
+ * A close action for each descriptor of this process from 3. Before the
+ * dup2 actions, so that the ends of the pipes at 3 and 4 stay. The caller
+ * holds the lock of the descriptor table until posix_spawn() returns.
+ * Each new descriptor takes its slot with this lock (__reservefd()), so no
+ * descriptor can come between this list and the copy of the table in
+ * posix_spawn(). A reserved slot gets a close action too, because the
+ * thread that reserved it fills it in with no lock.
+ */
+static int spawn_nt_closes(posix_spawn_file_actions_t *fa)
+{
+    size_t fd;
+    int err = 0;
+
+    for (fd = 3; fd < g_fds.n && !err; fd++)
+        if (g_fds.p[fd].kind != kFdEmpty)
+            err = posix_spawn_file_actions_addclose(fa, (int)fd);
+    return err;
+}
+
+int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
+                      const char *cwd, const char *wd, int in_fd, int out_fd,
+                      int err_fd, int use_stdio, int *pid)
+{
+    char sh[PATH_MAX];
+    struct arglist script = {0};
+    int kind;
+    posix_spawn_file_actions_t fa;
+    char *sh_argv[] = {"sh", "-c", (char *)cmd, NULL};
+    const char *path = cmd;
+    char *const *env = envp;
+    char **henv = NULL;
+    int err;
+
+    if (argv && beam_com_is_zip(cmd)) {
+        path = GetProgramExecutableName();
+        env = henv = helper_env(cmd, envp);
+    } else if (!argv && !(path = spawn_nt_sh(sh, sizeof(sh)))) {
+        return ENOENT;
+    } else if (argv && (kind = spawn_nt_script(cmd))) {
+        /* An escript runs with this file ("beam.com escript FILE ARGS"),
+         * another script with the sh in PATH ("sh FILE ARGS"). */
+        if (kind == 'e') {
+            path = GetProgramExecutableName();
+            push(&script, (char *)path);
+            push(&script, "escript");
+        } else if ((path = spawn_nt_sh(sh, sizeof(sh)))) {
+            push(&script, "sh");
+        } else {
+            return ENOENT;
+        }
+        push(&script, (char *)cmd);
+        for (size_t i = 1; argv[0] && argv[i]; i++)
+            push(&script, argv[i]);
+        argv = script.v;
+    }
+    if ((err = posix_spawn_file_actions_init(&fa)))
+        return err;
+    /* The same order as erl_child_setup: chdir(cwd), then chdir(wd). A
+     * cwd that does not open is not an error there either. */
+    if (cwd && access(cwd, F_OK) == 0)
+        err = posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    if (!err && wd)
+        err = posix_spawn_file_actions_addchdir_np(&fa, wd);
+    __fds_lock();
+    if (!err)
+        err = spawn_nt_closes(&fa);
+    if (!err && in_fd >= 0)
+        err = posix_spawn_file_actions_adddup2(&fa, in_fd, use_stdio ? 0 : 3);
+    if (!err && out_fd >= 0)
+        err = posix_spawn_file_actions_adddup2(&fa, out_fd, use_stdio ? 1 : 4);
+    if (!err && err_fd >= 0)
+        err = posix_spawn_file_actions_adddup2(&fa, err_fd, 2);
+    if (!err)
+        err = posix_spawn(pid, path, &fa, NULL, argv ? argv : sh_argv, env);
+    __fds_unlock();
+    posix_spawn_file_actions_destroy(&fa);
+    free(script.v);
+    if (henv) {
+        /* helper_env() makes the list and its last entry (the name). */
+        size_t n = 0;
+        while (henv[n])
+            n++;
+        free(henv[n - 1]);
+        free(henv);
+    }
+    return err;
+}
+
+/*
  * --- macOS arm64: posix_spawn() of libSystem (docs/UPSTREAM.md, C32) ---
  *
  * On XNU arm64, the APE loader gives Cosmopolitan its system calls, and
@@ -2064,6 +2284,7 @@ void beam_com_main(int *argcp, char ***argvp)
     char *program = getenv("BEAM_COM_PROGRAM");
     struct arglist file = {0}, emu = {0}, init = {0}, certs = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode, make_mode;
+    int is_program = 0;
     const char *tool;
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
@@ -2083,6 +2304,11 @@ void beam_com_main(int *argcp, char ***argvp)
 
     apply_sandbox(starts_with(name, "erl_child_setup") ||
                   starts_with(name, "inet_gethost") || starts_with(name, "epmd"));
+
+    /* Native NIF objects (c_src/cosmo/beam_com_nif.c): load_nif/2 tries
+     * PATH.ARCH.o before the NIF libraries in WebAssembly. After the
+     * constructors, which set the loader of WebAssembly. */
+    beam_com_nif_hook();
 
     if (starts_with(name, "erl_child_setup")) {
         exec_prepare();
@@ -2114,6 +2340,18 @@ void beam_com_main(int *argcp, char ***argvp)
     if (argc > 1 && strcmp(argv[1], "mac_listener") == 0 && file_exists(BEAM_COM_TOOL) &&
         !file_exists(BEAM_COM_RELEASES "/start_erl.data"))
         exit(beam_com_mac_listener_main(argc - 1, argv + 1));
+
+    /* ssh_agent_bridge: the connection of the git client to an SSH agent,
+     * a named pipe on Windows (c_src/cosmo/beam_com_agent.c). The git
+     * client starts it as /zip/bin/ssh_agent_bridge. */
+    if (starts_with(name, "ssh_agent_bridge"))
+        exit(beam_com_ssh_agent_main(argc, argv));
+    /* git_sha1dc: the SHA-1 check of the git client, with the collision
+     * detection of git (c_src/cosmo/beam_com_sha1dc.c). The git client
+     * starts it as /zip/bin/git_sha1dc. No other helper name starts with
+     * "git_sha1dc", and "git_sha1dc" starts with no other helper name. */
+    if (starts_with(name, "git_sha1dc"))
+        exit(beam_com_sha1dc_main(argc, argv));
 
     /* make: the program that make_link() makes, for elixir_make. It runs
      * beam_com_make (the commands of beam.com, below). */
@@ -2279,6 +2517,7 @@ void beam_com_main(int *argcp, char ***argvp)
     } else {
         has_release = read_release(&file);
         has_args = read_zip_args(&file);
+        is_program = has_release || has_args;
     }
     if (!erl_mode && !tool && file_exists(BEAM_COM_TOOL) && !has_release && !has_args) {
         /* The command line of beam.com (run, -o, --help, --version), when
@@ -2359,9 +2598,8 @@ void beam_com_main(int *argcp, char ***argvp)
 
     /* The file of SSL_CERT_FILE for public_key (see cert_file()). */
     cert_file_setup(&init, &certs);
-    /* On Windows there are no port programs, and the native resolver
-     * (inet_gethost) is one: kernel halts the node when it cannot start
-     * it. Give kernel the name servers of Windows and public_key the
+    /* On Windows, kernel does not use the native resolver (inet_gethost).
+     * Give kernel the name servers of Windows and public_key the
      * certificates of Windows (see windows_setup()). */
     if (beam_com_is_windows())
         windows_setup(&init, &certs);
@@ -2388,6 +2626,7 @@ void beam_com_main(int *argcp, char ***argvp)
      * beam_com_exe) (for example to start it again in erl mode). */
     push(&all, "-beam_com_exe");
     push(&all, GetProgramExecutableName());
+    reload_flag(&all, is_program);
     push(&all, "--");
     for (i = 0; i < certs.n; i++)
         push(&all, certs.v[i]);

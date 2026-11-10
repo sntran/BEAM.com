@@ -80,9 +80,13 @@ an issue with the form
 [A custom build of beam.com](https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml).
 CI builds and tests the file with your choices, and puts it on the issue.
 Without a GitHub account, use the form of
-[mkfifo.com/beam.com](https://mkfifo.com/beam.com): it sends the
-link of the file to your email address. You need no toolchain. See "A
-custom build" in [`docs/BUILDING.md`](docs/BUILDING.md).
+[mkfifo.com/beam.com](https://mkfifo.com/beam.com?form): it gives the
+file in the browser, or sends its link to your email address. A script
+gets the same file with one request, as
+`curl -fo beam.com 'https://mkfifo.com/beam.com?apps=mnesia&nifs+=vix'`,
+and `curl -fo beam.com https://mkfifo.com/beam.com` gives the default
+build. You need no toolchain. See "A custom build" and "A build URL" in
+[`docs/BUILDING.md`](docs/BUILDING.md).
 
 ## Quick start
 
@@ -348,7 +352,8 @@ the Erlang shell in your browser is at
 | File | What |
 |---|---|
 | [`docs/PROGRAMS.md`](docs/PROGRAMS.md) | Run and build programs: the inputs, Hex packages, command line programs, native files (`--target`), distributed Erlang, a release in the zip, debugging. |
-| [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, the file watcher. |
+| [`docs/ELIXIR.md`](docs/ELIXIR.md) | Elixir programs, the tools (`mix`, `iex`, `elixir`), Phoenix from source, Phoenix in one file, the file watcher. |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Deploy a Phoenix app to a Linux server: a build on the server or in CI, systemd, migrations, new code with no restart, and what needs a restart. |
 | [`docs/WORKERS.md`](docs/WORKERS.md) | Cloudflare Workers, Deno Deploy and web pages: `app.com` with the npm package, Durable Objects, Ecto SQLite, HTTP through `fetch()`, snapshots, tenants, static sites (`--page`), and limits. |
 | [`docs/NOTEBOOKS.md`](docs/NOTEBOOKS.md) | The documentation as notebooks that run in your browser: a tour of beam.com, the WebAssembly VM, the anatomy of the file, WebAssembly programs, hosts and storage, networking, and building programs. |
 | [`docs/LIBRARIES.md`](docs/LIBRARIES.md) | Crypto and TLS, SQLite, and WebAssembly in Erlang code. |
@@ -380,7 +385,7 @@ the Erlang shell in your browser is at
 |---|---|
 | Linux x86_64 and aarch64, WSL2 | ✅ |
 | macOS arm64 and x86_64 | ✅ |
-| Windows x86_64 | ✅ (no port programs) |
+| Windows x86_64 | ✅ |
 | FreeBSD, NetBSD, OpenBSD 7.3 | ✅ |
 | OpenBSD 7.4 and later | ❌ (not supported by Cosmopolitan) |
 

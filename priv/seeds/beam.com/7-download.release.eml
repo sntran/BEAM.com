@@ -1,4 +1,4 @@
-To: https://github.com/{{GITHUB_REPO}}/releases/download/custom-builds/$file
+To: {{GITHUB_WEB}}/{{GITHUB_REPO}}/releases/download/custom-builds/$file
 X-HTTP-Method-Override: GET
 Range: $range
 Reply-To: -

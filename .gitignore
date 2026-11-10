@@ -11,6 +11,9 @@ deps/
 /cover/
 # The directories of the tmp_dir tag of ExUnit.
 /tmp/
+# The objects of the NIF parts of the store (tests/run.sh, from
+# store_nifs.tar.gz of CI).
+/tests/programs/store_nif_check/priv/
 # The generated part of the npm package (scripts/npm.sh), and npm itself.
 /runtime/
 /node_modules/

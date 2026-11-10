@@ -22,12 +22,32 @@ Usage:
     Elixir version except the pair of the defaults (the matrix of
     custom-build-versions.yml).
   custom_build.py exists     Status 0 when the release has the file of KEY.
-  custom_build.py today      The number of files of the release of today (UTC).
-  custom_build.py put FILE   Puts FILE in the release, as asset_name().
+  custom_build.py current    Status 0 when the release has the file of a
+                             build of a URL, and its NAME.json names KEY.
+  custom_build.py today      The number of new builds of the release of today
+                             (UTC): no .sha256, .json or .new file.
+  custom_build.py put FILE   Puts FILE in the release of kept files of the
+    month, as beam-SHA256.com (keep()). Then it puts FILE in the release,
+    as asset_name(), with NAME.sha256 before it (the line of sha256sum),
+    and NAME.json after it, with KEY, the query, the SHA-256 and the kept
+    URL. For a build of a URL, the new files replace the old ones. With
+    GITHUB_OUTPUT, it writes name= and sha256= for the job that attests
+    the file.
   custom_build.py cleanup    Deletes the files that are older than 30 days.
   custom_build.py queue      Waits for the turn of this run (see queue()).
   custom_build.py notify STATUS [REASON]
     Sends the result to the FIFO beam.com: ready, failed or refused.
+  custom_build.py mark REASON
+    For a build of a URL (the input url): puts a text with the reason in
+    the release, so the FIFO stops its waits for the day (url_mark()).
+  custom_build.py rebuild-urls COMMIT
+    For each file of a build of a URL whose KEY at COMMIT is not the KEY
+    of its NAME.json: starts a new build of the URL, and waits for its
+    end. The old file stays until the new one replaces it
+    (rebuild_urls()).
+  custom_build.py delete-marks
+    Deletes each mark of a build of a URL (url_mark()): after a push, a
+    build that did not run can run again.
 
 The files are the assets of the prerelease RELEASE of the repository: a
 person with no GitHub account can download them. The requests to GitHub
@@ -52,9 +72,27 @@ import urllib.request
 QUEUE = 3
 DAILY = 10
 WAIT_SECONDS = 180 * 60
+# A new build of the URLs after a change of the source starts only while
+# the release has fewer than REBUILD_DAILY new builds of today. Thus the
+# requests of people always have DAILY - REBUILD_DAILY new builds or more.
+REBUILD_DAILY = 5
+# The wait of rebuild_urls() for one build: the queue and the timeout of
+# the job build of custom-build.yml. NEW_RUN_SECONDS is the wait for the
+# run of a dispatch to show in the list of the runs.
+REBUILD_SECONDS = 250 * 60
+NEW_RUN_SECONDS = 10 * 60
+# The files next to the file of a build: its SHA-256, the facts of a
+# build of a URL, and a file that is not in its place yet (replace()).
+SIDE_FILES = (".sha256", ".json", ".new")
 # The prerelease of the files. The check of the newest release of BEAM.com
 # takes only the tags v0.1.0 and later, as the prerelease edge.
 RELEASE = "custom-builds"
+# The prereleases of the kept files: each new build also goes to the
+# prerelease of its month (UTC), kept-YYYYMM, as beam-SHA256.com. No job
+# deletes them, so a lock that names the bytes always finds them. One
+# release for each month: GitHub permits 1,000 files in one release, and
+# a month has at most 31 * DAILY new builds.
+KEPT = "kept-"
 
 NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
 # The NIFs of the default build (with Elixir; exqlite also needs SQLite),
@@ -82,9 +120,14 @@ ELIXIR_VERSIONS = {
 # The paths of the repository that do not change the file of a build:
 # the documents, the tests, the workflows, the Mix project of the tests,
 # and the envelopes of the FIFO. A change of another path makes a new
-# KEY.
+# KEY. The paths-ignore of custom-build-caches.yml has the same paths,
+# except this file.
 NOT_SOURCE = (".github", ".formatter.exs", ".gitignore", "docs", "examples", "js", "lib",
               "mix.exs", "mix.lock", "package.json", "priv/seeds", "specs", "tests")
+# This file only makes the settings of a build, and KEY has the settings.
+# So a change of this file that does not change the settings keeps KEY,
+# and keeps each file of a build of a URL.
+NOT_SOURCE_FILES = ("scripts/custom_build.py",)
 # The default OTP applications that a build can leave out (OTP_OMIT of
 # scripts/steps.sh), and the applications that need them. The other
 # default applications (kernel, stdlib, sasl, compiler and crypto) are
@@ -106,6 +149,28 @@ FLAGS = ("hex", "rebar3", "elixir", "jit", "sqlite", "wasm")
 # The encrypted address of the requester: Base64 of a secretbox of
 # mkfifo.com (24 bytes of nonce, 16 of tag, and the address).
 REPLY = re.compile(r"[A-Za-z0-9+/]{4,684}={0,2}")
+# A build of a URL (the input url, from the FIFO beam.com): "plus" (the
+# default NIFs and these NIFs) or "only" (only these NIFs), then the
+# names of the NIFs in the sequence of sort, each one after a ".".
+# The file is beam-u.URL.com, so the FIFO knows its name from the URL
+# alone. A build of a URL has the defaults of the form for each other
+# choice, and no email.
+#
+# A build of a query has the URL "q." and 32 hexadecimal characters: the
+# start of the SHA-256 of the lines of the query (the input query), as
+# the FIFO gives them (query_inputs()).
+URL = re.compile(r"(plus|only)((?:\.[a-z0-9_-]{1,32}){1,16})|q\.([0-9a-f]{32})")
+URL_PREFIX = "beam-u."
+# The query of a build: the fields of the query of GET /beam.com, one
+# "NAME: VALUE" for each field, with "&" after each one. The short names
+# are for a person or a script; the other names are the fields of the
+# form of the FIFO, so a GET of the form is also a query. The FIFO drops
+# the fields email and website, and sorts the lines.
+QUERY_SHORT = ("otp_version", "elixir_version", "apps", "omit", "hex", "rebar3", "jit",
+               "sqlite", "wasm", "nifs", "nifs ", "nifs+")
+QUERY_FORM = re.compile(r"otp|dnifs|dnif[1-3]|nif[1-8]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}")
+QUERY_VALUE = re.compile(r"[a-z0-9_.,+ -]{0,200}")
+QUERY_LINES = 60
 
 
 def fail(message):
@@ -150,7 +215,148 @@ def issue(body):
     }
 
 
+# The inputs of a build of a URL or a query, before its choices: the
+# defaults of the form, and no email.
+URL_DEFAULTS = {
+    "INPUT_APPS": "", "INPUT_KEEP": "", "INPUT_HEX": "0", "INPUT_REBAR3": "0",
+    "INPUT_ELIXIR": "1", "INPUT_JIT": "1", "INPUT_SQLITE": "1", "INPUT_WASM": "1",
+    "INPUT_NIFS": "", "INPUT_OTP_VERSION": "", "INPUT_ELIXIR_VERSION": "",
+    "INPUT_REPLY": "",
+}
+
+
+def query_hash(lines):
+    """The name of a query in its URL: the first 32 characters of the
+    SHA-256 of its lines, each one with a line break after it, in the
+    sequence of the FIFO."""
+    text = "".join(f"{line}\n" for line in lines)
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+def query_inputs(digest, query):
+    """The inputs of workflow_dispatch of the build of a query (the input
+    query, with the hash DIGEST of its URL): the defaults of the form, and
+    the fields of the query. A field that is not there keeps its default."""
+    lines = [line for line in query.split("&") if line]
+    if not lines or len(lines) > QUERY_LINES:
+        fail(f"A query has 1 to {QUERY_LINES} fields")
+    if query_hash(lines) != digest:
+        fail("The query does not have the hash of its URL")
+    fields = []
+    for line in lines:
+        name, sep, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if not sep or not (name in QUERY_SHORT or QUERY_FORM.fullmatch(name)):
+            fail(f"Not a field of a query: {name[:40]!r}")
+        if not QUERY_VALUE.fullmatch(value):
+            fail(f"Not a value of the field {name}")
+        fields.append((name, value.strip()))
+
+    def values(name):
+        return [v for n, v in fields if n == name]
+
+    def one(name):
+        found = values(name)
+        if len(found) > 1:
+            fail(f"The field {name} is in the query more than one time")
+        return found[0] if found else None
+
+    def words(*names):
+        return " ".join(v for name in names for v in values(name)).replace(",", " ").split()
+
+    def checks(prefix, allowed=None):
+        """The values of the check boxes PREFIX_NAME of the form: each
+        one is NAME, or empty."""
+        out = []
+        for name, value in fields:
+            if name.startswith(prefix) and value:
+                if value != name[len(prefix):] or (allowed is not None and value not in allowed):
+                    fail(f"Not a value of the field {name}")
+                out.append(value)
+        return out
+
+    env = dict(URL_DEFAULTS)
+    for flag in ("hex", "rebar3", "jit", "sqlite", "wasm"):
+        value = one(flag)
+        if value is not None:
+            env["INPUT_" + flag.upper()] = value
+    otp = one("otp_version")
+    if otp:
+        env["INPUT_OTP_VERSION"] = otp
+    # As in the form: an empty elixir_version (or "none") is no Elixir.
+    elixir = one("elixir_version")
+    if elixir is not None:
+        env["INPUT_ELIXIR"] = ""
+        env["INPUT_ELIXIR_VERSION"] = "" if elixir == "none" else elixir
+    env["INPUT_APPS"] = " ".join(words("apps") + checks("a_"))
+    # The default applications: "otp=keep" and the check boxes k_NAME of
+    # the form, or the short field omit.
+    omit = words("omit")
+    if one("otp") is not None:
+        if one("otp") != "keep" or omit:
+            fail("The field otp is keep, with the fields k_NAME, and no field omit")
+        env["INPUT_KEEP"] = " ".join(["keep"] + checks("k_", OMITTABLE))
+    elif omit:
+        bad = [a for a in omit if a not in OMITTABLE]
+        if bad:
+            fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
+        env["INPUT_KEEP"] = " ".join(["keep"] + [a for a in OMITTABLE if a not in omit])
+    # The NIFs: nifs= gives only these, and nifs+= adds them to the default
+    # NIFs. The form sends dnifs=default, the default NIFs to keep, and
+    # the others.
+    only, plus = words("nifs"), words("nifs ", "nifs+")
+    chosen = [v for n, v in fields if re.fullmatch(r"nif[1-8]", n) and v]
+    kept = [v for n, v in fields if re.fullmatch(r"dnif[1-3]", n) and v]
+    if only and plus:
+        fail("A query has nifs= or nifs+=, not both")
+    # In the short fields, a part of vix also chooses vix, as in an issue.
+    # The form hides the parts when vix is off, so its fields do not.
+    for short in (only, plus):
+        if "vix" not in short and any(n in VIX_PARTS for n in short):
+            short.append("vix")
+    if one("dnifs") is not None:
+        if one("dnifs") != "default":
+            fail("Not a value of the field dnifs")
+        env["INPUT_NIFS"] = " ".join(["default"] + kept + chosen + only + plus)
+    elif kept:
+        fail("The fields dnif1 to dnif3 need dnifs=default")
+    elif only:
+        env["INPUT_NIFS"] = " ".join(["default"] + only + chosen)
+    else:
+        env["INPUT_NIFS"] = " ".join(plus + chosen)
+    return env
+
+
+def url_inputs(url, query=""):
+    """The inputs of workflow_dispatch of the build of URL: the defaults
+    of the form, and the NIFs of URL, or the fields of QUERY."""
+    found = URL.fullmatch(url)
+    if not found:
+        fail(f"Not the choices of a URL: {url[:100]!r}")
+    if found.group(3):
+        return query_inputs(found.group(3), query)
+    if query:
+        fail("Only a URL q.HASH has a query")
+    names = found.group(2)[1:].split(".")
+    if names != sorted(set(names)):
+        fail("The names of the NIFs of a URL must be in the sequence of sort, each one time")
+    known = set(NIFS) | set(DEFAULT_NIFS) | set(VIX_PARTS)
+    bad = [n for n in names if n not in known]
+    if bad:
+        fail(f"Not NIFs that a build can use: {', '.join(bad)}")
+    # The form drops a part of vix without vix. A URL names its file, so
+    # the build refuses it.
+    if "vix" not in names and any(n in VIX_PARTS for n in names):
+        fail("A part of vix needs vix")
+    words = (["default"] if found.group(1) == "only" else []) + names
+    return dict(URL_DEFAULTS, INPUT_NIFS=" ".join(words))
+
+
 def dispatch(env):
+    # A build of a URL: its inputs come only from the URL.
+    if env.get("INPUT_URL", ""):
+        env = dict(env, **url_inputs(env["INPUT_URL"], env.get("INPUT_QUERY", "")))
+
     def flag(name):
         value = env.get("INPUT_" + name.upper(), "")
         if value not in ("0", "1"):
@@ -342,15 +548,16 @@ def source(commit, git=None):
         listing = git("ls-tree", commit, "--", folder + "/") if folder else git("ls-tree", commit)
         for line in listing.splitlines():
             meta, _, name = line.partition("\t")
-            if name in NOT_SOURCE or ("/" not in name and name.endswith(".md")):
+            if (name in NOT_SOURCE or name in NOT_SOURCE_FILES
+                    or ("/" not in name and name.endswith(".md"))):
                 continue
-            if any(n.startswith(name + "/") for n in NOT_SOURCE):
+            if any(n.startswith(name + "/") for n in NOT_SOURCE + NOT_SOURCE_FILES):
                 yield from walk(name)
             else:
                 yield f"{meta.split()[2]} {name}"
 
     lines = list(walk(""))
-    if not any(line.endswith(" scripts") for line in lines):
+    if not any(line.endswith(" scripts") or " scripts/" in line for line in lines):
         fail(f"No source at the commit {commit}")
     return "".join(f"{line}\n" for line in lines)
 
@@ -379,7 +586,13 @@ def github(path, method="GET", data=None, content_type=None, base=None):
 
 def asset_name():
     """The name of the file in the release: beam-KEY16.com or
-    beam-emu-KEY16.com, with the first 16 characters of KEY."""
+    beam-emu-KEY16.com, with the first 16 characters of KEY. The file of
+    a build of a URL is beam-u.URL.com."""
+    url = os.environ.get("URL", "")
+    if url:
+        if not URL.fullmatch(url):
+            fail("Not the choices of a URL")
+        return f"{URL_PREFIX}{url}.com"
     if not re.fullmatch(r"[0-9a-f]{64}", os.environ.get("KEY", "")):
         fail("No KEY")
     stem = {"beam.com": "beam", "beam-emu.com": "beam-emu"}.get(os.environ.get("OUT_NAME"))
@@ -388,27 +601,36 @@ def asset_name():
     return f"{stem}-{os.environ['KEY'][:16]}.com"
 
 
-def release(create=False):
-    """The prerelease RELEASE of the custom builds, or None. With create,
-    a new one when it is not there."""
+def release(create=False, tag=RELEASE):
+    """The prerelease TAG (RELEASE, or a release of kept files), or None.
+    With create, a new one when it is not there."""
     repo = os.environ["GITHUB_REPOSITORY"]
     try:
-        return github(f"/repos/{repo}/releases/tags/{RELEASE}")
+        return github(f"/repos/{repo}/releases/tags/{tag}")
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
     if not create:
         return None
+    if tag == RELEASE:
+        name = "Custom builds"
+        text = ("The files of the custom builds of the FIFO beam.com of mkfifo.com "
+                "(docs/BUILDING.md). Each file is beam-KEY.com, beam-emu-KEY.com or "
+                "beam-u.URL.com, and goes away after 30 days. This is not a release of "
+                "BEAM.com.")
+    else:
+        name = f"Kept custom builds of {tag[len(KEPT):len(KEPT) + 4]}-{tag[len(KEPT) + 4:]}"
+        text = ("Each new custom build of this month (UTC), as beam-SHA256.com: SHA256 is "
+                "the SHA-256 of the file. No job deletes these files, so a lock can name "
+                "them (docs/BUILDING.md, \"A fixed version of a build\"). This is not a "
+                "release of BEAM.com.")
     body = {
-        "tag_name": RELEASE,
+        "tag_name": tag,
         "target_commitish": os.environ.get("GITHUB_SHA", "main"),
-        "name": "Custom builds",
+        "name": name,
         "prerelease": True,
-        "body": (
-            "The files of the custom builds of the FIFO beam.com of mkfifo.com "
-            "(docs/BUILDING.md). Each file is beam-KEY.com or beam-emu-KEY.com, "
-            "and goes away after 30 days. This is not a release of BEAM.com."
-        ),
+        "make_latest": "false",
+        "body": text,
     }
     return github(
         f"/repos/{repo}/releases", "POST", json.dumps(body).encode(), "application/json"
@@ -428,7 +650,8 @@ def today(now=None):
     """The files that the release got today (UTC): the new builds."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     day = now.strftime("%Y-%m-%d")
-    return sum(1 for a in assets() if a["created_at"].startswith(day))
+    return sum(1 for a in assets()
+               if a["created_at"].startswith(day) and not a["name"].endswith(SIDE_FILES))
 
 
 def cleanup(now=None, days=30):
@@ -442,23 +665,212 @@ def cleanup(now=None, days=30):
             print(f"deleted {a['name']}")
 
 
+def keep(data, digest, now=None):
+    """Puts DATA in the release of kept files of this month, as
+    beam-DIGEST.com, when no file has that name. Gives its URL."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    tag = KEPT + now.strftime("%Y%m")
+    name = f"beam-{digest}.com"
+    upload(name, data, "application/octet-stream", tag=tag)
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    return f"{server}/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{name}"
+
+
 def put(file):
-    """Puts FILE in the release with the name of asset_name()."""
-    found = release(create=True)
+    """Puts FILE in the release with the name of asset_name(), and its
+    SHA-256 first, as NAME.sha256 in the format of sha256sum. Thus a
+    person can check the file, and see a new build after the cleanup.
+    The name and the hash also go to GITHUB_OUTPUT, for the job that
+    attests the file (custom-build.yml).
+
+    The same bytes go first to the release of kept files (keep()), with a
+    name that never changes. NAME.json names that URL.
+
+    The file of a build of a URL replaces the old file of the URL, after
+    a change of the source (rebuild_urls()). NAME.json comes last, with
+    KEY, the commit, the query, the SHA-256 and the kept URL: a build that
+    stops before it has the old KEY, so the next rebuild_urls() builds the
+    URL again."""
     name = asset_name()
+    with open(file, "rb") as f:
+        data = f.read()
+    digest = hashlib.sha256(data).hexdigest()
+    kept = keep(data, digest)
+    store = replace if os.environ.get("URL") else upload
+    store(name + ".sha256", f"{digest}  {name}\n".encode(), "text/plain")
+    store(name, data, "application/octet-stream")
+    info = {"key": os.environ.get("KEY", ""), "commit": os.environ.get("GITHUB_SHA", ""),
+            "query": os.environ.get("INPUT_QUERY", ""), "sha256": digest, "kept": kept}
+    store(name + ".json", json.dumps(info, sort_keys=True).encode() + b"\n",
+          "application/json")
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a") as f:
+            f.write(f"name={name}\nsha256={digest}\n")
+
+
+def upload(name, data, content_type, tag=RELEASE):
+    """Puts DATA in the release TAG as NAME, when no file has that name."""
+    found = release(create=True, tag=tag)
     for a in found["assets"]:
         if a["name"] == name:
             return
-    with open(file, "rb") as f:
-        data = f.read()
-    upload = found["upload_url"].split("{", 1)[0]
-    github(
-        "?name=" + urllib.parse.quote(name),
-        "POST",
-        data,
-        "application/octet-stream",
-        base=upload,
-    )
+    base = found["upload_url"].split("{", 1)[0]
+    github("?name=" + urllib.parse.quote(name), "POST", data, content_type, base=base)
+
+
+def replace(name, data, content_type):
+    """Puts DATA in the release as NAME, in place of the file with that
+    name. The new file goes in as NAME.new, and gets the name NAME after
+    the delete of the old file. Thus the old file stays until the new file
+    is in the release, and a request finds no file only for a moment."""
+    found = release(create=True)
+    by_name = {a["name"]: a for a in found["assets"]}
+    if name not in by_name:
+        upload(name, data, content_type)
+        return
+    repo = os.environ["GITHUB_REPOSITORY"]
+    if name + ".new" in by_name:
+        github(f"/repos/{repo}/releases/assets/{by_name[name + '.new']['id']}", "DELETE")
+    base = found["upload_url"].split("{", 1)[0]
+    new = github("?name=" + urllib.parse.quote(name + ".new"), "POST", data, content_type,
+                 base=base)
+    github(f"/repos/{repo}/releases/assets/{by_name[name]['id']}", "DELETE")
+    github(f"/repos/{repo}/releases/assets/{new['id']}", "PATCH",
+           json.dumps({"name": name}).encode(), "application/json")
+
+
+def facts(asset, read=None):
+    """The decoded NAME.json of ASSET (None: no file), or {} when it is
+    not a JSON object. The release is public, so the request has no
+    token: a redirect does not take the token to another host."""
+    if not asset:
+        return {}
+    read = read or (lambda url: urllib.request.urlopen(url, timeout=60).read(65537))
+    data = read(asset["browser_download_url"])
+    try:
+        found = json.loads(data) if len(data) <= 65536 else None
+    except ValueError:
+        found = None
+    return found if isinstance(found, dict) else {}
+
+
+def current():
+    """True when the release has the file of asset_name(), and its
+    NAME.json names KEY: the file of a build of a URL is of the source
+    of now."""
+    name = asset_name()
+    by_name = {a["name"]: a for a in assets()}
+    if name not in by_name:
+        return False
+    return facts(by_name.get(name + ".json")).get("key") == os.environ.get("KEY")
+
+
+def url_key(url, query, source_text):
+    """The KEY of a new build of URL (with QUERY for a URL q.HASH) of the
+    source SOURCE_TEXT (source()), as the step "Read the choices" of
+    custom-build.yml makes it."""
+    env = settings(dispatch({"INPUT_URL": url, "INPUT_QUERY": query}))
+    return key(env, source_text)
+
+
+def url_mark(reason, now=None):
+    """Puts beam-u.URL.DAY.txt in the release, with the reason why the
+    build of the URL did not run, and the link of the run. DAY is the day
+    of now (UTC), as the FIFO writes it with date -u +%Y%m%d: the FIFO
+    gives this text to the client in place of a new build, until the
+    next day."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    url = os.environ.get("URL", "")
+    if not URL.fullmatch(url):
+        fail("No URL")
+    run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    detail = os.environ.get("REFUSED_DETAIL", "")
+    text = f"The build did not run ({reason}). {detail}\nThe log of the run: {run}\n"
+    upload(f"{URL_PREFIX}{url}.{now.strftime('%Y%m%d')}.txt", text.encode(), "text/plain")
+
+
+MARK = re.compile(re.escape(URL_PREFIX) + r"(?:" + URL.pattern + r")\.[0-9]{8}\.txt")
+
+
+def delete_marks():
+    """Deletes each mark of a build of a URL (url_mark()). The files of
+    the builds stay."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    for a in assets():
+        if MARK.fullmatch(a["name"]):
+            github(f"/repos/{repo}/releases/assets/{a['id']}", "DELETE")
+            print(f"deleted {a['name']}")
+
+
+def stale_urls(found, source_text, read=None):
+    """The URL and the query of each file of a build of a URL in FOUND
+    (the files of the release) whose NAME.json does not name the KEY of a
+    build of the source SOURCE_TEXT. A file of a URL q.HASH with no query
+    in NAME.json (a build before NAME.json) stays as it is, until the
+    cleanup of 30 days."""
+    by_name = {a["name"]: a for a in found}
+    out = []
+    for name in sorted(by_name):
+        url = name[len(URL_PREFIX):-len(".com")] if name.startswith(URL_PREFIX) else ""
+        if not (name.endswith(".com") and URL.fullmatch(url)):
+            continue
+        known = facts(by_name.get(name + ".json"), read)
+        query = known.get("query", "") if isinstance(known.get("query", ""), str) else ""
+        if url.startswith("q.") and not query:
+            print(f"{name}: no query in {name}.json, so no new build")
+            continue
+        try:
+            new = url_key(url, query, source_text)
+        except SystemExit as error:
+            print(f"{name}: no new build ({str(error)[:200]})")
+            continue
+        if known.get("key") != new:
+            out.append((url, query))
+    return out
+
+
+def run_of(runs, title, since):
+    """The run with the title TITLE that started at SINCE or later, or
+    None."""
+    found = [r for r in runs if r["display_title"] == title and r["created_at"] >= since]
+    return min(found, key=lambda r: r["run_number"]) if found else None
+
+
+def rebuild_urls(commit, sleep=time.sleep, clock=time.monotonic, now=None):
+    """Starts a new build of each URL of stale_urls(), one at a time, and
+    waits for its end. The run has the input rebuild: it builds only when
+    the file of the URL is not of its source, and its new file replaces
+    the old one (put()). Thus a request of the URL gets the old file until
+    the new one is there, and never waits. The loop stops at
+    REBUILD_DAILY new builds of today: the next run of the workflow (each
+    day) does the rest."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
+    runs = (f"/repos/{repo}/actions/workflows/custom-build.yml/runs"
+            "?event=workflow_dispatch&per_page=100")
+    for url, query in stale_urls(assets(), source(commit)):
+        if today() >= REBUILD_DAILY:
+            print(f"{REBUILD_DAILY} new builds today: the other URLs wait for the next run")
+            return
+        # One minute before now: the clock of GitHub can be a bit late.
+        since = (now() - datetime.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = {"ref": "main", "inputs": {"url": url, "query": query, "rebuild": "1"}}
+        github(f"/repos/{repo}/actions/workflows/custom-build.yml/dispatches", "POST",
+               json.dumps(body).encode(), "application/json")
+        print(f"started a new build of {url}")
+        title = f"Rebuild of the URL {url}"
+        start = clock()
+        while True:
+            sleep(30)
+            run = run_of(github(runs)["workflow_runs"], title, since)
+            if run and run["status"] == "completed":
+                print(f"{url}: {run['conclusion']} ({run['html_url']})")
+                break
+            limit = REBUILD_SECONDS if run else NEW_RUN_SECONDS
+            if clock() - start > limit:
+                print(f"{url}: no end of the run, so the next URL")
+                break
 
 
 def ahead(runs, number):
@@ -556,6 +968,19 @@ def main(argv):
     if command == "cleanup" and len(argv) == 2:
         cleanup()
         return
+    if command == "current" and len(argv) == 2:
+        sys.exit(0 if current() else 1)
+    if command == "delete-marks" and len(argv) == 2:
+        delete_marks()
+        return
+    if command == "rebuild-urls" and len(argv) == 3:
+        if not re.fullmatch(r"[0-9a-f]{40}", argv[2]):
+            fail(f"Not a commit: {argv[2]!r}")
+        rebuild_urls(argv[2])
+        return
+    if command == "mark" and len(argv) == 3:
+        url_mark(argv[2])
+        return
     if command == "queue" and len(argv) == 2:
         reason = queue()
         if reason:
@@ -582,6 +1007,11 @@ def main(argv):
         if "GITHUB_ENV" in os.environ and REPLY.fullmatch(reply):
             with open(os.environ["GITHUB_ENV"], "a") as f:
                 f.write(f"REPLY={reply}\n")
+        # The URL first too: the mark of a refusal has its name.
+        url = os.environ.get("INPUT_URL", "")
+        if "GITHUB_ENV" in os.environ and URL.fullmatch(url):
+            with open(os.environ["GITHUB_ENV"], "a") as f:
+                f.write(f"URL={url}\n")
         # A choice that is not possible: the requester gets the reason
         # (REFUSED=choice, and REFUSED_DETAIL with only safe characters).
         try:

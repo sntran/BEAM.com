@@ -14,6 +14,7 @@ defmodule BeamComHexTest do
 
   import ExUnit.CaptureIO
 
+  alias BeamCom.GitFixture
   alias BeamCom.HexFixture
 
   @moduletag :tmp_dir
@@ -157,13 +158,35 @@ defmodule BeamComHexTest do
                ])
     end
 
-    test "git is not supported" do
-      assert {:error,
-              ~c"the dependency ~p is not a Hex package (only Hex packages are supported, not git)",
-              [:g]} ==
-               catch_throw(
-                 rebar_deps([{:g, {:git, ~c"https://example.com/g.git", {:tag, ~c"1.0"}}}])
-               )
+    test "git deps: the forms of rebar3" do
+      deps = [
+        :jsx,
+        {:a, {:git, ~c"https://e.com/a.git"}},
+        {:b, {:git, "https://e.com/b.git", {:tag, "v1"}}},
+        {:c, {:git, ~c"https://e.com/c.git", {:branch, ~c"main"}}, [:raw]},
+        {:d, ~c".*", {:git, ~c"https://e.com/d.git", {:ref, ~c"abc"}}},
+        {:e, ~c".*", {:git, ~c"https://e.com/e.git", ~c""}, []},
+        {:f, {:git_subdir, ~c"https://e.com/f.git", {:tag, ~c"1"}, ~c"apps/f"}}
+      ]
+
+      assert [{:jsx, "jsx", :any}] == rebar_deps(deps)
+
+      assert [
+               {:a, ~c"https://e.com/a.git", :head, :none},
+               {:b, ~c"https://e.com/b.git", {:tag, ~c"v1"}, :none},
+               {:c, ~c"https://e.com/c.git", {:branch, ~c"main"}, :none},
+               {:d, ~c"https://e.com/d.git", {:ref, ~c"abc"}, :none},
+               {:e, ~c"https://e.com/e.git", :head, :none},
+               {:f, ~c"https://e.com/f.git", {:tag, ~c"1"}, ~c"apps/f"}
+             ] == :beam_com_hex.git_deps([{:deps, deps}])
+    end
+
+    test "another source, and a bad git ref" do
+      assert {:error, ~c"the dependency ~p is not a Hex package or a git dependency", [:g]} ==
+               catch_throw(rebar_deps([{:g, {:hg, ~c"https://e.com/g", {:tag, ~c"1"}}}]))
+
+      assert {:error, ~c"~p: a bad git ref: ~tp", [:h, {:sha, ~c"x"}]} ==
+               catch_throw(rebar_deps([{:h, {:git, ~c"https://e.com/h.git", {:sha, ~c"x"}}}]))
     end
 
     test "a bad requirement" do
@@ -239,10 +262,29 @@ defmodule BeamComHexTest do
       assert %{
                a: %{pkg: "a", vsn: ~c"1.0.0", inner: none, outer: none},
                b: %{pkg: "b", vsn: ~c"1.0.0", inner: "BB", outer: none},
-               c: %{pkg: "c", vsn: ~c"1.0.0", inner: "CC", outer: none},
-               d: %{pkg: "d_pkg", vsn: ~c"1.0.0", inner: "DD", outer: none},
-               e: %{pkg: "e", vsn: ~c"1.0.0", inner: "EE", outer: none}
+               c: %{pkg: "c", vsn: ~c"1.0.0", inner: "CC", outer: none, deps: []},
+               d: %{pkg: "d_pkg", vsn: ~c"1.0.0", inner: "DD", outer: none, deps: []},
+               e: %{pkg: "e", vsn: ~c"1.0.0", inner: "EE", outer: none, deps: []}
              } == :beam_com_hex.read_lock(:mix, file)
+    end
+
+    # Mix also locks the deps only for :dev or :test. A build gets the
+    # entries that its deps reach, not the optional ones. With an entry
+    # that has no deps (an older mix.lock, or rebar.lock), it gets all.
+    test "locked/2: the entries that the deps reach" do
+      lock = %{
+        app: %{pkg: "app", deps: [:lib]},
+        lib: %{pkg: "lib", deps: [:base]},
+        base: %{pkg: "base", deps: []},
+        dev_only: %{pkg: "dev_only", deps: [:base]},
+        other: %{pkg: "other", deps: []}
+      }
+
+      deps = [{:app, "app", ~c"~> 1.0"}]
+      assert [:app, :base, :lib] == Enum.sort(Map.keys(:beam_com_hex.locked(deps, lock)))
+
+      assert [:app, :base, :dev_only, :lib, :other] ==
+               Enum.sort(Map.keys(:beam_com_hex.locked(deps, %{lock | other: %{pkg: "other"}})))
     end
 
     test "read_lock/2: a bad checksum and an entry that is not Hex", %{dir: dir} do
@@ -252,10 +294,38 @@ defmodule BeamComHexTest do
       assert {:error, ~c"mix.lock: ~ts has a bad checksum: ~tp", [:a, 12]} ==
                catch_throw(:beam_com_hex.read_lock(:mix, file))
 
+      git = {:git, "https://example.com/a.git", "abc", []}
       :ok = :file.write_file(file, ~s(%{"a": {:git, "https://example.com/a.git", "abc", []}}\n))
+      assert %{a: %{other: git, deps: []}} == :beam_com_hex.read_lock(:mix, file)
 
+      # Only an entry that the build needs must be of Hex.
       assert {:error, ~c"mix.lock: ~ts is not a Hex package (only Hex packages are supported)",
-              [:a]} == catch_throw(:beam_com_hex.read_lock(:mix, file))
+              [:a]} ==
+               catch_throw(:beam_com_hex.fetch(dir, dir, [{:a, "a", :any}], :mix, %{}))
+    end
+
+    # A package of a Hex organization (repo "hexpm:acme") or of another
+    # repository: the builder gets only packages of hex.pm, so a build
+    # that needs such an entry stops. It does not get a package of the
+    # same name from hex.pm.
+    test "read_lock/2: an entry of another Hex repository", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      :ok =
+        :file.write_file(file, """
+        %{
+          "p": {:hex, :p, "1.0.0", "AA", [:mix], [], "hexpm:acme", "BB"},
+          "q": {:hex, :q, "1.0.0", "AA", [:mix], [], "hexpm", "BB"},
+        }
+        """)
+
+      assert %{p: %{repo: "hexpm:acme", deps: []}, q: q} = :beam_com_hex.read_lock(:mix, file)
+      refute Map.has_key?(q, :repo)
+
+      assert {:error,
+              ~c"mix.lock: ~ts is a package of the Hex repository ~tp, not of hex.pm: use --tool mix-release",
+              [:p, "hexpm:acme"]} ==
+               catch_throw(:beam_com_hex.fetch(dir, dir, [{:p, "p", :any}], :mix, %{}))
     end
 
     test "the format of rebar3", %{lock: file} do
@@ -286,8 +356,20 @@ defmodule BeamComHexTest do
       assert "" ==
                capture_io(:stderr, fn ->
                  assert %{
-                          jason: %{pkg: "jason", vsn: ~c"1.4.4", inner: "AA", outer: "BB"},
-                          my_app: %{pkg: "my_pkg", vsn: ~c"0.1.0", inner: "CC", outer: "DD"}
+                          jason: %{
+                            pkg: "jason",
+                            vsn: ~c"1.4.4",
+                            inner: "AA",
+                            outer: "BB",
+                            deps: []
+                          },
+                          my_app: %{
+                            pkg: "my_pkg",
+                            vsn: ~c"0.1.0",
+                            inner: "CC",
+                            outer: "DD",
+                            deps: []
+                          }
                         } == :beam_com_hex.read_lock(:mix, file)
                end)
     end
@@ -311,14 +393,83 @@ defmodule BeamComHexTest do
 
       :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, pkgs))
 
+      # The keys are atoms, as Mix writes them: Hex reads the name of a
+      # package with atom_to_binary/1.
       assert {%{
-                "a" =>
+                a:
                   {:hex, :a_pkg, "1.0.0", "aa", [:rebar3, :make, :mix],
                    [{:b, "~> 0.2", [hex: :b, repo: "hexpm", optional: false]}], "hexpm", "bb"}
               }, _} = Code.eval_file(List.to_string(file))
 
-      assert %{a: %{pkg: "a_pkg", vsn: ~c"1.0.0", inner: "aa", outer: "bb"}} ==
+      assert {:ok,
+              "%{\n  \"a\": {:hex, :a_pkg, \"1.0.0\", \"aa\", [:rebar3, :make, :mix], " <>
+                "[{:b, \"~> 0.2\", [hex: :b, repo: \"hexpm\", optional: false]}], " <>
+                "\"hexpm\", \"bb\"},\n}\n"} == File.read(List.to_string(file))
+
+      assert %{a: %{pkg: "a_pkg", vsn: ~c"1.0.0", inner: "aa", outer: "bb", deps: [:b]}} ==
                :beam_com_hex.read_lock(:mix, file)
+    end
+
+    # Hex checks the deps of an entry against the registry: the optional
+    # deps must be there too (vix has the optional dep kino).
+    test "lock_text/2 of Mix: the optional deps", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      pkg = %{
+        name: :v,
+        pkg: "v",
+        vsn: ~c"1.0.0",
+        inner: "a",
+        outer: "b",
+        tools: ["mix"],
+        reqs: [{:m, "m", ~c"~> 0.8"}],
+        lock_reqs: [{:m, "m", ~c"~> 0.8", false}, {:k, "k", ~c"~> 0.7", true}]
+      }
+
+      :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, [pkg]))
+
+      assert {%{
+                v:
+                  {:hex, :v, "1.0.0", "a", [:mix],
+                   [
+                     {:m, "~> 0.8", [hex: :m, repo: "hexpm", optional: false]},
+                     {:k, "~> 0.7", [hex: :k, repo: "hexpm", optional: true]}
+                   ], "hexpm", "b"}
+              }, _} = Code.eval_file(List.to_string(file))
+    end
+
+    test "lock_text/2 of Mix: the names in order", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      pkg = fn n ->
+        %{
+          name: n,
+          pkg: Atom.to_string(n),
+          vsn: ~c"1.0.0",
+          inner: "a",
+          outer: "b",
+          tools: ["mix"],
+          reqs: []
+        }
+      end
+
+      :ok = :file.write_file(file, :beam_com_hex.lock_text(:mix, [pkg.(:zeta), pkg.(:alpha)]))
+      {:ok, text} = File.read(List.to_string(file))
+      assert [_, "  \"alpha\"" <> _, "  \"zeta\"" <> _, "}", ""] = String.split(text, "\n")
+    end
+
+    # A mix.lock of an older beam.com: string keys. Hex cannot read it, and
+    # this reader can.
+    test "read_lock/2 of string keys", %{dir: dir} do
+      file = :filename.join(dir, ~c"mix.lock")
+
+      :ok =
+        :file.write_file(
+          file,
+          ~s(%{"a" => {:hex, :a, "1.0.0", "AA", [:mix], [], "hexpm", "BB"}}\n)
+        )
+
+      assert %{a: %{pkg: "a", vsn: ~c"1.0.0"}} = :beam_com_hex.read_lock(:mix, file)
     end
   end
 
@@ -551,6 +702,13 @@ defmodule BeamComHexTest do
       end
     end
 
+    # An older rebar3 wrote the requirements as a map.
+    test "the requirements as a map" do
+      reqs = %{"x" => %{"app" => "x", "optional" => false, "requirement" => "~> 1.0"}}
+      assert [{:x, "x", ~c"~> 1.0"}] == :beam_com_hex.meta_requirements([{"requirements", reqs}])
+      assert [] == :beam_com_hex.meta_requirements([{"requirements", %{}}])
+    end
+
     test "too many requirements" do
       assert {:error, ~c"a package has more than ~b requirements", [256]} ==
                catch_throw(
@@ -622,6 +780,66 @@ defmodule BeamComHexTest do
   end
 
   # fetch/2 with a server in place of hex.pm.
+  describe "git_test_" do
+    test "rebar.lock: the git entries, with a subdirectory, next to a Hex package",
+         %{tmp_dir: dir} do
+      file = :filename.join(String.to_charlist(dir), ~c"rebar.lock")
+
+      text =
+        :beam_com_hex.lock_text([
+          %{name: :a, git: ~c"https://e.com/a.git", ref: "abc", sub: :none, level: 0},
+          %{name: :f, git: ~c"https://e.com/f.git", ref: "def", sub: ~c"apps/f", level: 1},
+          %{name: :h, pkg: "h", vsn: ~c"1.0.0", inner: "AA", outer: "BB", level: 1}
+        ])
+
+      :ok = :file.write_file(file, text)
+
+      assert {:ok,
+              [
+                {"1.2.0",
+                 [
+                   {"a", {:git, ~c"https://e.com/a.git", {:ref, ~c"abc"}}, 0},
+                   {"f", {:git_subdir, ~c"https://e.com/f.git", {:ref, ~c"def"}, ~c"apps/f"}, 1},
+                   {"h", {:pkg, "h", "1.0.0"}, 1}
+                 ]},
+                [{:pkg_hash, [{"h", "AA"}]}, {:pkg_hash_ext, [{"h", "BB"}]}]
+              ]} == :file.consult(file)
+
+      assert %{
+               a: %{git: ~c"https://e.com/a.git", ref: "abc", sub: :none, level: 0},
+               f: %{git: ~c"https://e.com/f.git", ref: "def", sub: ~c"apps/f", level: 1},
+               h: %{pkg: "h", vsn: ~c"1.0.0"}
+             } = :beam_com_hex.read_lock(:rebar, file)
+    end
+
+    test "git_vsn: the vsn of the app, else the tag, else the commit", %{tmp_dir: dir} do
+      d = String.to_charlist(dir)
+      sha = "abcdef0123456789abcdef0123456789abcdef01"
+      assert ~c"0.0.0+git.abcdef0" == :beam_com_hex.git_vsn(d, :head, sha)
+      File.mkdir_p!(Path.join(dir, "src"))
+      File.write!(Path.join(dir, "src/x.app.src"), ~s({application, x, [{vsn, "git"}]}.\n))
+      assert ~c"2.0.0" == :beam_com_hex.git_vsn(d, {:tag, ~c"v2.0.0"}, sha)
+      assert ~c"3.0" == :beam_com_hex.git_vsn(d, {:tag, ~c"3.0"}, sha)
+      assert ~c"0.0.0+git.abcdef0" == :beam_com_hex.git_vsn(d, {:branch, ~c"main"}, sha)
+      File.write!(Path.join(dir, "src/x.app.src"), ~s({application, x, [{vsn, "1.2.3"}]}.\n))
+      assert ~c"1.2.3" == :beam_com_hex.git_vsn(d, {:tag, ~c"v9"}, sha)
+      File.write!(Path.join(dir, "src/x.app.src"), "not a term")
+      assert ~c"9" == :beam_com_hex.git_vsn(d, {:tag, ~c"v9"}, sha)
+    end
+  end
+
+  # The proxy of HTTPS_PROXY, also with no port or no scheme.
+  test "proxy/1" do
+    assert {~c"proxy.example", 3128} == :beam_com_hex.proxy(~c"http://proxy.example:3128")
+    assert {~c"proxy.example", 3128} == :beam_com_hex.proxy(~c"proxy.example:3128")
+    assert {~c"proxy.example", 1080} == :beam_com_hex.proxy(~c"http://proxy.example")
+    assert {~c"proxy.example", 1080} == :beam_com_hex.proxy(~c"http://u:p@proxy.example/")
+    assert {~c"proxy.example", 443} == :beam_com_hex.proxy(~c"https://proxy.example")
+
+    assert {:error, ~c"HTTPS_PROXY: not a URL of a proxy: ~ts", [~c"http://"]} ==
+             catch_throw(:beam_com_hex.proxy(~c"http://"))
+  end
+
   describe "fetch_test_" do
     # The routes of the server: the packages alpha, beta and elixir_only.
     defp fetch_routes do
@@ -640,7 +858,31 @@ defmodule BeamComHexTest do
           ["rebar3"]
         )
 
+      # aopt needs zopt only when zopt is in the build (an optional
+      # dep): the names sort the other way.
+      aopt =
+        HexFixture.package(
+          "aopt",
+          ~c"1.0.0",
+          app_files("aopt", ~c"1.0.0", [], ~c"f() -> aopt.\n"),
+          [{"zopt", ~c">= 1.0.0", :optional}],
+          ["rebar3"]
+        )
+
+      zopt =
+        HexFixture.package(
+          "zopt",
+          ~c"1.0.0",
+          app_files("zopt", ~c"1.0.0", [], ~c"f() -> zopt.\n"),
+          [],
+          [
+            "rebar3"
+          ]
+        )
+
       pkgs = [
+        {"aopt", ~c"1.0.0", [{"zopt", ~c">= 1.0.0", :optional}], aopt},
+        {"zopt", ~c"1.0.0", [], zopt},
         {"alpha", ~c"1.0.0", [], b.(~c"9.9.9")},
         {"alpha", ~c"1.1.0", [{"beta", ~c">= 0.2.0"}], a11},
         {"alpha", ~c"2.0.0", [], b.(~c"9.9.9")},
@@ -723,6 +965,102 @@ defmodule BeamComHexTest do
       :ok = :file.write_file(cache, "changed")
       _ = fetch_quiet(app, lib.(3))
       assert ~c"/repo/tarballs/beta-0.2.0.tar" == List.last(HexFixture.requests(pid))
+    end
+
+    # As Mix does: ecto_sql compiles after postgrex when the build has
+    # postgrex, because the code of ecto_sql checks it at compile time.
+    test "an optional dep in the build compiles first", %{dir: dir, lib: lib} do
+      both = :filename.join(dir, ~c"both")
+      :ok = :filelib.ensure_path(both)
+      :ok = :file.write_file(:filename.join(both, ~c"rebar.config"), "{deps, [aopt, zopt]}.\n")
+      assert [:zopt, :aopt] == for(%{name: n} <- fetch_quiet(both, lib.(4)), do: n)
+      # Without zopt in the deps, the build does not get it.
+      one = :filename.join(dir, ~c"one")
+      :ok = :filelib.ensure_path(one)
+      :ok = :file.write_file(:filename.join(one, ~c"rebar.config"), "{deps, [aopt]}.\n")
+      assert [:aopt] == for(%{name: n} <- fetch_quiet(one, lib.(5)), do: n)
+    end
+
+    # A git dep with a Hex dep (beta) and a git dep of its own (gsub). The
+    # second fetch takes the commits of rebar.lock: no list of refs.
+    test "git deps: their deps, the lock, and the order", %{dir: dir, lib: lib} do
+      gdep =
+        GitFixture.repo([
+          {"rebar.config",
+           ~s({deps, [beta, {gsub, {git, "https://e.com/gsub.git", {tag, "v1"}}}]}.\n)},
+          {"src/gdep.app.src", ~s({application, gdep, [{vsn, "git"}]}.\n)},
+          {"src/gdep.erl", "-module(gdep).\n"}
+        ])
+
+      gsub =
+        GitFixture.repo([
+          {"src/gsub.app.src", ~s({application, gsub, [{vsn, "0.5.0"}]}.\n)},
+          {"src/gsub.erl", "-module(gsub).\n"}
+        ])
+
+      servers = %{
+        "gdep" => GitFixture.server(gdep, ["refs/tags/v2.0.0"]),
+        "gsub" => GitFixture.server(gsub, ["refs/tags/v1"])
+      }
+
+      test = self()
+
+      http = fn method, url, headers, body, max ->
+        repo = if to_string(url) =~ "gdep", do: "gdep", else: "gsub"
+
+        if match?({_, b} when is_binary(b), body) and elem(body, 1) =~ "ls-refs",
+          do: send(test, {:ls_refs, repo})
+
+        servers[repo].(method, url, headers, body, max)
+      end
+
+      app = :filename.join(dir, ~c"gapp")
+      :ok = :filelib.ensure_path(app)
+
+      config = [
+        {:deps, [{:gdep, {:git, ~c"https://e.com/gdep.git", {:tag, ~c"v2.0.0"}}}]}
+      ]
+
+      fetch = fn n ->
+        {got, _} =
+          with_io(fn ->
+            :beam_com_hex.fetch_git(
+              app,
+              lib.(n),
+              :beam_com_hex.rebar_deps(config),
+              :beam_com_hex.git_deps(config),
+              :beam_com_hex.registry(),
+              %{http: http}
+            )
+          end)
+
+        got
+      end
+
+      got = fetch.(5)
+
+      assert [{:beta, ~c"0.2.0"}, {:gsub, ~c"0.5.0"}, {:gdep, ~c"2.0.0"}] ==
+               for(%{name: n, vsn: v} <- got, do: {n, v})
+
+      assert_receive {:ls_refs, "gdep"}, 5000
+      assert_receive {:ls_refs, "gsub"}, 5000
+      %{dir: gdep_dir} = Enum.find(got, &(&1.name == :gdep))
+      assert File.exists?(Path.join(to_string(gdep_dir), "src/gdep.erl"))
+
+      {:ok, [{_, entries}, _]} = :file.consult(:filename.join(app, ~c"rebar.lock"))
+      {_, gdep_commit} = gdep
+      {_, gsub_commit} = gsub
+
+      assert [
+               {"beta", {:pkg, "beta", "0.2.0"}, 1},
+               {"gdep",
+                {:git, ~c"https://e.com/gdep.git", {:ref, String.to_charlist(gdep_commit)}}, 0},
+               {"gsub",
+                {:git, ~c"https://e.com/gsub.git", {:ref, String.to_charlist(gsub_commit)}}, 1}
+             ] == entries
+
+      assert [:beta, :gsub, :gdep] == for(%{name: n} <- fetch.(6), do: n)
+      refute_receive {:ls_refs, _}, 200
     end
 
     test "a package that is not on the server", %{dir: dir, lib: lib} do
@@ -871,6 +1209,64 @@ defmodule BeamComHexTest do
       before = length(HexFixture.requests(pid))
       {_, _} = with_io(fn -> :beam_com_hex.fetch(app, lib.(2), deps, :mix) end)
       assert before == length(HexFixture.requests(pid))
+    end
+
+    # The builder writes mix.lock again (an entry with no outer
+    # checksum). The entries that the build does not reach stay as they
+    # are: a dep only for :dev, and a git dep only for :dev.
+    test "mix.lock again: the entries of other deps stay", %{app: app, lib: lib, routes: routes} do
+      lock = :filename.join(app, ~c"mix.lock")
+      inner = :string.lowercase(inner_sum(routes, ~c"alpha-1.1.0"))
+      beta = :string.lowercase(inner_sum(routes, ~c"beta-0.2.0"))
+      dev = ~s(  "devonly": {:hex, :devonly, "1.0.0", "aa", [:mix], [], "hexpm", "bb"},\n)
+
+      credo =
+        ~s(  "credo": {:git, "https://example.com/credo.git", ) <>
+          ~s("0123456789abcdef0123456789abcdef01234567", [only: :dev]},\n)
+
+      :ok =
+        :file.write_file(lock, """
+        %{
+          "alpha": {:hex, :alpha, "1.1.0", "#{inner}", [:rebar3], [{:beta, ">= 0.2.0", [hex: :beta, repo: "hexpm", optional: false]}], "hexpm"},
+          "beta": {:hex, :beta, "0.2.0", "#{beta}", [:rebar3], [], "hexpm"},
+        #{credo}#{dev}}
+        """)
+
+      deps = [{:alpha, "alpha", ~c"~> 1.0"}]
+      {got, output} = with_io(fn -> :beam_com_hex.fetch(app, lib.(1), deps, :mix) end)
+      assert [:beta, :alpha] == for(%{name: n} <- got, do: n)
+      assert output =~ "wrote " <> List.to_string(lock)
+      {:ok, text} = :file.read_file(lock)
+      assert text =~ dev
+      assert text =~ credo
+
+      assert %{alpha: %{outer: outer}, devonly: %{outer: "bb"}, credo: %{other: {:git, _, _, _}}} =
+               :beam_com_hex.read_lock(:mix, lock)
+
+      assert outer == :string.lowercase(outer_sum(routes, ~c"alpha-1.1.0"))
+    end
+
+    # rebar.lock with a git entry, and rebar.config with no git dep:
+    # rebar3 does not use the entry, and the builder leaves it out.
+    test "rebar.lock with a git entry that rebar.config does not have", %{app: app, lib: lib} do
+      _ = fetch_quiet(app, lib.(1))
+      lock = :filename.join(app, ~c"rebar.lock")
+      {:ok, [{vsn, entries}, hashes]} = :file.consult(lock)
+
+      git =
+        {"g",
+         {:git, ~c"https://example.com/g.git",
+          {:ref, ~c"0123456789abcdef0123456789abcdef01234567"}}, 0}
+
+      :ok =
+        :file.write_file(
+          lock,
+          :io_lib.format(~c"~tp.~n~tp.~n", [{vsn, entries ++ [git]}, hashes])
+        )
+
+      {got, output} = with_io(fn -> :beam_com_hex.fetch(app, lib.(2)) end)
+      assert [:beta, :alpha] == for(%{name: n} <- got, do: n)
+      assert output =~ "rebar.lock: g is a git dependency that rebar.config does not have"
     end
 
     # The repository gives at most 32 MiB for a tarball.

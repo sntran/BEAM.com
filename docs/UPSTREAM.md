@@ -368,13 +368,92 @@ each port program to it with `sendmsg(SCM_RIGHTS)`. On Windows,
 forker child also kept the stdout/stderr pipes of `beam.exe` open, so the
 test hung after the program ended.
 
-**Workaround in BEAM.com.** On Windows (run-time test of `__hostos`), do
-not start the forker, and make `open_port({spawn, ...})` fail with
-`enotsup`. So `os:cmd/1` and native name lookups (`inet_gethost`) do not
-work on Windows yet.
+**Workaround in BEAM.com.** On Windows (run-time test of `__hostos`), the
+forker port starts no `erl_child_setup`
+(`patches/otp/0006-windows-spawn.patch`):
 
-**Possible upstream fix.** Implement fd passing between Cosmopolitan
-processes (the fd table is already serialized for `execve()` in
+- The spawn driver starts the program itself with `posix_spawn()`
+  (`beam_com_spawn_nt()` of `c_src/cosmo/beam_com.c`). The pipes of the
+  port have `O_CLOEXEC`, and the file actions give the ends of the child
+  as its fds 0, 1 and 2. A program of `/zip/bin` is a helper of the
+  file. `{spawn, Command}` runs `sh -c` with the `sh.exe` (else `sh`) in
+  `PATH`, because `posix_spawnp()` (`commandv()`) tries no `.exe`.
+- `posix_spawn()` of Cosmopolitan gives the child each descriptor with
+  no `O_CLOEXEC` (`libc/proc/describefds.c`), and the sockets and the
+  files of ERTS have no `O_CLOEXEC`. On Unix, `erl_child_setup` closes
+  them. So `beam_com_spawn_nt()` adds a close action for each descriptor
+  from 3, before the actions of the pipes. It holds the lock of the
+  descriptor table (`__fds_lock()`) until `posix_spawn()` returns, so no
+  new descriptor can come in between. In a test, a listen socket of the
+  VM stayed open in a port program (`ping -n 15`) for 14 s after its
+  close; now a connection gets `econnrefused`.
+- The pid is known at once, so no message "Go" comes on the output of
+  the program: the first event of the port (input, or a timer of 0 ms)
+  sends the ack of the open.
+- A thread for each program waits for its end, and writes the exit
+  status to a pipe that the forker port reads. A native program exits
+  with its code, not with a wait status (`code << 8`), and the thread
+  converts it.
+- The write end of the pipe is non-blocking, as on Unix. A pipe of
+  Cosmopolitan on Windows has a buffer of 4 KiB (`PIPE_BUF`,
+  `libc/calls/pipe-nt.c`). Cosmopolitan cancels a non-blocking write
+  that does not fit, and gives `EAGAIN` (`libc/calls/readwrite-nt.c`).
+  It does this also when a reader waits and a part of the data went
+  into the pipe: that data is lost. And `poll()` and `select()` report a write end as ready at once,
+  also when the pipe is full. In a test, 3000 bytes to `cat` came back
+  in 27 ms, and of 5000 bytes, only 40 came back in 20 s. The wraps of
+  `write()`, `writev()` and `select()` in `c_src/cosmo/beam_com_pipe.c`
+  get the free space of the pipe with `NtQueryInformationFile()`
+  (`WriteQuotaAvailable`). A write gives at most that number of bytes to
+  Cosmopolitan, so it completes at once, and a full pipe gives `EAGAIN`.
+  `select()` does not report a full pipe: it waits in steps of 5 ms and
+  reports the pipe when it has space again. `tests/cosmo/pipe_check.c`
+  checks this on Windows; with no wraps, it fails.
+- Windows subtracts the size of a read that waits from
+  `WriteQuotaAvailable`. A reader that waits for 4096 bytes or more on
+  an empty pipe gives 0, as a full pipe does. Most native programs read
+  so (`python`, `git`, `findstr`): no write reached them, and the halt
+  of the VM waited for the queue of the port. So for the value 0, the
+  wrap starts a write of 1 byte with its own `OVERLAPPED`, and gives 1.
+  To a reader that waits, the write completes at once. To a full pipe,
+  the byte waits in the pipe until the reader reads; meanwhile a write
+  gives `EAGAIN`, and `select()` does not report the pipe. The wrap
+  never cancels this write: Windows can cancel a write after the reader
+  took its byte, and `GetOverlappedResult()` then gives
+  `ERROR_OPERATION_ABORTED` and a count of 0. In a test of 128 KiB and
+  of 1 MiB, a byte came two times in each of 8 runs. At the close of
+  the write end (`__wrap_close()`), a thread keeps a copy of the handle
+  until the write ends, so the reader gets the byte and then the end of
+  the file. Windows cancels a write that waits at the exit of the
+  process, and the reader does not get its byte. On Unix, the data stays
+  in the pipe. So after the first byte that waits, an `atexit()` handler
+  waits at most 2 s, for all the bytes together (also the bytes of the
+  closer threads). The `exit()` of Cosmopolitan runs the handler also
+  from another thread, as ERTS calls it for `erlang:halt/0,1`. In a test,
+  a reader that read 300 ms late got all of 4097 bytes, and the writer
+  exited after 307 ms; before, it got 4096. A reader that never reads holds
+  the exit for 2 s. `_exit()` and `ExitProcess()` (`erlang:halt/2` with
+  `{flush, false}`) do not wait. A copy of the
+  read end, as Cygwin keeps for its query of the free space, does not
+  work here: a query on it wakes a native reader that waits in a
+  synchronous `ReadFile()` on the overlapped handle, and that reader
+  then sees the end of the file.
+- `os.erl`: with `{unix, windows}`, `os:find_executable/1` tries the
+  suffixes of Windows.
+
+Kernel still resolves names with the DNS client of Erlang (no
+`inet_gethost`).
+
+**Possible upstream fix.** For a non-blocking write to a pipe on Windows,
+write at most the free space of the pipe. `WriteQuotaAvailable` of the
+write end is smaller while a reader waits, and the count of
+`GetOverlappedResult()` after `CancelIoEx()` is not reliable for a
+pipe. So keep a write that waits, as the wrap does, and do not cancel
+it. In `poll()`, report the write end of a full pipe as not ready. In
+`posix_spawn()`, give a way to close each descriptor that the file
+actions do not name (as `posix_spawn_file_actions_addclosefrom_np()`). In
+`commandv()`, try `.exe` and `.com` on Windows. Implement fd passing
+between Cosmopolitan processes (the fd table is already serialized for `execve()` in
 `_COSMO_FDS_V2`, and `DuplicateHandle()` can copy handles into a known
 peer process). At minimum return `ENOTSUP`, not `EINVAL`.
 
@@ -677,15 +756,30 @@ not change. POSIX changes nothing then, but Cosmopolitan's `chown()`
 gives `ENOSYS` on Windows for all values.
 
 **Workaround in BEAM.com.** The emulator is linked with
-`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c` gives,
-for `-1` and `-1`: 0 when the path exists, else the error of `stat()`
-(`ENOENT`, on which `File.touch/1` makes the file). It does this on each
-system: the sandbox of Linux has no promise `chown`, so the call failed
-there too, and `file:change_mode/2` and `file:change_time/2` failed with
-it (#172).
+`-Wl,--wrap=chown`, and `__wrap_chown()` in `c_src/cosmo/beam_com.c`
+calls the real `chown()` first. Where the system permits the call, the
+result is that of the system: for example, Linux clears the setuid and
+setgid bits of the file. When the system refuses the call with
+`ENOSYS`, `EPERM` or `EACCES`, and the call changes no owner and no
+group, the wrap gives 0 when the path exists, else the error of
+`stat()` (`ENOENT`, on which `File.touch/1` makes the file). The
+refusals are:
+
+- `ENOSYS` of Cosmopolitan on Windows.
+- `EPERM` of the sandbox of Linux, which has no promise `chown`
+  (#172). Before the wrap, `file:change_mode/2` and
+  `file:change_time/2` failed with it.
+- The sandboxes of macOS (Seatbelt) and of OpenBSD (`unveil()`), which
+  can refuse the call too.
+
+`File.cp/3` of Elixir copies the owner of the source, and `mix release`
+copies `config/runtime.exs` with it. `tests/run.sh` checks the bits on
+Linux (`sandbox_check setid`) and the call in the sandbox, and
+`tests/run.ps1` checks the call on Windows.
 
 **Possible upstream fix.** In `chown()` and `fchownat()` on Windows,
-return 0 for `-1` and `-1` when the path exists.
+return 0 for `-1` and `-1`, and for the owner and the group of the file,
+when the path exists.
 
 ### C29. No `kqueue()` and `kevent()` for programs
 
@@ -1446,6 +1540,149 @@ outside the ranges of the malloc of macOS. A reproducer: a loop of
 starts of an APE program that calls `sandbox_init()` of libSystem, and
 `vmmap` of a process that hangs.
 
+### C52. /zip maps the file one time, and a change in place stops the program
+
+**Status:** 4.0.2 (`libc/runtime/zipos-*.c`), Linux x86_64. Not a bug
+of the design: the zip file system reads its own file one time.
+
+**Symptom.** A running program does not see a new entry that `zip` puts
+into its file: `zip` writes a new file and renames it, and `/zip` still
+reads the old file. When a tool writes into the same file (Python
+`zipfile` with mode `a`), the next `file:list_dir("/zip")` of the
+program stops it with `SIGSEGV` in `readdir_zipos`.
+
+```sh
+cp beam.com t.com
+./t.com -noshell -eval 'timer:sleep(3000), io:format("~p~n", [file:list_dir("/zip")]), halt().' &
+sleep 1
+python3 -c 'import zipfile; z = zipfile.ZipFile("t.com", "a"); z.writestr("x.txt", "x"); z.close()'
+```
+
+**Cause.** The first use of `/zip` maps the file of the program and
+reads its central directory one time. The map stays for the life of
+the process, and a write into the file changes the bytes under it.
+
+**Workaround in BEAM.com.** The process `beam_com_reload`
+(`src/beam_com_reload`) watches the path of the file. When a new file is
+in its place, it reads that file as a plain file, and loads each changed
+module. For new files of `priv/`, it copies the application to the cache
+directory and moves its code path there (`PROGRAMS.md`, "New code in a
+running program"). The docs tell people to write a new file and rename
+it, never to write into the file.
+
+**Possible upstream fix.** A check of the path of the program (inode
+and size) at an open of `/zip`, as `OpenZip()` of redbean
+(`tool/net/redbean.c`) does at a reload: a new map for the new file,
+and the old map stays for the files that are open.
+
+### C53. bind() refuses a Unix socket with a short path
+
+**Status:** HEAD (`libc/sock/bind.c`). Seen on Linux x86_64.
+
+**Symptom.** `gen_tcp:listen(0, [{ifaddr, {local, "/tmp/a.sock"}}])`
+gives `{error, einval}`. The same call with a path of 14 bytes or more
+works, and `gen_tcp:connect({local, Path}, 0, [])` works with each path.
+
+**Cause.** `bind()` accepts an address only when its size is at least
+`sizeof(struct sockaddr_in)` (16 bytes). For `AF_UNIX`, `inet_drv` of
+OTP gives `offsetof(struct sockaddr_un, sun_path)` plus the length of
+the path, as POSIX permits. Thus a path of 13 bytes or fewer gives
+`EINVAL`. `connect()` has no such check.
+
+```c
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+int main(void) {
+  struct sockaddr_un a = {AF_UNIX};
+  strcpy(a.sun_path, "/tmp/c53");
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int rc = bind(fd, (void *)&a, offsetof(struct sockaddr_un, sun_path) + 9);
+  printf("%d\n", rc);  /* -1 (EINVAL); 0 on glibc */
+}
+```
+
+**Workaround in BEAM.com.** For an `AF_UNIX` address of fewer than 16
+bytes with a path, the wrap of `bind()` (`c_src/cosmo/beam_com_net.c`)
+gives `bind()` a copy of 16 bytes with zeros after the path. The path
+ends at its first zero, so the socket gets the same path.
+`tests/cosmo/net_check.c` and `tests/run.sh` check it. An abstract
+address of Linux (a zero at the start of the path) with a name of 12
+bytes or fewer still gives `EINVAL`: there each byte is a part of the
+name, so a longer copy is another name.
+
+**Possible upstream fix.** For `AF_UNIX`, check only that the size has
+the family (`sizeof(sa_family_t)`), as `sockaddr2linux()` does.
+
+### C54. symlink() on Windows reads a relative target from the working directory
+
+**Status:** HEAD (`libc/calls/symlinkat-nt.c`). Seen on Windows Server
+2025 (x86_64).
+
+**Symptom.** `mix release` of a Phoenix app on Windows makes a release
+with no `priv` of the app, so the server gives 404 for each static
+file. `File.exists?("_build/prod/lib/hello/priv")` gives `false`, and
+`stat()` of the link gives `EACCES`. `dir` shows the link as
+`<SYMLINK>`, not `<SYMLINKD>`.
+
+**Cause.** Windows has two kinds of symbolic links: a link to a file and
+a link to a directory. A link to a file that points to a directory
+gives "access denied" when a program opens it. `sys_symlinkat_nt()`
+makes a link to a directory only when `GetFileAttributes()` of the
+target gives a directory. For a relative target, it calls
+`GetFileAttributes()` with the target as it is, so Windows reads it
+from the working directory, not from the directory of the link. Mix
+makes `_build/prod/lib/APP/priv` with the target `../../../../priv`
+from the directory of the project.
+
+```c
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(void) {
+  struct stat st;
+  mkdir("t", 0700); mkdir("t/priv", 0700); mkdir("t/lib", 0700);
+  symlink("../priv", "t/lib/priv");
+  printf("%d\n", stat("t/lib/priv", &st));  /* -1 on Windows; 0 on Linux */
+}
+```
+
+**Workaround in BEAM.com.** `__wrap_symlink()` and `__wrap_symlinkat()`
+of `c_src/cosmo/beam_com_fs.c` read a relative target from the
+directory of the link. When it is a directory, they add a `/` at the end
+of the target, and Cosmopolitan then makes a link to a directory.
+`readlink()` gives the target with the `/`.
+
+**Possible upstream fix.** For a relative target, call
+`GetFileAttributes()` on the directory of the link joined with the
+target.
+
+### C55. The path functions change the name of a named pipe
+
+**Status:** HEAD (`libc/calls/mkntpath.c`). Seen on Windows Server 2025
+(x86_64).
+
+**Symptom.** `open("\\\\.\\pipe\\openssh-ssh-agent", O_RDWR)` gives
+`ENOENT`, also with the form `//./pipe/openssh-ssh-agent`, while the
+agent of Windows OpenSSH runs. `file:open/2` of Erlang gives
+`{error, enoent}`.
+
+**Cause.** `__mkntpath2()` gives the path to `__normntpath()`, which
+removes each `.` part ("/./"). Thus `\\.\pipe\NAME` becomes
+`\\pipe\NAME`, and `CreateFile()` gets a UNC path of a server named
+`pipe`. The form `\\?\pipe\NAME` is not a pipe.
+
+**Workaround in BEAM.com.** The git client starts the helper program
+`ssh_agent_bridge` (`c_src/cosmo/beam_com_agent.c`). It opens the pipe
+with `CreateFile()` of Windows, and copies the messages of the agent
+between the pipe and its standard I/O.
+
+**Possible upstream fix.** In `__mkntpath2()`, keep a path that starts
+with `\\.\` or `//./` (a device path of Win32) as it is, as the code
+already does for `\\?\`.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2202,6 +2439,35 @@ each address, also when Erlang code changes the name servers.
 
 **Possible upstream fix.** None needed. An environment variable for the
 name servers, as `ERL_INETRC` is for the file, would do the same.
+
+### O28. system_architecture is the text of configure
+
+**Status:** OTP 29.1.1 (`erts/emulator/beam/erl_bif_info.c`). Not a bug
+of OTP: an APE file runs on two CPUs and on six systems.
+
+**Symptom.** `erlang:system_info(system_architecture)` gives
+`ERLANG_ARCHITECTURE`, the text of `configure`. BEAM.com runs
+`configure` one time, for x86_64 Linux, and cosmocc compiles each file
+again for the aarch64 half. Thus the text is `x86_64-pc-linux-gnu` on
+each CPU and each system. Packages read it to choose a native program.
+On Linux aarch64, the `tailwind` and `esbuild` packages of Phoenix
+download the x86_64 programs, and they do not start:
+
+```
+ape error: _build/tailwind-linux-x64-4.3.3: couldn't find ELF header with AARCH64 machine type
+```
+
+On macOS arm64, the x86_64 programs run with Rosetta 2.
+
+**Workaround in BEAM.com.** `patches/otp/0005-architecture.patch`: with
+Cosmopolitan, the text comes from the CPU half (`__aarch64__`) and from
+the system at run time (`IsXnu()`, `IsFreebsd()`, `IsOpenbsd()`,
+`IsNetbsd()`): `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-freebsd`,
+`x86_64-unknown-openbsd`, `x86_64-unknown-netbsd`. Linux x86_64 and
+Windows keep the text of `configure`.
+
+**Possible upstream fix.** None needed for a native build.
 
 ## Emscripten
 

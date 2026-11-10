@@ -366,6 +366,13 @@ defmodule WasmTcpTest do
        {:shutdown, :write},
        :close
      ]},
+    {"shutdown of read and write: the data after the reset goes too", @passive,
+     [
+       {:shutdown, :read_write},
+       {:peer_send, "a"},
+       {:peer_send, "a"},
+       {:recv, 0, 0}
+     ]},
     {"exit_on_close false: the socket sends after the end of the peer",
      [:binary, active: true, exit_on_close: false],
      [

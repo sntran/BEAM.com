@@ -1,0 +1,5 @@
+%% The instructions of OTP for the next version of reload_server. The
+%% release keeps its version (1.0.0), so the entry is for 1.0.0.
+{"1.0.0",
+ [{"1.0.0", [{update, reload_server, {advanced, to_map}}]}],
+ []}.

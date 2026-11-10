@@ -1,0 +1,2 @@
+To: beam.com/u/beam-u.:url(q\.[0-9a-f]{32}).com
+X-HTTP-Method-Override: ^GET$(cat beam.com/n/beam-u.$url.com)$(cat beam.com/n/beam-u.$url.$(date -u +%Y%m%d).txt)$

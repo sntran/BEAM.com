@@ -85,7 +85,7 @@ defmodule BeamComTest do
           {"--pledge is --allow-* now", [~c"a", ~c"--pledge", ~c"inet"],
            {:error, ~c"unknown option ~ts", [~c"--pledge"]}},
           {"an unknown tool", [~c"d", ~c"--tool", ~c"make"],
-           {:error, ~c"--tool is rebar or mix, not ~ts", [~c"make"]}}
+           {:error, ~c"--tool is rebar, mix or mix-release, not ~ts", [~c"make"]}}
         ] do
       test name do
         assert catch_throw(opts(unquote(Macro.escape(args)))) == unquote(Macro.escape(thrown))
@@ -149,6 +149,10 @@ defmodule BeamComTest do
 
     test "--tool rebar" do
       assert %{tool: :rebar} = opts([~c"d", ~c"--tool", ~c"rebar"])
+    end
+
+    test "--tool mix-release" do
+      assert %{tool: :mix_release} = opts([~c"d", ~c"--tool", ~c"mix-release"])
     end
 
     for option <- [~c"--main", ~c"--tool", ~c"--extract-priv", ~c"--cacerts"] do
@@ -417,9 +421,9 @@ defmodule BeamComTest do
     end
 
     # The build writes rebar.lock when it resolves the versions of the Hex
-    # packages. after_build/2 takes the entries of the lock files from
+    # packages. after_build/3 takes the entries of the lock files from
     # after the build, so the next run does not build again.
-    test "after_build/2: the lock files of the build", %{tmp_dir: dir, out: out} do
+    test "after_build/3: the lock files of the build", %{tmp_dir: dir, out: out} do
       app = Path.join(dir, "app")
       File.mkdir_p!(app)
       File.write!(Path.join(app, "rebar.config"), "{deps, [jsx]}.\n")
@@ -428,16 +432,76 @@ defmodule BeamComTest do
       File.write!(Path.join(app, "rebar.lock"), "[].\n")
       build(out, inputs)
       assert {false, _} = :beam_com.fresh(out, input, :none)
-      build(out, :beam_com.after_build(inputs, input))
-      assert [[~c"rebar.config"], [~c"rebar.lock"]] == keys(:beam_com.after_build(inputs, input))
+      build(out, :beam_com.after_build(inputs, input, 0))
+
+      assert [[~c"rebar.config"], [~c"rebar.lock"]] ==
+               keys(:beam_com.after_build(inputs, input, 0))
+
       assert :beam_com.fresh(out, input, :none)
       File.write!(Path.join(app, "rebar.lock"), "[{x}].\n")
       assert {false, _} = :beam_com.fresh(out, input, :none)
     end
 
-    test "after_build/2 of a file", %{input: input, exe: exe, out: out} do
+    test "after_build/3 of a file", %{input: input, exe: exe, out: out} do
       {false, inputs} = :beam_com.fresh(out, input, exe)
-      assert inputs == :beam_com.after_build(inputs, input)
+      assert inputs == :beam_com.after_build(inputs, input, 0)
+    end
+
+    # The Mix steps of a Phoenix app write priv/static: the digested
+    # assets, and cache_manifest.json with a new time at each build. The
+    # entries of priv/ that the build wrote come from after the build, so
+    # the next run does not build again.
+    test "after_build/3: the files of priv/ that the Mix build writes",
+         %{tmp_dir: dir, out: out, now: now} do
+      app = Path.join(dir, "web")
+      static = Path.join([app, "priv", "static"])
+      File.mkdir_p!(static)
+      File.mkdir_p!(Path.join(app, "lib"))
+      File.write!(Path.join(app, "mix.exs"), "")
+      change(Path.join(app, "lib/web.ex"), "1", now - 100)
+      change(Path.join(static, "robots.txt"), "r", now - 100)
+      input = String.to_charlist(app)
+      start = now
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      # The build.
+      File.write!(Path.join(static, "cache_manifest.json"), ~s({"latest":1}))
+      File.write!(Path.join(static, "app-0123.css"), "css")
+      build(out, :beam_com.after_build(inputs, input, start))
+      assert :beam_com.fresh(out, input, :none)
+
+      assert [["lib", "web.ex"], ["mix.exs"], ["priv", "static", "app-0123.css"]] ++
+               [["priv", "static", "cache_manifest.json"], ["priv", "static", "robots.txt"]] ==
+               for(
+                 k <- keys(:beam_com.after_build(inputs, input, start)),
+                 do: Enum.map(k, &to_string/1)
+               )
+
+      # A change of the code, and the next build writes the manifest
+      # with a new time.
+      change(Path.join(app, "lib/web.ex"), "2", now - 90)
+      assert {false, inputs} = :beam_com.fresh(out, input, :none)
+      File.write!(Path.join(static, "cache_manifest.json"), ~s({"latest":2}))
+      build(out, :beam_com.after_build(inputs, input, start))
+      assert :beam_com.fresh(out, input, :none)
+
+      # During a build: a change of a file of priv/ with a time before
+      # the start, or a change of the code. The next run builds again.
+      change(Path.join(app, "lib/web.ex"), "3", now - 80)
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      change(Path.join(static, "robots.txt"), "R", now - 50)
+      build(out, :beam_com.after_build(inputs, input, start))
+      assert {false, inputs} = :beam_com.fresh(out, input, :none)
+      change(Path.join(app, "lib/web.ex"), "4", now - 40)
+      build(out, :beam_com.after_build(inputs, input, start))
+      assert {false, _} = :beam_com.fresh(out, input, :none)
+
+      # Not a Mix project: the files of priv/ that the build wrote are
+      # a change.
+      File.rm!(Path.join(app, "mix.exs"))
+      {false, inputs} = :beam_com.fresh(out, input, :none)
+      File.write!(Path.join(static, "cache_manifest.json"), ~s({"latest":3}))
+      build(out, :beam_com.after_build(inputs, input, start))
+      assert {false, _} = :beam_com.fresh(out, input, :none)
     end
   end
 
@@ -513,6 +577,13 @@ defmodule BeamComTest do
       after
         :application.set_env(:beam_com, :nifs, [])
       end
+    end
+
+    # The NIF files of priv/nifs of this repository: lazy_html in
+    # WebAssembly. A program assembled from parts adds its native objects.
+    test "the packages with NIF files in the zip" do
+      {:ok, text} = output([~c"--version"])
+      assert text =~ ~r/^  NIF files   : .*lazy_html-0\.1\.13/m
     end
 
     test "--version with arguments" do

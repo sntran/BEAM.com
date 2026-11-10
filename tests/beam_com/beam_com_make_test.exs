@@ -1,8 +1,8 @@
 defmodule BeamComMakeTest do
   @moduledoc """
   The tests of `:beam_com_make`: the make of elixir_make for the packages
-  whose NIFs are linked into beam.com, or are NIF libraries in WebAssembly
-  in it.
+  whose NIFs are linked into beam.com, or whose NIF files are in it (a NIF
+  library in WebAssembly, or native NIF objects).
 
   A test changes the PATH of the OS, so the module is not async.
   """
@@ -98,15 +98,31 @@ defmodule BeamComMakeTest do
     end
   end
 
-  # lazy_html: a NIF library in WebAssembly in beam.com (the env
-  # wasm_nifs), with its files in priv/nifs/lazy_html-0.1.13.
-  describe "wasm_nif_test_" do
+  # lazy_html: a NIF library in WebAssembly in beam.com, with its files in
+  # priv/nifs/lazy_html-0.1.13. vix: native NIF objects, in two versions.
+  # rusty_csv: an object in the subdirectory native/.
+  describe "nif_files_test_" do
     setup %{tmp_dir: tmp_dir} do
       dir = String.to_charlist(tmp_dir)
       priv = :filename.join(dir, ~c"priv")
       nifs = :filename.join([priv, ~c"nifs", ~c"lazy_html-0.1.13"])
       write(nifs, ~c"liblazy_html.wasm", "wasm")
       write(nifs, ~c"liblazy_html.x86_64.aot", "aot")
+      vix = :filename.join([priv, ~c"nifs", ~c"vix-0.42.0"])
+      write(vix, ~c"vix.x86_64.o", "x86_64")
+      write(vix, ~c"vix.aarch64.o", "aarch64")
+      write(:filename.join([priv, ~c"nifs", ~c"vix-0.41.0"]), ~c"vix.x86_64.o", "old")
+
+      write(
+        :filename.join([priv, ~c"nifs", ~c"rusty_csv-0.4.6", ~c"native"]),
+        ~c"librustycsv.x86_64.o",
+        "csv"
+      )
+
+      # Not a package: a file, and names with no version.
+      write(:filename.join(priv, ~c"nifs"), ~c"README", "text")
+      :ok = :filelib.ensure_path(:filename.join([priv, ~c"nifs", ~c"noversion"]))
+      :ok = :filelib.ensure_path(:filename.join([priv, ~c"nifs", ~c"-1.0"]))
       pkg = :filename.join(dir, ~c"lazy_html")
 
       write(
@@ -122,47 +138,93 @@ defmodule BeamComMakeTest do
     end
 
     test "make copies the files into the priv directory of the package", ctx do
-      assert :ok == wasm_run([~c"all"], ctx.pkg, ctx.app_path, ctx.priv)
+      assert :ok == files_run([~c"all"], ctx.pkg, ctx.app_path, ctx.priv)
       priv = :filename.join(ctx.app_path, ~c"priv")
       assert {:ok, "wasm"} == :file.read_file(:filename.join(priv, ~c"liblazy_html.wasm"))
       assert {:ok, "aot"} == :file.read_file(:filename.join(priv, ~c"liblazy_html.x86_64.aot"))
     end
 
     test "make clean does nothing", ctx do
-      assert :ok == wasm_run([~c"clean"], ctx.pkg, ctx.app_path, ctx.priv)
+      assert :ok == files_run([~c"clean"], ctx.pkg, ctx.app_path, ctx.priv)
       refute :filelib.is_dir(:filename.join(ctx.app_path, ~c"priv"))
     end
 
     test "another version of the package", ctx do
-      assert ~c"lazy_html 0.1.12 has a NIF, and beam.com has the NIF library in " ++
-               ~c"WebAssembly of lazy_html 0.1.13. Use lazy_html 0.1.13 " ++
+      assert ~c"lazy_html 0.1.12 has a NIF, and beam.com has the NIF of " ++
+               ~c"lazy_html 0.1.13. Use lazy_html 0.1.13 " ++
                ~c"(in the deps of mix.exs: {:lazy_html, \"0.1.13\"})" ==
                error_text(fn ->
-                 wasm_run([~c"all"], ctx.old, :filename.join(ctx.dir, ~c"lazy_html"), ctx.priv)
+                 files_run([~c"all"], ctx.old, :filename.join(ctx.dir, ~c"lazy_html"), ctx.priv)
                end)
     end
 
-    test "no files of the library", ctx do
+    test "no files of the library: an empty directory", ctx do
       none = :filename.join(ctx.dir, ~c"none")
+      :ok = :filelib.ensure_path(:filename.join([none, ~c"nifs", ~c"lazy_html-0.1.13"]))
 
-      text = error_text(fn -> wasm_run([~c"all"], ctx.pkg, ctx.app_path, none) end)
-      assert List.to_string(text) =~ "no NIF library of lazy_html 0.1.13"
+      text = error_text(fn -> files_run([~c"all"], ctx.pkg, ctx.app_path, none) end)
+      assert List.to_string(text) =~ "no NIF files of lazy_html 0.1.13"
     end
 
-    test "wasm_nif_files/3 reads the files, in order", ctx do
+    test "native objects: the files of the version of the package", ctx do
+      pkg = :filename.join(ctx.dir, ~c"vix")
+      write(pkg, ~c"mix.exs", "@version \"0.42.0\"\n")
+      app_path = :filename.join([ctx.dir, ~c"_build", ~c"dev", ~c"lib", ~c"vix"])
+      assert :ok == files_run([], pkg, app_path, ctx.priv)
+      priv = :filename.join(app_path, ~c"priv")
+      assert {:ok, "x86_64"} == :file.read_file(:filename.join(priv, ~c"vix.x86_64.o"))
+      assert {:ok, "aarch64"} == :file.read_file(:filename.join(priv, ~c"vix.aarch64.o"))
+      # The other version, and a version that beam.com does not have.
+      write(pkg, ~c"mix.exs", "@version \"0.41.0\"\n")
+      assert :ok == files_run([~c"all"], pkg, app_path, ctx.priv)
+      assert {:ok, "old"} == :file.read_file(:filename.join(priv, ~c"vix.x86_64.o"))
+      write(pkg, ~c"mix.exs", "@version \"0.40.0\"\n")
+      text = error_text(fn -> files_run([~c"all"], pkg, app_path, ctx.priv) end)
+
+      assert List.to_string(text) =~
+               "vix 0.40.0 has a NIF, and beam.com has the NIF of vix 0.41.0"
+    end
+
+    test "native objects: no version is known, a file in a subdirectory", ctx do
+      pkg = :filename.join(ctx.dir, ~c"rusty_csv")
+      :ok = :filelib.ensure_path(pkg)
+      assert :ok == files_run([], pkg, ~c"", ctx.priv)
+
+      assert {:ok, "csv"} ==
+               :file.read_file(
+                 :filename.join([pkg, ~c"priv", ~c"native", ~c"librustycsv.x86_64.o"])
+               )
+    end
+
+    test "nif_files/3 reads the files, in order, also in subdirectories", ctx do
       assert [{~c"liblazy_html.wasm", "wasm"}, {~c"liblazy_html.x86_64.aot", "aot"}] ==
-               :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.13", ctx.priv)
+               :beam_com_make.nif_files(:lazy_html, ~c"0.1.13", ctx.priv)
 
-      assert [] == :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.12", ctx.priv)
+      assert [{~c"native/librustycsv.x86_64.o", "csv"}] ==
+               :beam_com_make.nif_files(:rusty_csv, ~c"0.4.6", ctx.priv)
+
+      assert [] == :beam_com_make.nif_files(:lazy_html, ~c"0.1.12", ctx.priv)
     end
 
-    # The files of priv/nifs of this repository, for the version of the env
-    # wasm_nifs only.
-    test "wasm_nif_files/2: the files of beam.com" do
-      names = for {name, _} <- :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.13"), do: name
+    test "file_nifs/1: the packages of the directories of priv/nifs", ctx do
+      assert [
+               {:lazy_html, ~c"0.1.13"},
+               {:rusty_csv, ~c"0.4.6"},
+               {:vix, ~c"0.41.0"},
+               {:vix, ~c"0.42.0"}
+             ] == :beam_com_make.file_nifs(ctx.priv)
+
+      assert [] == :beam_com_make.file_nifs(:filename.join(ctx.dir, ~c"none"))
+    end
+
+    # The files of priv/nifs of this repository.
+    test "nif_files/2 and file_nifs/0: the files of beam.com" do
+      names = for {name, _} <- :beam_com_make.nif_files(:lazy_html, ~c"0.1.13"), do: name
       assert ~w(liblazy_html.aarch64.aot liblazy_html.wasm liblazy_html.x86_64.aot)c == names
-      assert [] == :beam_com_make.wasm_nif_files(:lazy_html, ~c"0.1.12")
-      assert [] == :beam_com_make.wasm_nif_files(:other, ~c"0.1.13")
+      assert [] == :beam_com_make.nif_files(:lazy_html, ~c"0.1.12")
+      assert [] == :beam_com_make.nif_files(:other, ~c"0.1.13")
+      assert {:lazy_html, ~c"0.1.13"} in :beam_com_make.file_nifs()
+      assert :beam_com_make.priv() == :filename.join(:code.lib_dir(:beam_com), ~c"priv")
     end
 
     # The env of elixir_make that the tools of Elixir set at their start.
@@ -232,12 +294,12 @@ defmodule BeamComMakeTest do
     end
   end
 
-  defp wasm_run(args, cwd, app_path, priv) do
+  defp files_run(args, cwd, app_path, priv) do
     :beam_com_make.run(args, %{
       cwd: cwd,
       app_path: app_path,
       nifs: @linked_nifs,
-      wasm_nifs: [{:lazy_html, ~c"0.1.13"}],
+      file_nifs: :beam_com_make.file_nifs(priv),
       priv: priv,
       make: ~c"/nowhere/make"
     })

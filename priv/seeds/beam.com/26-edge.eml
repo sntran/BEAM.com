@@ -1,0 +1,6 @@
+To: beam.com
+X-HTTP-Method-Override: ^GET$
+Accept: ^(?![^\r\n]*text/html)
+Range: ^(?<range>[^\r\n]{0,256})$
+
+\A\z

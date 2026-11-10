@@ -28,8 +28,8 @@ beam.com hello.ex -- Alice             # or run it
   `:registered` of `application/0`. The Erlang files are compiled
   first, then the Elixir files. `config/config.exs` becomes the
   `sys.config` of the release (with `Config.Reader`, env `:prod`).
-- **Deps** are Hex packages, in Erlang (rebar3, make) or in Elixir (Mix),
-  as for rebar3 projects (see "Hex packages" in
+- **Deps** are Hex packages of hex.pm, in Erlang (rebar3, make) or in
+  Elixir (Mix), as for rebar3 projects (see "Hex packages" in
   [`PROGRAMS.md`](PROGRAMS.md)), with `mix.lock` (in the
   format of Mix) in place of `rebar.lock`. Deps `only: :dev` or
   `:test` and `optional: true` are left out; `runtime: false` deps are
@@ -38,9 +38,19 @@ beam.com hello.ex -- Alice             # or run it
   with `compiler` (which Elixir needs at run time), makes a program
   1.9 MB larger than the same program in Erlang, and its start about
   40 ms slower ([`BENCHMARKS.md`](BENCHMARKS.md)).
-- **Not supported:** umbrella projects, `config/runtime.exs`, protocol
-  consolidation (protocols work, but their dispatch is not optimized),
-  and Mix tasks or aliases.
+- **A Mix project that needs Mix**: for a project with
+  `config/runtime.exs`, a dep that is not a Hex package (`git:`,
+  `github:`, `path:`), a dep of a Hex organization or of another Hex
+  repository (`organization:`, `repo:`, or such an entry in `mix.lock`),
+  `:compilers` in `project/0`, or the alias `assets.deploy`, the
+  builder does not compile the project itself.
+  Mix gets the deps, compiles the project, runs `assets.deploy`, and
+  makes a release. Then the builder makes the file from that release.
+  A new Phoenix app has all four. See "Phoenix in one file" below.
+- The builder of a plain Mix project does not consolidate the
+  protocols. The protocols work, but their dispatch is slower. A release
+  of Mix consolidates them.
+- **Not supported:** umbrella projects.
 
 [`examples/greeter_ex`](../examples/greeter_ex) is a Mix project with jason
 (a Hex package in Elixir) and `config/config.exs`;
@@ -99,9 +109,7 @@ The name can also be without `.com` (`mix`), or with `.exe` on Windows
 - **Not supported:** the options of
   the Elixir scripts that change the `erl` command (`--erl`, `--sname`,
   `--name`, `--cookie`, `--pipe-to`; give the flags of `erl` in
-  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`). On
-  Windows, there are no port programs: Mix tasks that start other
-  programs (rebar3, git) do not work.
+  `ELIXIR_ERL_OPTIONS` instead, for example `-sname dev`).
 
 ### Make your own tools
 
@@ -160,12 +168,13 @@ iex.com -S mix phx.server        # http://localhost:4000
   compiled NIF.
 - The version of these packages must be the version of their NIF in
   `beam.com` ("Linked NIFs" in `beam.com --version`): `beam.com` always
-  uses its NIF. With another version, `mix compile` stops with an error
+  uses its NIF. A package with native NIF objects in the zip of
+  `beam.com` ("NIF files", docs/NIFS.md) gets them in its priv directory. With another version, `mix compile` stops with an error
   that tells what to put in the deps of `mix.exs` (for example
   `{:exqlite, "0.41.0"}`).
 - The esbuild and tailwind watchers download their programs and run
-  them as ports, as they do with Elixir (not on Windows, which has no
-  port programs here).
+  them as ports, as they do with Elixir. CI does not test the watchers
+  on Windows.
 - Live reload works without `inotify-tools`: the tools set
   `FILESYSTEM_FSINOTIFY_EXECUTABLE_FILE` (read by `file_system`) to the
   file watcher of the file (see "The file watcher"), on Linux and the
@@ -177,8 +186,8 @@ iex.com -S mix phx.server        # http://localhost:4000
   code, need `make` and a C compiler, and a NIF that `beam.com` can load:
   a static NIF of a custom build, or a NIF library in WebAssembly
   (`priv/NAME.wasm`, see [`NIFS.md`](NIFS.md)).
-- Not on Windows (no port programs, so `elixir_make` cannot run) and
-  not on NetBSD (its kernel does not start an APE file by a link; set
+- CI does not test these packages on Windows (`elixir_make` needs
+  `make` and a C compiler there), or on NetBSD (its kernel does not start an APE file by a link; set
   `MAKE` to a script that starts `beam.com` with the APE loader and
   `BEAM_COM_PROGRAM=make`).
 
@@ -190,6 +199,131 @@ form). With the network, the check of the tools also compiles `exqlite`,
 `bcrypt_elixir` and `argon2_elixir` in a small project (on all the
 platforms but NetBSD and Windows), checks that no NIF file was built or downloaded, and uses
 esqlite and exqlite in one VM.
+
+## Phoenix in one file
+
+`beam.com DIR -o FILE` makes one file from a Phoenix app. Run no Mix
+task first:
+
+```sh
+mix.com phx.new hello            # or an app of your own
+cd hello
+beam.com . -o hello.com
+PHX_SERVER=true SECRET_KEY_BASE=... DATABASE_URL=... ./hello.com
+```
+
+A project with `config/runtime.exs`, a dep that is not a Hex package,
+a dep of a Hex organization or of another Hex repository, `:compilers`
+in `project/0`, or the alias `assets.deploy` needs Mix itself. Mix uses
+your Hex client and your keys of Hex for a private package. A new Phoenix app has all four. For such a project, the builder
+writes one line with the reasons. Then a child `beam.com` runs Mix, in
+the directory of the project and with your environment:
+
+1. `loadconfig` and `deps.get`. Mix gets the git deps (for example
+   `heroicons` and `daisyui`) with the `git` program, with your keys of
+   SSH and your proxy, or with the git client of `beam.com` (below). It
+   installs rebar3 when a dep needs it.
+2. `compile`, with the compilers of `mix.exs` (the colocated hooks of
+   Phoenix LiveView).
+3. `assets.deploy`, when `mix.exs` has this alias: tailwind, esbuild
+   and `phx.digest`. Tailwind and esbuild get their programs over the
+   network, the first time.
+4. `release`, with `include_erts: false` and a temporary directory.
+   `mix.exs` does not change: the child adds these two options to each
+   release with `Mix.Project.in_project/4`, and the other options of
+   the release stay. A release consolidates the protocols and keeps
+   `config/runtime.exs`, which the program reads at each start.
+
+The builder then makes the file from the release, as for
+`beam.com _build/prod/rel/NAME -o FILE`, and removes the temporary
+directory.
+
+- The environment is `MIX_ENV`, or `prod` when it is not set.
+- Mix writes `deps/`, `_build/`, `mix.lock` and the digested files of
+  `priv/static` in the project, as `mix release` does. A second build
+  uses them again, so it is faster.
+- When the project has a dep and no Hex is loaded, the child installs
+  Hex, as `mix local.hex` does (in `MIX_HOME`). A git dep, a path dep,
+  and a dep only for `:dev` can need Hex too, because `deps.get` gets
+  the deps of each environment. A custom build with Hex in its
+  zip needs no installation.
+- The child reads no standard input. A question of Mix gets the answer
+  "no", so the build stops and does not wait.
+- The builder prints the output of Mix as it comes. A byte that is not
+  UTF-8 (for example of a code page of Windows) prints as U+FFFD.
+- When the build stops (an error, or the end of the builder), the child
+  stops too, because its standard input ends. The builder then removes
+  the temporary directory of the release.
+- `--tool mix-release` makes the release with Mix for each Mix project.
+  `--tool mix` keeps the builder of a plain Mix project, also for a
+  project with `config/runtime.exs`.
+- A release of Mix has its own applications and no `main/1`. Thus only
+  the builder of a plain Mix project reads `--main`, `-a`,
+  `--extract-priv` and `escript: [main_module: M]`. With one of them,
+  a project whose only reasons are `config/runtime.exs` and
+  `:compilers` gets the builder of a plain Mix project, with a warning:
+  the program runs `M.main/1`, and it does not read
+  `config/runtime.exs`. With another reason, the build stops with an
+  error.
+- The builder checks the base file and the directory of the output
+  before the Mix steps. After an error of Mix, it removes the temporary
+  directory of the release.
+- New code for a program that runs (see "New code in a running
+  program" in [`PROGRAMS.md`](PROGRAMS.md)) works the same with a file
+  of this build: `lib/hello-0.1.0/` has the code and `priv/static`.
+- On Windows, the Mix steps run too: the spawn driver of `beam.com`
+  starts the child `beam.com`, git and the other programs with
+  `posix_spawn()` (C16 of [`UPSTREAM.md`](UPSTREAM.md)). CI builds and
+  runs `tests/programs/runtime_check` and a new Phoenix app there. A script with `#!` as a
+  port program (for example `rebar3`) runs with the `escript` of
+  `beam.com`, or with the `sh` in `PATH`. tailwind and esbuild get their
+  programs for Windows. When the config gives no target and no path, the
+  builder sets the target `windows-x64.exe` of tailwind. It also sets the
+  path of `esbuild.exe` of the npm package `@esbuild/win32-x64` in
+  `_build`, with the version of `config :esbuild`. For esbuild before
+  0.16.0, the package is `esbuild-windows-64`. The builder does this only
+  when `mix.exs` has the alias `assets.deploy` and the dep is in the
+  environment of Mix.
+- The check of `esbuild.exe` is the check of the esbuild package: the
+  metadata of npm must have a valid signature of a key of npm over the
+  name, the version and the SHA-512 of the tarball, and the tarball
+  must have that SHA-512. The keys of npm are in `beam_com_mix.erl`.
+  Thus you trust the keys of npm, and the registry that signs. The
+  tarball has at most 64 MiB, and 128 MiB without compression. The
+  program of tailwind has only the checks of the tailwind package (TLS).
+- The builder does not know a step other than `assets.deploy` that runs
+  esbuild or tailwind, for example a compiler of `:compilers`. Such a
+  step gets the programs for Linux on Windows: give the `path` or the
+  `target` in the config.
+- With no `git` program in `PATH`, the git client of `beam.com`
+  (`beam_com_git`) gets each git dep of an `https` URL, also `github:`.
+  It speaks version 2 of the git protocol over HTTPS, with your proxy,
+  and with the user and the password of the URL. It gets the commit of
+  `mix.lock` (or of `ref:`, `branch:` or `tag:`), with depth 1, and it
+  computes the name of each object, so the files are the files of that
+  commit. It refuses an object with the mark of a SHA-1 collision attack
+  (see "Git deps" in [`PROGRAMS.md`](PROGRAMS.md)). It writes only the
+  objects of that commit, and `sparse:` gives
+  one directory of it. `ref:` is a commit with all its 40 hex digits,
+  or the name of a tag or a branch: a shorter commit does not work with
+  no `git` program. The lock entries are the entries of `git`, so
+  `mix.lock` stays the same. `BEAM_COM_GIT=client` uses it also when
+  `git` is in `PATH`.
+- With no `git` program, the same client also gets each git dep of an
+  SSH URL (`git@host:path`, `ssh://`), with the keys of `~/.ssh` and of
+  the SSH agent: see "Git over SSH" in [`PROGRAMS.md`](PROGRAMS.md).
+- A git dep of another URL (for example `git://`), and `submodules:
+  true`, need the `git` program.
+- To deploy the file to a server, from the server itself or from CI, see
+  [`DEPLOY.md`](DEPLOY.md).
+
+CI builds the app of "Phoenix from source" this way on Linux. The git
+client of `beam.com` gets its git deps. On Windows, CI builds a new app
+with no database (`mix phx.new hello --no-ecto`). Each file must serve
+the start page and its digested CSS.
+[`tests/programs/runtime_check`](../tests/programs/runtime_check) is a
+small Mix project with `config/runtime.exs` and no deps. CI builds and
+runs it on each platform.
 
 ## The file watcher
 

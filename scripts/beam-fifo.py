@@ -30,6 +30,10 @@ The variables:
                                (default ~/.config/beam-fifo/HOLDER.ids).
                                The next save deletes these envelopes first.
   BEAM_FIFO_GITHUB_REPO        sntran/BEAM.com (the default).
+  BEAM_FIFO_GITHUB_WEB         https://github.com (the default): the files
+                               of the releases. A test gives a stub.
+  BEAM_FIFO_GITHUB_API         https://api.github.com (the default): the
+                               dispatch of the workflow. A test gives a stub.
   BEAM_FIFO_GITHUB_REF         main (the default).
   BEAM_FIFO_GITHUB_TOKEN       A fine-grained token: Actions, read and write,
                                on the repository only.
@@ -59,6 +63,8 @@ SEEDS = pathlib.Path(__file__).resolve().parent.parent / "priv" / "seeds" / "bea
 DEFAULTS = {
     "BASE": "https://mkfifo.com",
     "GITHUB_REPO": "sntran/BEAM.com",
+    "GITHUB_WEB": "https://github.com",
+    "GITHUB_API": "https://api.github.com",
     "GITHUB_REF": "main",
 }
 PLACEHOLDER = re.compile(r"\{\{([A-Z0-9_]+)\}\}")

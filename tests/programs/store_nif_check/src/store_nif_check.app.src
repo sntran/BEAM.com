@@ -1,0 +1,5 @@
+{application, store_nif_check,
+ [{description, "The NIFs of the store as native NIF objects"},
+  {vsn, "1.0.0"},
+  {applications, [kernel, stdlib, compiler]},
+  {modules, []}]}.
