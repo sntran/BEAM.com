@@ -216,19 +216,23 @@ jobs:
           if-no-files-found: error
 
       # The check of the writes to a pipe (c_src/cosmo/beam_com_pipe.c),
-      # for the job test: tests/run.ps1 runs it on Windows.
+      # and of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c),
+      # for the job test: tests/run.ps1 runs them on Windows.
       - name: Build the check of the pipe writes
         if: matrix.out == 'beam.com'
         run: |
           build/cosmocc/bin/cosmocc -O2 -Wno-unused-function -o build/pipe_check.com \
             tests/cosmo/pipe_check.c
+          build/cosmocc/bin/cosmocc -O2 -o build/agent_check.com tests/cosmo/agent_check.c
 
       - name: Upload the check of the pipe writes
         if: matrix.out == 'beam.com'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pipe_check.com
-          path: build/pipe_check.com
+          path: |
+            build/pipe_check.com
+            build/agent_check.com
           if-no-files-found: error
 
       - name: Upload the APE loader

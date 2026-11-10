@@ -39,6 +39,14 @@
 #define AGENT_MAX (256 * 1024)
 #define AGENT_PATH 512
 
+/* The flags of CreateFile() for the security quality of service of a
+ * client of a pipe (SECURITY_SQOS_PRESENT and SECURITY_IDENTIFICATION of
+ * winbase.h). Cosmopolitan has no names for them. With these flags, the
+ * server of the pipe can identify this client, but cannot impersonate it.
+ * Windows OpenSSH sets the same flags for its agent. */
+#define AGENT_SQOS_PRESENT 0x00100000u
+#define AGENT_SQOS_IDENTIFICATION 0x00010000u
+
 /* The agent: a handle of Windows, or a socket. */
 struct agent {
     int64_t handle;
@@ -63,7 +71,9 @@ static int agent_open(const char *path, struct agent *a)
         name[i] = 0;
         for (tries = 0; tries < 50; tries++) {
             a->handle = CreateFile(name, kNtGenericRead | kNtGenericWrite, 0, 0,
-                                   kNtOpenExisting, 0, 0);
+                                   kNtOpenExisting,
+                                   AGENT_SQOS_PRESENT | AGENT_SQOS_IDENTIFICATION,
+                                   0);
             if (a->handle != kNtInvalidHandleValue)
                 return 0;
             /* All the instances of the pipe are in use: try again after
