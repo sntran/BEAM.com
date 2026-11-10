@@ -40,6 +40,18 @@ defmodule BeamComGitSshTest do
 
       assert :beam_com_git_ssh.is_ssh("ssh://h/r")
 
+      # On Windows, a host of one letter is a drive, as for git.
+      for url <- ["C:/repos/dep", "c:repo", "D:\\repos\\dep"] do
+        assert :none == :beam_com_git_ssh.parse_url(url, {:win32, :nt}), url
+        assert {:none, [_], :none, _} = :beam_com_git_ssh.parse_url(url, {:unix, :linux})
+      end
+
+      assert {:none, ~c"cd", :none, ~c"repo"} ==
+               :beam_com_git_ssh.parse_url("cd:repo", {:win32, :nt})
+
+      assert {~c"git", ~c"c", :none, ~c"repo"} ==
+               :beam_com_git_ssh.parse_url("git@c:repo", {:win32, :nt})
+
       # SSH has no password in the URL: the user stays, and the password
       # goes.
       assert {~c"git", ~c"h", :none, ~c"/r"} ==

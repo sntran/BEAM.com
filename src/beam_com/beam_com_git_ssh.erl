@@ -29,7 +29,7 @@
 -export([is_host_key/5, add_host_key/4, user_key/2, sign/3]).
 
 -ifdef(TEST).
--export([parse_url/1, config/3, match_host/2, known/3, key_algs/1, rounds/1, quote/1, sig_alg/1,
+-export([parse_url/1, parse_url/2, config/3, match_host/2, known/3, key_algs/1, rounds/1, quote/1, sig_alg/1,
          host_algs/2,
          v0_refs/1, private_key/1, next_pkt/1, agent_keys/1, agent_call/2, identities/1,
          signature/1, default_agent/2, agent/2]).
@@ -83,7 +83,10 @@ pack(Url, Sha, Body, Opts) ->
 %%% The URL.
 
 %% {User | none, Host, Port | none, Path}, or none.
-parse_url(Url0) ->
+parse_url(Url) ->
+    parse_url(Url, os:type()).
+
+parse_url(Url0, Os) ->
     Url = unicode:characters_to_list(Url0),
     case uri_string:parse(Url) of
         #{scheme := Scheme, host := Host, path := Path} = U
@@ -100,14 +103,15 @@ parse_url(Url0) ->
                  "/~" ++ _ -> tl(Path);
                  _ -> uri_string:percent_decode(Path)
              end};
-        #{scheme := _} ->
-            scp_url(Url);
         _ ->
-            scp_url(Url)
+            scp_url(Url, Os)
     end.
 
-%% user@host:path: a ":" before the first "/", and no "://".
-scp_url(Url) ->
+%% user@host:path: a ":" before the first "/", and no "://". On Windows,
+%% a host of one letter is a drive (C:/repos/dep), as for git.
+scp_url([Drive, $: | _], {win32, _}) when Drive >= $a, Drive =< $z; Drive >= $A, Drive =< $Z ->
+    none;
+scp_url(Url, _Os) ->
     case string:find(Url, "://") of
         nomatch ->
             case string:split(Url, ":") of

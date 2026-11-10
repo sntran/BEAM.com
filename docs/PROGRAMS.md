@@ -203,6 +203,8 @@ A dep of `rebar.config` can also come from a git repository of an
 The git client speaks SSH with the `ssh` application of OTP, with no
 `ssh` program. It accepts `ssh://[user@]host[:port]/path` and the form
 of scp, `[user@]host:path` (for example `git@github.com:org/repo.git`).
+On Windows, a host of one letter is a drive, as for `git`: `C:/repos/dep`
+is a path, not an SSH URL.
 The same client gets the git deps of Mix with no `git` program (see
 "Phoenix in one file" in [`ELIXIR.md`](ELIXIR.md)).
 
