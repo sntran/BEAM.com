@@ -959,6 +959,10 @@ jobs:
             else
               sh tests/bench/run.sh bin > bench.md
             fi
+            # The action copies the work directory back from the VM, and
+            # the job needs only bench.md: bin/ has GBs (the artifacts and
+            # the outputs of the tests), and a copy of 2 GB broke.
+            rm -rf bin
 
       # NetBSD's sh stops at the NUL bytes of the APE header (C13 of
       # docs/UPSTREAM.md): one start through sh shows it in the log, not
@@ -981,6 +985,10 @@ jobs:
             else
               RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
             fi
+            # The action copies the work directory back from the VM, and
+            # the job needs only bench.md: bin/ has GBs (the artifacts and
+            # the outputs of the tests), and a copy of 2 GB broke.
+            rm -rf bin
 
       - name: Run on OpenBSD through the APE loader
         if: matrix.vm == 'openbsd' && matrix.runner == 'loader'
@@ -998,6 +1006,10 @@ jobs:
             else
               RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
             fi
+            # The action copies the work directory back from the VM, and
+            # the job needs only bench.md: bin/ has GBs (the artifacts and
+            # the outputs of the tests), and a copy of 2 GB broke.
+            rm -rf bin
 
       - name: Run on OpenBSD through sh
         if: matrix.vm == 'openbsd' && matrix.runner == 'sh'
@@ -1006,6 +1018,8 @@ jobs:
           release: "7.3"
           run: |
             sh tests/run.sh bin && echo "The benchmarks run in the job through the APE loader." > bench.md
+            # Only bench.md goes back from the VM (see the step of FreeBSD).
+            rm -rf bin
 
       - name: Benchmarks
         run: |
