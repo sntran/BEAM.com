@@ -26,7 +26,7 @@
 %%   contents.tar.gz at most ?MAX_CONTENTS bytes without compression.
 -module(beam_com_hex).
 
--export([fetch/2, fetch/4, http/5]).
+-export([fetch/2, fetch/4, http/5, http/6]).
 
 -ifdef(TEST).
 -export([parse_version/1, compare/2, parse_requirement/1, matches/2,
@@ -1139,8 +1139,18 @@ http_get(Url, Max) ->
 %% A request with the client of the builder: its own profile of httpc,
 %% the proxy of HTTPS_PROXY, the check of the certificate and of the
 %% host name, and at most Max bytes of body. Body: none (GET), or
-%% {ContentType, Data} (POST). The git client (beam_com_git) uses it too.
-http(Method, Url, Headers0, Body, Max) ->
+%% {ContentType, Data} (POST).
+http(Method, Url, Headers, Body, Max) ->
+    http(Method, Url, Headers, Body, Max, #{}).
+
+%% The same with options, for the git client (beam_com_git): timeout, the
+%% time limit of the complete request (ms); idle, the time limit with no
+%% data (ms); redirect, false to get {redirect, Location} for a redirect,
+%% in place of the response of the new URL.
+http(Method, Url, Headers0, Body, Max, Opts) ->
+    Timeout = maps:get(timeout, Opts, ?HTTP_TIMEOUT),
+    Idle = maps:get(idle, Opts, 2 * ?HTTP_TIMEOUT),
+    Redirect = maps:get(redirect, Opts, true),
     ok = start_http(),
     Tls = [{verify, verify_peer}, {cacerts, public_key:cacerts_get()},
            {customize_hostname_check,
@@ -1150,36 +1160,43 @@ http(Method, Url, Headers0, Body, Max) ->
                   none -> {Url, Headers};
                   {Type, Data} -> {Url, Headers, Type, Data}
               end,
-    case httpc:request(Method, Request, [{ssl, Tls}, {timeout, ?HTTP_TIMEOUT}],
+    case httpc:request(Method, Request, [{ssl, Tls}, {timeout, Timeout}, {autoredirect, Redirect}],
                        [{sync, false}, {stream, {self, once}}, {body_format, binary},
                         {max_body_size, Max}], beam_com) of
-        {ok, Ref} -> body(Ref, Url, Max, undefined, 0, []);
+        {ok, Ref} -> body(Ref, Url, Max, undefined, 0, [], {Idle, Redirect});
         {error, Reason} -> throw({error, "~ts: ~p", [Url, Reason]})
     end.
 
-body(Ref, Url, Max, Handler, Size, Parts) ->
+body(Ref, Url, Max, Handler, Size, Parts, {Idle, Redirect} = O) ->
     receive
         {http, {Ref, stream_start, _Headers, Pid}} ->
             ok = httpc:stream_next(Pid),
-            body(Ref, Url, Max, Pid, Size, Parts);
+            body(Ref, Url, Max, Pid, Size, Parts, O);
         {http, {Ref, stream, Part}} when Size + byte_size(Part) =< Max ->
             ok = httpc:stream_next(Handler),
-            body(Ref, Url, Max, Handler, Size + byte_size(Part), [Part | Parts]);
+            body(Ref, Url, Max, Handler, Size + byte_size(Part), [Part | Parts], O);
         {http, {Ref, stream, _}} ->
             ok = httpc:cancel_request(Ref, beam_com),
             flush(Ref),
             too_large(Url, Max);
         {http, {Ref, stream_end, _Headers}} ->
             iolist_to_binary(lists:reverse(Parts));
+        {http, {Ref, {{_, Code, _}, Headers, _}}}
+          when not Redirect, Code >= 301, Code =< 308, Code =/= 304, Code =/= 305, Code =/= 306 ->
+            case proplists:get_value("location", Headers) of
+                undefined -> throw({error, "~ts: HTTP ~b with no location", [Url, Code]});
+                Location -> {redirect, Location}
+            end;
         {http, {Ref, {{_, 404, _}, _, _}}} -> throw({error, "~ts: not found", [Url]});
         {http, {Ref, {{_, Code, _}, _, _}}} -> throw({error, "~ts: HTTP ~b", [Url, Code]});
         {http, {Ref, {error, body_too_big}}} -> too_large(Url, Max);
         {http, {Ref, {error, {body_too_long, _}}}} -> too_large(Url, Max);
         {http, {Ref, {error, Reason}}} -> throw({error, "~ts: ~p", [Url, Reason]})
-    after 2 * ?HTTP_TIMEOUT ->
-            %% httpc answers at its timeout: this is only a guard.
+    after Idle ->
+            %% A server that sends no data.
             ok = httpc:cancel_request(Ref, beam_com),
-            throw({error, "~ts: ~p", [Url, timeout]})
+            flush(Ref),
+            throw({error, "~ts: no data for ~b s", [Url, Idle div 1000]})
     end.
 
 too_large(Url, Max) ->

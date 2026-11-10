@@ -16,7 +16,7 @@
 -export([pkt/1, refs/1, pack_response/1]).
 
 -ifdef(TEST).
--export([pkts/1, advertisement/1, objects/1, objects/2, apply_delta/2, apply_delta/3,
+-export([pkts/1, advertisement/1, objects/1, objects/2, apply_delta/2, apply_delta/3, http_opts/0,
          tree/1, commit_tree/1, inflate/2, safe_name/1, url/1]).
 -endif.
 
@@ -28,11 +28,19 @@
 -define(MAX_OBJECT, 256 * 1024 * 1024).
 -define(MAX_TOTAL, 1024 * 1024 * 1024).
 -define(SHA_RE, "^[0-9a-f]{40}$").
+%% The time limits of a request over HTTPS: the complete request (a pack
+%% of MAX_PACK at 150 KB/s), and the time with no data.
+-define(HTTP_TIMEOUT, 3600 * 1000).
+-define(HTTP_IDLE, 120 * 1000).
+%% The client follows at most 5 redirects of info/refs, as curl and git.
+-define(MAX_REDIRECTS, 5).
+-define(INFO_REFS, "/info/refs?service=git-upload-pack").
 
 %% The commit of Rev at the repository Url: Rev is a commit (40 hex
 %% digits), {branch, B}, {tag, T}, {ref, R}, or head. Opts: http, the
-%% function of the requests (beam_com_hex:http/5; another one for the
-%% tests), and ssh, the settings of beam_com_git_ssh for the tests.
+%% function of the requests (beam_com_hex:http/6 with the options of
+%% http/1; another one for the tests), and ssh, the settings of
+%% beam_com_git_ssh for the tests.
 resolve(Url, {ref, Ref}, Opts) when length(Ref) =:= 40 ->
     case is_sha(Ref) of
         true -> list_to_binary(Ref);
@@ -55,8 +63,8 @@ resolve_refs(Url, Names, Opts) ->
                true ->
                    beam_com_git_ssh:ls_refs(Url, Body, ?MAX_REFS, Opts);
                false ->
-                   capabilities(Url, Opts),
-                   refs(pkts(upload_pack(Url, Body, ?MAX_REFS, Opts)))
+                   Base = capabilities(Url, Opts),
+                   refs(pkts(upload_pack(Url, Base, Body, ?MAX_REFS, Opts)))
            end,
     case [Sha || N <- Names, {Name, Sha} <- Refs, Name =:= list_to_binary(N)] of
         [Sha | _] -> Sha;
@@ -74,8 +82,8 @@ fetch(Url, Sha, Opts) ->
                true ->
                    beam_com_git_ssh:pack(Url, Sha, Body, Opts);
                false ->
-                   capabilities(Url, Opts),
-                   pack_response(pkts(upload_pack(Url, Body, ?MAX_PACK, Opts)))
+                   Base = capabilities(Url, Opts),
+                   pack_response(pkts(upload_pack(Url, Base, Body, ?MAX_PACK, Opts)))
            end,
     Objects = objects(Pack),
     reachable(Sha, Objects).
@@ -130,33 +138,74 @@ pkts(<<Hex:4/binary, Rest/binary>>) ->
 pkts(_) ->
     throw({error, "git: a short pkt-line", []}).
 
-%% The capabilities of the server: the server must speak version 2.
+%% The capabilities of the server: the server must speak version 2. The
+%% result is the URL of the repository after the redirects of info/refs:
+%% the requests after it go there, as with git.
 capabilities(Url, Opts) ->
+    capabilities(Url, url(Url), Opts, 0).
+
+capabilities(Url, Base, Opts, N) ->
     Http = http(Opts),
-    Body = Http(get, url(Url) ++ "/info/refs?service=git-upload-pack", headers(Url), none,
-                ?MAX_REFS),
-    advertisement(pkts(Body)) orelse
-        throw({error, "~ts: the server does not speak version 2 of the git protocol; "
-               "install git", [redact(Url)]}).
+    case Http(get, Base ++ ?INFO_REFS, headers(Url, Base), none, ?MAX_REFS) of
+        {redirect, Location} when N < ?MAX_REDIRECTS ->
+            capabilities(Url, redirect(Url, Base, Location), Opts, N + 1);
+        {redirect, _} ->
+            throw({error, "~ts: more than ~b redirects", [redact(Url), ?MAX_REDIRECTS]});
+        Body ->
+            advertisement(pkts(Body)) orelse
+                throw({error, "~ts: the server does not speak version 2 of the git protocol; "
+                       "install git", [redact(Url)]}),
+            Base
+    end.
+
+%% The new URL of the repository: the location of a redirect of info/refs
+%% with no INFO_REFS at its end. It must be https.
+redirect(Url, Base, Location0) ->
+    Location = uri_string:resolve(unicode:characters_to_list(Location0), Base ++ ?INFO_REFS),
+    case {uri_string:parse(Location), string:find(Location, ?INFO_REFS, trailing)} of
+        {#{scheme := "https", host := Host}, ?INFO_REFS} when Host =/= "" ->
+            url(string:slice(Location, 0, length(Location) - length(?INFO_REFS)));
+        _ ->
+            throw({error, "~ts: a redirect to ~ts, which is not the info/refs of an https URL",
+                   [redact(Url), redact(Location)]})
+    end.
 
 %% True when the advertisement has "version 2". A server of HTTP can put
 %% "# service=git-upload-pack" and a flush first.
 advertisement(Lines) ->
     lists:member(<<"version 2">>, [string:trim(L, trailing, "\n") || L <- Lines, is_binary(L)]).
 
-upload_pack(Url, Body, Max, Opts) ->
+upload_pack(Url, Base, Body, Max, Opts) ->
     Http = http(Opts),
-    Http(post, url(Url) ++ "/git-upload-pack",
-         [{"accept", "application/x-git-upload-pack-result"} | headers(Url)],
-         {"application/x-git-upload-pack-request", iolist_to_binary(Body)}, Max).
+    case Http(post, Base ++ "/git-upload-pack",
+              [{"accept", "application/x-git-upload-pack-result"} | headers(Url, Base)],
+              {"application/x-git-upload-pack-request", iolist_to_binary(Body)}, Max) of
+        {redirect, _} ->
+            throw({error, "~ts: a redirect of git-upload-pack; the server must redirect "
+                   "info/refs", [redact(Url)]});
+        Answer ->
+            Answer
+    end.
 
 http(Opts) ->
-    maps:get(http, Opts, fun beam_com_hex:http/5).
+    maps:get(http, Opts, fun(Method, Url, Headers, Body, Max) ->
+                                 beam_com_hex:http(Method, Url, Headers, Body, Max, http_opts())
+                         end).
 
-headers(Url) ->
+%% The options of beam_com_hex:http/6 for git: a pack can need more time
+%% than a request of Hex, and the client follows a redirect itself.
+http_opts() ->
+    #{timeout => ?HTTP_TIMEOUT, idle => ?HTTP_IDLE, redirect => false}.
+
+%% The headers of a request to Base. The user and the password of Url go
+%% only to the host of Url, also after a redirect.
+headers(Url, Base) ->
+    U = uri_string:parse(unicode:characters_to_list(Url)),
+    B = uri_string:parse(Base),
+    Same = maps:with([host, port], maps:remove(userinfo, U)) =:= maps:with([host, port], B),
     [{"git-protocol", "version=2"}]
-        ++ case uri_string:parse(unicode:characters_to_list(Url)) of
-               #{userinfo := User} ->
+        ++ case U of
+               #{userinfo := User} when Same ->
                    [{"authorization",
                      "Basic " ++ base64:encode_to_string(uri_string:percent_decode(User))}];
                _ -> []

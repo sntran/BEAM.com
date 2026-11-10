@@ -106,6 +106,10 @@ notes of its release.
   - The log line of a git dep and the errors of Git over SSH show no
     password and no token of the URL. An `ssh://` URL with a password
     logs in with the user only.
+  - Git over HTTPS: a request can take one hour, and it stops after 120 s
+    with no data. Before, a pack that needed more than 60 s failed. The
+    client follows a redirect of `info/refs` itself, and sends the next
+    requests to the new URL. Before, they went to the old URL.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

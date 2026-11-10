@@ -597,6 +597,144 @@ defmodule BeamComGitTest do
       assert ~c"https://example.com/r.git" == :beam_com_git.url("https://me:x@example.com/r.git/")
     end
 
+    test "a redirect of info/refs: the next requests go to the new URL" do
+      r = repo()
+      test = self()
+      moved = "https://new.example.com/moved/repo.git"
+
+      redirect = fn location, inner ->
+        fn
+          :get, ~c"https://example.com/org/repo.git/info/refs" ++ _, headers, :none, _ ->
+            send(test, {:old, headers})
+            {:redirect, location}
+
+          method, url, headers, body, max ->
+            inner.(method, url, headers, body, max)
+        end
+      end
+
+      http = redirect.(moved <> "/info/refs?service=git-upload-pack", server(r, test))
+      url = "https://me:pw@example.com/org/repo.git"
+      assert r.commit == :beam_com_git.resolve(url, :head, %{http: http})
+      assert_receive {:old, old_headers}, 5000
+      assert Enum.any?(old_headers, &match?({~c"authorization", _}, &1))
+
+      assert_receive {:get, ~c"https://new.example.com/moved/repo.git/info/refs" ++ _, headers},
+                     5000
+
+      assert_receive {:post, ~c"https://new.example.com/moved/repo.git/git-upload-pack", _}, 5000
+      # The password goes only to the host of the URL.
+      refute Enum.any?(headers, &match?({~c"authorization", _}, &1))
+
+      # A location on the same host keeps the password.
+      http = redirect.("/moved/repo.git/info/refs?service=git-upload-pack", server(r, test))
+      assert r.commit == :beam_com_git.resolve(url, :head, %{http: http})
+      assert_receive {:get, ~c"https://example.com/moved/repo.git/info/refs" ++ _, headers}, 5000
+      assert Enum.any?(headers, &match?({~c"authorization", _}, &1))
+      assert_receive {:post, ~c"https://example.com/moved/repo.git/git-upload-pack", _}, 5000
+
+      for {location, text} <- [
+            {"http://example.com/r.git/info/refs?service=git-upload-pack",
+             "is not the info/refs"},
+            {"https://example.com/other", "is not the info/refs"},
+            {"https://example.com/org/repo.git/info/refs?service=git-upload-pack",
+             "more than ~b redirects"}
+          ] do
+        http = redirect.(location, server(r, test))
+
+        assert {:error, format, _} =
+                 catch_throw(:beam_com_git.resolve(@url, :head, %{http: http}))
+
+        assert List.to_string(format) =~ text
+      end
+
+      post = fn
+        :post, _, _, _, _ -> {:redirect, moved}
+        method, url, headers, body, max -> server(r, test).(method, url, headers, body, max)
+      end
+
+      assert {:error, ~c"~ts: a redirect of git-upload-pack; the server must redirect info/refs",
+              _} = catch_throw(:beam_com_git.resolve(@url, :head, %{http: post}))
+    end
+
+    # A server of HTTP on the loopback address: each connection gets the
+    # answer of reply.(request, socket).
+    defp http_server(reply) do
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false])
+      {:ok, port} = :inet.port(listen)
+
+      spawn_link(fn ->
+        Stream.repeatedly(fn -> :gen_tcp.accept(listen) end)
+        |> Enum.each(fn {:ok, s} ->
+          {:ok, request} = :gen_tcp.recv(s, 0, 5000)
+          reply.(request, s)
+          :gen_tcp.close(s)
+        end)
+      end)
+
+      ~c"http://127.0.0.1:#{port}"
+    end
+
+    test "beam_com_hex:http/6: the time limits and the redirects of git" do
+      assert %{redirect: false, timeout: t, idle: idle} = :beam_com_git.http_opts()
+      # A pack of 512 MiB needs more than the 60 s of a request of Hex.
+      assert t >= 3_600_000 and idle < t
+
+      test = self()
+
+      base =
+        http_server(fn request, s ->
+          cond do
+            request =~ "GET /silent" ->
+              send(test, :silent)
+              # No answer before the client closes.
+              :gen_tcp.recv(s, 0, 10_000)
+
+            request =~ "GET /moved" ->
+              :gen_tcp.send(
+                s,
+                "HTTP/1.1 301 Moved\r\nlocation: /new\r\ncontent-length: 0\r\n\r\n"
+              )
+
+            request =~ "GET /nolocation" ->
+              :gen_tcp.send(s, "HTTP/1.1 302 Found\r\ncontent-length: 0\r\n\r\n")
+
+            request =~ "GET /new" ->
+              :gen_tcp.send(s, "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nnew")
+
+            request =~ "GET /slow" ->
+              :gen_tcp.send(s, "HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\n")
+
+              # Four parts, with a gap of 300 ms: more than the time
+              # limit of the complete request of the test.
+              for c <- ~w(a b c d) do
+                receive do
+                after
+                  300 -> :gen_tcp.send(s, c)
+                end
+              end
+          end
+        end)
+
+      http = fn path, opts -> :beam_com_hex.http(:get, base ++ path, [], :none, 100, opts) end
+      no_redirect = %{redirect: false}
+
+      assert {:redirect, ~c"/new"} == http.(~c"/moved", no_redirect)
+      assert "new" == http.(~c"/moved", %{})
+
+      assert {:error, ~c"~ts: HTTP ~b with no location", [_, 302]} =
+               catch_throw(http.(~c"/nolocation", no_redirect))
+
+      assert {:error, ~c"~ts: no data for ~b s", [_, 1]} =
+               catch_throw(http.(~c"/silent", %{idle: 1000}))
+
+      assert_receive :silent, 5000
+      assert "abcd" == http.(~c"/slow", %{timeout: 5000, idle: 1000})
+
+      assert {:error, ~c"~ts: ~p", [_, :timeout]} =
+               catch_throw(http.(~c"/slow", %{timeout: 600, idle: 5000}))
+    end
+
     test "redact: no password and no token in a message" do
       assert ~c"https://****:****@e.com/r.git" ==
                :beam_com_git.redact("https://me:s3cret@e.com/r.git")
