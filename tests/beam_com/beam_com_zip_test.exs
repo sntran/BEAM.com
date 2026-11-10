@@ -71,6 +71,49 @@ defmodule BeamComZipTest do
            ] == files(out)
   end
 
+  # write/4: the programs get the mode 0755, and .programs lists them
+  # (the SHA-256, the size and the name, sorted by name).
+  test "programs_test" do
+    new = sample() ++ [{~c"bin/p", "program"}, {~c".programs", "old"}]
+
+    out =
+      IO.iodata_to_binary(
+        :beam_com_zip.write(exe(prefix()), &all/1, new, [~c"dir/b.bin", ~c"bin/p"])
+      )
+
+    {:ok, list} = :zip.list_dir(out)
+    modes = for {:zip_file, name, info, _, _, _} <- list, into: %{}, do: {name, elem(info, 7)}
+    assert 0o755 == modes[~c"bin/p"]
+    assert 0o755 == modes[~c"dir/b.bin"]
+    assert 0o644 == modes[~c"a.txt"]
+    assert 0o644 == modes[~c".programs"]
+    line = fn data, name -> "#{sha256(data)} #{byte_size(data)} #{name}\n" end
+
+    assert line.("program", "bin/p") <> line.(crypto_free_random(1000), "dir/b.bin") ==
+             :proplists.get_value(~c".programs", files(out))
+
+    assert 1 == Enum.count(:beam_com_zip.entries(out), &(&1 == ~c".programs"))
+
+    # With no program: the same as write/3, and no new .programs.
+    assert write(exe(prefix()), &all/1, sample()) ==
+             IO.iodata_to_binary(:beam_com_zip.write(exe(prefix()), &all/1, sample(), []))
+
+    # A .programs of the executable gets a new text.
+    again =
+      IO.iodata_to_binary(:beam_com_zip.write(out, &all/1, [{~c"c", "c"}], [~c"c"]))
+
+    assert line.("c", "c") == :proplists.get_value(~c".programs", files(again))
+  end
+
+  # A name with a new line gets no line in .programs.
+  test "programs_names_test" do
+    assert "" == :beam_com_zip.programs([{~c"a\nb", "x"}])
+    text = :beam_com_zip.programs([{~c"b", "1"}, {~c"a", "2"}])
+    assert "#{sha256("2")} 1 a\n#{sha256("1")} 1 b\n" == text
+  end
+
+  defp sha256(data), do: Base.encode16(:crypto.hash(:sha256, data), case: :lower)
+
   test "entries_order_test" do
     out = write(exe(prefix()), &all/1, sample())
     assert [~c"a.txt", ~c"dir/", ~c"dir/b.bin", ~c"dir/c.txt"] == :beam_com_zip.entries(out)

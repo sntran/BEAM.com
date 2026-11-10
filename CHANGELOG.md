@@ -5,6 +5,25 @@ notes of its release.
 
 ## Unreleased
 
+- A program of the zip runs as a port program from its `/zip` path, for
+  example `priv/bin/tailwind` of a Phoenix app: there is no copy by hand
+  before a run. Before, a spawn of a path in `/zip` started `beam.com`
+  itself. Now only the paths `/zip/bin/NAME` of the helper programs do
+  that (`beam_com_zip_helper()`). On Linux, the program runs from a
+  sealed memfd. On the other systems, in a sandbox, and when the kernel
+  refuses the memfd, it runs from its copy `CACHE/bin/SHA256/NAME`,
+  which the first start writes one time (`O_EXCL`, mode 0500, `fsync()`,
+  then a link or `rename()`). Before each start, beam.com checks that the
+  directories and the copy are of the user and that other users cannot
+  write them. The builder keeps the execute bit of the files of `priv`
+  in the zip, and writes their SHA-256 and size to `.programs`, so a
+  start reads no whole program. In a sandbox, `--allow-run` must name
+  the `/zip` path of the program, and the start makes the copy before
+  the sandbox. `BEAM_COM_MEMFD=0` uses the copy on Linux too. `sh -c`
+  and `os:cmd/1` cannot run a program of the zip. See "priv files as
+  real files" in `docs/PROGRAMS.md`, `docs/SANDBOX.md`, and C56 of
+  `docs/UPSTREAM.md` (`fexecve()` of Cosmopolitan).
+
 - `beam.com DIR -o FILE` makes one file from a Phoenix app, with no Mix
   task first. A Mix project with `config/runtime.exs`, a dep that is not
   a Hex package (git, github, path), a dep of a Hex organization or of

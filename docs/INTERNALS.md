@@ -32,10 +32,17 @@ What BEAM.com writes, and removes:
   macOS and the BSDs, not Windows). It stays there, for all APE files
   of that version. A Linux system with the loader registered in
   `binfmt_misc` does not need this.
-- A program whose `priv` has an executable file (or with
-  `--extract-priv`) copies that `priv` directory to the user cache at
-  its first start (see "Command line programs" in
+- A program of a project whose `priv` has an executable file (or with
+  `--extract-priv`) copies that `priv` directory to
+  the user cache at its first start (see "Command line programs" in
   [`PROGRAMS.md`](PROGRAMS.md)). It stays there.
+- A program of the zip (a file of `/zip` with an execute bit) that runs
+  as a port program: on Linux from a memfd, with no file. On the other
+  systems, in a sandbox, and when the memfd does not work, the first
+  start writes its copy `CACHE/bin/SHA256/NAME` (mode 0500, in
+  directories of mode 0700), and the next starts use it. It stays there,
+  one copy for each content of the program. Remove `CACHE/bin` to
+  remove the copies.
 - On Windows, the resolver settings and the certificates of Windows go
   to two files in the temp directory at start, which are removed at
   exit (see "Crypto and TLS").
@@ -48,12 +55,16 @@ Linux the kernel starts `inet_gethost` at boot to resolve the host name.
 BEAM.com links these programs into the emulator. It is a multi-call
 binary, like BusyBox (see [`c_src/cosmo/beam_com.c`](../c_src/cosmo/beam_com.c)).
 
-When ERTS must execute a program in `/zip/bin/`, it executes its own
-file (`GetProgramExecutableName()`) again, with
+When ERTS must execute a helper program `/zip/bin/NAME`, it executes
+its own file (`GetProgramExecutableName()`) again, with
 `BEAM_COM_PROGRAM=<program name>` in the environment
 (`beam_com_exec_helper()`). The new process removes the variable and
 runs that program. The base name of `argv[0]` is only a fallback,
-because Linux `binfmt_misc` does not keep `argv[0]`.
+because Linux `binfmt_misc` does not keep `argv[0]`. One function,
+`beam_com_zip_helper()` of `c_src/cosmo/beam_com_zipexec.c`, decides
+which paths are helpers. Each other program of the zip runs from a real
+file: a memfd on Linux, else a copy in the cache (see "priv files as
+real files" in [`PROGRAMS.md`](PROGRAMS.md)).
 
 The helper programs (`beam_com_main()` in `beam_com.c` finds each one by
 the start of its name):

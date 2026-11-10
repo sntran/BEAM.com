@@ -223,6 +223,7 @@ int __wrap_chown(const char *path, uid_t owner, gid_t group)
 #include "beam_com_net.h"
 #include "beam_com_seatbelt.h"
 #include "beam_com_nif.h"
+#include "beam_com_zipexec.h"
 
 extern int erl_child_setup_main(int argc, char **argv);
 extern int inet_gethost_main(int argc, char **argv);
@@ -454,7 +455,20 @@ static int exec_allowed(const char *path)
  * kernel cannot start the loader, it is Cosmopolitan's execve(), as
  * before. On Linux without Landlock, a file that is not in the list of
  * --allow-run gives EACCES, as with Landlock. Returns only on error. */
+static int ape_execve(const char *path, char *const argv[], char *const envp[]);
+
 int beam_com_execve(const char *path, char *const argv[], char *const envp[])
+{
+    if (!exec_allowed(path)) {
+        errno = EACCES;
+        return -1;
+    }
+    return ape_execve(path, argv, envp);
+}
+
+/* beam_com_execve() without the check of --allow-run: for a program of
+ * the zip, zip_exec() checks its /zip path. */
+static int ape_execve(const char *path, char *const argv[], char *const envp[])
 {
     extern char **environ;
     char loader[4096];
@@ -462,10 +476,6 @@ int beam_com_execve(const char *path, char *const argv[], char *const envp[])
     struct arglist args = {0};
     int i;
 
-    if (!exec_allowed(path)) {
-        errno = EACCES;
-        return -1;
-    }
     if (!envp)
         envp = environ;
     if (ape_loader(loader, sizeof(loader)) && is_ape_file(path)) {
@@ -858,6 +868,8 @@ static void landlock_check(int helper, struct allow *a, int from_env)
     }
 }
 
+static void zip_prepare(int helper, struct allow *a);
+
 static void apply_allow(int helper, struct allow *a, int from_env)
 {
     static const char *libs[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64",
@@ -920,6 +932,8 @@ static void apply_allow(int helper, struct allow *a, int from_env)
         for (i = 0; i < a->programs.n; i++)
             sandbox_unveil_optional(helper, find_program(a->programs.v[i]), "rx");
     }
+    /* The copies of the programs of the zip that --allow-run allows. */
+    zip_prepare(helper, a);
     sandbox_windows(helper, a);
     if (unveil(NULL, NULL) == -1)
         sandbox_error(helper, "unveil", "(commit)");
@@ -980,17 +994,204 @@ static int read_allow(int helper, struct allow *a, int *from_env)
     return words.n > 0;
 }
 
+static void zip_rules_set(struct allow *a, int on);
+
 static void apply_sandbox(int helper)
 {
     struct allow a = {0};
-    int from_env;
+    int from_env, on;
 
     if (helper && IsLinux())
         return;
     __pledge_mode = PLEDGE_PENALTY_RETURN_EPERM;
 
-    if (read_allow(helper, &a, &from_env) && !a.all)
+    on = read_allow(helper, &a, &from_env) && !a.all;
+    zip_rules_set(&a, on);
+    if (on)
         apply_allow(helper, &a, from_env);
+}
+
+/*
+ * --- The programs of the zip ------------------------------------------
+ *
+ * A path of the zip that is not a helper (beam_com_zip_helper()) and
+ * names a regular file with an execute bit is a program of the zip
+ * (c_src/cosmo/beam_com_zipexec.c). In a sandbox (permissions that are
+ * not "all"), it runs only when --allow-run has no list, or when the list
+ * names its /zip path or a /zip directory that has it. The check uses the
+ * /zip path, on each system. There it runs only from its copy in the
+ * cache, never from a memfd: Landlock does not see a memfd, so a memfd
+ * would run a program that the rules of the paths do not name. The VM
+ * makes the copies at its start, before the sandbox (zip_prepare()), and
+ * the rules of the paths name each copy ("rx").
+ */
+static int zip_rules_known, zip_sandbox, zip_run_all;
+static struct arglist zip_run;
+
+static void zip_rules_set(struct allow *a, int on)
+{
+    char path[PATH_MAX];
+    int i;
+
+    zip_rules_known = 1;
+    zip_sandbox = on;
+    zip_run_all = on && a->run_all;
+    for (i = 0; on && i < a->programs.n; i++)
+        if (beam_com_zip_path(a->programs.v[i], path, sizeof(path)) == 0)
+            push(&zip_run, strdup(path));
+}
+
+/* The rules in erl_child_setup on Linux, which keeps the sandbox of the
+ * VM and does not read the permissions (apply_sandbox()). */
+static void zip_rules(void)
+{
+    struct allow a = {0};
+    char *text = allow_text;
+    int from_env, on;
+
+    if (zip_rules_known)
+        return;
+    on = read_allow(1, &a, &from_env) && !a.all;
+    allow_text = text;
+    zip_rules_set(&a, on);
+}
+
+/* erl_child_setup: a relative BEAM_COM_CACHE names a directory of the
+ * directory of the VM, as for beam_com_script. The child of a port
+ * changes its directory before it makes the copy (zip_file()). */
+static void zip_cache_absolute(void)
+{
+    const char *cache = getenv("BEAM_COM_CACHE");
+    char cwd[PATH_MAX];
+
+    if (cache && *cache && *cache != '/' && getcwd(cwd, sizeof(cwd)))
+        setenv("BEAM_COM_CACHE", join(cwd, "/", cache), 1);
+}
+
+/* 1 when the rules allow the program of the zip PATH (a clean path). */
+static int zip_allowed(const char *path)
+{
+    size_t n;
+    int i;
+
+    if (!zip_sandbox || zip_run_all)
+        return 1;
+    for (i = 0; i < zip_run.n; i++) {
+        n = strlen(zip_run.v[i]);
+        if (strncmp(path, zip_run.v[i], n) == 0 && (path[n] == '\0' || path[n] == '/'))
+            return 1;
+    }
+    return 0;
+}
+
+static void zip_prepare_one(const char *path, void *arg)
+{
+    char file[PATH_MAX], msg[PATH_MAX + 256];
+    int helper = *(int *)arg;
+
+    if (beam_com_zip_cache(path, 1, file, sizeof(file), msg, sizeof(msg))) {
+        if (!helper)
+            fprintf(stderr, "beam.com: warning: --allow-run: %s\n", msg);
+        return;
+    }
+    if (!helper && getenv("BEAM_COM_VERBOSE"))
+        fprintf(stderr, "beam.com: --allow-run: %s is %s\n", path, file);
+    sandbox_unveil_optional(helper, file, "rx");
+}
+
+/* At the start of the VM, before the sandbox: the copy of each program of
+ * the zip that the rules allow. On OpenBSD, erl_child_setup gives the
+ * copies to its own unveil() too: there the rules end at exec. */
+static void zip_prepare(int helper, struct allow *a)
+{
+    char path[PATH_MAX];
+    struct stat st;
+    int i;
+
+    if (helper && !IsOpenbsd())
+        return;
+    if (a->run_all) {
+        beam_com_zip_walk(BEAM_COM_ROOT, zip_prepare_one, &helper);
+        return;
+    }
+    for (i = 0; i < a->programs.n; i++) {
+        if (beam_com_zip_path(a->programs.v[i], path, sizeof(path)) != 0 ||
+            stat(path, &st) != 0)
+            continue;
+        if (S_ISDIR(st.st_mode))
+            beam_com_zip_walk(path, zip_prepare_one, &helper);
+        else if (!beam_com_zip_helper(path) && beam_com_zip_program(path) == 0)
+            zip_prepare_one(path, &helper);
+    }
+}
+
+/* The checks of the program of the zip CMD: its clean path in PATH, and 0,
+ * or an errno value (with a text on stderr for a refusal). */
+static int zip_check(const char *cmd, char *path, size_t size)
+{
+    int err;
+
+    if ((err = beam_com_zip_path(cmd, path, size)) || (err = beam_com_zip_program(path)))
+        return err;
+    zip_rules();
+    if (!zip_allowed(path)) {
+        fprintf(stderr, "beam.com: %s: --allow-run does not name this program\n", path);
+        return EACCES;
+    }
+    return 0;
+}
+
+/* The copy of the program of the zip PATH (a clean path) in FILE. In a
+ * sandbox, the copy must exist already (zip_prepare()). */
+static int zip_file(const char *path, char *file, size_t size)
+{
+    char msg[PATH_MAX + 256];
+    int err;
+
+    if ((err = beam_com_zip_cache(path, !zip_sandbox, file, size, msg, sizeof(msg)))) {
+        fprintf(stderr, "beam.com: %s\n", msg);
+        return err;
+    }
+    if (getenv("BEAM_COM_VERBOSE"))
+        fprintf(stderr, "beam.com: %s runs from %s\n", path, file);
+    return 0;
+}
+
+/* Executes the program of the zip CMD. On Linux, from a memfd, unless
+ * BEAM_COM_MEMFD=0, a sandbox, or a file that is not ELF; when the memfd
+ * does not work, from its copy. Returns only on error. */
+static int zip_exec(const char *cmd, char *const argv[], char *const envp[])
+{
+    extern char **environ;
+    char path[PATH_MAX], file[PATH_MAX], proc[32];
+    const char *memfd = getenv("BEAM_COM_MEMFD");
+    int err, fd;
+
+    if (!envp)
+        envp = environ;
+    if ((err = zip_check(cmd, path, sizeof(path)))) {
+        errno = err;
+        return -1;
+    }
+    if (IsLinux() && !zip_sandbox && !(memfd && strcmp(memfd, "0") == 0) &&
+        (fd = beam_com_zip_memfd(path)) >= 0) {
+        if (getenv("BEAM_COM_VERBOSE"))
+            fprintf(stderr, "beam.com: %s runs from a memfd\n", path);
+        /* Not fexecve(): Cosmopolitan reads an ELF file with FD_CLOEXEC
+         * as an APE file, and fails with ENOEXEC (docs/UPSTREAM.md, C56). */
+        snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
+        __sys_execve(proc, argv, envp);
+        err = errno;
+        close(fd);
+        if (getenv("BEAM_COM_VERBOSE"))
+            fprintf(stderr, "beam.com: %s: the memfd does not start (%s)\n", path,
+                    strerror(err));
+    }
+    if ((err = zip_file(path, file, sizeof(file)))) {
+        errno = err;
+        return -1;
+    }
+    return ape_execve(file, argv, envp);
 }
 
 /* A path of the list of exec_allowed(), by its real path. */
@@ -1934,9 +2135,13 @@ static char **helper_env(const char *path, char *const envp[])
     return env.v;
 }
 
+/* A helper of /zip/bin is this file. Another program of the zip runs
+ * from a real file (zip_exec()). */
 int beam_com_exec_helper(const char *path, char *const argv[],
                          char *const envp[])
 {
+    if (!beam_com_zip_helper(path))
+        return zip_exec(path, argv, envp);
     return beam_com_execve(GetProgramExecutableName(), argv, helper_env(path, envp));
 }
 
@@ -1954,8 +2159,10 @@ int beam_com_exec_helper(const char *path, char *const argv[],
  *
  * cmd: the program (argv != NULL), or the command for "sh -c" (argv ==
  * NULL; sh must be in PATH, for example the sh of Git for Windows). A
- * program in /zip/bin is a helper of this file. cwd: the directory of the
- * emulator; wd: the directory of the port (relative to cwd), or NULL.
+ * helper of /zip/bin (beam_com_zip_helper()) is this file, and another
+ * program of the zip runs from its copy in the cache (zip_file()). cwd:
+ * the directory of the emulator; wd: the directory of the port (relative
+ * to cwd), or NULL.
  * in_fd, out_fd: the ends of the pipes for the child, or -1. use_stdio: at
  * fds 0 and 1, else at fds 3 and 4. err_fd: fd 2 of the child. Returns 0
  * and the pid, or an errno value.
@@ -2025,7 +2232,7 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
                       const char *cwd, const char *wd, int in_fd, int out_fd,
                       int err_fd, int use_stdio, int *pid)
 {
-    char sh[PATH_MAX];
+    char sh[PATH_MAX], zpath[PATH_MAX], zfile[PATH_MAX];
     struct arglist script = {0};
     int kind;
     posix_spawn_file_actions_t fa;
@@ -2035,6 +2242,13 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     char **henv = NULL;
     int err;
 
+    /* A program of the zip runs from its copy in the cache. */
+    if (argv && beam_com_is_zip(cmd) && !beam_com_zip_helper(cmd)) {
+        if ((err = zip_check(cmd, zpath, sizeof(zpath))) ||
+            (err = zip_file(zpath, zfile, sizeof(zfile))))
+            return err;
+        cmd = path = zfile;
+    }
     if (argv && beam_com_is_zip(cmd)) {
         path = GetProgramExecutableName();
         env = henv = helper_env(cmd, envp);
@@ -2160,7 +2374,7 @@ int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
     unsigned size = sizeof(loader);
     int pid = -1, rc, i;
 
-    if (!IsXnuSilicon() || !xnu_spawn_load(&x))
+    if (!IsXnuSilicon() || !beam_com_zip_helper(path) || !xnu_spawn_load(&x))
         return -1;
     /* The file of this process is the loader (.ape-1.10). */
     if (x.executable_path(loader, &size) != 0)
@@ -2312,6 +2526,8 @@ void beam_com_main(int *argcp, char ***argvp)
 
     if (starts_with(name, "erl_child_setup")) {
         exec_prepare();
+        zip_rules();
+        zip_cache_absolute();
         exit(erl_child_setup_main(argc, argv));
     }
     if (starts_with(name, "inet_gethost"))

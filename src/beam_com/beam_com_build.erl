@@ -27,7 +27,8 @@
          base_kind/1, check_base/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
-         with_extract/2, compile_all/2, first_names/1, mix_release/3, why/1]).
+         with_extract/2, compile_all/2, first_names/1, mix_release/3, why/1,
+         programs/1, release_programs/2]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -238,8 +239,15 @@ build(Input, Output, Opts, ExtraApps0, Base0, Root, DepsLib) ->
                                           files => app_files(App) ++ DepFiles ++ Release ++ Zip},
                                 Opts#{root => Root});
         false ->
-            write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root)
+            Exec = programs([App | [D || #{name := N} = D <- Deps, lists:member(N, Apps)]]),
+            write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root, Exec)
     end.
+
+%% The names of the programs of the applications in the zip: the files of
+%% priv with an execute bit (priv_files/1).
+programs(Apps) ->
+    [lists:flatten(["lib/", atom_to_list(N), "-", V, "/priv/", F])
+     || #{name := N, vsn := V, priv_exec := Exec} <- Apps, F <- Exec].
 
 zip_app_files(Dir) ->
     Len = length(filename:split(Dir)),
@@ -251,13 +259,14 @@ zip_app_files(Dir) ->
         filelib:is_regular(F), Rel <- [lists:nthtail(Len, filename:split(F))],
         {ok, Data} <- [read_file(F)]].
 
-write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
+write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root, Exec) ->
     {ok, Bin} = base(Opts),
     Files = app_files(App) ++ DepFiles ++ Release ++ without_docs(Kept, Base0, Root),
     Keep = keep(Kept, Base0),
     Rel = #{name => atom_to_list(maps:get(name, App)), vsn => maps:get(vsn, App), kind => beam_com},
     Edge = edge(Files, [], Bin, Keep, Rel, Opts, Root),
-    Data = output_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Edge, Opts),
+    Data = output_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Edge, Exec,
+                       Opts),
     write_output(Output, Data, mode(Opts)),
     summary(Output, Data, Rel, Apps, Edge, Opts),
     site(Opts, Rel, Files, Edge, Root).
@@ -266,7 +275,8 @@ write_exe(Output, Opts, App, Apps, Kept, DepFiles, Release, Base0, Root) ->
 %% and the applications of the zip of beam.com that the release names but
 %% does not have, in the versions of the zip (beam_com_wasm:release_files/2
 %% checked them). A Mix release also gets the variables of its start
-%% script (native_release/3).
+%% script (native_release/3). The files of priv with an execute bit keep
+%% it in the zip (release_programs/2).
 release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files := Files0} = Rel,
             Root) ->
     check_base(Opts),
@@ -288,7 +298,8 @@ release_exe(Dir, Output, Opts, #{name := Name, vsn := Vsn, kind := Kind, files :
     Files = Native ++ without_docs(Kept, Base0, Root),
     Keep = keep(Kept, Base0),
     Edge = edge(Files, Originals, Bin, Keep, maps:with([name, vsn, kind], Rel), Opts, Root),
-    Data = output_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Edge, Opts),
+    Data = output_data(Bin, Keep, with_dirs(Files ++ sandbox_files(Opts)) ++ Edge, Edge,
+                       release_programs(Dir, Native), Opts),
     write_output(Output, Data, mode(Opts)),
     summary(Output, Data, Rel, [A || {A, _} <- RelApps], Edge, Opts),
     site(Opts, Rel, Files, Edge, Root).
@@ -335,6 +346,23 @@ native_release(Files, mix, #{name := Name, vsn := Vsn}) ->
                 (F) -> F
              end,
     {[Change(F) || F <- Files], [Boot, VmArgs]}.
+
+%% The names of the files of priv with an execute bit in the release
+%% directory Dir.
+release_programs(Dir, Files) ->
+    [P || {P, _} <- Files, priv_path(P), executable(filename:join(Dir, P))].
+
+priv_path(P) ->
+    case string:split(P, "/", all) of
+        ["lib", _, "priv", _ | _] -> true;
+        _ -> false
+    end.
+
+executable(File) ->
+    case file:read_file_info(File) of
+        {ok, #file_info{type = regular, mode = Mode}} -> Mode band 8#111 =/= 0;
+        _ -> false
+    end.
 
 %% The start script of a Mix release runs releases/VSN/env.sh, and a
 %% native file has no start script: a warning when env.sh has a line that
@@ -404,14 +432,14 @@ kept_data(Name, Root) ->
 %% --target wasm32 with -o FILE.com: the entries that the WebAssembly
 %% runtime reads (lib/, releases/ and .wasm/, see app-com.js of wasm_host)
 %% and the licenses, in a zip with no native program before them.
-output_data(Bin, Keep, New, Edge, #{edge_only := true}) ->
+output_data(Bin, Keep, New, Edge, _Exec, #{edge_only := true}) ->
     Edge =:= [] andalso
         throw({error, "--target wasm32: there is no WebAssembly runtime in ~ts, so no edge part",
                [beam_com:name()]}),
     Exe = iolist_to_binary(beam_com_zip:write(Bin, Keep, New)),
     beam_com_zip:only(Exe, fun edge_entry/1);
-output_data(Bin, Keep, New, _Edge, Opts) ->
-    exe_data(Bin, Keep, New, Opts).
+output_data(Bin, Keep, New, _Edge, Exec, Opts) ->
+    exe_data(Bin, Keep, New, Exec, Opts).
 
 edge_entry(Name) ->
     lists:any(fun(Dir) -> lists:prefix(Dir, Name) end, ["lib/", "releases/", ".wasm/", "licenses/"]).
@@ -420,12 +448,12 @@ edge_entry(Name) ->
 mode(#{edge_only := true}) -> 8#644;
 mode(_Opts) -> 8#755.
 
-exe_data(Bin, Keep, New, Opts) ->
+exe_data(Bin, Keep, New, Exec, Opts) ->
     case Opts of
         #{target := Target} ->
-            native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New)));
+            native(Target, iolist_to_binary(beam_com_zip:write(Bin, Keep, New, Exec)));
         _ ->
-            beam_com_zip:write(Bin, Keep, New)
+            beam_com_zip:write(Bin, Keep, New, Exec)
     end.
 
 summary(Output, Data, #{name := Name, vsn := Vsn}, Apps, Edge, Opts) ->
@@ -1580,6 +1608,7 @@ keep(Apps, Base) ->
        ("releases/" ++ _) -> false;
        (".args") -> false;
        (".allow") -> false;
+       (".programs") -> false;
        (_) -> true
     end.
 

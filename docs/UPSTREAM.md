@@ -1683,6 +1683,47 @@ between the pipe and its standard I/O.
 with `\\.\` or `//./` (a device path of Win32) as it is, as the code
 already does for `\\?\`.
 
+### C56. fexecve() of an ELF file with FD_CLOEXEC fails with ENOEXEC
+
+**Status:** 4.0.2 (`libc/proc/fexecve.c`), Linux x86_64.
+
+**Symptom.** `fexecve()` of a memfd with `MFD_CLOEXEC` that holds an
+ELF program gives `ENOEXEC`. Without `MFD_CLOEXEC`, and with glibc, the
+program runs.
+
+```c
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
+int main(void) {
+  char *argv[] = {"echo", "ok", NULL}, *envp[] = {NULL}, buf[65536];
+  int in = open("/bin/echo", O_RDONLY), fd = memfd_create("t", MFD_CLOEXEC);
+  ssize_t n;
+  while ((n = read(in, buf, sizeof(buf))) > 0)
+    write(fd, buf, n);
+  fexecve(fd, argv, envp);
+  perror("fexecve"); /* "Exec format error"; glibc prints "ok" */
+}
+```
+
+**Cause.** For a descriptor with `FD_CLOEXEC`, `fexecve()` reads the
+first bytes with `IsApeLoadable()`, which gives true for an ELF file too.
+So it does not start `/proc/self/fd/N`: it copies the file to a new
+memfd and converts it with `ape_to_elf()`, which finds no APE header
+and fails with `ENOEXEC`. `strace` shows `memfd_create("fd_to_mem_fd")`
+and no `execve()`.
+
+**Workaround in BEAM.com.** A program of the zip runs from a memfd
+(`zip_exec()` of `c_src/cosmo/beam_com.c`): beam.com calls the execve
+system call of `/proc/self/fd/N` itself (`__sys_execve()`), with the
+memfd still `FD_CLOEXEC`, so the program does not get the descriptor.
+
+**Possible upstream fix.** Copy to a memfd only for an APE file (the
+magic `MZqFpD='` or `jartsr='`), and call `fexecve_impl()` for an ELF
+file.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -1976,7 +2017,10 @@ BEAM.com links `erl_child_setup` and `inet_gethost` into the emulator
 and selects the program by `argv[0]`. A small ERTS hook for "the path
 of the helper programs" (instead of `BINDIR/name`) would make
 single-file runtimes possible without patches to `sys_drivers.c` and
-`erl_child_setup.c`.
+`erl_child_setup.c`. The same hook could start a port program whose file
+is in an archive of the runtime: BEAM.com starts each other program of
+`/zip` from a memfd or from a copy in the cache
+(`beam_com_exec_helper()`, "priv files as real files" in `PROGRAMS.md`).
 
 ### O10. `inet_db` discards added name servers when `/etc/resolv.conf` is missing
 

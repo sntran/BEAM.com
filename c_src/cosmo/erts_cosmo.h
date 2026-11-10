@@ -83,8 +83,10 @@ static inline const char *beam_com_basename(const char *path)
 }
 
 /*
- * Programs in /zip/bin are not real files. They are names for the
- * helper programs that are linked into this executable.
+ * A path in /zip is not a real file, so the kernel cannot start it.
+ * beam_com_exec_helper() starts it: a path /zip/bin/NAME of a helper
+ * program (beam_com_zip_helper()) is a name of this executable, and
+ * another program of the zip runs from a real file.
  */
 static inline int beam_com_is_zip(const char *path)
 {
@@ -92,18 +94,26 @@ static inline int beam_com_is_zip(const char *path)
         && path[3] == 'p' && path[4] == '/';
 }
 
-/* The file to check with access() for a program path. */
+/* Defined in beam_com_zipexec.c: 1 for /zip/bin/NAME of a helper. */
+int beam_com_zip_helper(const char *path) __attribute__((__weak__));
+
+/* The file to check with access() for a program path: this executable
+ * for a helper. A program of the zip is its zip entry, which access()
+ * of Cosmopolitan checks (an execute bit). */
 static inline const char *beam_com_exec_path(const char *path)
 {
-    return beam_com_is_zip(path) ? GetProgramExecutableName() : path;
+    return beam_com_is_zip(path) && (!beam_com_zip_helper || beam_com_zip_helper(path))
+        ? GetProgramExecutableName() : path;
 }
 
 /*
- * Defined in beam_com.c. Executes this file again as the helper program
- * of the /zip/bin path. The helper name goes in the environment
- * (BEAM_COM_PROGRAM), because argv[0] is not kept on all systems: the
- * Linux binfmt_misc APE loader gives the file path as argv[0]. When envp
- * is NULL, the current environment is used. Returns only on error.
+ * Defined in beam_com.c. Executes the program of a /zip path. A helper
+ * program of /zip/bin is this file, executed again. The helper name goes
+ * in the environment (BEAM_COM_PROGRAM), because argv[0] is not kept on
+ * all systems: the Linux binfmt_misc APE loader gives the file path as
+ * argv[0]. Another program of the zip runs from a memfd (Linux) or from
+ * its copy in the cache (docs/PROGRAMS.md). When envp is NULL, the
+ * current environment is used. Returns only on error.
  */
 int beam_com_exec_helper(const char *path, char *const argv[],
                          char *const envp[]) __attribute__((__weak__));
@@ -141,7 +151,8 @@ int beam_com_execle(const char *path, const char *arg, ...);
  * /zip/bin path with posix_spawn() of libSystem (fd3 at fd 3, other and
  * fd3 closed, a new session), because the child of fork() can hang in
  * the fork handlers of libSystem (docs/UPSTREAM.md, C32). Returns the
- * pid, or -1 on the other systems and on an error.
+ * pid, or -1 on the other systems, for a path that is not a helper, and
+ * on an error.
  */
 int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
                           int other) __attribute__((__weak__));
