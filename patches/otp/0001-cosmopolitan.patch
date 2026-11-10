@@ -116,9 +116,9 @@ index aa5c2e9..9dee841 100644
      if (args) {
          /* spawn_executable */
 +#ifdef __COSMOPOLITAN__
-+        /* BEAM.com: programs in /zip/bin are linked into this executable.
-+         * beam_com_execve() starts an APE file (for example the file of
-+         * the program, in erl mode) with the APE loader on Linux. */
++        /* BEAM.com: a helper of /zip/bin is this executable, and another
++         * program of /zip runs from a real file (beam_com_exec_helper()).
++         * beam_com_execve() starts an APE file with the APE loader. */
 +        if (beam_com_exec_helper && beam_com_is_zip(cmd))
 +            beam_com_exec_helper(cmd, args, new_environ);
 +        else if (beam_com_execve)

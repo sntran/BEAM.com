@@ -38,6 +38,16 @@ what they allow:
 - With `--allow-run`, a program can start its own file in erl mode, for
   example with `peer` (see `docs/PROGRAMS.md`). The new VM has the
   permissions of the program, and it can do no more than the program.
+- A program of the zip (a file of `/zip` with an execute bit, see
+  "priv files as real files" in `docs/PROGRAMS.md`) runs only when
+  `--allow-run` has no list, or when the list names its `/zip` path or
+  a `/zip` directory that has it, for example
+  `--allow-run=/zip/lib/app-1.0.0/priv/bin/tailwind`. beam.com checks the
+  `/zip` path itself, on each system, also where the system has no
+  sandbox. A refused program gives "--allow-run does not name this
+  program" on the standard error: the port exits with the status 13
+  (`EACCES`) on Unix, and `open_port/2` gives `eacces` on Windows. See
+  [Programs of the zip](#programs-of-the-zip).
 - On Linux, `--allow-net` allows the options of a socket that
   `inet:setopts/2` and `inet:getopts/2` use, for example `sndbuf`,
   `recbuf`, `nodelay`, `keepalive`, `linger`, `reuseaddr` and
@@ -128,6 +138,27 @@ code. `BEAM_COM_VERBOSE=1` prints "a job object of one process".
 
 `BEAM_COM_WINDOWS_SANDBOX=1` with `BEAM_COM_ALLOW` does the checks of
 the paths and of the sockets on Linux too, for the tests.
+
+## Programs of the zip
+
+Without a sandbox, a program of the zip runs from a memfd on Linux. A
+memfd is not in the tree of the files, so Landlock does not see it, and
+a memfd could run a program that the rules of the paths do not name.
+Thus, with permissions (other than `--allow-all`):
+
+- A program of the zip never runs from a memfd, only from its copy in
+  the cache, `CACHE/bin/SHA256/NAME`. The seccomp filter of the sandbox
+  also refuses `memfd_create()` (`ENOSYS`), also for native code.
+- At its start, before the sandbox, the program makes the copy of each
+  program of the zip that `--allow-run` allows. The rules give each
+  copy read and execute access (Landlock, `unveil()` of OpenBSD, the
+  profile of Seatbelt, and the check of the paths of Windows). With
+  `--allow-run` without a list, the start makes the copies of all the
+  programs of the zip, outside `/zip/bin`.
+- A spawn does not write in the cache: a copy that is not there gives
+  an error.
+- The checks of the cache (see `docs/PROGRAMS.md`) apply too: a copy in
+  a directory that other users can write does not run.
 
 ## A list of hosts
 

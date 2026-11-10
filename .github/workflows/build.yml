@@ -216,7 +216,8 @@ jobs:
           if-no-files-found: error
 
       # The check of the writes to a pipe (c_src/cosmo/beam_com_pipe.c),
-      # and of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c),
+      # of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c), and of
+      # the copies of the programs of the zip (c_src/cosmo/beam_com_zipexec.c),
       # for the job test: tests/run.ps1 runs them on Windows.
       - name: Build the check of the pipe writes
         if: matrix.out == 'beam.com'
@@ -224,6 +225,7 @@ jobs:
           build/cosmocc/bin/cosmocc -O2 -Wno-unused-function -o build/pipe_check.com \
             tests/cosmo/pipe_check.c
           build/cosmocc/bin/cosmocc -O2 -o build/agent_check.com tests/cosmo/agent_check.c
+          CC=build/cosmocc/bin/cosmocc sh tests/cosmo/zipexec_check.sh build
 
       - name: Upload the check of the pipe writes
         if: matrix.out == 'beam.com'
@@ -233,6 +235,7 @@ jobs:
           path: |
             build/pipe_check.com
             build/agent_check.com
+            build/zipexec_check.com
           if-no-files-found: error
 
       - name: Upload the APE loader

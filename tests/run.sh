@@ -1002,6 +1002,35 @@ if [ -d examples ]; then
     rm -f examples/worker/rebar.lock
 fi
 
+# The programs of the zip (docs/PROGRAMS.md, "priv files as real files"):
+# zip_programs NAME PROG PATTERN [ARGS...] builds a copy of
+# tests/programs/zip_programs with PROG as priv/bin/prog into DIR/NAME.com
+# (with ARGS for the build), and checks the output of the build with
+# PATTERN. The program runs priv/bin/prog with open_port/2 and
+# System.cmd/3, by code:priv_dir/1 and by its path in /zip.
+zip_src=$(pwd)/tests/programs/zip_programs
+zip_fail() {
+    echo "FAIL: $1"
+    fail=1
+    failed="$failed
+  $1"
+}
+zip_programs() {
+    zname=$1 zprog=$2 zpattern=$3
+    shift 3
+    rm -rf "$dir/$zname" "$dir/$zname.com"
+    cp -R "$zip_src" "$dir/$zname"
+    rm -rf "$dir/$zname/_build"
+    mkdir -p "$dir/$zname/priv/bin"
+    cp "$zprog" "$dir/$zname/priv/bin/prog"
+    chmod 755 "$dir/$zname/priv/bin/prog"
+    zlimit=$limit
+    limit=600
+    check beam.com "$zpattern" "$dir/$zname" "$@" -o "$dir/$zname.com"
+    limit=$zlimit
+    rm -rf "$dir/$zname"
+}
+
 # Elixir: a one-file program, and a Mix project with a Hex package in
 # Elixir (jason, from hex.pm) and config/config.exs.
 greeter_ex='greeter_ex: Hello from config/config.exs (1)@@greeter_ex: Hello from config/config.exs (2)@@greeter_ex: json {.*"elixir":"1\.[0-9.]*".*}@@greeter_ex: decoded 1\.'
@@ -1032,6 +1061,101 @@ if [ -d examples ]; then
         check runtime_check.com 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs'
         unset RUNTIME_CHECK_GREETING
     fi
+    # The programs of the zip: a small echo program that cc compiles here
+    # (not /bin/echo: the echo of uutils of Ubuntu 26.04 refuses a name
+    # that is not the name of a tool) in priv/bin, in a Mix release
+    # (config/runtime.exs) and in a plain Mix project. On Linux,
+    # the program runs from a memfd, with no file in the cache. With
+    # BEAM_COM_MEMFD=0, and on the other systems, it runs from its copy
+    # CACHE/bin/SHA256/prog: one copy, the same file at the next run, and
+    # one whole file for two runs at the same time. A cache directory that
+    # other users can write, and a sandbox whose --allow-run does not name
+    # the program, give an error and run nothing. The cache is in DIR.
+    zecho=$(cd "$dir" && pwd)/zip_echo
+    printf '%s\n' '#include <stdio.h>' \
+        'int main(int argc, char **argv) {' \
+        '    for (int i = 1; i < argc; i++) printf(i > 1 ? " %s" : "%s", argv[i]);' \
+        '    printf("\n");' \
+        '    return 0;' \
+        '}' > "$zecho.c"
+    rm -f "$zecho"
+    if ! cc -std=c99 -o "$zecho" "$zecho.c"; then
+        zip_fail "cc: no program for the check of the programs of the zip"
+    fi
+    if [ -x "$zecho" ]; then
+        zcache=$(cd "$dir" && pwd)/zip-cache
+        rm -rf "$zcache"
+        BEAM_COM_CACHE=$zcache
+        export BEAM_COM_CACHE
+        zip_programs zip_rel "$zecho" \
+            'Mix gets the deps of .*zip_rel and makes its release (config/runtime.exs)@@wrote .*zip_rel.com'
+        zip_programs zip_plain "$zecho" 'wrote .*zip_plain.com' --tool mix
+        # The Mix tools of the builds put their links in CACHE/bin.
+        rm -rf "$zcache"
+        zline='zip_programs: zip port 0 hello zip (@@zip_programs: zip cmd 0 hello zip ('
+        zprog=/zip/lib/zip_programs-0.1.0/priv/bin/prog
+        if [ -f "$dir/zip_rel.com" ]; then
+            if [ "$os" = linux ]; then
+                check zip_rel.com "$zline@@$zprog runs from a memfd" hello zip
+                if [ -n "$(ls "$zcache/bin" 2>/dev/null)" ]; then
+                    zip_fail "zip_rel.com: the run from a memfd wrote a file in $zcache/bin"
+                fi
+                BEAM_COM_MEMFD=0
+                export BEAM_COM_MEMFD
+            fi
+            check zip_rel.com "$zline@@$zprog runs from $zcache/bin/[0-9a-f]*/prog" hello zip
+            zcopy=$(ls -d "$zcache"/bin/*/prog 2>/dev/null)
+            # The inode: a new copy is a new file (link or rename). Not the
+            # time of ls -l: the clock of a VM can be before the file time.
+            zls=$(ls -id $zcopy 2>/dev/null)
+            check zip_rel.com "$zline" hello zip
+            if [ "$(echo "$zcopy" | grep -c .)" != 1 ] || [ "$(ls -id $zcopy 2>/dev/null)" != "$zls" ]; then
+                zip_fail "zip_rel.com: not one copy in $zcache/bin, or the second run wrote it again: [$zcopy] [$zls] [$(ls -id $zcopy 2>&1)]"
+            else
+                echo "PASS: zip_rel.com: one copy, and the second run used it: $zls"
+            fi
+            # Two runs at the same time make the first copy.
+            rm -rf "$zcache"
+            BEAM_COM_VERBOSE=1 $runner "$dir/zip_rel.com" hello zip > "$tmp.z1" 2>&1 &
+            z1=$!
+            BEAM_COM_VERBOSE=1 $runner "$dir/zip_rel.com" hello zip > "$tmp.z2" 2>&1 &
+            z2=$!
+            wait "$z1"
+            wait "$z2"
+            cat "$tmp.z1" "$tmp.z2"
+            zleft=$(cd "$zcache/bin" 2>/dev/null && ls -A ./*/)
+            if grep -q 'zip_programs: zip cmd 0 hello zip (' "$tmp.z1" &&
+               grep -q 'zip_programs: zip cmd 0 hello zip (' "$tmp.z2" && [ "$zleft" = prog ]; then
+                echo "PASS: zip_rel.com: two runs at the same time, one copy"
+            else
+                zip_fail "zip_rel.com: two runs at the same time (files: $zleft)"
+            fi
+            rm -f "$tmp.z1" "$tmp.z2"
+            # A cache directory that other users can write.
+            chmod 777 "$zcache/bin"
+            check zip_rel.com 'another user can write it@@zip_programs: zip port 13 @@zip_programs: zip cmd 13 ' hello zip
+            if grep -q ' 0 hello zip' "$tmp"; then
+                zip_fail "zip_rel.com: a program ran from a cache that other users can write"
+            fi
+            chmod 700 "$zcache/bin"
+            # The sandbox: --allow-run with the /zip path of the program.
+            BEAM_COM_ALLOW='read;run=/bin/true'
+            export BEAM_COM_ALLOW
+            check zip_rel.com "$zprog: --allow-run does not name this program@@zip_programs: zip port 13 " hello zip
+            if grep -q ' 0 hello zip' "$tmp"; then
+                zip_fail "zip_rel.com: --allow-run=/bin/true ran a program of the zip"
+            fi
+            BEAM_COM_ALLOW="read;run=$zprog"
+            check zip_rel.com "$zline@@--allow-run: $zprog is $zcache/bin/" hello zip
+            unset BEAM_COM_ALLOW BEAM_COM_MEMFD
+        fi
+        if [ -f "$dir/zip_plain.com" ]; then
+            check zip_plain.com "zip_programs: priv port 0 hello zip (@@zip_programs: priv cmd 0 hello zip (@@$zline" hello zip
+        fi
+        unset BEAM_COM_CACHE
+        rm -rf "$zcache" "$dir/zip_rel.com" "$dir/zip_plain.com"
+    fi
+    rm -f "$zecho" "$zecho.c"
     # Run mode with a Mix project whose build writes a file in priv/: the
     # alias assets.deploy of tests/programs/rebuild_check writes a new
     # time, as phx.digest of Phoenix does. The second run must not build
@@ -1414,6 +1538,32 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
             fi
             kill "$phx" 2>/dev/null
             wait "$phx" 2>/dev/null
+        fi
+        # The tailwind program of the build (one file of Bun, which reads
+        # its own file) in priv of a program: it runs from the zip, from a
+        # memfd and from its copy in the cache.
+        tw=$(ls _build/tailwind-* 2>/dev/null | head -n 1)
+        if [ -n "$tw" ]; then
+            BEAM_COM_CACHE=$work/zip-cache
+            export BEAM_COM_CACHE
+            zip_programs zip_tw "$tw" 'Mix gets the deps of .*zip_tw and makes its release@@wrote .*zip_tw.com'
+            if [ -f "$dir/zip_tw.com" ]; then
+                # The output of tailwind has the escapes of the colors.
+                tline='zip_programs: zip port 0 .*tailwindcss .*v4@@zip_programs: zip cmd 0 .*tailwindcss .*v4'
+                check zip_tw.com "$tline@@runs from a memfd" --help
+                BEAM_COM_MEMFD=0
+                export BEAM_COM_MEMFD
+                check zip_tw.com "$tline@@runs from $work/zip-cache/bin/" --help
+                check zip_tw.com "$tline" --help
+                unset BEAM_COM_MEMFD
+            fi
+            unset BEAM_COM_CACHE
+            rm -f "$dir/zip_tw.com"
+        else
+            echo "FAIL: no _build/tailwind-* in the Phoenix app"
+            fail=1
+            failed="$failed
+  Phoenix: no _build/tailwind-* for the check of a program of the zip"
         fi
     fi
     cd "$here"

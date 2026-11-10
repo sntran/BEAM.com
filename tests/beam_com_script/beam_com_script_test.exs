@@ -72,6 +72,26 @@ defmodule BeamComScriptTest do
       assert {:ok, "#!/bin/sh\necho run\n"} ==
                :file.read_file(:filename.join(priv, ~c"run.sh"))
     end
+
+    # extract/1 (the boot script of a release): the cache of
+    # BEAM_COM_CACHE.
+    test "extract/1: the entries, in BEAM_COM_CACHE", %{dir: dir} do
+      cache = :filename.join(dir, ~c"cache1")
+      old = System.get_env("BEAM_COM_CACHE")
+      System.put_env("BEAM_COM_CACHE", List.to_string(cache))
+
+      try do
+        assert :ok == :beam_com_script.extract([])
+        assert :ok == :beam_com_script.extract([{:xapp, ~c"1.2", ~c"def", [~c"run.sh"]}])
+      after
+        if old,
+          do: System.put_env("BEAM_COM_CACHE", old),
+          else: System.delete_env("BEAM_COM_CACHE")
+      end
+
+      assert :filename.join([cache, ~c"priv", ~c"def", ~c"xapp-1.2", ~c"priv"]) ==
+               :code.priv_dir(:xapp)
+    end
   end
 
   defp mode(file) do

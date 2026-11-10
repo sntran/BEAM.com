@@ -297,18 +297,85 @@ one file" in [`ELIXIR.md`](ELIXIR.md)).
 
 **`priv` files as real files.** Code reads `priv` from the zip
 (`code:priv_dir/1` is in `/zip`), which works for `file:read_file/1`,
-but other programs (`sh`, a port program, a tool that gets a path)
-cannot read `/zip`. When the `priv` directory of an application has an
-executable file, or `--extract-priv APP` names the application, the
-program copies that `priv` directory at its first start to
-`CACHE/priv/HASH/APP-VSN/priv` (read-only files; the executables stay
-executable), and `code:priv_dir(APP)` is then that directory. The code
-stays in the zip. `HASH` is from the files, so a new build gets a new
-directory, and the next starts use the copy. `CACHE` is
-`$BEAM_COM_CACHE`, else the user cache directory
+but other programs (`sh`, a tool that gets a path) cannot read `/zip`.
+`CACHE` is `$BEAM_COM_CACHE`, else the user cache directory
 (`filename:basedir(user_cache, "beam.com")`: `~/Library/Caches/beam.com`
 on macOS, `$XDG_CACHE_HOME/beam.com` or `~/.cache/beam.com` on the other
 systems, Windows too).
+
+- **A program of the zip.** A file of the zip with an execute bit runs
+  as a port program from its `/zip` path, for example
+  `open_port({spawn_executable, filename:join(code:priv_dir(app),
+  "bin/tailwind")}, ...)` or `System.cmd/3`. The builder keeps the
+  execute bit of each file of `priv` in the zip, and the entry
+  `.programs` of the zip has the SHA-256 and the size of each such file.
+  `os:find_executable/1` and the check of `open_port/2` see the entry:
+  it exists, and it has an execute bit. The arguments, `argv[0]`, the
+  environment, the file descriptors and the directory of the program are
+  the same as for a program on the disk. Only the paths `/zip/bin/NAME`
+  and `/zip/erts-VSN/bin/NAME` of the helper programs
+  (`erl_child_setup`, `inet_gethost`, `epmd`, `inotifywait`,
+  `mac_listener`, `ssh_agent_bridge`, `git_sha1dc`, `make`, `erl`,
+  `erlexec`, which `peer` starts when it has no `exec` option, and the
+  tools `mix`, `iex`, `elixir`, `elixirc`, `escript`, `rebar3`) start
+  the file of the program again
+  (`beam_com_zip_helper()` in `c_src/cosmo/beam_com_zipexec.c`).
+- **Linux: a memfd.** The kernel cannot start a file of the zip, so
+  beam.com copies the bytes of an ELF program to a new memfd
+  (`memfd_create()` with `MFD_CLOEXEC`, and `MFD_EXEC` where the kernel
+  has it), seals it (`F_SEAL_SHRINK`, `F_SEAL_GROW`, `F_SEAL_WRITE`,
+  `F_SEAL_SEAL`), and starts it through `/proc/self/fd/N`. Nothing goes
+  to the disk. `/proc/self/exe` of the program is the memfd, so a program
+  that reads its own file works: the tailwind program of Tailwind CSS 4
+  is one file of Bun, and `tests/run.sh` runs it from a memfd. The path
+  of `/proc/self/exe` is `/memfd:NAME (deleted)`, so a program that
+  needs that name (for example the multi-call tools of uutils, which
+  compare it with the name of the tool) does not run: start it with
+  `BEAM_COM_MEMFD=0` in the environment of the VM. When the
+  kernel refuses (`vm.memfd_noexec=2`, an old kernel, no `/proc`), for
+  a script or an APE file, in a sandbox, and with `BEAM_COM_MEMFD=0`,
+  the program runs from its copy in the cache.
+- **The other systems: a copy in the cache.** On macOS, Windows,
+  FreeBSD, NetBSD and OpenBSD, the program runs from
+  `CACHE/bin/SHA256/NAME`, where `SHA256` is the SHA-256 of its bytes
+  (from `.programs`) and `NAME` is its name (with `.exe` on Windows when
+  the name has no suffix). The first start writes the copy one time: a
+  new file in that directory, with `O_EXCL` and the mode 0500, all the
+  bytes, `fsync()`, then a link or `rename()` to its name. A program
+  that starts at the same time sees no half file, and beam.com never
+  changes a copy (macOS stops a signed program when its file changes).
+  The next starts use the copy with no new write. beam.com makes the
+  directories `CACHE/bin` and `CACHE/bin/SHA256` with the mode 0700.
+- **The checks of the copy.** Before each start, `CACHE/bin` and
+  `CACHE/bin/SHA256` must be real directories (no symbolic link) of the
+  user, which other users cannot write, and the copy must be a regular
+  file of the user with the size of the program, which other users
+  cannot write. Else the start fails with an error on the standard error
+  ("... another user can write it: beam.com runs no program from it"),
+  and nothing runs. beam.com does not read the whole copy again at each
+  start: only the user can change it, and a SHA-256 of 100 MB takes
+  about 0.4 s. On Windows, the access lists of the profile of the user
+  protect the cache: Cosmopolitan gives each file the user of the
+  process and modes with no meaning there.
+- **A shell cannot run a program of the zip.** `os:cmd/1`, `{spawn,
+  Command}` and `sh -c` give the command to `sh`, and `sh` cannot read
+  `/zip`. Use `spawn_executable` (or `System.cmd/3`) with the path of
+  the program.
+- **A directory of real files.** A program that needs the files next to
+  it, or a tool that reads a data file of `priv`, needs the whole
+  directory. The builder of a project (not a release) copies the `priv`
+  directory of each application whose `priv` has an executable file, or
+  that `--extract-priv APP` names. For a Mix or rebar3 release
+  (`beam.com DIR -o FILE` with a release), only `--extract-priv APP`
+  does it: a program of the zip runs as it is, and a copy of a large
+  `priv` (the static files of Phoenix) costs time and disk at the first
+  start. The program copies that `priv` directory at its first start to
+  `CACHE/priv/HASH/APP-VSN/priv` (read-only files; the executables stay
+  executable), and `code:priv_dir(APP)` is then that directory. In a
+  release, the boot script runs the copy after the start of `stdlib`,
+  before the other applications start (`beam_com_script:extract/1`).
+  The code stays in the zip. `HASH` is from the files, so a new build
+  gets a new directory, and the next starts use the copy.
 
 **erl mode.** A program that starts a new Erlang VM (a peer node, a
 worker in a sandbox) can start its own file: each program has

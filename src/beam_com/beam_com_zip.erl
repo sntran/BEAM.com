@@ -12,9 +12,15 @@
 %% new entries, and writes a new central directory. only/2 writes a zip
 %% with some of the entries of an executable, and no executable before
 %% them. Zip64 is not supported.
+%%
+%% write/4 also names the programs of the new entries: they get the mode
+%% 0755, and the entry .programs lists them, one line "SHA256 SIZE NAME"
+%% for each. A spawn of a program of the zip gets its SHA-256 from that
+%% line, and needs no read of the whole program (c_src/cosmo/
+%% beam_com_zipexec.c).
 -module(beam_com_zip).
 
--export([entries/1, write/3, only/2]).
+-export([entries/1, write/3, write/4, only/2, programs/1]).
 
 -define(LOCAL, 16#04034b50).
 -define(CENTRAL, 16#02014b50).
@@ -48,6 +54,18 @@ entries(Bin) ->
 -spec write(binary(), fun((string()) -> boolean()),
             [{string(), binary()}]) -> iodata().
 write(Bin, Keep, New) ->
+    write(Bin, Keep, New, []).
+
+%% write/3, and Exec: the names of the entries of New that are programs.
+-spec write(binary(), fun((string()) -> boolean()),
+            [{string(), iodata()}], [string()]) -> iodata().
+write(Bin, Keep, New0, Exec) ->
+    Programs = [{N, D} || {N, D} <- New0, lists:member(N, Exec)],
+    New = case Programs of
+              [] -> New0;
+              _ -> [F || {N, _} = F <- New0, N =/= ".programs"]
+                       ++ [{".programs", programs(Programs)}]
+          end,
     NewNames = [unicode:characters_to_binary(N) || {N, _} <- New],
     Entries = lists:keysort(#entry.offset, central_directory(Bin)),
     IsKept = fun(#entry{name = Name}) ->
@@ -63,7 +81,7 @@ write(Bin, Keep, New) ->
     {InPlace, Moved} = lists:partition(
                          fun(E) -> E#entry.offset < PrefixEnd end, Kept),
     {MovedData, MovedEntries, Pos1} = move(Bin, Moved, PrefixEnd),
-    {NewData, NewEntries, CdOffset} = add(New, Pos1),
+    {NewData, NewEntries, CdOffset} = add(New, Pos1, sets:from_list(Exec, [{version, 2}])),
     Central = [central(E) || E <- InPlace ++ MovedEntries ++ NewEntries],
     CdSize = iolist_size(Central),
     Count = length(Central),
@@ -114,12 +132,25 @@ descriptor_size(Bin, #entry{flags = Flags, offset = Offset, csize = CSize},
 descriptor_size(_Bin, _E, _N, _M) ->
     0.
 
-add(New, Pos) ->
-    add(New, Pos, [], []).
+%% The text of .programs for the programs [{Name, Data}]: the SHA-256 of
+%% the bytes of the entry, its size and its name, sorted by name. A name
+%% with a new line has no line.
+-spec programs([{string(), iodata()}]) -> binary().
+programs(Programs) ->
+    iolist_to_binary(
+      [[binary:encode_hex(crypto:hash(sha256, Content), lowercase), " ",
+        integer_to_list(byte_size(Content)), " ", Name, "\n"]
+       || {Name0, Data} <- lists:sort(Programs),
+          Name <- [unicode:characters_to_binary(Name0)],
+          binary:match(Name, <<"\n">>) =:= nomatch,
+          Content <- [gzip_beam(Name, iolist_to_binary(Data))]]).
 
-add([], Pos, Data, Entries) ->
+add(New, Pos, Exec) ->
+    add(New, Pos, Exec, [], []).
+
+add([], Pos, _Exec, Data, Entries) ->
     {lists:reverse(Data), lists:reverse(Entries), Pos};
-add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
+add([{Name0, Data0} | Rest], Pos, Exec, Data, Entries) ->
     Name = unicode:characters_to_binary(Name0),
     Content = gzip_beam(Name, iolist_to_binary(Data0)),
     USize = byte_size(Content),
@@ -129,9 +160,10 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
                 true -> 0;
                 false -> ?UTF8
             end,
-    Mode = case Dir of
-               true -> 8#40755;
-               false -> 8#100644
+    Mode = case {Dir, sets:is_element(Name0, Exec)} of
+               {true, _} -> 8#40755;
+               {false, true} -> 8#100755;
+               {false, false} -> 8#100644
            end,
     Crc = erlang:crc32(Content),
     CSize = byte_size(Stored),
@@ -149,7 +181,7 @@ add([{Name0, Data0} | Rest], Pos, Data, Entries) ->
                vmade = (?UNIX bsl 8) bor ?VERSION, vneed = ?VERSION,
                iattr = 0, eattr = (Mode bsl 16) bor DosAttr,
                extra = <<>>, comment = <<>>},
-    add(Rest, Pos + iolist_size(Local), [Local | Data], [E | Entries]).
+    add(Rest, Pos + iolist_size(Local), Exec, [Local | Data], [E | Entries]).
 
 %% The code of kernel and stdlib is stored, not compressed: the boot
 %% loads it, and a stored entry needs no inflating (see

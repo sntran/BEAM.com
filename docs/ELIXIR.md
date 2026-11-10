@@ -258,8 +258,10 @@ directory.
   `--tool mix` keeps the builder of a plain Mix project, also for a
   project with `config/runtime.exs`.
 - A release of Mix has its own applications and no `main/1`. Thus only
-  the builder of a plain Mix project reads `--main`, `-a`,
-  `--extract-priv` and `escript: [main_module: M]`. With one of them,
+  the builder of a plain Mix project reads `--main`, `-a` and
+  `escript: [main_module: M]`. The release reads `--extract-priv` too
+  (see "priv files as real files" in [`PROGRAMS.md`](PROGRAMS.md)).
+  With one of them,
   a project whose only reasons are `config/runtime.exs` and
   `:compilers` gets the builder of a plain Mix project, with a warning:
   the program runs `M.main/1`, and it does not read
@@ -291,6 +293,13 @@ directory.
   Thus you trust the keys of npm, and the registry that signs. The
   tarball has at most 64 MiB, and 128 MiB without compression. The
   program of tailwind has only the checks of the tailwind package (TLS).
+- The programs of tailwind and esbuild stay in `_build`, not in the
+  file. An app that runs a program while it serves, for example
+  tailwind, can put the program in its `priv` and run it with
+  `spawn_executable` and the path of `code:priv_dir/1`: the program
+  runs from the zip (a memfd on Linux, else a copy in the cache), with
+  no copy by hand. See "priv files as real files" in
+  [`PROGRAMS.md`](PROGRAMS.md).
 - The builder does not know a step other than `assets.deploy` that runs
   esbuild or tailwind, for example a compiler of `:compilers`. Such a
   step gets the programs for Linux on Windows: give the `path` or the

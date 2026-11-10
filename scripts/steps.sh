@@ -500,7 +500,8 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_seatbelt.h "$ROOT"/c_src/cosmo/beam_com_nif.c \
        "$ROOT"/c_src/cosmo/beam_com_nif.h "$ROOT"/c_src/cosmo/beam_com_nif_syms.c \
        "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ROOT"/c_src/cosmo/beam_com_nif_cxx.h \
-       "$ROOT"/c_src/cosmo/beam_com_sha1dc.c \
+       "$ROOT"/c_src/cosmo/beam_com_sha1dc.c "$ROOT"/c_src/cosmo/beam_com_zipexec.c \
+       "$ROOT"/c_src/cosmo/beam_com_zipexec.h \
        "$ERL_TOP/erts/emulator/sys/unix/"
     # The library of beam_com_sha1dc.c (sha1collisiondetection), which it
     # includes as sha1dc/sha1.c and sha1dc/ubc_check.c.
@@ -1759,6 +1760,7 @@ step_multicall() {
     objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_agent.o $objdir/beam_com_net.o"
     objs="$objs $objdir/beam_com_fs.o $objdir/beam_com_pipe.o $objdir/beam_com_sha1dc.o"
     objs="$objs $objdir/beam_com_seatbelt.o $objdir/beam_com_nif.o $objdir/beam_com_nif_syms.o"
+    objs="$objs $objdir/beam_com_zipexec.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"
     build_cosmo_file unveil "$COSMO_UNVEIL_SHA256" "$objdir/beam_com_unveil.o"
@@ -2168,6 +2170,13 @@ step_test() {
         cosmocc -O2 -Wno-unused-function -o "$BUILD/pipe_check.com" "$ROOT/tests/cosmo/pipe_check.c"
         "$BUILD/pipe_check.com" | tee "$BUILD/test.out"
         grep -q '^pipe_check: ok$' "$BUILD/test.out"
+        # The programs of the zip (c_src/cosmo/beam_com_zipexec.c): the
+        # copy in the cache, and the memfd of Linux. tests/run.ps1 runs the
+        # check on Windows, and tests/run.sh runs the programs of a zip.
+        log "Checking the programs of the zip"
+        sh "$ROOT/tests/cosmo/zipexec_check.sh" "$BUILD"
+        (cd "$BUILD" && ./zipexec_check.com) | tee "$BUILD/test.out"
+        grep -q '^zipexec_check: ok$' "$BUILD/test.out"
         # The SHA-1 check of the git client (c_src/cosmo/beam_com_sha1dc.c),
         # with the vectors of the SHA-1 collisions. tests/run.sh and
         # tests/run.ps1 run the helper of beam.com on each system.

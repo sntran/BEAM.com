@@ -262,6 +262,12 @@ if ((Test-Path (Join-Path $Dir "pipe_check.com")) -or (Skip "pipe_check.com: not
 if ((Test-Path (Join-Path $Dir "agent_check.com")) -or (Skip "agent_check.com: not in $Dir")) {
     Check "agent_check.com" '(?m)^agent_check: ok' @()
 }
+# The copies of the programs of the zip in the cache
+# (c_src/cosmo/beam_com_zipexec.c): the name with .exe, the copy of 8
+# programs at the same time, and a run of the copy.
+if ((Test-Path (Join-Path $Dir "zipexec_check.com")) -or (Skip "zipexec_check.com: not in $Dir")) {
+    Check "zipexec_check.com" '(?m)^zipexec_check: ok' @()
+}
 
 # The commands of the default beam.com.
 # With no input, beam.com runs the project in the current directory. The
@@ -513,6 +519,87 @@ if (Test-Path "examples") {
     if (Test-Path (Join-Path $Dir "escript_never.com")) { Fail "beam.com --tool mix-release: wrote escript_never.com" }
 }
 
+# The programs of the zip (see tests/run.sh): ZipPrograms NAME PROG
+# PATTERN [ARGS] builds a copy of tests/programs/zip_programs with PROG as
+# priv/bin/prog.exe into DIR/NAME.com. On Windows, a program of the zip
+# runs from its copy CACHE/bin/SHA256/prog.exe.
+$zipSrc = (Resolve-Path "tests/programs/zip_programs").Path
+function ZipPrograms($Name, $Prog, $Pattern, [string[]]$Extra = @()) {
+    $work = Join-Path $Dir $Name
+    Remove-Item $work, (Join-Path $Dir "$Name.com") -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item $zipSrc $work -Recurse
+    Remove-Item (Join-Path $work "_build") -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory (Join-Path $work "priv/bin") -Force | Out-Null
+    Copy-Item $Prog (Join-Path $work "priv/bin/prog.exe")
+    $script:Limit = 300
+    Check "beam.com" $Pattern (@($work) + $Extra + @("-o", "$Dir/$Name.com"))
+    $script:Limit = 120
+    RemoveWork $work
+}
+# The cache in DIR, with the drive as /D/ (the paths of Cosmopolitan).
+function ZipCache {
+    $full = (Resolve-Path $Dir).Path
+    "/" + $full.Substring(0, 1) + ($full.Substring(2) -replace '\\', '/') + "/zip-cache"
+}
+if (Test-Path "examples") {
+    $zcache = ZipCache
+    $zcacheWin = Join-Path (Resolve-Path $Dir).Path "zip-cache"
+    Remove-Item $zcacheWin -Recurse -Force -ErrorAction SilentlyContinue
+    $env:BEAM_COM_CACHE = $zcache
+    $whoamiExe = Join-Path $env:SystemRoot "System32\whoami.exe"
+    $who = [regex]::Escape((& $whoamiExe | Out-String).Trim())
+    $zprog = "/zip/lib/zip_programs-0.1.0/priv/bin/prog.exe"
+    ZipPrograms "zip_rel" $whoamiExe 'Mix gets the deps of .*zip_rel and makes its release \(config/runtime.exs\)@@wrote .*zip_rel.com'
+    ZipPrograms "zip_plain" $whoamiExe 'wrote .*zip_plain.com' @("--tool", "mix")
+    # The Mix tools of the builds can write in the cache.
+    Remove-Item $zcacheWin -Recurse -Force -ErrorAction SilentlyContinue
+    $zline = "zip_programs: zip port 0 $who \(@@zip_programs: zip cmd 0 $who \("
+    if (Test-Path (Join-Path $Dir "zip_rel.com")) {
+        Check "zip_rel.com" "$zline@@$([regex]::Escape($zprog)) runs from .*zip-cache/bin/[0-9a-f]{64}/prog\.exe" @()
+        $copies = @(Get-ChildItem (Join-Path $zcacheWin "bin") -Recurse -File)
+        $before = if ($copies.Count -eq 1) { $copies[0].LastWriteTimeUtc } else { $null }
+        Check "zip_rel.com" $zline @()
+        $after = @(Get-ChildItem (Join-Path $zcacheWin "bin") -Recurse -File)
+        if ($copies.Count -ne 1 -or $after.Count -ne 1 -or $after[0].LastWriteTimeUtc -ne $before) {
+            Fail "zip_rel.com: not one copy in $zcacheWin, or the second run wrote it again"
+        } else {
+            Write-Host "PASS: zip_rel.com: one copy, and the second run used it: $($after[0].FullName)"
+        }
+        # Two runs at the same time make the first copy.
+        Remove-Item $zcacheWin -Recurse -Force -ErrorAction SilentlyContinue
+        $exe = (Resolve-Path (Join-Path $Dir "zip_rel.exe")).Path
+        $runs = foreach ($i in 1, 2) {
+            Start-Process -FilePath $exe -PassThru -NoNewWindow -RedirectStandardOutput "$exe.$i.out" -RedirectStandardError "$exe.$i.err"
+        }
+        $ok = $true
+        foreach ($i in 1, 2) {
+            if (-not $runs[$i - 1].WaitForExit(120000)) { $runs[$i - 1].Kill($true); $ok = $false }
+            $text = (Get-Content "$exe.$i.out", "$exe.$i.err" -Raw -ErrorAction SilentlyContinue) -join "`n"
+            Write-Host $text
+            if ($text -notmatch "zip_programs: zip cmd 0 $who \(") { $ok = $false }
+            Remove-Item "$exe.$i.out", "$exe.$i.err" -ErrorAction SilentlyContinue
+        }
+        $files = @(Get-ChildItem (Join-Path $zcacheWin "bin") -Recurse -File -Force)
+        if ($ok -and $files.Count -eq 1 -and $files[0].Name -eq "prog.exe") {
+            Write-Host "PASS: zip_rel.com: two runs at the same time, one copy"
+        } else {
+            Fail "zip_rel.com: two runs at the same time (files: $($files.Name -join ', '))"
+        }
+        # The sandbox: --allow-run with the /zip path of the program.
+        $env:BEAM_COM_ALLOW = "read;run=whoami"
+        Check "zip_rel.com" "$([regex]::Escape($zprog)): --allow-run does not name this program@@zip_programs: zip port error :eacces" @()
+        $env:BEAM_COM_ALLOW = "read;run=$zprog"
+        Check "zip_rel.com" "$zline@@--allow-run: $([regex]::Escape($zprog)) is .*zip-cache/bin/" @()
+        Remove-Item Env:BEAM_COM_ALLOW
+    }
+    if (Test-Path (Join-Path $Dir "zip_plain.com")) {
+        Check "zip_plain.com" "zip_programs: priv port 0 $who \(@@zip_programs: priv cmd 0 $who \(@@$zline" @()
+    }
+    Remove-Item Env:BEAM_COM_CACHE
+    RemoveWork $zcacheWin
+    Remove-Item (Join-Path $Dir "zip_rel.com"), (Join-Path $Dir "zip_rel.exe"), (Join-Path $Dir "zip_plain.com"), (Join-Path $Dir "zip_plain.exe") -ErrorAction SilentlyContinue
+}
+
 # The tools (see tests/run.sh), as the first argument of beam.com, and
 # by the name of the file (mix.com, elixir.com: hard links to beam.com,
 # as a copy).
@@ -556,8 +643,25 @@ function PhoenixCheck {
             '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net -Tries 2
         $script:Limit = 120
     }
+    # The tailwind program of the build (one file of Bun, which reads its
+    # own file) in priv of a program: it runs from its copy in the cache.
+    $tw = @(Get-ChildItem (Join-Path $phx "hello/_build") -Filter "tailwind-*" -File -ErrorAction SilentlyContinue)
     Pop-Location
     if (Test-Path $out) { PhoenixServe $out }
+    if ($tw.Count -gt 0) {
+        $env:BEAM_COM_CACHE = (ZipCache) + "-tw"
+        ZipPrograms "zip_tw" $tw[0].FullName 'Mix gets the deps of .*zip_tw and makes its release@@wrote .*zip_tw.com'
+        if (Test-Path (Join-Path $Dir "zip_tw.com")) {
+            # The output of tailwind has the escapes of the colors.
+            Check "zip_tw.com" 'zip_programs: zip port 0 .*tailwindcss .*v4@@zip_programs: zip cmd 0 .*tailwindcss .*v4@@runs from .*zip-cache-tw/bin/' @("--help")
+            Check "zip_tw.com" 'zip_programs: zip port 0 .*tailwindcss .*v4@@zip_programs: zip cmd 0 .*tailwindcss .*v4' @("--help")
+        }
+        Remove-Item Env:BEAM_COM_CACHE
+        RemoveWork (Join-Path (Resolve-Path $Dir).Path "zip-cache-tw")
+        Remove-Item (Join-Path $Dir "zip_tw.com"), (Join-Path $Dir "zip_tw.exe") -ErrorAction SilentlyContinue
+    } elseif (Test-Path $out) {
+        Fail "Phoenix: no _build/tailwind-* for the check of a program of the zip"
+    }
     RemoveWork $phx
 }
 
