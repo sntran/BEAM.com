@@ -447,8 +447,10 @@ run(Task, Args) ->
     'Elixir.Mix.Task':run(list_to_binary(Task), [list_to_binary(A) || A <- Args]),
     ok.
 
-%% Hex, as "mix local.hex" installs it, when the project has a Hex dep
-%% and no Hex is loaded (a custom build can have Hex in the zip).
+%% Hex, as "mix local.hex" installs it, when the project has a dep and
+%% no Hex is loaded (a custom build can have Hex in the zip). deps.get
+%% gets the deps of each environment, and a git or path dep can have
+%% Hex deps too.
 hex() ->
     case 'Elixir.Code':'ensure_loaded?'('Elixir.Hex') of
         true ->
@@ -466,26 +468,33 @@ hex() ->
 releases(App, [], Out) ->
     releases(App, [{App, []}], Out);
 releases(_App, Releases, Out) ->
-    [{Name, lists:keystore(path, 1,
-                           lists:keystore(include_erts, 1, Opts, {include_erts, false}),
-                           {path, unicode:characters_to_binary(
-                                    filename:join(Out, atom_to_list(Name)))})}
-     || {Name, Opts} <- Releases].
+    [{Name, release_opts(Name, Opts, Out)} || {Name, Opts} <- Releases].
 
-%% A dep from Hex: no git, github, path or in_umbrella.
+%% Mix also takes a function of arity 0 that gives the options: the
+%% result is a function too, and Mix calls it when it makes the release.
+release_opts(Name, Fun, Out) when is_function(Fun, 0) ->
+    fun() -> release_opts(Name, Fun(), Out) end;
+release_opts(Name, Opts, Out) ->
+    lists:keystore(path, 1,
+                   lists:keystore(include_erts, 1, Opts, {include_erts, false}),
+                   {path, unicode:characters_to_binary(filename:join(Out, atom_to_list(Name)))}).
+
+%% A dep that can need Hex: each dep.
 hex_deps(Config) ->
-    lists:any(fun({_, Opts}) -> in_prod(Opts) andalso not not_hex(Opts) end,
-              dep_opts(proplists:get_value(deps, Config, []))).
+    proplists:get_value(deps, Config, []) =/= [].
 
 has_alias(Config, Name) ->
     proplists:is_defined(Name, proplists:get_value(aliases, Config, [])).
 
+%% The deps of mix.exs as {Name, Opts}. Another form is not a dep of
+%% Mix: the error comes from Mix, or from beam_com_elixir:mix_dep/1.
 dep_opts(Deps) ->
-    [case D of
-         {Name, Opts} when is_list(Opts) -> {Name, Opts};
-         {Name, _Req} -> {Name, []};
-         {Name, _Req, Opts} -> {Name, Opts}
-     end || D <- Deps].
+    lists:append([case D of
+                      {Name, Opts} when is_atom(Name), is_list(Opts) -> [{Name, Opts}];
+                      {Name, _Req} when is_atom(Name) -> [{Name, []}];
+                      {Name, _Req, Opts} when is_atom(Name), is_list(Opts) -> [{Name, Opts}];
+                      _ -> []
+                  end || D <- Deps]).
 
 in_prod(Opts) ->
     in_env(Opts, prod).

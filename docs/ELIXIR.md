@@ -242,8 +242,10 @@ directory.
 - Mix writes `deps/`, `_build/`, `mix.lock` and the digested files of
   `priv/static` in the project, as `mix release` does. A second build
   uses them again, so it is faster.
-- When the deps need Hex and no Hex is loaded, the child installs it, as
-  `mix local.hex` does (in `MIX_HOME`). A custom build with Hex in its
+- When the project has a dep and no Hex is loaded, the child installs
+  Hex, as `mix local.hex` does (in `MIX_HOME`). A git dep, a path dep,
+  and a dep only for `:dev` can need Hex too, because `deps.get` gets
+  the deps of each environment. A custom build with Hex in its
   zip needs no installation.
 - The child reads no standard input. A question of Mix gets the answer
   "no", so the build stops and does not wait.

@@ -84,6 +84,11 @@ defmodule BeamComMixTest do
       assert [] == :beam_com_mix.reasons(dir, app: :a, deps: [{:jason, "~> 1.4"}])
     end
 
+    test "a dep that is only an atom is not a dep of Mix", %{dir: dir} do
+      assert [{:deps, [:g]}] == :beam_com_mix.reasons(dir, deps: [:jason, {:g, git: "x"}])
+      assert [] == :beam_com_mix.reasons(dir, deps: [:jason, {"s", "~> 1.0"}])
+    end
+
     test "reasons/1 reads mix.exs", %{dir: dir} do
       write(
         dir,
@@ -99,7 +104,11 @@ defmodule BeamComMixTest do
   test "hex_deps and has_alias" do
     assert :beam_com_mix.hex_deps(deps: [{:jason, "~> 1.4"}])
     assert :beam_com_mix.hex_deps(deps: [{:jason, ">= 0.0.0", hex: :jason}])
-    refute :beam_com_mix.hex_deps(deps: [{:a, git: "x"}, {:b, "~> 1.0", only: :test}])
+    # A git dep, and a dep only for :test: deps.get gets them, and they
+    # can need Hex.
+    assert :beam_com_mix.hex_deps(deps: [{:a, git: "x"}])
+    assert :beam_com_mix.hex_deps(deps: [{:b, "~> 1.0", only: :test}])
+    refute :beam_com_mix.hex_deps(deps: [])
     refute :beam_com_mix.hex_deps([])
     assert :beam_com_mix.has_alias([aliases: ["assets.deploy": []]], :"assets.deploy")
     refute :beam_com_mix.has_alias([aliases: [setup: []]], :"assets.deploy")
@@ -332,6 +341,13 @@ defmodule BeamComMixTest do
                [one: [applications: [x: :permanent], include_erts: true], two: [path: "/p"]],
                ~c"/out"
              )
+  end
+
+  test "releases: a function of arity 0 as the options" do
+    assert [app: fun] =
+             :beam_com_mix.releases(:app, [app: fn -> [version: "1.0.0"] end], ~c"/out")
+
+    assert [version: "1.0.0", include_erts: false, path: "/out/app"] == fun.()
   end
 
   test "child_env: MIX_ENV of the user, else prod" do
