@@ -424,7 +424,16 @@ forker port starts no `erl_child_setup`
   of 1 MiB, a byte came two times in each of 8 runs. At the close of
   the write end (`__wrap_close()`), a thread keeps a copy of the handle
   until the write ends, so the reader gets the byte and then the end of
-  the file. The exit of the VM cancels a byte that waits. A copy of the
+  the file. Windows cancels a write that waits at the exit of the
+  process, and the reader does not get its byte. On Unix, the data stays
+  in the pipe. So after the first byte that waits, an `atexit()` handler
+  waits at most 2 s, for all the bytes together (also the bytes of the
+  closer threads). The `exit()` of Cosmopolitan runs the handler also
+  from another thread, as ERTS calls it for `erlang:halt/0,1`. In a test,
+  a reader that read 300 ms late got all of 4097 bytes, and the writer
+  exited after 307 ms; before, it got 4096. A reader that never reads holds
+  the exit for 2 s. `_exit()` and `ExitProcess()` (`erlang:halt/2` with
+  `{flush, false}`) do not wait. A copy of the
   read end, as Cygwin keeps for its query of the free space, does not
   work here: a query on it wakes a native reader that waits in a
   synchronous `ReadFile()` on the overlapped handle, and that reader

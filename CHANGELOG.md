@@ -34,7 +34,9 @@ notes of its release.
   them on Windows. Windows gives a free space of 0 while the program
   waits in a read of 4 KiB or more, so for 0 the wraps write 1 byte that
   can wait in the pipe. Thus a write reaches a native program such as
-  `python`, `git` or `findstr`.
+  `python`, `git` or `findstr`. Windows cancels such a byte at the exit of
+  the process, so the exit of the VM waits at most 2 s for the bytes that
+  wait. A port program that reads late thus gets all the data, as on Unix.
 - On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
   the ends of its pipes. Before, it also got each socket and file of the
   VM, so a closed connection stayed open until the program stopped.

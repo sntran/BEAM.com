@@ -36,9 +36,18 @@
  * The close of the write end (__wrap_close() of beam_com.c calls
  * beam_com_pipe_forget()) keeps a copy of the handle while the byte waits:
  * a thread closes the copy after the end of the write. The reader thus
- * gets the byte, and then the end of the file, as on Unix. The exit of
- * the process cancels a write that waits: the reader does not get that
- * byte.
+ * gets the byte, and then the end of the file, as on Unix.
+ *
+ * Windows cancels a write that waits at the exit of the process, also a
+ * write of a closer thread. On Unix, the data stays in the pipe. So after
+ * the first byte that waits, an atexit() handler waits at most
+ * PIPE_EXIT_MS (2 s) for the end of these writes, for all of them
+ * together. A reader that reads gets each byte, and a reader that never
+ * reads holds the exit for at most 2 s. The exit() of Cosmopolitan runs
+ * this handler also when another thread calls exit(), as ERTS does for
+ * erlang:halt/0,1. _exit() and ExitProcess() do not wait. A process with
+ * no byte that waited has no handler. When no byte waits at the exit, the
+ * handler returns at once.
  *
  * With BEAM_COM_PIPE_TEST, the file compiles for the test
  * tests/cosmo/pipe_check.c.
@@ -87,17 +96,27 @@ ssize_t __wrap_writev(int fd, const struct iovec *iov, int iovcnt);
 int __wrap_select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv);
 void beam_com_pipe_forget(int fd);
 
+/* The longest wait at the exit of the process for all the bytes that
+ * wait, together. */
+#define PIPE_EXIT_MS 2000
+
 /* A write of 1 byte that waits in a pipe. */
 struct pipe_byte {
     struct NtOverlapped ov;
     int64_t handle;
+    struct pipe_byte *next; /* in the list of the closer threads */
     unsigned char byte;
 };
 
-/* For each fd: the write of 1 byte that waits, or NULL. The lock guards
- * the table. */
+/* For each fd: the write of 1 byte that waits, or NULL. The bytes of the
+ * closer threads. The lock guards both. */
 static struct pipe_byte *pipe_bytes[FD_SETSIZE];
+static struct pipe_byte *pipe_closing;
 static pthread_mutex_t pipe_lock = PTHREAD_MUTEX_INITIALIZER;
+/* The wait at exit: one atexit() handler, for the process that added it. */
+static pthread_once_t pipe_exit_once = PTHREAD_ONCE_INIT;
+static int pipe_exit_pid;
+static void pipe_exit_init(void);
 
 static void pipe_byte_free(struct pipe_byte *b)
 {
@@ -159,6 +178,20 @@ static ssize_t pipe_try_byte(int fd, const void *buf)
     return 1;
 }
 
+/* Removes B from the list of the closer threads. */
+static void pipe_unlink(struct pipe_byte *b)
+{
+    struct pipe_byte **p;
+
+    pthread_mutex_lock(&pipe_lock);
+    for (p = &pipe_closing; *p; p = &(*p)->next)
+        if (*p == b) {
+            *p = b->next;
+            break;
+        }
+    pthread_mutex_unlock(&pipe_lock);
+}
+
 /* The thread for a closed fd: it waits for the end of the write of its
  * byte, then closes its copy of the handle. */
 static void *pipe_closer(void *arg)
@@ -166,6 +199,7 @@ static void *pipe_closer(void *arg)
     struct pipe_byte *b = arg;
 
     WaitForSingleObject(b->ov.hEvent, -1u);
+    pipe_unlink(b);
     CloseHandle(b->handle);
     pipe_byte_free(b);
     return 0;
@@ -188,17 +222,24 @@ void beam_com_pipe_forget(int fd)
         return;
     }
     b = pipe_bytes[fd];
-    pipe_bytes[fd] = NULL;
-    pthread_mutex_unlock(&pipe_lock);
     if (!DuplicateHandle(GetCurrentProcess(), b->handle, GetCurrentProcess(),
-                         &copy, 0, 0, kNtDuplicateSameAccess))
+                         &copy, 0, 0, kNtDuplicateSameAccess)) {
+        pipe_bytes[fd] = NULL;
+        pthread_mutex_unlock(&pipe_lock);
         return; /* The write can still use B, so it stays. */
+    }
+    pipe_bytes[fd] = NULL;
     b->handle = copy;
+    b->next = pipe_closing;
+    pipe_closing = b; /* The wait at exit also waits for this byte. */
+    pthread_mutex_unlock(&pipe_lock);
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setstacksize(&attr, 65536);
-    if (pthread_create(&t, &attr, pipe_closer, b) != 0)
+    if (pthread_create(&t, &attr, pipe_closer, b) != 0) {
+        pipe_unlink(b);
         CloseHandle(copy); /* The write ends with the close; B stays. */
+    }
     pthread_attr_destroy(&attr);
 }
 
@@ -287,8 +328,11 @@ static ssize_t pipe_writev(int fd, const struct iovec *iov, int iovcnt,
         if (rc <= 0)
             return done > 0 ? (ssize_t)done : rc;
         done += rc;
-        if (quota == 0 && busy)
-            break; /* The byte waits in the pipe. */
+        if (quota == 0 && busy) {
+            /* The byte waits in the pipe: the exit waits for it. */
+            pthread_once(&pipe_exit_once, pipe_exit_init);
+            break;
+        }
     }
     return done;
 }
@@ -325,6 +369,47 @@ static int64_t now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* The handler of atexit(): it waits for the end of the writes of the
+ * bytes that wait, at most PIPE_EXIT_MS for all together. Windows cancels
+ * such a write at the exit of the process. A reader that reads thus gets
+ * each byte that write() reported, as on Unix. */
+static void pipe_exit_wait(void)
+{
+    static int64_t events[2 * FD_SETSIZE];
+    struct pipe_byte *b;
+    int64_t self = GetCurrentProcess(), left, end;
+    int fd, n = 0, i, part;
+
+    if (getpid() != pipe_exit_pid)
+        return; /* A child of fork(): the writes are of the parent. */
+    pthread_mutex_lock(&pipe_lock);
+    for (fd = 0; fd < FD_SETSIZE; fd++)
+        if ((b = pipe_bytes[fd]) &&
+            DuplicateHandle(self, b->ov.hEvent, self, &events[n], 0, 0,
+                            kNtDuplicateSameAccess))
+            n++;
+    for (b = pipe_closing; b && n < 2 * FD_SETSIZE; b = b->next)
+        if (DuplicateHandle(self, b->ov.hEvent, self, &events[n], 0, 0,
+                            kNtDuplicateSameAccess))
+            n++;
+    pthread_mutex_unlock(&pipe_lock);
+    /* The copies of the events stay valid when a thread frees a byte. */
+    end = now_ms() + PIPE_EXIT_MS;
+    for (i = 0; i < n; i += part) {
+        part = n - i < 64 ? n - i : 64; /* MAXIMUM_WAIT_OBJECTS */
+        left = end - now_ms();
+        WaitForMultipleObjects(part, events + i, 1, left > 0 ? left : 0);
+    }
+    for (i = 0; i < n; i++)
+        CloseHandle(events[i]);
+}
+
+static void pipe_exit_init(void)
+{
+    pipe_exit_pid = getpid();
+    atexit(pipe_exit_wait);
 }
 
 /* 1 when FD is the write end of a pipe with a byte that waits. */

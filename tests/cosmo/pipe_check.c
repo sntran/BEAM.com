@@ -13,6 +13,11 @@
  *   and then the end of the file.
  * - After the reader closes its end, a write gives EPIPE, also when
  *   another handle of the read end stays open until then.
+ * - The exit of the writer while a byte waits: a reader that reads late
+ *   gets each byte. A reader that never reads holds the exit for at most
+ *   PIPE_EXIT_MS. With no byte that waits, the exit does not wait. For
+ *   this check, the program starts itself as the writer (--writer), and
+ *   the writer starts it as the reader (--reader).
  *
  * All the data that a write reports arrives, in order. On the other
  * systems, the wraps only call the libc, and the same checks of the data
@@ -26,8 +31,10 @@
 
 #include <pthread.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/wait.h>
 
 static int failures;
 
@@ -176,7 +183,147 @@ static void full_pipe(int fd)
     CHECK(cpu_ms() - c0 < 100);
 }
 
-int main(void)
+/* Starts this program with ARGV, with the fd IN as its fd 0 and the fd
+ * OUT as its fd 1 (-1: the same as this process). The pid, or -1. */
+static pid_t start_self(char **argv, int in, int out)
+{
+    posix_spawn_file_actions_t fa;
+    extern char **environ;
+    pid_t pid;
+    int rc;
+
+    posix_spawn_file_actions_init(&fa);
+    if (in >= 0)
+        posix_spawn_file_actions_adddup2(&fa, in, 0);
+    if (out >= 0)
+        posix_spawn_file_actions_adddup2(&fa, out, 1);
+    argv[0] = (char *)GetProgramExecutableName();
+    rc = posix_spawn(&pid, argv[0], &fa, 0, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    return rc == 0 ? pid : -1;
+}
+
+/* The reader: it waits DELAY_MS, reads its input to the end, and writes
+ * the number of bytes to the file PATH. */
+static int exit_reader(int delay_ms, const char *path)
+{
+    static unsigned char in[65536];
+    char tmp[512];
+    size_t got = 0;
+    ssize_t n;
+    FILE *f;
+
+    usleep(delay_ms * 1000);
+    while ((n = read(0, in, sizeof(in))) > 0 || (n < 0 && errno == EINTR))
+        if (n > 0)
+            got += n;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (!(f = fopen(tmp, "w")))
+        return 1;
+    fprintf(f, "%zu\n", got);
+    fclose(f);
+    return rename(tmp, path) != 0;
+}
+
+/* The exit of the writer, from a thread that is not the main thread, as
+ * ERTS calls exit() for erlang:halt/1. */
+static void *exit_thread(void *arg)
+{
+    (void)arg;
+    exit(0);
+}
+
+/* The writer: it starts the reader, writes SIZE bytes to it with the
+ * wraps, writes a line to its output, and exits at once. With CLOSE, it
+ * closes the pipe before the exit: a closer thread then holds the byte
+ * that waits. */
+static int exit_writer(char *delay, char *path, size_t size, int close_fd)
+{
+    char *argv[] = {0, "--reader", delay, path, 0};
+    int fds[2];
+    size_t sent = 0;
+    pthread_t t;
+    ssize_t n;
+
+    if (pipe2(fds, O_CLOEXEC) != 0 || fcntl(fds[1], F_SETFL, O_NONBLOCK) != 0 ||
+        start_self(argv, fds[0], -1) < 0)
+        return 1;
+    close(fds[0]);
+    while (sent < size) {
+        n = __wrap_write(fds[1], data + sent, size - sent);
+        if (n > 0)
+            sent += n;
+        else if (n < 0 && errno == EAGAIN)
+            writable(fds[1], 100);
+        else
+            return 1;
+    }
+    if (close_fd) {
+        beam_com_pipe_forget(fds[1]);
+        close(fds[1]);
+    }
+    printf("written\n");
+    fflush(stdout);
+    /* The exit of the process: the wait for a byte runs. The main thread
+     * waits meanwhile. */
+    if (pthread_create(&t, 0, exit_thread, 0) == 0)
+        pthread_join(t, 0);
+    return 1;
+}
+
+/* The exit of a writer of SIZE bytes, with a reader that reads DELAY_MS
+ * late. With CLOSE_FD, the writer closes the pipe before its exit. The
+ * time from the end of the writes to the end of the writer must be from
+ * MIN_MS to less than MAX_MS. With EXACT, the reader must get all the
+ * bytes. */
+static void exit_check(int delay_ms, size_t size, int close_fd, int min_ms,
+                       int max_ms, int exact)
+{
+    char delay[16], nsize[32], path[64], line[64];
+    char *argv[] = {0, "--writer", delay, path, nsize,
+                    close_fd ? "close" : "keep", 0};
+    int64_t t0, t1;
+    size_t got = 0;
+    int fds[2], status = -1, ok = 0;
+    pid_t pid;
+    FILE *f;
+
+    snprintf(delay, sizeof(delay), "%d", delay_ms);
+    snprintf(nsize, sizeof(nsize), "%zu", size);
+    snprintf(path, sizeof(path), "pipe_check.%d.%d.%zu.%d", (int)getpid(),
+             delay_ms, size, close_fd);
+    unlink(path);
+    CHECK(pipe2(fds, O_CLOEXEC) == 0);
+    pid = start_self(argv, -1, fds[1]);
+    CHECK(pid > 0);
+    close(fds[1]);
+    /* The line comes after the writes. */
+    if (read(fds[0], line, sizeof(line)) > 0)
+        ok = 1;
+    t0 = now_ms();
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+    t1 = now_ms();
+    close(fds[0]);
+    CHECK(ok);
+    CHECK(status == 0);
+    /* The reader writes the file at the end of its input. */
+    while (!(f = fopen(path, "r")) && now_ms() - t1 < 15000)
+        usleep(10000);
+    CHECK(f && fscanf(f, "%zu", &got) == 1);
+    if (f)
+        fclose(f);
+    unlink(path);
+    printf("pipe_check: exit after %zu bytes%s, reader %d ms late: %d ms, "
+           "the reader got %zu\n",
+           size, close_fd ? " and the close" : "", delay_ms, (int)(t1 - t0),
+           got);
+    CHECK(t1 - t0 >= min_ms);
+    CHECK(t1 - t0 < max_ms);
+    if (exact)
+        CHECK(got == size);
+}
+
+int main(int argc, char **argv)
 {
     static const size_t sizes[] = {1, 4095, 4096, 65536};
     struct reader r = {0};
@@ -188,6 +335,11 @@ int main(void)
     signal(SIGPIPE, SIG_IGN);
     for (i = 0; i < TOTAL; i++)
         data[i] = (unsigned char)(i * 7 + i / 251);
+    if (argc == 4 && !strcmp(argv[1], "--reader"))
+        return exit_reader(atoi(argv[2]), argv[3]);
+    if (argc == 6 && !strcmp(argv[1], "--writer"))
+        return exit_writer(argv[2], argv[3], strtoul(argv[4], 0, 10),
+                           !strcmp(argv[5], "close"));
     CHECK(pipe(fds) == 0);
     CHECK(fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0);
     CHECK(fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0);
@@ -271,6 +423,17 @@ int main(void)
         beam_com_pipe_forget(fds[1]);
         close(fds[1]);
     }
+
+    /* The exit of the writer. With 4097 bytes, 1 byte waits in the full
+     * pipe on Windows: the reader that reads 300 ms late gets it, also
+     * after the close of the pipe. A reader that never reads (4 s late)
+     * holds the exit for PIPE_EXIT_MS. With 4096 bytes, no byte waits, and
+     * the exit does not wait. */
+    exit_check(300, 4097, 0, 0, PIPE_EXIT_MS + 1000, 1);
+    exit_check(300, 4097, 1, 0, PIPE_EXIT_MS + 1000, 1);
+    exit_check(4000, 4097, 0, IsWindows() ? PIPE_EXIT_MS - 100 : 0,
+               PIPE_EXIT_MS + 1000, 0);
+    exit_check(1000, 4096, 0, 0, PIPE_EXIT_MS / 2, 1);
 
     if (failures) {
         printf("pipe_check: %d failures\n", failures);

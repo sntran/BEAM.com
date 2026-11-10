@@ -88,8 +88,10 @@ give the rule the file of your app, build a native file with `--target`
   full, 1 byte waits in the pipe, and the VM checks the end of that
   write every 5 ms (C16). In a test with a full pipe, the VM used 16 to
   109 ms of CPU in 5 s (31 ms in 3 of 5 runs); the build before this
-  check used 31 to 62 ms. The exit of the VM cancels a byte that waits,
-  so the reader does not get it.
+  check used 31 to 62 ms. Windows cancels a byte that waits at the exit
+  of the VM. So the exit waits at most 2 s for these bytes, and a program
+  that reads its input gets them. `erlang:halt/2` with `{flush, false}`
+  does not wait.
 - WSL2: start an APE file with `sh`. The kernel gives an APE file that
   it starts itself to Windows (`WSLInterop`): `./beam.com`, and an APE
   file that a shell starts (`os:cmd("other.com")`). BEAM.com starts its
