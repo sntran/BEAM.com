@@ -271,6 +271,10 @@ dir=$top_dir runner=$top_runner
 rmdir "$empty"
 check beam.com 'run INPUT (default: the project in this directory)' --help
 check beam.com "Erlang/OTP  : 29\.@@OS type     : unix/$os@@Emulator    : jit@@stdlib-@@esqlite-@@wasm-" --version
+# The architecture is the CPU and the system where the file runs (O28 of
+# docs/UPSTREAM.md), not the one text of configure.
+case $(uname -m) in arm64|aarch64) cpu=aarch64 ;; amd64|x86_64) cpu=x86_64 ;; *) cpu=$(uname -m) ;; esac
+check beam.com "^arch: $cpu-[a-z]*-$os" -noshell -eval 'io:format("arch: ~ts~n", [erlang:system_info(system_architecture)]), halt().'
 check_status 1 beam.com 'nosuch: not a .erl, .ex or .exs file, or a directory' nosuch
 check_status 1 beam.com 'there is no command build: use "beam.com INPUT -o OUTPUT"' build
 check_status 1 beam.com 'the arguments of the program come after "--"' x.erl y
@@ -514,6 +518,17 @@ if [ -d examples ]; then
         fi
         unset BEAM_COM_CRASH_REPORTS
         check script_check.b.com '^line 100000$@@^last line$' big
+        # A slow reader of the standard output: it reads only after 3 s,
+        # and it must get each line.
+        slow=$($runner "$dir/script_check.b.com" big 1000000 2>/dev/null | (sleep 3; wc -l))
+        if [ "$slow" -eq 1000001 ] 2>/dev/null; then
+            echo "PASS: script_check.b.com big 1000000 with a slow reader"
+        else
+            echo "FAIL: script_check.b.com big 1000000 with a slow reader: $slow lines"
+            fail=1
+            failed="$failed
+  script_check.b.com big 1000000 with a slow reader: $slow lines (expected 1000001)"
+        fi
         check script_check.b.com 'returned' spawn
         ERL_FLAGS='+S 1'
         export ERL_FLAGS
@@ -525,8 +540,8 @@ if [ -d examples ]; then
     check beam.com 'wrote .*peer_check.b.com' \
         tests/programs/peer_check.erl -o "$dir/peer_check.b.com"
     if [ -f "$dir/peer_check.b.com" ]; then
-        peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000'
-        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$"
+        peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
+        check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$@@^exit status 3\$@@^cmd hello\$@@^slow reader 200000\$@@^halt reader 4097\$@@^closed listen socket refused\$@@^find executable true\$@@^script ok\$@@^nouse_stdio fd ping\$"
     fi
     # The blue-green spike (examples/bluegreen): an upgrade under load, and
     # three upgrades that the server refuses. Linux has a result; the other
@@ -552,7 +567,7 @@ if [ -d examples ]; then
         # (Info-ZIP). A probe on the systems other than Linux.
         if command -v zip > /dev/null; then
             cp -R examples/reload "$dir/"
-            reload='^hello: v1 2$@@^status: .*last => {ok,\[reload_loop,reload_text\]}@@^hello: v2 3$'
+            reload='^hello: v1 2$@@^build: .*last => {ok,\[reload_text\]}@@^status: .*last => {ok,\[reload_loop,reload_text\]}@@^hello: v2 3$'
             reload="$reload@@^loop: loop 1\$@@last => {waiting,\[reload_loop\]}@@^status: .*last => {ok,\[reload_loop\]}"
             reload="$reload@@^after move: loop 2\$@@^state: #{count => 3,extra => to_map}\$@@^hello: v2 4\$"
             reload="$reload@@^file: hello 2 changes 1\$@@^outside: v2 5\$@@^off: no reload\$"
@@ -777,20 +792,32 @@ time.sleep(120)' "$claims/in/srv.sock" &
     BEAM_COM_ALLOW=read
     check sandbox_net.com "$env" read /etc/hosts read "$dir/beam.com"
     unset BEAM_COM_ALLOW
-    # On Linux, write allows the change of the mode and of the times
-    # (chown with no change first, #172), and net allows a Unix socket.
+    # chown() to the owner that a file already has (C28 of
+    # docs/UPSTREAM.md): outside the sandbox, the result of the system.
+    # Linux clears the setuid and setgid bits at each chown().
+    rm -rf "$dir/sandbox-w"
+    mkdir "$dir/sandbox-w"
     if [ "$os" = linux ]; then
-        rm -rf "$dir/sandbox-w"
-        mkdir "$dir/sandbox-w"
+        check sandbox_none.com 'write: ok@@setid: owner 755, times 755@@done' \
+            write "$dir/sandbox-w/g" setid "$dir/sandbox-w/g"
+    else
+        check sandbox_none.com 'write: ok@@owner: ok@@touch: ok@@done' \
+            write "$dir/sandbox-w/g" owner "$dir/sandbox-w/g" touch "$dir/sandbox-w/g"
+    fi
+    # On Linux, write allows the change of the mode and of the times
+    # (chown with no change first, #172), the same owner again (the
+    # sandbox refuses chown()), and net allows a Unix socket.
+    if [ "$os" = linux ]; then
         BEAM_COM_ALLOW="write=$dir/sandbox-w;net"
         export BEAM_COM_ALLOW
-        check sandbox_none.com 'write: ok@@chmod: ok@@touch: ok@@unix: ok@@done' \
-            write "$dir/sandbox-w/f" chmod "$dir/sandbox-w/f" touch "$dir/sandbox-w/f" unix
+        check sandbox_none.com 'write: ok@@chmod: ok@@touch: ok@@owner: ok@@unix: ok@@done' \
+            write "$dir/sandbox-w/f" chmod "$dir/sandbox-w/f" touch "$dir/sandbox-w/f" \
+            owner "$dir/sandbox-w/f" unix
         BEAM_COM_ALLOW="write=$dir/sandbox-w"
         check sandbox_none.com 'unix: error eperm@@done' unix
         unset BEAM_COM_ALLOW
-        rm -rf "$dir/sandbox-w"
     fi
+    rm -rf "$dir/sandbox-w"
     # Landlock on Linux: the ABI with BEAM_COM_VERBOSE, and a warning on a
     # kernel without it (BEAM_COM_NO_LANDLOCK=1 acts as one, issue 171).
     if [ "$os" = linux ]; then
@@ -990,6 +1017,90 @@ if [ -d examples ]; then
         examples/greeter_ex -o "$dir/greeter_ex.com"
     [ -f "$dir/greeter_ex.com" ] && check greeter_ex.com "$greeter_ex"
     rm -f examples/greeter_ex/mix.lock
+    # A Mix project with config/runtime.exs: Mix makes the release
+    # (beam_com_mix), and the program reads config/runtime.exs at its
+    # start. It has no deps, so it needs no network.
+    limit_saved=$limit
+    limit=600
+    check beam.com 'Mix gets the deps of tests/programs/runtime_check and makes its release (config/runtime.exs)@@wrote .*runtime_check.com@@applications: .*runtime_check' \
+        tests/programs/runtime_check -o "$dir/runtime_check.com"
+    limit=$limit_saved
+    rm -rf tests/programs/runtime_check/_build
+    if [ -f "$dir/runtime_check.com" ]; then
+        RUNTIME_CHECK_GREETING="hello from config/runtime.exs"
+        export RUNTIME_CHECK_GREETING
+        check runtime_check.com 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs'
+        unset RUNTIME_CHECK_GREETING
+    fi
+    # Run mode with a Mix project whose build writes a file in priv/: the
+    # alias assets.deploy of tests/programs/rebuild_check writes a new
+    # time, as phx.digest of Phoenix does. The second run must not build
+    # again. A change of a source file builds again. The copy and the
+    # cache are in DIR, not in the repository and not in the home.
+    rm -rf "$dir/rebuild_check" "$dir/run-cache"
+    cp -R tests/programs/rebuild_check "$dir/"
+    BEAM_COM_CACHE=$dir/run-cache
+    export BEAM_COM_CACHE
+    limit_saved=$limit
+    limit=600
+    rebuild_line='Mix gets the deps of .*rebuild_check and makes its release (the alias assets.deploy)'
+    check beam.com "$rebuild_line@@^rebuild_check: v1\$" "$dir/rebuild_check"
+    if [ ! -f "$dir/rebuild_check/priv/static/stamp.txt" ]; then
+        echo "FAIL: the build of rebuild_check did not run its alias assets.deploy"
+        fail=1
+        failed="$failed
+  beam.com $dir/rebuild_check: no priv/static/stamp.txt"
+    fi
+    check beam.com '^rebuild_check: v1$' "$dir/rebuild_check"
+    if grep -q 'Mix gets the deps' "$tmp"; then
+        echo "FAIL: run mode built rebuild_check again with no change"
+        fail=1
+        failed="$failed
+  beam.com $dir/rebuild_check: built again with no change"
+    else
+        echo "PASS: run mode did not build rebuild_check again"
+    fi
+    cat > "$dir/rebuild_check/lib/rebuild_check.ex" <<'EOF'
+defmodule RebuildCheck do
+  @moduledoc "Writes one line, then stops the program (after a change)."
+  use Application
+
+  def start(_type, _args) do
+    IO.puts("rebuild_check: v2")
+    System.halt(0)
+  end
+end
+EOF
+    check beam.com "$rebuild_line@@^rebuild_check: v2\$" "$dir/rebuild_check"
+    limit=$limit_saved
+    unset BEAM_COM_CACHE
+    rm -rf "$dir/rebuild_check" "$dir/run-cache"
+    # A command line Mix project (escript main_module) with
+    # config/runtime.exs: the builder of a plain Mix project makes the
+    # file, with a warning, and the file runs main/1. With one more reason
+    # for Mix (--tool mix-release, or the alias assets.deploy), the build
+    # stops and writes no file.
+    rm -f "$dir/escript_check.com" "$dir/escript_never.com"
+    plain_line='only the builder of a plain Mix project reads'
+    check beam.com "warning: tests/programs/escript_check: $plain_line the escript main_module of mix.exs@@the program does not have config/runtime.exs@@wrote .*escript_check.com" \
+        tests/programs/escript_check -o "$dir/escript_check.com"
+    rm -rf tests/programs/escript_check/_build
+    if [ -f "$dir/escript_check.com" ]; then
+        check escript_check.com '^escript_check: args \["a", "b"\]$@@^escript_check: greeting none$' a b
+    fi
+    check_status 1 beam.com "$plain_line the escript main_module of mix.exs, and the project needs Mix (--tool mix-release)" \
+        tests/programs/escript_check --tool mix-release -o "$dir/escript_never.com"
+    check_status 1 beam.com "$plain_line --main, and the project needs Mix (the alias assets.deploy)" \
+        tests/programs/rebuild_check --main RebuildCheck -o "$dir/escript_never.com"
+    # A wrong build of rebuild_check writes _build and priv/ there.
+    rm -rf tests/programs/escript_check/_build tests/programs/rebuild_check/_build \
+        tests/programs/rebuild_check/priv
+    if [ -e "$dir/escript_never.com" ]; then
+        echo "FAIL: a build that stops wrote escript_never.com"
+        fail=1
+        failed="$failed
+  beam.com --tool mix-release or --main: wrote escript_never.com"
+    fi
 fi
 
 # The tools: escript, and mix, iex, elixir and elixirc, as a first
@@ -1006,6 +1117,56 @@ cat > "$tmp.escript" <<'ESCRIPT'
 main(Args) -> io:format("escript: ~p ~p~n", [Args, erlang:system_info(schedulers)]).
 ESCRIPT
 check beam.com 'escript: \["a","b c"\] 1$' escript "$tmp.escript" a "b c"
+# The SHA-1 check of the git client: the helper git_sha1dc in the file
+# (c_src/cosmo/beam_com_sha1dc.c) finds the SHA-1 collisions.
+if [ -d examples ]; then
+    check beam.com 'git_sha1dc_check: 4 vectors have the mark, the good objects pass' \
+        escript tests/programs/git_sha1dc_check.escript
+fi
+# A Unix socket with a short path (C53 of docs/UPSTREAM.md): bind() of
+# Cosmopolitan refuses an address of fewer than 16 bytes, and the wrap of
+# bind() (c_src/cosmo/beam_com_net.c) makes it longer. A server and a
+# client talk through a stream socket with a path of 1 byte and of 14
+# bytes, and through two datagram sockets.
+cat > "$tmp.unix.escript" <<'ESCRIPT'
+#!/usr/bin/env escript
+main(_) ->
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"),
+                        "unix_socket." ++ os:getpid()),
+    ok = file:make_dir(Dir),
+    ok = file:set_cwd(Dir),
+    Results = [stream("s"), stream("s2345678901234"), datagram("d", "e")],
+    [file:delete(F) || F <- ["s", "s2345678901234", "d", "e"]],
+    ok = file:del_dir(Dir),
+    io:format("unix socket: ~ts~n", [lists:join(", ", Results)]).
+
+stream(Path) ->
+    Result = try
+                 {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {ifaddr, {local, Path}}]),
+                 {ok, C} = gen_tcp:connect({local, Path}, 0, [binary, {active, false}]),
+                 {ok, A} = gen_tcp:accept(L, 5000),
+                 ok = gen_tcp:send(C, <<"hello">>),
+                 {ok, <<"hello">>} = gen_tcp:recv(A, 5, 5000),
+                 [gen_tcp:close(S) || S <- [C, A, L]],
+                 "ok"
+             catch error:{badmatch, Reason} -> io_lib:format("~p", [Reason])
+             end,
+    [Path, " ", Result].
+
+datagram(Path1, Path2) ->
+    Result = try
+                 {ok, S1} = gen_udp:open(0, [binary, {active, false}, {ifaddr, {local, Path1}}]),
+                 {ok, S2} = gen_udp:open(0, [binary, {active, false}, {ifaddr, {local, Path2}}]),
+                 ok = gen_udp:send(S2, {local, Path1}, 0, <<"hello">>),
+                 {ok, {_, _, <<"hello">>}} = gen_udp:recv(S1, 0, 5000),
+                 [gen_udp:close(S) || S <- [S1, S2]],
+                 "ok"
+             catch error:{badmatch, Reason} -> io_lib:format("~p", [Reason])
+             end,
+    ["datagram ", Result].
+ESCRIPT
+check beam.com '^unix socket: s ok, s2345678901234 ok, datagram ok$' escript "$tmp.unix.escript"
+rm -f "$tmp.unix.escript"
 check beam.com '^55$' elixir -e 'IO.puts(Enum.sum(1..10))'
 # The errno names of the BEAM on each system: ELOOP gave errno_40 on
 # Linux and errno_62 on macOS (C35 of docs/UPSTREAM.md).
@@ -1130,7 +1291,9 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     export PATH
     cd "$work"
     net_check mix.com '' local.hex --force
-    net_check mix.com 'phx_new' archive.install hex phx_new --force
+    # A fixed phx_new: a new version can give other deps (the checks
+    # below name the git deps). Keep it equal to tests/run.ps1.
+    net_check mix.com 'phx_new' archive.install hex phx_new 1.8.16 --force
     check mix.com 'creating hello/mix.exs' phx.new hello --database sqlite3 --no-install
     linked_nifs
     if [ -d hello ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then
@@ -1192,6 +1355,66 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
         kill "$phx" 2>/dev/null
         pkill -f "^sleep 300$" 2>/dev/null
         wait "$phx" 2>/dev/null
+        # The watchers of the server download tailwind and esbuild into
+        # _build, and the stop above can come before the chmod of a
+        # download. Then the file stays, and the next install skips it
+        # ("eacces" at the open of the port). Remove such a file.
+        for f in _build/tailwind-* _build/esbuild-*; do
+            if [ -f "$f" ] && [ ! -x "$f" ]; then
+                echo "remove $f: the stop of the server came before its chmod"
+                rm -f "$f"
+            fi
+        done
+        # The same app in one file, with no Mix task first: Mix makes the
+        # release (beam_com_mix), for config/runtime.exs, the git deps
+        # (heroicons, daisyui), the compilers and assets.deploy. The git
+        # deps come again with the git client of beam.com
+        # (BEAM_COM_GIT=client), as on a computer with no git program.
+        rm -rf deps/heroicons deps/daisyui
+        BEAM_COM_GIT=client
+        export BEAM_COM_GIT
+        net_check beam.com 'Mix gets the deps of \. and makes its release (config/runtime.exs, deps that are not Hex packages: heroicons daisyui@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix' \
+            . -o "$dir/hello.com"
+        unset BEAM_COM_GIT
+        if [ -f deps/heroicons/.git/HEAD ] && [ ! -d deps/heroicons/.git/objects/pack ]; then
+            echo "PASS: the git client of beam.com got heroicons"
+        else
+            echo "FAIL: the git client of beam.com did not get heroicons"
+            fail=1
+            failed="$failed
+  BEAM_COM_GIT=client: deps/heroicons is not a checkout of the git client of beam.com"
+        fi
+        if [ -f "$dir/hello.com" ]; then
+            chmod +x "$dir/hello.com"
+            echo "==> hello.com"
+            PHX_SERVER=true PORT=4124 DATABASE_PATH="$work/hello_prod.db" \
+                SECRET_KEY_BASE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+                $runner "$dir/hello.com" > "$tmp.phx" 2>&1 &
+            phx=$!
+            served=
+            i=0
+            while [ $i -lt 60 ]; do
+                sleep 1
+                i=$((i + 1))
+                if curl -s http://127.0.0.1:4124/ 2>/dev/null | grep -q 'Phoenix Framework'; then
+                    served=yes
+                    break
+                fi
+            done
+            grep -v '^ *$' "$tmp.phx" | head -20
+            css=$(curl -s http://127.0.0.1:4124/ 2>/dev/null | sed -n 's/.*href="\(\/assets\/css\/app-[^"]*\)".*/\1/p' | head -n 1)
+            if [ -n "$served" ] && [ -n "$css" ] &&
+               [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:4124$css")" = 200 ]; then
+                echo "PASS: hello.com serves the start page and $css (after $i s)"
+            else
+                echo "FAIL: hello.com did not serve the start page and its digested CSS"
+                fail=1
+                failed="$failed
+  hello.com: no start page or digested CSS on http://127.0.0.1:4124/"
+            fi
+            kill "$phx" 2>/dev/null
+            wait "$phx" 2>/dev/null
+        fi
     fi
     cd "$here"
     rm -f "$dir/mix" "$dir/escript" "$dir/mix.com" "$dir/iex.com"

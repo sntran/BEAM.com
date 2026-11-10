@@ -10,8 +10,8 @@
 %%   sys.config (Config.Reader).
 -module(beam_com_elixir).
 
--export([available/0, script/1, is_mix/1, mix_project/1, in_project/2, compile/3,
-         sys_config/1]).
+-export([available/0, script/1, is_mix/1, mix_project/1, mix_config/1, in_project/2,
+         compile/3, sys_config/1]).
 
 -ifdef(TEST).
 -export([mix_deps/1]).
@@ -95,6 +95,17 @@ is_mix(Dir) ->
 mix_project(Dir) ->
     with_project(Dir, fun mix_project/2).
 
+%% The project/0 of mix.exs as it is, with the deps of each source
+%% (beam_com_mix).
+mix_config(Dir) ->
+    with_project(Dir, fun(File, Project) ->
+                              try Project:project()
+                              catch C:R:S ->
+                                      throw({error, "~ts: ~ts",
+                                             [File, 'Elixir.Exception':format(C, R, S)]})
+                              end
+                      end).
+
 %% Fun() with the Mix project of Dir on the project stack of Mix, as Mix
 %% compiles a package: the code of a package can read
 %% Mix.Project.config() when it compiles (rusty_csv).
@@ -169,13 +180,21 @@ mix_dep({Name, Req, Opts}) when is_atom(Name), is_list(Opts) ->
     Only = proplists:get_value(only, Opts, prod),
     InProd = Only =:= prod orelse (is_list(Only) andalso lists:member(prod, Only)),
     Other = [K || K <- [git, github, path, in_umbrella], proplists:is_defined(K, Opts)],
+    %% The Hex client of the builder gets only packages of hex.pm, so a
+    %% package of an organization or of another repository is an error,
+    %% not a package of the same name from hex.pm.
+    Repo = [K || K <- [organization, repo], proplists:is_defined(K, Opts),
+                 not lists:member(proplists:get_value(K, Opts), [<<"hexpm">>, "hexpm"])],
     Optional = proplists:get_value(optional, Opts, false) =:= true,
-    case {InProd andalso not Optional, Other} of
-        {false, _} -> [];
-        {true, [K | _]} ->
+    case {InProd andalso not Optional, Other, Repo} of
+        {false, _, _} -> [];
+        {true, [K | _], _} ->
             throw({error, "the dependency ~p is not a Hex package (~p; only Hex "
                    "packages are supported)", [Name, K]});
-        {true, []} ->
+        {true, [], [K | _]} ->
+            throw({error, "the dependency ~p is not a package of hex.pm (~p; only "
+                   "packages of hex.pm are supported, else use --tool mix-release)", [Name, K]});
+        {true, [], []} ->
             Pkg = case proplists:get_value(hex, Opts) of
                       undefined -> atom_to_binary(Name);
                       H -> atom_to_binary(H)

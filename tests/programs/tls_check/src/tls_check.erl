@@ -1,6 +1,6 @@
 %% Checks port programs and TLS, prints the results, then stops the node:
 %%
-%%  0. Port programs: os:cmd/1 and the native resolver (not on Windows).
+%%  0. Port programs: os:cmd/1, and the native resolver (not on Windows).
 %%  1. A handshake between a server and a client in this node, with test
 %%     certificates. This needs no network.
 %%  2. An HTTPS request to a public host. The server certificate is
@@ -18,14 +18,16 @@ main() ->
 
 %% --- 0. Port programs -----------------------------------------------------
 
-%% os:cmd/1 and the native resolver (inet_gethost) are port programs.
-%% BEAM.com has no port programs on Windows.
+%% os:cmd/1 and the native resolver (inet_gethost) are port programs. On
+%% Windows, os:cmd/1 needs a sh in PATH (in CI, the sh of Git for
+%% Windows), and BEAM.com does not use inet_gethost (C16 of
+%% docs/UPSTREAM.md).
 port_programs() ->
+    "port-ok" ++ _ = os:cmd("echo port-ok"),
     case os:type() of
         {_, windows} ->
-            io:format("ports: not supported on windows~n");
+            io:format("ports: ok (os:cmd)~n");
         _ ->
-            "port-ok" ++ _ = os:cmd("echo port-ok"),
             {ok, _} = inet_gethost_native:gethostbyname("localhost"),
             io:format("ports: ok (os:cmd and inet_gethost)~n")
     end.
@@ -93,9 +95,8 @@ remote_request() ->
                       [inet_res:resolve(Host, in, a, [], 5000)])
     end.
 
-%% Resolve names with the DNS client of Erlang. The native resolver
-%% (inet_gethost) is a port program, and there are no port programs in
-%% BEAM.com on Windows.
+%% Resolve names with the DNS client of Erlang, as BEAM.com does on
+%% Windows (it does not use inet_gethost there).
 use_erlang_dns() ->
     inet_db:set_lookup([file, dns]),
     case inet_db:res_option(nameservers) of

@@ -384,14 +384,56 @@ int __wrap_linkat(int fromfd, const char *from, int tofd, const char *to, int fl
 }
 
 /* The target of a link is text: only the new name counts. */
+/*
+ * On Windows, symlink() of Cosmopolitan makes a link to a directory only
+ * when the target is a directory, but it reads a relative target from the
+ * working directory, not from the directory of the link (C54 of
+ * docs/UPSTREAM.md). Mix makes _build/prod/lib/APP/priv with the target
+ * ../../../../priv, and Windows then gives EACCES for each stat() and
+ * open() through the link. When the target, read from the directory of
+ * the link, is a directory, this gives the target with a "/" at the end:
+ * then Cosmopolitan makes a link to a directory. Buf has FS_PATH bytes.
+ */
+static const char *fs_link_target(const char *target, int dirfd, const char *path, char *buf)
+{
+    size_t n = strlen(target), d = 0, i;
+    struct stat st;
+
+    if (!IS_WINDOWS() || n == 0 || target[n - 1] == '/' || target[n - 1] == '\\'
+        || target[0] == '/' || target[0] == '\\' || (n > 1 && target[1] == ':')
+        || dirfd != AT_FDCWD)
+        return target;
+    for (i = 0; path[i]; i++)
+        if (path[i] == '/' || path[i] == '\\')
+            d = i + 1;
+    if (d + n + 2 > FS_PATH)
+        return target;
+    memcpy(buf, path, d);
+    memcpy(buf + d, target, n + 1);
+    if (stat(buf, &st) != 0 || !S_ISDIR(st.st_mode))
+        return target;
+    memcpy(buf, target, n);
+    buf[n] = '/';
+    buf[n + 1] = 0;
+    return buf;
+}
+
 int __wrap_symlink(const char *target, const char *path)
 {
-    return beam_com_fs_check(path, 1) ? -1 : __real_symlink(target, path);
+    char buf[FS_PATH];
+
+    if (beam_com_fs_check(path, 1))
+        return -1;
+    return __real_symlink(fs_link_target(target, AT_FDCWD, path, buf), path);
 }
 
 int __wrap_symlinkat(const char *target, int dirfd, const char *path)
 {
-    return fs_check_at(dirfd, path, 1) ? -1 : __real_symlinkat(target, dirfd, path);
+    char buf[FS_PATH];
+
+    if (fs_check_at(dirfd, path, 1))
+        return -1;
+    return __real_symlinkat(fs_link_target(target, dirfd, path, buf), dirfd, path);
 }
 
 int __wrap_chmod(const char *path, mode_t mode)

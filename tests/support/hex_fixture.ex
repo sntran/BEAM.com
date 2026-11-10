@@ -12,7 +12,8 @@ defmodule BeamCom.HexFixture do
   @doc """
   A Hex tarball (version 3) of the package `name` at the version `vsn`.
   The tarball has `files` in contents.tar.gz, and `reqs` as the
-  requirements `[{dep, requirement}]`. `tools` are the build tools.
+  requirements `[{dep, requirement}]` (or `{dep, requirement, :optional}`).
+  `tools` are the build tools.
   """
   def package(name, vsn, files, reqs, tools) do
     in_tmp(fn tmp ->
@@ -28,11 +29,13 @@ defmodule BeamCom.HexFixture do
       {:ok, contents} = :file.read_file(contents_file)
 
       requirements =
-        for {d, r} <- reqs do
+        for req <- reqs do
+          {d, r, optional} = requirement(req)
+
           {d,
            [
              {"app", d},
-             {"optional", false},
+             {"optional", optional},
              {"requirement", :erlang.list_to_binary(r)},
              {"repository", "hexpm"}
            ]}
@@ -54,6 +57,10 @@ defmodule BeamCom.HexFixture do
       hex_tar(meta, contents)
     end)
   end
+
+  # A requirement {dep, requirement}, or {dep, requirement, :optional}.
+  defp requirement({d, r}), do: {d, r, false}
+  defp requirement({d, r, :optional}), do: {d, r, true}
 
   @doc """
   A Hex tarball of the metadata `meta` and the contents `contents`, with
@@ -100,8 +107,10 @@ defmodule BeamCom.HexFixture do
     releases =
       for {n, v, reqs, tar} <- packages do
         requirements =
-          Map.new(reqs, fn {d, r} ->
-            {d, %{"app" => d, "optional" => false, "requirement" => :erlang.list_to_binary(r)}}
+          Map.new(reqs, fn req ->
+            {d, r, optional} = requirement(req)
+
+            {d, %{"app" => d, "optional" => optional, "requirement" => :erlang.list_to_binary(r)}}
           end)
 
         {~c"/api/packages/" ++ :erlang.binary_to_list(n) ++ ~c"/releases/" ++ v,

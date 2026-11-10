@@ -62,7 +62,9 @@ jobs:
           python3 -I scripts/custom_build.py versions > versions.json
           python3 -I -c 'import json; print("pairs=" + json.dumps(json.load(open("versions.json"))["pairs"]))' >> "$GITHUB_OUTPUT"
 
-      # The patches of beam.com apply to each version.
+      # The patches of beam.com apply to each version, in order, as
+      # step_otp of scripts/steps.sh applies them: a patch can change the
+      # lines of an earlier patch (0006 changes lines of 0001).
       - name: The patches
         run: |
           python3 -I -c 'import json; d = json.load(open("versions.json")); [print("otp", v, c) for v, c in d["otp"].items()]; [print("elixir", v, c) for v, c in d["elixir"].items()]' |
@@ -75,7 +77,7 @@ jobs:
             git clone -q --depth 1 --branch "$tag" "$url" "src-$tag"
             [ "$(git -C "src-$tag" rev-parse HEAD)" = "$c" ] || { echo "$tag is not the commit $c" >&2; exit 1; }
             for p in "$patches"/*.patch; do
-              git -C "src-$tag" apply --check "$GITHUB_WORKSPACE/$p" || { echo "$p does not apply to $tag" >&2; exit 1; }
+              git -C "src-$tag" apply "$GITHUB_WORKSPACE/$p" || { echo "$p does not apply to $tag" >&2; exit 1; }
             done
             echo "$tag: the commit and the patches are correct"
             rm -rf "src-$tag"

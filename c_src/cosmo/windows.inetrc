@@ -5,8 +5,8 @@
 %% it (see windows_setup() in beam_com.c). This file is used instead
 %% when that file cannot be written. Set ERL_INETRC to use your own.
 %%
-%% There are no port programs on Windows, so the native resolver
-%% (inet_gethost) cannot run. Resolve names with the hosts file support
+%% BEAM.com does not use the native resolver (inet_gethost) on Windows
+%% (C16 of docs/UPSTREAM.md). Kernel resolves names with the hosts file
 %% and the DNS client of Erlang.
 {lookup, [file, dns]}.
 %% Windows has no /etc/resolv.conf. Without this line kernel watches that

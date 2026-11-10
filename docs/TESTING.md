@@ -32,6 +32,13 @@ the tests.
 - `tests/host_test.exs`: the tests of the JavaScript of the hosts
   (`tests/host/*.test.mjs`) with `node --test`. They need Node.js 20.6 or
   later. Without `node`, ExUnit skips them (the tag `node`).
+- `tests/beam_com/beam_com_git_ssh_test.exs`: a test of the git client
+  with the `git-upload-pack` program of git. Without `git`, ExUnit skips
+  it (the tag `git`).
+- The tests of the Mix release in `tests/beam_com/beam_com_mix_test.exs`
+  start a child `beam.com`. They need a test VM of `beam.com` (the init
+  argument `beam_com_exe`, as in `make unit`). Without it, ExUnit skips
+  them (the tag `beam_com_exe`).
 - StreamData properties, in the test file of their module. A property
   uses an independent oracle where one exists: the `Version` module of
   Elixir for the versions and the requirements of Hex, `io_lib`,
@@ -47,6 +54,19 @@ the tests.
   build lock of Mix runs in a user and network namespace
   (`unshare -rn`). Without it, ExUnit skips the test (the tag `netns`).
   CI sets `BEAM_COM_NETNS=1`, so there the test must run.
+- `tests/beam_com/beam_com_git_ssh_test.exs`: the tests of Git over SSH,
+  with an SSH daemon of OTP and a test agent on the loopback address. The
+  tests of the program `ssh_agent_bridge` (the tag `agent_bridge`) need
+  the helper in the `beam.com` of the tests, or `BEAM_COM_AGENT_BRIDGE`
+  (a build of `c_src/cosmo/beam_com_agent.c` with
+  `-DBEAM_COM_AGENT_MAIN`). Without them, ExUnit skips these tests.
+- `tests/beam_com/beam_com_git_test.exs`: the tests of the SHA-1 check
+  of the git client use small shell scripts as false helpers (an attack,
+  a wrong digest, a bad answer, an exit, no answer). The tests of the
+  program `git_sha1dc` (the tag `sha1dc`) need the helper in the
+  `beam.com` of the tests, or `BEAM_COM_SHA1DC` (a build of
+  `c_src/cosmo/beam_com_sha1dc.c` with `-DBEAM_COM_SHA1DC_MAIN`).
+  Without them, ExUnit skips these tests.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
 - `tests/errno_test.exs`: the errors of the VM have the names of the
@@ -178,8 +198,8 @@ the programs that it builds, on each system, and check the output and
 the exit status of each one, with a time limit. They also check the
 errors of `beam.com INPUT -o OUTPUT` (the exit status and the message).
 A check that uses the network gets two more tries when it fails, after
-10 s and after 30 s, and the log shows each try. Both runners do this for the HTTPS
-request of `tls_check`, and `tests/run.sh` also does it for Hex and Mix.
+10 s and after 30 s, and the log shows each try. Both runners do this
+for the HTTPS request of `tls_check` and for Hex and Mix.
 
 ```sh
 tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
@@ -190,22 +210,47 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 | `tests/programs/wasm_tests.erl` | WebAssembly: every value type at its limits, wrong arguments, all trap kinds and the recovery after a trap, stack exhaustion, memory bounds and growth, 50 processes that call one instance, missing imports, and WASI arguments, environment and exit codes. |
 | `tests/programs/wasm_check.erl`, `tests/programs/hello_go` | A WebAssembly module, and a WASI program in Go (`GOOS=wasip1`). |
 | `tests/programs/nif_check` | A NIF library in WebAssembly ([`NIFS.md`](NIFS.md)): an application with a NIF in C and its `.wasm` and AOT files in `priv/`, built with `-o`. The terms, binaries, maps, resources and their destructors, monitors and their down callbacks, `enif_send`, `enif_snprintf`, an I/O queue, exceptions, a trap and the recovery after it, `enif_schedule_nif`, a dirty NIF, an unsupported function, and 32 processes that call the library at the same time. The bad calls that ERTS checks only in a debug build (each one must trap), functions of other types (four results, four parameters, an `i64`), and 20 `load_nif/2` calls that ERTS refuses (on Linux, the address space must not grow by their modules). With the AOT file and with the interpreter. |
-| `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB). On Windows, which has no port programs, it checks that `peer` gives `enotsup`. |
-| `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS`. |
-| `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. |
+| `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB, a request of 1 MB). Then the exit status of a port program, `os:cmd/1`, a port program that reads its input after 1 s (a full pipe), a node that halts right after a write of 4097 bytes to a port program that reads 300 ms late (the program must get all the bytes), a listen socket that a port program must not get, `os:find_executable/1`, a `#!` script as a port program, and `nouse_stdio`. On Windows also `findstr`, a native program that waits in large reads. On each system, also Windows. |
+| `tests/cosmo/agent_check.c` | The pipe of the SSH agent of `c_src/cosmo/beam_com_agent.c` on Windows: the server of the pipe gets a token of the level `SecurityIdentification` only. The build job of CI makes `agent_check.com` for `tests/run.ps1`. |
+| `tests/cosmo/pipe_check.c` | The wraps of `c_src/cosmo/beam_com_pipe.c`: on Windows, a write to a non-blocking pipe gives at most its free space, a full pipe takes 1 byte that waits and then gives `EAGAIN`, it is not writable for `select()` and uses no CPU, and 1 MB through the pipe arrives in order. Blocking readers with reads of 1, 4095, 4096 and 65536 bytes get all the data, the reader gets the byte that waits after the close of the write end, and a write after the close of the read end gives `EPIPE`. At the exit of a writer with a byte that waits, a reader that reads 300 ms late gets all of 4097 bytes, a reader that never reads holds the exit for 2 s at most, and with no byte that waits the exit does not wait. `scripts/steps.sh test` runs it on Linux (only the data); the build job of CI makes `pipe_check.com` for `tests/run.ps1`. |
+| `tests/cosmo/sha1dc_check.c` | The helper `git_sha1dc` of `c_src/cosmo/beam_com_sha1dc.c` in a child process: many messages in one input (0, 3, 55, 56, 63, 64, 65 and 1,000,000 bytes, and 196,864 bytes in parts) with their SHA-1, the vectors of `tests/programs/sha1dc_vectors.txt` (SHAttered and Shambles) with the mark of an attack and another digest, and the end of the input in a message (status 1). `scripts/steps.sh test` runs it on Linux. |
+| `tests/programs/git_sha1dc_check.escript` | The helper `/zip/bin/git_sha1dc` of `beam.com` on each system, also Windows: the vectors have the mark of an attack, good inputs pass, and `beam_com_git:check/2` checks good objects. The option `sha1dc` `none` does not stop the check of `beam.com`. |
+| `tests/programs/ssh_agent_check.escript` | Windows only (`tests/run.ps1`): the service `ssh-agent` of Windows OpenSSH with a new key, and the helper program `ssh_agent_bridge` on its named pipe. The keys of the agent, and a signature of the git client (`beam_com_git_ssh:sign/3`). |
+| Phoenix on Windows (`tests/run.ps1`) | A new app (`mix phx.new hello --no-ecto`) in one file with `beam.com . -o`: the tailwind and esbuild programs for Windows, the git deps, and `priv` through a link to a directory (C54). Then the file serves the start page and its digested CSS. |
+| `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, 1000000 lines in one write, also to a reader that starts to read after 3 s, `ERL_FLAGS`. |
+| `tests/programs/sandbox_check.erl` | The `--allow-*` flags: what each one allows and refuses. Also `chown()` to the owner that a file already has (C28): on Linux the setuid and setgid bits go, as with the `chown()` of the system; in the sandbox of Linux and on Windows the call gives `ok`. |
 | `tests/programs/jit_maps.erl` | No page of the JIT code is writable and executable. |
 | `tests/programs/elixir_check.ex` | A one-file Elixir program. |
 | `tests/programs/sqlite_check.erl` | SQLite: a database in memory and in a file. |
-| `tests/programs/crypto_check`, `tls_check` | Crypto (exact hash values), port programs, a local TLS 1.3 handshake, and a verified HTTPS request. Also as rebar3 releases in the zip. |
+| `tests/programs/crypto_check`, `tls_check` | Crypto (exact hash values), port programs (`os:cmd/1`, and `inet_gethost` except on Windows), a local TLS 1.3 handshake, and a verified HTTPS request. Also as rebar3 releases in the zip. |
+| `tests/programs/runtime_check` | A Mix project with `config/runtime.exs` and no deps: Mix makes its release (`beam_com_mix`), and the file reads the config at its start. On each system, also Windows. |
+| `tests/programs/rebuild_check` | Run mode (`beam.com DIR`) with a Mix project and no deps: its alias `assets.deploy` writes a new time to `priv/static/stamp.txt` at each build, as `phx.digest` of Phoenix does. The first run builds, the second run does not build again, and a change of a source file builds again. The copy of the project and the cache (`BEAM_COM_CACHE`) are in `DIR`. Also with `--main`: the build stops, because only Mix can build the project. `tests/run.sh` only. |
+| `tests/programs/escript_check` | A command line Mix project (`escript: [main_module: ...]`) with `config/runtime.exs` and no deps: the builder of a plain Mix project makes the file, with a warning that the program does not read `config/runtime.exs`, and the file runs `main/1` with its arguments. With `--tool mix-release`, the build stops and writes no file. On each system, also Windows. |
+| `erlang:system_info(system_architecture)` (`tests/run.sh`) | The CPU and the system where the file runs (O28 of [`UPSTREAM.md`](UPSTREAM.md)), not the text of `configure`. |
 | `tests/programs/calc` | A scanner, a parser and an ASN.1 module. |
 | `examples/*` | The examples: a release in the zip, Hex packages, a Mix project, a command line program, distributed Erlang and a remote shell, and `--target wasm32` (the build and its files; the Workers do not run in CI). |
 
 `tests/run.sh` also runs the tools of Elixir (`mix.com`, `iex.com`,
-`elixir.com`, `elixirc.com`, `escript`), a new Phoenix app with SQLite
-and `phx.gen.auth` (Linux, with the network), the file watchers, a
-check of WSL2 in a user namespace of Linux, and the blue-green spike
-(`examples/bluegreen/check.sh`: a check on Linux, a probe on the other
-Unix systems).
+`elixir.com`, `elixirc.com`, `escript`), and a new Phoenix app with
+SQLite and `phx.gen.auth` (Linux, with the network). It then builds the
+same app in one file with `beam.com . -o`, with the git client of
+`beam.com` for the git deps (`BEAM_COM_GIT=client`), and the file must
+serve the start page and its digested CSS. It also runs the file
+watchers, a check of WSL2 in a user namespace of Linux, and the
+blue-green spike (`examples/bluegreen/check.sh`: a check on Linux, a
+probe on the other Unix systems).
+
+`tests/run.ps1` needs PowerShell 7.3 or later. It keeps the tree of the
+processes that each check starts, and it stops and shows each one that
+still runs after the check. It reads the output of a check on the reader
+threads of .NET, and it waits for the end of each stream (30 s at most).
+The events of `Register-ObjectEvent -Action` run only between the
+statements of the script. So after the end of a long output, a part of it
+stayed in the queue of events, and a check failed by chance. In CI (`GITHUB_ACTIONS`), a check of
+`tests/run.ps1` that cannot run, for example with no `pipe_check.com` or
+no service `ssh-agent`, is a failed check. The Phoenix checks of both
+scripts install the fixed `phx_new` 1.8.16, because a new version can
+give other deps.
 
 When a program does not stop in its time limit, or a process stays after
 the tests, `tests/run.sh` writes the processes and their stacks: `sample`

@@ -1,0 +1,66 @@
+erl_bif_info.c: erlang:system_info(system_architecture) gives the CPU and
+the system where the file runs, not the one text of configure
+(x86_64-pc-linux-gnu): aarch64 Linux and macOS, and the BSDs. See O28 of
+docs/UPSTREAM.md.
+
+diff --git a/erts/emulator/beam/erl_bif_info.c b/erts/emulator/beam/erl_bif_info.c
+--- a/erts/emulator/beam/erl_bif_info.c
++++ b/erts/emulator/beam/erl_bif_info.c
+@@ -60,6 +60,9 @@
+ #include "erl_iolist.h"
+ #include "erl_debugger.h"
+ #include "erl_record.h"
++#ifdef __COSMOPOLITAN__
++#include <cosmo.h>
++#endif
+ 
+ #ifdef ERTS_ENABLE_LOCK_COUNT
+ #include "erl_lock_count.h"
+@@ -2770,6 +2773,28 @@
+     return res;
+ }
+ 
++#ifdef __COSMOPOLITAN__
++/*
++ * The CPU and the system where the file runs. configure runs one time,
++ * for x86_64 Linux, and cosmocc compiles each file again for the aarch64
++ * half: ERLANG_ARCHITECTURE is "x86_64-pc-linux-gnu" in both halves and
++ * on each system. Packages read this text to choose a native program,
++ * for example the tailwind and esbuild packages of Phoenix.
++ */
++static const char *cosmo_system_architecture(void)
++{
++#ifdef __aarch64__
++    return IsXnu() ? "aarch64-apple-darwin" : "aarch64-unknown-linux-gnu";
++#else
++    return IsXnu() ? "x86_64-apple-darwin"
++        : IsFreebsd() ? "x86_64-unknown-freebsd"
++        : IsOpenbsd() ? "x86_64-unknown-openbsd"
++        : IsNetbsd() ? "x86_64-unknown-netbsd"
++        : ERLANG_ARCHITECTURE;
++#endif
++}
++#endif
++
+ BIF_RETTYPE system_info_1(BIF_ALIST_1)
+ {
+     Eterm res;
+@@ -3017,11 +3042,18 @@
+ 	erts_destroy_tmp_dsbuf(dsbufp);
+ 	BIF_RET(res);
+     } else if (BIF_ARG_1 == am_system_architecture) {
++#ifdef __COSMOPOLITAN__
++	const char *arch = cosmo_system_architecture();
++	size_t len = sys_strlen(arch);
++	hp = HAlloc(BIF_P, 2*len);
++	BIF_RET(buf_to_intlist(&hp, arch, len, NIL));
++#else
+ 	hp = HAlloc(BIF_P, 2*(sizeof(ERLANG_ARCHITECTURE)-1));
+ 	BIF_RET(buf_to_intlist(&hp,
+ 			       ERLANG_ARCHITECTURE,
+ 			       sizeof(ERLANG_ARCHITECTURE)-1,
+ 			       NIL));
++#endif
+     } 
+     else if (BIF_ARG_1 == am_os_type) {
+ 	BIF_RET(ERTS_GLOBAL_LIT_OS_TYPE);

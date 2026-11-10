@@ -11,11 +11,15 @@ systems.
   is writable and executable. See [`JIT.md`](JIT.md).
 - `beam.com INPUT` and `beam.com INPUT -o OUTPUT`: run and build `.erl`
   and `.ex` files, applications, rebar3 and Mix projects, with Hex
-  packages, and with no Erlang installation. See
+  packages and git deps (over HTTPS and SSH, also with no `git`
+  program), and with no Erlang installation. See
   [`PROGRAMS.md`](PROGRAMS.md).
 - Elixir 1.20.4 and its tools in the file (`mix`, `iex`, `elixir`,
-  `elixirc`, `escript`), and Phoenix from source with SQLite and
-  `phx.gen.auth`. See [`ELIXIR.md`](ELIXIR.md).
+  `elixirc`, `escript`), Phoenix from source with SQLite and
+  `phx.gen.auth`, and a Phoenix app in one file (`beam.com . -o FILE`).
+  See [`ELIXIR.md`](ELIXIR.md).
+- Port programs on each system, also on Windows (`posix_spawn()`, C16
+  of [`UPSTREAM.md`](UPSTREAM.md)).
 - Static NIFs: `crypto` and `asn1` (OpenSSL 4.0.3), SQLite 3.53.4
   (esqlite and exqlite), WebAssembly (WAMR 2.4.5), bcrypt_elixir and
   argon2_elixir. See [`LIBRARIES.md`](LIBRARIES.md).
@@ -39,11 +43,10 @@ systems.
 
 ### Programs
 
-- Git dependencies (`{git, URL, {ref, R}}` in `rebar.config`,
-  `git:`/`github:` in `mix.exs`), with the lock entries of rebar3 and
-  Mix.
-- `config/runtime.exs` and `priv/static` in `beam.com INPUT -o OUTPUT`,
-  for a Phoenix app in one file.
+- More of git over SSH with no `git` program (`PROGRAMS.md`, "Git over
+  SSH"): `ProxyJump` through a channel `direct-tcpip` of the `ssh`
+  application, and a question for the passphrase of a key file when the
+  build runs in a terminal.
 - `mix release` with `include_erts: true`, and the options of the Elixir
   scripts that change the `erl` command (`--erl`).
 - The file watcher on Windows.

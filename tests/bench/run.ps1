@@ -13,8 +13,8 @@ function Exe($Name) {
     return (Resolve-Path $exe).Path
 }
 
-# The median of 10 runs, in milliseconds (Windows has no port programs,
-# so bench.com cannot measure this itself).
+# The median of 10 runs, in milliseconds. PowerShell measures it: the
+# command "bench.com start" (a port program) is not tested on Windows.
 function StartTime($Exe, [string[]]$Arguments) {
     $times = foreach ($i in 1..10) {
         (Measure-Command { & $Exe @Arguments | Out-Null }).TotalMilliseconds

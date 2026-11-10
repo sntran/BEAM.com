@@ -43,7 +43,7 @@ benchmarks() ->
      {wasm_loop, fun wasm_loop/0}].
 
 %% The start time of a program: the median of 10 runs, from the start of
-%% the process to its end (as a port program, so not on Windows).
+%% the process to its end (as a port program; not tested on Windows).
 start_time(Exe, Args) ->
     %% A name with a directory (bin/ape-x86_64.elf) is from the current
     %% directory; os:find_executable/1 finds only names in PATH.

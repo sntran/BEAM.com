@@ -45,7 +45,7 @@ defmodule BeamCom.MixProject do
     [extra_applications: extra_applications(Mix.env())]
   end
 
-  @applications [:logger, :compiler, :sasl, :crypto, :ssl, :inets, :public_key]
+  @applications [:logger, :compiler, :sasl, :crypto, :ssl, :inets, :public_key, :ssh]
 
   # Mix keeps only the applications of the project in the code path. The
   # tests need parsetools and asn1 (the generators of beam_com_build).

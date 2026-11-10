@@ -204,12 +204,55 @@ static void check_random(void)
     }
 }
 
+/* fs_link_target(): on Windows, a "/" after a relative target that is a
+ * directory, read from the directory of the link (C54). */
+static void check_link_target(void)
+{
+    char tmpl[] = "fs_link.XXXXXX", buf[FS_PATH], path[FS_PATH], file[FS_PATH];
+    char *dir = mkdtemp(tmpl);
+    int fd;
+
+    CHECK(dir != NULL);
+    if (!dir)
+        return;
+    snprintf(path, sizeof(path), "%s/priv", dir);
+    CHECK(mkdir(path, 0700) == 0);
+    snprintf(path, sizeof(path), "%s/lib", dir);
+    CHECK(mkdir(path, 0700) == 0);
+    snprintf(file, sizeof(file), "%s/file", dir);
+    fd = open(file, O_CREAT | O_WRONLY, 0600);
+    CHECK(fd >= 0);
+    close(fd);
+    snprintf(path, sizeof(path), "%s/lib/priv", dir);
+
+    fs_windows = 1;
+    CHECK(strcmp(fs_link_target("../priv", AT_FDCWD, path, buf), "../priv/") == 0);
+    CHECK(strcmp(fs_link_target(dir, AT_FDCWD, "l", buf), dir) != 0);
+    CHECK(strcmp(fs_link_target("../file", AT_FDCWD, path, buf), "../file") == 0);
+    CHECK(strcmp(fs_link_target("../none", AT_FDCWD, path, buf), "../none") == 0);
+    CHECK(strcmp(fs_link_target("../priv/", AT_FDCWD, path, buf), "../priv/") == 0);
+    CHECK(strcmp(fs_link_target("/tmp", AT_FDCWD, path, buf), "/tmp") == 0);
+    CHECK(strcmp(fs_link_target("C:/x", AT_FDCWD, path, buf), "C:/x") == 0);
+    CHECK(strcmp(fs_link_target("", AT_FDCWD, path, buf), "") == 0);
+    CHECK(strcmp(fs_link_target("../priv", 3, path, buf), "../priv") == 0);
+    fs_windows = 0;
+    CHECK(strcmp(fs_link_target("../priv", AT_FDCWD, path, buf), "../priv") == 0);
+
+    unlink(file);
+    snprintf(path, sizeof(path), "%s/priv", dir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/lib", dir);
+    rmdir(path);
+    rmdir(dir);
+}
+
 int main(void)
 {
     check_norm();
     check_rules();
     check_flags();
     check_random();
+    check_link_target();
     reset(0);
     if (failures) {
         printf("fs_check: %d failures\n", failures);

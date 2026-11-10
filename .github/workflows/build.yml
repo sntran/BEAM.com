@@ -215,6 +215,26 @@ jobs:
           path: build/hello_go.wasm
           if-no-files-found: error
 
+      # The check of the writes to a pipe (c_src/cosmo/beam_com_pipe.c),
+      # and of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c),
+      # for the job test: tests/run.ps1 runs them on Windows.
+      - name: Build the check of the pipe writes
+        if: matrix.out == 'beam.com'
+        run: |
+          build/cosmocc/bin/cosmocc -O2 -Wno-unused-function -o build/pipe_check.com \
+            tests/cosmo/pipe_check.c
+          build/cosmocc/bin/cosmocc -O2 -o build/agent_check.com tests/cosmo/agent_check.c
+
+      - name: Upload the check of the pipe writes
+        if: matrix.out == 'beam.com'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pipe_check.com
+          path: |
+            build/pipe_check.com
+            build/agent_check.com
+          if-no-files-found: error
+
       - name: Upload the APE loader
         if: matrix.out == 'beam.com'
         # NetBSD and OpenBSD cannot run APE files through sh.
@@ -814,9 +834,10 @@ jobs:
           - { name: Linux aarch64, os: ubuntu-24.04-arm }
           - { name: macOS arm64, os: macos-latest }
           - { name: macOS x86_64, os: macos-15-intel }
-          - { name: Windows x86_64, os: windows-latest }
+          # The Phoenix check of tests/run.ps1 has 2 tries of 10 minutes.
+          - { name: Windows x86_64, os: windows-latest, timeout: 40 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: ${{ matrix.timeout || 25 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -938,6 +959,10 @@ jobs:
             else
               sh tests/bench/run.sh bin > bench.md
             fi
+            # The action copies the work directory back from the VM, and
+            # the job needs only bench.md: bin/ has GBs (the artifacts and
+            # the outputs of the tests), and a copy of 2 GB broke.
+            rm -rf bin
 
       # NetBSD's sh stops at the NUL bytes of the APE header (C13 of
       # docs/UPSTREAM.md): one start through sh shows it in the log, not
@@ -960,6 +985,10 @@ jobs:
             else
               RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
             fi
+            # The action copies the work directory back from the VM, and
+            # the job needs only bench.md: bin/ has GBs (the artifacts and
+            # the outputs of the tests), and a copy of 2 GB broke.
+            rm -rf bin
 
       - name: Run on OpenBSD through the APE loader
         if: matrix.vm == 'openbsd' && matrix.runner == 'loader'
@@ -977,6 +1006,10 @@ jobs:
             else
               RUNNER=bin/ape-x86_64.elf sh tests/bench/run.sh bin > bench.md
             fi
+            # The action copies the work directory back from the VM, and
+            # the job needs only bench.md: bin/ has GBs (the artifacts and
+            # the outputs of the tests), and a copy of 2 GB broke.
+            rm -rf bin
 
       - name: Run on OpenBSD through sh
         if: matrix.vm == 'openbsd' && matrix.runner == 'sh'
@@ -985,6 +1018,8 @@ jobs:
           release: "7.3"
           run: |
             sh tests/run.sh bin && echo "The benchmarks run in the job through the APE loader." > bench.md
+            # Only bench.md goes back from the VM (see the step of FreeBSD).
+            rm -rf bin
 
       - name: Benchmarks
         run: |

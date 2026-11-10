@@ -35,11 +35,22 @@ WSL2: the WSL check of `tests/run.sh` makes an entry such as
 `WSLInterop` in a user namespace of Linux (Linux 6.7 or later), and
 runs the checks there.
 
-On Windows, `os:type()` is `{unix, windows}`, and port programs do not
-work: `open_port({spawn, ...})`, `os:cmd/1` and native name lookups
-fail with `enotsup` (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
-At start, BEAM.com therefore gives kernel an inetrc with the name servers
-and the hosts file of Windows, so that names are resolved with Erlang's
+On Windows, `os:type()` is `{unix, windows}`. The spawn driver starts a
+port program itself with `posix_spawn()`, because `erl_child_setup`
+cannot work there (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
+`os:find_executable/1` tries the suffixes of Windows (`.exe`, `.com`,
+`.cmd`, `.bat`). A port program gets only the fds 0, 1 and 2 of the VM
+and the ends of its pipes, not the sockets and the files of the VM. `open_port({spawn, Command})` and `os:cmd/1` run
+`sh -c` with the `sh` in `PATH`, for example the `sh` of Git for
+Windows, and give `enoent` with no `sh`.
+The pipes of a port program are overlapped handles, as each pipe of
+Cosmopolitan. Windows PowerShell 5.1 (`powershell.exe`) starts no read
+on such an input with `[Console]::In` or `[Console]::OpenStandardInput()`.
+It does the same with any parent that gives it an overlapped pipe. In
+PowerShell 5.1, read the input with `$input`, or use PowerShell 7
+(`pwsh`): both work.
+At start, BEAM.com gives kernel an inetrc with the name servers
+and the hosts file of Windows, so that kernel resolves names with Erlang's
 own DNS client (`ERL_INETRC` points at it; set `ERL_INETRC` yourself to
 use your own file), and it exports the trusted root certificates of
 Windows to a PEM file that `public_key:cacerts_get/0` reads
@@ -77,8 +88,16 @@ give the rule the file of your app, build a native file with `--target`
 - Windows: SQLite (esqlite) takes a path with a drive (`C:\db\x.db`)
   as a relative path, because its Unix VFS runs there; give a relative
   path, or the form of Cosmopolitan (`/C/db/x.db`).
-- Windows: no port programs (no `os:cmd/1`, no `inet_gethost`; names
-  are resolved with Erlang's DNS client, IPv4 name servers only).
+- Windows: kernel resolves names with Erlang's DNS client (IPv4 name
+  servers only), not with `inet_gethost`. `os:cmd/1` needs a `sh` in
+  `PATH`. While a port program does not read its input and its pipe is
+  full, 1 byte waits in the pipe, and the VM checks the end of that
+  write every 5 ms (C16). In a test with a full pipe, the VM used 16 to
+  109 ms of CPU in 5 s (31 ms in 3 of 5 runs); the build before this
+  check used 31 to 62 ms. Windows cancels a byte that waits at the exit
+  of the VM. So the exit waits at most 2 s for these bytes, and a program
+  that reads its input gets them. `erlang:halt/2` with `{flush, false}`
+  does not wait.
 - WSL2: start an APE file with `sh`. The kernel gives an APE file that
   it starts itself to Windows (`WSLInterop`): `./beam.com`, and an APE
   file that a shell starts (`os:cmd("other.com")`). BEAM.com starts its

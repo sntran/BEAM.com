@@ -109,6 +109,17 @@ int beam_com_exec_helper(const char *path, char *const argv[],
                          char *const envp[]) __attribute__((__weak__));
 
 /*
+ * Defined in beam_com.c. On Windows, starts a port program with
+ * posix_spawn() in place of erl_child_setup (docs/UPSTREAM.md, C16):
+ * argv == NULL runs cmd with "sh -c". Returns 0 and the pid, or an errno
+ * value.
+ */
+int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
+                      const char *cwd, const char *wd, int in_fd, int out_fd,
+                      int err_fd, int use_stdio, int *pid)
+    __attribute__((__weak__));
+
+/*
  * Defined in beam_com.c. execve() that starts an APE file with the APE
  * loader of this process when a loader runs it on Linux, so that the
  * kernel does not see the APE file (on WSL, binfmt_misc gives it to

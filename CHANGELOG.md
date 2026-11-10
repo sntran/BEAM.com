@@ -5,6 +5,181 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com DIR -o FILE` makes one file from a Phoenix app, with no Mix
+  task first. A Mix project with `config/runtime.exs`, a dep that is not
+  a Hex package (git, github, path), a dep of a Hex organization or of
+  another Hex repository, `:compilers`, or the alias `assets.deploy`
+  needs Mix itself. For it, a child `beam.com`
+  (`beam_com_mix`) runs Mix in the project, with the environment of the
+  user: `deps.get`, `compile`, `assets.deploy`, and `release` with
+  `include_erts: false`. Then the builder makes the file from the
+  release. The release consolidates the protocols, and the program reads
+  `config/runtime.exs` at each start. When the project has a dep, the child
+  installs Hex, as `mix local.hex` does. `--tool mix-release` uses Mix for
+  each Mix project, and `--tool mix` keeps the builder of a plain Mix
+  project. See "Phoenix in one file" in `docs/ELIXIR.md`.
+- `docs/DEPLOY.md`: deploy a Phoenix app to a Linux server, with a build
+  on the server or in CI.
+- Port programs on Windows (C16 of `docs/UPSTREAM.md`). The spawn driver
+  starts the program itself with `posix_spawn()`, because
+  `erl_child_setup` cannot work there. Thus `open_port/2`, `peer`,
+  `System.cmd/3`, `os:cmd/1` (with the `sh` of Git for Windows in
+  `PATH`), and the Mix steps of `beam.com DIR -o FILE` work on Windows.
+  `os:find_executable/1` tries `.exe`, `.com`, `.cmd` and `.bat` there.
+  The writes to a port program are non-blocking, as on Unix. The wraps
+  of `write()`, `writev()` and `select()` (`c_src/cosmo/beam_com_pipe.c`)
+  write at most the free space of a pipe. A larger non-blocking write to
+  a pipe of Cosmopolitan on Windows can lose data. The wraps do not
+  report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
+  them on Windows. Windows gives a free space of 0 while the program
+  waits in a read of 4 KiB or more, so for 0 the wraps write 1 byte that
+  can wait in the pipe. Thus a write reaches a native program such as
+  `python`, `git` or `findstr`. Windows cancels such a byte at the exit of
+  the process, so the exit of the VM waits at most 2 s for the bytes that
+  wait. A port program that reads late thus gets all the data, as on Unix.
+- On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
+  the ends of its pipes. Before, it also got each socket and file of the
+  VM, so a closed connection stayed open until the program stopped.
+- A Unix socket with a path of 13 bytes or fewer works for
+  `gen_tcp:listen/2` and `gen_udp:open/2` (`{ifaddr, {local, Path}}`).
+  Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).
+- A Unix socket with a path of 13 bytes or fewer works for
+  `gen_tcp:listen/2` and `gen_udp:open/2` (`{ifaddr, {local, Path}}`).
+  Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).
+- On Windows, the server of the pipe of the SSH agent can identify the
+  client, but cannot act as the user (`SECURITY_IDENTIFICATION`).
+- A `chown()` that changes no owner and no group gives 0 also where the
+  system refuses it: on Windows, and in the sandbox (C28). `File.cp/3`
+  copies the owner, and it failed on Windows. Where the system permits
+  the call, `beam.com` gives the result of the system: Linux clears the
+  setuid and setgid bits of the file. Before, `beam.com` did not call
+  `chown()` for these calls on any system, so the bits stayed.
+- On Windows, a script with `#!` runs as a port program: with the
+  `escript` of `beam.com` for an escript (such as `rebar3`), else with
+  the `sh` in `PATH`.
+- On Windows, a Phoenix build gets the tailwind and esbuild programs for
+  Windows, when the config gives no target and no path for them, and
+  `mix.exs` has the alias `assets.deploy`. The builder checks the
+  signature of npm and the SHA-512 of the esbuild package, as the esbuild
+  package of Hex does.
+- On Windows, the git client uses the SSH agent of Windows OpenSSH
+  (`\\.\pipe\openssh-ssh-agent`) when `SSH_AUTH_SOCK` is not set. The
+  helper program `ssh_agent_bridge` connects to the named pipe (C55).
+- CI builds a new Phoenix app on Windows with `beam.com . -o FILE`, and
+  gets the start page and the digested CSS of the file. It also checks
+  the SSH agent of Windows OpenSSH.
+- `tests/run.ps1` reads the output of a check on the reader threads of
+  .NET, and waits for the end of each stream. Before, it read the events
+  of PowerShell, and a part of a long output could stay in their queue:
+  the check "script_check.b.com big" failed by chance. A new check sends
+  1000000 lines to a reader that starts after 3 s.
+- `tests/run.ps1` needs PowerShell 7.3 or later. It stops each process
+  that a check started and that still runs, and it removes the key and
+  puts back the service `ssh-agent` at the end of its check. In CI, a
+  check that cannot run is a failed check. Both scripts install the
+  fixed `phx_new` 1.8.16.
+- On Windows, a relative symbolic link to a directory works (C54). Before,
+  `mix release` copied no `priv` of the app, because `stat()` of the
+  link `_build/prod/lib/APP/priv` gave `EACCES`.
+- `beam.com DIR -o FILE` over the file of a program that runs updates it:
+  the builder writes a new file and renames it, and the program loads the
+  changed code. The builder strips the beams of the program and of its
+  deps, as `mix release` does, and compiles with `deterministic`. Thus
+  two builds of the same code almost always give the same bytes, and the
+  new file has only the changed modules. A file that a Mix step writes
+  with a new time (`cache_manifest.json` of `phx.digest`) is new at each
+  build, and a run takes the files of `priv/` that the build wrote from
+  after the build, so it does not build again. The reload
+  gives no notice for a new file of `.wasm/`.
+- With no `git` program, the git deps of an `https` URL come with the git
+  client of beam.com (`beam_com_git`, `beam_com_git_scm`): version 2 of
+  the git protocol over HTTPS, the commit of `mix.lock` with depth 1, and
+  the name of each object computed from its data. `mix.lock` stays the
+  same as with git.
+- The git client of beam.com also speaks SSH (`beam_com_git_ssh`), with
+  the `ssh` application of OTP and no `ssh` program. It takes
+  `git@host:path` and `ssh://` URLs, and it reads `~/.ssh/config`
+  (`Host`, `Include`, `HostName`, `User`, `Port`, `IdentityFile`,
+  `IdentitiesOnly`, `IdentityAgent`, and more). It uses the keys of the
+  SSH agent and of `~/.ssh`. It checks the host key in `known_hosts`:
+  an unknown host stops the build, with its fingerprint. It uses version 2 of the git protocol, else version 0.
+  `BEAM_COM_GIT=client` uses the client also when `git` is in `PATH`.
+  See "Git over SSH" in `docs/PROGRAMS.md`.
+- The builder of a rebar3 project gets the git deps of `rebar.config`
+  (`git` and `git_subdir`, of an `https` or SSH URL) with the same git client,
+  and their deps. `rebar.lock` keeps the commit of each git dep, as
+  rebar3 does. See "Git deps" in `docs/PROGRAMS.md`.
+- Checks of the git client of beam.com:
+  - The limits of a pack: 256 MiB for one object, also for the result of
+    a delta, and 1 GiB for all the objects. The inflate of an object
+    stops at the size in its header. Before, a small pack could use all
+    the memory.
+  - The search for the end of each zlib stream of a pack takes linear
+    time. Before, a hostile object of some MiB could stop the build for
+    hours.
+  - A short pack with a good checksum gives the error "a short pack".
+  - An RSA key of the SSH agent logs in. The client asks the agent for
+    the RSA algorithm of the request (rsa-sha2-512 or rsa-sha2-256).
+    Before, the client never offered an RSA key of the agent.
+  - When the SSH agent does not sign with a key, the client tries the
+    next key, and the error names the key. A signature can take 60 s.
+    Before, the connection stopped with a stack trace after 10 s.
+  - Git over SSH starts a new round of keys only when the server refused
+    each key of the last round, and the error says that the client tries
+    at most 4 keys of each type. The host key algorithms keep the order
+    of OTP, so ed25519 comes before RSA.
+  - The log line of a git dep and the errors of Git over SSH show no
+    password and no token of the URL. An `ssh://` URL with a password
+    logs in with the user only.
+  - Git over HTTPS: a request can take one hour, and it stops after 120 s
+    with no data. Before, a pack that needed more than 60 s failed. The
+    client follows a redirect of `info/refs` itself, and sends the next
+    requests to the new URL. Before, they went to the old URL.
+  - The checkout refuses a tree with two entries of the same name (also
+    in another letter case), and each write follows no link. Before, a
+    link and a file of one name could write the file `.git`. A link
+    target with `\` or `:` is an error too.
+  - The names that Windows and macOS read as `.git` (`.git.`, `GIT~1`,
+    `.git::$INDEX_ALLOCATION`, and more) are errors in a tree.
+  - `{ref, NAME}` takes a tag before a branch of the same name, as git
+    does. A short commit gives an error that asks for all its 40 hex
+    digits. The docs showed a short commit as an example.
+  - On Windows, `C:/repos/dep` is a path, not an SSH URL of the host `C`.
+  - The name of a git dep of a rebar3 project and its `git_subdir`
+    directory cannot name a path out of the lib directory or of the
+    checkout. Before, a dep of a git dep could name `../NAME`.
+  - Clear errors in place of a crash: a pack with fewer objects than its
+    count, an unknown side band or an empty pkt-line in the pack, a file
+    error of the checkout, and a `Port` of `~/.ssh/config` that is not a
+    number. A `~/.ssh/config` or `known_hosts` file that is not UTF-8
+    gives its bytes, as for `ssh`.
+  - A request names the object format only when the server gives it, as
+    `git` does. A server older than git 2.28 refuses a capability that it
+    does not know. A repository of SHA-256 gives a clear error.
+  - The client checks each object of a pack with the SHA-1 collision
+    detection of git (sha1dc). The new helper program `git_sha1dc` of
+    beam.com (`c_src/cosmo/beam_com_sha1dc.c`) runs the library
+    sha1collisiondetection (MIT License, in `c_src/cosmo/sha1dc/`). An
+    object with the mark of a collision attack stops the build before
+    the checkout writes a file. The check always runs in beam.com. Before,
+    two different trees with a SHA-1 collision could have the name of one
+    locked commit. See "Git deps" in `docs/PROGRAMS.md`.
+- The builder reads a map in a term of a package, for example `#{}` as
+  the requirements of `metadata.config`. Before, the build of a package
+  with a map stopped with "metadata.config is not a list of terms".
+- `erlang:system_info(system_architecture)` gives the CPU and the system
+  where the file runs, for example `aarch64-unknown-linux-gnu` or
+  `aarch64-apple-darwin`. Before, it was `x86_64-pc-linux-gnu` on each
+  CPU and each system, and the tailwind and esbuild packages of Phoenix
+  downloaded x86_64 programs on Linux aarch64 (O28 of
+  `docs/UPSTREAM.md`).
+- The builder of a plain Mix project compiles a package after its
+  optional deps that the build has, as Mix does. Before, `ecto_sql`
+  could compile before `postgrex`, and the program stopped at its start:
+  "could not find Ecto.Adapters.Postgres.Connection".
+- With a `mix.lock` that Mix wrote, the builder takes only the entries
+  that the deps of the program reach. Before, it also compiled the deps
+  only for `:dev` or `:test` of the lock, such as `phoenix_live_reload`.
 - A program loads new code when a new file takes the place of its file,
   so a deploy can send only the changed code: `zip -r app.com
   lib/my_app-0.1.0` on the server. The process `beam_com_reload`

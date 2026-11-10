@@ -55,6 +55,21 @@ file (`GetProgramExecutableName()`) again, with
 runs that program. The base name of `argv[0]` is only a fallback,
 because Linux `binfmt_misc` does not keep `argv[0]`.
 
+The helper programs (`beam_com_main()` in `beam_com.c` finds each one by
+the start of its name):
+
+| Program | Source | Use |
+|---|---|---|
+| `erl_child_setup` | `beam_com_child_setup.c` | ERTS starts it at boot; it forks the port programs. |
+| `inet_gethost` | `beam_com_inet_gethost.c` | The resolver of host names of `inet`. |
+| `epmd` | `beam_com_epmd*.c` | The port mapper of distributed Erlang. |
+| `inotifywait`, `mac_listener` | `beam_com_watch.c` | The file watcher. |
+| `ssh_agent_bridge` | `beam_com_agent.c` | The connection of the git client to an SSH agent on a named pipe of Windows. |
+| `git_sha1dc` | `beam_com_sha1dc.c` | The SHA-1 check of the git client, with the library of `sha1dc/`. |
+
+A new helper needs a name that does not start with the name of another
+helper, and that no other helper name starts with.
+
 On Linux, the APE loader runs an APE file (the shell script of the file
 starts it, or binfmt_misc). Cosmopolitan's `execve()` of an APE file
 tries the kernel first, and starts the loader only when the kernel
@@ -148,6 +163,17 @@ does (`strip_beams`). It keeps the chunks that the loader uses, the line
 numbers (for stack traces) and the attributes. A program is about 7.7 MB
 smaller, and it starts as fast as before ([`BENCHMARKS.md`](BENCHMARKS.md)).
 
+The builder also strips the beams that it compiles, of the program and
+of its deps. Their compile information and debug information have the
+paths of the build, with a new temporary directory each time. Without
+them, two builds of the same code almost always give the same bytes,
+and the reload of a program that runs (`beam_com_reload`) reads only the
+beams that changed. A file that a Mix step writes with a new time (for
+example `cache_manifest.json` of `phx.digest`) is new at each build. The
+Erlang compiler gets the option `deterministic`.
+The Elixir compiler can give other bytes for some modules (for example
+in the tables of a module that a macro makes).
+
 ## JIT, and the interpreter (`beam-emu.com`)
 
 `beam.com` runs Erlang code with BeamAsm, the JIT of OTP, in one fat
@@ -186,7 +212,7 @@ arguments and in a header that the compiler includes in each file
 | No reserve-then-commit `mmap` | On Windows, `mmap(MAP_FIXED)` in a `PROT_NONE` reservation fails, and ERTS stopped at boot. |
 | `FD_SETSIZE` when `sysconf(_SC_OPEN_MAX)` fails | It fails with `EINVAL` on Windows. |
 | Native `cmsghdr` layout in `sys_uds.c` | Cosmopolitan does not convert control messages for BSD and XNU, so no port program could start on macOS and the BSDs. |
-| No forker on Windows | Cosmopolitan cannot pass fds on Windows, so port programs fail with `enotsup` there. |
+| No forker on Windows | Cosmopolitan cannot pass fds on Windows. The spawn driver starts each port program itself with `posix_spawn()` (C16 of [`UPSTREAM.md`](UPSTREAM.md)). |
 | [`patches/otp/0001-cosmopolitan.patch`](../patches/otp/0001-cosmopolitan.patch) | The items above that need source changes, the multi-call hooks, the `_Float16` conversion, and `gethostbyname_r` in `erl_interface`. |
 | [`patches/otp/0002-jit.patch`](../patches/otp/0002-jit.patch) | The JIT with both backends in one fat file ([`JIT.md`](JIT.md)). |
 

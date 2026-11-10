@@ -319,7 +319,10 @@ changes(Fd, {Beams, Other}, #{path := Path} = State0) ->
     {Moved, State1} = move_apps(Fd, Beams ++ Other, State0),
     MovedDirs = [Dir || {Dir, _} <- Moved],
     Appups = [N || N <- Other, appup_name(N)],
-    Rest = [N || N <- Other, not appup_name(N), not lists:member(app_dir(N), MovedDirs)],
+    %% The native program does not read .wasm/ (the part of the WebAssembly
+    %% runtime), so a new file there gets no notice.
+    Rest = [N || N <- Other, not appup_name(N), not lists:member(app_dir(N), MovedDirs),
+                 not lists:prefix(".wasm/", N)],
     Rest =:= [] orelse
         ?LOG_NOTICE("beam.com: ~ts has new files that a restart uses: ~ts",
                     [Path, names(Rest)]),
