@@ -93,6 +93,9 @@ notes of its release.
     time. Before, a hostile object of some MiB could stop the build for
     hours.
   - A short pack with a good checksum gives the error "a short pack".
+  - An RSA key of the SSH agent logs in. The client asks the agent for
+    the RSA algorithm of the request (rsa-sha2-512 or rsa-sha2-256).
+    Before, the client never offered an RSA key of the agent.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

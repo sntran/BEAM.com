@@ -162,12 +162,27 @@ defmodule BeamComGitSshTest do
         {{:file, :dss}, blob.("ssh-dss")}
       ]
 
+      # OTP asks user_key/2 for ssh-rsa for each of the RSA algorithms.
       assert [r1, r2] = :beam_com_git_ssh.rounds(keys)
-      assert %{"ssh-ed25519": {:agent, ^ed}, "rsa-sha2-256": {:agent, ^rsa}} = r1
+      assert %{"ssh-ed25519": {:agent, ^ed}, "ssh-rsa": {:agent, ^rsa}} = r1
       assert %{"ecdsa-sha2-nistp256": {:file, :k3}} = r1
-      refute Map.has_key?(r1, :"rsa-sha2-512")
-      assert %{"ssh-ed25519": {:file, :k1}, "rsa-sha2-512": {:file, :k2}} = r2
+      assert [:"ecdsa-sha2-nistp256", :"ssh-ed25519", :"ssh-rsa"] == Enum.sort(Map.keys(r1))
+      assert %{"ssh-ed25519": {:file, :k1}, "ssh-rsa": {:file, :k2}} = r2
+      assert [:"ssh-ed25519", :"ssh-rsa"] == Enum.sort(Map.keys(r2))
       assert [] == :beam_com_git_ssh.rounds([])
+    end
+
+    test "sig_alg: the algorithm in the data of a signature" do
+      str = fn s -> <<byte_size(s)::32, s::binary>> end
+
+      data =
+        str.("session") <>
+          <<50>> <>
+          str.("git") <>
+          str.("ssh-connection") <> str.("publickey") <> <<1>> <> str.("rsa-sha2-512") <> "blob"
+
+      assert "rsa-sha2-512" == :beam_com_git_ssh.sig_alg(data)
+      assert :none == :beam_com_git_ssh.sig_alg("other data")
     end
 
     test "private_key: a key of OpenSSH, a key with a passphrase, and bad text" do
@@ -242,11 +257,9 @@ defmodule BeamComGitSshTest do
       assert [] == :beam_com_git_ssh.agent_keys({:bridge, false_, none})
     end
 
-    test "agent_keys and sign: the agent on a socket, also through ssh_agent_bridge" do
+    test "agent_keys and sign: the agent on a socket" do
       {key, _} = SshFixture.user_key()
-      # A short path: a Unix socket has at most 107 bytes.
-      sock = Path.join(System.tmp_dir!(), "beam_com_agent_#{System.unique_integer([:positive])}")
-      on_exit(fn -> File.rm(sock) end)
+      sock = agent_socket()
       SshFixture.Agent.start(sock, [key])
       blob = :ssh_file.encode(SshFixture.public(key), :ssh2_pubkey)
 
@@ -264,6 +277,17 @@ defmodule BeamComGitSshTest do
         :beam_com_git_ssh.sign("other", "data", key_cb_private: [agent: ~c""])
       end
     end
+  end
+
+  # The path of a socket of an agent. A Unix socket has at most 107 bytes,
+  # so the path is relative to the directory of the project, in its tmp
+  # directory (as the directories of the tmp_dir tag). The runtime of the
+  # tests refuses a path of fewer than 14 bytes (einval).
+  defp agent_socket do
+    File.mkdir_p!("tmp")
+    sock = Path.join("tmp", "ssh-agent-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm(sock) end)
+    sock
   end
 
   # The program ssh_agent_bridge: BEAM_COM_AGENT_BRIDGE (a build of
@@ -391,8 +415,7 @@ defmodule BeamComGitSshTest do
 
     test "a key of the SSH agent, also with IdentitiesOnly", ctx do
       {agent_key, locked_text} = SshFixture.user_key("aes256-ctr")
-      sock = Path.join(System.tmp_dir!(), "beam_com_agent_#{System.unique_integer([:positive])}")
-      on_exit(fn -> File.rm(sock) end)
+      sock = agent_socket()
       SshFixture.Agent.start(sock, [agent_key])
 
       # Only the key of the agent can log in.
@@ -418,6 +441,45 @@ defmodule BeamComGitSshTest do
         opts = put_in(opts, [:ssh, :agent_bridge], b)
         assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out3"))
       end
+    end
+
+    test "an RSA key and an ECDSA key of the agent", ctx do
+      rsa = :public_key.generate_key({:rsa, 2048, 65_537})
+      ec = :public_key.generate_key({:namedCurve, :secp256r1})
+      {_pack, commit} = ctx.repo
+
+      # The client of OTP tries rsa-sha2-512 first, and the agent follows
+      # the flags of the request.
+      for {key, alg} <- [{rsa, "rsa-sha2-512"}, {ec, "ecdsa-sha2-nistp256"}] do
+        sock = agent_socket()
+        SshFixture.Agent.start(sock, [key], owner: self())
+        # Only the key of the agent can log in.
+        port = daemon(ctx, {:v2, ctx.repo, ["refs/tags/v1"]}, [SshFixture.public(key)])
+        opts = put_in(ctx.opts, [:ssh, :agent], String.to_charlist(sock))
+        url = "ssh://git@127.0.0.1:#{port}/r"
+        assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out-#{port}"))
+        assert_receive {:agent_sign, ^alg}, 5_000
+      end
+    end
+
+    test "an RSA key in ~/.ssh/id_rsa that is also in the agent", ctx do
+      rsa = :public_key.generate_key({:rsa, 2048, 65_537})
+      pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, rsa)])
+      File.rm!(Path.join(ctx.dir, "id_ed25519"))
+      File.write!(Path.join(ctx.dir, "id_rsa"), pem)
+      port = daemon(ctx, {:v2, ctx.repo, ["refs/tags/v1"]}, [SshFixture.public(rsa)])
+      url = "ssh://git@127.0.0.1:#{port}/r"
+      {_pack, commit} = ctx.repo
+
+      # With no agent, the key of the file signs.
+      assert commit == get(url, ctx.opts, Path.join(ctx.tmp_dir, "out1"))
+
+      # With the key in the agent, the agent signs.
+      sock = agent_socket()
+      SshFixture.Agent.start(sock, [rsa], owner: self())
+      opts = put_in(ctx.opts, [:ssh, :agent], String.to_charlist(sock))
+      assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out2"))
+      assert_receive {:agent_sign, "rsa-sha2-" <> _}, 5_000
     end
 
     test "a host that is not known, or a revoked key", ctx do

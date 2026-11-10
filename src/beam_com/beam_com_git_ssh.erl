@@ -29,7 +29,7 @@
 -export([is_host_key/5, add_host_key/4, user_key/2, sign/3]).
 
 -ifdef(TEST).
--export([parse_url/1, config/3, match_host/2, known/3, key_algs/1, rounds/1, quote/1,
+-export([parse_url/1, config/3, match_host/2, known/3, key_algs/1, rounds/1, quote/1, sig_alg/1,
          v0_refs/1, private_key/1, next_pkt/1, agent_keys/1, agent_call/2, identities/1,
          signature/1, default_agent/2, agent/2]).
 -endif.
@@ -309,22 +309,20 @@ encrypted_v1(Text) ->
         _ -> false
     end.
 
-%% The rounds of keys: [#{Alg => Key}]. The client of OTP asks for one
-%% key of each algorithm, so each round has the next key of each type.
+%% The rounds of keys: [#{Type => Key}]. The client of OTP asks for one
+%% key of each type, so each round has the next key of each type.
 %% Key: {agent, Blob} or {file, PrivateKey}.
 rounds(Keys) ->
     lists:foldl(fun({Key, Algs}, Rounds) -> add_round(Key, Algs, Rounds, []) end,
-                [], [{K, algs(K, B)} || {K, B} <- Keys, algs(K, B) =/= []]).
+                [], [{K, algs(B)} || {K, B} <- Keys, algs(B) =/= []]).
 
-%% An agent of OpenSSH signs with rsa-sha2-256 when the client asks for
-%% each of the two RSA algorithms (sign/3 asks for both).
-algs({agent, _}, B) ->
+%% The type of the key, as OTP gives it to user_key/2: ssh-rsa for each
+%% of the RSA algorithms (rsa-sha2-512, rsa-sha2-256 and ssh-rsa).
+algs(B) ->
     case key_algs(B) of
-        ['rsa-sha2-512' | _] -> ['rsa-sha2-256'];
+        ['rsa-sha2-512' | _] -> ['ssh-rsa'];
         Algs -> Algs
-    end;
-algs(_, B) ->
-    key_algs(B).
+    end.
 
 add_round(Key, Algs, [], Done) ->
     lists:reverse(Done) ++ [maps:from_list([{A, Key} || A <- Algs])];
@@ -365,17 +363,31 @@ user_key(Alg, Opts) ->
         none -> {error, enoent}
     end.
 
-%% A signature of the agent, for a key of the agent. The flags ask for
-%% rsa-sha2-256 and rsa-sha2-512, as ssh_agent of OTP does (other keys
-%% do not use them).
+%% A signature of the agent, for a key of the agent. OTP gives no
+%% algorithm, but Data has it. For an RSA key, the flags ask the agent
+%% for the same algorithm (other keys do not use them).
 sign(Blob, Data, Opts) ->
     P = proplists:get_value(key_cb_private, Opts),
+    Flags = case sig_alg(Data) of
+                <<"rsa-sha2-256">> -> 2;
+                <<"rsa-sha2-512">> -> 4;
+                _ -> 0
+            end,
     Request = <<13, (byte_size(Blob)):32, Blob/binary, (byte_size(Data)):32, Data/binary,
-                6:32>>,
+                Flags:32>>,
     case signature(agent_call(proplists:get_value(agent, P), Request)) of
         {ok, Sig} -> Sig;
         error -> error(agent_sign_failed)
     end.
+
+%% The algorithm of the data of a signature of the publickey method
+%% (RFC 4252): the session, 50, the user, the service, "publickey", 1,
+%% then the algorithm.
+sig_alg(<<L1:32, _:L1/binary, 50, L2:32, _:L2/binary, L3:32, _:L3/binary, L4:32, _:L4/binary,
+          1, L5:32, Alg:L5/binary, _/binary>>) ->
+    Alg;
+sig_alg(_) ->
+    none.
 
 note(P, Note) ->
     proplists:get_value(owner, P) ! {?MODULE, proplists:get_value(ref, P), Note}.

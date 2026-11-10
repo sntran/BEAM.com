@@ -258,49 +258,92 @@ end
 defmodule BeamCom.SshFixture.Agent do
   @moduledoc """
   An SSH agent for the tests: it lists its keys and signs with them, on
-  a Unix socket.
+  a Unix socket. It signs with ed25519, ECDSA and RSA keys, and for an
+  RSA key it follows the flags of the request (rsa-sha2-256 or
+  rsa-sha2-512), as the agent of OpenSSH does.
+
+  Options: `refuse`, the keys that it does not sign with (it answers
+  SSH_AGENT_FAILURE), and `owner`, a process that gets
+  `{:agent_sign, algorithm}` for each signature.
   """
 
   @doc "Start an agent with the private keys at the socket `path`."
-  def start(path, keys) do
+  def start(path, keys, opts \\ []) do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, ifaddr: {:local, path}, active: false])
-    pid = spawn(fn -> accept(listen, keys) end)
+    pid = spawn(fn -> accept(listen, keys, opts) end)
     :ok = :gen_tcp.controlling_process(listen, pid)
     pid
   end
 
-  defp accept(listen, keys) do
+  defp accept(listen, keys, opts) do
     case :gen_tcp.accept(listen) do
       {:ok, socket} ->
-        spawn(fn -> serve(socket, keys) end)
+        spawn(fn -> serve(socket, keys, opts) end)
         |> then(&:gen_tcp.controlling_process(socket, &1))
 
-        accept(listen, keys)
+        accept(listen, keys, opts)
 
       {:error, _} ->
         :ok
     end
   end
 
-  defp serve(socket, keys) do
+  defp serve(socket, keys, opts) do
     with {:ok, <<len::32>>} <- :gen_tcp.recv(socket, 4),
          {:ok, msg} <- :gen_tcp.recv(socket, len) do
-      :gen_tcp.send(socket, frame(answer(msg, keys)))
-      serve(socket, keys)
+      :gen_tcp.send(socket, frame(answer(msg, keys, opts)))
+      serve(socket, keys, opts)
     end
   end
 
-  # 11: the identities; 13: a signature.
-  defp answer(<<11>>, keys) do
+  # 11: the identities; 13: a signature; 5: SSH_AGENT_FAILURE.
+  defp answer(<<11>>, keys, _opts) do
     [<<12, length(keys)::32>>, for(k <- keys, do: [str(blob(k)), str("test")])]
   end
 
   defp answer(
-         <<13, len::32, key_blob::binary-size(len), dlen::32, data::binary-size(dlen), _::32>>,
-         keys
+         <<13, len::32, key_blob::binary-size(len), dlen::32, data::binary-size(dlen),
+           flags::32>>,
+         keys,
+         opts
        ) do
     key = Enum.find(keys, &(blob(&1) == key_blob))
-    [<<14>>, str([str("ssh-ed25519"), str(:public_key.sign(data, :none, key))])]
+
+    if key == nil or key in Keyword.get(opts, :refuse, []) do
+      <<5>>
+    else
+      {alg, sig} = sign(key, data, flags)
+      if owner = opts[:owner], do: send(owner, {:agent_sign, alg})
+      [<<14>>, str([str(alg), str(sig)])]
+    end
+  end
+
+  defp sign({:RSAPrivateKey, _, _, _, _, _, _, _, _, _, _} = key, data, flags) do
+    cond do
+      Bitwise.band(flags, 2) != 0 -> {"rsa-sha2-256", :public_key.sign(data, :sha256, key)}
+      Bitwise.band(flags, 4) != 0 -> {"rsa-sha2-512", :public_key.sign(data, :sha512, key)}
+      true -> {"ssh-rsa", :public_key.sign(data, :sha, key)}
+    end
+  end
+
+  defp sign(key, data, _flags) do
+    case type(blob(key)) do
+      "ssh-ed25519" ->
+        {"ssh-ed25519", :public_key.sign(data, :none, key)}
+
+      "ecdsa-sha2-" <> curve = type ->
+        hash = %{"nistp256" => :sha256, "nistp384" => :sha384, "nistp521" => :sha512}[curve]
+        der = :public_key.sign(data, hash, key)
+        {:"ECDSA-Sig-Value", r, s} = :public_key.der_decode(:"ECDSA-Sig-Value", der)
+        {type, IO.iodata_to_binary([mpint(r), mpint(s)])}
+    end
+  end
+
+  defp type(<<len::32, type::binary-size(len), _::binary>>), do: type
+
+  defp mpint(n) do
+    bin = :binary.encode_unsigned(n)
+    str(if :binary.first(bin) >= 128, do: <<0>> <> bin, else: bin)
   end
 
   defp blob(key), do: :ssh_file.encode(:ssh_file.extract_public_key(key), :ssh2_pubkey)
