@@ -492,8 +492,89 @@ defmodule BeamComGitTest do
                )
     end
 
+    # A checkout of one tree: the objects and the commit.
+    defp one_tree(entries, blobs) do
+      root = tree_data(entries)
+      commit = commit_data(name(:tree, root))
+
+      objects =
+        :beam_com_git.objects(
+          pack(for(b <- blobs, do: {:obj, 3, b}) ++ [{:obj, 2, root}, {:obj, 1, commit}])
+        )
+
+      {objects, name(:commit, commit)}
+    end
+
+    test "a tree with two entries of the same name, also for a file system that ignores the case",
+         %{tmp_dir: dir} do
+      # A link g to .git, then a file g: the file must not go to .git.
+      {objects, commit} =
+        one_tree(
+          [{"120000", "g", name(:blob, ".git")}, {"100644", "g", name(:blob, "gitdir: x\n")}],
+          [".git", "gitdir: x\n"]
+        )
+
+      assert {:error, ~c"git: a tree with two entries of the same name: ~tp", ["g"]} ==
+               catch_throw(
+                 :beam_com_git.checkout(objects, commit, Path.join(dir, "g"), %{url: @url})
+               )
+
+      refute File.exists?(Path.join(dir, "g/.git"))
+      sha = String.duplicate("ab", 20)
+
+      for {a, b} <- [
+            {"A", "a"},
+            {"\u00e9", "e\u0301"},
+            {"a.", "a"},
+            {"a ", "a"},
+            {"Stra\u00dfe", "STRASSE"}
+          ] do
+        assert {:error, ~c"git: a tree with two entries of the same name: ~tp", [_]} =
+                 catch_throw(
+                   :beam_com_git.tree(tree_data([{"100644", a, sha}, {"100644", b, sha}]))
+                 )
+      end
+
+      assert [_, _] = :beam_com_git.tree(tree_data([{"100644", "a", sha}, {"100644", "b", sha}]))
+      assert "abc" == :beam_com_git.same_key("ABC.. ")
+      # A name that is not UTF-8.
+      assert <<0xFF, ?a>> == :beam_com_git.same_key(<<0xFF, ?A>>)
+    end
+
+    test "checkout: a write follows no link, and the errors of the files", %{tmp_dir: dir} do
+      {objects, commit} = one_tree([{"100644", "x", name(:blob, "data")}], ["data"])
+      out = Path.join(dir, "out")
+      File.mkdir_p!(out)
+      outside = Path.join(dir, "outside")
+      File.ln_s!(outside, Path.join(out, "x"))
+
+      assert {:error, ~c"git: ~ts is in the checkout already", [_]} =
+               catch_throw(:beam_com_git.checkout(objects, commit, out, %{url: @url}))
+
+      refute File.exists?(outside)
+
+      # The checkout directory is a file.
+      file = Path.join(dir, "file")
+      File.write!(file, "")
+
+      assert {:error, ~c"git: ~ts: ~ts", [_, _]} =
+               catch_throw(
+                 :beam_com_git.checkout(objects, commit, Path.join(file, "d"), %{url: @url})
+               )
+    end
+
     test "checkout: a link out of the checkout, a bad mode, a missing object", %{tmp_dir: dir} do
-      for target <- ["/etc/passwd", "../x", ""] do
+      for target <- [
+            "/etc/passwd",
+            "../x",
+            "",
+            "a\\b",
+            "C:/x",
+            "C:x",
+            "sub/.git/config",
+            ".GIT",
+            "a/.Git"
+          ] do
         root = tree_data([{"120000", "l", name(:blob, target)}])
         commit = commit_data(name(:tree, root))
 

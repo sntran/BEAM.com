@@ -176,6 +176,12 @@ A dep of `rebar.config` can also come from a git repository of an
   no data. The client follows at most 5 redirects of `info/refs`, only
   to an `https` URL, and it sends the next requests to the new URL, as
   `git` does. The user and the password of the URL go only to its host.
+- **The checkout.** A tree with two entries of the same name stops the
+  build, also when the names differ only in the letter case (as for a
+  file system that ignores it). Each file, directory and link of the
+  checkout is new, so a write follows no link. A link must stay in the
+  checkout: a relative target with no `..`, no `\`, no `:` and no part
+  `.git`.
 - **Limits.** The list of refs has at most 16 MiB, and the pack at most
   512 MiB. One object of the pack (also a delta and its result) has at
   most 256 MiB, and all the objects, with the results of the deltas, at

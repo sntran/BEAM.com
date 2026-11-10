@@ -17,7 +17,8 @@
 
 -ifdef(TEST).
 -export([pkts/1, advertisement/1, objects/1, objects/2, apply_delta/2, apply_delta/3, http_opts/0,
-         tree/1, commit_tree/1, inflate/2, safe_name/1, url/1]).
+         tree/1, commit_tree/1, inflate/2, safe_name/1, url/1, same_key/1,
+         dot_git/1]).
 -endif.
 
 %% The limits of a response: the list of refs, and the pack.
@@ -98,15 +99,16 @@ checkout(Objects, Sha, Dir, Opts) ->
                none -> {[], Tree};
                Sparse -> subtree(Tree, Sparse, Objects)
            end,
-    ok = filelib:ensure_path(Dir),
     {Path, Sub} = Root,
-    write_tree(Sub, filename:join([Dir | Path]), Objects, maps:get(submodules, Opts, false)),
+    Top = filename:join([Dir | Path]),
+    file_ok(Top, filelib:ensure_path(Top)),
+    write_tree(Sub, Top, Objects, maps:get(submodules, Opts, false)),
     Git = filename:join(Dir, ".git"),
-    ok = filelib:ensure_path(filename:join(Git, "objects")),
-    ok = filelib:ensure_path(filename:join(Git, "refs")),
-    ok = file:write_file(filename:join(Git, "HEAD"), [Sha, "\n"]),
-    ok = file:write_file(filename:join(Git, "config"),
-                         ["[remote \"origin\"]\n\turl = ", maps:get(url, Opts), "\n"]),
+    make_dir(Git),
+    make_dir(filename:join(Git, "objects")),
+    make_dir(filename:join(Git, "refs")),
+    write_new(filename:join(Git, "HEAD"), [Sha, "\n"]),
+    write_new(filename:join(Git, "config"), ["[remote \"origin\"]\n\turl = ", maps:get(url, Opts), "\n"]),
     ok.
 
 %%% The protocol.
@@ -558,17 +560,44 @@ commit_tree(_) ->
 
 %% The entries of a tree: [{Mode, Name, Sha}], with the mode as text
 %% ("100644", "40000").
-tree(<<>>) ->
-    [];
+%% Two entries with one name, also for a file system that ignores the
+%% case, make an error: the second entry could write through the first.
 tree(Data) ->
+    Entries = entries(Data),
+    Keys = [same_key(N) || {_, N, _} <- Entries],
+    case Keys -- lists:usort(Keys) of
+        [] -> Entries;
+        [Key | _] ->
+            throw({error, "git: a tree with two entries of the same name: ~tp",
+                   [hd([N || {_, N, _} <- Entries, same_key(N) =:= Key])]})
+    end.
+
+entries(<<>>) ->
+    [];
+entries(Data) ->
     case binary:split(Data, <<0>>) of
         [Head, <<Raw:20/binary, Rest/binary>>] ->
             case binary:split(Head, <<" ">>) of
-                [Mode, Name] -> [{Mode, safe_name(Name), binary:encode_hex(Raw, lowercase)} | tree(Rest)];
+                [Mode, Name] ->
+                    [{Mode, safe_name(Name), binary:encode_hex(Raw, lowercase)} | entries(Rest)];
                 _ -> throw({error, "git: a bad tree", []})
             end;
         _ ->
             throw({error, "git: a bad tree", []})
+    end.
+
+%% The name as a file system that ignores the case can see it: in lower
+%% case (case folding), in the form NFC, and with no "." or " " at the
+%% end (Windows removes them).
+same_key(Name) ->
+    string:trim(fold(Name), trailing, ". ").
+
+%% The name in lower case. A name that is not UTF-8 gets only the ASCII
+%% letters in lower case (string:casefold/1 fails for it).
+fold(Name) ->
+    case unicode:characters_to_nfc_binary(Name) of
+        B when is_binary(B) -> unicode:characters_to_nfc_binary(string:casefold(B));
+        _ -> << <<(case C of _ when C >= $A, C =< $Z -> C + 32; _ -> C end)>> || <<C>> <= Name >>
     end.
 
 kind(<<"40000">>) -> tree;
@@ -585,9 +614,13 @@ kind(Mode) -> throw({error, "git: a tree entry of the mode ~ts", [Mode]}).
 safe_name(Name) ->
     Bad = Name =:= <<>> orelse Name =:= <<".">> orelse Name =:= <<"..">>
         orelse binary:match(Name, [<<"/">>, <<"\\">>, <<0>>]) =/= nomatch
-        orelse string:lowercase(Name) =:= <<".git">>,
+        orelse dot_git(Name),
     Bad andalso throw({error, "git: a tree entry with a bad name: ~tp", [Name]}),
     Name.
+
+%% True for a name that a file system can read as .git.
+dot_git(Name) ->
+    fold(Name) =:= <<".git">>.
 
 %% The tree of the directory Sparse ("a/b") of the tree Root: {Path, Tree}.
 subtree(Root, Sparse, Objects) ->
@@ -601,17 +634,20 @@ subtree(Root, Sparse, Objects) ->
                         end
                 end, {[], Root}, Parts).
 
+%% Each entry is new: a directory, a file or a link that is already
+%% there is an error, so a write never follows a link of the checkout.
 write_tree(Tree, Dir, Objects, Submodules) ->
-    ok = filelib:ensure_path(Dir),
     lists:foreach(
       fun({Mode, Name, Sha}) ->
               Path = filename:join(Dir, Name),
               case kind(Mode) of
-                  tree -> write_tree(Sha, Path, Objects, Submodules);
-                  file -> ok = file:write_file(Path, object(Sha, blob, Objects));
+                  tree ->
+                      make_dir(Path),
+                      write_tree(Sha, Path, Objects, Submodules);
+                  file -> write_new(Path, object(Sha, blob, Objects));
                   exec ->
-                      ok = file:write_file(Path, object(Sha, blob, Objects)),
-                      ok = file:change_mode(Path, 8#755);
+                      write_new(Path, object(Sha, blob, Objects)),
+                      file_ok(Path, file:change_mode(Path, 8#755));
                   link -> write_link(Path, object(Sha, blob, Objects));
                   gitlink when Submodules ->
                       throw({error, "git: submodules need the git program", []});
@@ -619,13 +655,34 @@ write_tree(Tree, Dir, Objects, Submodules) ->
               end
       end, tree(object(Tree, tree, Objects))).
 
-%% A symbolic link stays in the checkout: a relative target with no "..".
+%% A symbolic link stays in the checkout: a relative target with no ".."
+%% and no part .git. A "\" or a ":" (a drive of Windows, as "C:") is an
+%% error too, also on another system.
 write_link(Path, Target) ->
     Parts = string:split(Target, "/", all),
     (Target =/= <<>> andalso binary:first(Target) =/= $/
-     andalso not lists:member(<<"..">>, Parts) andalso binary:match(Target, <<0>>) =:= nomatch)
+     andalso not lists:member(<<"..">>, Parts)
+     andalso binary:match(Target, [<<0>>, <<"\\">>, <<":">>]) =:= nomatch
+     andalso not lists:any(fun dot_git/1, Parts))
         orelse throw({error, "git: a link out of the checkout: ~ts", [Target]}),
-    ok = file:make_symlink(Target, Path).
+    file_ok(Path, file:make_symlink(Target, Path)).
+
+%% A new file, with the exclusive mode: it follows no link.
+write_new(Path, Data) ->
+    {ok, F} = file_ok(Path, file:open(Path, [write, exclusive, raw, binary])),
+    try file_ok(Path, file:write(F, Data))
+    after file:close(F)
+    end.
+
+make_dir(Path) ->
+    file_ok(Path, file:make_dir(Path)).
+
+file_ok(_Path, ok) -> ok;
+file_ok(_Path, {ok, _} = R) -> R;
+file_ok(Path, {error, eexist}) ->
+    throw({error, "git: ~ts is in the checkout already", [Path]});
+file_ok(Path, {error, Reason}) ->
+    throw({error, "git: ~ts: ~ts", [Path, file:format_error(Reason)]}).
 
 is_sha(Text) ->
     re:run(Text, ?SHA_RE, [{capture, none}]) =:= match.

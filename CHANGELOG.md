@@ -110,6 +110,10 @@ notes of its release.
     with no data. Before, a pack that needed more than 60 s failed. The
     client follows a redirect of `info/refs` itself, and sends the next
     requests to the new URL. Before, they went to the old URL.
+  - The checkout refuses a tree with two entries of the same name (also
+    in another letter case), and each write follows no link. Before, a
+    link and a file of one name could write the file `.git`. A link
+    target with `\` or `:` is an error too.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".
