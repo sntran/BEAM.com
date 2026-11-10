@@ -386,6 +386,16 @@ defmodule BeamComMixTest do
     assert base == :beam_com_mix.child_env(~c"/d", ~c"/o", ~c"staging")
   end
 
+  test "cache_env: the child gets the absolute path of BEAM_COM_CACHE" do
+    assert [] == :beam_com_mix.cache_env(false)
+    assert [] == :beam_com_mix.cache_env(~c"")
+    assert [{~c"BEAM_COM_CACHE", ~c"/a/cache"}] == :beam_com_mix.cache_env(~c"/a/cache")
+    {:ok, cwd} = :file.get_cwd()
+
+    assert [{~c"BEAM_COM_CACHE", :filename.join(cwd, ~c"bin/cache")}] ==
+             :beam_com_mix.cache_env(~c"bin/cache")
+  end
+
   test "no_input: the output goes to the leader, and each read gets eof" do
     {:ok, out} = StringIO.open("an answer that nobody reads\n")
     leader = :beam_com_mix.no_input(out)

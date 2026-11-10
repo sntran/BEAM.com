@@ -32,7 +32,7 @@
 
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
-         asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0,
+         asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0, cache_env/1,
          windows_assets/2, steps/4, relay/1, status/1, watch_input/2]).
 -endif.
 
@@ -86,7 +86,8 @@ release(Dir0, Dir, Out, Exe) ->
     %% APE file, and the execve() of this executable can.
     Port = open_port({spawn_executable, Exe},
                      [{args, ["elixir", "-e", ":beam_com_mix.child()"]},
-                      {env, child_env(Dir, Out, os:getenv("MIX_ENV"))},
+                      {env, child_env(Dir, Out, os:getenv("MIX_ENV"))
+                           ++ cache_env(os:getenv("BEAM_COM_CACHE"))},
                       {cd, Dir}, exit_status, stderr_to_stdout, binary]),
     Status = try relay(Port)
              after
@@ -107,6 +108,15 @@ release(Dir0, Dir, Out, Exe) ->
 child_env(Dir, Out, MixEnv) ->
     [{"BEAM_COM_MIX_DIR", Dir}, {"BEAM_COM_MIX_OUT", Out}]
         ++ [{"MIX_ENV", "prod"} || MixEnv =:= false orelse MixEnv =:= ""].
+
+%% The child starts in the directory of the project. There, a relative
+%% BEAM_COM_CACHE names a directory in the project, and the files that
+%% the child writes in it are inputs of the next run (a run then builds
+%% again with no change). So the child gets the absolute path.
+cache_env(Cache) when Cache =:= false; Cache =:= "" ->
+    [];
+cache_env(Cache) ->
+    [{"BEAM_COM_CACHE", filename:absname(Cache)}].
 
 %% The output of Mix, as it comes. A port read can divide a character
 %% of UTF-8, so the incomplete end of a part waits for the next part. A
