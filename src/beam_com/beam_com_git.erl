@@ -618,9 +618,27 @@ safe_name(Name) ->
     Bad andalso throw({error, "git: a tree entry with a bad name: ~tp", [Name]}),
     Name.
 
-%% True for a name that a file system can read as .git.
+%% True for a name that a file system can read as .git, with the rules of
+%% core.protectNTFS and core.protectHFS of git: NTFS removes the "." and
+%% " " at the end, a ":" starts a stream (".git::$INDEX_ALLOCATION"),
+%% and GIT~1 is the short name of .git. HFS+ ignores some code points
+%% (for example U+200C), and the case.
 dot_git(Name) ->
-    fold(Name) =:= <<".git">>.
+    re:run(fold(no_ignorable(Name)), "^(\\.git|git~1)[. ]*(:.*)?$", [{capture, none}, dotall])
+        =:= match.
+
+no_ignorable(Name) ->
+    case unicode:characters_to_list(Name) of
+        Chars when is_list(Chars) ->
+            unicode:characters_to_binary([C || C <- Chars, not ignorable(C)]);
+        _ ->
+            Name
+    end.
+
+%% The code points that HFS+ ignores in a name (is_hfs_dotgit of git).
+ignorable(C) ->
+    (C >= 16#200C andalso C =< 16#200F) orelse (C >= 16#202A andalso C =< 16#202E)
+        orelse (C >= 16#206A andalso C =< 16#206F) orelse C =:= 16#FEFF.
 
 %% The tree of the directory Sparse ("a/b") of the tree Root: {Path, Tree}.
 subtree(Root, Sparse, Objects) ->

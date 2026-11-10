@@ -182,6 +182,11 @@ A dep of `rebar.config` can also come from a git repository of an
   checkout is new, so a write follows no link. A link must stay in the
   checkout: a relative target with no `..`, no `\`, no `:` and no part
   `.git`.
+- **The names `.git`.** An entry or a part of a link that Windows or
+  macOS reads as `.git` is an error, on each system, as with
+  `core.protectNTFS` and `core.protectHFS` of git: for example `.git.`,
+  `.git `, `GIT~1`, `.git::$INDEX_ALLOCATION`, or `.git` with a code
+  point that HFS+ ignores (U+200C).
 - **Limits.** The list of refs has at most 16 MiB, and the pack at most
   512 MiB. One object of the pack (also a delta and its result) has at
   most 256 MiB, and all the objects, with the results of the deltas, at

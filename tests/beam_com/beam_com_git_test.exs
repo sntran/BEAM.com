@@ -453,6 +453,31 @@ defmodule BeamComGitTest do
                  catch_throw(:beam_com_git.safe_name(bad))
       end
 
+      # The names that NTFS and HFS+ read as .git (core.protectNTFS and
+      # core.protectHFS of git).
+      for bad <- [
+            ".git.",
+            ".git ",
+            ".git . .",
+            "GIT~1",
+            "git~1.",
+            ".git::$INDEX_ALLOCATION",
+            ".GIT:stream",
+            ".g\u200cit",
+            ".GI\ufeffT",
+            "\u202e.git"
+          ] do
+        assert :beam_com_git.dot_git(bad), bad
+
+        assert {:error, ~c"git: a tree entry with a bad name: ~tp", [^bad]} =
+                 catch_throw(:beam_com_git.safe_name(bad))
+      end
+
+      for good <- [".gitignore", ".github", "git~2", "git", ".git~1", "x.git", <<0xFF, ".git">>] do
+        refute :beam_com_git.dot_git(good), good
+        assert good == :beam_com_git.safe_name(good)
+      end
+
       assert {:error, ~c"git: a commit with no tree", []} ==
                catch_throw(:beam_com_git.commit_tree("parent x"))
     end

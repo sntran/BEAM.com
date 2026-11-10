@@ -114,6 +114,8 @@ notes of its release.
     in another letter case), and each write follows no link. Before, a
     link and a file of one name could write the file `.git`. A link
     target with `\` or `:` is an error too.
+  - The names that Windows and macOS read as `.git` (`.git.`, `GIT~1`,
+    `.git::$INDEX_ALLOCATION`, and more) are errors in a tree.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".
