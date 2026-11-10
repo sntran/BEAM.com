@@ -16,6 +16,11 @@ exclude =
     do: [:check_format | exclude],
     else: exclude
 
+# The tag :agent_bridge needs the program ssh_agent_bridge
+# (BeamCom.SshFixture.bridge/0): BEAM_COM_AGENT_BRIDGE, or the helper in
+# the beam.com of the tests.
+exclude = if BeamCom.SshFixture.bridge(), do: exclude, else: [:agent_bridge | exclude]
+
 # The tag :netns needs a user and network namespace (unshare -rn) and
 # python3 (tests/elixir_patches_test.exs).
 netns? =

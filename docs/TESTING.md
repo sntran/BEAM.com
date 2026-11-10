@@ -54,6 +54,12 @@ the tests.
   build lock of Mix runs in a user and network namespace
   (`unshare -rn`). Without it, ExUnit skips the test (the tag `netns`).
   CI sets `BEAM_COM_NETNS=1`, so there the test must run.
+- `tests/beam_com/beam_com_git_ssh_test.exs`: the tests of Git over SSH,
+  with an SSH daemon of OTP and a test agent on the loopback address. The
+  tests of the program `ssh_agent_bridge` (the tag `agent_bridge`) need
+  the helper in the `beam.com` of the tests, or `BEAM_COM_AGENT_BRIDGE`
+  (a build of `c_src/cosmo/beam_com_agent.c` with
+  `-DBEAM_COM_AGENT_MAIN`). Without them, ExUnit skips these tests.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
 - `tests/errno_test.exs`: the errors of the VM have the names of the

@@ -303,15 +303,10 @@ defmodule BeamComGitSshTest do
       SshFixture.Agent.start(sock, [key])
       blob = :ssh_file.encode(SshFixture.public(key), :ssh2_pubkey)
 
-      agents =
-        [String.to_charlist(sock)] ++
-          for b <- [bridge()], b != nil, do: {:bridge, b, String.to_charlist(sock)}
-
-      for agent <- agents do
-        assert [blob] == :beam_com_git_ssh.agent_keys(agent)
-        sig = :beam_com_git_ssh.sign(blob, "data", key_cb_private: [agent: agent])
-        assert :public_key.verify("data", :none, sig, SshFixture.public(key))
-      end
+      agent = String.to_charlist(sock)
+      assert [blob] == :beam_com_git_ssh.agent_keys(agent)
+      sig = :beam_com_git_ssh.sign(blob, "data", key_cb_private: [agent: agent])
+      assert :public_key.verify("data", :none, sig, SshFixture.public(key))
 
       # A refused signature: an empty signature, and a note to the owner.
       ref = make_ref()
@@ -325,6 +320,19 @@ defmodule BeamComGitSshTest do
       assert_receive {:beam_com_git_ssh, ^ref, {:sign_failed, _}}, 5_000
       assert_receive {:beam_com_git_ssh, ^ref, {:sign_failed, ^fp}}, 5_000
     end
+
+    # tests/test_helper.exs excludes the tag when the program is absent.
+    @tag :agent_bridge
+    test "agent_keys and sign: the agent through ssh_agent_bridge" do
+      {key, _} = SshFixture.user_key()
+      sock = agent_socket()
+      SshFixture.Agent.start(sock, [key])
+      blob = :ssh_file.encode(SshFixture.public(key), :ssh2_pubkey)
+      agent = {:bridge, SshFixture.bridge(), String.to_charlist(sock)}
+      assert [blob] == :beam_com_git_ssh.agent_keys(agent)
+      sig = :beam_com_git_ssh.sign(blob, "data", key_cb_private: [agent: agent])
+      assert :public_key.verify("data", :none, sig, SshFixture.public(key))
+    end
   end
 
   # The path of a socket of an agent. A Unix socket has at most 107 bytes,
@@ -336,25 +344,6 @@ defmodule BeamComGitSshTest do
     sock = Path.join("tmp", "ssh-agent-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm(sock) end)
     sock
-  end
-
-  # The program ssh_agent_bridge: BEAM_COM_AGENT_BRIDGE (a build of
-  # c_src/cosmo/beam_com_agent.c), else the helper of the beam.com of the
-  # tests when the file has one, else nil.
-  defp bridge do
-    case System.get_env("BEAM_COM_AGENT_BRIDGE") do
-      nil ->
-        with {:ok, [[exe]]} <- :init.get_argument(:beam_com_exe),
-             {:ok, bin} <- File.read(exe),
-             {_, _} <- :binary.match(bin, "usage: ssh_agent_bridge AGENT") do
-          ~c"/zip/bin/ssh_agent_bridge"
-        else
-          _ -> nil
-        end
-
-      path ->
-        String.to_charlist(path)
-    end
   end
 
   describe "the protocol" do
@@ -526,12 +515,24 @@ defmodule BeamComGitSshTest do
       """)
 
       assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out2"))
+    end
 
-      # The same through ssh_agent_bridge, as for the agent of Windows.
-      if b = bridge() do
-        opts = put_in(opts, [:ssh, :agent_bridge], b)
-        assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out3"))
-      end
+    # The agent through ssh_agent_bridge, as for the agent of Windows.
+    @tag :agent_bridge
+    test "a key of the SSH agent through ssh_agent_bridge", ctx do
+      {agent_key, _} = SshFixture.user_key()
+      sock = agent_socket()
+      SshFixture.Agent.start(sock, [agent_key])
+      port = daemon(ctx, {:v2, ctx.repo, ["refs/tags/v1"]}, [SshFixture.public(agent_key)])
+      url = "ssh://git@127.0.0.1:#{port}/r"
+
+      opts =
+        ctx.opts
+        |> put_in([:ssh, :agent], String.to_charlist(sock))
+        |> put_in([:ssh, :agent_bridge], SshFixture.bridge())
+
+      {_pack, commit} = ctx.repo
+      assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out"))
     end
 
     test "an RSA key and an ECDSA key of the agent", ctx do

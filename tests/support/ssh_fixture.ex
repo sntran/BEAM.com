@@ -82,6 +82,28 @@ defmodule BeamCom.SshFixture do
   @doc "The public key of a private key."
   def public(key), do: :ssh_file.extract_public_key(key)
 
+  @doc """
+  The program ssh_agent_bridge: `BEAM_COM_AGENT_BRIDGE` (a build of
+  `c_src/cosmo/beam_com_agent.c`), else the helper of the `beam.com` of
+  the tests when the file has one, else nil. `tests/test_helper.exs`
+  excludes the tag `:agent_bridge` when it is nil.
+  """
+  def bridge do
+    case System.get_env("BEAM_COM_AGENT_BRIDGE") do
+      nil ->
+        with {:ok, [[exe]]} <- :init.get_argument(:beam_com_exe),
+             {:ok, bin} <- File.read(exe),
+             {_, _} <- :binary.match(bin, "usage: ssh_agent_bridge AGENT") do
+          ~c"/zip/bin/ssh_agent_bridge"
+        else
+          _ -> nil
+        end
+
+      path ->
+        String.to_charlist(path)
+    end
+  end
+
   @impl true
   def init([mode, owner]),
     do: {:ok, %{mode: mode, owner: owner, env: nil, buf: "", port: nil, phase: nil}}
