@@ -313,10 +313,12 @@ systems, Windows too).
   it exists, and it has an execute bit. The arguments, `argv[0]`, the
   environment, the file descriptors and the directory of the program are
   the same as for a program on the disk. Only the paths `/zip/bin/NAME`
-  of the helper programs (`erl_child_setup`, `inet_gethost`, `epmd`,
-  `inotifywait`, `mac_listener`, `ssh_agent_bridge`, `git_sha1dc`,
-  `make`, `erl` and the tools `mix`, `iex`, `elixir`, `elixirc`,
-  `escript`, `rebar3`) start the file of the program again
+  and `/zip/erts-VSN/bin/NAME` of the helper programs
+  (`erl_child_setup`, `inet_gethost`, `epmd`, `inotifywait`,
+  `mac_listener`, `ssh_agent_bridge`, `git_sha1dc`, `make`, `erl`,
+  `erlexec`, which `peer` starts when it has no `exec` option, and the
+  tools `mix`, `iex`, `elixir`, `elixirc`, `escript`, `rebar3`) start
+  the file of the program again
   (`beam_com_zip_helper()` in `c_src/cosmo/beam_com_zipexec.c`).
 - **Linux: a memfd.** The kernel cannot start a file of the zip, so
   beam.com copies the bytes of an ELF program to a new memfd

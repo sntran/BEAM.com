@@ -40,21 +40,32 @@
 int memfd_create(const char *name, unsigned int flags);
 
 /* The helper programs of beam_com_main() (beam_com.c), by name: a path
- * /zip/bin/NAME, NAME.exe or NAME.com starts this file again. */
+ * /zip/bin/NAME or /zip/erts-VSN/bin/NAME, with NAME, NAME.exe or
+ * NAME.com, starts this file again. */
 static const char *const zip_helpers[] = {
     "erl_child_setup", "inet_gethost", "epmd", "inotifywait", "mac_listener",
     "ssh_agent_bridge", "git_sha1dc", "make", "erl",
+    /* The front end of erl in erts-VSN/bin, which peer starts when it
+     * has no exec option: this file in erl mode. */
+    "erlexec",
     /* The tools (elixir_tool() of beam_com.c). */
     "mix", "iex", "elixir", "elixirc", "escript", "rebar3"};
 
 int beam_com_zip_helper(const char *path)
 {
-    const char *name;
+    const char *name, *p;
     size_t i, n;
 
-    if (!path || strncmp(path, "/zip/bin/", 9) != 0)
+    if (!path)
         return 0;
-    name = path + 9;
+    if (strncmp(path, "/zip/bin/", 9) == 0) {
+        name = path + 9;
+    } else if (strncmp(path, "/zip/erts-", 10) == 0 && (p = strchr(path + 10, '/')) &&
+               strncmp(p, "/bin/", 5) == 0) {
+        name = p + 5;
+    } else {
+        return 0;
+    }
     if (strchr(name, '/') || strchr(name, '\\'))
         return 0;
     for (i = 0; i < sizeof(zip_helpers) / sizeof(zip_helpers[0]); i++) {

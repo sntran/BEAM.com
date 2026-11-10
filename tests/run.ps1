@@ -551,6 +551,8 @@ if (Test-Path "examples") {
     $zprog = "/zip/lib/zip_programs-0.1.0/priv/bin/prog.exe"
     ZipPrograms "zip_rel" $whoamiExe 'Mix gets the deps of .*zip_rel and makes its release \(config/runtime.exs\)@@wrote .*zip_rel.com'
     ZipPrograms "zip_plain" $whoamiExe 'wrote .*zip_plain.com' @("--tool", "mix")
+    # The Mix tools of the builds can write in the cache.
+    Remove-Item $zcacheWin -Recurse -Force -ErrorAction SilentlyContinue
     $zline = "zip_programs: zip port 0 $who \(@@zip_programs: zip cmd 0 $who \("
     if (Test-Path (Join-Path $Dir "zip_rel.com")) {
         Check "zip_rel.com" "$zline@@$([regex]::Escape($zprog)) runs from .*zip-cache/bin/[0-9a-f]{64}/prog\.exe" @()
@@ -572,7 +574,7 @@ if (Test-Path "examples") {
         $ok = $true
         foreach ($i in 1, 2) {
             if (-not $runs[$i - 1].WaitForExit(120000)) { $runs[$i - 1].Kill($true); $ok = $false }
-            $text = Get-Content "$exe.$i.out", "$exe.$i.err" -Raw -ErrorAction SilentlyContinue
+            $text = (Get-Content "$exe.$i.out", "$exe.$i.err" -Raw -ErrorAction SilentlyContinue) -join "`n"
             Write-Host $text
             if ($text -notmatch "zip_programs: zip cmd 0 $who \(") { $ok = $false }
             Remove-Item "$exe.$i.out", "$exe.$i.err" -ErrorAction SilentlyContinue
@@ -650,8 +652,9 @@ function PhoenixCheck {
         $env:BEAM_COM_CACHE = (ZipCache) + "-tw"
         ZipPrograms "zip_tw" $tw[0].FullName 'Mix gets the deps of .*zip_tw and makes its release@@wrote .*zip_tw.com'
         if (Test-Path (Join-Path $Dir "zip_tw.com")) {
-            Check "zip_tw.com" 'zip_programs: zip port 0 .*tailwindcss v4@@zip_programs: zip cmd 0 .*tailwindcss v4@@runs from .*zip-cache-tw/bin/' @("--help")
-            Check "zip_tw.com" 'zip_programs: zip port 0 .*tailwindcss v4@@zip_programs: zip cmd 0 .*tailwindcss v4' @("--help")
+            # The output of tailwind has the escapes of the colors.
+            Check "zip_tw.com" 'zip_programs: zip port 0 .*tailwindcss .*v4@@zip_programs: zip cmd 0 .*tailwindcss .*v4@@runs from .*zip-cache-tw/bin/' @("--help")
+            Check "zip_tw.com" 'zip_programs: zip port 0 .*tailwindcss .*v4@@zip_programs: zip cmd 0 .*tailwindcss .*v4' @("--help")
         }
         Remove-Item Env:BEAM_COM_CACHE
         RemoveWork (Join-Path (Resolve-Path $Dir).Path "zip-cache-tw")

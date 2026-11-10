@@ -136,6 +136,13 @@ static void check_names(void)
     CHECK(beam_com_zip_helper("/zip/bin/mix"));
     CHECK(beam_com_zip_helper("/zip/bin/make.exe"));
     CHECK(beam_com_zip_helper("/zip/bin/erl.com"));
+    CHECK(beam_com_zip_helper("/zip/erts-17.1/bin/erlexec"));
+    CHECK(beam_com_zip_helper("/zip/erts-17.1/bin/erl_child_setup"));
+    CHECK(!beam_com_zip_helper("/zip/erts-17.1/bin/tailwind"));
+    CHECK(!beam_com_zip_helper("/zip/erts-17.1/lib/erlexec"));
+    CHECK(!beam_com_zip_helper("/zip/erts-17.1/bin/x/erlexec"));
+    CHECK(!beam_com_zip_helper("/zip/lib/erts-17.1/bin/erlexec"));
+    CHECK(!beam_com_zip_helper("/zip/bin/erlexecx"));
     CHECK(!beam_com_zip_helper("/zip/bin/tailwind"));
     CHECK(!beam_com_zip_helper("/zip/bin/epmdx"));
     CHECK(!beam_com_zip_helper("/zip/bin/epmd.sh"));

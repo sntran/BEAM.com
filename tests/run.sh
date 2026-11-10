@@ -1090,6 +1090,8 @@ if [ -d examples ]; then
         zip_programs zip_rel "$zecho" \
             'Mix gets the deps of .*zip_rel and makes its release (config/runtime.exs)@@wrote .*zip_rel.com'
         zip_programs zip_plain "$zecho" 'wrote .*zip_plain.com' --tool mix
+        # The Mix tools of the builds put their links in CACHE/bin.
+        rm -rf "$zcache"
         zline='zip_programs: zip port 0 hello zip (@@zip_programs: zip cmd 0 hello zip ('
         zprog=/zip/lib/zip_programs-0.1.0/priv/bin/prog
         if [ -f "$dir/zip_rel.com" ]; then
@@ -1106,7 +1108,7 @@ if [ -d examples ]; then
             zls=$(ls -lid $zcopy 2>/dev/null)
             check zip_rel.com "$zline" hello zip
             if [ "$(echo "$zcopy" | grep -c .)" != 1 ] || [ "$(ls -lid $zcopy 2>/dev/null)" != "$zls" ]; then
-                zip_fail "zip_rel.com: not one copy in $zcache/bin, or the second run wrote it again"
+                zip_fail "zip_rel.com: not one copy in $zcache/bin, or the second run wrote it again: [$zcopy] [$zls] [$(ls -lid $zcopy 2>&1)]"
             else
                 echo "PASS: zip_rel.com: one copy, and the second run used it: $zls"
             fi
@@ -1130,7 +1132,7 @@ if [ -d examples ]; then
             # A cache directory that other users can write.
             chmod 777 "$zcache/bin"
             check zip_rel.com 'another user can write it@@zip_programs: zip port 13 @@zip_programs: zip cmd 13 ' hello zip
-            if grep -q 'hello zip' "$tmp"; then
+            if grep -q ' 0 hello zip' "$tmp"; then
                 zip_fail "zip_rel.com: a program ran from a cache that other users can write"
             fi
             chmod 700 "$zcache/bin"
@@ -1138,7 +1140,7 @@ if [ -d examples ]; then
             BEAM_COM_ALLOW='read;run=/bin/true'
             export BEAM_COM_ALLOW
             check zip_rel.com "$zprog: --allow-run does not name this program@@zip_programs: zip port 13 " hello zip
-            if grep -q 'hello zip' "$tmp"; then
+            if grep -q ' 0 hello zip' "$tmp"; then
                 zip_fail "zip_rel.com: --allow-run=/bin/true ran a program of the zip"
             fi
             BEAM_COM_ALLOW="read;run=$zprog"
@@ -1544,7 +1546,8 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
             export BEAM_COM_CACHE
             zip_programs zip_tw "$tw" 'Mix gets the deps of .*zip_tw and makes its release@@wrote .*zip_tw.com'
             if [ -f "$dir/zip_tw.com" ]; then
-                tline='zip_programs: zip port 0 .*tailwindcss v4@@zip_programs: zip cmd 0 .*tailwindcss v4'
+                # The output of tailwind has the escapes of the colors.
+                tline='zip_programs: zip port 0 .*tailwindcss .*v4@@zip_programs: zip cmd 0 .*tailwindcss .*v4'
                 check zip_tw.com "$tline@@runs from a memfd" --help
                 BEAM_COM_MEMFD=0
                 export BEAM_COM_MEMFD
