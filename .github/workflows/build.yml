@@ -830,9 +830,10 @@ jobs:
           - { name: Linux aarch64, os: ubuntu-24.04-arm }
           - { name: macOS arm64, os: macos-latest }
           - { name: macOS x86_64, os: macos-15-intel }
-          - { name: Windows x86_64, os: windows-latest }
+          # The Phoenix check of tests/run.ps1 has 2 tries of 10 minutes.
+          - { name: Windows x86_64, os: windows-latest, timeout: 40 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: ${{ matrix.timeout || 25 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

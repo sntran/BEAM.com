@@ -218,6 +218,12 @@ watchers, a check of WSL2 in a user namespace of Linux, and the
 blue-green spike (`examples/bluegreen/check.sh`: a check on Linux, a
 probe on the other Unix systems).
 
+`tests/run.ps1` needs PowerShell 7.3 or later. It keeps the tree of the
+processes that each check starts, and it stops and shows each one that
+still runs after the check. In CI (`GITHUB_ACTIONS`), a check of
+`tests/run.ps1` that cannot run, for example with no `pipe_check.com` or
+no service `ssh-agent`, is a failed check.
+
 When a program does not stop in its time limit, or a process stays after
 the tests, `tests/run.sh` writes the processes and their stacks: `sample`
 on macOS, `procstat -kk` on FreeBSD, and the wait channels on Linux. The

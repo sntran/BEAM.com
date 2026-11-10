@@ -2,6 +2,9 @@
 # print. Run it from the top of the repository to also test
 # "beam.com INPUT -o OUTPUT".
 # Usage: tests/run.ps1 DIR
+# PowerShell 7.3 or later: an empty argument (ssh-keygen -N "") goes to a
+# native program only from 7.3.
+#Requires -Version 7.3
 param([string]$Dir = ".")
 # An absolute path: some checks run in another directory.
 $Dir = (Resolve-Path $Dir).Path
@@ -10,19 +13,102 @@ $script:Limit = 120
 $fail = 0
 $failures = [System.Collections.Generic.List[string]]::new()
 
-# Check NAME PATTERN ARGUMENTS [EXPECT] [-Net]: run the program NAME of
-# DIR with ARGUMENTS, and check its exit status and its output
-# (CheckOnce). With -Net (as net_check of tests/run.sh), the check uses
-# the network: a failure gets two more tries, after 10 s and after 30 s,
-# and the log shows each try.
-function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0, [switch]$Net) {
+# Fail TEXT: a failed check, with TEXT in the list "Failed checks".
+function Fail($Text) {
+    Write-Host "FAIL: $Text"
+    $script:fail = 1
+    $script:failures.Add($Text)
+}
+
+# Skip TEXT: a check that cannot run here. In CI (GITHUB_ACTIONS), each
+# check must run, so a skip is a failed check. Skip gives no value, so
+# "if ((Test-Path X) -or (Skip ...))" runs the block only when X exists.
+function Skip($Text) {
+    if ($env:GITHUB_ACTIONS) { Fail "$Text (a skip is a failure in CI)" } else { Write-Host "SKIP: $Text" }
+}
+
+# The processes that a check started (Watch, Left): a map of process
+# IDs to their start times. Windows gives the ID of a process that ended
+# to a new process. Thus a process with a known ID and another start
+# time is not the known process, and Left does not give it.
+function Same($A, $B) { [math]::Abs(($A - $B).TotalSeconds) -lt 1 }
+
+# Watch ROOT TIME KNOWN: add to KNOWN the process ROOT (started at TIME),
+# and each live process that ROOT or a process of KNOWN started. A
+# process that ended takes its children out of the tree of Windows, so
+# a check calls Watch while it waits, and once more at its end.
+function Watch([int]$Root, [datetime]$Time, $Known) {
+    if (-not $Known.ContainsKey($Root)) { $Known[$Root] = $Time }
+    $live = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        ForEach-Object { $live[[int]$_.ProcessId] = $_ }
+    do {
+        $more = $false
+        foreach ($c in @($live.Values)) {
+            $id = [int]$c.ProcessId
+            $parent = [int]$c.ParentProcessId
+            if ($Known.ContainsKey($id) -or -not $Known.ContainsKey($parent)) { continue }
+            # A child starts after its parent.
+            if ($c.CreationDate -lt $Known[$parent].AddSeconds(-1)) { continue }
+            # The parent ID is now the ID of another process, and that
+            # process started this one.
+            $other = $live[$parent]
+            if ($other -and -not (Same $other.CreationDate $Known[$parent]) -and
+                $c.CreationDate -ge $other.CreationDate) { continue }
+            $Known[$id] = $c.CreationDate
+            $more = $true
+        }
+    } while ($more)
+}
+
+# Left KNOWN: the live processes of KNOWN.
+function Left($Known) {
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $Known.ContainsKey([int]$_.ProcessId) -and (Same $_.CreationDate $Known[[int]$_.ProcessId])
+    })
+}
+
+# StopLeft KNOWN NAME: stop the live processes of KNOWN, and show them.
+function StopLeft($Known, $Name) {
+    $left = Left $Known
+    if ($left.Count -gt 0) {
+        Write-Host "Processes of $Name that still run:"
+        $left | Format-Table ProcessId, ParentProcessId, Name, CreationDate -AutoSize | Out-String | Write-Host
+        $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# RemoveWork DIR: remove the work directory DIR of a check. A process
+# can keep a file open for a short time, so a failure gets more tries
+# for 10 s. Then it is a failed check.
+function RemoveWork($Path) {
+    $err = $null
+    for ($try = 1; $try -le 10; $try++) {
+        if (-not (Test-Path $Path)) { return }
+        try {
+            Remove-Item -Recurse -Force $Path -ErrorAction Stop
+            return
+        } catch {
+            $err = $_
+            Start-Sleep -Seconds 1
+        }
+    }
+    Fail "cannot remove ${Path}: $err"
+}
+
+# Check NAME PATTERN ARGUMENTS [EXPECT] [-Net] [-Tries N]: run the
+# program NAME of DIR with ARGUMENTS, and check its exit status and its
+# output (CheckOnce). With -Net (as net_check of tests/run.sh), the check
+# uses the network: a failure gets two more tries (N - 1 with -Tries),
+# after 10 s and after 30 s, and the log shows each try.
+function Check($Name, $Pattern, [string[]]$Arguments, [int]$Expect = 0, [switch]$Net, [int]$Tries = 3) {
     for ($try = 1; ; $try++) {
         $script:pending = [System.Collections.Generic.List[string]]::new()
         CheckOnce $Name $Pattern $Arguments $Expect
         if ($script:pending.Count -eq 0) { return }
-        if ($Net -and $try -lt 3) {
+        if ($Net -and $try -lt $Tries) {
             $wait = $try * 20 - 10
-            Write-Host "RETRY: $Name uses the network: try $($try + 1) of 3 in $wait s"
+            Write-Host "RETRY: $Name uses the network: try $($try + 1) of $Tries in $wait s"
             Start-Sleep -Seconds $wait
             continue
         }
@@ -65,28 +151,32 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     $handler = { if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue($EventArgs.Data) } }
     $o = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $handler -MessageData $lines
     $e = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $handler -MessageData $lines
+    $since = Get-Date
     [void]$p.Start()
     # stdin: a pipe at EOF, the same on each runner.
     $p.StandardInput.Close()
     $p.BeginOutputReadLine()
     $p.BeginErrorReadLine()
 
-    $timedOut = -not $p.WaitForExit($script:Limit * 1000)
+    # Wait, and keep the tree of the processes that the check starts (a
+    # port program such as sh.exe, git.exe, tailwind or esbuild).
+    $started = try { $p.StartTime } catch { $since }
+    $known = @{}
+    $deadline = $since.AddSeconds($script:Limit)
+    $timedOut = $false
+    while (-not $p.WaitForExit(2000)) {
+        Watch $p.Id $started $known
+        if ((Get-Date) -ge $deadline) { $timedOut = $true; break }
+    }
+    Watch $p.Id $started $known
     if ($timedOut) {
         Write-Host "FAIL: $Name did not stop in $($script:Limit) seconds. Processes:"
-        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
-            Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
-        $p.Kill($true)
-        Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' } |
-            Stop-Process -Force -ErrorAction SilentlyContinue
+        Left $known | Format-Table ProcessId, ParentProcessId, Name, CreationDate -AutoSize |
+            Out-String | Write-Host
+        try { $p.Kill($true) } catch { }
     }
     Start-Sleep -Seconds 1
-    $left = Get-Process | Where-Object { $_.ProcessName -match 'beam|greeter' }
-    if ($left) {
-        Write-Host "Processes still running after $Name stopped:"
-        $left | Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
-        $left | Stop-Process -Force -ErrorAction SilentlyContinue
-    }
+    StopLeft $known $Name
     Unregister-Event -SourceIdentifier $o.Name
     Unregister-Event -SourceIdentifier $e.Name
     $all = $lines.ToArray()
@@ -139,7 +229,7 @@ $apps = @("greeter", "crypto_check", "tls_check")
 
 # The writes to a non-blocking pipe (c_src/cosmo/beam_com_pipe.c): the
 # build job of CI makes pipe_check.com with cosmocc.
-if (Test-Path (Join-Path $Dir "pipe_check.com")) {
+if ((Test-Path (Join-Path $Dir "pipe_check.com")) -or (Skip "pipe_check.com: not in $Dir")) {
     Check "pipe_check.com" '(?m)^pipe_check: ok' @()
 }
 
@@ -350,7 +440,11 @@ if (Test-Path "examples") {
     Remove-Item "examples/greeter_ex/mix.lock" -ErrorAction SilentlyContinue
     # A project that needs Mix (config/runtime.exs): a child beam.com runs
     # the Mix steps, as a port program (C16 of docs/UPSTREAM.md).
+    # In CI the build takes about 5 s. The limit is for a slow runner
+    # (see the limits of PhoenixCheck).
+    $script:Limit = 300
     Check "beam.com" 'Mix gets the deps of tests/programs/runtime_check and makes its release \(config/runtime.exs\)@@wrote .*runtime_check.com@@applications: .*runtime_check' @("tests/programs/runtime_check", "-o", "$Dir/runtime_check.com")
+    $script:Limit = 120
     Remove-Item "tests/programs/runtime_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path (Join-Path $Dir "runtime_check.com")) {
         $env:RUNTIME_CHECK_GREETING = "hello from config/runtime.exs"
@@ -390,16 +484,19 @@ function PhoenixCheck {
     $out = Join-Path $Dir "hello.com"
     if (Test-Path "hello") {
         Set-Location hello
-        # Mix gets and compiles the deps, and downloads the asset programs.
-        $script:Limit = 900
+        # Mix gets and compiles the deps, and downloads the asset programs:
+        # about 5 minutes in CI. The limits fit in the time of the job
+        # (timeout-minutes of .github/workflows/build.yml): 2 tries of
+        # 10 minutes, and the other checks.
+        $script:Limit = 600
         Check "beam.com" ('Mix gets the deps of \. and makes its release \(config/runtime.exs, deps that are not Hex packages: heroicons daisyui' +
             '@@tailwind for Windows \(target windows-x64.exe\)@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
-            '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net
+            '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net -Tries 2
         $script:Limit = 120
     }
     Pop-Location
     if (Test-Path $out) { PhoenixServe $out }
-    Remove-Item -Recurse -Force $phx -ErrorAction SilentlyContinue
+    RemoveWork $phx
 }
 
 # PhoenixServe FILE: start the release in FILE, and get its start page
@@ -414,11 +511,15 @@ function PhoenixServe($File) {
     $env:PORT = "4124"
     $env:SECRET_KEY_BASE = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     $log = "$exe.log"
+    $since = Get-Date
     $p = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err"
     Remove-Item Env:PHX_SERVER, Env:PORT, Env:SECRET_KEY_BASE
+    $started = try { $p.StartTime } catch { $since }
+    $known = @{}
     $page = $null
     for ($i = 1; $i -le 60; $i++) {
         Start-Sleep -Seconds 1
+        Watch $p.Id $started $known
         try {
             $r = Invoke-WebRequest -UseBasicParsing http://localhost:4124/ -TimeoutSec 5
             if ($r.Content -match 'Phoenix Framework') { $page = $r.Content; break }
@@ -429,7 +530,11 @@ function PhoenixServe($File) {
     if ($css) {
         try { $code = (Invoke-WebRequest -UseBasicParsing "http://localhost:4124$css" -TimeoutSec 10).StatusCode } catch { }
     }
-    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    # Stop the program and each process that it started.
+    Watch $p.Id $started $known
+    try { $p.Kill($true) } catch { }
+    [void]$p.WaitForExit(10000)
+    StopLeft $known "hello.com"
     if ($page -and $code -eq 200) {
         Write-Host "PASS: hello.com serves the start page and $css (after $i s)"
     } else {
@@ -438,6 +543,7 @@ function PhoenixServe($File) {
         $script:fail = 1
         $script:failures.Add("hello.com: no start page or digested CSS on http://localhost:4124/ (CSS: '$css', status $code)")
     }
+    Remove-Item $exe, $log, "$log.err" -ErrorAction SilentlyContinue
 }
 
 if (Test-Path (Join-Path $Dir "elixir.com")) {
@@ -670,24 +776,44 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
 # The SSH agent of Windows OpenSSH: the git client connects to its named
 # pipe through ssh_agent_bridge (c_src/cosmo/beam_com_agent.c). The check
 # starts the service ssh-agent (a runner of CI is an administrator), and
-# adds a new key without a passphrase.
-if ((Test-Path "examples") -and (Get-Service ssh-agent -ErrorAction SilentlyContinue)) {
-    $agentReady = $false
-    try {
-        Set-Service ssh-agent -StartupType Manual -ErrorAction Stop
-        Start-Service ssh-agent -ErrorAction Stop
-        $agentReady = $true
-    } catch {
-        Write-Host "SKIP: ssh_agent_check: the service ssh-agent does not start ($_)"
-    }
-    if ($agentReady) {
+# adds a new key without a passphrase. At its end, it removes the key and
+# puts back the start type and the state of the service.
+if (Test-Path "examples") {
+    $agent = Get-Service ssh-agent -ErrorAction SilentlyContinue
+    if (-not $agent) {
+        Skip "ssh_agent_check: there is no service ssh-agent"
+    } else {
+        $agentType = $agent.StartType
+        $agentRan = $agent.Status -eq 'Running'
         $key = Join-Path ([System.IO.Path]::GetTempPath()) "beam_com_agent_key"
-        Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
-        & ssh-keygen.exe -q -t ed25519 -N ([string]::Empty) -C beam_com_agent_check -f $key
-        & ssh-add.exe $key 2>&1 | Write-Host
-        Check "beam.com" 'ssh_agent_check: [0-9]+ keys, the key signs' @("escript", "tests/programs/ssh_agent_check.escript", '\\.\pipe\openssh-ssh-agent', "$key.pub")
-        & ssh-add.exe -d $key 2>&1 | Write-Host
-        Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+        $keyAdded = $false
+        try {
+            $agentReady = $false
+            try {
+                if ($agentType -eq 'Disabled') { Set-Service ssh-agent -StartupType Manual -ErrorAction Stop }
+                Start-Service ssh-agent -ErrorAction Stop
+                $agentReady = $true
+            } catch {
+                Skip "ssh_agent_check: the service ssh-agent does not start ($_)"
+            }
+            if ($agentReady) {
+                Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+                & ssh-keygen.exe -q -t ed25519 -N ([string]::Empty) -C beam_com_agent_check -f $key
+                if ($LASTEXITCODE -ne 0) { throw "ssh-keygen exited with $LASTEXITCODE" }
+                # Before ssh-add: a stop after the add must also remove the key.
+                $keyAdded = $true
+                & ssh-add.exe $key 2>&1 | Write-Host
+                if ($LASTEXITCODE -ne 0) { throw "ssh-add exited with $LASTEXITCODE" }
+                Check "beam.com" 'ssh_agent_check: [0-9]+ keys, the key signs' @("escript", "tests/programs/ssh_agent_check.escript", '\\.\pipe\openssh-ssh-agent', "$key.pub")
+            }
+        } catch {
+            Fail "ssh_agent_check: $_"
+        } finally {
+            if ($keyAdded) { & ssh-add.exe -d $key 2>&1 | Write-Host }
+            Remove-Item $key, "$key.pub" -ErrorAction SilentlyContinue
+            if (-not $agentRan) { Stop-Service ssh-agent -ErrorAction SilentlyContinue }
+            if ($agentType -eq 'Disabled') { Set-Service ssh-agent -StartupType Disabled -ErrorAction SilentlyContinue }
+        }
     }
 }
 

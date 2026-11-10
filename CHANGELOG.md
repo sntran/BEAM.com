@@ -44,6 +44,10 @@ notes of its release.
 - CI builds a new Phoenix app on Windows with `beam.com . -o FILE`, and
   gets the start page and the digested CSS of the file. It also checks
   the SSH agent of Windows OpenSSH.
+- `tests/run.ps1` needs PowerShell 7.3 or later. It stops each process
+  that a check started and that still runs, and it removes the key and
+  puts back the service `ssh-agent` at the end of its check. In CI, a
+  check that cannot run is a failed check.
 - On Windows, a relative symbolic link to a directory works (C54). Before,
   `mix release` copied no `priv` of the app, because `stat()` of the
   link `_build/prod/lib/APP/priv` gave `EACCES`.
