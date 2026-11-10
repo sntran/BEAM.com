@@ -9,9 +9,17 @@
 %% writes only the objects that the wanted commit names: the commit, its
 %% tree, the trees in it, and their files. Thus each byte that it writes
 %% is the byte of the commit of mix.lock.
+%%
+%% With a SHA-1 collision, two different objects can have one name. So
+%% the helper program git_sha1dc of beam.com (c_src/cosmo/beam_com_sha1dc.c)
+%% checks each object of a pack with the collision detection of git
+%% (sha1dc). The client refuses a pack with an object that has the mark
+%% of a collision attack, before the checkout writes a file.
 -module(beam_com_git).
 
 -export([resolve/3, fetch/3, checkout/4, redact/1]).
+%% For tests/programs/git_sha1dc_check.escript.
+-export([check/2]).
 %% For beam_com_git_ssh.
 -export([pkt/1, refs/1, pack_response/1]).
 
@@ -37,6 +45,21 @@
 %% The client follows at most 5 redirects of info/refs, as curl and git.
 -define(MAX_REDIRECTS, 5).
 -define(INFO_REFS, "/info/refs?service=git-upload-pack").
+%% The check of the objects (git_sha1dc). The build of beam.com
+%% (scripts/steps.sh) compiles this module with BEAM_COM_SHA1DC: the
+%% helper is in the same file, so the check always runs. The Mix project
+%% of the tests compiles it with no BEAM_COM_SHA1DC, for a test VM that
+%% can have no helper: then the option sha1dc names the program, and the
+%% default is none (no check).
+-define(SHA1DC, "/zip/bin/git_sha1dc").
+%% The longest time with no answer of the helper while an answer is due.
+%% The helper checks about 300 MB/s on a current x86_64 PC, so an object of
+%% MAX_OBJECT takes about 1 s. 120 s is enough for a computer that is 100
+%% times slower.
+-define(SHA1DC_TIMEOUT, 120 * 1000).
+%% The port is busy above this size of data in its queue. The data is
+%% the objects of the pack, which are in memory already.
+-define(SHA1DC_BUSY, {1024 * 1024, 4 * 1024 * 1024}).
 
 %% The commit of Rev at the repository Url: Rev is a commit (40 hex
 %% digits), {branch, B}, {tag, T}, {ref, R}, or head. {ref, R} is a commit
@@ -45,7 +68,8 @@
 %% only a complete name. Opts: http, the
 %% function of the requests (beam_com_hex:http/6 with the options of
 %% http/1; another one for the tests), and ssh, the settings of
-%% beam_com_git_ssh for the tests.
+%% beam_com_git_ssh for the tests. fetch/3 also reads sha1dc and
+%% sha1dc_timeout (see check/2).
 resolve(Url, {ref, Ref}, Opts) when length(Ref) =:= 40 ->
     case is_sha(Ref) of
         true -> list_to_binary(Ref);
@@ -99,7 +123,7 @@ fetch(Url, Sha, Opts) ->
                    {Base, Caps} = capabilities(Url, Opts),
                    pack_response(pkts(upload_pack(Url, Base, Body(Caps), ?MAX_PACK, Opts)))
            end,
-    Objects = objects(Pack),
+    Objects = objects(Pack, maps:with([sha1dc, sha1dc_timeout], Opts)),
     reachable(Sha, Objects).
 
 %% Write the files of the tree of the commit Sha in Dir, or of the
@@ -307,18 +331,25 @@ pack_response(Lines) ->
 %% the SHA-1 of the bytes before it. Limits: object, the largest size of
 %% one object (also of a delta and its result), and total, the largest
 %% sum of the sizes of all the objects and the results of the deltas.
+%% The keys sha1dc and sha1dc_timeout are the options of check/2.
+-ifdef(TEST).
 objects(Pack) ->
-    objects(Pack, #{object => ?MAX_OBJECT, total => ?MAX_TOTAL}).
+    objects(Pack, #{}).
+-endif.
 
-objects(<<"PACK", Version:32, Count:32, _/binary>> = Pack, Limits)
+objects(<<"PACK", Version:32, Count:32, _/binary>> = Pack, Opts)
   when Version =:= 2; Version =:= 3 ->
+    Limits = maps:merge(#{object => ?MAX_OBJECT, total => ?MAX_TOTAL}, Opts),
     Size = byte_size(Pack) - 20,
     Size >= 12 orelse throw({error, "git: a short pack", []}),
     <<Body:Size/binary, Sum:20/binary>> = Pack,
+    %% Plain SHA-1, with no collision check: this checksum finds damaged
+    %% bytes of the transfer. It is no guard against an attack; the
+    %% server makes the pack and its checksum. check/2 is that guard.
     crypto:hash(sha, Body) =:= Sum orelse throw({error, "git: the pack has a bad checksum", []}),
     {Entries, Left} = read_objects(Body, 12, Count, [], Limits, maps:get(total, Limits)),
-    resolve_deltas(Entries, Limits, Left);
-objects(_, _Limits) ->
+    with_sha1dc(Limits, fun(Check) -> resolve_deltas(Entries, Limits, Left, Check) end);
+objects(_, _Opts) ->
     throw({error, "git: not a pack", []}).
 
 read_objects(_Pack, _Pos, 0, Acc, _Limits, Left) ->
@@ -471,10 +502,10 @@ zadd(Out, {Got, Acc, Size, Keep}) ->
 %% The objects with their names, after the deltas, in one pass in the
 %% order of the pack: the base of an offset delta comes before it. A
 %% server sends the base of a ref delta first too (no thin pack).
-resolve_deltas(Entries, Limits, Left0) ->
-    {Named, _, _} =
+resolve_deltas(Entries, Limits, Left0, Check0) ->
+    {Named, _, _, Check} =
         lists:foldl(
-          fun({Pos, T, Base, Data}, {Named, Done, Left}) ->
+          fun({Pos, T, Base, Data}, {Named, Done, Left, Check}) ->
                   {Type, Full} =
                       case {T, Base} of
                           {_, none} when T >= 1, T =< 4 -> {type(T), Data};
@@ -484,8 +515,11 @@ resolve_deltas(Entries, Limits, Left0) ->
                           _ -> throw({error, "git: an object of an unknown type", []})
                       end,
                   Left1 = case Base of none -> Left; _ -> take(byte_size(Full), Limits, Left) end,
-                  {Named#{name(Type, Full) => {Type, Full}}, Done#{Pos => {Type, Full}}, Left1}
-          end, {#{}, #{}, Left0}, Entries),
+                  Digest = digest(Type, Full),
+                  {Named#{hex(Digest) => {Type, Full}}, Done#{Pos => {Type, Full}}, Left1,
+                   sha1dc_add(Check, Type, Full, Digest)}
+          end, {#{}, #{}, Left0, Check0}, Entries),
+    sha1dc_end(Check),
     Named.
 
 delta({ok, {Type, Base}}, Delta, Limits, Left) ->
@@ -498,10 +532,125 @@ type(2) -> tree;
 type(3) -> blob;
 type(4) -> tag.
 
-name(Type, Data) ->
-    binary:encode_hex(crypto:hash(sha, [atom_to_list(Type), " ",
-                                        integer_to_list(byte_size(Data)), 0, Data]),
-                      lowercase).
+%% The SHA-1 of an object: the bytes "TYPE SIZE", NUL, then the data.
+digest(Type, Data) ->
+    crypto:hash(sha, object_bytes(Type, Data)).
+
+object_bytes(Type, Data) ->
+    [atom_to_list(Type), " ", integer_to_list(byte_size(Data)), 0, Data].
+
+hex(Digest) ->
+    binary:encode_hex(Digest, lowercase).
+
+%%% The check of the objects with the collision detection of git.
+
+%% Check the objects [{Type, Data}] with the helper git_sha1dc: ok, or an
+%% error for the first object with the mark of a SHA-1 collision attack.
+%% Opts: sha1dc, the path of the helper or none (only when the module has
+%% no BEAM_COM_SHA1DC, for the tests), and sha1dc_timeout, the longest
+%% time in ms with no answer (SHA1DC_TIMEOUT).
+check(Objects, Opts) ->
+    with_sha1dc(Opts, fun(Check) ->
+                              sha1dc_end(lists:foldl(fun({Type, Data}, C) ->
+                                                             sha1dc_add(C, Type, Data,
+                                                                        digest(Type, Data))
+                                                     end, Check, Objects))
+                      end).
+
+-ifdef(BEAM_COM_SHA1DC).
+sha1dc_program(_Opts) -> ?SHA1DC.
+-else.
+sha1dc_program(Opts) -> maps:get(sha1dc, Opts, none).
+-endif.
+
+%% Give Fun the state of the check, and stop the helper after it, also
+%% after an error. No message of the port stays in the mailbox.
+with_sha1dc(Opts, Fun) ->
+    case sha1dc_program(Opts) of
+        none ->
+            Fun(none);
+        Program ->
+            Port = sha1dc_open(Program),
+            try Fun({Port, maps:get(sha1dc_timeout, Opts, ?SHA1DC_TIMEOUT), queue:new()})
+            after sha1dc_close(Port)
+            end
+    end.
+
+sha1dc_open(Program) ->
+    try open_port({spawn_executable, Program},
+                  [{packet, 4}, binary, exit_status, use_stdio,
+                   {busy_limits_port, ?SHA1DC_BUSY}]) of
+        Port ->
+            %% No exit signal to the caller when the helper stops.
+            unlink(Port),
+            Port
+    catch error:Reason ->
+            throw({error, "git: the SHA-1 check ~ts does not start: ~p", [Program, Reason]})
+    end.
+
+%% A kill closes the port also with data in its queue (port_close/1
+%% waits until the helper reads it). The helper then reads the end of
+%% its input and stops. After the 'DOWN', the port sends no message.
+sha1dc_close(Port) ->
+    Ref = erlang:monitor(port, Port),
+    exit(Port, kill),
+    receive {'DOWN', Ref, port, Port, _} -> ok end,
+    sha1dc_flush(Port).
+
+sha1dc_flush(Port) ->
+    receive
+        {Port, _} -> sha1dc_flush(Port);
+        {'EXIT', Port, _} -> sha1dc_flush(Port)
+    after 0 -> ok
+    end.
+
+%% Send one object to the helper, with no wait for its answer: the
+%% answers come in the order of the objects. When the port is busy, take
+%% one answer, then try again.
+sha1dc_add(none, _Type, _Data, _Digest) ->
+    none;
+sha1dc_add({Port, Timeout, Queue} = Check, Type, Data, Digest) ->
+    try erlang:port_command(Port, object_bytes(Type, Data), [nosuspend]) of
+        true -> {Port, Timeout, queue:in(Digest, Queue)};
+        false -> sha1dc_add(sha1dc_answer(Check), Type, Data, Digest)
+    catch error:badarg ->
+            %% The port is closed: the helper stopped.
+            sha1dc_add(sha1dc_answer(Check), Type, Data, Digest)
+    end.
+
+%% Take each answer that is due.
+sha1dc_end(none) ->
+    ok;
+sha1dc_end({_Port, _Timeout, Queue} = Check) ->
+    case queue:is_empty(Queue) of
+        true -> ok;
+        false -> sha1dc_end(sha1dc_answer(Check))
+    end.
+
+%% The next answer: 1 byte (1 for a collision attack, else 0) and the 20
+%% bytes of the digest, which must be the SHA-1 of the object.
+sha1dc_answer({Port, Timeout, Queue}) ->
+    receive
+        {Port, {data, <<Flag, Sum:20/binary>>}} when Flag =:= 0; Flag =:= 1 ->
+            case queue:out(Queue) of
+                {{value, Sum}, Rest} when Flag =:= 0 ->
+                    {Port, Timeout, Rest};
+                {{value, Digest}, _} when Flag =:= 1 ->
+                    throw({error, "git: the object ~ts has the mark of a SHA-1 collision attack",
+                           [hex(Digest)]});
+                {{value, Digest}, _} ->
+                    throw({error, "git: the SHA-1 check gives another digest for the object ~ts",
+                           [hex(Digest)]});
+                {empty, _} ->
+                    throw({error, "git: the SHA-1 check gives an answer with no object", []})
+            end;
+        {Port, {data, _}} ->
+            throw({error, "git: the SHA-1 check gives a bad answer", []});
+        {Port, {exit_status, Status}} ->
+            throw({error, "git: the SHA-1 check stopped with the status ~b", [Status]})
+    after Timeout ->
+            throw({error, "git: the SHA-1 check gives no answer in ~b ms", [Timeout]})
+    end.
 
 %% The new data of a delta: the size of the base, the size of the result,
 %% then copies from the base and new bytes. The result has at most Max

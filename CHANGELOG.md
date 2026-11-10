@@ -147,6 +147,14 @@ notes of its release.
   - A request names the object format only when the server gives it, as
     `git` does. A server older than git 2.28 refuses a capability that it
     does not know. A repository of SHA-256 gives a clear error.
+  - The client checks each object of a pack with the SHA-1 collision
+    detection of git (sha1dc). The new helper program `git_sha1dc` of
+    beam.com (`c_src/cosmo/beam_com_sha1dc.c`) runs the library
+    sha1collisiondetection (MIT License, in `c_src/cosmo/sha1dc/`). An
+    object with the mark of a collision attack stops the build before
+    the checkout writes a file. The check always runs in beam.com. Before,
+    two different trees with a SHA-1 collision could have the name of one
+    locked commit. See "Git deps" in `docs/PROGRAMS.md`.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

@@ -55,6 +55,21 @@ file (`GetProgramExecutableName()`) again, with
 runs that program. The base name of `argv[0]` is only a fallback,
 because Linux `binfmt_misc` does not keep `argv[0]`.
 
+The helper programs (`beam_com_main()` in `beam_com.c` finds each one by
+the start of its name):
+
+| Program | Source | Use |
+|---|---|---|
+| `erl_child_setup` | `beam_com_child_setup.c` | ERTS starts it at boot; it forks the port programs. |
+| `inet_gethost` | `beam_com_inet_gethost.c` | The resolver of host names of `inet`. |
+| `epmd` | `beam_com_epmd*.c` | The port mapper of distributed Erlang. |
+| `inotifywait`, `mac_listener` | `beam_com_watch.c` | The file watcher. |
+| `ssh_agent_bridge` | `beam_com_agent.c` | The connection of the git client to an SSH agent on a named pipe of Windows. |
+| `git_sha1dc` | `beam_com_sha1dc.c` | The SHA-1 check of the git client, with the library of `sha1dc/`. |
+
+A new helper needs a name that does not start with the name of another
+helper, and that no other helper name starts with.
+
 On Linux, the APE loader runs an APE file (the shell script of the file
 starts it, or binfmt_misc). Cosmopolitan's `execve()` of an APE file
 tries the kernel first, and starts the loader only when the kernel

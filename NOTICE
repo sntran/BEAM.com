@@ -76,6 +76,12 @@ of lazy_html in lib/beam_com/priv/nifs; only a program with lazy_html
   lexbor: Copyright 2018-2020 Alexander Borisov. Apache License 2.0
   (LICENSE). https://github.com/lexbor/lexbor
 
+sha1collisiondetection (SHA-1 with collision detection, the library of
+git; in the helper program git_sha1dc of the git client)
+  Copyright 2017 Marc Stevens and Dan Shumow.
+  MIT License (licenses/sha1collisiondetection.txt).
+  https://github.com/cr-marcstevens/sha1collisiondetection
+
 The Public Suffix List (lib/beam_com/priv/public_suffix_list.dat, for
 the warning of --allow-net=*.DOMAIN; only beam.com contains it)
   Mozilla Public License 2.0 (licenses/mpl-2.0.txt).

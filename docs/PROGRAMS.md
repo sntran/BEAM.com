@@ -194,6 +194,20 @@ A dep of `rebar.config` can also come from a git repository of an
   `core.protectNTFS` and `core.protectHFS` of git: for example `.git.`,
   `.git `, `GIT~1`, `.git::$INDEX_ALLOCATION`, or `.git` with a code
   point that HFS+ ignores (U+200C).
+- **SHA-1 collisions.** The name of a git object is a SHA-1, and with a
+  SHA-1 collision two different objects can have one name. So the client
+  checks each object of a pack with the collision detection of git
+  (sha1dc, the library sha1collisiondetection). The helper program
+  `git_sha1dc` of `beam.com` does the check in a process of its own,
+  while the client resolves the deltas. An object with the mark of a
+  collision attack stops the build before the checkout writes a file:
+  `git: the object NAME has the mark of a SHA-1 collision attack`.
+- **When the check runs.** Each `beam.com` after 0.1.0-rc.6 has the
+  helper, and its git client always checks the objects. No setting and
+  no environment variable stops the check. A helper that does not start,
+  that stops, that gives a wrong digest, or that gives no answer in
+  120 s also stops the build. The checksum at the end of the pack stays
+  plain SHA-1: it finds damaged bytes of the transfer, not an attack.
 - **Limits.** The list of refs has at most 16 MiB, and the pack at most
   512 MiB. One object of the pack (also a delta and its result) has at
   most 256 MiB, and all the objects, with the results of the deltas, at

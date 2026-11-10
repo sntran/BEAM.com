@@ -60,6 +60,13 @@ the tests.
   the helper in the `beam.com` of the tests, or `BEAM_COM_AGENT_BRIDGE`
   (a build of `c_src/cosmo/beam_com_agent.c` with
   `-DBEAM_COM_AGENT_MAIN`). Without them, ExUnit skips these tests.
+- `tests/beam_com/beam_com_git_test.exs`: the tests of the SHA-1 check
+  of the git client use small shell scripts as false helpers (an attack,
+  a wrong digest, a bad answer, an exit, no answer). The tests of the
+  program `git_sha1dc` (the tag `sha1dc`) need the helper in the
+  `beam.com` of the tests, or `BEAM_COM_SHA1DC` (a build of
+  `c_src/cosmo/beam_com_sha1dc.c` with `-DBEAM_COM_SHA1DC_MAIN`).
+  Without them, ExUnit skips these tests.
 - `tests/check_format_test.exs`: the tests of the file format checks.
   See "File formats" below.
 - `tests/errno_test.exs`: the errors of the VM have the names of the
@@ -206,6 +213,8 @@ tests/run.sh DIR           # DIR has beam.com (and the CI artifacts)
 | `tests/programs/peer_check.erl` | The `peer` module of OTP: the program starts its own file in erl mode as a node, and controls it through its standard I/O, then through a TCP connection (calls, an error, a reply of 1 MB, a request of 1 MB). Then the exit status of a port program, `os:cmd/1`, a port program that reads its input after 1 s (a full pipe), a node that halts right after a write of 4097 bytes to a port program that reads 300 ms late (the program must get all the bytes), a listen socket that a port program must not get, `os:find_executable/1`, a `#!` script as a port program, and `nouse_stdio`. On Windows also `findstr`, a native program that waits in large reads. On each system, also Windows. |
 | `tests/cosmo/agent_check.c` | The pipe of the SSH agent of `c_src/cosmo/beam_com_agent.c` on Windows: the server of the pipe gets a token of the level `SecurityIdentification` only. The build job of CI makes `agent_check.com` for `tests/run.ps1`. |
 | `tests/cosmo/pipe_check.c` | The wraps of `c_src/cosmo/beam_com_pipe.c`: on Windows, a write to a non-blocking pipe gives at most its free space, a full pipe takes 1 byte that waits and then gives `EAGAIN`, it is not writable for `select()` and uses no CPU, and 1 MB through the pipe arrives in order. Blocking readers with reads of 1, 4095, 4096 and 65536 bytes get all the data, the reader gets the byte that waits after the close of the write end, and a write after the close of the read end gives `EPIPE`. At the exit of a writer with a byte that waits, a reader that reads 300 ms late gets all of 4097 bytes, a reader that never reads holds the exit for 2 s at most, and with no byte that waits the exit does not wait. `scripts/steps.sh test` runs it on Linux (only the data); the build job of CI makes `pipe_check.com` for `tests/run.ps1`. |
+| `tests/cosmo/sha1dc_check.c` | The helper `git_sha1dc` of `c_src/cosmo/beam_com_sha1dc.c` in a child process: many messages in one input (0, 3, 55, 56, 63, 64, 65 and 1,000,000 bytes, and 196,864 bytes in parts) with their SHA-1, the vectors of `tests/programs/sha1dc_vectors.txt` (SHAttered and Shambles) with the mark of an attack and another digest, and the end of the input in a message (status 1). `scripts/steps.sh test` runs it on Linux. |
+| `tests/programs/git_sha1dc_check.escript` | The helper `/zip/bin/git_sha1dc` of `beam.com` on each system, also Windows: the vectors have the mark of an attack, good inputs pass, and `beam_com_git:check/2` checks good objects. The option `sha1dc` `none` does not stop the check of `beam.com`. |
 | `tests/programs/ssh_agent_check.escript` | Windows only (`tests/run.ps1`): the service `ssh-agent` of Windows OpenSSH with a new key, and the helper program `ssh_agent_bridge` on its named pipe. The keys of the agent, and a signature of the git client (`beam_com_git_ssh:sign/3`). |
 | Phoenix on Windows (`tests/run.ps1`) | A new app (`mix phx.new hello --no-ecto`) in one file with `beam.com . -o`: the tailwind and esbuild programs for Windows, the git deps, and `priv` through a link to a directory (C54). Then the file serves the start page and its digested CSS. |
 | `tests/programs/script_check.erl` | One-file programs: the arguments (spaces, UTF-8, text that looks like flags), exit codes (return, exception, throw, exit, `halt(N)`), 100000 lines written before the exit, `ERL_FLAGS`. |

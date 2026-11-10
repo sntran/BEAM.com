@@ -301,7 +301,9 @@ directory.
   and with the user and the password of the URL. It gets the commit of
   `mix.lock` (or of `ref:`, `branch:` or `tag:`), with depth 1, and it
   computes the name of each object, so the files are the files of that
-  commit. It writes only the objects of that commit, and `sparse:` gives
+  commit. It refuses an object with the mark of a SHA-1 collision attack
+  (see "Git deps" in [`PROGRAMS.md`](PROGRAMS.md)). It writes only the
+  objects of that commit, and `sparse:` gives
   one directory of it. `ref:` is a commit with all its 40 hex digits,
   or the name of a tag or a branch: a shorter commit does not work with
   no `git` program. The lock entries are the entries of `git`, so

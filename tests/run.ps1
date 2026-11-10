@@ -795,6 +795,12 @@ if (Test-Path (Join-Path $Dir "beam-emu.com")) {
     }
 }
 
+# The SHA-1 check of the git client: the helper git_sha1dc in the file
+# (c_src/cosmo/beam_com_sha1dc.c) finds the SHA-1 collisions.
+if (Test-Path "examples") {
+    Check "beam.com" 'git_sha1dc_check: 4 vectors have the mark, the good objects pass' @("escript", "tests/programs/git_sha1dc_check.escript")
+}
+
 # The SSH agent of Windows OpenSSH: the git client connects to its named
 # pipe through ssh_agent_bridge (c_src/cosmo/beam_com_agent.c). The check
 # starts the service ssh-agent (a runner of CI is an administrator), and
