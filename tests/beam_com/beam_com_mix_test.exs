@@ -328,6 +328,35 @@ defmodule BeamComMixTest do
     assert {:ok, "windows-x64.exe"} == :application.get_env(:tailwind, :target)
   end
 
+  test "steps: the order of the Mix steps" do
+    parent = self()
+    run = fn task, args -> send(parent, {:step, task, args}) end
+    hex = fn -> send(parent, {:step, ~c"hex", []}) end
+    assets = fn -> send(parent, {:step, ~c"assets", []}) end
+    config = [deps: [{:jason, "~> 1.4"}], aliases: ["assets.deploy": []]]
+    :beam_com_mix.steps(config, run, hex, assets)
+
+    assert [
+             {~c"loadconfig", []},
+             {~c"hex", []},
+             {~c"deps.get", []},
+             {~c"assets", []},
+             {~c"compile", []},
+             {~c"assets.deploy", []},
+             {~c"release", [~c"--overwrite", ~c"--quiet"]}
+           ] == received_steps()
+
+    :beam_com_mix.steps([], run, hex, assets)
+
+    assert [
+             {~c"loadconfig", []},
+             {~c"deps.get", []},
+             {~c"assets", []},
+             {~c"compile", []},
+             {~c"release", [~c"--overwrite", ~c"--quiet"]}
+           ] == received_steps()
+  end
+
   test "releases: include_erts false and a directory in Out, for each release" do
     assert [app: [include_erts: false, path: "/out/app"]] ==
              :beam_com_mix.releases(:app, [], ~c"/out")
@@ -687,6 +716,15 @@ defmodule BeamComMixTest do
     fn :get, url, [], :none, max ->
       send(parent, {:get, url, max})
       if List.to_string(url) =~ ~r/\.tgz$/, do: tgz, else: JSON.encode!(meta)
+    end
+  end
+
+  # The steps that the funs of steps/4 sent, in their order.
+  defp received_steps do
+    receive do
+      {:step, task, args} -> [{task, args} | received_steps()]
+    after
+      0 -> []
     end
   end
 

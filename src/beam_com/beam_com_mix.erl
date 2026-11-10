@@ -33,7 +33,7 @@
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
          asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0,
-         windows_assets/2, relay/1, status/1, watch_input/2]).
+         windows_assets/2, steps/4, relay/1, status/1, watch_input/2]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -233,7 +233,10 @@ build(Dir, Out) when is_list(Dir), is_list(Out) ->
     Releases = releases(App, proplists:get_value(releases, Config, []), Out),
     'Elixir.Mix.Project':in_project(App, unicode:characters_to_binary(Dir),
                                     [{releases, Releases}],
-                                    fun(_Module) -> steps(Config) end).
+                                    fun(_Module) ->
+                                            steps(Config, fun run/2, fun hex/0,
+                                                  fun() -> windows_assets(os:type(), Config) end)
+                                    end).
 
 %% The git client of beam.com (beam_com_git_scm) gets the git deps of an
 %% https or SSH URL when PATH has no git, or with BEAM_COM_GIT=client. It
@@ -250,17 +253,19 @@ git_scm(_, _Git) ->
 %% The steps of "mix setup" and of a deploy: the config, the deps, the
 %% code, the assets (when the project has the alias assets.deploy), and
 %% the release.
-steps(Config) ->
-    run("loadconfig", []),
-    hex_deps(Config) andalso hex(),
+%% Run(Task, Args) runs a Mix task, Hex() installs Hex, and Assets()
+%% chooses the asset programs (windows_assets/2).
+steps(Config, Run, Hex, Assets) ->
+    Run("loadconfig", []),
+    hex_deps(Config) andalso Hex(),
     %% deps.get also installs rebar3 for a dep that rebar3 builds.
-    run("deps.get", []),
+    Run("deps.get", []),
     %% Before compile: compile removes the code paths of the
     %% applications that are not deps (beam_com_hex, inets).
-    windows_assets(os:type(), Config),
-    run("compile", []),
-    has_alias(Config, 'assets.deploy') andalso run("assets.deploy", []),
-    run("release", ["--overwrite", "--quiet"]).
+    Assets(),
+    Run("compile", []),
+    has_alias(Config, 'assets.deploy') andalso Run("assets.deploy", []),
+    Run("release", ["--overwrite", "--quiet"]).
 
 %% On Windows, os:type() is {unix, windows}, so the Hex packages
 %% tailwind and esbuild choose their programs for Linux. For a package
