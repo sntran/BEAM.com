@@ -1009,6 +1009,75 @@ if [ -d examples ]; then
         check runtime_check.com 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs'
         unset RUNTIME_CHECK_GREETING
     fi
+    # Run mode with a Mix project whose build writes a file in priv/: the
+    # alias assets.deploy of tests/programs/rebuild_check writes a new
+    # time, as phx.digest of Phoenix does. The second run must not build
+    # again. A change of a source file builds again. The copy and the
+    # cache are in DIR, not in the repository and not in the home.
+    rm -rf "$dir/rebuild_check" "$dir/run-cache"
+    cp -R tests/programs/rebuild_check "$dir/"
+    BEAM_COM_CACHE=$dir/run-cache
+    export BEAM_COM_CACHE
+    limit_saved=$limit
+    limit=600
+    rebuild_line='Mix gets the deps of .*rebuild_check and makes its release (the alias assets.deploy)'
+    check beam.com "$rebuild_line@@^rebuild_check: v1\$" "$dir/rebuild_check"
+    if [ ! -f "$dir/rebuild_check/priv/static/stamp.txt" ]; then
+        echo "FAIL: the build of rebuild_check did not run its alias assets.deploy"
+        fail=1
+        failed="$failed
+  beam.com $dir/rebuild_check: no priv/static/stamp.txt"
+    fi
+    check beam.com '^rebuild_check: v1$' "$dir/rebuild_check"
+    if grep -q 'Mix gets the deps' "$tmp"; then
+        echo "FAIL: run mode built rebuild_check again with no change"
+        fail=1
+        failed="$failed
+  beam.com $dir/rebuild_check: built again with no change"
+    else
+        echo "PASS: run mode did not build rebuild_check again"
+    fi
+    cat > "$dir/rebuild_check/lib/rebuild_check.ex" <<'EOF'
+defmodule RebuildCheck do
+  @moduledoc "Writes one line, then stops the program (after a change)."
+  use Application
+
+  def start(_type, _args) do
+    IO.puts("rebuild_check: v2")
+    System.halt(0)
+  end
+end
+EOF
+    check beam.com "$rebuild_line@@^rebuild_check: v2\$" "$dir/rebuild_check"
+    limit=$limit_saved
+    unset BEAM_COM_CACHE
+    rm -rf "$dir/rebuild_check" "$dir/run-cache"
+    # A command line Mix project (escript main_module) with
+    # config/runtime.exs: the builder of a plain Mix project makes the
+    # file, with a warning, and the file runs main/1. With one more reason
+    # for Mix (--tool mix-release, or the alias assets.deploy), the build
+    # stops and writes no file.
+    rm -f "$dir/escript_check.com" "$dir/escript_never.com"
+    plain_line='only the builder of a plain Mix project reads'
+    check beam.com "warning: tests/programs/escript_check: $plain_line the escript main_module of mix.exs@@the program does not have config/runtime.exs@@wrote .*escript_check.com" \
+        tests/programs/escript_check -o "$dir/escript_check.com"
+    rm -rf tests/programs/escript_check/_build
+    if [ -f "$dir/escript_check.com" ]; then
+        check escript_check.com '^escript_check: args \["a", "b"\]$@@^escript_check: greeting none$' a b
+    fi
+    check_status 1 beam.com "$plain_line the escript main_module of mix.exs, and the project needs Mix (--tool mix-release)" \
+        tests/programs/escript_check --tool mix-release -o "$dir/escript_never.com"
+    check_status 1 beam.com "$plain_line --main, and the project needs Mix (the alias assets.deploy)" \
+        tests/programs/rebuild_check --main RebuildCheck -o "$dir/escript_never.com"
+    # A wrong build of rebuild_check writes _build and priv/ there.
+    rm -rf tests/programs/escript_check/_build tests/programs/rebuild_check/_build \
+        tests/programs/rebuild_check/priv
+    if [ -e "$dir/escript_never.com" ]; then
+        echo "FAIL: a build that stops wrote escript_never.com"
+        fail=1
+        failed="$failed
+  beam.com --tool mix-release or --main: wrote escript_never.com"
+    fi
 fi
 
 # The tools: escript, and mix, iex, elixir and elixirc, as a first

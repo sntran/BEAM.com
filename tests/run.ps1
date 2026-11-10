@@ -458,6 +458,19 @@ if (Test-Path "examples") {
         Check "runtime_check.com" 'runtime_check: hello from config/runtime.exs@@runtime_check: build from config/config.exs' @()
         Remove-Item Env:RUNTIME_CHECK_GREETING
     }
+    # A command line Mix project with config/runtime.exs (see tests/run.sh):
+    # the builder of a plain Mix project, a warning, and main/1. With
+    # --tool mix-release, the build stops and writes no file.
+    $plain = 'only the builder of a plain Mix project reads the escript main_module of mix.exs'
+    Remove-Item (Join-Path $Dir "escript_never.com") -ErrorAction SilentlyContinue
+    Check "beam.com" "warning: tests/programs/escript_check: $plain@@the program does not have config/runtime.exs@@wrote .*escript_check.com" @("tests/programs/escript_check", "-o", "$Dir/escript_check.com")
+    Remove-Item "tests/programs/escript_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dir "escript_check.com")) {
+        Check "escript_check.com" 'escript_check: args \["a", "b"\]@@escript_check: greeting none' @("a", "b")
+    }
+    Check "beam.com" "$plain, and the project needs Mix \(--tool mix-release\)" @("tests/programs/escript_check", "--tool", "mix-release", "-o", "$Dir/escript_never.com") 1
+    Remove-Item "tests/programs/escript_check/_build" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dir "escript_never.com")) { Fail "beam.com --tool mix-release: wrote escript_never.com" }
 }
 
 # The tools (see tests/run.sh), as the first argument of beam.com, and
