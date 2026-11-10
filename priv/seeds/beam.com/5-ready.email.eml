@@ -2,4 +2,4 @@ To: beam.com.mail
 X-Mail-Key: <seal:{{MAIL_KEY}}>
 Content-Type: application/json
 
-{"to": "$($reply | base64 -d | secretbox -d -K <seal:{{BOX_KEY}}>)", "subject": "Your custom build of beam.com is ready", "text": "Your custom build of beam.com is ready:\n\n{{BASE}}/beam.com/b/$file\n\nThe file stays available for 30 days. Make it executable (chmod +x $file) and run it, or see https://github.com/sntran/BEAM.com#readme.\n\nThe settings: $settings\n"}
+{"to": "$($reply | base64 -d | secretbox -d -K <seal:{{BOX_KEY}}>)", "subject": "Your custom build of beam.com is ready", "text": "Your custom build of beam.com is ready:\n\n{{BASE}}/beam.com/b/$file\n\nFor a script or CI, use the link of GitHub. The same file comes from it, with no check of the browser:\n\nhttps://github.com/{{GITHUB_REPO}}/releases/download/custom-builds/$file\n\nThe file stays available for 30 days. Make it executable (chmod +x $file) and run it, or see https://github.com/sntran/BEAM.com#readme.\n\nThe settings: $settings\n"}
