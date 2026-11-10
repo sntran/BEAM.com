@@ -666,8 +666,34 @@ defmodule BeamComGitTest do
       assert {:error, ~c"~ts: no ~ts", [_, ~c"refs/tags/v9"]} =
                catch_throw(:beam_com_git.resolve(@url, {:tag, ~c"v9"}, %{http: http}))
 
+      assert {:error, ~c"~ts: no ref ~ts; give a commit with all its 40 hex digits",
+              [_, ~c"1a2b3c4"]} =
+               catch_throw(:beam_com_git.resolve(@url, {:ref, ~c"1a2b3c4"}, %{http: http}))
+
+      assert {:error, ~c"~ts: no ~ts", [_, ~c"nobranch"]} =
+               catch_throw(:beam_com_git.resolve(@url, {:ref, ~c"nobranch"}, %{http: http}))
+
       assert_receive {:post, _, body}, 5000
       assert body =~ "ref-prefix refs/tags/v1\n"
+    end
+
+    test "resolve: {ref, NAME} takes a tag before a branch, as git" do
+      r = repo()
+      tag = String.duplicate("7", 40)
+
+      http = fn
+        :post, _, _, {_, body}, _ ->
+          send(self(), {:ls_refs, body})
+          pkt("#{r.commit} refs/heads/v1\n") <> pkt("#{tag} refs/tags/v1\n") <> "0000"
+
+        method, url, headers, body, max ->
+          server(r, self()).(method, url, headers, body, max)
+      end
+
+      assert tag == :beam_com_git.resolve(@url, {:ref, ~c"v1"}, %{http: http})
+      assert_receive {:ls_refs, body}, 5000
+      # The order of git: the name, then the tag, then the branch.
+      assert body =~ "ref-prefix v1\n001cref-prefix refs/tags/v1\n001dref-prefix refs/heads/v1\n"
     end
 
     test "a server of version 1, and a URL that is not https" do
@@ -683,6 +709,12 @@ defmodule BeamComGitTest do
 
       assert {:error, ~c"~ts: not a commit: ~ts", [_, "main"]} =
                catch_throw(:beam_com_git.fetch(@url, "main", %{}))
+
+      # 40 hex digits and a newline: not a commit.
+      sha = String.duplicate("c", 40) <> "\n"
+
+      assert {:error, ~c"~ts: not a commit: ~ts", [_, ^sha]} =
+               catch_throw(:beam_com_git.fetch(@url, sha, %{}))
     end
 
     test "a user in the URL: basic authentication, and no user in the request URL" do

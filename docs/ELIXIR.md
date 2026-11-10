@@ -302,7 +302,9 @@ directory.
   `mix.lock` (or of `ref:`, `branch:` or `tag:`), with depth 1, and it
   computes the name of each object, so the files are the files of that
   commit. It writes only the objects of that commit, and `sparse:` gives
-  one directory of it. The lock entries are the entries of `git`, so
+  one directory of it. `ref:` is a commit with all its 40 hex digits,
+  or the name of a tag or a branch: a shorter commit does not work with
+  no `git` program. The lock entries are the entries of `git`, so
   `mix.lock` stays the same. `BEAM_COM_GIT=client` uses it also when
   `git` is in `PATH`.
 - With no `git` program, the same client also gets each git dep of an

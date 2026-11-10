@@ -116,6 +116,9 @@ notes of its release.
     target with `\` or `:` is an error too.
   - The names that Windows and macOS read as `.git` (`.git.`, `GIT~1`,
     `.git::$INDEX_ALLOCATION`, and more) are errors in a tree.
+  - `{ref, NAME}` takes a tag before a branch of the same name, as git
+    does. A short commit gives an error that asks for all its 40 hex
+    digits. The docs showed a short commit as an example.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

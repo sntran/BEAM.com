@@ -28,7 +28,8 @@
 %% result), and the sum of all the objects and the results of the deltas.
 -define(MAX_OBJECT, 256 * 1024 * 1024).
 -define(MAX_TOTAL, 1024 * 1024 * 1024).
--define(SHA_RE, "^[0-9a-f]{40}$").
+%% \z: "$" also matches before a newline at the end.
+-define(SHA_RE, "\\A[0-9a-f]{40}\\z").
 %% The time limits of a request over HTTPS: the complete request (a pack
 %% of MAX_PACK at 150 KB/s), and the time with no data.
 -define(HTTP_TIMEOUT, 3600 * 1000).
@@ -38,7 +39,10 @@
 -define(INFO_REFS, "/info/refs?service=git-upload-pack").
 
 %% The commit of Rev at the repository Url: Rev is a commit (40 hex
-%% digits), {branch, B}, {tag, T}, {ref, R}, or head. Opts: http, the
+%% digits), {branch, B}, {tag, T}, {ref, R}, or head. {ref, R} is a commit
+%% of 40 hex digits, else a ref, with the order of git: R, then the tag,
+%% then the branch. A shorter commit does not work: the protocol fetches
+%% only a complete name. Opts: http, the
 %% function of the requests (beam_com_hex:http/6 with the options of
 %% http/1; another one for the tests), and ssh, the settings of
 %% beam_com_git_ssh for the tests.
@@ -48,7 +52,18 @@ resolve(Url, {ref, Ref}, Opts) when length(Ref) =:= 40 ->
         false -> resolve_refs(Url, [Ref], Opts)
     end;
 resolve(Url, {ref, Ref}, Opts) ->
-    resolve_refs(Url, [Ref, "refs/heads/" ++ Ref, "refs/tags/" ++ Ref], Opts);
+    try
+        resolve_refs(Url, [Ref, "refs/tags/" ++ Ref, "refs/heads/" ++ Ref], Opts)
+    catch
+        throw:{error, "~ts: no ~ts", _} = Error ->
+            case re:run(Ref, "\\A[0-9a-fA-F]{4,39}\\z", [{capture, none}]) of
+                match ->
+                    throw({error, "~ts: no ref ~ts; give a commit with all its 40 hex digits",
+                           [redact(Url), Ref]});
+                nomatch ->
+                    throw(Error)
+            end
+    end;
 resolve(Url, {branch, Branch}, Opts) ->
     resolve_refs(Url, ["refs/heads/" ++ Branch], Opts);
 resolve(Url, {tag, Tag}, Opts) ->

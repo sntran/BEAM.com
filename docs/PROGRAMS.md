@@ -157,13 +157,18 @@ A dep of `rebar.config` can also come from a git repository of an
 ```erlang
 {deps, [{jsx, {git, "https://github.com/talentdeficit/jsx.git", {tag, "v3.1.0"}}},
         {mylib, {git, "git@github.com:org/mylib.git", {branch, "main"}}},
-        {other, {git_subdir, "https://example.com/mono.git", {ref, "1a2b3c4"}, "apps/other"}}]}.
+        {other, {git_subdir, "https://example.com/mono.git",
+                 {ref, "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"}, "apps/other"}}]}.
 ```
 
 - The git client of `beam.com` (`beam_com_git`) gets the commit, with
   no `git` program: version 2 of the git protocol over HTTPS or SSH,
   with depth 1. It computes the name of each object from its data. See
   "Git over SSH" below.
+- `{ref, R}` is a commit with all its 40 hex digits, or the name of a
+  ref. A shorter commit (`1a2b3c4`) does not work: the git protocol
+  fetches only a complete name. As with `git`, a tag comes before a
+  branch of the same name.
 - `rebar.lock` keeps the commit of each git dep, as rebar3 does:
   `{git, URL, {ref, SHA}}`. A build with the lock gets this commit, and
   does not ask the server for the branch or the tag.
