@@ -400,6 +400,25 @@ forker port starts no `erl_child_setup`
   `select()` does not report a full pipe: it waits in steps of 5 ms and
   reports the pipe when it has space again. `tests/cosmo/pipe_check.c`
   checks this on Windows; with no wraps, it fails.
+- Windows subtracts the size of a read that waits from
+  `WriteQuotaAvailable`. A reader that waits for 4096 bytes or more on
+  an empty pipe gives 0, as a full pipe does. Most native programs read
+  so (`python`, `git`, `findstr`): no write reached them, and the halt
+  of the VM waited for the queue of the port. A write of 1 byte to find
+  the difference is not safe: Windows can cancel a write after the
+  reader took its byte, and `GetOverlappedResult()` then gives
+  `ERROR_OPERATION_ABORTED` and a count of 0. In a test of 128 KiB and
+  of 1 MiB, a byte came two times in each of 8 runs. So, as Cygwin does,
+  the spawn driver
+  gives the read end of the pipe of the program to
+  `beam_com_pipe_reader()`, which keeps a copy of its handle with
+  `FILE_READ_ATTRIBUTES` only. The free space is `InboundQuota -
+  ReadDataAvailable` of that handle, which a read that waits does not
+  change. The copy keeps the read end open, so when its handle count
+  (`NtQueryObject()`) is 1, the wrap closes it, and the next write gives
+  `EPIPE`. The close of the write end closes the copy too
+  (`__wrap_close()`). A pipe with no copy (for example the standard
+  output of the VM) still uses `WriteQuotaAvailable`.
 - `os.erl`: with `{unix, windows}`, `os:find_executable/1` tries the
   suffixes of Windows.
 
@@ -407,10 +426,11 @@ Names are still resolved with the DNS client of Erlang (no
 `inet_gethost`).
 
 **Possible upstream fix.** For a non-blocking write to a pipe on Windows,
-write at most `WriteQuotaAvailable` bytes, or give the count of the
-bytes that went into the pipe (the result of `GetOverlappedResult()`
-after `CancelIoEx()`), not `EAGAIN`. In `poll()`, report the write end
-of a full pipe as not ready. In
+write at most the free space of the pipe. Get it from the read end
+(`InboundQuota - ReadDataAvailable`), because `WriteQuotaAvailable` of
+the write end is smaller while a reader waits. The count of
+`GetOverlappedResult()` after `CancelIoEx()` is not reliable for a
+pipe. In `poll()`, report the write end of a full pipe as not ready. In
 `commandv()`, try `.exe` and `.com` on Windows. Implement fd passing
 between Cosmopolitan processes (the fd table is already serialized for `execve()` in
 `_COSMO_FDS_V2`, and `DuplicateHandle()` can copy handles into a known

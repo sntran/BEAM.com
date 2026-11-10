@@ -113,6 +113,10 @@ void __releasefd(int fd);
 void __zipos_drop(struct ZiposHandle *h);
 int sys_close(int fd);
 
+/* beam_com_pipe.c: the close of the query handle of a pipe. Weak: not
+ * each program of this file has beam_com_pipe.o. */
+void beam_com_pipe_forget(int fd) __attribute__((__weak__));
+
 static int close_pid;
 
 __attribute__((__constructor__)) static void close_init(void)
@@ -126,6 +130,8 @@ int __wrap_close(int fd)
     int rc;
 
     __fds_lock();
+    if (beam_com_pipe_forget)
+        beam_com_pipe_forget(fd);
     if (fd >= 0 && (size_t)fd < g_fds.n && g_fds.p[fd].kind == kFdZip &&
         !beam_com_is_windows() && getpid() == close_pid) {
         h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;

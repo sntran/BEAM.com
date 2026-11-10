@@ -19,6 +19,11 @@
 %%   cmd hello
 %%   slow reader 200000
 %%
+%% Then, on Windows only, a native port program that waits in large reads
+%% (the free space of the write end of the pipe is then 0):
+%%
+%%   native reader true
+%%
 %% On Windows, the spawn driver starts the port programs itself, with
 %% posix_spawn() (docs/UPSTREAM.md, C16).
 -module(peer_check).
@@ -30,7 +35,40 @@ main(_) ->
     exit_status(Exe),
     io:format("cmd ~ts~n", [string:trim(os:cmd("echo hello"))]),
     slow_reader(200000),
+    native_reader(),
     ok.
+
+%% On Windows: findstr.exe, a native program that waits in reads of 4 KiB
+%% or more, so the free space of the write end of its pipe is 0. It gets
+%% 20000 lines, and gives them back in order. It writes the last lines
+%% only at the end of its input, so the check waits for 10000 lines.
+native_reader() ->
+    case os:type() of
+        {unix, windows} ->
+            Exe = os:find_executable("findstr"),
+            Port = open_port({spawn_executable, Exe},
+                             [binary, {line, 100}, {args, ["/B", "line"]}]),
+            %% The program waits in its read.
+            timer:sleep(500),
+            port_command(Port, [io_lib:format("line ~6..0b~n", [I])
+                                || I <- lists:seq(1, 20000)]),
+            Ok = native_lines(Port, 1),
+            port_close(Port),
+            io:format("native reader ~p~n", [Ok]);
+        _ ->
+            ok
+    end.
+
+native_lines(_Port, 10001) ->
+    true;
+native_lines(Port, I) ->
+    Line = iolist_to_binary(io_lib:format("line ~6..0b", [I])),
+    receive
+        {Port, {data, {eol, Line}}} -> native_lines(Port, I + 1);
+        {Port, {data, Other}} -> {line, I, Other}
+    after 60000 ->
+            {no_line_in_60_s, I}
+    end.
 
 %% A port program that reads its input after 1 s, and counts N bytes.
 slow_reader(N) ->

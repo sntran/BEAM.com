@@ -30,7 +30,10 @@ notes of its release.
   write at most the free space of a pipe, because a larger non-blocking
   write to a pipe of Cosmopolitan on Windows can lose data, and they do
   not report a full pipe as writable. `tests/cosmo/pipe_check.c` checks
-  them on Windows.
+  them on Windows. Windows gives a free space of 0 while the program
+  waits in a read of 4 KiB or more, so the wraps get the free space from
+  the read end of the pipe. Thus a write reaches a native program such
+  as `python`, `git` or `findstr`.
 - A `chown()` to the owner and the group that a file already has gives
   0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
 - On Windows, a script with `#!` runs as a port program: with the
