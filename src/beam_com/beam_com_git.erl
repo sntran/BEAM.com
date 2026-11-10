@@ -72,15 +72,14 @@ resolve(Url, head, Opts) ->
     resolve_refs(Url, ["HEAD"], Opts).
 
 resolve_refs(Url, Names, Opts) ->
-    Body = [pkt("command=ls-refs\n"), pkt("object-format=sha1\n"), <<"0001">>,
-            pkt("peel\n"), pkt("symrefs\n")]
-        ++ [pkt(["ref-prefix ", N, "\n"]) || N <- Names] ++ [<<"0000">>],
+    Body = command("ls-refs", [pkt("peel\n"), pkt("symrefs\n")]
+                   ++ [pkt(["ref-prefix ", N, "\n"]) || N <- Names]),
     Refs = case beam_com_git_ssh:is_ssh(Url) of
                true ->
                    beam_com_git_ssh:ls_refs(Url, Body, ?MAX_REFS, Opts);
                false ->
-                   Base = capabilities(Url, Opts),
-                   refs(pkts(upload_pack(Url, Base, Body, ?MAX_REFS, Opts)))
+                   {Base, Caps} = capabilities(Url, Opts),
+                   refs(pkts(upload_pack(Url, Base, Body(Caps), ?MAX_REFS, Opts)))
            end,
     case [Sha || N <- Names, {Name, Sha} <- Refs, Name =:= list_to_binary(N)] of
         [Sha | _] -> Sha;
@@ -91,15 +90,14 @@ resolve_refs(Url, Names, Opts) ->
 %% Data}}, with only the commit and the objects of its tree.
 fetch(Url, Sha, Opts) ->
     is_sha(binary_to_list(Sha)) orelse throw({error, "~ts: not a commit: ~ts", [redact(Url), Sha]}),
-    Body = [pkt("command=fetch\n"), pkt("object-format=sha1\n"), <<"0001">>,
-            pkt("no-progress\n"), pkt("ofs-delta\n"), pkt("deepen 1\n"),
-            pkt(["want ", Sha, "\n"]), pkt("done\n"), <<"0000">>],
+    Body = command("fetch", [pkt("no-progress\n"), pkt("ofs-delta\n"), pkt("deepen 1\n"),
+                             pkt(["want ", Sha, "\n"]), pkt("done\n")]),
     Pack = case beam_com_git_ssh:is_ssh(Url) of
                true ->
                    beam_com_git_ssh:pack(Url, Sha, Body, Opts);
                false ->
-                   Base = capabilities(Url, Opts),
-                   pack_response(pkts(upload_pack(Url, Base, Body, ?MAX_PACK, Opts)))
+                   {Base, Caps} = capabilities(Url, Opts),
+                   pack_response(pkts(upload_pack(Url, Base, Body(Caps), ?MAX_PACK, Opts)))
            end,
     Objects = objects(Pack),
     reachable(Sha, Objects).
@@ -155,9 +153,26 @@ pkts(<<Hex:4/binary, Rest/binary>>) ->
 pkts(_) ->
     throw({error, "git: a short pkt-line", []}).
 
+%% A request of version 2, as a function of the advertisement of the
+%% server (its pkt-lines). The request names the object format only when
+%% the server gives it, as git does: a server older than git 2.28 refuses
+%% a capability that it does not know.
+command(Command, Args) ->
+    fun(Adv) ->
+            Caps = [string:trim(L, trailing, "\n") || L <- Adv, is_binary(L)],
+            Format = case [F || <<"object-format=", F/binary>> <- Caps] of
+                         [] -> [];
+                         [<<"sha1">> | _] -> [pkt("object-format=sha1\n")];
+                         [F | _] ->
+                             throw({error, "git: the repository has the object format ~ts; "
+                                    "install git", [F]})
+                     end,
+            [pkt(["command=", Command, "\n"])] ++ Format ++ [<<"0001">>] ++ Args ++ [<<"0000">>]
+    end.
+
 %% The capabilities of the server: the server must speak version 2. The
-%% result is the URL of the repository after the redirects of info/refs:
-%% the requests after it go there, as with git.
+%% result: the URL of the repository after the redirects of info/refs
+%% (the requests after it go there, as with git), and the advertisement.
 capabilities(Url, Opts) ->
     capabilities(Url, url(Url), Opts, 0).
 
@@ -169,10 +184,11 @@ capabilities(Url, Base, Opts, N) ->
         {redirect, _} ->
             throw({error, "~ts: more than ~b redirects", [redact(Url), ?MAX_REDIRECTS]});
         Body ->
-            advertisement(pkts(Body)) orelse
+            Adv = pkts(Body),
+            advertisement(Adv) orelse
                 throw({error, "~ts: the server does not speak version 2 of the git protocol; "
                        "install git", [redact(Url)]}),
-            Base
+            {Base, Adv}
     end.
 
 %% The new URL of the repository: the location of a redirect of info/refs

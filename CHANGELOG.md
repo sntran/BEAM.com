@@ -128,6 +128,9 @@ notes of its release.
     error of the checkout, and a `Port` of `~/.ssh/config` that is not a
     number. A `~/.ssh/config` or `known_hosts` file that is not UTF-8
     gives its bytes, as for `ssh`.
+  - A request names the object format only when the server gives it, as
+    `git` does. A server older than git 2.28 refuses a capability that it
+    does not know. A repository of SHA-256 gives a clear error.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

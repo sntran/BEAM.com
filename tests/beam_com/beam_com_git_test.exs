@@ -702,6 +702,35 @@ defmodule BeamComGitTest do
       assert body =~ "ref-prefix v1\n001cref-prefix refs/tags/v1\n001dref-prefix refs/heads/v1\n"
     end
 
+    test "object-format: only when the server gives it" do
+      r = repo()
+      test = self()
+
+      with_format = fn format ->
+        fn
+          :get, _, _, :none, _ ->
+            IO.iodata_to_binary([
+              pkt("version 2\n"),
+              if(format, do: pkt("object-format=#{format}\n"), else: []),
+              "0000"
+            ])
+
+          method, url, headers, body, max ->
+            server(r, test).(method, url, headers, body, max)
+        end
+      end
+
+      assert r.commit == :beam_com_git.resolve(@url, :head, %{http: with_format.("sha1")})
+      assert_receive {:post, _, body}, 5000
+      assert body =~ "0014command=ls-refs\n0017object-format=sha1\n0001"
+      _ = :beam_com_git.fetch(@url, r.commit, %{http: with_format.(nil)})
+      assert_receive {:post, _, body}, 5000
+      assert "0012command=fetch\n0001" <> _ = body
+
+      assert {:error, ~c"git: the repository has the object format ~ts; install git", ["sha256"]} ==
+               catch_throw(:beam_com_git.resolve(@url, :head, %{http: with_format.("sha256")}))
+    end
+
     test "a server of version 1, and a URL that is not https" do
       v1 = fn :get, _, _, _, _ -> "001e# service=git-upload-pack\n0000" end
 

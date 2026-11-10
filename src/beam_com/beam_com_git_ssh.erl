@@ -57,24 +57,24 @@
 is_ssh(Url) ->
     parse_url(Url) =/= none.
 
-%% The refs of the repository: [{Name, Sha}]. Body is the request
-%% ls-refs of version 2 (pkt-lines). A server of version 0 gives its refs
-%% at the start.
+%% The refs of the repository: [{Name, Sha}]. Body gives the request
+%% ls-refs of version 2 (pkt-lines) for the advertisement of the server.
+%% A server of version 0 gives its refs at the start.
 ls_refs(Url, Body, Max, Opts) ->
     session(Url, Opts,
-            fun(v2, S) ->
-                    {Lines, S1} = request(S, Body, Max),
+            fun({v2, Adv}, S) ->
+                    {Lines, S1} = request(S, Body(Adv), Max),
                     {beam_com_git:refs(Lines), S1};
                ({v0, Adv}, S) ->
                     {v0_refs(Adv), S}
             end).
 
-%% The pack of the commit Sha, with depth 1. Body is the request fetch
+%% The pack of the commit Sha, with depth 1. Body gives the request fetch
 %% of version 2.
 pack(Url, Sha, Body, Opts) ->
     session(Url, Opts,
-            fun(v2, S) ->
-                    {Lines, S1} = request(S, Body, max_pack),
+            fun({v2, Adv}, S) ->
+                    {Lines, S1} = request(S, Body(Adv), max_pack),
                     {beam_com_git:pack_response(Lines), S1};
                ({v0, Adv}, S) ->
                     v0_pack(maps:get(url, S), Sha, Adv, S)
@@ -625,8 +625,8 @@ flush_port(Port) ->
     after 0 -> ok
     end.
 
-%% Connect, run git-upload-pack, and give Fun the version of the server:
-%% v2, or {v0, Advertisement}.
+%% Connect, run git-upload-pack, and give Fun the version of the server
+%% and its advertisement: {v2, Advertisement} or {v0, Advertisement}.
 session(Url0, Opts, Fun) ->
     S = settings(Url0, maps:get(ssh, Opts, #{})),
     Url = beam_com_git:redact(Url0),
@@ -641,7 +641,7 @@ session(Url0, Opts, Fun) ->
         {Adv, St1} = read_flush(St, 16 * 1024 * 1024),
         Version = case lists:member(<<"version 2">>, [string:trim(L, trailing, "\n")
                                                       || L <- Adv, is_binary(L)]) of
-                      true -> v2;
+                      true -> {v2, Adv};
                       false -> {v0, Adv}
                   end,
         {Result, St2} = Fun(Version, St1),
