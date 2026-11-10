@@ -37,6 +37,8 @@ notes of its release.
 - On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
   the ends of its pipes. Before, it also got each socket and file of the
   VM, so a closed connection stayed open until the program stopped.
+- On Windows, the server of the pipe of the SSH agent can identify the
+  client, but cannot act as the user (`SECURITY_IDENTIFICATION`).
 - A `chown()` to the owner and the group that a file already has gives
   0 (C28): `File.cp/3` copies the owner, and it failed on Windows.
 - On Windows, a script with `#!` runs as a port program: with the
