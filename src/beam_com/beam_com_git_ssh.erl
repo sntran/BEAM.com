@@ -174,7 +174,7 @@ config_lines([{Key, Args} | Rest], Host, Read, Applies, Acc, Depth) ->
 %% The lines of a config file: [{Keyword, [Arg]}], with the keyword in
 %% lower case, and "Keyword=Arg" also.
 lines(Text) ->
-    [L || Line <- string:split(unicode:characters_to_list(Text), "\n", all),
+    [L || Line <- string:split(text(Text), "\n", all),
           L <- [line(string:trim(Line))], L =/= none].
 
 line("") -> none;
@@ -247,7 +247,7 @@ known(Text, Name, Acc) ->
                       end;
                   _ -> {K, R}
               end
-      end, Acc, [L || L <- string:split(unicode:characters_to_list(Text), "\n", all),
+      end, Acc, [L || L <- string:split(text(Text), "\n", all),
                       hd(string:trim(L) ++ "#") =/= $#]).
 
 blob(Key) ->
@@ -449,7 +449,7 @@ settings(Url0, Opts) ->
     Host = expand(hd(maps:get("hostname", C, [Alias])), Tokens0),
     Tokens = Tokens0#{$h => Host},
     Port = case Port0 of
-               none -> list_to_integer(hd(maps:get("port", C, ["22"])));
+               none -> port(hd(maps:get("port", C, ["22"])), Url, Dir);
                _ -> Port0
            end,
     KeyName = hd(maps:get("hostkeyalias", C, [Host])),
@@ -494,6 +494,21 @@ settings(Url0, Opts) ->
       keys => Keys, agent => Agent, known => Known, revoked => Revoked,
       locked => [F || {F, B} <- Locked, not lists:member(B, AgentKeys)],
       known_files => KnownFiles}.
+
+port(Text, Url, Dir) ->
+    case string:to_integer(Text) of
+        {N, ""} when N >= 1, N =< 65535 -> N;
+        _ -> throw({error, "~ts: the Port ~tp of ~ts is not a port number",
+                    [Url, Text, filename:join(Dir, "config")]})
+    end.
+
+%% The text of a file of ssh. ssh reads bytes: a file that is not UTF-8
+%% gives its bytes as Latin-1.
+text(Bin) ->
+    case unicode:characters_to_list(Bin) of
+        Chars when is_list(Chars) -> Chars;
+        _ -> binary_to_list(iolist_to_binary(Bin))
+    end.
 
 include_path(Arg, Dir) ->
     case filename:pathtype(Arg) of

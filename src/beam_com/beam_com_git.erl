@@ -274,7 +274,9 @@ pack_response(Lines) ->
               [case B of
                    <<1, Data/binary>> -> Data;
                    <<2, _/binary>> -> [];
-                   <<3, Message/binary>> -> throw({error, "git: ~ts", [Message]})
+                   <<3, Message/binary>> -> throw({error, "git: ~ts", [Message]});
+                   <<>> -> throw({error, "git: an empty pkt-line in the pack", []});
+                   <<Band, _/binary>> -> throw({error, "git: a pack in the side band ~b", [Band]})
                end || B <- Bands, is_binary(B)]);
         [] ->
             case [M || <<"ERR ", M/binary>> <- Lines] of

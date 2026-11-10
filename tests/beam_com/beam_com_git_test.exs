@@ -216,6 +216,12 @@ defmodule BeamComGitTest do
 
       assert {:error, ~c"git: the answer has no pack", []} ==
                catch_throw(:beam_com_git.pack_response([:flush]))
+
+      assert {:error, ~c"git: an empty pkt-line in the pack", []} ==
+               catch_throw(:beam_com_git.pack_response(["packfile\n", "", <<1, "x">>]))
+
+      assert {:error, ~c"git: a pack in the side band ~b", [4]} ==
+               catch_throw(:beam_com_git.pack_response(["packfile\n", <<4, "x">>]))
     end
   end
 

@@ -101,6 +101,14 @@ defmodule BeamComGitSshTest do
       refute Map.has_key?(c, ~c"port")
     end
 
+    test "a file that is not UTF-8: its bytes" do
+      text = "# caf" <> <<0xE9>> <> "\nHost x\n  User " <> <<0xE9>> <> "\n"
+      assert %{~c"user" => [[0xE9]]} = config(text, "x")
+
+      known = "h ssh-ed25519 #{Base.encode64("K")} " <> <<0xFF>> <> "\n"
+      assert {["K"], []} == :beam_com_git_ssh.known(known, ~c"h", {[], []})
+    end
+
     test "Match all applies, another Match does not, and Include" do
       text = """
       Include extra
@@ -650,6 +658,17 @@ defmodule BeamComGitSshTest do
       refute IO.chardata_to_string(extra) =~ "at most"
       assert_receive :accepted, 5_000
       refute_receive :accepted, 200
+    end
+
+    test "a Port of ~/.ssh/config that is not a port number", ctx do
+      for port <- ["abc", "0", "70000", "22x"] do
+        File.write!(Path.join(ctx.dir, "config"), "Host h\n  Port #{port}\n")
+
+        assert {:error, ~c"~ts: the Port ~tp of ~ts is not a port number", [_, p, _]} =
+                 catch_throw(:beam_com_git.resolve("h:r", :head, ctx.opts))
+
+        assert to_charlist(port) == p
+      end
     end
 
     test "ProxyJump, GIT_SSH_COMMAND and a URL that is not SSH", ctx do

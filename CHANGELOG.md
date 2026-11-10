@@ -123,6 +123,11 @@ notes of its release.
   - The name of a git dep of a rebar3 project and its `git_subdir`
     directory cannot name a path out of the lib directory or of the
     checkout. Before, a dep of a git dep could name `../NAME`.
+  - Clear errors in place of a crash: a pack with fewer objects than its
+    count, an unknown side band or an empty pkt-line in the pack, a file
+    error of the checkout, and a `Port` of `~/.ssh/config` that is not a
+    number. A `~/.ssh/config` or `known_hosts` file that is not UTF-8
+    gives its bytes, as for `ssh`.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".
