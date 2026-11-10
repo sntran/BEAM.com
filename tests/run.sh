@@ -1149,7 +1149,9 @@ if [ "$os" = linux ] && [ "${BEAM_COM_TEST_OFFLINE:-0}" != 1 ] && [ -f "$dir/bea
     export PATH
     cd "$work"
     net_check mix.com '' local.hex --force
-    net_check mix.com 'phx_new' archive.install hex phx_new --force
+    # A fixed phx_new: a new version can give other deps (the checks
+    # below name the git deps). Keep it equal to tests/run.ps1.
+    net_check mix.com 'phx_new' archive.install hex phx_new 1.8.16 --force
     check mix.com 'creating hello/mix.exs' phx.new hello --database sqlite3 --no-install
     linked_nifs
     if [ -d hello ] && [ -n "$exqlite_vsn" ] && [ -n "$bcrypt_vsn" ]; then

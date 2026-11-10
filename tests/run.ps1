@@ -479,7 +479,9 @@ function PhoenixCheck {
     New-Item -ItemType Directory -Path $phx | Out-Null
     Push-Location $phx
     Check "mix.com" 'hex' @("local.hex", "--force") -Net
-    Check "mix.com" 'phx_new' @("archive.install", "hex", "phx_new", "--force") -Net
+    # A fixed phx_new: a new version can give other deps (the pattern
+    # below names the git deps). Keep it equal to tests/run.sh.
+    Check "mix.com" 'phx_new' @("archive.install", "hex", "phx_new", "1.8.16", "--force") -Net
     Check "mix.com" 'creating hello/mix.exs' @("phx.new", "hello", "--no-ecto", "--no-install")
     $out = Join-Path $Dir "hello.com"
     if (Test-Path "hello") {

@@ -222,7 +222,9 @@ probe on the other Unix systems).
 processes that each check starts, and it stops and shows each one that
 still runs after the check. In CI (`GITHUB_ACTIONS`), a check of
 `tests/run.ps1` that cannot run, for example with no `pipe_check.com` or
-no service `ssh-agent`, is a failed check.
+no service `ssh-agent`, is a failed check. The Phoenix checks of both
+scripts install the fixed `phx_new` 1.8.16, because a new version can
+give other deps.
 
 When a program does not stop in its time limit, or a process stays after
 the tests, `tests/run.sh` writes the processes and their stacks: `sample`
