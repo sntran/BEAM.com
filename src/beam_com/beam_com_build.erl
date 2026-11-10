@@ -27,7 +27,7 @@
          base_kind/1, check_base/2,
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
-         with_extract/2, compile_all/2, first_names/1, mix_release/2, why/1]).
+         with_extract/2, compile_all/2, first_names/1, mix_release/3, why/1]).
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -64,7 +64,7 @@ run(#{input := Input0, apps := ExtraApps} = Opts0) ->
     Output = slashes(maps:get(output, Opts, default_output(Input)), os:type()),
     Root = maps:get(root, Opts, ?ROOT),
     Base = base_apps(Root),
-    case mix_release(Input, Opts) of
+    case mix_release(Input, Output, Opts) of
         none ->
             build_dir(Input, Output, Opts, ExtraApps, Base, Root);
         {Out, Release} ->
@@ -86,7 +86,18 @@ build_dir(Input, Output, Opts, ExtraApps, Base, Root) ->
 %% any Mix project with --tool mix-release: Mix makes its release in a
 %% new directory Out, and the build reads the release. none for the
 %% other inputs, and with --tool mix or --tool rebar.
-mix_release(Input, Opts) ->
+%%
+%% --main, -a, --extract-priv and the escript main_module of mix.exs are
+%% for the builder of a plain Mix project: a release of Mix has its own
+%% applications and no main/1. With them, the builder of a plain Mix
+%% project makes the program when the reasons are only
+%% config/runtime.exs and :compilers (as before the Mix release), with
+%% a warning: the program does not read config/runtime.exs. With other
+%% reasons, the build stops.
+%%
+%% The checks of the base file and of the directory of Output come
+%% before the Mix build, because the Mix build can take minutes.
+mix_release(Input, Output, Opts) ->
     Mix = filelib:is_dir(Input) andalso beam_com_elixir:is_mix(Input),
     Reasons = case {Mix, maps:get(tool, Opts, auto)} of
                   {false, mix_release} ->
@@ -100,15 +111,46 @@ mix_release(Input, Opts) ->
                       end;
                   _ -> []
               end,
-    case Reasons of
-        [] ->
+    Plain = case Reasons of
+                [] -> [];
+                _ -> plain_options(Input, Opts)
+            end,
+    case {Reasons, Plain, Reasons -- [runtime_exs, compilers]} of
+        {[], _, _} ->
             none;
-        _ ->
+        {_, [_ | _], []} ->
+            maps:get(quiet, Opts, false) orelse
+                io:format(standard_error,
+                          "~ts: warning: ~ts: only the builder of a plain Mix project reads "
+                          "~ts, so the build makes no Mix release: the program does not have ~ts~n",
+                          [beam_com:name(), Input, lists:join(", ", Plain), why(Reasons)]),
+            none;
+        {_, [_ | _], _} ->
+            throw({error, "~ts: only the builder of a plain Mix project reads ~ts, and the "
+                   "project needs Mix (~ts): give the applications and the start of the "
+                   "program in mix.exs, as for a release of Mix",
+                   [Input, lists:join(", ", Plain), why(Reasons)]});
+        {_, [], _} ->
+            Wasm = maps:get(target, Opts, none) =:= ?WASM,
+            Wasm orelse check_base(Opts),
+            OutDir = filename:dirname(filename:absname(Output)),
+            Wasm orelse filelib:is_dir(OutDir) orelse
+                throw({error, "~ts: no such directory", [OutDir]}),
             io:format("~ts: Mix gets the deps of ~ts and makes its release (~ts)~n",
                       [beam_com:name(), Input, why(Reasons)]),
             Out = temp_dir("mix_release"),
             {Out, beam_com_mix:release(Input, #{out => Out})}
     end.
+
+%% The options of the build (and the escript of mix.exs) that only the
+%% builder of a plain Mix project reads.
+plain_options(Input, Opts) ->
+    Escript = proplists:get_value(escript, beam_com_elixir:mix_config(Input), []),
+    ["--main" || is_map_key(main, Opts)]
+        ++ ["-a" || maps:get(apps, Opts, []) =/= []]
+        ++ ["--extract-priv" || is_map_key(extract_priv, Opts)]
+        ++ ["the escript main_module of mix.exs"
+            || is_list(Escript), proplists:get_value(main_module, Escript) =/= undefined].
 
 why(Reasons) ->
     lists:join(", ", [case R of

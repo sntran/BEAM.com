@@ -257,6 +257,17 @@ directory.
 - `--tool mix-release` makes the release with Mix for each Mix project.
   `--tool mix` keeps the builder of a plain Mix project, also for a
   project with `config/runtime.exs`.
+- A release of Mix has its own applications and no `main/1`. Thus only
+  the builder of a plain Mix project reads `--main`, `-a`,
+  `--extract-priv` and `escript: [main_module: M]`. With one of them,
+  a project whose only reasons are `config/runtime.exs` and
+  `:compilers` gets the builder of a plain Mix project, with a warning:
+  the program runs `M.main/1`, and it does not read
+  `config/runtime.exs`. With another reason, the build stops with an
+  error.
+- The builder checks the base file and the directory of the output
+  before the Mix steps. After an error of Mix, it removes the temporary
+  directory of the release.
 - New code for a program that runs (see "New code in a running
   program" in [`PROGRAMS.md`](PROGRAMS.md)) works the same with a file
   of this build: `lib/hello-0.1.0/` has the code and `priv/static`.

@@ -465,10 +465,10 @@ defmodule BeamComMixTest do
 
   describe "the choice of the builder" do
     test "Mix makes the release only for a Mix project that needs it", %{dir: dir} do
-      assert :none == :beam_com_build.mix_release(dir, %{})
+      assert :none == :beam_com_build.mix_release(dir, ~c"out.com", %{})
 
       assert {:error, ~c"~ts: --tool mix-release needs a Mix project (mix.exs)", [^dir]} =
-               catch_throw(:beam_com_build.mix_release(dir, %{tool: :mix_release}))
+               catch_throw(:beam_com_build.mix_release(dir, ~c"out.com", %{tool: :mix_release}))
 
       write(
         dir,
@@ -477,13 +477,79 @@ defmodule BeamComMixTest do
           "  def project, do: [app: :c, version: \"0.1.0\", deps: []]\nend\n"
       )
 
-      assert :none == :beam_com_build.mix_release(dir, %{})
+      assert :none == :beam_com_build.mix_release(dir, ~c"out.com", %{})
       write(:filename.join(dir, ~c"config"), ~c"runtime.exs", "import Config\n")
-      assert :none == :beam_com_build.mix_release(dir, %{tool: :mix})
-      assert :none == :beam_com_build.mix_release(dir, %{tool: :rebar})
+      assert :none == :beam_com_build.mix_release(dir, ~c"out.com", %{tool: :mix})
+      assert :none == :beam_com_build.mix_release(dir, ~c"out.com", %{tool: :rebar})
       # A directory with rebar.config and mix.exs is a rebar3 project.
       write(dir, ~c"rebar.config", "{deps, []}.\n")
-      assert :none == :beam_com_build.mix_release(dir, %{})
+      assert :none == :beam_com_build.mix_release(dir, ~c"out.com", %{})
+    end
+
+    # --main, -a, --extract-priv and the escript of mix.exs need the
+    # builder of a plain Mix project.
+    test "options of the plain builder", %{dir: dir} do
+      write(dir, ~c"mix.exs", mix_exs("escript: [main_module: C.CLI]"))
+      write(:filename.join(dir, ~c"config"), ~c"runtime.exs", "import Config\n")
+
+      warning = fn opts ->
+        capture_io(:stderr, fn ->
+          assert :none == :beam_com_build.mix_release(dir, ~c"out.com", opts)
+        end)
+      end
+
+      assert warning.(%{}) =~
+               "warning: #{dir}: only the builder of a plain Mix project reads the escript " <>
+                 "main_module of mix.exs, so the build makes no Mix release: the program does " <>
+                 "not have config/runtime.exs\n"
+
+      assert "" == warning.(%{quiet: true})
+      write(dir, ~c"mix.exs", mix_exs("compilers: [:yecc] ++ Mix.compilers()"))
+
+      assert warning.(%{main: :m, apps: [:x], extract_priv: [:y]}) =~
+               "reads --main, -a, --extract-priv, so"
+
+      assert warning.(%{apps: [:x]}) =~ "config/runtime.exs, the compilers of mix.exs\n"
+
+      # Mix only: a git dep, or --tool mix-release.
+      write(dir, ~c"mix.exs", mix_exs("deps: [{:g, git: \"x\"}], escript: [main_module: C.CLI]"))
+
+      assert {:error, text, [^dir, [~c"the escript main_module of mix.exs"], why]} =
+               catch_throw(:beam_com_build.mix_release(dir, ~c"out.com", %{}))
+
+      assert text ==
+               ~c"~ts: only the builder of a plain Mix project reads ~ts, and the project " ++
+                 ~c"needs Mix (~ts): give the applications and the start of the program in " ++
+                 ~c"mix.exs, as for a release of Mix"
+
+      assert IO.iodata_to_binary(why) =~ "deps that are not Hex packages: g"
+      write(dir, ~c"mix.exs", mix_exs(""))
+
+      assert {:error, _, [^dir, [~c"--main"], _]} =
+               catch_throw(
+                 :beam_com_build.mix_release(dir, ~c"out.com", %{tool: :mix_release, main: :m})
+               )
+    end
+
+    # The checks that need no Mix come before the Mix build.
+    test "the base file and the directory of the output, before Mix", %{dir: dir} do
+      write(dir, ~c"mix.exs", mix_exs(""))
+      none = :filename.join([dir, ~c"none", ~c"out.com"])
+
+      assert {:error, ~c"~ts: no such directory", [:filename.join(dir, ~c"none")]} ==
+               catch_throw(:beam_com_build.mix_release(dir, none, %{tool: :mix_release}))
+
+      elf =
+        write(
+          dir,
+          ~c"native",
+          <<127, "ELF", 2, 1, 1, 0, 0::64, 2::16-little, 0x3E::16-little, 0::384>>
+        )
+
+      assert {:error, ~c"this is a native file (~ts), not an APE file: " ++ _, _} =
+               catch_throw(
+                 :beam_com_build.mix_release(dir, ~c"out.com", %{tool: :mix_release, exe: elf})
+               )
     end
 
     test "why: the reasons in the line of the build" do
@@ -622,6 +688,13 @@ defmodule BeamComMixTest do
       send(parent, {:get, url, max})
       if List.to_string(url) =~ ~r/\.tgz$/, do: tgz, else: JSON.encode!(meta)
     end
+  end
+
+  defp mix_exs(more) do
+    more = if more == "", do: "", else: ", " <> more
+
+    "defmodule C.MixProject do\n  use Mix.Project\n" <>
+      "  def project, do: [app: :c, version: \"0.1.0\"#{more}]\nend\n"
   end
 
   defp write(dir, name, content) do
