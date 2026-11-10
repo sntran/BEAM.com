@@ -194,6 +194,9 @@ The same client gets the git deps of Mix with no `git` program (see
 - **Keys.** The SSH agent of `SSH_AUTH_SOCK` (a key that only the agent
   has, for example of a password manager), and the key files:
   `IdentityFile`, else `~/.ssh/id_ed25519`, `id_ecdsa` and `id_rsa`.
+  The client tries at most 4 keys of each type: one connection for each
+  round of keys. It starts the next round only when the server refused
+  each key of a round.
 - **The agent on Windows.** With no `SSH_AUTH_SOCK`, the client uses the
   agent of Windows OpenSSH, the named pipe `\\.\pipe\openssh-ssh-agent`.
   Start the service and add your key once:

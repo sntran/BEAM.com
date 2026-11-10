@@ -30,13 +30,18 @@
 
 -ifdef(TEST).
 -export([parse_url/1, config/3, match_host/2, known/3, key_algs/1, rounds/1, quote/1, sig_alg/1,
+         host_algs/2,
          v0_refs/1, private_key/1, next_pkt/1, agent_keys/1, agent_call/2, identities/1,
          signature/1, default_agent/2, agent/2]).
 -endif.
 
 -define(TIMEOUT, 120000).
 -define(CONNECT_TIMEOUT, 30000).
+%% The client tries at most 4 keys of each type: one connection for each
+%% round of keys.
 -define(MAX_ROUNDS, 4).
+%% The text of OTP for a login that each key failed.
+-define(AUTH_FAILED, "Unable to connect using the available authentication methods").
 -define(AGENT_TIMEOUT, 10000).
 %% A signature of the agent can wait for a person (a confirmation of the
 %% key, or of a password manager). The key exchange and the login of a
@@ -633,13 +638,19 @@ connect(Url, S) ->
         throw({error, "~ts: ~ts is not in known_hosts (~ts). Add its key, for example with "
                "ssh-keyscan, and check the fingerprint", [Url, maps:get(name, S),
                                                          lists:join(", ", maps:get(known_files, S))]}),
-    Rounds = case rounds(Keys) of [] -> [#{}]; R -> lists:sublist(R, ?MAX_ROUNDS) end,
-    HostAlgs = lists:usort(lists:append([key_algs(B) || B <- Known])),
-    connect(Url, S, Host, Port, HostAlgs, Rounds).
+    All = case rounds(Keys) of [] -> [#{}]; R -> R end,
+    Rounds = lists:sublist(All, ?MAX_ROUNDS),
+    Supported = proplists:get_value(public_key, ssh:default_algorithms()),
+    connect(Url, S#{more_keys => length(All) > ?MAX_ROUNDS}, Host, Port,
+            host_algs(Known, Supported), Rounds).
+
+%% The algorithms of the known keys of the host, in the order of OTP.
+host_algs(Known, Supported) ->
+    Algs = lists:append([key_algs(B) || B <- Known]),
+    [A || A <- Supported, lists:member(A, Algs)].
 
 connect(Url, S, Host, Port, HostAlgs, [Round | Rest]) ->
     Ref = make_ref(),
-    Supported = proplists:get_value(public_key, ssh:default_algorithms()),
     Private = [{owner, self()}, {ref, Ref}, {keys, Round}, {agent, maps:get(agent, S)},
                {known, maps:get(known, S)}, {revoked, maps:get(revoked, S)}],
     Result = ssh:connect(Host, Port,
@@ -651,7 +662,7 @@ connect(Url, S, Host, Port, HostAlgs, [Round | Rest]) ->
                           {user_interaction, false},
                           {quiet_mode, true},
                           {connect_timeout, ?CONNECT_TIMEOUT}]
-                         ++ case [A || A <- HostAlgs, lists:member(A, Supported)] of
+                         ++ case HostAlgs of
                                 [] -> [];
                                 First -> [{modify_algorithms, [{prepend, [{public_key, First}]}]}]
                             end,
@@ -669,7 +680,9 @@ connect(Url, S, Host, Port, HostAlgs, [Round | Rest]) ->
             S1 = S#{unsigned => maps:get(unsigned, S, []) ++ unsigned(Ref)},
             case Result of
                 {ok, Conn} -> Conn;
-                {error, _} when Rest =/= [] -> connect(Url, S1, Host, Port, HostAlgs, Rest);
+                %% The next round only after a login that each key failed.
+                {error, ?AUTH_FAILED} when Rest =/= [] ->
+                    connect(Url, S1, Host, Port, HostAlgs, Rest);
                 {error, Reason} -> throw(auth_error(Url, S1, Reason))
             end
     end.
@@ -694,8 +707,15 @@ auth_error(Url, S, Reason) ->
                    Fps -> io_lib:format(". The SSH agent did not sign with these keys: ~ts",
                                         [lists:join(", ", Fps)])
                end,
+    More = case {Reason, maps:get(more_keys, S, false)} of
+               {?AUTH_FAILED, true} ->
+                   io_lib:format(". The client tries at most ~b keys of each type: name the key "
+                                 "with IdentityFile and IdentitiesOnly in ~~/.ssh/config",
+                                 [?MAX_ROUNDS]);
+               _ -> ""
+           end,
     {error, "~ts: no SSH connection as ~ts: ~ts~ts",
-     [Url, maps:get(user, S), reason(Reason), [Locked, Unsigned]]}.
+     [Url, maps:get(user, S), reason(Reason), [Locked, Unsigned, More]]}.
 
 reason(R) when is_list(R) -> R;
 reason(R) -> io_lib:format("~p", [R]).

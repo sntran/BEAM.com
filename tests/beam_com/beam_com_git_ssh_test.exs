@@ -172,6 +172,21 @@ defmodule BeamComGitSshTest do
       assert [] == :beam_com_git_ssh.rounds([])
     end
 
+    test "host_algs: the algorithms of the known keys, in the order of OTP" do
+      blob = fn type -> <<byte_size(type)::32, type::binary, 0::32>> end
+      supported = :proplists.get_value(:public_key, :ssh.default_algorithms())
+      algs = :beam_com_git_ssh.host_algs([blob.("ssh-rsa"), blob.("ssh-ed25519")], supported)
+      assert algs == Enum.filter(supported, &(&1 in algs))
+      assert :"ssh-ed25519" in algs and :"rsa-sha2-512" in algs
+
+      # Not the alphabetical order, where RSA comes first.
+      order = [:"ssh-ed25519", :"rsa-sha2-512", :"rsa-sha2-256", :"ssh-rsa", :other]
+      known = [blob.("ssh-rsa"), blob.("ssh-ed25519")]
+      assert Enum.take(order, 4) == :beam_com_git_ssh.host_algs(known, order)
+
+      assert [] == :beam_com_git_ssh.host_algs([blob.("ssh-dss")], supported)
+    end
+
     test "sig_alg: the algorithm in the data of a signature" do
       str = fn s -> <<byte_size(s)::32, s::binary>> end
 
@@ -528,7 +543,7 @@ defmodule BeamComGitSshTest do
       assert List.to_string(msg) =~ "is not in known_hosts (~ts)"
 
       # Another key for the name: the error gives the fingerprint.
-      {_d, _p, other} = SshFixture.start({:v0, ctx.repo, []}, [])
+      other = :public_key.generate_key({:namedCurve, :ed25519})
       File.write!(Path.join(ctx.dir, "known_hosts"), SshFixture.known_line(port, other))
 
       assert {:error,
@@ -558,6 +573,60 @@ defmodule BeamComGitSshTest do
                catch_throw(:beam_com_git.resolve(url, :head, ctx.opts))
 
       assert IO.chardata_to_string(extra) =~ "id_rsa"
+    end
+
+    # Five keys of one type in ~/.ssh/config: five rounds.
+    defp five_keys(ctx) do
+      names = for i <- 1..5, do: "key#{i}"
+
+      for n <- names do
+        {_k, text} = SshFixture.user_key()
+        File.write!(Path.join(ctx.dir, n), text)
+      end
+
+      File.write!(
+        Path.join(ctx.dir, "config"),
+        Enum.map_join(names, fn n -> "IdentityFile ~/.ssh/#{n}\n" end)
+      )
+    end
+
+    test "at most 4 rounds of keys: the error says it", ctx do
+      five_keys(ctx)
+      port = daemon(ctx, {:v2, ctx.repo, []}, [])
+      url = "ssh://git@127.0.0.1:#{port}/r"
+
+      assert {:error, _, [^url, ~c"git", _, extra]} =
+               catch_throw(:beam_com_git.resolve(url, :head, ctx.opts))
+
+      assert IO.chardata_to_string(extra) =~ "The client tries at most 4 keys of each type"
+    end
+
+    test "a new round of keys only after a failed login", ctx do
+      five_keys(ctx)
+      # A server that closes each connection: one connection, not one for
+      # each round.
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false])
+      {:ok, port} = :inet.port(listen)
+      test = self()
+
+      spawn_link(fn ->
+        Stream.repeatedly(fn -> :gen_tcp.accept(listen) end)
+        |> Enum.each(fn {:ok, c} ->
+          send(test, :accepted)
+          :gen_tcp.close(c)
+        end)
+      end)
+
+      host = :public_key.generate_key({:namedCurve, :ed25519})
+      File.write!(Path.join(ctx.dir, "known_hosts"), SshFixture.known_line(port, host))
+      url = "ssh://git@127.0.0.1:#{port}/r"
+
+      assert {:error, _, [^url, ~c"git", _, extra]} =
+               catch_throw(:beam_com_git.resolve(url, :head, ctx.opts))
+
+      refute IO.chardata_to_string(extra) =~ "at most"
+      assert_receive :accepted, 5_000
+      refute_receive :accepted, 200
     end
 
     test "ProxyJump, GIT_SSH_COMMAND and a URL that is not SSH", ctx do

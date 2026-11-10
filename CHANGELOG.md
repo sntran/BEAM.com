@@ -99,6 +99,10 @@ notes of its release.
   - When the SSH agent does not sign with a key, the client tries the
     next key, and the error names the key. A signature can take 60 s.
     Before, the connection stopped with a stack trace after 10 s.
+  - Git over SSH starts a new round of keys only when the server refused
+    each key of the last round, and the error says that the client tries
+    at most 4 keys of each type. The host key algorithms keep the order
+    of OTP, so ed25519 comes before RSA.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".
