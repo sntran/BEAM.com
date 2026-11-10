@@ -39,7 +39,8 @@ On Windows, `os:type()` is `{unix, windows}`. The spawn driver starts a
 port program itself with `posix_spawn()`, because `erl_child_setup`
 cannot work there (see C16 in [`UPSTREAM.md`](UPSTREAM.md)).
 `os:find_executable/1` tries the suffixes of Windows (`.exe`, `.com`,
-`.cmd`, `.bat`). `open_port({spawn, Command})` and `os:cmd/1` run
+`.cmd`, `.bat`). A port program gets only the fds 0, 1 and 2 of the VM
+and the ends of its pipes, not the sockets and the files of the VM. `open_port({spawn, Command})` and `os:cmd/1` run
 `sh -c` with the `sh` in `PATH`, for example the `sh` of Git for
 Windows, and give `enoent` with no `sh`.
 At start, BEAM.com gives kernel an inetrc with the name servers
@@ -84,7 +85,11 @@ give the rule the file of your app, build a native file with `--target`
 - Windows: names are resolved with Erlang's DNS client (IPv4 name
   servers only), not with `inet_gethost`. `os:cmd/1` needs a `sh` in
   `PATH`. While a port program does not read its input and its pipe is
-  full, the VM checks the pipe every 5 ms (C16).
+  full, 1 byte waits in the pipe, and the VM checks the end of that
+  write every 5 ms (C16). In a test with a full pipe, the VM used 16 to
+  109 ms of CPU in 5 s (31 ms in 3 of 5 runs); the build before this
+  check used 31 to 62 ms. The exit of the VM cancels a byte that waits,
+  so the reader does not get it.
 - WSL2: start an APE file with `sh`. The kernel gives an APE file that
   it starts itself to Windows (`WSLInterop`): `./beam.com`, and an APE
   file that a shell starts (`os:cmd("other.com")`). BEAM.com starts its
