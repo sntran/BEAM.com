@@ -14,8 +14,8 @@ notes of its release.
   user: `deps.get`, `compile`, `assets.deploy`, and `release` with
   `include_erts: false`. Then the builder makes the file from the
   release. The release consolidates the protocols, and the program reads
-  `config/runtime.exs` at each start. When the deps need Hex, the child
-  installs it, as `mix local.hex` does. `--tool mix-release` uses Mix for
+  `config/runtime.exs` at each start. When the project has a dep, the child
+  installs Hex, as `mix local.hex` does. `--tool mix-release` uses Mix for
   each Mix project, and `--tool mix` keeps the builder of a plain Mix
   project. See "Phoenix in one file" in `docs/ELIXIR.md`.
 - `docs/DEPLOY.md`: deploy a Phoenix app to a Linux server, with a build
