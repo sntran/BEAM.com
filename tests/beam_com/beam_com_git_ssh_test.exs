@@ -273,9 +273,17 @@ defmodule BeamComGitSshTest do
         assert :public_key.verify("data", :none, sig, SshFixture.public(key))
       end
 
-      assert_raise ErlangError, fn ->
-        :beam_com_git_ssh.sign("other", "data", key_cb_private: [agent: ~c""])
-      end
+      # A refused signature: an empty signature, and a note to the owner.
+      ref = make_ref()
+      private = [agent: String.to_charlist(sock), owner: self(), ref: ref]
+      assert "" == :beam_com_git_ssh.sign("other", "data", key_cb_private: private)
+      fp = :ssh.hostkey_fingerprint(:sha256, :ssh_file.decode(blob, :ssh2_pubkey))
+
+      assert "" ==
+               :beam_com_git_ssh.sign(blob, "data", key_cb_private: [agent: ~c""] ++ tl(private))
+
+      assert_receive {:beam_com_git_ssh, ^ref, {:sign_failed, _}}, 5_000
+      assert_receive {:beam_com_git_ssh, ^ref, {:sign_failed, ^fp}}, 5_000
     end
   end
 
@@ -460,6 +468,33 @@ defmodule BeamComGitSshTest do
         assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out-#{port}"))
         assert_receive {:agent_sign, ^alg}, 5_000
       end
+    end
+
+    test "the agent refuses to sign with a key: the next key, and the error", ctx do
+      {refused, _} = SshFixture.user_key()
+      ec = :public_key.generate_key({:namedCurve, :secp256r1})
+      File.rm!(Path.join(ctx.dir, "id_ed25519"))
+      sock = agent_socket()
+      SshFixture.Agent.start(sock, [refused, ec], refuse: [refused], owner: self())
+      opts = put_in(ctx.opts, [:ssh, :agent], String.to_charlist(sock))
+      {_pack, commit} = ctx.repo
+
+      # The two keys are in one round: the ECDSA key logs in.
+      port = daemon(ctx, {:v2, ctx.repo, ["refs/tags/v1"]}, [SshFixture.public(ec)])
+      url = "ssh://git@127.0.0.1:#{port}/r"
+      assert commit == get(url, opts, Path.join(ctx.tmp_dir, "out"))
+      assert_receive {:agent_sign, "ecdsa-sha2-nistp256"}, 5_000
+
+      # Only the refused key can log in: the error names it.
+      port = daemon(ctx, {:v2, ctx.repo, []}, [SshFixture.public(refused)])
+      url = "ssh://git@127.0.0.1:#{port}/r"
+
+      assert {:error, ~c"~ts: no SSH connection as ~ts: ~ts~ts", [^url, ~c"git", _, extra]} =
+               catch_throw(:beam_com_git.resolve(url, :head, opts))
+
+      blob = :ssh_file.encode(SshFixture.public(refused), :ssh2_pubkey)
+      fp = List.to_string(:ssh.hostkey_fingerprint(:sha256, :ssh_file.decode(blob, :ssh2_pubkey)))
+      assert IO.chardata_to_string(extra) =~ "The SSH agent did not sign with these keys: #{fp}"
     end
 
     test "an RSA key in ~/.ssh/id_rsa that is also in the agent", ctx do

@@ -96,6 +96,9 @@ notes of its release.
   - An RSA key of the SSH agent logs in. The client asks the agent for
     the RSA algorithm of the request (rsa-sha2-512 or rsa-sha2-256).
     Before, the client never offered an RSA key of the agent.
+  - When the SSH agent does not sign with a key, the client tries the
+    next key, and the error names the key. A signature can take 60 s.
+    Before, the connection stopped with a stack trace after 10 s.
 - The builder reads a map in a term of a package, for example `#{}` as
   the requirements of `metadata.config`. Before, the build of a package
   with a map stopped with "metadata.config is not a list of terms".

@@ -38,6 +38,11 @@
 -define(CONNECT_TIMEOUT, 30000).
 -define(MAX_ROUNDS, 4).
 -define(AGENT_TIMEOUT, 10000).
+%% A signature of the agent can wait for a person (a confirmation of the
+%% key, or of a password manager). The key exchange and the login of a
+%% connection can wait for two of them.
+-define(SIGN_TIMEOUT, 60000).
+-define(LOGIN_TIMEOUT, (?CONNECT_TIMEOUT + 2 * ?SIGN_TIMEOUT)).
 %% The agent of Windows OpenSSH.
 -define(WINDOWS_AGENT, "\\\\.\\pipe\\openssh-ssh-agent").
 -define(BRIDGE, "/zip/bin/ssh_agent_bridge").
@@ -375,10 +380,19 @@ sign(Blob, Data, Opts) ->
             end,
     Request = <<13, (byte_size(Blob)):32, Blob/binary, (byte_size(Data)):32, Data/binary,
                 Flags:32>>,
-    case signature(agent_call(proplists:get_value(agent, P), Request)) of
-        {ok, Sig} -> Sig;
-        error -> error(agent_sign_failed)
+    case signature(agent_call(proplists:get_value(agent, P), Request, ?SIGN_TIMEOUT)) of
+        {ok, Sig} ->
+            Sig;
+        error ->
+            %% OTP takes no error from sign/3. An empty signature fails
+            %% the login with this key, and OTP tries the next key.
+            note(P, {sign_failed, fingerprint(Blob)}),
+            <<>>
     end.
+
+%% The fingerprint of a key blob, as ssh-keygen -l gives it.
+fingerprint(Blob) ->
+    "SHA256:" ++ string:trim(base64:encode_to_string(crypto:hash(sha256, Blob)), trailing, "=").
 
 %% The algorithm of the data of a signature of the publickey method
 %% (RFC 4252): the session, 50, the user, the service, "publickey", 1,
@@ -511,7 +525,7 @@ agent(Agent, _Opts) ->
 %% The keys of the agent: [Blob]. No agent, or an agent that does not
 %% answer, gives none.
 agent_keys(Agent) ->
-    identities(agent_call(Agent, <<11>>)).
+    identities(agent_call(Agent, <<11>>, ?AGENT_TIMEOUT)).
 
 identities({ok, <<12, N:32, Keys/binary>>}) ->
     identities(Keys, N, []);
@@ -536,9 +550,12 @@ signature(_) ->
 
 %% One request to the agent: {ok, Answer} or error. A message of the
 %% agent protocol has its length (4 bytes) before it: {packet, 4}.
-agent_call("", _Request) ->
+agent_call(Agent, Request) ->
+    agent_call(Agent, Request, ?AGENT_TIMEOUT).
+
+agent_call("", _Request, _Timeout) ->
     error;
-agent_call({bridge, Program, Agent}, Request) ->
+agent_call({bridge, Program, Agent}, Request, Timeout) ->
     try open_port({spawn_executable, Program},
                   [{args, [Agent]}, {packet, 4}, binary, exit_status, use_stdio]) of
         Port ->
@@ -548,20 +565,20 @@ agent_call({bridge, Program, Agent}, Request) ->
             Answer = receive
                          {Port, {data, Data}} -> {ok, Data};
                          {Port, {exit_status, _}} -> error
-                     after ?AGENT_TIMEOUT -> error
+                     after Timeout -> error
                      end,
             try port_close(Port) catch error:_ -> ok end,
             flush_port(Port),
             Answer
     catch error:_ -> error
     end;
-agent_call(Socket, Request) ->
+agent_call(Socket, Request, Timeout) ->
     %% A path that is too long for a socket exits with badarg.
     try gen_tcp:connect({local, Socket}, 0, [binary, {packet, 4}, {active, false}],
                         ?AGENT_TIMEOUT) of
         {ok, S} ->
             Answer = case gen_tcp:send(S, Request) of
-                         ok -> case gen_tcp:recv(S, 0, ?AGENT_TIMEOUT) of
+                         ok -> case gen_tcp:recv(S, 0, Timeout) of
                                    {ok, Data} -> {ok, Data};
                                    {error, _} -> error
                                end;
@@ -638,7 +655,7 @@ connect(Url, S, Host, Port, HostAlgs, [Round | Rest]) ->
                                 [] -> [];
                                 First -> [{modify_algorithms, [{prepend, [{public_key, First}]}]}]
                             end,
-                         ?CONNECT_TIMEOUT),
+                         ?LOGIN_TIMEOUT),
     receive
         {?MODULE, Ref, {unknown_host, Fp}} ->
             close(Result),
@@ -649,11 +666,18 @@ connect(Url, S, Host, Port, HostAlgs, [Round | Rest]) ->
             throw({error, "~ts: the key of ~ts (~ts) is revoked in known_hosts",
                    [Url, maps:get(name, S), Fp]})
     after 0 ->
+            S1 = S#{unsigned => maps:get(unsigned, S, []) ++ unsigned(Ref)},
             case Result of
                 {ok, Conn} -> Conn;
-                {error, _} when Rest =/= [] -> connect(Url, S, Host, Port, HostAlgs, Rest);
-                {error, Reason} -> throw(auth_error(Url, S, Reason))
+                {error, _} when Rest =/= [] -> connect(Url, S1, Host, Port, HostAlgs, Rest);
+                {error, Reason} -> throw(auth_error(Url, S1, Reason))
             end
+    end.
+
+%% The fingerprints of the keys that the agent did not sign with.
+unsigned(Ref) ->
+    receive {?MODULE, Ref, {sign_failed, Fp}} -> [Fp | unsigned(Ref)]
+    after 0 -> []
     end.
 
 close({ok, Conn}) -> ssh:close(Conn);
@@ -665,8 +689,13 @@ auth_error(Url, S, Reason) ->
                  Files -> io_lib:format(". These keys have a passphrase: add them to the SSH "
                                         "agent (ssh-add): ~ts", [lists:join(", ", Files)])
              end,
+    Unsigned = case lists:usort(maps:get(unsigned, S, [])) of
+                   [] -> "";
+                   Fps -> io_lib:format(". The SSH agent did not sign with these keys: ~ts",
+                                        [lists:join(", ", Fps)])
+               end,
     {error, "~ts: no SSH connection as ~ts: ~ts~ts",
-     [Url, maps:get(user, S), reason(Reason), Locked]}.
+     [Url, maps:get(user, S), reason(Reason), [Locked, Unsigned]]}.
 
 reason(R) when is_list(R) -> R;
 reason(R) -> io_lib:format("~p", [R]).

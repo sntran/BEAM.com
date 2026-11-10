@@ -210,6 +210,10 @@ The same client gets the git deps of Mix with no `git` program (see
 - **A key with a passphrase.** The client asks no question. Add the key
   to the agent (`ssh-add`). The error names each key file with a
   passphrase.
+- **The signature of the agent.** The client waits at most 60 s for a
+  signature, so a person can confirm the key in the agent. When the
+  agent does not sign, the client tries the next key. The error names
+  the fingerprint of each key that the agent did not sign with.
 - **Host keys.** The key of the host must be in `~/.ssh/known_hosts`
   (also a hashed name, and `[host]:port`), or in
   `/etc/ssh/ssh_known_hosts`. For an unknown host, the build stops with
