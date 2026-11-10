@@ -244,6 +244,11 @@ directory.
   zip needs no installation.
 - The child reads no standard input. A question of Mix gets the answer
   "no", so the build stops and does not wait.
+- The builder prints the output of Mix as it comes. A byte that is not
+  UTF-8 (for example of a code page of Windows) prints as U+FFFD.
+- When the build stops (an error, or the end of the builder), the child
+  stops too, because its standard input ends. The builder then removes
+  the temporary directory of the release.
 - `--tool mix-release` makes the release with Mix for each Mix project.
   `--tool mix` keeps the builder of a plain Mix project, also for a
   project with `config/runtime.exs`.

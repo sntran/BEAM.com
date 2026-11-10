@@ -22,10 +22,12 @@
 
 %% The tarball of @esbuild/win32-x64 has about 4 MB.
 -define(ESBUILD_MAX, 64 * 1024 * 1024).
+%% The replacement of a byte that is not UTF-8 in the output of Mix.
+-define(BAD_CHAR, <<16#FFFD/utf8>>).
 
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
-         asset_tools/2, esbuild_exe/3]).
+         asset_tools/2, esbuild_exe/3, relay/1, status/1, watch_input/2]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -44,7 +46,8 @@ reasons(Dir, Config) ->
 %% Make the release of the project Dir with Mix: the directory of the
 %% release. Opts: out (the directory of the release, else a new
 %% temporary directory), and exe (the path of this executable, for the
-%% tests).
+%% tests). On an error, this function closes the port (the child then
+%% stops, see watch_input/2) and removes Out.
 release(Dir0, Opts) ->
     %% The child starts in Dir, so a relative path is not correct there.
     Dir = filename:absname(Dir0),
@@ -58,19 +61,33 @@ release(Dir0, Opts) ->
               #{exe := E} -> E;
               _ -> beam_com_build:executable()
           end,
+    try
+        release(Dir0, Dir, Out, Exe)
+    catch
+        Class:Reason:Stack ->
+            _ = file:del_dir_r(Out),
+            erlang:raise(Class, Reason, Stack)
+    end.
+
+release(Dir0, Dir, Out, Exe) ->
     %% Not through /bin/sh: the sh of NetBSD and OpenBSD cannot start an
     %% APE file, and the execve() of this executable can.
     Port = open_port({spawn_executable, Exe},
                      [{args, ["elixir", "-e", ":beam_com_mix.child()"]},
                       {env, child_env(Dir, Out, os:getenv("MIX_ENV"))},
                       {cd, Dir}, exit_status, stderr_to_stdout, binary]),
-    case relay(Port) of
+    Status = try relay(Port)
+             after
+                 %% The port is closed after its exit status.
+                 try port_close(Port) catch error:badarg -> ok end
+             end,
+    case Status of
         0 ->
             case file:list_dir(Out) of
                 {ok, [Name]} -> filename:join(Out, Name);
                 _ -> throw({error, "~ts: Mix made no release in ~ts", [Dir0, Out]})
             end;
-        Status ->
+        _ ->
             throw({error, "~ts: Mix did not make a release (exit status ~p)", [Dir0, Status]})
     end.
 
@@ -79,38 +96,77 @@ child_env(Dir, Out, MixEnv) ->
     [{"BEAM_COM_MIX_DIR", Dir}, {"BEAM_COM_MIX_OUT", Out}]
         ++ [{"MIX_ENV", "prod"} || MixEnv =:= false orelse MixEnv =:= ""].
 
-%% The output of Mix, as it comes.
+%% The output of Mix, as it comes. A port read can divide a character
+%% of UTF-8, so the incomplete end of a part waits for the next part. A
+%% byte that is not UTF-8 (for example of a code page of Windows) becomes
+%% U+FFFD: io:put_chars/1 refuses it.
 relay(Port) ->
+    relay(Port, <<>>).
+
+relay(Port, Rest) ->
     receive
         {Port, {data, Data}} ->
-            io:put_chars(Data),
-            relay(Port);
+            relay(Port, put_utf8(<<Rest/binary, Data/binary>>));
         {Port, {exit_status, Status}} ->
+            Rest =:= <<>> orelse io:put_chars(?BAD_CHAR),
             Status
+    end.
+
+%% Print the UTF-8 of Data: the incomplete end that stays.
+put_utf8(Data) ->
+    case unicode:characters_to_binary(Data) of
+        Good when is_binary(Good) ->
+            io:put_chars(Good),
+            <<>>;
+        {incomplete, Good, Rest} ->
+            io:put_chars(Good),
+            Rest;
+        {error, Good, <<_, Rest/binary>>} ->
+            io:put_chars([Good, ?BAD_CHAR]),
+            put_utf8(Rest)
     end.
 
 %% In the child (beam.com elixir -e ":beam_com_mix.child()"). The child
 %% reads no input: a question of Mix (for example "Shall I install
 %% Hex?") gets the end of the input, thus "no", and the build stops with
 %% the error of Mix. It does not wait for an answer that does not come.
+%% The standard input of the child is the port of the builder: its end
+%% stops the child (watch_input/2), so no child continues when the
+%% builder stops.
 child() ->
-    group_leader(no_input(group_leader()), self()),
-    Status = try
-                 build(os:getenv("BEAM_COM_MIX_DIR"), os:getenv("BEAM_COM_MIX_OUT")),
-                 0
-             catch
-                 error:#{'__struct__' := 'Elixir.Mix.Error', message := Message} ->
-                     io:format(standard_error, "beam.com: ~ts~n", [Message]),
-                     1;
-                 throw:{error, Format, Args} ->
-                     io:format(standard_error, "beam.com: " ++ Format ++ "~n", Args),
-                     1;
-                 Class:Reason:Stack ->
-                     io:format(standard_error, "beam.com: ~ts~n",
-                               ['Elixir.Exception':format(Class, Reason, Stack)]),
-                     1
-             end,
-    erlang:halt(Status).
+    Leader = group_leader(),
+    _ = spawn(fun() -> watch_input(Leader, fun() -> erlang:halt(1) end) end),
+    group_leader(no_input(Leader), self()),
+    erlang:halt(status(fun() ->
+                               build(os:getenv("BEAM_COM_MIX_DIR"), os:getenv("BEAM_COM_MIX_OUT"))
+                       end)).
+
+%% The exit status of Build, with the message of its error.
+status(Build) ->
+    try
+        Build(),
+        0
+    catch
+        error:#{'__struct__' := 'Elixir.Mix.Error', message := Message} ->
+            io:format(standard_error, "beam.com: ~ts~n", [Message]),
+            1;
+        throw:{error, Format, Args} ->
+            io:format(standard_error, "beam.com: " ++ Format ++ "~n", Args),
+            1;
+        Class:Reason:Stack ->
+            io:format(standard_error, "beam.com: ~ts~n",
+                      ['Elixir.Exception':format(Class, Reason, Stack)]),
+            1
+    end.
+
+%% Read Leader until the end of the input, then Halt(). The builder
+%% writes nothing to the port, so only its close (or the end of the
+%% builder) ends the input.
+watch_input(Leader, Halt) ->
+    case io:get_line(Leader, "") of
+        Line when is_list(Line); is_binary(Line) -> watch_input(Leader, Halt);
+        _EofOrError -> Halt()
+    end.
 
 %% A group leader that gives each output request to Leader, and the end
 %% of the input (eof) to each input request, after the output of its

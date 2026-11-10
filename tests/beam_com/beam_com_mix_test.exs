@@ -173,6 +173,93 @@ defmodule BeamComMixTest do
              StringIO.contents(out)
   end
 
+  describe "the output and the errors of the child" do
+    test "relay: a character in two parts, and bytes that are not UTF-8" do
+      port = make_ref()
+      send(self(), {port, {:data, <<0xE2, 0x94>>}})
+      send(self(), {port, {:data, <<0x82, "caf", 0xE9, "\n", 0xE2>>}})
+      send(self(), {port, {:exit_status, 3}})
+
+      assert capture_io(fn -> send(self(), {:status, :beam_com_mix.relay(port)}) end) ==
+               "\u2502caf\uFFFD\n\uFFFD"
+
+      assert_received {:status, 3}
+    end
+
+    test "relay: the output of a port program, in parts of any size", %{dir: dir} do
+      big = String.duplicate("\u2502", 30_000) <> "\n"
+      file = write(dir, ~c"big.txt", big <> <<"caf", 0xE9, "\n">>)
+
+      port =
+        Port.open({:spawn_executable, ~c"/bin/cat"}, [:binary, :exit_status, args: [file]])
+
+      assert capture_io(fn -> send(self(), {:status, :beam_com_mix.relay(port)}) end) ==
+               big <> "caf\uFFFD\n"
+
+      assert_received {:status, 0}
+    end
+
+    test "status: 0, or 1 with the message of the error" do
+      assert 0 == :beam_com_mix.status(fn -> :ok end)
+
+      assert capture_io(:stderr, fn ->
+               assert 1 == :beam_com_mix.status(fn -> throw({:error, ~c"no ~ts", ["x"]}) end)
+             end) == "beam.com: no x\n"
+
+      assert capture_io(:stderr, fn ->
+               assert 1 == :beam_com_mix.status(fn -> Mix.raise("a Mix error") end)
+             end) == "beam.com: a Mix error\n"
+
+      assert capture_io(:stderr, fn ->
+               assert 1 == :beam_com_mix.status(fn -> raise ArgumentError, "bad" end)
+             end) =~ "beam.com: ** (ArgumentError) bad"
+    end
+
+    test "watch_input: the end of the input stops the child" do
+      {:ok, input} = StringIO.open("a line\nanother line\n")
+      parent = self()
+      :ok = :beam_com_mix.watch_input(input, fn ->
+        send(parent, :halt)
+        :ok
+      end)
+      assert_received :halt
+      assert {"", ""} == StringIO.contents(input)
+    end
+
+    test "release: an error removes the directory of the release", %{dir: dir} do
+      # A program in place of beam.com: it prints bytes that are not
+      # UTF-8, and it makes no release.
+      exe = write(dir, ~c"exe.sh", "#!/bin/sh\nprintf 'caf\\351\\n'\nexit 0\n")
+      :ok = :file.change_mode(exe, 0o755)
+      out = :filename.join(dir, ~c"out")
+      :ok = :file.make_dir(out)
+
+      {{:error, format, [^dir, ^out]}, output} =
+        with_io(fn -> catch_throw(:beam_com_mix.release(dir, %{out: out, exe: exe})) end)
+
+      assert format == ~c"~ts: Mix made no release in ~ts"
+      assert output == "caf\uFFFD\n"
+      refute File.exists?(out)
+
+      exe = write(dir, ~c"exe.sh", "#!/bin/sh\nexit 7\n")
+      :ok = :file.make_dir(out)
+
+      assert {:error, _, [^dir, 7]} =
+               catch_throw(:beam_com_mix.release(dir, %{out: out, exe: exe}))
+
+      refute File.exists?(out)
+
+      :ok = :file.make_dir(out)
+
+      assert :enoent ==
+               catch_error(
+                 :beam_com_mix.release(dir, %{out: out, exe: :filename.join(dir, ~c"none")})
+               )
+
+      refute File.exists?(out)
+    end
+  end
+
   describe "the choice of the builder" do
     test "Mix makes the release only for a Mix project that needs it", %{dir: dir} do
       assert :none == :beam_com_build.mix_release(dir, %{})
