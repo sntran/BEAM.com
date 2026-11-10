@@ -1105,10 +1105,12 @@ if [ -d examples ]; then
             fi
             check zip_rel.com "$zline@@$zprog runs from $zcache/bin/[0-9a-f]*/prog" hello zip
             zcopy=$(ls -d "$zcache"/bin/*/prog 2>/dev/null)
-            zls=$(ls -lid $zcopy 2>/dev/null)
+            # The inode: a new copy is a new file (link or rename). Not the
+            # time of ls -l: the clock of a VM can be before the file time.
+            zls=$(ls -id $zcopy 2>/dev/null)
             check zip_rel.com "$zline" hello zip
-            if [ "$(echo "$zcopy" | grep -c .)" != 1 ] || [ "$(ls -lid $zcopy 2>/dev/null)" != "$zls" ]; then
-                zip_fail "zip_rel.com: not one copy in $zcache/bin, or the second run wrote it again: [$zcopy] [$zls] [$(ls -lid $zcopy 2>&1)]"
+            if [ "$(echo "$zcopy" | grep -c .)" != 1 ] || [ "$(ls -id $zcopy 2>/dev/null)" != "$zls" ]; then
+                zip_fail "zip_rel.com: not one copy in $zcache/bin, or the second run wrote it again: [$zcopy] [$zls] [$(ls -id $zcopy 2>&1)]"
             else
                 echo "PASS: zip_rel.com: one copy, and the second run used it: $zls"
             fi
