@@ -5,12 +5,12 @@
 -export([main/1, run/0]).
 -export([add/2, echo/1, upcase/1, iolist/1, map_keys/1, mul/2, counter_new/0,
          counter_add/2, dtor_count/0, watch/1, unwatch/1, send_self/1, raise/1,
-         dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, code/1,
+         dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, libc_more/1, code/1,
          info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0,
          cxx/0, cxx_dirty/0, cxx_thread/0]).
 -nifs([add/2, echo/1, upcase/1, iolist/1, map_keys/1, mul/2, counter_new/0,
        counter_add/2, dtor_count/0, watch/1, unwatch/1, send_self/1, raise/1,
-       dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, code/1,
+       dirty_sum/1, dirty_io/1, yield_sum/1, thread_send/1, libc/0, libc_more/1, code/1,
        info/1, big/0, tls_check/0, tls_check_dirty/0, tls_check_io/0, tls_thread/0,
        cxx/0, cxx_dirty/0, cxx_thread/0]).
 -on_load(init/0).
@@ -43,6 +43,7 @@ dirty_io(_) -> erlang:nif_error(not_loaded).
 yield_sum(_) -> erlang:nif_error(not_loaded).
 thread_send(_) -> erlang:nif_error(not_loaded).
 libc() -> erlang:nif_error(not_loaded).
+libc_more(_) -> erlang:nif_error(not_loaded).
 code(_) -> erlang:nif_error(not_loaded).
 info(_) -> erlang:nif_error(not_loaded).
 big() -> erlang:nif_error(not_loaded).
@@ -92,6 +93,7 @@ run() ->
          {thread, fun thread/0, ok},
          {libc, fun() -> {S, D, E, L, F, Ok} = libc(), {S, D, E, L, abs(F - 1024.25) < 1.0e-9, Ok} end,
           {"42| 3.14|str|ff|1099511627776|z", 2500.0, 1, [-2, 0, 3, 3, 5, 9], true, 1}},
+         {libc_more, fun libc_more/0, {true, true, true, 1, true}},
          {code, fun() -> [{R, A, N, C} || Op <- lists:seq(0, 8), {R, A, N, _, C} <- [code(Op)]] end,
           [{R, 420709, N, 7} || {R, N} <- lists:zip([10, 21, 32, 43, 54, 65, 76, 87, -1],
                                                    ["zero", "one", "two", "three", "many",
@@ -123,6 +125,18 @@ run() ->
 
 run(F) ->
     try F() catch C:R -> {C, R} end.
+
+%% asinf, atanf, expm1 and malloc_usable_size give the values of the
+%% libc, and __hostos gives the system of os:type/0.
+libc_more() ->
+    {Asin, Atan, Expm1, Usable, Os} = libc_more(0.5),
+    Near = fun(A, B) -> abs(A - B) =< 1.0e-6 * abs(B) end,
+    Want = case os:type() of
+               {win32, _} -> windows;
+               {unix, Name} -> Name
+           end,
+    {Near(Asin, math:asin(0.5)), Near(Atan, math:atan(1.0)), Near(Expm1, 5.0e-10), Usable,
+     Os =:= Want}.
 
 %% The destructor of a counter runs when its process ends.
 dtor() ->

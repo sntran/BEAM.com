@@ -82,7 +82,8 @@ uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
   libc in
   [`c_src/cosmo/beam_com_nif_libc.h`](../c_src/cosmo/beam_com_nif_libc.h):
   the strings, the memory, `stdio`, the math functions, the threads, the
-  time, and the files. A symbol that is not there stops the load, and the
+  time, the files, and `__hostos` (the system tests of Cosmopolitan, such
+  as `IsWindows()`). A symbol that is not there stops the load, and the
   error of `load_nif/2` names it.
 - The constructors of the object run at the load. A second `load_nif/2`
   of the same file (an upgrade of the module) gives the same copy of the
