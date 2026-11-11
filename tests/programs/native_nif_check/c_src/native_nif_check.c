@@ -8,10 +8,13 @@
 #include <erl_nif.h>
 
 #include <errno.h>
+#include <malloc.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <cosmo.h> /* IsLinux() and the other tests of __hostos */
 
 extern int util_calls;
 int tls_check_thread(void);
@@ -444,6 +447,32 @@ static ERL_NIF_TERM big(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
                            enif_make_int64(env, -9223372036854775807LL - 1), enif_make_ref(env));
 }
 
+/* More names of the libc, which Lightning CSS and QuickJS use: asinf,
+ * atanf, expm1, malloc_usable_size, and __hostos (the system tests of
+ * Cosmopolitan). X comes from Erlang, so the compiler does not compute
+ * the results, and the object calls the functions. */
+static ERL_NIF_TERM libc_more(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    double x;
+    size_t usable;
+    char *p;
+    const char *os = IsLinux() ? "linux" : IsXnu() ? "darwin" : IsWindows() ? "windows"
+                   : IsFreebsd() ? "freebsd" : IsNetbsd() ? "netbsd" : IsOpenbsd() ? "openbsd" : "other";
+    (void)argc;
+    if (!enif_get_double(env, argv[0], &x))
+        return enif_make_badarg(env);
+    p = malloc(100 + (size_t)x);
+    if (!p)
+        return enif_make_badarg(env);
+    usable = malloc_usable_size(p);
+    free(p);
+    return enif_make_tuple5(env, enif_make_double(env, asinf((float)x)),
+                            enif_make_double(env, atanf((float)(2 * x))),
+                            enif_make_double(env, expm1(x * 1e-9)),
+                            enif_make_int(env, usable >= 100 + (size_t)x),
+                            enif_make_atom(env, os));
+}
+
 /* Thread-local data (native_nif_check_tls.c): the first call in each
  * thread checks the initial values. On a normal scheduler, a dirty
  * scheduler, and a new thread. */
@@ -518,6 +547,7 @@ static ErlNifFunc funcs[] = {
     { "yield_sum", 1, yield_sum, 0 },
     { "thread_send", 1, thread_send, 0 },
     { "libc", 0, libc, 0 },
+    { "libc_more", 1, libc_more, 0 },
     { "code", 1, code, 0 },
     { "info", 1, info, 0 },
     { "big", 0, big, 0 },

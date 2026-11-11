@@ -5,6 +5,10 @@ notes of its release.
 
 ## Unreleased
 
+- A native NIF object can call `asinf`, `atanf`, `expm1`,
+  `malloc_usable_size`, and `__hostos` (`IsWindows()` and the other
+  system tests of Cosmopolitan). Lightning CSS and QuickJS use them.
+  `native_nif_check` calls them on each system.
 - A program of the zip runs as a port program from its `/zip` path, for
   example `priv/bin/tailwind` of a Phoenix app: there is no copy by hand
   before a run. Before, a spawn of a path in `/zip` started `beam.com`
