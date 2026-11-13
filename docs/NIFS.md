@@ -157,6 +157,15 @@ so a `beam.com` with more files in its zip needs no other build:
 - `beam.com DIR -o OUT` (a Mix project) writes the files of each
   package into its priv directory before its code compiles (vix loads
   its NIF then), and puts them into OUT.
+- A Mix project that Mix builds (a release of Mix, for example with git
+  deps or `assets.deploy`): after `mix compile`, the builder writes the
+  files of each dep of the version of a directory into
+  `_build/ENV/lib/APP/priv`. Thus `assets.deploy` can use the NIF, and
+  the release has it. This is also for a package that compiles no NIF,
+  such as tailwind.com, whose module loads `priv/native/libtailwind_nif`
+  of its application. A file with the same bytes stays. For a dep of
+  another version, the builder writes no file and names the two
+  versions.
 - `beam.com mix compile`: `make` of `elixir_make` (vix) copies them into
   `MIX_APP_PATH/priv`, and the module `Rustler` of `beam.com` (rusty_csv,
   ex_pdfium) copies them into the priv directory of the package and

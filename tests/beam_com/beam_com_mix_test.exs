@@ -333,8 +333,9 @@ defmodule BeamComMixTest do
     run = fn task, args -> send(parent, {:step, task, args}) end
     hex = fn -> send(parent, {:step, ~c"hex", []}) end
     assets = fn -> send(parent, {:step, ~c"assets", []}) end
+    nif_files = fn -> send(parent, {:step, ~c"nif_files", []}) end
     config = [deps: [{:jason, "~> 1.4"}], aliases: ["assets.deploy": []]]
-    :beam_com_mix.steps(config, run, hex, assets)
+    :beam_com_mix.steps(config, run, hex, assets, nif_files)
 
     assert [
              {~c"loadconfig", []},
@@ -342,19 +343,85 @@ defmodule BeamComMixTest do
              {~c"deps.get", []},
              {~c"assets", []},
              {~c"compile", []},
+             {~c"nif_files", []},
              {~c"assets.deploy", []},
              {~c"release", [~c"--overwrite", ~c"--quiet"]}
            ] == received_steps()
 
-    :beam_com_mix.steps([], run, hex, assets)
+    :beam_com_mix.steps([], run, hex, assets, nif_files)
 
     assert [
              {~c"loadconfig", []},
              {~c"deps.get", []},
              {~c"assets", []},
              {~c"compile", []},
+             {~c"nif_files", []},
              {~c"release", [~c"--overwrite", ~c"--quiet"]}
            ] == received_steps()
+  end
+
+  test "write_nif_files: the NIF files of beam.com go into priv of a dep of their version",
+       %{dir: dir} do
+    priv = Path.join(dir, "beam_com_priv")
+    build = Path.join(dir, "_build/prod")
+    nif = Path.join(priv, "nifs/tailwind-0.3.0/native")
+    File.mkdir_p!(nif)
+    File.write!(Path.join(nif, "libtailwind_nif.x86_64.o"), "x86_64")
+    File.write!(Path.join(nif, "libtailwind_nif.aarch64.o"), "aarch64")
+    File.mkdir_p!(Path.join(priv, "nifs/vix-0.42.0"))
+    File.write!(Path.join(priv, "nifs/vix-0.42.0/vix.x86_64.o"), "vix")
+
+    app = fn name, vsn ->
+      ebin = Path.join(build, "lib/#{name}/ebin")
+      File.mkdir_p!(ebin)
+
+      File.write!(
+        Path.join(ebin, "#{name}.app"),
+        :io_lib.format(~c"~p.~n", [{:application, name, [vsn: vsn]}])
+      )
+    end
+
+    # tailwind of the version of the files, vix of another version, and
+    # no rusty_csv in the build.
+    app.(:tailwind, ~c"0.3.0")
+    app.(:vix, ~c"0.41.0")
+    file_nifs = :beam_com_make.file_nifs(String.to_charlist(priv))
+
+    assert [{:tailwind, ~c"0.3.0"}, {:vix, ~c"0.42.0"}] == Enum.sort(file_nifs)
+
+    out =
+      capture_io(fn ->
+        :ok =
+          :beam_com_mix.write_nif_files(
+            String.to_charlist(priv),
+            file_nifs,
+            String.to_charlist(build)
+          )
+      end)
+
+    assert out =~ "beam.com: the NIF files of tailwind 0.3.0 (2) in its priv directory\n"
+    assert out =~ "for vix 0.42.0, and the project has vix 0.41.0: no NIF files\n"
+    target = Path.join(build, "lib/tailwind/priv/native")
+    assert "x86_64" == File.read!(Path.join(target, "libtailwind_nif.x86_64.o"))
+    assert "aarch64" == File.read!(Path.join(target, "libtailwind_nif.aarch64.o"))
+    refute File.exists?(Path.join(build, "lib/vix/priv"))
+
+    # A file with the same bytes stays (its time does not change), and a
+    # file with other bytes gets the bytes of beam.com.
+    File.touch!(Path.join(target, "libtailwind_nif.x86_64.o"), {{2000, 1, 1}, {0, 0, 0}})
+    File.write!(Path.join(target, "libtailwind_nif.aarch64.o"), "old")
+
+    capture_io(fn ->
+      :ok =
+        :beam_com_mix.write_nif_files(
+          String.to_charlist(priv),
+          file_nifs,
+          String.to_charlist(build)
+        )
+    end)
+
+    assert {{2000, 1, 1}, _} = File.stat!(Path.join(target, "libtailwind_nif.x86_64.o")).mtime
+    assert "aarch64" == File.read!(Path.join(target, "libtailwind_nif.aarch64.o"))
   end
 
   test "releases: include_erts false and a directory in Out, for each release" do
@@ -728,7 +795,7 @@ defmodule BeamComMixTest do
     end
   end
 
-  # The steps that the funs of steps/4 sent, in their order.
+  # The steps that the funs of steps/5 sent, in their order.
   defp received_steps do
     receive do
       {:step, task, args} -> [{task, args} | received_steps()]

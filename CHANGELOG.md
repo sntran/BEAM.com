@@ -5,6 +5,15 @@ notes of its release.
 
 ## Unreleased
 
+- The builder of a Mix release (`beam.com DIR -o OUT` for a project that
+  Mix builds) writes the NIF files of `beam.com` into
+  `_build/ENV/lib/APP/priv` of each dep `APP` of the version of
+  `priv/nifs/APP-VSN`, after `mix compile`. Thus `assets.deploy` can use
+  the NIF, and the program has it. Before, only the hooks of
+  `elixir_make` and of Rustler copied them, so a package with no NIF to
+  compile, such as tailwind.com (`priv/native/libtailwind_nif`), got no
+  NIF. A dep of another version gets no files, with one line that names
+  the two versions.
 - The loader of native NIF objects gives each live section of size 0 an
   address. Before, a symbol in such a section stopped the load with "the
   symbol is in a section that is not loaded". Rust puts each static of

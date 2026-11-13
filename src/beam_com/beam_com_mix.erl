@@ -33,7 +33,7 @@
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
          asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0, cache_env/1,
-         windows_assets/2, steps/4, relay/1, status/1, watch_input/2]).
+         windows_assets/2, steps/5, relay/1, status/1, watch_input/2, write_nif_files/3]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -241,11 +241,15 @@ build(Dir, Out) when is_list(Dir), is_list(Out) ->
     'Elixir.Mix.Local':append_paths(),
     git_scm(os:getenv("BEAM_COM_GIT"), os:find_executable("git")),
     Releases = releases(App, proplists:get_value(releases, Config, []), Out),
+    %% The priv directory of beam_com now: compile removes beam_com from
+    %% the code path.
+    Priv = beam_com_make:priv(),
     'Elixir.Mix.Project':in_project(App, unicode:characters_to_binary(Dir),
                                     [{releases, Releases}],
                                     fun(_Module) ->
                                             steps(Config, fun run/2, fun hex/0,
-                                                  fun() -> windows_assets(os:type(), Config) end)
+                                                  fun() -> windows_assets(os:type(), Config) end,
+                                                  fun() -> nif_files(Priv) end)
                                     end).
 
 %% The git client of beam.com (beam_com_git_scm) gets the git deps of an
@@ -263,9 +267,10 @@ git_scm(_, _Git) ->
 %% The steps of "mix setup" and of a deploy: the config, the deps, the
 %% code, the assets (when the project has the alias assets.deploy), and
 %% the release.
-%% Run(Task, Args) runs a Mix task, Hex() installs Hex, and Assets()
-%% chooses the asset programs (windows_assets/2).
-steps(Config, Run, Hex, Assets) ->
+%% Run(Task, Args) runs a Mix task, Hex() installs Hex, Assets() chooses
+%% the asset programs (windows_assets/2), and NifFiles() puts the NIF
+%% files of beam.com into the priv directories of the deps (nif_files/1).
+steps(Config, Run, Hex, Assets, NifFiles) ->
     Run("loadconfig", []),
     hex_deps(Config) andalso Hex(),
     %% deps.get also installs rebar3 for a dep that rebar3 builds.
@@ -274,8 +279,64 @@ steps(Config, Run, Hex, Assets) ->
     %% applications that are not deps (beam_com_hex, inets).
     Assets(),
     Run("compile", []),
+    %% After compile, which makes the directories of the deps. Before
+    %% assets.deploy, which can use a NIF, and before the release, which
+    %% copies the priv directories.
+    NifFiles(),
     has_alias(Config, 'assets.deploy') andalso Run("assets.deploy", []),
     Run("release", ["--overwrite", "--quiet"]).
+
+%% The NIF files of beam.com (priv/nifs/APP-VSN of beam_com, in Priv),
+%% for each dep APP of version VSN: the files go into the priv directory
+%% of APP in the build path of Mix, so the release has them. The builder
+%% of a plain Mix project does the same (beam_com_build). The hooks of
+%% make and Rustler (beam_com_make, beam_com_rustler) copy them for a
+%% package with a NIF to compile. This step is also for a package with
+%% no compile step for its NIF, such as tailwind.com, whose module loads
+%% priv/native/libtailwind_nif.
+nif_files(Priv) ->
+    write_nif_files(Priv, beam_com_make:file_nifs(Priv),
+                    unicode:characters_to_list('Elixir.Mix.Project':build_path())).
+
+%% For each {App, Vsn} of FileNifs with the application App of version
+%% Vsn in Build/lib/App, write the NIF files of Priv into
+%% Build/lib/App/priv. A file with the same bytes stays. A dep of another
+%% version gets no files, and one line names the two versions.
+write_nif_files(Priv, FileNifs, Build) ->
+    Apps = lists:ukeysort(1, FileNifs),
+    lists:foreach(
+      fun({App, Vsns}) ->
+              Name = atom_to_list(App),
+              AppFile = filename:join([Build, "lib", Name, "ebin", Name ++ ".app"]),
+              case file:consult(AppFile) of
+                  {ok, [{application, App, Props}]} ->
+                      Vsn = proplists:get_value(vsn, Props),
+                      case lists:member(Vsn, Vsns) of
+                          true ->
+                              Dir = filename:join([Build, "lib", Name, "priv"]),
+                              Files = beam_com_make:nif_files(App, Vsn, Priv),
+                              [write_new(filename:join(Dir, F), D) || {F, D} <- Files],
+                              io:format("beam.com: the NIF files of ~ts ~ts (~b) in its priv "
+                                        "directory~n", [Name, Vsn, length(Files)]);
+                          false ->
+                              io:format("beam.com: the NIF files of beam.com are for ~ts ~ts, "
+                                        "and the project has ~ts ~ts: no NIF files~n",
+                                        [Name, lists:join(", ", Vsns), Name, Vsn])
+                      end;
+                  _ ->
+                      ok
+              end
+      end,
+      [{A, [V || {A1, V} <- FileNifs, A1 =:= A]} || {A, _} <- Apps]).
+
+write_new(Path, Data) ->
+    case file:read_file(Path) of
+        {ok, Data} ->
+            ok;
+        _ ->
+            ok = filelib:ensure_dir(Path),
+            ok = file:write_file(Path, Data)
+    end.
 
 %% On Windows, os:type() is {unix, windows}, so the Hex packages
 %% tailwind and esbuild choose their programs for Linux. For a package
