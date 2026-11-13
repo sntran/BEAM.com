@@ -491,11 +491,14 @@ static uint32_t sym_shndx(bcn_load_t *l, size_t i)
 }
 
 /* A section that goes into memory, and its group: 0 the code, 1 the
- * constants, 2 the data. -1: not in memory. */
+ * constants, 2 the data. -1: not in memory. A section of size 0 also has
+ * a group, thus an address: the code takes the address of a static of
+ * size 0 of Rust (log::logger::NOP), and each such static has its own
+ * empty section. */
 static int sec_group_of(const bcn_shdr *s)
 {
     /* A TLS section is in the TLS image, not in a mapping. */
-    if (!(s->sh_flags & BCN_SHF_ALLOC) || s->sh_size == 0 || (s->sh_flags & BCN_SHF_TLS))
+    if (!(s->sh_flags & BCN_SHF_ALLOC) || (s->sh_flags & BCN_SHF_TLS))
         return -1;
     if (s->sh_flags & BCN_SHF_EXECINSTR)
         return 0;
