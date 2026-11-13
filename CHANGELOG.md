@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- The loader of native NIF objects gives each live section of size 0 an
+  address. Before, a symbol in such a section stopped the load with "the
+  symbol is in a section that is not loaded". Rust puts each static of
+  size 0 in its own empty section, for example `log::logger::NOP` and
+  `tracing_core::dispatcher::NO_SUBSCRIBER`, and the code takes their
+  address. Thus a Rust NIF that uses the crates `log` or `tracing`
+  (the scanner of Tailwind CSS) did not load. `nif_load_check` loads an
+  object with such a section.
 - A native NIF object can call `asinf`, `atanf`, `expm1`,
   `malloc_usable_size`, and `__hostos` (`IsWindows()` and the other
   system tests of Cosmopolitan). Lightning CSS and QuickJS use them.

@@ -361,7 +361,8 @@ int main(void)
     refused(other, othern, "an object of a different CPU");
     tls_checks(tls, tlsn, tlsbig, tlsbign);
     /* The dead sections: the object loads with no dead_missing_* in the
-     * program, and its dead code and constants do not go into memory. */
+     * program, and its dead code and constants do not go into memory.
+     * Its empty section (dead_nop) gets an address. */
     m2 = bcn_load(dead, deadn, lookup, err, sizeof(err));
     CHECK(m2 != NULL);
     if (m2) {

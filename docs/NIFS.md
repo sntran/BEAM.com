@@ -71,7 +71,9 @@ that the NIF never reaches can name a symbol that the program does not
 have, as in a static link. With one global name (`objcopy
 --keep-global-symbol`), the loader keeps only the code that the NIF
 uses: the object of `ex_pdfium` (PDFium, 38 MB, 72,789 sections) takes
-9.6 MB of memory.
+9.6 MB of memory. A live section of size 0 also gets an address: Rust
+puts each static of size 0 (such as `log::logger::NOP`) in its own empty
+section, and the code takes its address.
 
 - The entry of the object is `LIB_nif_init`, with `LIB` the name of the
   file (`-DSTATIC_ERLANG_NIF_LIBNAME=LIB`), else `nif_init`, as for a
