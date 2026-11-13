@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- The git client: when the SHA-1 check (`git_sha1dc`) stops before it
+  reads all of its input, the client stops with "the SHA-1 check stopped
+  with no answer" at once. Before, the write to the helper failed
+  (EPIPE), the port closed with no exit status, and the client waited for
+  the time limit (120 s). A test of an early stop of the helper failed at
+  random on a slow machine for the same reason.
 - The builder of a Mix release (`beam.com DIR -o OUT` for a project that
   Mix builds) writes the NIF files of `beam.com` into
   `_build/ENV/lib/APP/priv` of each dep of their source, after
