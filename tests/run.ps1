@@ -804,8 +804,8 @@ function FileCount([string[]]$Dirs) {
 }
 
 # The NIFs of the store as native NIF objects (tests/run.sh): vix,
-# rusty_csv and ex_pdfium, from store_nifs.tar.gz of CI, with
-# nif_needs.com.
+# rusty_csv and ex_pdfium, and the NIF files of tailwind.com, from
+# store_nifs.tar.gz of CI, with nif_needs.com.
 $StoreNifs = Join-Path $Dir "store_nifs.tar.gz"
 if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     $Store = Join-Path $Dir "store_nifs"
@@ -814,14 +814,16 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     tar -xzf $StoreNifs -C $Store
     Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
     $Objects = @(Get-ChildItem -Recurse -File -Filter "*.x86_64.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
-    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok' $Objects
+    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok@@libtailwind_nif\.x86_64\.o: ok' $Objects
     $Priv = "tests/programs/store_nif_check/priv"
     if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
     New-Item -ItemType Directory -Force -Path $Priv | Out-Null
     # Each file of nifs/APP-VSN, at its path in priv/ (native/ of two
-    # packages goes into one directory).
+    # packages goes into one directory). The NIF files with a file SOURCE
+    # (tailwind.com) are for tailwind_check.
     Get-ChildItem -Directory (Join-Path $Store "nifs") | ForEach-Object {
         $pkg = $_.FullName
+        if (Test-Path (Join-Path $pkg "SOURCE")) { return }
         Get-ChildItem -Recurse -File $pkg | ForEach-Object {
             $to = Join-Path $Priv $_.FullName.Substring($pkg.Length + 1)
             New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
@@ -846,7 +848,8 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
         Check "store_nif_hand.com" $StoreOk @()
     }
     # A beam.com assembled from parts, and the Elixir programs of the
-    # three packages from hex.pm (tests/run.sh).
+    # three packages from hex.pm and of tailwind.com from git
+    # (tests/run.sh).
     # The license texts of the parts (PDFium) go into licenses/.
     # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
     $Specs = @()
@@ -863,8 +866,8 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     # (tests/run.sh).
     $Parts = Join-Path $Dir "program_parts"
     if (Test-Path $Parts) { Remove-Item -Recurse -Force $Parts }
-    Check "beam.com" 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]+ bytes' (@("scripts/assemble.erl", "--", "--parts", "$Dir/beam.com", $Parts, "0123abc", "beam.com/p/") + $PartSpecs)
-    foreach ($set in @("ex_pdfium.rusty_csv.vix", "rusty_csv")) {
+    Check "beam.com" 'the program of ex_pdfium\.rusty_csv\.tailwind\.vix has [0-9]+ bytes' (@("scripts/assemble.erl", "--", "--parts", "$Dir/beam.com", $Parts, "0123abc", "beam.com/p/") + $PartSpecs)
+    foreach ($set in @("ex_pdfium.rusty_csv.tailwind.vix", "rusty_csv")) {
         $joined = Join-Path $Dir "beam_p_$set.com"
         if (Test-Path $joined) { Remove-Item -Force $joined }
         $list = Join-Path $Parts "beam-p.plus.$set.txt"
@@ -877,12 +880,12 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
             }
         } finally { $outStream.Dispose() }
     }
-    $Whole = Join-Path $Dir "beam_p_ex_pdfium.rusty_csv.vix.com"
+    $Whole = Join-Path $Dir "beam_p_ex_pdfium.rusty_csv.tailwind.vix.com"
     if ((Test-Path (Join-Path $Dir "beam_nifs.com")) -and (Test-Path $Whole) -and
         ((Get-FileHash (Join-Path $Dir "beam_nifs.com")).Hash -eq (Get-FileHash $Whole).Hash)) {
-        Write-Host "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+        Write-Host "PASS: the segments of ex_pdfium.rusty_csv.tailwind.vix are beam_nifs.com"
     } else {
-        Write-Host "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        Write-Host "FAIL: the segments of ex_pdfium.rusty_csv.tailwind.vix are not beam_nifs.com"
         $script:fail = 1
         $failures.Add("assemble.erl --parts: the segments are not the bytes of beam_nifs.com")
     }
@@ -890,9 +893,9 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
         Check "beam_p_rusty_csv.com" '(?m)NIF files   : .*rusty_csv-' @("--version")
     }
     if (Test-Path (Join-Path $Dir "beam_nifs.com")) {
-        Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' @("--version")
+        Check "beam_nifs.com" 'NIF files   : .*ex_pdfium-.* rusty_csv-.* tailwind-.* \(git https://github\.com/sntran/tailwind\.com commit=.*\) vix-' @("--version")
         Check "beam_nifs.com" '(?m)^licenses: pdfium' @("-noshell", "-eval", 'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().')
-        foreach ($p in @("vix_check", "rusty_csv_check", "ex_pdfium_check")) {
+        foreach ($p in @("vix_check", "rusty_csv_check", "ex_pdfium_check", "tailwind_check")) {
             $src = Join-Path $Dir $p
             if (Test-Path $src) { Remove-Item -Recurse -Force $src }
             Copy-Item -Recurse "tests/programs/$p" $src

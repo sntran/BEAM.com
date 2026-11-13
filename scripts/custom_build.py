@@ -95,6 +95,10 @@ RELEASE = "custom-builds"
 KEPT = "kept-"
 
 NIFS = ("picosat_elixir", "vix", "rusty_csv", "ex_pdfium")
+# The NIFs of NIF files from a release of another project
+# (scripts/file_nifs.sh): no build and no link. The build puts their files
+# into the zip after make (custom-build.yml), and FILE_NIFS names them.
+FILE_NIFS = ("tailwind",)
 # The NIFs of the default build (with Elixir; exqlite also needs SQLite),
 # which a build can leave out (NIFS_OMIT of scripts/steps.sh). The form
 # sends the word "default" and the names of the default NIFs to keep.
@@ -168,7 +172,7 @@ URL_PREFIX = "beam-u."
 # the fields email and website, and sorts the lines.
 QUERY_SHORT = ("otp_version", "elixir_version", "apps", "omit", "hex", "rebar3", "jit",
                "sqlite", "wasm", "nifs", "nifs ", "nifs+")
-QUERY_FORM = re.compile(r"otp|dnifs|dnif[1-3]|nif[1-8]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}")
+QUERY_FORM = re.compile(r"otp|dnifs|dnif[1-3]|nif[1-9]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}")
 QUERY_VALUE = re.compile(r"[a-z0-9_.,+ -]{0,200}")
 QUERY_LINES = 60
 
@@ -305,7 +309,7 @@ def query_inputs(digest, query):
     # NIFs. The form sends dnifs=default, the default NIFs to keep, and
     # the others.
     only, plus = words("nifs"), words("nifs ", "nifs+")
-    chosen = [v for n, v in fields if re.fullmatch(r"nif[1-8]", n) and v]
+    chosen = [v for n, v in fields if re.fullmatch(r"nif[1-9]", n) and v]
     kept = [v for n, v in fields if re.fullmatch(r"dnif[1-3]", n) and v]
     if only and plus:
         fail("A query has nifs= or nifs+=, not both")
@@ -340,7 +344,7 @@ def url_inputs(url, query=""):
     names = found.group(2)[1:].split(".")
     if names != sorted(set(names)):
         fail("The names of the NIFs of a URL must be in the sequence of sort, each one time")
-    known = set(NIFS) | set(DEFAULT_NIFS) | set(VIX_PARTS)
+    known = set(NIFS) | set(FILE_NIFS) | set(DEFAULT_NIFS) | set(VIX_PARTS)
     bad = [n for n in names if n not in known]
     if bad:
         fail(f"Not NIFs that a build can use: {', '.join(bad)}")
@@ -468,7 +472,7 @@ def settings(choices, default=None):
     if len(apps) > 40:
         fail("More than 40 applications")
     words = set(choices["nifs"])
-    bad = sorted(n for n in words if n not in NIFS and n not in VIX_PARTS)
+    bad = sorted(n for n in words if n not in NIFS and n not in FILE_NIFS and n not in VIX_PARTS)
     if bad:
         fail(f"Not NIFs of the list: {', '.join(bad)}")
     nifs_omit = set(choices.get("nifs_omit", []))
@@ -483,9 +487,10 @@ def settings(choices, default=None):
         nifs_omit.discard("exqlite")
     parts = sorted(VIX_PARTS[n] for n in words if n in VIX_PARTS)
     nifs = sorted({n for n in words if n in NIFS} | ({"vix"} if parts else set()))
+    file_nifs = sorted(n for n in words if n in FILE_NIFS)
     if choices["hex"] and not choices["elixir"]:
         fail("Hex needs Elixir")
-    if nifs and not choices["elixir"]:
+    if (nifs or file_nifs) and not choices["elixir"]:
         fail("The NIFs of hex.pm packages need Elixir")
     omit = sorted(set(choices.get("omit", [])))
     bad = [a for a in omit if a not in OMITTABLE]
@@ -529,6 +534,9 @@ def settings(choices, default=None):
     # Only with a part: the KEY of a build with no part stays the same.
     if parts:
         env["VIX_PARTS"] = " ".join(parts)
+    # The same for the NIF files: they are not in EXTRA_NIFS, which links.
+    if file_nifs:
+        env["FILE_NIFS"] = " ".join(file_nifs)
     # The same for the default NIFs.
     if nifs_omit:
         env["NIFS_OMIT"] = " ".join(n for n in DEFAULT_NIFS if n in nifs_omit)
@@ -912,7 +920,8 @@ def notify(status, reason=""):
         return
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     names = ("OTP_VERSION", "OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR",
-             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "NIFS_OMIT", "EXTRA_NIFS", "VIX_PARTS")
+             "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "NIFS_OMIT", "EXTRA_NIFS", "VIX_PARTS",
+             "FILE_NIFS")
     body = {
         "status": status,
         "reason": reason,

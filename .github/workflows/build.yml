@@ -260,7 +260,9 @@ jobs:
       # need. The jobs test and test-bsd check the aarch64 objects, and
       # run them (tests/run.sh). When the store has no part of a key (a
       # recipe that changed), the step writes a warning, and there is no
-      # store_nifs.tar.gz.
+      # store_nifs.tar.gz. The NIF files of scripts/file_nifs.sh (the
+      # objects of a release of another project, such as tailwind.com)
+      # are parts too, with their file SOURCE.
       - name: The NIF objects of the store
         if: matrix.out == 'beam.com'
         env:
@@ -291,6 +293,14 @@ jobs:
               done
             else
               echo "::warning::The store has no part nif-$p-$key: no native NIF object of $p"
+              missing=1
+            fi
+          done
+          for p in $(sh scripts/file_nifs.sh names); do
+            if line=$(sh scripts/file_nifs.sh fetch "$p" "$out/tree"); then
+              echo "$line" >> "$out/parts"
+            else
+              echo "::warning::No NIF files of $p (scripts/file_nifs.sh)"
               missing=1
             fi
           done

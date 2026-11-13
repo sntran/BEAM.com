@@ -51,7 +51,7 @@ on:
         type: string
         default: "1"
       nifs:
-        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, vix-svg, rusty_csv, ex_pdfium), with spaces or commas. With the word default, the default NIFs to keep (exqlite, bcrypt_elixir, argon2_elixir); without it, all of them
+        description: More NIFs (picosat_elixir, vix, vix-icc, vix-gif, vix-avif, vix-svg, rusty_csv, ex_pdfium, tailwind), with spaces or commas. With the word default, the default NIFs to keep (exqlite, bcrypt_elixir, argon2_elixir); without it, all of them
         type: string
         default: ""
       otp_version:
@@ -370,6 +370,26 @@ jobs:
           AR: cosmoar
         run: OUT="$GITHUB_WORKSPACE/build/$OUT_NAME" timeout 120 build/cosmocc/bin/make test
 
+      # The NIF files of FILE_NIFS (scripts/file_nifs.sh): the native NIF
+      # objects of a release of another project, with their SHA-256 of
+      # the pins, and their file SOURCE. scripts/assemble.erl adds them to
+      # the zip of the file, after the step test (the test of the Makefile
+      # does not know them).
+      - name: Add the NIF files
+        if: env.REUSE != '1' && env.REFUSED == '' && env.FILE_NIFS != ''
+        run: |
+          f="build/$OUT_NAME"
+          rm -rf build/file_nifs
+          set --
+          for n in $FILE_NIFS; do
+            line=$(sh scripts/file_nifs.sh fetch "$n" build/file_nifs)
+            spec=${line#* }
+            set -- "$@" "${spec%%=*}=build/file_nifs/${spec#*=}"
+          done
+          "$f" scripts/assemble.erl -- "$f" "$f.new" "$@"
+          chmod 755 "$f.new"
+          mv "$f.new" "$f"
+
       - name: Check the file
         if: env.REUSE != '1' && env.REFUSED == ''
         run: |
@@ -380,6 +400,9 @@ jobs:
             { echo "No WebAssembly runtime in the file" >&2; exit 1; }
           for n in $EXTRA_NIFS; do
             "$f" --version | grep -q "Linked NIFs.* $n-" || { echo "The NIF of $n is not linked" >&2; exit 1; }
+          done
+          for n in ${FILE_NIFS:-}; do
+            "$f" --version | grep -q "NIF files.* $n-" || { echo "The file has no NIF files of $n" >&2; exit 1; }
           done
           if [ "$REBAR3" = 1 ]; then "$f" rebar3 version; fi
           if [ "$HEX" = 1 ]; then "$f" mix hex; fi

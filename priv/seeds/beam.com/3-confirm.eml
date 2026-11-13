@@ -24,6 +24,7 @@ nif5: ^(?<nif5>|vix-icc)$
 nif6: ^(?<nif6>|vix-gif)$
 nif7: ^(?<nif7>|vix-avif)$
 nif8: ^(?<nif8>|vix-svg)$
+nif9: ^(?<nif9>|tailwind)$
 otp: ^(?<otp>|keep)$
 k_parsetools: ^(?<k_parsetools>|parsetools)$
 k_asn1: ^(?<k_asn1>|asn1)$
