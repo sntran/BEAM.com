@@ -333,8 +333,9 @@ defmodule BeamComMixTest do
     run = fn task, args -> send(parent, {:step, task, args}) end
     hex = fn -> send(parent, {:step, ~c"hex", []}) end
     assets = fn -> send(parent, {:step, ~c"assets", []}) end
+    nif_files = fn -> send(parent, {:step, ~c"nif_files", []}) end
     config = [deps: [{:jason, "~> 1.4"}], aliases: ["assets.deploy": []]]
-    :beam_com_mix.steps(config, run, hex, assets)
+    :beam_com_mix.steps(config, run, hex, assets, nif_files)
 
     assert [
              {~c"loadconfig", []},
@@ -342,19 +343,161 @@ defmodule BeamComMixTest do
              {~c"deps.get", []},
              {~c"assets", []},
              {~c"compile", []},
+             {~c"nif_files", []},
              {~c"assets.deploy", []},
              {~c"release", [~c"--overwrite", ~c"--quiet"]}
            ] == received_steps()
 
-    :beam_com_mix.steps([], run, hex, assets)
+    :beam_com_mix.steps([], run, hex, assets, nif_files)
 
     assert [
              {~c"loadconfig", []},
              {~c"deps.get", []},
              {~c"assets", []},
              {~c"compile", []},
+             {~c"nif_files", []},
              {~c"release", [~c"--overwrite", ~c"--quiet"]}
            ] == received_steps()
+  end
+
+  # The NIF files of beam.com go into priv of a dep of their source and
+  # version (beam_com_make:match_nifs/2): the source of a dep comes from
+  # its lock entry.
+  describe "the NIF files of beam.com in the deps" do
+    setup %{dir: dir} do
+      priv = Path.join(dir, "beam_com_priv")
+      build = Path.join(dir, "_build/prod")
+
+      put = fn name, source, files ->
+        d = Path.join([priv, "nifs", name])
+        File.mkdir_p!(d)
+        if source, do: File.write!(Path.join(d, "SOURCE"), source)
+
+        for {f, data} <- files do
+          File.mkdir_p!(Path.dirname(Path.join(d, f)))
+          File.write!(Path.join(d, f), data)
+        end
+      end
+
+      # tailwind.com at a commit (its version is not checked), and vix of
+      # hex.pm.
+      put.(
+        "tailwind-0.2.0",
+        "git https://github.com/sntran/tailwind.com commit=c0be553\n",
+        [
+          {"native/libtailwind_nif.x86_64.o", "x86_64"},
+          {"native/libtailwind_nif.aarch64.o", "aarch64"}
+        ]
+      )
+
+      put.("vix-0.42.0", nil, [{"vix.x86_64.o", "vix"}])
+
+      app = fn name, vsn ->
+        ebin = Path.join(build, "lib/#{name}/ebin")
+        File.mkdir_p!(ebin)
+
+        File.write!(
+          Path.join(ebin, "#{name}.app"),
+          :io_lib.format(~c"~p.~n", [{:application, name, [vsn: vsn]}])
+        )
+      end
+
+      %{priv: String.to_charlist(priv), build: String.to_charlist(build), app: app}
+    end
+
+    test "deps/2: the version of the build and the source of the lock", ctx do
+      ctx.app.(:tailwind, ~c"0.2.0")
+      ctx.app.(:vix, ~c"0.42.0")
+      ctx.app.(:mine, ~c"1.0.0")
+      ctx.app.(:private, ~c"2.0.0")
+      ctx.app.(:old, ~c"0.1.0")
+      # A directory with no .app file of its name is not a dep.
+      File.mkdir_p!(Path.join(ctx.build, "lib/empty/ebin"))
+
+      lock = %{
+        tailwind:
+          {:git, "https://github.com/sntran/tailwind.com.git",
+           "c0be5530906454fbd3ff5b9dca9af32fb87b24af", [branch: "main"]},
+        vix: {:hex, :vix, "0.42.0", "inner", [:mix], [], "hexpm", "outer"},
+        private: {:hex, :private, "2.0.0", "inner", [:mix], [], "acme", "outer"},
+        old: {:hex, :old_name, "0.1.0", "inner"}
+      }
+
+      assert [
+               {:mine, ~c"1.0.0", :other},
+               {:old, ~c"0.1.0", {:hex, ~c"old_name"}},
+               {:private, ~c"2.0.0", :other},
+               {:tailwind, ~c"0.2.0",
+                {:git, ~c"https://github.com/sntran/tailwind.com.git",
+                 ~c"c0be5530906454fbd3ff5b9dca9af32fb87b24af", [branch: ~c"main"]}},
+               {:vix, ~c"0.42.0", {:hex, ~c"vix"}}
+             ] == :beam_com_mix.deps(ctx.build, lock)
+
+      assert [] == :beam_com_mix.deps(~c"/nonexistent", lock)
+    end
+
+    test "write_nif_files/3: a dep of the source of the files gets them", ctx do
+      ctx.app.(:tailwind, ~c"0.2.0")
+      ctx.app.(:vix, ~c"0.41.0")
+
+      deps = [
+        {:tailwind, ~c"0.2.0",
+         {:git, ~c"https://github.com/sntran/tailwind.com.git",
+          ~c"c0be5530906454fbd3ff5b9dca9af32fb87b24af", [branch: ~c"main"]}},
+        {:vix, ~c"0.41.0", {:hex, ~c"vix"}}
+      ]
+
+      out = capture_io(fn -> :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build) end)
+      assert out =~ "beam.com: the NIF files of tailwind 0.2.0 (2) in its priv directory\n"
+
+      assert out =~
+               "beam.com: the NIF files of beam.com are for vix 0.42.0 (hex), and the " <>
+                 "project has vix 0.41.0 (hex vix): no NIF files\n"
+
+      target = Path.join(ctx.build, "lib/tailwind/priv/native")
+      assert "x86_64" == File.read!(Path.join(target, "libtailwind_nif.x86_64.o"))
+      assert "aarch64" == File.read!(Path.join(target, "libtailwind_nif.aarch64.o"))
+      refute File.exists?(Path.join(ctx.build, "lib/tailwind/priv/SOURCE"))
+      refute File.exists?(Path.join(ctx.build, "lib/vix/priv"))
+
+      # A file with the same bytes stays (its time does not change), and a
+      # file with other bytes gets the bytes of beam.com.
+      File.touch!(Path.join(target, "libtailwind_nif.x86_64.o"), {{2000, 1, 1}, {0, 0, 0}})
+      File.write!(Path.join(target, "libtailwind_nif.aarch64.o"), "old")
+      capture_io(fn -> :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build) end)
+      assert {{2000, 1, 1}, _} = File.stat!(Path.join(target, "libtailwind_nif.x86_64.o")).mtime
+      assert "aarch64" == File.read!(Path.join(target, "libtailwind_nif.aarch64.o"))
+    end
+
+    test "write_nif_files/3: the Hex package tailwind of the same version gets no files", ctx do
+      ctx.app.(:tailwind, ~c"0.2.0")
+      deps = [{:tailwind, ~c"0.2.0", {:hex, ~c"tailwind"}}]
+      out = capture_io(fn -> :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build) end)
+
+      assert out ==
+               "beam.com: the NIF files of beam.com are for tailwind 0.2.0 (git " <>
+                 "https://github.com/sntran/tailwind.com commit=c0be553), and the project " <>
+                 "has tailwind 0.2.0 (hex tailwind): no NIF files\n"
+
+      refute File.exists?(Path.join(ctx.build, "lib/tailwind/priv"))
+
+      # Another commit of the repository, and a path dep.
+      for source <- [
+            {:git, ~c"https://github.com/sntran/tailwind.com", ~c"1234567890abcdef", []},
+            :other
+          ] do
+        out =
+          capture_io(fn ->
+            :ok =
+              :beam_com_mix.write_nif_files(ctx.priv, [{:tailwind, ~c"0.2.0", source}], ctx.build)
+          end)
+
+        assert out =~ "no NIF files\n"
+        assert out =~ if(source == :other, do: "(not of hex.pm or git)", else: "1234567890ab)")
+      end
+
+      refute File.exists?(Path.join(ctx.build, "lib/tailwind/priv"))
+    end
   end
 
   test "releases: include_erts false and a directory in Out, for each release" do
@@ -728,7 +871,7 @@ defmodule BeamComMixTest do
     end
   end
 
-  # The steps that the funs of steps/4 sent, in their order.
+  # The steps that the funs of steps/5 sent, in their order.
   defp received_steps do
     receive do
       {:step, task, args} -> [{task, args} | received_steps()]

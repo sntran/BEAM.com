@@ -34,10 +34,11 @@
 -module(beam_com_make).
 
 -export([main/0, force_build/0, nif_files/2, nif_files/3, file_nifs/0, file_nifs/1,
-         priv/0, linked_nifs/0]).
+         priv/0, linked_nifs/0, nif_dirs/1, match_nifs/2, source_text/1]).
 
 -ifdef(TEST).
--export([run/2, dep_version/1, force_build/1, app_file_nifs/1]).
+-export([run/2, dep_version/1, force_build/1, app_file_nifs/1, source/1, url/1,
+         source_match/5]).
 -endif.
 
 main() ->
@@ -140,34 +141,193 @@ write_files(Dir, Files) ->
      end || {F, Data} <- Files],
     ok.
 
-%% The NIF files of App in beam.com, for the version Vsn: [{Name, Data}],
-%% with Name relative to the priv directory of App, or [] for another
-%% package or version. beam_com_build adds them to the priv directory of
-%% App in a program, and beam_com_rustler copies them.
+%% The NIF files of the Hex package App in beam.com, for the version Vsn:
+%% [{Name, Data}], with Name relative to the priv directory of App, or []
+%% for another package, version or source. beam_com_build adds them to
+%% the priv directory of App in a program, and beam_com_rustler copies
+%% them.
 nif_files(App, Vsn) ->
     nif_files(App, Vsn, priv()).
 
 nif_files(App, Vsn, Priv) ->
-    Dir = filename:join([Priv, "nifs", atom_to_list(App) ++ "-" ++ Vsn]),
+    Dir = nif_dir(Priv, App, Vsn),
+    case is_hex(App, source(Dir)) of
+        true -> dir_files(Dir);
+        false -> []
+    end.
+
+%% True for the source of the Hex package App.
+is_hex(_App, hex) -> true;
+is_hex(App, {hex, Package}) -> Package =:= atom_to_list(App);
+is_hex(_App, _Source) -> false.
+
+%% The files of a directory of priv/nifs, with no SOURCE.
+dir_files(Dir) ->
     [{N, element(2, {ok, _} = file:read_file(filename:join(Dir, N)))}
-     || N <- lists:sort(filelib:wildcard("**", Dir)),
+     || N <- lists:sort(filelib:wildcard("**", Dir)), N =/= "SOURCE",
         filelib:is_regular(filename:join(Dir, N))].
 
-%% The packages with NIF files in beam.com: [{App, Vsn}], from the names
-%% APP-VSN of the directories of priv/nifs.
+nif_dir(Priv, App, Vsn) ->
+    filename:join([Priv, "nifs", atom_to_list(App) ++ "-" ++ Vsn]).
+
+%% The Hex packages with NIF files in beam.com: [{App, Vsn}], from the
+%% names APP-VSN of the directories of priv/nifs with no SOURCE (or the
+%% source hex). The hooks of make and Rustler, and the builder of a plain
+%% Mix project, are for the Hex packages.
 file_nifs() ->
     file_nifs(priv()).
 
 file_nifs(Priv) ->
+    [{A, V} || {A, V, Source} <- nif_dirs(Priv), is_hex(A, Source)].
+
+%% Each directory APP-VSN of priv/nifs: [{App, Vsn, Source}]. The file
+%% SOURCE of the directory names the package of the files (source/1).
+nif_dirs(Priv) ->
     case file:list_dir(filename:join(Priv, "nifs")) of
         {ok, Names} ->
-            [{list_to_atom(A), V} || N <- lists:sort(Names),
-                                     [A, V] <- [string:split(N, "-")],
-                                     A =/= "", V =/= "",
-                                     filelib:is_dir(filename:join([Priv, "nifs", N]))];
+            [{list_to_atom(A), V, source(filename:join([Priv, "nifs", N]))}
+             || N <- lists:sort(Names),
+                [A, V] <- [string:split(N, "-")],
+                A =/= "", V =/= "",
+                filelib:is_dir(filename:join([Priv, "nifs", N]))];
         {error, _} ->
             []
     end.
+
+%% The source of the NIF files of the directory Dir: the package that
+%% they are for, from the file Dir/SOURCE. With no file, or with the line
+%% "hex": hex, the Hex package of the name and the version of the
+%% directory (hex.pm). "hex PACKAGE": {hex, PACKAGE}, the Hex package
+%% PACKAGE for the application of the directory (the option hex: of a
+%% dep). The line "git URL" is the git dep of URL, of the
+%% version of the directory; {git, URL, []}. With "commit=SHA" (7 to 40
+%% hexadecimal digits) or "tag=TAG" after URL, the version is not
+%% checked: the dep must be at that commit, or have that tag in mix.exs;
+%% {git, URL, [{commit, SHA} | {tag, TAG}]}. A file of another form gives
+%% invalid, which no dep matches.
+source(Dir) ->
+    case file:read_file(filename:join(Dir, "SOURCE")) of
+        {error, enoent} ->
+            hex;
+        {ok, Bin} ->
+            case unicode:characters_to_list(Bin) of
+                Text when is_list(Text) ->
+                    Lines = [L || L0 <- string:split(Text, "\n", all),
+                                  L <- [string:trim(L0)], L =/= "", hd(L) =/= $#],
+                    case Lines of
+                        [Line] -> parse_source(string:lexemes(Line, " \t"));
+                        _ -> invalid
+                    end;
+                _ ->
+                    invalid
+            end;
+        {error, _} ->
+            invalid
+    end.
+
+parse_source(["hex"]) ->
+    hex;
+parse_source(["hex", Package]) ->
+    {hex, Package};
+parse_source(["git", Url | Revs]) ->
+    Parsed = [rev(R) || R <- Revs],
+    case lists:member(invalid, Parsed) orelse url(Url) =:= invalid of
+        true -> invalid;
+        false -> {git, url(Url), Parsed}
+    end;
+parse_source(_) ->
+    invalid.
+
+rev("commit=" ++ Sha) ->
+    case length(Sha) >= 7 andalso length(Sha) =< 40
+        andalso lists:all(fun(C) -> lists:member(C, "0123456789abcdefABCDEF") end, Sha) of
+        true -> {commit, string:lowercase(Sha)};
+        false -> invalid
+    end;
+rev("tag=" ++ Tag) when Tag =/= "" ->
+    {tag, Tag};
+rev(_) ->
+    invalid.
+
+%% The URL of a git repository in one form, so that the URLs of mix.exs
+%% compare: the scheme and the host in lower case, and no "/" or ".git"
+%% at the end (Mix writes github: NAME as https://github.com/NAME.git).
+url(Url0) ->
+    Url = case unicode:characters_to_list(Url0) of
+              L when is_list(L) -> L;
+              _ -> ""
+          end,
+    case string:split(Url, "://") of
+        [Scheme, Rest] when Scheme =/= "", Rest =/= "" ->
+            {Host, Path} = case string:split(Rest, "/") of
+                               [H, P] -> {H, "/" ++ P};
+                               [H] -> {H, ""}
+                           end,
+            string:lowercase(Scheme) ++ "://" ++ string:lowercase(Host) ++ trim_path(Path);
+        _ ->
+            invalid
+    end.
+
+trim_path(Path) ->
+    P = string:trim(Path, trailing, "/"),
+    case lists:suffix(".git", P) of
+        true -> string:trim(lists:sublist(P, length(P) - 4), trailing, "/");
+        false -> P
+    end.
+
+%% True when the NIF files of the directory of App, of version DirVsn and
+%% source Source, are for the dep App of version DepVsn and source
+%% DepSource: {hex, PACKAGE} (a package of hex.pm), {git, URL, Commit,
+%% Opts} (the lock entry of a git dep), or other.
+source_match(Source, App, DirVsn, DepVsn, {hex, Package}) ->
+    Own = case Source of
+              hex -> atom_to_list(App);
+              {hex, P} -> P;
+              _ -> none
+          end,
+    Own =:= Package andalso DirVsn =:= DepVsn;
+source_match({git, Url, []}, _App, DirVsn, DepVsn, {git, DepUrl, _Commit, _Opts}) ->
+    Url =:= url(DepUrl) andalso DirVsn =:= DepVsn;
+source_match({git, Url, Revs}, _App, _DirVsn, _DepVsn, {git, DepUrl, Commit, Opts}) ->
+    Url =:= url(DepUrl) andalso
+        lists:any(fun({commit, Sha}) -> lists:prefix(Sha, string:lowercase(Commit));
+                     ({tag, Tag}) -> proplists:get_value(tag, Opts) =:= Tag
+                  end, Revs);
+source_match(_Source, _App, _DirVsn, _DepVsn, _DepSource) ->
+    false.
+
+%% The NIF files of beam.com (in Priv) for the deps [{App, Vsn, Source}]
+%% (source_match/4): [{App, DirVsn, Files}], one for each dep that has
+%% NIF files. A directory with a commit or a tag comes before one with
+%% none. Also [{App, nomatch, Dirs}] for a dep of an application that has
+%% NIF files of no matching version or source.
+match_nifs(Priv, Deps) ->
+    Dirs = nif_dirs(Priv),
+    lists:append(
+      [case [{V, Src} || {A, V, Src} <- Dirs, A =:= App] of
+           [] ->
+               [];
+           Own ->
+               Sorted = lists:sort(fun({_, S1}, {_, S2}) -> specific(S1) >= specific(S2) end,
+                                   Own),
+               case [V || {V, Src} <- Sorted, source_match(Src, App, V, Vsn, DepSource)] of
+                   [V | _] -> [{App, V, dir_files(nif_dir(Priv, App, V))}];
+                   [] -> [{App, nomatch, Own}]
+               end
+       end || {App, Vsn, DepSource} <- Deps]).
+
+specific({git, _, [_ | _]}) -> 1;
+specific(_) -> 0.
+
+%% The text of a source, for the messages and beam.com --version.
+source_text(hex) -> "hex";
+source_text({hex, Package}) -> ["hex ", Package];
+source_text(invalid) -> "an invalid SOURCE";
+source_text({git, Url, Revs}) ->
+    lists:join(" ", ["git", Url | [case R of
+                                       {commit, Sha} -> "commit=" ++ Sha;
+                                       {tag, Tag} -> "tag=" ++ Tag
+                                   end || R <- Revs]]).
 
 %% The priv directory of beam_com, also when beam_com is not loaded (it
 %% is in the code path). Mix removes beam_com from the code path before

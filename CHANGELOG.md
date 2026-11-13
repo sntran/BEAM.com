@@ -5,6 +5,21 @@ notes of its release.
 
 ## Unreleased
 
+- The builder of a Mix release (`beam.com DIR -o OUT` for a project that
+  Mix builds) writes the NIF files of `beam.com` into
+  `_build/ENV/lib/APP/priv` of each dep of their source, after
+  `mix compile`. Thus `assets.deploy` can use the NIF, and the program
+  has it. Before, only the hooks of `elixir_make` and of Rustler copied
+  them, so a package with no NIF to compile, such as tailwind.com
+  (`priv/native/libtailwind_nif`), got no NIF.
+- A directory `priv/nifs/APP-VSN` of `beam.com` can have a file
+  `SOURCE`: `hex PACKAGE`, `git URL`, or `git URL commit=SHA tag=TAG`.
+  Before, only the name and the version chose the files: the Hex
+  package `tailwind` and tailwind.com of the same version would get the
+  same files. Now the source of the lock of a dep must match too, and with a
+  commit or a tag, the version is not checked. No file is the Hex
+  package of the name, as before. `beam.com --version` shows a source
+  that is not `hex`. See "The NIF files of beam.com" in `docs/NIFS.md`.
 - The loader of native NIF objects gives each live section of size 0 an
   address. Before, a symbol in such a section stopped the load with "the
   symbol is in a section that is not loaded". Rust puts each static of
