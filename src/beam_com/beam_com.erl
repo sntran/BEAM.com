@@ -505,12 +505,17 @@ version() ->
                                                  || {A, V} <- Nifs])])
      end,
      %% The packages with NIF files in the zip (priv/nifs of beam_com): a
-     %% NIF library in WebAssembly, or native NIF objects.
-     case beam_com_make:file_nifs() of
+     %% NIF library in WebAssembly, or native NIF objects. A source that is
+     %% not the Hex package of the name follows the name.
+     case beam_com_make:nif_dirs(beam_com_make:priv()) of
          [] -> [];
-         Files -> io_lib:format("  NIF files   : ~ts~n",
-                                [lists:join(" ", [[atom_to_list(A), "-", V]
-                                                  || {A, V} <- Files])])
+         Dirs -> io_lib:format("  NIF files   : ~ts~n",
+                               [lists:join(" ", [[atom_to_list(A), "-", V,
+                                                  case S of
+                                                      hex -> "";
+                                                      _ -> [" (", beam_com_make:source_text(S), ")"]
+                                                  end]
+                                                 || {A, V, S} <- Dirs])])
      end,
      io_lib:format("  Applications: ~ts~n",
                    [lists:join(" ", [[A, "-", V] || {A, V} <- lists:usort(Apps)])])].

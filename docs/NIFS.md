@@ -159,13 +159,44 @@ so a `beam.com` with more files in its zip needs no other build:
   its NIF then), and puts them into OUT.
 - A Mix project that Mix builds (a release of Mix, for example with git
   deps or `assets.deploy`): after `mix compile`, the builder writes the
-  files of each dep of the version of a directory into
+  files of each dep of the source of a directory (see below) into
   `_build/ENV/lib/APP/priv`. Thus `assets.deploy` can use the NIF, and
   the release has it. This is also for a package that compiles no NIF,
   such as tailwind.com, whose module loads `priv/native/libtailwind_nif`
   of its application. A file with the same bytes stays. For a dep of
-  another version, the builder writes no file and names the two
-  versions.
+  another source or version, the builder writes no file, and one line
+  names the two.
+
+A directory `APP-VSN` is for the Hex package `APP` of version `VSN`,
+unless it has a file `SOURCE`. Its one line names the package of the
+files, because two packages can have the same application and version
+(the Hex package `tailwind` and tailwind.com):
+
+| `SOURCE` | The files are for |
+|---|---|
+| no file, or `hex` | the Hex package `APP` of hex.pm, of the version `VSN` |
+| `hex PACKAGE` | the Hex package `PACKAGE` (the option `hex:` of the dep), of the version `VSN` |
+| `git URL` | the git dep of `URL`, of the version `VSN` |
+| `git URL commit=SHA tag=TAG` | the git dep of `URL` at a commit that starts with `SHA` (7 to 40 hexadecimal digits), or with `tag: TAG` in `mix.exs`. `VSN` is only a name: the version is not checked |
+
+The URL compares with no `/` or `.git` at the end, and with the scheme
+and the host in lower case: `github: "sntran/tailwind.com"` in
+`mix.exs` is `https://github.com/sntran/tailwind.com.git`. With
+`commit=` and `tag=`, one of them must match. A directory with a commit
+or a tag comes before one without. A line `#` is a comment. A file of
+another form matches no dep. `SOURCE` does not go into the priv
+directory. The hooks of `make` and Rustler and the builder of a plain
+Mix project use only the directories of a Hex package of the name of
+the directory. `beam.com --version` gives a source that is not `hex`
+after the name. For example, the objects of a commit of tailwind.com:
+
+```sh
+printf 'git https://github.com/sntran/tailwind.com commit=c0be553\n' > SOURCE
+beam.com scripts/assemble.erl -- beam.com beam-tailwind.com \
+  lib/beam_com/priv/nifs/tailwind-c0be553/SOURCE=SOURCE \
+  lib/beam_com/priv/nifs/tailwind-c0be553/native/libtailwind_nif.x86_64.o=libtailwind_nif.x86_64.o \
+  lib/beam_com/priv/nifs/tailwind-c0be553/native/libtailwind_nif.aarch64.o=libtailwind_nif.aarch64.o
+```
 - `beam.com mix compile`: `make` of `elixir_make` (vix) copies them into
   `MIX_APP_PATH/priv`, and the module `Rustler` of `beam.com` (rusty_csv,
   ex_pdfium) copies them into the priv directory of the package and

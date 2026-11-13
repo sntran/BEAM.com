@@ -7,6 +7,7 @@ defmodule BeamComMakeTest do
   A test changes the PATH of the OS, so the module is not async.
   """
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
   @moduletag :tmp_dir
 
@@ -324,5 +325,163 @@ defmodule BeamComMakeTest do
   defp write(dir, name, content) do
     :ok = :filelib.ensure_path(dir)
     :ok = :file.write_file(:filename.join(dir, name), content)
+  end
+
+  # The file SOURCE of a directory of priv/nifs names the package of its
+  # files: the Hex package of the name (no file), a git repository, or a
+  # commit or a tag of it.
+  describe "sources" do
+    setup %{tmp_dir: dir} do
+      priv = Path.join(dir, "priv")
+
+      put = fn name, source, files ->
+        d = Path.join([priv, "nifs", name])
+        File.mkdir_p!(d)
+        if source, do: File.write!(Path.join(d, "SOURCE"), source)
+        for {f, data} <- files, do: File.write!(Path.join(d, f), data)
+      end
+
+      put.("tailwind-0.5.2", nil, [{"hex.o", "hex"}])
+      put.("tailwind-0.2.0", "git https://github.com/sntran/tailwind.com\n", [{"any.o", "any"}])
+
+      put.(
+        "tailwind-c0be553",
+        "# The objects of the commit c0be553.\ngit https://GitHub.com/sntran/tailwind.com.git/ commit=C0BE553 tag=v0.3.0\n",
+        [{"commit.o", "commit"}]
+      )
+
+      put.("vix-0.42.0", "hex\n", [{"vix.o", "vix"}])
+      put.("rename-1.0.0", "hex rename_ex\n", [{"r.o", "r"}])
+      put.("bad-1.0.0", "svn https://example.com/x\n", [{"bad.o", "bad"}])
+      %{priv: String.to_charlist(priv)}
+    end
+
+    test "source/1: the forms of SOURCE", %{priv: priv} do
+      dir = fn name -> :filename.join([priv, ~c"nifs", name]) end
+      assert :hex == :beam_com_make.source(dir.(~c"tailwind-0.5.2"))
+      assert :hex == :beam_com_make.source(dir.(~c"vix-0.42.0"))
+      assert {:hex, ~c"rename_ex"} == :beam_com_make.source(dir.(~c"rename-1.0.0"))
+
+      assert {:git, ~c"https://github.com/sntran/tailwind.com", []} ==
+               :beam_com_make.source(dir.(~c"tailwind-0.2.0"))
+
+      assert {:git, ~c"https://github.com/sntran/tailwind.com",
+              [{:commit, ~c"c0be553"}, {:tag, ~c"v0.3.0"}]} ==
+               :beam_com_make.source(dir.(~c"tailwind-c0be553"))
+
+      assert :invalid == :beam_com_make.source(dir.(~c"bad-1.0.0"))
+
+      for text <- [
+            "git\n",
+            "git not-a-url\n",
+            "git https://h/x commit=abc\n",
+            "git https://h/x commit=#{String.duplicate("a", 41)}\n",
+            "git https://h/x commit=xyz1234\n",
+            "git https://h/x tag=\n",
+            "git https://h/x branch=main\n",
+            "hex a b\n",
+            "git https://h/x\ngit https://h/y\n",
+            "",
+            <<0xFF, 0xFE>>
+          ] do
+        File.write!(:filename.join(dir.(~c"bad-1.0.0"), ~c"SOURCE"), text)
+        assert :invalid == :beam_com_make.source(dir.(~c"bad-1.0.0")), text
+      end
+    end
+
+    test "the hooks and the plain builder see only the Hex packages, and no SOURCE",
+         %{priv: priv} do
+      # The hooks know the application, not its Hex package: the files
+      # of "hex rename_ex" are not for them.
+      assert [{:tailwind, ~c"0.5.2"}, {:vix, ~c"0.42.0"}] ==
+               Enum.sort(:beam_com_make.file_nifs(priv))
+
+      assert [{~c"vix.o", "vix"}] == :beam_com_make.nif_files(:vix, ~c"0.42.0", priv)
+      assert [{~c"hex.o", "hex"}] == :beam_com_make.nif_files(:tailwind, ~c"0.5.2", priv)
+      assert [] == :beam_com_make.nif_files(:tailwind, ~c"0.2.0", priv)
+      assert [] == :beam_com_make.nif_files(:tailwind, ~c"c0be553", priv)
+      assert [] == :beam_com_make.nif_files(:bad, ~c"1.0.0", priv)
+      # "hex rename_ex" is the package rename_ex, not rename.
+      assert [] == :beam_com_make.nif_files(:rename, ~c"1.0.0", priv)
+    end
+
+    test "match_nifs/2: the source and the version of each dep", %{priv: priv} do
+      url = "https://github.com/sntran/tailwind.com.git"
+      commit = ~c"c0be5530906454fbd3ff5b9dca9af32fb87b24af"
+      other = ~c"1111111111111111111111111111111111111111"
+
+      files = fn deps -> :beam_com_make.match_nifs(priv, deps) end
+
+      # The Hex package tailwind 0.5.2 gets the Hex files, and the Hex
+      # package tailwind 0.2.0 gets none: the git files of 0.2.0 are not
+      # for it.
+      assert [{:tailwind, ~c"0.5.2", [{~c"hex.o", "hex"}]}] ==
+               files.([{:tailwind, ~c"0.5.2", {:hex, ~c"tailwind"}}])
+
+      assert [{:tailwind, :nomatch, _}] = files.([{:tailwind, ~c"0.2.0", {:hex, ~c"tailwind"}}])
+
+      # The git dep at the commit gets the files of the commit, before
+      # the files of its version.
+      assert [{:tailwind, ~c"c0be553", [{~c"commit.o", "commit"}]}] ==
+               files.([{:tailwind, ~c"0.2.0", {:git, url, commit, [branch: ~c"main"]}}])
+
+      # At another commit: the files of the version 0.2.0 of the
+      # repository, else none.
+      assert [{:tailwind, ~c"0.2.0", [{~c"any.o", "any"}]}] ==
+               files.([{:tailwind, ~c"0.2.0", {:git, url, other, [branch: ~c"main"]}}])
+
+      assert [{:tailwind, :nomatch, _}] =
+               files.([{:tailwind, ~c"0.4.0", {:git, url, other, [branch: ~c"main"]}}])
+
+      # The tag of mix.exs, at any commit.
+      assert [{:tailwind, ~c"c0be553", _}] =
+               files.([{:tailwind, ~c"0.9.0", {:git, url, other, [tag: ~c"v0.3.0"]}}])
+
+      # Another repository, a path dep, a package of another name.
+      fork = {:git, "https://github.com/fork/tailwind.com", commit, []}
+      assert [{:tailwind, :nomatch, _}] = files.([{:tailwind, ~c"0.2.0", fork}])
+      assert [{:tailwind, :nomatch, _}] = files.([{:tailwind, ~c"0.2.0", :other}])
+      assert [{:rename, ~c"1.0.0", _}] = files.([{:rename, ~c"1.0.0", {:hex, ~c"rename_ex"}}])
+      assert [{:rename, :nomatch, _}] = files.([{:rename, ~c"1.0.0", {:hex, ~c"rename"}}])
+      assert [{:bad, :nomatch, _}] = files.([{:bad, ~c"1.0.0", {:hex, ~c"bad"}}])
+      # A dep with no NIF files.
+      assert [] == files.([{:jason, ~c"1.4.4", {:hex, ~c"jason"}}])
+    end
+
+    test "nif_dirs/1 and source_text/1", %{priv: priv} do
+      texts =
+        for {app, vsn, source} <- :beam_com_make.nif_dirs(priv),
+            do: {app, vsn, IO.iodata_to_binary(:beam_com_make.source_text(source))}
+
+      assert {:tailwind, ~c"c0be553",
+              "git https://github.com/sntran/tailwind.com commit=c0be553 tag=v0.3.0"} in texts
+
+      assert {:tailwind, ~c"0.5.2", "hex"} in texts
+      assert {:rename, ~c"1.0.0", "hex rename_ex"} in texts
+      assert {:bad, ~c"1.0.0", "an invalid SOURCE"} in texts
+    end
+
+    # The URL of a repository has one form: the forms of Mix (github:
+    # gives a URL with .git) compare equal.
+    property "url/1: case of the scheme and the host, and / and .git at the end" do
+      check all(
+              host <- string(:alphanumeric, min_length: 1),
+              path <- list_of(string(:alphanumeric, min_length: 1), min_length: 1),
+              suffix <- member_of(["", "/", ".git", ".git/"])
+            ) do
+        base = "https://#{host}/#{Enum.join(path, "/")}"
+        url = :beam_com_make.url(String.to_charlist(base <> suffix))
+
+        assert url ==
+                 :beam_com_make.url(
+                   String.to_charlist(
+                     String.upcase("https://#{host}") <> "/" <> Enum.join(path, "/")
+                   )
+                 )
+
+        assert url == :beam_com_make.url(url)
+        refute :lists.suffix(~c".git", url)
+      end
+    end
   end
 end

@@ -33,7 +33,8 @@
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
          asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0, cache_env/1,
-         windows_assets/2, steps/5, relay/1, status/1, watch_input/2, write_nif_files/3]).
+         windows_assets/2, steps/5, relay/1, status/1, watch_input/2, write_nif_files/3,
+         deps/2]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -287,47 +288,84 @@ steps(Config, Run, Hex, Assets, NifFiles) ->
     Run("release", ["--overwrite", "--quiet"]).
 
 %% The NIF files of beam.com (priv/nifs/APP-VSN of beam_com, in Priv),
-%% for each dep APP of version VSN: the files go into the priv directory
-%% of APP in the build path of Mix, so the release has them. The builder
-%% of a plain Mix project does the same (beam_com_build). The hooks of
-%% make and Rustler (beam_com_make, beam_com_rustler) copy them for a
-%% package with a NIF to compile. This step is also for a package with
-%% no compile step for its NIF, such as tailwind.com, whose module loads
+%% for each dep of the source and the version of a directory
+%% (beam_com_make:match_nifs/2): the files go into the priv directory of
+%% the dep in the build path of Mix, so the release has them. The
+%% builder of a plain Mix project does the same for the Hex deps
+%% (beam_com_build). The hooks of make and Rustler (beam_com_make,
+%% beam_com_rustler) copy them for a Hex package with a NIF to compile.
+%% This step is also for a package with no compile step for its NIF, and
+%% for a git dep, such as tailwind.com, whose module loads
 %% priv/native/libtailwind_nif.
 nif_files(Priv) ->
-    write_nif_files(Priv, beam_com_make:file_nifs(Priv),
-                    unicode:characters_to_list('Elixir.Mix.Project':build_path())).
+    Build = unicode:characters_to_list('Elixir.Mix.Project':build_path()),
+    write_nif_files(Priv, deps(Build, 'Elixir.Mix.Dep.Lock':read()), Build).
 
-%% For each {App, Vsn} of FileNifs with the application App of version
-%% Vsn in Build/lib/App, write the NIF files of Priv into
-%% Build/lib/App/priv. A file with the same bytes stays. A dep of another
-%% version gets no files, and one line names the two versions.
-write_nif_files(Priv, FileNifs, Build) ->
-    Apps = lists:ukeysort(1, FileNifs),
+%% The deps of the build path Build with the NIF files of beam.com in
+%% mind: [{App, Vsn, Source}], with the version of the .app file in
+%% Build/lib/APP/ebin and the source of the lock entry of the dep (a map
+%% of Mix.Dep.Lock.read/0): {hex, PACKAGE} for a package of hex.pm, {git,
+%% URL, Commit, Opts}, or other (a path dep, a dep of another Hex
+%% repository).
+deps(Build, Lock) ->
+    [{App, Vsn, lock_source(maps:get(App, Lock, none))}
+     || {App, Vsn} <- build_apps(Build)].
+
+build_apps(Build) ->
+    Lib = filename:join(Build, "lib"),
+    case file:list_dir(Lib) of
+        {ok, Names} ->
+            [{App, Vsn} || N <- lists:sort(Names),
+                           {ok, [{application, App, Props}]}
+                               <- [file:consult(filename:join([Lib, N, "ebin", N ++ ".app"]))],
+                           atom_to_list(App) =:= N,
+                           Vsn <- [proplists:get_value(vsn, Props)], is_list(Vsn)];
+        {error, _} ->
+            []
+    end.
+
+%% A lock entry of Hex: {hex, Package, Vsn, Checksum, Managers, Deps,
+%% Repo, OuterChecksum}. An older entry has no Repo: hex.pm.
+lock_source(Entry) when is_tuple(Entry), tuple_size(Entry) >= 3, element(1, Entry) =:= hex,
+                        is_atom(element(2, Entry)) ->
+    Package = {hex, atom_to_list(element(2, Entry))},
+    case tuple_size(Entry) >= 7 of
+        false -> Package;
+        true when element(7, Entry) =:= <<"hexpm">> -> Package;
+        true -> other
+    end;
+lock_source({git, Url, Commit, Opts}) when is_binary(Url), is_binary(Commit), is_list(Opts) ->
+    {git, unicode:characters_to_list(Url), unicode:characters_to_list(Commit),
+     [{K, if is_binary(V) -> unicode:characters_to_list(V); true -> V end} || {K, V} <- Opts]};
+lock_source(_) ->
+    other.
+
+%% Write the NIF files of Priv for the deps Deps ([{App, Vsn, Source}])
+%% into Build/lib/App/priv. A file with the same bytes stays. A dep of an
+%% application with NIF files of no matching version or source gets no
+%% files, and one line names the two.
+write_nif_files(Priv, Deps, Build) ->
     lists:foreach(
-      fun({App, Vsns}) ->
+      fun({App, nomatch, Dirs}) ->
+              {Vsn, Source} = hd([{V, S} || {A, V, S} <- Deps, A =:= App]),
+              io:format("beam.com: the NIF files of beam.com are for ~ts, and the project "
+                        "has ~ts ~ts (~ts): no NIF files~n",
+                        [lists:join(", ", [[atom_to_list(App), " ", V, " (",
+                                            beam_com_make:source_text(S), ")"]
+                                           || {V, S} <- Dirs]),
+                         atom_to_list(App), Vsn, dep_text(Source)]);
+         ({App, DirVsn, Files}) ->
               Name = atom_to_list(App),
-              AppFile = filename:join([Build, "lib", Name, "ebin", Name ++ ".app"]),
-              case file:consult(AppFile) of
-                  {ok, [{application, App, Props}]} ->
-                      Vsn = proplists:get_value(vsn, Props),
-                      case lists:member(Vsn, Vsns) of
-                          true ->
-                              Dir = filename:join([Build, "lib", Name, "priv"]),
-                              Files = beam_com_make:nif_files(App, Vsn, Priv),
-                              [write_new(filename:join(Dir, F), D) || {F, D} <- Files],
-                              io:format("beam.com: the NIF files of ~ts ~ts (~b) in its priv "
-                                        "directory~n", [Name, Vsn, length(Files)]);
-                          false ->
-                              io:format("beam.com: the NIF files of beam.com are for ~ts ~ts, "
-                                        "and the project has ~ts ~ts: no NIF files~n",
-                                        [Name, lists:join(", ", Vsns), Name, Vsn])
-                      end;
-                  _ ->
-                      ok
-              end
+              Dir = filename:join([Build, "lib", Name, "priv"]),
+              [write_new(filename:join(Dir, F), D) || {F, D} <- Files],
+              io:format("beam.com: the NIF files of ~ts ~ts (~b) in its priv directory~n",
+                        [Name, DirVsn, length(Files)])
       end,
-      [{A, [V || {A1, V} <- FileNifs, A1 =:= A]} || {A, _} <- Apps]).
+      beam_com_make:match_nifs(Priv, Deps)).
+
+dep_text({hex, Package}) -> ["hex ", Package];
+dep_text({git, Url, Commit, _Opts}) -> ["git ", Url, " ", string:slice(Commit, 0, 12)];
+dep_text(other) -> "not of hex.pm or git".
 
 write_new(Path, Data) ->
     case file:read_file(Path) of
