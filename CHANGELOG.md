@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- A custom build can add the NIF of tailwind.com 0.3.0: `nifs+=tailwind`
+  in the build URL, or the box "tailwind" of the form. The build does
+  not link it: it adds the native NIF objects of the release of
+  tailwind.com to the zip as NIF files (`FILE_NIFS`,
+  `scripts/file_nifs.sh`, with the SHA-256 of each object), with a file
+  `SOURCE` for the git dep of the tag `v0.3.0`. Thus a project with
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.3.0"}` builds its
+  CSS in the VM, with each Tailwind CSS 4.x version. The Hex package
+  `tailwind` gets no file. The program of parts of `edge` also has these
+  files, so `nifs+=tailwind` needs no build. `tailwind_check` tests it.
 - The git client: when the SHA-1 check (`git_sha1dc`) stops before it
   reads all of its input, the client stops with "the SHA-1 check stopped
   with no answer" at once. Before, the write to the helper failed

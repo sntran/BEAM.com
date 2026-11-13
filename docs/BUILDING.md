@@ -108,6 +108,16 @@ or rebar3. A custom build can have more, or less:
   Ash), `vix` (libvips, for the `image` package), `rusty_csv` (CSV, a
   NIF of Rust) and `ex_pdfium` (PDF documents with PDFium, a NIF of
   Rust). Only with `ELIXIR=1`.
+- `FILE_NIFS="tailwind"` (the custom builds, `custom-build.yml`): the
+  NIF files of a release of another project, not linked. The step "Add
+  the NIF files" puts them into the zip of the new file with
+  `scripts/assemble.erl`, after the step test. `scripts/file_nifs.sh` has
+  the pins: the tag, the commit and the SHA-256 of each file. `tailwind`
+  is the NIF of tailwind.com 0.3.0 (`tailwind_nif`), for the git dep
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.3.0"}` (or that
+  commit): see "The NIF files of beam.com" in [`NIFS.md`](NIFS.md). A
+  new pin changes the KEY of a build, because `scripts/` is a source of
+  the build.
   - `vix` needs a static libvips for each CPU. `scripts/libvips.sh`
     builds it in `build/libvips` (meson, ninja, cmake, nasm and pkg-config),
     or `LIBVIPS` names a build that exists. It builds in two stages:
@@ -322,7 +332,8 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
 
   The names of the NIFs are `exqlite`, `bcrypt_elixir`, `argon2_elixir`,
   `picosat_elixir`, `vix`, `vix-icc`, `vix-gif`, `vix-avif`, `vix-svg`,
-  `rusty_csv` and `ex_pdfium`. A part of vix also chooses vix. The fields
+  `rusty_csv`, `ex_pdfium` and `tailwind` (the NIF files of tailwind.com,
+  `FILE_NIFS`). A part of vix also chooses vix. The fields
   of the form are fields of the query too: Download of the form sends a
   `GET` with them, so the address of the download is also a URL for
   `curl`.
@@ -344,8 +355,9 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   The request does not wait for the build itself: on Cloudflare, a
   request with no head after 60 seconds gets `504`, and a response with
   no byte of its body ends after 100 seconds as if it were complete.
-- A query of only `nifs+=` with vix, rusty_csv, ex_pdfium and the default
-  NIFs gets a program of parts at once, with no build (below).
+- A query of only `nifs+=` with vix, rusty_csv, ex_pdfium, tailwind and
+  the default NIFs gets a program of parts at once, with no build
+  (below).
 - The file of a query is `beam-u.q.HASH.com` in the prerelease
   `custom-builds`. The FIFO drops the fields `email` and `website` of the
   form, and sorts the lines of the other fields. HASH is the start of the
@@ -391,9 +403,10 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   and the input `query` has the lines of a query.
 
 A program of parts is the `beam.com` of `edge` with the NIF objects of
-vix, rusty_csv and ex_pdfium as NIF files ([`NIFS.md`](NIFS.md), "A
-program assembled from parts"). It has no static NIF of them, and the
-builder gives the objects to the packages:
+vix, rusty_csv and ex_pdfium, and the NIF files of tailwind.com
+(`scripts/file_nifs.sh`, with their file `SOURCE`), as NIF files
+([`NIFS.md`](NIFS.md), "A program assembled from parts"). It has no
+static NIF of them, and the builder gives the objects to the packages:
 
 - After each publish of `edge`, the job `edge-parts` of `build.yml` cuts
   the program into segments with `scripts/assemble.erl --parts`. The

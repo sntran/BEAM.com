@@ -2073,9 +2073,10 @@ files() {
 }
 
 # The NIFs of the store as native NIF objects: vix, rusty_csv and
-# ex_pdfium. store_nifs.tar.gz of CI (the job Build of build.yml) holds
-# their objects for each CPU, in the tree nifs/APP-VSN of a program, the
-# license texts in licenses/NAME, parts.txt and nif_needs.com.
+# ex_pdfium, and the NIF files of tailwind.com (scripts/file_nifs.sh).
+# store_nifs.tar.gz of CI (the job Build of build.yml) holds their objects
+# for each CPU, in the tree nifs/APP-VSN of a program, the license texts
+# in licenses/NAME, parts.txt and nif_needs.com.
 if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     store=$dir/store_nifs
     rm -rf "${store:?}"
@@ -2087,13 +2088,15 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     esac
     # The program has each name that the objects of this CPU need.
     cp "$store/nif_needs.com" "$dir/nif_needs.com"
-    check nif_needs.com "libex_pdfium\.$cpu\.o: ok@@librustycsv\.$cpu\.o: ok@@vix\.$cpu\.o: ok" \
+    check nif_needs.com "libex_pdfium\.$cpu\.o: ok@@librustycsv\.$cpu\.o: ok@@vix\.$cpu\.o: ok@@libtailwind_nif\.$cpu\.o: ok" \
         $(find "$store/nifs" -name "*.$cpu.o" | sort)
-    # store_nif_check, with the objects at the paths of the packages.
+    # store_nif_check, with the objects at the paths of the packages. The
+    # NIF files with a file SOURCE (tailwind.com) are for tailwind_check.
     priv=tests/programs/store_nif_check/priv
     rm -rf "$priv"
     mkdir -p "$priv"
     for d in "$store"/nifs/*/; do
+        [ -f "${d}SOURCE" ] && continue
         cp -R "$d." "$priv/"
     done
     store_ok='store_nif_check: vix ok@@store_nif_check: rustycsv ok@@store_nif_check: ex_pdfium ok@@store_nif_check: all 3 passed'
@@ -2119,7 +2122,8 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     # files of beam_com (lib/beam_com/priv/nifs). It builds the Elixir
     # programs of vix, rusty_csv and ex_pdfium from hex.pm, with no static
     # NIF of them: the builder puts the objects in the priv directories of
-    # the packages.
+    # the packages. It also builds tailwind_check, a Mix release with the
+    # git dep tailwind.com of the tag of the NIF files of tailwind.com.
     # The license texts of the parts (PDFium) go into licenses/, as in the
     # static build, and each program of this beam.com keeps them.
     # parts.txt gives the files of each package ("PKG PREFIX/=DIR").
@@ -2134,9 +2138,9 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
     # the other, are the bytes of the program of these packages. The
     # program of rusty_csv alone has only its NIF files.
     rm -rf "${dir:?}/program_parts"
-    check beam.com 'the program of ex_pdfium\.rusty_csv\.vix has [0-9]* bytes' \
+    check beam.com 'the program of ex_pdfium\.rusty_csv\.tailwind\.vix has [0-9]* bytes' \
         scripts/assemble.erl -- --parts "$dir/beam.com" "$dir/program_parts" 0123abc beam.com/p/ $parts
-    for set in ex_pdfium.rusty_csv.vix rusty_csv; do
+    for set in ex_pdfium.rusty_csv.tailwind.vix rusty_csv; do
         rm -f "$dir/beam_p_$set.com"
         [ -f "$dir/program_parts/beam-p.plus.$set.txt" ] || continue
         sed 's|^beam\.com/p/||' "$dir/program_parts/beam-p.plus.$set.txt" | while read -r f; do
@@ -2144,18 +2148,18 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
         done > "$dir/beam_p_$set.com"
         chmod +x "$dir/beam_p_$set.com"
     done
-    if [ -f "$dir/beam_nifs.com" ] && [ -f "$dir/beam_p_ex_pdfium.rusty_csv.vix.com" ] &&
-       cmp "$dir/beam_nifs.com" "$dir/beam_p_ex_pdfium.rusty_csv.vix.com"; then
-        echo "PASS: the segments of ex_pdfium.rusty_csv.vix are beam_nifs.com"
+    if [ -f "$dir/beam_nifs.com" ] && [ -f "$dir/beam_p_ex_pdfium.rusty_csv.tailwind.vix.com" ] &&
+       cmp "$dir/beam_nifs.com" "$dir/beam_p_ex_pdfium.rusty_csv.tailwind.vix.com"; then
+        echo "PASS: the segments of ex_pdfium.rusty_csv.tailwind.vix are beam_nifs.com"
     else
-        echo "FAIL: the segments of ex_pdfium.rusty_csv.vix are not beam_nifs.com"
+        echo "FAIL: the segments of ex_pdfium.rusty_csv.tailwind.vix are not beam_nifs.com"
         fail=1
         failed="$failed
   assemble.erl --parts: the segments are not the bytes of beam_nifs.com"
     fi
     if [ -f "$dir/beam_p_rusty_csv.com" ]; then
         check beam_p_rusty_csv.com 'NIF files   : .*rusty_csv-' --version
-        if grep -q -e 'NIF files   : .*vix-' -e 'NIF files   : .*ex_pdfium-' "$tmp"; then
+        if grep -q -e 'NIF files   : .*vix-' -e 'NIF files   : .*ex_pdfium-' -e 'NIF files   : .*tailwind-' "$tmp"; then
             echo "FAIL: beam_p_rusty_csv.com has the NIF files of more packages"
             fail=1
             failed="$failed
@@ -2163,11 +2167,11 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
         fi
     fi
     if [ -f "$dir/beam_nifs.com" ]; then
-        check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* vix-' --version
+        check beam_nifs.com 'NIF files   : .*ex_pdfium-.* rusty_csv-.* tailwind-.* (git https://github.com/sntran/tailwind.com commit=.*) vix-' --version
         check beam_nifs.com '^licenses: pdfium$' -noshell -eval \
             'true = filelib:is_regular("/zip/licenses/pdfium/pdfium.txt"), io:format("licenses: pdfium~n"), halt().'
         # check sets p: the loop has its own name.
-        for nif_prog in vix_check rusty_csv_check ex_pdfium_check; do
+        for nif_prog in vix_check rusty_csv_check ex_pdfium_check tailwind_check; do
             rm -rf "${dir:?}/$nif_prog"
             cp -R "tests/programs/$nif_prog" "$dir/$nif_prog"
             # A build compiles the package and its deps: more time.

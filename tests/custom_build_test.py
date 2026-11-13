@@ -92,6 +92,34 @@ class ShortNames(unittest.TestCase):
         self.assertEqual(env["HEX"], "1")
         self.assertEqual((env["EXTRA_NIFS"], env["VIX_PARTS"]), ("vix", "svg"))
 
+    def test_the_nif_files_of_tailwind(self):
+        # tailwind is a NIF of NIF files (scripts/file_nifs.sh): FILE_NIFS,
+        # not EXTRA_NIFS, which links.
+        env = build_settings(["nifs : tailwind,vix"])
+        self.assertEqual((env["EXTRA_NIFS"], env["FILE_NIFS"]), ("vix", "tailwind"))
+        env = build_settings(["nifs+: tailwind"])
+        self.assertEqual((env["EXTRA_NIFS"], env["FILE_NIFS"]), ("", "tailwind"))
+        # A build with no NIF files has no FILE_NIFS, so its KEY stays.
+        self.assertNotIn("FILE_NIFS", build_settings(["nifs : vix"]))
+        # Without Elixir, the build ignores the NIFs of a query, as for the
+        # other NIFs.
+        env = build_settings(["elixir_version: ", "nifs : tailwind"])
+        self.assertNotIn("FILE_NIFS", env)
+        # An issue (settings() with the choices) refuses it with no Elixir.
+        choices = cb.dispatch(dict(inputs(["nifs : tailwind"]), INPUT_URL=""))
+        with self.assertRaisesRegex(SystemExit, "need Elixir"):
+            cb.settings(dict(choices, elixir=False, nifs=["tailwind"]))
+
+    def test_a_url_of_tailwind(self):
+        self.assertEqual(cb.url_inputs("plus.tailwind")["INPUT_NIFS"], "tailwind")
+        self.assertEqual(cb.url_inputs("plus.rusty_csv.tailwind")["INPUT_NIFS"],
+                         "rusty_csv tailwind")
+        self.assertEqual(cb.url_inputs("only.tailwind")["INPUT_NIFS"], "default tailwind")
+        with self.assertRaisesRegex(SystemExit, "Not NIFs that a build can use"):
+            cb.url_inputs("plus.tailwind2")
+        env = cb.settings(cb.dispatch({"INPUT_URL": "plus.tailwind"}))
+        self.assertEqual(env["FILE_NIFS"], "tailwind")
+
     def test_bad_fields(self):
         cases = [
             (["email: jo@example.com"], "Not a field"),
@@ -121,15 +149,16 @@ class FormNames(unittest.TestCase):
         lines = ["apps: ", "a_mnesia: mnesia", "a_os_mon: ", "dnifs: default",
                  "dnif1: exqlite", "dnif2: ", "dnif3: argon2_elixir", "elixir_version: 1.20.4",
                  "hex: 0", "jit: 1", "k_asn1: asn1", "k_ssl: ", "k_public_key: public_key",
-                 "nif2: vix", "nif5: vix-icc", "otp: keep", "otp_version: 29.1.1",
+                 "nif2: vix", "nif5: vix-icc", "nif9: tailwind", "otp: keep", "otp_version: 29.1.1",
                  "rebar3: 0", "sqlite: 1", "wasm: 1"]
         env = inputs(sorted(lines))
         self.assertEqual(env["INPUT_APPS"], "mnesia")
         self.assertEqual(env["INPUT_KEEP"], "keep asn1 public_key")
-        self.assertEqual(env["INPUT_NIFS"], "default exqlite argon2_elixir vix vix-icc")
+        self.assertEqual(env["INPUT_NIFS"], "default exqlite argon2_elixir vix vix-icc tailwind")
         self.assertEqual((env["INPUT_ELIXIR"], env["INPUT_ELIXIR_VERSION"]), ("", "1.20.4"))
         settings = build_settings(sorted(lines))
         self.assertEqual(settings["NIFS_OMIT"], "bcrypt_elixir")
+        self.assertEqual((settings["EXTRA_NIFS"], settings["FILE_NIFS"]), ("vix", "tailwind"))
         self.assertEqual(settings["OTP_OMIT"],
                          " ".join(a for a in sorted(cb.OMITTABLE) if a not in ("asn1", "public_key")))
 

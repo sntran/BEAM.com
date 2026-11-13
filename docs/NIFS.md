@@ -197,6 +197,16 @@ beam.com scripts/assemble.erl -- beam.com beam-tailwind.com \
   lib/beam_com/priv/nifs/tailwind-c0be553/native/libtailwind_nif.x86_64.o=libtailwind_nif.x86_64.o \
   lib/beam_com/priv/nifs/tailwind-c0be553/native/libtailwind_nif.aarch64.o=libtailwind_nif.aarch64.o
 ```
+
+A custom build with `nifs+=tailwind` ([`BUILDING.md`](BUILDING.md),
+`FILE_NIFS`) does this with the objects of a release of tailwind.com.
+`scripts/file_nifs.sh` has the tag, the commit and the SHA-256 of each
+object, and writes `SOURCE` with `commit=` and `tag=`. Thus the dep
+`{:tailwind, github: "sntran/tailwind.com", tag: "v0.3.0"}` gets the
+NIF, and the version of Tailwind CSS (4.x) stays a choice of the
+project (`config :tailwind, version:`). The Hex package `tailwind` gets
+no file, and it uses its own program, as before.
+
 - `beam.com mix compile`: `make` of `elixir_make` (vix) copies them into
   `MIX_APP_PATH/priv`, and the module `Rustler` of `beam.com` (rusty_csv,
   ex_pdfium) copies them into the priv directory of the package and
@@ -627,9 +637,11 @@ rayon. Each NIF also runs in eight processes at the same time. Then the
 tests assemble the same program with `scripts/assemble.erl`: the program
 with no objects, and the six objects as new files. That program must
 give the same results. Last, they assemble a `beam.com` with the six
-objects as its NIF files, and it builds and runs
-`tests/programs/vix_check`, `rusty_csv_check` and `ex_pdfium_check`
-(the packages from hex.pm). Before, `nif_needs.com` checks the objects
+objects and the NIF files of tailwind.com as its NIF files, and it
+builds and runs `tests/programs/vix_check`, `rusty_csv_check` and
+`ex_pdfium_check` (the packages from hex.pm), and `tailwind_check` (the
+git dep tailwind.com of the tag of `scripts/file_nifs.sh`, a Mix
+release that builds CSS with the NIF at its start). Before, `nif_needs.com` checks the objects
 of the CPU of the system.
 
 [`tests/programs/nif_check`](../tests/programs/nif_check) is an
