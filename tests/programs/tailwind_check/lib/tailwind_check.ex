@@ -57,7 +57,8 @@ defmodule TailwindCheck do
       if status == 0 and css =~ "tailwindcss v#{vsn}" and css =~ ".flex" do
         {:cont, :ok}
       else
-        {:halt, {:error, "Tailwind CSS #{vsn}: the status #{status}, #{byte_size(css)} bytes of CSS"}}
+        {:halt,
+         {:error, "Tailwind CSS #{vsn}: the status #{status}, #{byte_size(css)} bytes of CSS"}}
       end
     end)
   end
