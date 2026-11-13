@@ -629,7 +629,19 @@ sha1dc_end({_Port, _Timeout, Queue} = Check) ->
 
 %% The next answer: 1 byte (1 for a collision attack, else 0) and the 20
 %% bytes of the digest, which must be the SHA-1 of the object.
+%%
+%% A helper that stops before it reads all of its input makes a write of
+%% the port fail (EPIPE): the port closes, and it sends no exit status.
+%% The monitor ends the wait then, with no wait for Timeout. A message of
+%% the port that came before the close comes first: the receive takes the
+%% oldest message that matches.
 sha1dc_answer({Port, Timeout, Queue}) ->
+    Ref = erlang:monitor(port, Port),
+    try sha1dc_answer(Port, Timeout, Queue, Ref)
+    after erlang:demonitor(Ref, [flush])
+    end.
+
+sha1dc_answer(Port, Timeout, Queue, Ref) ->
     receive
         {Port, {data, <<Flag, Sum:20/binary>>}} when Flag =:= 0; Flag =:= 1 ->
             case queue:out(Queue) of
@@ -647,7 +659,9 @@ sha1dc_answer({Port, Timeout, Queue}) ->
         {Port, {data, _}} ->
             throw({error, "git: the SHA-1 check gives a bad answer", []});
         {Port, {exit_status, Status}} ->
-            throw({error, "git: the SHA-1 check stopped with the status ~b", [Status]})
+            throw({error, "git: the SHA-1 check stopped with the status ~b", [Status]});
+        {'DOWN', Ref, port, Port, _Reason} ->
+            throw({error, "git: the SHA-1 check stopped with no answer", []})
     after Timeout ->
             throw({error, "git: the SHA-1 check gives no answer in ~b ms", [Timeout]})
     end.

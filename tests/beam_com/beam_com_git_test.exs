@@ -582,7 +582,13 @@ defmodule BeamComGitTest do
          "git: the SHA-1 check gives a bad answer"},
         {"short", after_input("printf '\\0\\0\\0\\1\\0'\nexec cat >/dev/null"),
          "git: the SHA-1 check gives a bad answer"},
-        {"exit", "exit 3", "git: the SHA-1 check stopped with the status 3"},
+        # A helper that stops before the write of the port: the write can
+        # fail (EPIPE), and the port then closes with no exit status.
+        {"exit", "exit 3",
+         [
+           "git: the SHA-1 check stopped with the status 3",
+           "git: the SHA-1 check stopped with no answer"
+         ]},
         {"exit0", after_input("exit 0"), "git: the SHA-1 check stopped with the status 0"},
         {"silent", "exec cat >/dev/null", "git: the SHA-1 check gives no answer in 300 ms"}
       ]
@@ -591,7 +597,8 @@ defmodule BeamComGitTest do
         opts = %{sha1dc: fake(dir, file, script), sha1dc_timeout: 300}
 
         assert {:error, format, args} = catch_throw(:beam_com_git.check([{:blob, data}], opts))
-        assert message == IO.chardata_to_string(:io_lib.format(format, args)), file
+        text = IO.chardata_to_string(:io_lib.format(format, args))
+        assert text in List.wrap(message), "#{file}: #{text}"
         assert_clean()
       end
 
@@ -607,6 +614,27 @@ defmodule BeamComGitTest do
       assert {:error, ~c"git: the SHA-1 check ~ts does not start: ~p", [^missing, :enoent]} =
                catch_throw(:beam_com_git.check([{:blob, data}], %{sha1dc: missing}))
 
+      assert_clean()
+    end
+
+    test "a helper that closes its input and stays: an error at once, with no wait for the time limit",
+         %{tmp_dir: dir} do
+      # The helper reads one byte and closes its input. 8 MiB is more than
+      # a pipe holds, so the write of the port fails (EPIPE), and the port
+      # closes with no exit status, while the helper stays.
+      prog = fake(dir, "closed", after_input("exec 0<&-\nexec sleep 2"))
+      big = :binary.copy("c", 8 * 1024 * 1024)
+
+      {time, result} =
+        :timer.tc(fn ->
+          catch_throw(
+            :beam_com_git.check([{:blob, big}], %{sha1dc: prog, sha1dc_timeout: 20_000})
+          )
+        end)
+
+      assert {:error, ~c"git: the SHA-1 check stopped with no answer", []} == result
+      # Much less than the time limit of 20 s.
+      assert time < 10_000_000
       assert_clean()
     end
 
