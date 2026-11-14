@@ -273,6 +273,52 @@ static void die(const char *what)
     beam_com_exit(127, 1);
 }
 
+/* Writes all of BUF to the descriptor FD, and stops at an error. */
+static void verbose_write(int fd, const char *buf, size_t n)
+{
+    ssize_t w;
+
+    while (n > 0) {
+        w = write(fd, buf, n);
+        if (w < 0 && errno == EINTR)
+            continue;
+        if (w <= 0)
+            return;
+        buf += w;
+        n -= (size_t)w;
+    }
+}
+
+/*
+ * A line of BEAM_COM_VERBOSE on stderr, with one write(). stderr has no
+ * buffer, so fprintf() can write one line in parts. tests/run.sh puts
+ * the output and the errors of a program and of its children into one
+ * file, and the output of another process then went into a line in
+ * parts ("beam.com: executing:script ok"). This function calls no
+ * malloc(): zip_exec() and ape_execve() can run in a child of vfork().
+ * A line longer than the buffer is cut, and ends with a newline.
+ */
+static void verbose(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void verbose(const char *fmt, ...)
+{
+    char line[2 * PATH_MAX + 256];
+    va_list ap;
+    int n;
+
+    if (!getenv("BEAM_COM_VERBOSE"))
+        return;
+    va_start(ap, fmt);
+    n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return;
+    if ((size_t)n >= sizeof(line)) {
+        n = sizeof(line) - 1;
+        line[n - 1] = '\n';
+    }
+    verbose_write(2, line, (size_t)n);
+}
+
 static void push(struct arglist *l, char *arg)
 {
     if (l->n + 1 >= l->cap) {
@@ -283,6 +329,33 @@ static void push(struct arglist *l, char *arg)
     }
     l->v[l->n++] = arg;
     l->v[l->n] = NULL;
+}
+
+/* The line "beam.com: executing: ARG..." of BEAM_COM_VERBOSE, with one
+ * write(), as verbose() does. It can be longer than the buffer of
+ * verbose(), so it takes its buffer from malloc(): only the launcher
+ * calls it, before the VM starts. */
+static void verbose_args(const struct arglist *all)
+{
+    static const char head[] = "beam.com: executing:";
+    size_t n = sizeof(head), at;
+    char *line;
+    int i;
+
+    for (i = 0; i < all->n; i++)
+        n += 1 + strlen(all->v[i]);
+    if (!(line = malloc(n)))
+        return;
+    memcpy(line, head, sizeof(head) - 1);
+    at = sizeof(head) - 1;
+    for (i = 0; i < all->n; i++) {
+        line[at++] = ' ';
+        memcpy(line + at, all->v[i], strlen(all->v[i]));
+        at += strlen(all->v[i]);
+    }
+    line[at++] = '\n';
+    verbose_write(2, line, at);
+    free(line);
 }
 
 static int starts_with(const char *s, const char *prefix)
@@ -485,8 +558,7 @@ static int ape_execve(const char *path, char *const argv[], char *const envp[])
         push(&args, (char *)path);
         for (i = 0; argv[i]; i++)
             push(&args, argv[i]);
-        if (getenv("BEAM_COM_VERBOSE"))
-            fprintf(stderr, "beam.com: starting %s with the APE loader %s\n", path, file);
+        verbose("beam.com: starting %s with the APE loader %s\n", path, file);
         __sys_execve(file, args.v, envp);
     }
     return execve(path, argv, envp);
@@ -798,9 +870,8 @@ static void sandbox_windows(int helper, struct allow *a)
             fprintf(stderr, "beam.com: the sandbox of macOS: %s\n", step);
             beam_com_exit(127, 1);
         }
-        if (getenv("BEAM_COM_VERBOSE"))
-            fprintf(stderr, IsXnuSilicon() ? "beam.com: the sandbox of macOS (Seatbelt) is on\n"
-                                           : "beam.com: no sandbox on macOS x86_64\n");
+        verbose("%s", IsXnuSilicon() ? "beam.com: the sandbox of macOS (Seatbelt) is on\n"
+                                     : "beam.com: no sandbox on macOS x86_64\n");
     }
     if (!sandbox_fs)
         return;
@@ -816,8 +887,7 @@ static void sandbox_windows(int helper, struct allow *a)
                         (unsigned)GetLastError());
             beam_com_exit(127, 1);
         }
-        if (getenv("BEAM_COM_VERBOSE"))
-            fprintf(stderr, "beam.com: no permission run: a job object of one process\n");
+        verbose("beam.com: no permission run: a job object of one process\n");
     }
 }
 
@@ -863,8 +933,8 @@ static void landlock_check(int helper, struct allow *a, int from_env)
         fprintf(stderr, "beam.com: warning: the kernel has no Landlock, so beam.com checks "
                         "the paths only in the calls of the C library: native code and the "
                         "programs of --allow-run are not limited\n");
-    } else if (getenv("BEAM_COM_VERBOSE")) {
-        fprintf(stderr, "beam.com: the sandbox of Linux: Landlock ABI %d\n", abi);
+    } else {
+        verbose("beam.com: the sandbox of Linux: Landlock ABI %d\n", abi);
     }
 }
 
@@ -1094,8 +1164,8 @@ static void zip_prepare_one(const char *path, void *arg)
             fprintf(stderr, "beam.com: warning: --allow-run: %s\n", msg);
         return;
     }
-    if (!helper && getenv("BEAM_COM_VERBOSE"))
-        fprintf(stderr, "beam.com: --allow-run: %s is %s\n", path, file);
+    if (!helper)
+        verbose("beam.com: --allow-run: %s is %s\n", path, file);
     sandbox_unveil_optional(helper, file, "rx");
 }
 
@@ -1152,8 +1222,7 @@ static int zip_file(const char *path, char *file, size_t size)
         fprintf(stderr, "beam.com: %s\n", msg);
         return err;
     }
-    if (getenv("BEAM_COM_VERBOSE"))
-        fprintf(stderr, "beam.com: %s runs from %s\n", path, file);
+    verbose("beam.com: %s runs from %s\n", path, file);
     return 0;
 }
 
@@ -1175,17 +1244,14 @@ static int zip_exec(const char *cmd, char *const argv[], char *const envp[])
     }
     if (IsLinux() && !zip_sandbox && !(memfd && strcmp(memfd, "0") == 0) &&
         (fd = beam_com_zip_memfd(path)) >= 0) {
-        if (getenv("BEAM_COM_VERBOSE"))
-            fprintf(stderr, "beam.com: %s runs from a memfd\n", path);
+        verbose("beam.com: %s runs from a memfd\n", path);
         /* Not fexecve(): Cosmopolitan reads an ELF file with FD_CLOEXEC
          * as an APE file, and fails with ENOEXEC (docs/UPSTREAM.md, C56). */
         snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
         __sys_execve(proc, argv, envp);
         err = errno;
         close(fd);
-        if (getenv("BEAM_COM_VERBOSE"))
-            fprintf(stderr, "beam.com: %s: the memfd does not start (%s)\n", path,
-                    strerror(err));
+        verbose("beam.com: %s: the memfd does not start (%s)\n", path, strerror(err));
     }
     if ((err = zip_file(path, file, sizeof(file)))) {
         errno = err;
@@ -2403,9 +2469,8 @@ int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
         rc = x.spawn(&pid, loader, &actions, &attr, args.v, helper_env(path, NULL));
     x.attr_destroy(&attr);
     x.actions_destroy(&actions);
-    if (getenv("BEAM_COM_VERBOSE"))
-        fprintf(stderr, "beam.com: posix_spawn of %s with the APE loader %s: %s\n",
-                path, loader, rc == 0 ? "ok" : strerror(rc));
+    verbose("beam.com: posix_spawn of %s with the APE loader %s: %s\n", path, loader,
+            rc == 0 ? "ok" : strerror(rc));
     if (rc != 0)
         return -1;
     return pid;
@@ -2851,12 +2916,8 @@ void beam_com_main(int *argcp, char ***argvp)
 
     start_epmd(&all);
 
-    if (getenv("BEAM_COM_VERBOSE")) {
-        fprintf(stderr, "beam.com: executing:");
-        for (i = 0; i < all.n; i++)
-            fprintf(stderr, " %s", all.v[i]);
-        fprintf(stderr, "\n");
-    }
+    if (getenv("BEAM_COM_VERBOSE"))
+        verbose_args(&all);
 
     *argcp = all.n;
     *argvp = all.v;

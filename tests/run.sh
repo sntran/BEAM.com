@@ -1696,6 +1696,58 @@ watch_stop() {
     wait "$watcher" 2>/dev/null
     rm -f "$tmp.in"
 }
+# Each line of BEAM_COM_VERBOSE is one write() (verbose() of
+# c_src/cosmo/beam_com.c). check() puts the output and the errors of a
+# program and of its children into one file. A line in parts took the
+# output of another process between its parts ("beam.com: executing:script
+# ok", peer_check.b.com). The errors go to a socket of SOCK_SEQPACKET, which
+# keeps each write() as one packet.
+if [ -f "$dir/beam.com" ] && [ "$(uname -s)" = Linux ]; then
+    if command -v python3 > /dev/null 2>&1; then
+        echo "==> beam.com: each line of BEAM_COM_VERBOSE with one write()"
+        cat > "$tmp.seq.py" <<'SEQ'
+import os, socket, subprocess, sys
+a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+env = dict(os.environ, BEAM_COM_VERBOSE="1")
+p = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=b.fileno(), env=env)
+b.close()
+packets = []
+a.settimeout(60)
+while True:
+    try:
+        m = a.recv(1 << 20)
+    except socket.timeout:
+        break
+    if not m:
+        break
+    packets.append(m)
+    # A process that outlives the program (epmd) can keep the socket open.
+    if p.poll() is not None:
+        a.settimeout(2)
+p.wait(60)
+lines = [m for m in packets if m.startswith(b"beam.com: ")]
+cut = [m for m in lines if not m.endswith(b"\n")]
+executing = [m for m in lines if m.startswith(b"beam.com: executing: ")]
+for m in cut[:3]:
+    print("in parts:", m[:100])
+print(f"{len(lines)} lines, {len(cut)} in parts, {len(executing)} lines 'executing'")
+sys.exit(0 if executing and not cut else 1)
+SEQ
+        if python3 -I "$tmp.seq.py" $runner "$dir/beam.com" -noshell -eval 'halt().'; then
+            echo "PASS: beam.com: each line of BEAM_COM_VERBOSE with one write()"
+        else
+            echo "FAIL: beam.com: each line of BEAM_COM_VERBOSE with one write()"
+            fail=1
+            failed="$failed
+  beam.com: a line of BEAM_COM_VERBOSE in parts, or no line 'executing'"
+        fi
+        rm -f "$tmp.seq.py"
+    else
+        echo "SKIP: the lines of BEAM_COM_VERBOSE (no python3)"
+    fi
+fi
+
 if [ -f "$dir/beam.com" ] && [ "$(uname -s)" = Linux ]; then
     wdir=$(mktemp -d "${TMPDIR:-/tmp}/beam_com_watch.XXXXXX")
     i=0
