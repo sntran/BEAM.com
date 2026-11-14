@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- With `BEAM_COM_VERBOSE`, `beam.com` writes each of its lines with one
+  `write()`. Before, the line `beam.com: executing: ...` went out in many
+  writes, one for each argument. When a program and its children wrote
+  to one file, the output of another process could go into that line.
+  Thus `peer_check.b.com` of `tests/run.sh` failed at random on macOS
+  arm64 ("beam.com: executing:script ok"). A new check of
+  `tests/run.sh` on Linux gives the program a socket of
+  `SOCK_SEQPACKET` as its stderr, and finds each line in one packet.
 - A custom build can add the NIF of tailwind.com 0.3.0: `nifs+=tailwind`
   in the build URL, or the box "tailwind" of the form. The build does
   not link it: it adds the native NIF objects of the release of
