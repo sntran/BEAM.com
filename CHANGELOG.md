@@ -8,7 +8,9 @@ notes of its release.
 - Mix in `beam.com` keeps the code path of Elixir in a project with
   `language: :erlang`. Before, `mix compile` and `mix run` of such a
   project, or of an Elixir project with it as a dep, stopped with
-  `undef` for `Path.Wildcard.list_dir/1`. Before each compile, Mix
+  `undef` for `Path.Wildcard.list_dir/1`. A Phoenix app with `telemetry`
+  from GitHub has such a dep, and its compile used all of the CPU with
+  no end. Before each compile, Mix
   removes the code paths of the applications that the project does not
   list. In a usual install, the form of the path of Elixir
   (`bin/../lib`) keeps it there by accident, but in `beam.com` it is in

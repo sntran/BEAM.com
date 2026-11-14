@@ -3132,9 +3132,15 @@ compile` and `mix.com run` stopped at the start with `undef` for
 `Path.Wildcard.list_dir/1`, from the first `Path.wildcard/2` of the
 compile. The error report itself then gave `undef` for
 `Exception.blame/3`. An Elixir project with such a project as a dep
-stopped in the same way (`Inspect.Opts.new/1`). A report also tells of
-a larger compile that used all of one CPU for 12 minutes. That case is
-not reproduced here.
+stopped in the same way (`Inspect.Opts.new/1`).
+
+Each Phoenix app has this case when it takes `telemetry` from GitHub,
+for example when Hex is not available: the repository of `telemetry`
+has a `mix.exs` with `language: :erlang`, and a git dep uses it (the
+Hex package builds with rebar3). In the larger compile of such an app,
+the compile of `telemetry` failed, and then the VM used more than one
+CPU and printed nothing more. A report tells of 12 minutes in this
+state.
 
 **Cause.** Before a compile, `Mix.Tasks.Compile.All` removes each code
 path that is not of an application of the project
@@ -3164,7 +3170,8 @@ beam.com mix run -e 'IO.puts(length(Path.wildcard("src/*")))'
 does not remove the code paths of the applications of Elixir (`elixir`,
 `eex`, `ex_unit`, `iex`, `logger` and `mix`). `tests/run.sh` checks a
 project with `language: :erlang`, and an Elixir project with it as a
-dep.
+dep. With the patch, a Phoenix app with `telemetry` from GitHub
+compiles in 13 s.
 
 **Possible upstream fix.** The same change. Mix itself runs from these
 paths, so a project of each language needs them. Today the usual
