@@ -3125,6 +3125,51 @@ the `Dbgi` chunk of the protocols (modules with `__protocol__/1`).
 **Possible upstream fix.** The same change: skip the paths of OTP, but
 not the paths of the applications of Elixir.
 
+### EX3. Mix removes the code path of Elixir in a project with `language: :erlang`
+
+**Symptom.** In a Mix project with `language: :erlang`, `mix.com
+compile` and `mix.com run` stopped at the start with `undef` for
+`Path.Wildcard.list_dir/1`, from the first `Path.wildcard/2` of the
+compile. The error report itself then gave `undef` for
+`Exception.blame/3`. An Elixir project with such a project as a dep
+stopped in the same way (`Inspect.Opts.new/1`). A report also tells of
+a larger compile that used all of one CPU for 12 minutes. That case is
+not reproduced here.
+
+**Cause.** Before a compile, `Mix.Tasks.Compile.All` removes each code
+path that is not of an application of the project
+(`prune_code_paths`, true by default). For `language: :erlang`, the
+applications of Elixir are not in that list (`Mix.AppLoader`), so Mix
+removes them. A module that is loaded stays, but each other module of
+Elixir gives `undef`.
+
+In a usual install, `bin/elixir` adds `-pa ELIXIR/bin/../lib/elixir/ebin`,
+and the code server keeps the `..`. `Code.delete_paths/1` expands each
+path, so it does not find these paths, and they stay. In `beam.com`, the
+code path of Elixir is `/zip/lib/elixir-VSN/ebin`, in the lib directory
+of OTP, with no `..`. The paths of the other applications of Elixir
+have the form `/zip/bin/../lib/...` and stay.
+
+**Reproduction.** A project with only `mix.exs` (`language: :erlang`)
+and one `.erl` file in `src/`:
+
+```sh
+beam.com mix run -e 'IO.puts(length(Path.wildcard("src/*")))'
+```
+
+`mix compile --no-prune-code-paths` works.
+
+**Workaround in BEAM.com.**
+`patches/elixir/0003-mix-keep-elixir-code-paths.patch`: `Compile.All`
+does not remove the code paths of the applications of Elixir (`elixir`,
+`eex`, `ex_unit`, `iex`, `logger` and `mix`). `tests/run.sh` checks a
+project with `language: :erlang`, and an Elixir project with it as a
+dep.
+
+**Possible upstream fix.** The same change. Mix itself runs from these
+paths, so a project of each language needs them. Today the usual
+install keeps them only because of the form of the path.
+
 ## Elixir packages with NIFs (exqlite, elixir_make)
 
 Seen with exqlite 0.41.0, bcrypt_elixir 3.3.2, elixir_make 0.10.0 and

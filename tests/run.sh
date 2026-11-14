@@ -1339,6 +1339,19 @@ if [ -f "$dir/beam.com" ]; then
     # information (step_bundle of scripts/steps.sh).
     printf 'defmodule Hello.Box do\n  defstruct [:text]\nend\n\ndefimpl String.Chars, for: Hello.Box do\n  def to_string(%%{text: t}), do: t\nend\n' > lib/box.ex
     check mix '^true true box$' run -e 'IO.puts("#{Protocol.consolidated?(String.Chars)} #{Protocol.consolidated?(Enumerable)} #{%Hello.Box{text: "box"}}")'
+    # A project with language: :erlang, and an Elixir project with it as a
+    # dep: the compile keeps the code path of Elixir (patches/elixir/0003).
+    # Before, a module of Elixir that was not loaded yet gave undef, for
+    # example Path.Wildcard.list_dir/1.
+    mkdir -p ../erl_check/src ../erl_user/lib
+    printf 'defmodule ErlCheck.MixProject do\n  use Mix.Project\n  def project, do: [app: :erl_check, version: "0.1.0", language: :erlang]\nend\n' > ../erl_check/mix.exs
+    printf -- '-module(erl_check).\n-export([hello/0]).\nhello() -> erlang_project.\n' > ../erl_check/src/erl_check.erl
+    printf 'defmodule ErlUser.MixProject do\n  use Mix.Project\n  def project, do: [app: :erl_user, version: "0.1.0", deps: [{:erl_check, path: "../erl_check"}]]\nend\n' > ../erl_user/mix.exs
+    cd ../erl_check
+    check mix '^erlang_project 1$' run -e 'IO.puts("#{:erl_check.hello()} #{length(Path.wildcard("src/*.erl"))}")'
+    cd ../erl_user
+    check mix '^erlang_project$' run -e 'IO.puts(:erl_check.hello())'
+    cd ../hello
     # iex evaluates .iex.exs after the start of the shell (and of mix).
     printf 'IO.puts("iex: #{Hello.hello()}")\nSystem.halt()\n' > tools.iex.exs
     check iex.com '^iex: world$' --dot-iex tools.iex.exs -S mix

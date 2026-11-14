@@ -47,6 +47,7 @@ The step `elixir` of the build applies them.
 |---|---|---|---|
 | `0001-mix-lock-port-file.patch` | `lib/mix/lib/mix/sync/lock.ex` | The build lock of Mix does not wait for its own process. | EX1 |
 | `0002-mix-consolidate-elixir-protocols-in-otp-lib.patch` | `lib/mix/lib/mix/compilers/protocol.ex` | Mix consolidates the protocols of Elixir when Elixir is in the lib directory of OTP. | EX2 |
+| `0003-mix-keep-elixir-code-paths.patch` | `lib/mix/lib/mix/tasks/compile.all.ex` | The compile keeps the code paths of the applications of Elixir, also for a project with `language: :erlang`. | EX3 |
 
 ## rustler (`patches/rustler/`)
 
