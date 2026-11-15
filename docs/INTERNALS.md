@@ -167,12 +167,18 @@ keeps the bytes up to the first entry that it removes, moves the entries
 after that point that it keeps, adds the new entries, and writes a new
 central directory with the new offsets.
 
-The code of OTP 29 and of Elixir has its docs and its debug information
-(for `h/1`, the debugger and `cover`). A program does not need them: the
-builder strips them from the beam files of the program, as `mix release`
-does (`strip_beams`). It keeps the chunks that the loader uses, the line
-numbers (for stack traces) and the attributes. A program is about 7.7 MB
-smaller, and it starts as fast as before ([`BENCHMARKS.md`](BENCHMARKS.md)).
+In the zip of `beam.com`, the code of OTP 29 has no docs and no debug
+information, and the code of Elixir has only its docs (for `h/1` in
+`iex`). `step_bundle` of `scripts/steps.sh` strips them, about 16 MB. The
+protocols of Elixir keep their debug information, because the
+consolidation of Mix reads it. A custom build can keep the debug
+information of OTP and Elixir (`DEBUG_INFO=1`, for `cover` and `rr/1`)
+and the docs of OTP (`OTP_DOCS=1`, for `h/1` of OTP modules). A program
+does not need them: the builder strips them from the beam files of the
+program, as `mix release` does (`strip_beams`). It keeps the chunks that
+the loader uses, the line numbers (for stack traces) and the
+attributes. A program is about 7.7 MB smaller, and it starts as fast as
+before ([`BENCHMARKS.md`](BENCHMARKS.md)).
 
 The builder also strips the beams that it compiles, of the program and
 of its deps. Their compile information and debug information have the

@@ -104,6 +104,13 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <div><label for="wasm">WebAssembly (WAMR)</label>
 <select id="wasm" name="wasm"><option value="1">Yes</option><option value="0">No</option></select></div>
 </div>
+<div class="row">
+<div><label for="debug_info">Debug information</label>
+<select id="debug_info" name="debug_info"><option value="0">No</option><option value="1">Yes</option></select></div>
+<div><label for="otp_docs">Docs of OTP</label>
+<select id="otp_docs" name="otp_docs"><option value="0">No</option><option value="1">Yes</option></select></div>
+</div>
+<p class="muted">The debug information of OTP and Elixir is for cover and rr/1 (about 14 MB more). The docs of OTP are for h/1 of OTP modules in iex (about 2 MB more). A program that beam.com builds has neither.</p>
 </fieldset>
 
 <fieldset>
@@ -159,7 +166,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <p class="warn w-hex">Hex needs inets and ssl. Keep inets and ssl, or choose No for Hex.</p>
 <button formmethod="post">Send me the link</button>
 </form>
-<p class="muted">A program or CI gets the file with one request: <code class="nw">curl -fo beam.com https://mkfifo.com/beam.com</code> gives the default build at once. Each choice is a field of the query: <code>otp_version</code>, <code>elixir_version</code> (empty: no Elixir), <code>apps</code>, <code>omit</code> (default applications to leave out), <code>hex</code>, <code>rebar3</code>, <code>jit</code>, <code>sqlite</code>, <code>wasm</code> (0 or 1), and <code>nifs+=</code> (the default NIFs and these) or <code>nifs=</code> (only these). For example <code class="nw">curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&amp;apps=mnesia&amp;nifs+=vix'</code>. The request waits for the build. <code>?nifs+=vix,rusty_csv,ex_pdfium</code> alone needs no build.</p>
+<p class="muted">A program or CI gets the file with one request: <code class="nw">curl -fo beam.com https://mkfifo.com/beam.com</code> gives the default build at once. Each choice is a field of the query: <code>otp_version</code>, <code>elixir_version</code> (empty: no Elixir), <code>apps</code>, <code>omit</code> (default applications to leave out), <code>hex</code>, <code>rebar3</code>, <code>jit</code>, <code>sqlite</code>, <code>wasm</code>, <code>debug_info</code>, <code>otp_docs</code> (0 or 1), and <code>nifs+=</code> (the default NIFs and these) or <code>nifs=</code> (only these). For example <code class="nw">curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&amp;apps=mnesia&amp;nifs+=vix'</code>. The request waits for the build. <code>?nifs+=vix,rusty_csv,ex_pdfium</code> alone needs no build.</p>
 <p class="muted">This page is a FIFO of <a href="https://mkfifo.com/">mkfifo.com</a>. The build runs on GitHub Actions from the main branch of BEAM.com. A member of the repository can also ask for a build with <a href="https://github.com/sntran/BEAM.com/issues/new?template=custom_build.yml">an issue</a>.</p>
 </main>
 </body>

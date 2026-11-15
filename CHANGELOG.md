@@ -3,6 +3,24 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+- `beam.com` is about 16 MB smaller (56.7 MB in 0.1.0-rc.7). The code of
+  OTP in its zip has no debug information (the chunk `Dbgi`) and no docs
+  (the chunk `Docs`), and the code of Elixir has no debug information.
+  Only the protocols of Elixir keep it, for the consolidation of Mix.
+  `kernel` and `stdlib` stay stored, so a program starts as fast as
+  before. A program that `beam.com` builds had neither already. Before,
+  the zip kept them for `h/1` of OTP modules, `cover` and `rr/1`.
+- A custom build can keep them: the choices "Debug information" and "Docs
+  of OTP" of the form of mkfifo.com/beam.com and of the issue form, the
+  fields `debug_info=1` and `otp_docs=1` of a build URL, and
+  `DEBUG_INFO=1` and `OTP_DOCS=1` of `scripts/steps.sh`.
+- The builder also strips the code of an application whose first beam
+  file has debug information and no docs, for a program of such a build.
+- Remove `scripts/__pycache__/beam-fifo.cpython-311.pyc`, a file of
+  Python that a commit added by mistake.
+
 ## 0.1.0-rc.7
 
 The seventh release candidate of 0.1.0. As 0.1.0-rc.6, it is a

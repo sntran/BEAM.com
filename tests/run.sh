@@ -293,6 +293,14 @@ case $os in
 linux) check beam.com '^fds: 0 1 2 3$' -noshell -eval "$fds_eval" ;;
 darwin) check beam.com '^fds: 0 1 2 3 4$' -noshell -eval "$fds_eval" ;;
 esac
+# The code of OTP in the zip has no debug information and no docs (step_bundle
+# of scripts/steps.sh, without DEBUG_INFO and OTP_DOCS), and the beam files
+# of stdlib are not gzip files (the zip keeps them stored).
+chunks_eval='C = fun(M, N) -> {ok, {_, [{_, D}]}} = beam_lib:chunks(code:which(M), [N], [allow_missing_chunks]), is_binary(D) end,
+    {ok, B} = file:read_file(code:which(lists)),
+    io:format("chunks: ~p ~p ~p ~p~n", [C(lists, "Dbgi"), C(lists, "Docs"), C(ssl, "Dbgi"), binary:part(B, 0, 4)]),
+    halt().'
+check beam.com '^chunks: false false false <<"FOR1">>$' -noshell -eval "$chunks_eval"
 # 200 port programs, one after the other: erl_child_setup forks for each
 # one (C36 of docs/UPSTREAM.md).
 ports_eval='N = length([ok || _ <- lists:seq(1, 200),

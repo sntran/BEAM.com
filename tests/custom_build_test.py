@@ -142,6 +142,46 @@ class ShortNames(unittest.TestCase):
             build_settings(["apps: 9bad"])
 
 
+class CodeFlags(unittest.TestCase):
+    """The debug information and the docs of OTP in the zip (DEBUG_INFO and
+    OTP_DOCS of scripts/steps.sh)."""
+
+    def test_a_query_with_the_flags(self):
+        env = build_settings(["debug_info: 1", "otp_docs: 1"])
+        self.assertEqual((env["DEBUG_INFO"], env["OTP_DOCS"]), ("1", "1"))
+        env = build_settings(["otp_docs: 1"])
+        self.assertEqual(env["OTP_DOCS"], "1")
+        self.assertNotIn("DEBUG_INFO", env)
+
+    def test_a_build_without_them_keeps_its_key(self):
+        # As VIX_PARTS: only a chosen flag goes into the settings, so the
+        # KEY of the builds of before stays the same.
+        for lines in (["hex: 1"], ["debug_info: 0", "otp_docs: 0"]):
+            env = build_settings(lines)
+            self.assertNotIn("DEBUG_INFO", env)
+            self.assertNotIn("OTP_DOCS", env)
+
+    def test_an_empty_input_is_0(self):
+        # 4-start.github.eml of a confirm link of before the flags sends
+        # them empty.
+        env = dict(cb.URL_DEFAULTS, INPUT_URL="", INPUT_DEBUG_INFO="", INPUT_OTP_DOCS="")
+        choices = cb.dispatch(env)
+        self.assertEqual((choices["debug_info"], choices["otp_docs"]), (False, False))
+        with self.assertRaisesRegex(SystemExit, "must be 0 or 1"):
+            cb.dispatch(dict(env, INPUT_DEBUG_INFO="2"))
+        with self.assertRaisesRegex(SystemExit, "Not a value"):
+            inputs(["otp_docs: ;"])
+
+    def test_an_issue_with_the_check_boxes(self):
+        body = ("### Debug information and docs\n\n"
+                "- [x] Debug information of OTP and Elixir (the chunk Dbgi)\n"
+                "- [ ] Docs of OTP (the chunk Docs)\n")
+        choices = cb.issue(body)
+        self.assertEqual((choices["debug_info"], choices["otp_docs"]), (True, False))
+        self.assertEqual(cb.settings(choices)["DEBUG_INFO"], "1")
+        self.assertEqual(cb.issue("")["debug_info"], False)
+
+
 class FormNames(unittest.TestCase):
     def test_a_get_of_the_form_gives_the_inputs_of_the_email_path(self):
         # The fields of 1-page.answer.eml, as a browser sends them, and the
@@ -150,7 +190,7 @@ class FormNames(unittest.TestCase):
                  "dnif1: exqlite", "dnif2: ", "dnif3: argon2_elixir", "elixir_version: 1.20.4",
                  "hex: 0", "jit: 1", "k_asn1: asn1", "k_ssl: ", "k_public_key: public_key",
                  "nif2: vix", "nif5: vix-icc", "nif9: tailwind", "otp: keep", "otp_version: 29.1.1",
-                 "rebar3: 0", "sqlite: 1", "wasm: 1"]
+                 "rebar3: 0", "sqlite: 1", "wasm: 1", "debug_info: 0", "otp_docs: 1"]
         env = inputs(sorted(lines))
         self.assertEqual(env["INPUT_APPS"], "mnesia")
         self.assertEqual(env["INPUT_KEEP"], "keep asn1 public_key")
@@ -159,6 +199,8 @@ class FormNames(unittest.TestCase):
         settings = build_settings(sorted(lines))
         self.assertEqual(settings["NIFS_OMIT"], "bcrypt_elixir")
         self.assertEqual((settings["EXTRA_NIFS"], settings["FILE_NIFS"]), ("vix", "tailwind"))
+        self.assertEqual(settings["OTP_DOCS"], "1")
+        self.assertNotIn("DEBUG_INFO", settings)
         self.assertEqual(settings["OTP_OMIT"],
                          " ".join(a for a in sorted(cb.OMITTABLE) if a not in ("asn1", "public_key")))
 

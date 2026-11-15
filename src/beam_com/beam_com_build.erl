@@ -1616,12 +1616,16 @@ parents(Name) ->
      || N <- lists:seq(1, length(Parts))].
 
 %% A program does not need the docs and the debug information of the
-%% code: the beam files of OTP 29 and of Elixir in beam.com have both (for h/1
-%% and the debugger). For the applications of the zip whose code has docs
-%% (the first beam file tells), the program gets the beam files without
-%% them, in place of the entries of the zip, as "mix release" strips
-%% them (strip_beams): it keeps the chunks that the loader uses, the line
-%% numbers and the attributes, and does not compress the file.
+%% code. The beam files of Elixir in beam.com have docs (for h/1), and a
+%% custom build can keep the debug information of OTP and Elixir
+%% (DEBUG_INFO=1) and the docs of OTP (OTP_DOCS=1) in scripts/steps.sh.
+%% For the applications of the zip whose code has docs or debug
+%% information (the first beam file tells), the program gets the beam
+%% files without them, in place of the entries of the zip, as "mix
+%% release" strips them (strip_beams): it keeps the chunks that the loader
+%% uses, the line numbers and the attributes, and does not compress the
+%% file. step_bundle of scripts/steps.sh strips the code of OTP with the
+%% same chunks.
 without_docs(Apps, Base, Root) ->
     lists:append([app_without_docs(A, maps:get(vsn, maps:get(A, Base)), Root)
                   || A <- Apps]).
@@ -1629,7 +1633,7 @@ without_docs(Apps, Base, Root) ->
 app_without_docs(App, Vsn, Root) ->
     Dir = atom_to_list(App) ++ "-" ++ Vsn,
     Files = lists:sort(filelib:wildcard(filename:join([Root, "lib", Dir, "ebin", "*.beam"]))),
-    case Files =/= [] andalso has_docs(hd(Files)) of
+    case Files =/= [] andalso has_extra(hd(Files)) of
         false -> [];
         true ->
             [begin
@@ -1645,10 +1649,11 @@ strip(Beam) ->
     {ok, Stripped} = beam_lib:build_module([C || {_, Data} = C <- Chunks, is_binary(Data)]),
     Stripped.
 
-has_docs(File) ->
+%% The beam file has docs or debug information.
+has_extra(File) ->
     {ok, Beam} = read_file(File),
-    case beam_lib:chunks(Beam, ["Docs"], [allow_missing_chunks]) of
-        {ok, {_, [{"Docs", Docs}]}} -> is_binary(Docs);
+    case beam_lib:chunks(Beam, ["Docs", "Dbgi"], [allow_missing_chunks]) of
+        {ok, {_, Chunks}} -> lists:any(fun({_, Data}) -> is_binary(Data) end, Chunks);
         _ -> false
     end.
 
