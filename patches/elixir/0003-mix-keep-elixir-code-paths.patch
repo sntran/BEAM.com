@@ -1,0 +1,44 @@
+Mix.Tasks.Compile.All: keep the code paths of Elixir in a project with language: :erlang
+
+Before a compile, Mix removes each code path that is not of an
+application of the project. A project with language: :erlang does not
+list the applications of Elixir, so Mix removed the code paths of
+Elixir and of Mix itself. Each module of Elixir that was not loaded yet
+then gave undef, for example Path.Wildcard.list_dir/1 at the first
+Path.wildcard/2 of the compile.
+
+Keep the code paths of the applications of Elixir. In a usual install,
+the code path of Elixir has the form ELIXIR/bin/../lib, which
+Code.delete_paths/1 does not find, so nothing changes there.
+
+--- a/lib/mix/lib/mix/tasks/compile.all.ex
++++ b/lib/mix/lib/mix/tasks/compile.all.ex
+@@ -51,7 +51,7 @@
+     current_paths = :code.get_path()
+ 
+     if Keyword.get(config, :prune_code_paths, true) and "--no-prune-code-paths" not in args do
+-      Code.delete_paths(current_paths -- loaded_paths)
++      Code.delete_paths(current_paths -- (loaded_paths ++ elixir_paths()))
+     end
+ 
+     Code.prepend_paths(loaded_paths -- current_paths, cache: true)
+@@ -97,6 +97,19 @@
+     {status, diagnostics}
+   end
+ 
++  # The code paths of the applications of Elixir stay. Mix itself runs from
++  # them, also for a project with language: :erlang, which does not list
++  # them. In a usual install, the code path has the form ELIXIR/bin/../lib,
++  # which Code.delete_paths/1 does not find, so these paths stayed already.
++  # In one file with OTP and Elixir (beam.com), they are in the lib
++  # directory of OTP, and Mix removed them.
++  defp elixir_paths do
++    for app <- [:elixir, :eex, :ex_unit, :iex, :logger, :mix],
++        dir <- [:code.lib_dir(app)],
++        is_list(dir),
++        do: :filename.join(dir, ~c"ebin")
++  end
++
+   @doc """
+   Returns all apps that should be available at compile time.
+   """
