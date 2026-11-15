@@ -45,7 +45,9 @@ send(Unix, Socket) ->
 
 %% Receive one descriptor over the Unix socket Unix, in at most Timeout
 %% ms. The descriptor has FD_CLOEXEC. The caller owns it: for example,
-%% gen_tcp:listen(0, [{fd, Fd} | Options]) makes a listener of it.
+%% gen_tcp:listen(0, [{fd, Fd} | Options]) makes a listener of it. Give
+%% port 0 and no ip or ifaddr option: with an address, inet binds the
+%% descriptor again, and with another port, the call fails.
 -spec recv(gen_tcp:socket(), timeout()) ->
           {ok, non_neg_integer()} | {error, timeout | closed | term()}.
 recv(Unix, Timeout) when Timeout =:= infinity;

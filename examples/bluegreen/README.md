@@ -54,10 +54,11 @@ as a probe: it shows the result, but a failure does not stop CI.
 The old server sends the descriptor of its listening socket over a Unix
 socket, with `beam_com_fd:send/2`. The new server receives it with
 `beam_com_fd:recv/2`, and opens a listener on it with
-`gen_tcp:listen(Port, [{fd, Fd} | Options])`. The two processes then have
-one socket. When the old server closes its copy, the socket stays open,
-and its queue stays. The new server accepts each connection of that
-queue.
+`gen_tcp:listen(0, [{fd, Fd} | Options])`: port 0, and no `ip` or
+`ifaddr` option, because the socket is already bound. The two processes
+then have one socket. When the old server closes its copy, the socket
+stays open, and its queue stays. The new server accepts each connection
+of that queue.
 
 `beam_com_fd` is a module of `beam.com` (`src/beam_com_reload/`), with a
 static NIF (`c_src/fd/beam_com_fd.c`). The `socket` module of OTP can

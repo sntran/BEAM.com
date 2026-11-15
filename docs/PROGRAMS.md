@@ -700,9 +700,10 @@ listening socket to the new program, with the module `beam_com_fd` of
 each program. The old program sends the descriptor over a Unix socket
 (`beam_com_fd:send(Unix, Listen)`), and the new program receives it
 (`{ok, Fd} = beam_com_fd:recv(Unix, Timeout)`) and listens on it
-(`gen_tcp:listen(Port, [{fd, Fd} | Options])`). The connections in the
-accept queue stay. The spike [`examples/bluegreen`](../examples/bluegreen)
-does all the steps. Only on Linux, macOS and the BSDs: on Windows, the
+(`gen_tcp:listen(0, [{fd, Fd} | Options])`, with port 0 and no `ip` or
+`ifaddr` option, because the socket is already bound). The connections
+in the accept queue stay. The spike
+[`examples/bluegreen`](../examples/bluegreen) does all the steps. Only on Linux, macOS and the BSDs: on Windows, the
 result is `{error, enotsup}`.
 
 ### What needs a restart

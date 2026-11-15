@@ -65,19 +65,21 @@ main(_) ->
 serve(Port, State0, Handoff) ->
     %% Only the loopback address: /upgrade starts the file that a client
     %% names, and it has no other check.
-    Options = [binary, {packet, http_bin}, {active, false}, {ip, {127, 0, 0, 1}},
-               {reuseaddr, true}, {backlog, 1024}],
+    Options = [binary, {packet, http_bin}, {active, false}, {backlog, 1024}],
     {Listen, State} =
         case Handoff of
             undefined ->
-                {ok, L} = gen_tcp:listen(Port, Options),
+                {ok, L} = gen_tcp:listen(Port, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}
+                                                | Options]),
                 {L, State0};
             _ ->
                 %% Step 2: the listening socket of the old server.
                 {ok, U} = gen_tcp:connect({local, Handoff ++ ".sock"}, 0,
                                           [local, binary, {active, false}], 30000),
                 {ok, Fd} = beam_com_fd:recv(U, 30000),
-                {ok, L} = gen_tcp:listen(Port, [{fd, Fd} | Options]),
+                %% Port 0 and no address: the socket is already bound, and
+                %% inet binds it again when the options name an address.
+                {ok, L} = gen_tcp:listen(0, [{fd, Fd} | Options]),
                 ok = gen_tcp:send(U, <<"L">>),
                 ok = gen_tcp:close(U),
                 %% Step 4: the state of the old server.
@@ -278,7 +280,9 @@ request(Port, Line, Body) ->
     {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}], 5000),
     ok = gen_tcp:send(S, [Line, " HTTP/1.1\r\nHost: localhost\r\nContent-Length: ",
                           integer_to_list(iolist_size(Body)), "\r\n\r\n", Body]),
-    {ok, Reply} = recv_all(S, <<>>),
+    Result = recv_all(S, <<>>),
+    ok = gen_tcp:close(S),
+    {ok, Reply} = Result,
     [_, Text] = binary:split(Reply, <<"\r\n\r\n">>),
     Text.
 
