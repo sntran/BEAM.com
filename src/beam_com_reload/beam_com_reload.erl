@@ -57,8 +57,11 @@
 %% The start from beam.com (-eval of beam_com.c, after the boot): a
 %% temporary child of kernel_safe_sup, so an error of the reload never
 %% stops the node. Nothing without -beam_com_exe, or with 0 for
-%% -beam_com_reload.
+%% -beam_com_reload. Also, each time, boot/0 loads beam_com_fd from the
+%% directory of this module (the descriptors of c_src/fd/beam_com_fd.c),
+%% because that directory is not in the code path.
 boot() ->
+    load_fd(code:which(?MODULE)),
     case {init:get_argument(beam_com_exe), interval(init:get_argument(beam_com_reload))} of
         {{ok, [[Path] | _]}, Ms} when Ms > 0 ->
             Spec = #{id => ?MODULE,
@@ -76,6 +79,12 @@ boot() ->
         _ ->
             ok
     end.
+
+load_fd(Path) when is_list(Path) ->
+    _ = code:load_abs(filename:join(filename:dirname(Path), "beam_com_fd")),
+    ok;
+load_fd(_) ->
+    ok.
 
 %% The last -beam_com_reload MS: a later value (the vm.args of the
 %% release) wins over the value of beam.com. Do not use

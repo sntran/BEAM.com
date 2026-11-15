@@ -230,7 +230,7 @@ These need a restart (`systemctl restart hello`):
 - a new NIF, or another version of `beam.com`.
 
 The log of the program tells which files of a new file need a restart.
-For a restart with almost no failed request, see the spike
+For a restart with no failed request, see the spike
 [`examples/bluegreen`](../examples/bluegreen).
 
 ## Limits, and why

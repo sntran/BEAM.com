@@ -543,10 +543,21 @@ if [ -d examples ]; then
         peer_line='release [0-9][0-9]*, sum 6, own code true, error boom, bytes 1000000, sent 1000000'
         check peer_check.b.com "^peer standard_io: $peer_line\$@@^peer tcp: $peer_line\$@@^exit status 3\$@@^cmd hello\$@@^slow reader 200000\$@@^halt reader 4097\$@@^closed listen socket refused\$@@^find executable true\$@@^script ok\$@@^nouse_stdio fd ping\$"
     fi
+    # beam_com_fd (c_src/fd/beam_com_fd.c): the descriptor of a listener
+    # over a Unix socket, with the native control message of each system.
+    # A connection in the queue at the handover must not get a reset.
+    check beam.com 'wrote .*fd_check.b.com' \
+        tests/programs/fd_check.erl -o "$dir/fd_check.b.com"
+    if [ -f "$dir/fd_check.b.com" ]; then
+        fd_lines='^fd: same port true, early {ok,<<"early">>}, late {ok,<<"late">>}$'
+        fd_lines="$fd_lines@@^fd timeout: {error,timeout}\$@@^fd closed: {error,closed}\$"
+        check fd_check.b.com "$fd_lines" "$dir"
+    fi
     # The blue-green spike (examples/bluegreen): an upgrade under load, and
-    # three upgrades that the server refuses. Linux has a result; the other
-    # systems have other rules for SO_REUSEPORT, so there it is a probe,
-    # with 5000 requests, so that the load still runs at the switch.
+    # three upgrades that the server refuses. The new server gets the
+    # listening socket (beam_com_fd), so no request fails. Linux has a
+    # result; on the other systems it is a probe, with 5000 requests, so
+    # that the load still runs at the switch.
     # check.sh is a shell script: sh starts it, and it starts each APE file
     # with RUNNER (the APE loader on NetBSD and OpenBSD).
     if [ -f "$dir/beam.com" ]; then

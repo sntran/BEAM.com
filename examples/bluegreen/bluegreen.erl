@@ -1,7 +1,7 @@
 %% A blue-green upgrade of one beam.com file: a new file of the program
-%% takes the place of the running one, with no lost state. On Linux, a
-%% request in the accept queue of the old listener can get a reset (see
-%% "Limits" in examples/bluegreen/README.md). A spike: see that file.
+%% takes the place of the running one, with no lost state and no lost
+%% request: the new server gets the listening socket itself. A spike: see
+%% examples/bluegreen/README.md.
 %%
 %%   beam.com examples/bluegreen/bluegreen.erl -o bluegreen.com
 %%   ./bluegreen.com serve PORT            serve "count C version V upgrades U"
@@ -18,11 +18,15 @@
 %%    A file that does not start, or a migrate/1 that refuses the state,
 %%    stops the upgrade, and the server goes on.
 %% 2. Listen. FILE starts as its own process ("serve PORT HANDOFF"): a
-%%    peer node stops when the node that started it stops. It listens on
-%%    the same port (SO_REUSEPORT), but does not accept yet.
-%% 3. Hand off. The server closes its listener, waits for its open
-%%    requests, and writes its state to HANDOFF. The new connections wait
-%%    in the queue of the new listener.
+%%    peer node stops when the node that started it stops. It connects
+%%    to the Unix socket HANDOFF.sock of the server, and gets the
+%%    descriptor of the listening socket (beam_com_fd, SCM_RIGHTS). The
+%%    two servers then have one socket, but the new one does not accept
+%%    yet.
+%% 3. Hand off. The server stops its accept and closes its copy of the
+%%    socket, waits for its open requests, and writes its state to
+%%    HANDOFF. The new connections wait in the queue of the socket, and
+%%    no connection gets a reset.
 %% 4. The new server reads the state, calls its migrate/1, and accepts.
 %%    The old server stops.
 -module(bluegreen).
@@ -61,21 +65,29 @@ main(_) ->
 serve(Port, State0, Handoff) ->
     %% Only the loopback address: /upgrade starts the file that a client
     %% names, and it has no other check.
-    {ok, Listen} = gen_tcp:listen(Port, [binary, {packet, http_bin}, {active, false},
-                                         {ip, {127, 0, 0, 1}},
-                                         {reuseaddr, true}, {reuseport, true},
-                                         {backlog, 1024}]),
-    State = case Handoff of
-                undefined ->
-                    State0;
-                _ ->
-                    %% Step 2: listening. Step 4: the state of the old server.
-                    ok = file:write_file(Handoff ++ ".listening", <<>>),
-                    {ok, Old} = wait_file(Handoff, 30000),
-                    {ok, New} = migrate(binary_to_term(Old)),
-                    ok = file:delete(Handoff),
-                    New
-            end,
+    Options = [binary, {packet, http_bin}, {active, false}, {backlog, 1024}],
+    {Listen, State} =
+        case Handoff of
+            undefined ->
+                {ok, L} = gen_tcp:listen(Port, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}
+                                                | Options]),
+                {L, State0};
+            _ ->
+                %% Step 2: the listening socket of the old server.
+                {ok, U} = gen_tcp:connect({local, Handoff ++ ".sock"}, 0,
+                                          [local, binary, {active, false}], 30000),
+                {ok, Fd} = beam_com_fd:recv(U, 30000),
+                %% Port 0 and no address: the socket is already bound, and
+                %% inet binds it again when the options name an address.
+                {ok, L} = gen_tcp:listen(0, [{fd, Fd} | Options]),
+                ok = gen_tcp:send(U, <<"L">>),
+                ok = gen_tcp:close(U),
+                %% Step 4: the state of the old server.
+                {ok, Old} = wait_file(Handoff, 30000),
+                {ok, New} = migrate(binary_to_term(Old)),
+                ok = file:delete(Handoff),
+                {L, New}
+        end,
     Self = self(),
     spawn_link(fun() -> acceptor(Listen, Self) end),
     loop(#{listen => Listen, port => Port, state => State, handlers => #{},
@@ -94,10 +106,17 @@ loop(#{state := State, handlers := Handlers} = S) ->
             maybe_finish(S#{handlers := maps:remove(Ref, Handlers)});
         {upgrade, From, File} ->
             Self = self(),
-            spawn(fun() -> upgrade(Self, From, File, maps:get(port, S), State) end),
+            case inet:getfd(maps:get(listen, S)) of
+                {ok, Fd} ->
+                    spawn(fun() -> upgrade(Self, From, File, maps:get(port, S), State, Fd) end);
+                {error, Reason} ->
+                    %% After a switch: the listener of this server is closed.
+                    From ! {upgrade, io_lib:format("upgrade refused: ~0p~n", [{listen, Reason}])}
+            end,
             loop(S);
         {switch, Handoff} ->
-            %% Step 3: no new connection comes to this server.
+            %% Step 3: this server accepts no more connections. The socket
+            %% stays open, because the new server has a copy of it.
             ok = gen_tcp:close(maps:get(listen, S)),
             loop(S#{handoff := Handoff});
         acceptor_done ->
@@ -162,24 +181,59 @@ read_request(Socket, Method, Path, Length) ->
     end.
 
 %% The upgrade, in its own process: the server serves during the check.
-upgrade(Server, From, File, Port, State) ->
+upgrade(Server, From, File, Port, State, Fd) ->
     Text = case check(File, State) of
                {ok, Version} ->
                    Handoff = filename:join(filename:dirname(File),
                                            "bluegreen-handoff-" ++ os:getpid()),
-                   start(File, Port, Handoff),
-                   case wait_file(Handoff ++ ".listening", 30000) of
-                       {ok, _} ->
-                           ok = file:delete(Handoff ++ ".listening"),
+                   case handover(File, Port, Handoff, Fd) of
+                       ok ->
                            Server ! {switch, Handoff},
                            io_lib:format("upgrade to version ~b~n", [Version]);
-                       timeout ->
-                           "upgrade refused: the new file did not listen\n"
+                       {error, Reason} ->
+                           io_lib:format("upgrade refused: ~0p~n", [{handover, Reason}])
                    end;
                {error, Reason} ->
                    io_lib:format("upgrade refused: ~0p~n", [Reason])
            end,
     From ! {upgrade, Text}.
+
+%% Step 2: the new file gets the descriptor Fd of the listening socket
+%% over the Unix socket HANDOFF.sock, and tells when it listens.
+handover(File, Port, Handoff, Fd) ->
+    Path = Handoff ++ ".sock",
+    _ = file:delete(Path),
+    case gen_tcp:listen(0, [binary, {active, false}, {ifaddr, {local, Path}}]) of
+        {ok, U} ->
+            start(File, Port, Handoff),
+            Result = case gen_tcp:accept(U, 30000) of
+                         {ok, S} ->
+                             R = give(S, Fd),
+                             _ = gen_tcp:close(S),
+                             R;
+                         {error, timeout} ->
+                             {error, the_new_file_did_not_connect};
+                         {error, _} = Error ->
+                             Error
+                     end,
+            _ = gen_tcp:close(U),
+            _ = file:delete(Path),
+            Result;
+        {error, _} = Error ->
+            Error
+    end.
+
+give(S, Fd) ->
+    case beam_com_fd:send(S, Fd) of
+        ok ->
+            case gen_tcp:recv(S, 1, 30000) of
+                {ok, <<"L">>} -> ok;
+                {error, timeout} -> {error, the_new_file_did_not_listen};
+                {error, _} = Error -> Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
 %% Step 1: the new code in a peer node, with the state of this server.
 %% peer:start/1, not start_link/1: a file that does not start must give
@@ -226,7 +280,9 @@ request(Port, Line, Body) ->
     {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}], 5000),
     ok = gen_tcp:send(S, [Line, " HTTP/1.1\r\nHost: localhost\r\nContent-Length: ",
                           integer_to_list(iolist_size(Body)), "\r\n\r\n", Body]),
-    {ok, Reply} = recv_all(S, <<>>),
+    Result = recv_all(S, <<>>),
+    ok = gen_tcp:close(S),
+    {ok, Reply} = Result,
     [_, Text] = binary:split(Reply, <<"\r\n\r\n">>),
     Text.
 

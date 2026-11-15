@@ -1375,7 +1375,7 @@ step_files() {
         wasm) echo "c_src/wasm patches/wamr" ;;
         make) echo "c_src/cosmo/depcc" ;;
         elixir) echo "patches/elixir" ;;
-        multicall) echo "patches/cosmo" ;;
+        multicall) echo "patches/cosmo c_src/fd" ;;
         wasm_runtime) echo "wasm/erts c_src/erts_wasm c_src/wasm patches/otp patches/wamr" ;;
         bundle) echo "src priv licenses c_src/cosmo/*.inetrc c_src/wasm/include LICENSE NOTICE" ;;
         *) echo "step_files: no step $1" >&2
@@ -1769,7 +1769,19 @@ step_multicall() {
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it (neither for driver_tab.c nor for its object).
     rm -f "$t/opt/$FLAVOR/driver_tab.c" "$objdir/driver_tab.o"
+    # The static NIF beam_com_fd (c_src/fd/beam_com_fd.c): a descriptor
+    # over a Unix socket, in each emulator. Without the other static NIFs
+    # of static_nifs(), STATIC_NIFS must also name the NIFs of the OTP
+    # configure (asn1 and crypto).
+    fd_nif=$ERL_TOP/erts/emulator/$objdir/beam_com_fd
+    rm -f "$fd_nif.a" "$(dirname "$fd_nif")/.aarch64/beam_com_fd.a"
+    "$CC" -O2 -D_COSMO_SOURCE -DSTATIC_ERLANG_NIF_LIBNAME=beam_com_fd \
+        -I"$ERL_TOP/erts/emulator/beam" -I"$ERL_TOP/erts/include" -I"$ERL_TOP/erts/include/$t" \
+        -c "$ROOT/c_src/fd/beam_com_fd.c" -o "$fd_nif.o"
+    "$AR" rcs "$fd_nif.a" "$fd_nif.o"
     nifs=$(static_nifs)
+    [ -n "$nifs" ] || nifs="$ERL_TOP/lib/asn1/priv/lib/$t/asn1rt_nif.a $ERL_TOP/lib/crypto/priv/lib/$t/crypto.a"
+    nifs="$nifs $fd_nif.a"
     # --wrap=close, --wrap=mkdir and --wrap=chown: see __wrap_close(),
     # __wrap_mkdir() and __wrap_chown() in c_src/cosmo/beam_com.c. The
     # wraps of LIBC_WRAPS are in c_src/cosmo/beam_com_libc.h, and the
@@ -1779,7 +1791,7 @@ step_multicall() {
     # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
         EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS" \
-        ${nifs:+"STATIC_NIFS=$nifs"} "$ERL_TOP/bin/$t/beam.$FLAVOR"
+        "STATIC_NIFS=$nifs" "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
 # Elixir, compiled with the Erlang/OTP of this build (its erl and erlc
