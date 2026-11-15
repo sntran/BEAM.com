@@ -1,10 +1,10 @@
 # Blue-green upgrade of one beam.com file (a spike)
 
 This spike replaces a running program with a new file of the same
-program. The state of the program stays. Almost no request fails: on
-Linux, a request that waits in the accept queue of the old server can
-get `econnreset` when that server closes its listener (see
-[Limits](#limits)).
+program. The state of the program stays, and no request fails: the new
+server gets the listening socket of the old server itself, so the
+connections in the accept queue stay (see
+[The handover of the socket](#the-handover-of-the-socket)).
 [`bluegreen.erl`](bluegreen.erl) is a small HTTP server. It counts its
 requests, and it is also its own load client.
 
@@ -39,14 +39,38 @@ as a probe: it shows the result, but a failure does not stop CI.
    start, or when `migrate/1` refuses the state. The server goes on, and
    the request gets the reason.
 2. **Listen.** The new file starts as its own process
-   (`serve PORT HANDOFF`). It listens on the same port, with
-   `SO_REUSEPORT`, but it does not accept yet.
-3. **Hand off.** The old server closes its listener. It waits for its
-   open requests, and writes its state to the file `HANDOFF` (a write
-   and a rename). In this time, the new connections wait in the queue of
-   the new listener.
+   (`serve PORT HANDOFF`). It connects to the Unix socket `HANDOFF.sock`
+   of the old server, and gets the descriptor of the listening socket.
+   It does not accept yet.
+3. **Hand off.** The old server stops its accept and closes its copy of
+   the socket. It waits for its open requests, and writes its state to
+   the file `HANDOFF` (a write and a rename). In this time, the new
+   connections wait in the queue of the socket.
 4. **Take over.** The new server reads the state, calls its own
    `migrate/1`, and starts to accept. The old server stops.
+
+## The handover of the socket
+
+The old server sends the descriptor of its listening socket over a Unix
+socket, with `beam_com_fd:send/2`. The new server receives it with
+`beam_com_fd:recv/2`, and opens a listener on it with
+`gen_tcp:listen(Port, [{fd, Fd} | Options])`. The two processes then have
+one socket. When the old server closes its copy, the socket stays open,
+and its queue stays. The new server accepts each connection of that
+queue.
+
+`beam_com_fd` is a module of `beam.com` (`src/beam_com_reload/`), with a
+static NIF (`c_src/fd/beam_com_fd.c`). The `socket` module of OTP can
+send a descriptor (`SCM_RIGHTS`), but the build of OTP for `beam.com`
+does not have it (`--disable-esock`), and `gen_tcp` cannot send one.
+
+Before, the new server opened its own listener on the same port, with
+`SO_REUSEPORT`. When the old listener closed, Linux reset the
+connections in its queue: one run of 5000 requests had one
+`econnreset`, and two CI runs on Linux aarch64 had one in 2000. Linux
+5.14 and later can move these connections to the other listener
+(`sysctl net.ipv4.tcp_migrate_req=1`), but that is a setting of the
+host, not of the program.
 
 ## Why the peer node only does the check
 
@@ -63,7 +87,9 @@ code cannot read, never gets traffic.
 
 ## Results
 
-Local, Linux x86_64 (4 CPUs), with the `beam.com` of CI:
+These results are from the method with `SO_REUSEPORT`, before the
+handover of the socket. Local, Linux x86_64 (4 CPUs), with the
+`beam.com` of CI:
 
 - 13 runs of 3000 requests, one after the other, with an upgrade in the
   middle: no failed request. The counts stay in order, so no state was
@@ -98,19 +124,14 @@ requests, and `sh` starts `check.sh` with `RUNNER` for each APE file.
 
 ## Limits
 
-- **Unix only.** The new server starts with `nohup`, and `SO_REUSEPORT`
-  of Windows is different. Windows is not done.
-- **Linux.** When a listener with `SO_REUSEPORT` closes, Linux resets the
-  connections in its accept queue. The acceptor of the old server keeps
-  that queue short, and the runs had no failure, but the risk is not
-  zero: one run of 5000 requests had one `econnreset`, and one CI run
-  on Linux aarch64 had one in 2000 (October 2026). Linux 5.14 and
-  later can move these connections to the other listener
-  (`sysctl net.ipv4.tcp_migrate_req=1`). A handover with no reset needs
-  another method, for example to give the listening socket itself to
-  the new server. That work comes after 0.1.0.
-- **macOS and the BSDs** have other rules for `SO_REUSEPORT`. CI runs the
-  check there as a probe, to get the result.
+- **Unix only.** The new server starts with `nohup`, and
+  `beam_com_fd` gives `{error, enotsup}` on Windows. Windows is not done.
+- **The path of the Unix socket** is `HANDOFF.sock`, next to the new
+  file. A Unix socket path has at most 104 bytes on macOS and the BSDs,
+  and 108 bytes on Linux. With a longer path, the server refuses the
+  upgrade.
+- **macOS and the BSDs**: CI runs the check there as a probe, to get the
+  result.
 - **The state** is in one process here. A real program must collect the
   state of all its processes (for an ETS table, `ets:tab2list/1`), and
   must stop its writes during step 3.
