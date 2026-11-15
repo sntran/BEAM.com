@@ -238,9 +238,10 @@ SQLite and `phx.gen.auth` (Linux, with the network). It then builds the
 same app in one file with `beam.com . -o`, with the git client of
 `beam.com` for the git deps (`BEAM_COM_GIT=client`), and the file must
 serve the start page and its digested CSS. It also runs the file
-watchers, a check of WSL2 in a user namespace of Linux, and the
-blue-green spike (`examples/bluegreen/check.sh`: a check on Linux, a
-probe on the other Unix systems).
+watchers, a check of WSL2 in a user namespace of Linux, the send of a
+listening socket to another program (`fd_check.erl`, `beam_com_fd`),
+and the blue-green spike (`examples/bluegreen/check.sh`: a check on
+Linux, a probe on the other Unix systems).
 
 `tests/run.ps1` needs PowerShell 7.3 or later. It keeps the tree of the
 processes that each check starts, and it stops and shows each one that

@@ -12,6 +12,15 @@ custom builds of mkfifo.com/beam.com. It also has a git client with SSH,
 port programs on Windows, fixes of the sandbox on each system, and fixes
 of the builder and of Mix:
 
+- The blue-green upgrade of `examples/bluegreen` loses no request. The
+  new server gets the listening socket of the old server over a Unix
+  socket, so the connections in the accept queue stay. Before, the new
+  server opened its own listener with `SO_REUSEPORT`. On Linux, a
+  connection in the queue of the old listener could then get
+  `econnreset` when that listener closed. The new module `beam_com_fd`
+  of each program sends a descriptor (`send/2`) and receives one
+  (`recv/2`), with a static NIF (`c_src/fd/beam_com_fd.c`). The build of
+  OTP has no `socket` NIF, and `gen_tcp` cannot send a descriptor.
 - Mix in `beam.com` keeps the code path of Elixir in a project with
   `language: :erlang`. Before, `mix compile` and `mix run` of such a
   project, or of an Elixir project with it as a dep, stopped with
@@ -134,9 +143,6 @@ of the builder and of Mix:
 - On Windows, a port program gets only the fds 0, 1 and 2 of the VM and
   the ends of its pipes. Before, it also got each socket and file of the
   VM, so a closed connection stayed open until the program stopped.
-- A Unix socket with a path of 13 bytes or fewer works for
-  `gen_tcp:listen/2` and `gen_udp:open/2` (`{ifaddr, {local, Path}}`).
-  Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).
 - A Unix socket with a path of 13 bytes or fewer works for
   `gen_tcp:listen/2` and `gen_udp:open/2` (`{ifaddr, {local, Path}}`).
   Before, the result was `{error, einval}` (C53 of `docs/UPSTREAM.md`).

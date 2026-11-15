@@ -211,7 +211,7 @@ arguments and in a header that the compiler includes in each file
 | --- | --- |
 | `--enable-jit` | BeamAsm with both backends ([`JIT.md`](JIT.md)). `JIT=0` gives `--disable-jit`: the BEAM interpreter (`beam-emu.com`). |
 | `--disable-kernel-poll`, `ac_cv_header_poll_h=no` | The `select()` back-end is used. The `POLL*` values of Cosmopolitan are not compile-time constants, and epoll/kqueue are not on all systems. |
-| `--disable-esock` | The `socket` NIF needs BSD types that Cosmopolitan does not have. `gen_tcp` and `gen_udp` use `inet_drv`. |
+| `--disable-esock` | The `socket` NIF needs BSD types that Cosmopolitan does not have. `gen_tcp` and `gen_udp` use `inet_drv`. To send a descriptor over a Unix socket (`SCM_RIGHTS`), `beam_com_fd` has its own static NIF (`c_src/fd/beam_com_fd.c`). |
 | `erts_cv_linux_thp=no` | The 2 MiB page alignment for Linux breaks the APE layout. |
 | monotonic clock = `CLOCK_MONOTONIC` | `CLOCK_UPTIME` is in the headers, but only works on BSD. |
 | `ac_cv_func_sendfile=no` | `inet_drv` only knows the Linux, BSD and Solaris `sendfile()`. |
