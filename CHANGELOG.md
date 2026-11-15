@@ -3,7 +3,14 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.7
+
+The seventh release candidate of 0.1.0. As 0.1.0-rc.6, it is a
+pre-release on GitHub, and on npm it has the dist-tag `next`. It has
+native NIF objects, for example vix, rusty_csv and ex_pdfium, and the
+custom builds of mkfifo.com/beam.com. It also has a git client with SSH,
+port programs on Windows, fixes of the sandbox on each system, and fixes
+of the builder and of Mix:
 
 - Mix in `beam.com` keeps the code path of Elixir in a project with
   `language: :erlang`. Before, `mix compile` and `mix run` of such a
