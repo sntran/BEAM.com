@@ -913,7 +913,9 @@ WebSocket closes with the code 1011. The next request gets a new VM: a
 stateless Worker starts one, and a Durable Object resets (its requests get
 503 until then). The host also writes `beam: memory N MB (a new peak of
 this VM)` when the memory of the VM grew by 8 MB or more. The memory of a
-VM does not shrink, and an isolate of a Worker has 128 MB.
+VM does not shrink, and an isolate of a Worker has 128 MB. After the stop,
+the runtime ends the waits of the threads of the VM, so the memory of the
+stopped VM goes back to the isolate (see "The swap of a VM").
 
 A process that computes with no wait does not hold the host in a Durable
 Object or in Deno. The scheduler gives the host a turn: in Deno after each
@@ -932,7 +934,8 @@ An isolate of a Worker has 128 MB for the VM, the modules of the Worker
 and JavaScript. Plan for these costs:
 
 - The idle VM of a Phoenix app takes about 32 MB. The VM grows, but it
-  does not shrink: the peak of the VM is what counts.
+  does not shrink: the peak of the VM is what counts. A stateless Worker
+  replaces a VM after a peak (see "The swap of a VM").
 - The modules stay in the memory of the isolate for its life: `app.com`
   and the snapshot of the build. A file of `--target wasm32` with
   `-o FILE.com` is about 25 MB smaller, and a snapshot in gzip about 13
@@ -978,6 +981,69 @@ tell when it does this check.
   refused each load that reset an object. So a load test under
   `wrangler dev` with this check gives a safe number of users.
 
+### The swap of a VM
+
+The memory of a WebAssembly instance does not shrink (CF5 in
+[`UPSTREAM.md`](UPSTREAM.md)). So after one large request, the VM keeps
+that memory, and the next peak can go over the 128 MB of the isolate.
+The swap gives the memory back: a new VM takes the place of a VM that
+grew, and the old VM stops.
+
+At the start of each request, a swap is due when all of these are true:
+
+- The memory of the VM (`wasm_host:memory/0`) is at the mark of
+  `BEAM_SWAP` or more.
+- At least 16 MB of that memory is free in `malloc()`
+  (`wasm_host:memory(used)` is lower by 16 MB or more).
+- The VM has no open request, WebSocket, TCP socket, port, or I/O of the
+  host (a SQL call, a `fetch()` of the fetch path).
+- The isolate had no swap in the last 10 s.
+
+Then the threads of the VM return to the host, as for a snapshot, and
+the VM stops. That request, and each request that comes during the swap,
+goes to a new VM. The new VM restores the snapshot of the store, or
+boots. The log of the Worker shows `beam: memory 120 MB (8 MB used): a new
+VM takes the next requests`.
+
+The mark:
+
+- A stateless Worker has the mark 64 MB by default.
+- A Durable Object has no swap by default. `BEAM_SWAP = "NN"` sets a mark
+  of NN MB.
+- `BEAM_SWAP = "off"` turns the swap off.
+- Deno and Node.js have no swap.
+
+Caution: a swap loses the state that is only in the memory of the VM:
+ETS tables, processes, and caches. A stateless Worker has such state for
+one isolate only, so the app cannot count on it. In a Durable Object,
+keep the state that must stay in the storage of the object
+(`BEAM_PERSIST`, Ecto SQLite). A VM with an open WebSocket (a LiveView)
+has no swap.
+
+The swap waits for the threads of the VM (about 100 to 300 ms), and then
+for the restore or the boot of the new VM. The request that finds the
+swap due waits for both. Measured in `wrangler dev` (November 2026, a VM
+of 120 MB, no snapshot store): 107 to 132 ms for that request, with the
+boot of the new VM. The process of workerd stayed at about 200 to 300 MB
+after each swap, and also after each stop with `erlang:halt/1` or a
+trap.
+
+How the memory goes back: V8 keeps each suspended stack of JSPI as a
+root. A thread of the VM that waits is such a stack, so it keeps all the
+memory of the VM, also after the host dropped the VM (V1 in
+[`UPSTREAM.md`](UPSTREAM.md)). So the host stops a VM in two ways:
+
+- The swap makes all the threads return first (`erts_wasm_hibernate`),
+  so that no thread is in a call.
+- Each stop also ends the waits of the threads (`jspiHalt` of
+  `wasm/erts/jspi_lib.js`): each wait rejects, and the stack of its
+  thread unwinds. This also covers a VM that stopped with
+  `erlang:halt/1` or a trap.
+
+Before this, each VM that stopped stayed in the memory of its isolate. In
+`wrangler dev`, four VMs of 120 MB that stopped one after the other grew
+workerd from 216 MB to 653 MB.
+
 The bridge of the host has one listener for each port, so the app needs
 one acceptor. In a Phoenix app, give Bandit `thousand_island_options:
 [num_acceptors: 1]` in the `http` options of the endpoint: else each of
@@ -1012,6 +1078,7 @@ Worker gets the same events. The tables of this file come from them.
 | `PHX_HOST` | Worker, Durable Object | The host of a Phoenix app, also for the Origin of a WebSocket. |
 | `BEAM_ERL_FLAGS` | Worker, Durable Object | More emulator flags, after the flags of the host (`-sbwt none -sbwtdcpu none -sbwtdio none -MBsbct 8192 -MHsbct 8192`, see below), so a flag here wins. `"-Mea min"` uses `malloc` for all memory: less memory, but no `erlang:memory/0`. |
 | `BEAM_SNAPSHOT` | Worker, Durable Object | `"off"`: no snapshot. |
+| `BEAM_SWAP` | Worker, Durable Object | The mark of the swap of a VM in MB (see "The swap of a VM"): 64 for a stateless Worker, none for a Durable Object. `"off"`: no swap. |
 | `SNAPSHOTS` | Worker, Durable Object | An R2 bucket for the snapshots, in place of the Cache API. |
 | `BEAM_VERSION` | Worker, Durable Object | The version metadata of the deploy (set by the build). |
 | `BEAM_WARM` | global scope | The path of a warm-up request after a restore (`"/"`). |

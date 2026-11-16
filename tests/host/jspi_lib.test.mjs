@@ -16,18 +16,30 @@ function library() {
   const timers = new Map();
   let next = 1;
   const later = [];
+  class ExitStatus { constructor(status) { this.status = status; } }
   const scope = {
     jspi: lib.$jspi,
+    jspiHalt: lib.$jspiHalt,
+    jspiQueue: { fns: [], port: null, recv: null },
     jspiTimer: (f, ms) => { timers.set(next, f); return next++; },
     jspiClear: (id) => timers.delete(id),
     jspiLater: (f) => later.push(f),
     Module: {},
     ENVIRONMENT_IS_NODE: true,
+    ExitStatus,
+    ABORT: false,
   };
   const bind = (f) => new Function(...Object.keys(scope), `return ${f.toString()}`)(...Object.values(scope));
+  scope.jspiWait = bind(lib.$jspiWait);
+  // Module.jspiHalt, as the postset of $jspiHalt makes it.
+  new Function(...Object.keys(scope), lib.$jspiHalt__postset)(...Object.values(scope));
   return {
     jspi: scope.jspi,
+    halt: scope.jspiHalt,
+    ExitStatus,
     suspend: bind(lib.jspi_suspend),
+    poll: bind(lib.jspi_poll_wait),
+    yield: bind(lib.jspi_yield),
     resume: bind(lib.jspi_resume),
     fireAll: () => { const fs = [...timers.values()]; timers.clear(); for (const f of fs) f(); },
     turn: bind(lib.jspi_host_turn),
@@ -105,4 +117,33 @@ test('with no jspiTurn, a turn in Node.js waits for setImmediate', async () => {
   const h = library();
   await h.turn();
   assert.equal(h.later.length, 0);
+});
+
+// The stop of a VM (Module.jspiHalt, from free() of worker.js): V8 keeps a
+// suspended stack of JSPI as a root, so each wait rejects, and the stack of
+// its thread unwinds.
+test('the stop rejects each wait, and a later wait at once', async () => {
+  const h = library();
+  const waits = [h.suspend(1, -1), h.suspend(2, 1000), h.turn(), h.yield()];
+  h.Module.jspiTurn = () => {};
+  assert.equal(h.halt.pending.size, 4);
+  h.Module.jspiHalt();
+  for (const w of waits) await assert.rejects(w, (e) => e instanceof h.ExitStatus && e.status === 0);
+  assert.equal(h.halt.pending.size, 0);
+  assert.equal(h.jspi.waiters.size, 0);
+  await assert.rejects(h.suspend(3, -1), (e) => e instanceof h.ExitStatus);
+  h.Module.jspiHalt();  // a second stop does nothing
+  h.resume(1);  // a late wake does nothing
+  assert.equal(h.jspi.early.size, 1);
+});
+
+test('a wait that ends leaves nothing for the stop', async () => {
+  const h = library();
+  const p = h.suspend(1, -1);
+  h.resume(1);
+  assert.equal(await p, 1);
+  const q = h.suspend(2, 5);
+  h.fireAll();
+  assert.equal(await q, 0);
+  assert.equal(h.halt.pending.size, 0);
 });

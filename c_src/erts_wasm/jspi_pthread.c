@@ -639,6 +639,16 @@ EMSCRIPTEN_KEEPALIVE int jspi_live_threads(void)
     return n;
 }
 
+/* The bytes that malloc() gives out now (uordblks of mallinfo()), for the
+ * swap of a VM (swapDue of worker.js): the memory of WebAssembly minus
+ * this value is free in malloc(). mallinfo() walks all the chunks. */
+#include <malloc.h>
+EMSCRIPTEN_KEEPALIVE size_t jspi_heap_used(void)
+{
+    struct mallinfo mi = mallinfo();
+    return (size_t)mi.uordblks;
+}
+
 /* Grow the memory to size bytes (a restore of a larger snapshot), through
  * Emscripten, so that its views of the memory (HEAPU8, ...) follow. */
 #include <emscripten/heap.h>

@@ -107,19 +107,23 @@ export class Beam extends DurableObject {
       }
       if (this.expires) vars.BEAM_INSTANCE_EXPIRES = String(Math.floor(this.expires / 1000));
       const vm = this.vm = this.makeVm(vars, new URL(request.url).hostname);
-      vm.onDead = () => this.vmStopped(vm);
+      vm.onDead = (reason) => this.vmStopped(vm, reason);
       vm.ready.catch(() => this.vmStopped(vm));
+      // A swap (BEAM_SWAP): the requests of the old VM go to a new VM.
+      vm.onSwap = (r) => this.fetch(r);
     }
     return this.vm.fetch(request);
   }
 
   // The VM stopped (erlang:halt, or a trap such as an allocation that
-  // failed), or its boot failed. Its open requests got 503. The memory of
-  // WebAssembly does not shrink, so the object resets after these answers:
-  // a new instance of the object, with a new VM, takes the next request.
-  vmStopped(vm) {
+  // failed), or its boot failed. Its open requests got 503. The object
+  // resets after these answers: a new instance of the object, with a new
+  // VM, takes the next request. After a swap (reason "swap"), the VM had
+  // no open request: the next request starts a new VM in this instance.
+  vmStopped(vm, reason) {
     if (this.vm !== vm) return;
     this.vm = null;
+    if (reason === 'swap') return;
     this.resetting = true;
     setTimeout(() => this.reset('the VM stopped'), 100);
   }

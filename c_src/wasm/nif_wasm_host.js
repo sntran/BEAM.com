@@ -411,13 +411,14 @@ addToLibrary({
     return id;
   },
 
-  nif_host_wait__deps: ['$nifHost'],
+  // jspiWait (jspi_lib.js): the stop of the VM can reject the wait.
+  nif_host_wait__deps: ['$nifHost', '$jspiWait'],
   nif_host_wait__async: true,
   nif_host_wait__sig: 'ii',
   nif_host_wait: (id) => {
     const p = nifHost.pending.get(id);
     nifHost.pending.delete(id);
-    return p;
+    return jspiWait((resolve, reject) => p.then(resolve, reject));
   },
 
   nif_host_throw__sig: 'v',

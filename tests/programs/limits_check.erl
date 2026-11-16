@@ -16,6 +16,9 @@
 %%   POST /refuse       413 at once: the app reads no part of the body
 %%   GET /download      200 with 64 MiB, in sends of 64 KB with no wait: a
 %%                      client that reads slowly slows the sends (tcp_sent)
+%%   GET /grow    200 with the start time of the VM, after a binary of 64 MB
+%%                that the VM then frees: the memory of the VM grows, and
+%%                most of it is free (the swap of BEAM_SWAP)
 %%   GET PATH     200 with the start time of the VM, for example "vm 12345"
 %%
 %% A new VM has a new start time, so the text shows that the host started a
@@ -47,8 +50,17 @@ serve(S) ->
         <<"/upload-whole">> -> whole(S, Data);
         <<"/refuse">> -> reply(S, "413 Payload Too Large", "too large\n");
         <<"/download">> -> download(S);
+        <<"/grow">> -> grow(S);
         _ -> reply(S, io_lib:format("vm ~p~n", [erlang:system_info(start_time)]))
     end.
+
+%% A binary of 64 MB in a process that then stops: the binary goes back
+%% to malloc(), and the memory of WebAssembly stays at its peak.
+grow(S) ->
+    Self = self(),
+    Pid = spawn(fun() -> Self ! {self(), byte_size(binary:copy(<<1>>, 64 * 1048576))} end),
+    receive {Pid, _} -> ok end,
+    reply(S, io_lib:format("vm ~p~n", [erlang:system_info(start_time)])).
 
 spin(0, A) -> A;
 spin(N, A) -> spin(N - 1, (A + N) rem 1000003).

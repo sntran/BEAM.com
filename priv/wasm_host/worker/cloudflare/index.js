@@ -89,6 +89,8 @@ export function serve(app, { binding = 'BEAM', name, nifs = null, snapshot = nul
     // A VM that stopped: the requests then go to the Worker of worker.js,
     // which boots a VM of its own.
     vm.onDead = () => { vm = null; };
+    // A swap (BEAM_SWAP): the same, also for the requests of the old VM.
+    vm.onSwap = (request, ctx, env) => plain.fetch(request, env, ctx);
     await vm.ready;
     if (globalEnv.BEAM_WARM) await vm.warm(globalEnv.BEAM_WARM);
   })().catch((e) => {

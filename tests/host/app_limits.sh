@@ -13,7 +13,9 @@
 # from a new VM. While a process computes (/spin), a Durable Object and
 # Deno answer other requests: the scheduler gives the host turns
 # (BEAM_YIELD_REDS). A plain Worker does not, so the script does not check
-# it there.
+# it there. Then workerd runs again with BEAM_SWAP=48: after a peak of the
+# memory of the VM (/grow), a later request goes to a new VM (the swap),
+# and the memory of the old VMs goes back (the RSS of workerd).
 #
 #   sh tests/host/app_limits.sh DIR
 #
@@ -111,6 +113,48 @@ check() {
     echo "$1: /slow 504; /halt and /abort 503, and then 200 from a new VM"
 }
 
+# NAME PORT LOG SESSION: the swap of a VM (BEAM_SWAP=48). /grow takes the
+# memory of the VM above 96 MB, and frees most of it. A later request
+# finds the swap due (one swap in each 10 s in an isolate at most, so the
+# loop tries for 30 s). After the first swap, three more swaps must grow
+# workerd (the process in SESSION) by less than 150 MB: each old VM that
+# stayed in memory would add more than 96 MB.
+swaps() {
+    grep -c 'a new VM takes the next requests' "$1" || true
+}
+rss() {
+    pid=$(ps -eo pid=,sid=,comm= | awk -v s="$1" '$2 == s && $3 == "workerd" { print $1; exit }')
+    [ -n "$pid" ] && awk '/VmRSS/ { print int($2 / 1024) }' "/proc/$pid/status" 2>/dev/null || true
+}
+swap_check() {
+    for i in $(seq 1 300); do [ "$(get "$2" /)" = 200 ] && break; sleep 0.5; done
+    first=
+    for n in 1 2 3 4; do
+        before=$(swaps "$3")
+        for i in $(seq 1 60); do
+            code=$(get "$2" /grow)
+            [ "$code" = 200 ] || { echo "$1: /grow gave $code"; tail -n 40 "$3"; return 1; }
+            code=$(get "$2" /)
+            [ "$code" = 200 ] || { echo "$1: / after /grow gave $code"; tail -n 40 "$3"; return 1; }
+            [ "$(swaps "$3")" -gt "$before" ] && break
+            sleep 0.5
+        done
+        [ "$(swaps "$3")" -gt "$before" ] || { echo "$1: no swap after a peak of the memory"; tail -n 40 "$3"; return 1; }
+        [ -n "$first" ] || first=$(rss "$4")
+    done
+    last=$(rss "$4")
+    if [ -n "$first" ] && [ -n "$last" ]; then
+        [ $((last - first)) -lt 150 ] ||
+            { echo "$1: workerd grew from $first MB to $last MB in three swaps"; tail -n 40 "$3"; return 1; }
+        echo "$1: four swaps after a peak of the memory, workerd from $first MB to $last MB"
+    else
+        echo "$1: four swaps after a peak of the memory (no RSS of workerd)"
+    fi
+    if grep -q 'cannot end the waits' "$3"; then
+        echo "$1: the runtime did not end the waits of a stopped VM"; tail -n 40 "$3"; return 1
+    fi
+}
+
 # Each host in its own session (see app_hosts.sh).
 host() {
     setsid sh -c 'echo $$ > "$0"; exec "$@"' "$@" &
@@ -127,6 +171,12 @@ turns=
 grep -q durable_objects wrangler.jsonc && turns=turns
 check workers 18787 wrangler.log $turns || status=1
 stop workers.pid
+
+printf 'BEAM_REQUEST_TIMEOUT=8\nBEAM_SWAP=48\n' > .dev.vars
+host workers.pid npx wrangler dev --port 18787 --ip 127.0.0.1 > swap.log 2>&1
+swap_check workers-swap 18787 swap.log "$(cat workers.pid)" || status=1
+stop workers.pid
+printf 'BEAM_REQUEST_TIMEOUT=8\n' > .dev.vars
 
 host deno.pid npx deno serve -A --port 18788 worker.js > deno.log 2>&1
 check deno 18788 deno.log turns || status=1

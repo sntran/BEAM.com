@@ -5,9 +5,44 @@ addToLibrary({
     early: new Set(),   // resumed before it suspended
     entry: null,
   },
+  // The stop of a VM that does not start again (Module.jspiHalt, from
+  // free() of worker.js). V8 keeps each suspended stack of JSPI as a root,
+  // so a thread that waits keeps all the memory of the VM, also after the
+  // host dropped the VM. So each wait of a thread rejects, and the stack of
+  // the thread unwinds. A wait after the stop rejects at once.
+  $jspiHalt: { halted: false, pending: new Set(), error: null },
+  $jspiHalt__deps: ['$jspi', '$jspiQueue'],
+  $jspiHalt__postset: `Module['jspiHalt'] = () => {
+    if (jspiHalt.halted) return;
+    jspiHalt.halted = true;
+    jspiHalt.error = new ExitStatus(0);
+    ABORT = true;
+    for (const reject of [...jspiHalt.pending]) reject(jspiHalt.error);
+    jspiHalt.pending.clear();
+    jspi.waiters.clear();
+    jspi.early.clear();
+    jspiQueue.fns.length = 0;
+    jspiQueue.recv?.close();
+    jspiQueue.port?.close();
+    jspiQueue.recv = jspiQueue.port = null;
+  };`,
+  // The promise of a wait of a thread: f(resolve, reject), as for new
+  // Promise(f), and the stop (jspiHalt) can reject it.
+  $jspiWait__deps: ['$jspiHalt'],
+  $jspiWait: (f) => {
+    if (jspiHalt.halted) return Promise.reject(jspiHalt.error);
+    return new Promise((resolve, reject) => {
+      jspiHalt.pending.add(reject);
+      f((v) => { jspiHalt.pending.delete(reject); resolve(v); },
+        (e) => { jspiHalt.pending.delete(reject); reject(e); });
+    });
+  },
   // A thread called exit() (Erlang halt/1): end the process, with the
-  // pending timers and I/O of the other threads.
+  // pending timers and I/O of the other threads. The threads that the stop
+  // (jspiHalt) ended need nothing.
+  $jspiExit__deps: ['$jspiHalt'],
   $jspiExit: (e) => {
+    if (jspiHalt.halted) return;
     if (!(e instanceof ExitStatus)) { err(e); e = new ExitStatus(2); }
     Module['onExit']?.(e.status);
     if (ENVIRONMENT_IS_NODE && !Module['beamKeepProcess']) {
@@ -24,8 +59,9 @@ addToLibrary({
   // Module.jspiSchedule (optional) takes the wake-ups and timers of the
   // threads: {later(f), timer(f, ms) -> id, clear(id)}. A plain Worker
   // runs them in an open request (I/O and timers belong to a request).
-  $jspiLater__deps: ['$jspiQueue'],
+  $jspiLater__deps: ['$jspiQueue', '$jspiHalt'],
   $jspiLater: (f) => {
+    if (jspiHalt.halted) return;
     const s = Module['jspiSchedule'];
     if (s) return s.later(f);
     if (ENVIRONMENT_IS_NODE) return setImmediate(f);
@@ -59,7 +95,7 @@ addToLibrary({
     // A pointer argument of a wasm64 export is a BigInt.
     jspiLater(() => jspi.entry({{{ MEMORY64 ? 'BigInt(t)' : 't' }}}).catch(jspiExit));
   },
-  jspi_suspend__deps: ['$jspi', '$jspiTimer', '$jspiClear'],
+  jspi_suspend__deps: ['$jspi', '$jspiTimer', '$jspiClear', '$jspiWait'],
   jspi_suspend__async: true,
   jspi_suspend__sig: 'ipi',
   // A timer can fire, and its thread can wait to run, while another thread
@@ -68,7 +104,7 @@ addToLibrary({
   // wake does not go to jspi.early. Else the next suspend of the thread
   // returns at once, while the thread is in a wait queue
   // (specs/GreenThreads.tla).
-  jspi_suspend: (t, ms) => new Promise((resolve) => {
+  jspi_suspend: (t, ms) => jspiWait((resolve) => {
     if (jspi.early.delete(t)) return resolve(1);
     let timer = null;
     const w = () => { if (timer !== null) jspiClear(timer); resolve(1); };
@@ -117,10 +153,10 @@ addToLibrary({
   jspi_host_send: (ptr, size) => { Module['beamHost'].onsend?.(HEAPU8.slice(ptr, ptr + size)); },
   // poll() with a timeout (jspi_pthread.c): wait until one of the files
   // changes (1) or the timeout (0, with the timers of jspiSchedule).
-  jspi_poll_wait__deps: ['$FS', '$jspiTimer', '$jspiClear'],
+  jspi_poll_wait__deps: ['$FS', '$jspiTimer', '$jspiClear', '$jspiWait'],
   jspi_poll_wait__async: true,
   jspi_poll_wait__sig: 'ipii',
-  jspi_poll_wait: (fds, n, ms) => new Promise((resolve) => {
+  jspi_poll_wait: (fds, n, ms) => jspiWait((resolve) => {
     const regs = [];
     let timer = null, done = false;
     const finish = (v) => {
@@ -142,11 +178,12 @@ addToLibrary({
   // grow during the wait: heap() gives the current view of it.
   jspi_host_files__sig: 'i',
   jspi_host_files: () => Module['beamHost']?.files ? 1 : 0,
-  jspi_file_wait__deps: ['$UTF8ToString'],
+  jspi_file_wait__deps: ['$UTF8ToString', '$jspiWait'],
   jspi_file_wait__async: true,
   jspi_file_wait__sig: 'iiidpi',
-  jspi_file_wait: (op, id, offset, buf, n) =>
-    Module['beamHost'].files.call(op, id, offset, buf, n, { heap: () => HEAPU8, string: UTF8ToString }),
+  jspi_file_wait: (op, id, offset, buf, n) => jspiWait((resolve, reject) =>
+    Module['beamHost'].files.call(op, id, offset, buf, n, { heap: () => HEAPU8, string: UTF8ToString })
+      .then(resolve, reject)),
   // The main thread of ERTS may return from main() where the runtime stays
   // after it (not Node.js, which exits then): no wait of it in a snapshot.
   jspi_main_may_return__sig: 'i',
@@ -157,10 +194,10 @@ addToLibrary({
   // after the poll of the I/O of the host. A task of jspiLater is not
   // enough there, because tasks can run one after the other with no poll
   // of the network.
-  jspi_host_turn__deps: ['$jspiLater'],
+  jspi_host_turn__deps: ['$jspiLater', '$jspiWait'],
   jspi_host_turn__async: true,
   jspi_host_turn__sig: 'v',
-  jspi_host_turn: () => new Promise((r) => {
+  jspi_host_turn: () => jspiWait((r) => {
     if (Module['jspiTurn']) Module['jspiTurn'](r);
     else if (ENVIRONMENT_IS_NODE) setImmediate(r);
     else jspiLater(r);
@@ -344,8 +381,8 @@ addToLibrary({
       end: () => { try { FS.close(input); } catch (e) {} },
     };
   },
-  jspi_yield__deps: ['$jspiLater'],
+  jspi_yield__deps: ['$jspiLater', '$jspiWait'],
   jspi_yield__async: true,
   jspi_yield__sig: 'v',
-  jspi_yield: () => new Promise((r) => jspiLater(r)),
+  jspi_yield: () => jspiWait((r) => jspiLater(r)),
 });

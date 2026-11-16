@@ -21,6 +21,9 @@ if (env.BEAM_WARM) await vm.warm(env.BEAM_WARM);
 // A VM that stopped: the requests of this isolate then boot a VM of their
 // own (the Worker of worker.js).
 vm.onDead = () => { vm = null; };
+// A swap (BEAM_SWAP): the requests of the old VM go to the Worker of
+// worker.js, which starts a new VM in this isolate.
+vm.onSwap = (request, ctx, env) => plain.fetch(request, env, ctx);
 
 export default {
   fetch(request, env, ctx) {

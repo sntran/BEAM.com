@@ -313,7 +313,7 @@ export const WAIT_FLAGS = ['-sbwt', 'none', '-sbwtdcpu', 'none', '-sbwtdio', 'no
 // gets the bytes of the VM as a ReadableStream, and gives a ReadableStream
 // of the bytes for the VM. The end of that stream gives the exit status 0,
 // and an error gives 1.
-export const PORT_DIR = '/env';
+const PORT_DIR = '/env';
 // A namespace has idFromName() and get(), and no port(). The stub of an RPC
 // binding (a service binding to a WorkerEntrypoint) gives a function for
 // each name, also idFromName and get: it has port(), so it is a port.
@@ -326,7 +326,11 @@ const PORT_WINDOW = 256 * 1024;
 // The size of a read of the result of a port.
 const PORT_READ = 64 * 1024;
 // The time that the result of a port that ended waits for a claim.
-export const PORT_CLAIM_MS = 10000;
+const PORT_CLAIM_MS = 10000;
+// workerd takes each export of the main module (worker.js in the
+// runtime directory) as an entrypoint, and refuses a number or a text.
+// So the values go out in one object.
+export const PORTS = Object.freeze({ dir: PORT_DIR, claimMs: PORT_CLAIM_MS });
 
 // A port to the binding NAME of PORT_DIR/NAME, for the spawn of the host
 // (Module.beamHost.spawn of jspi_lib.js). The bytes that the port writes go
@@ -789,17 +793,21 @@ async function sqlD1(env, sql, params) {
 
 let vm;  // the VM of this isolate
 
-export default {
+const plainWorker = {
   fetch(request, env, ctx) {
     if (!vm) {
       const v = vm = new Vm(env, { host: new URL(request.url).hostname });
       v.ready.catch(() => { if (vm === v) vm = undefined; });
-      // A VM that stopped: the next request starts a new one.
+      // A VM that stopped: the next request starts a new one. After a
+      // swap, the requests of the old VM go to the new one.
       v.onDead = () => { if (vm === v) vm = undefined; };
+      v.onSwap = (r, c, e) => plainWorker.fetch(r, e ?? env, c);
     }
     return vm.fetch(request, ctx, env);
   },
 };
+
+export default plainWorker;
 
 // The files of the host for SQLite in the VM (exqlite, the NIF of the
 // runtime, with c_src/erts_wasm/sqlite_vfs.c): the main database files. A store
@@ -1310,6 +1318,29 @@ function isolateMemory() {
   return `${LIVE.size} VMs in this isolate: ${mb} MB`;
 }
 
+// The swap of a VM (BEAM_SWAP, docs/WORKERS.md "The swap of a VM"): the
+// memory of WebAssembly does not shrink, so a VM keeps the memory of its
+// peak. A new VM takes its place, and the old VM stops: its memory then
+// goes back to the isolate. A swap is due at the start of a request when
+// the memory of the VM is at the mark or more, at least SWAP_FREE_MB of
+// it is free in malloc(), and the VM has no open request, socket, port,
+// or I/O of the host.
+const SWAP_DEFAULT_MB = 64;    // the mark of a stateless Worker
+const SWAP_FREE_MB = 16;
+const SWAP_EVERY_MS = 10000;   // one swap in an isolate each 10 s at most
+const PARK_STEPS = 5000;       // 1 ms steps for the threads to return
+let lastSwap = -Infinity;
+
+// The mark of the swap in MB, from BEAM_SWAP: a number of MB, or "off".
+// With no value, a stateless Worker (plain) has SWAP_DEFAULT_MB, and the
+// other hosts have no swap. 0: no swap; null: a value that is not correct.
+export function swapMark(env, plain) {
+  const v = env?.BEAM_SWAP;
+  if (v === undefined || v === '') return plain ? SWAP_DEFAULT_MB : 0;
+  if (v === 'off') return 0;
+  return /^[1-9][0-9]{0,4}$/.test(String(v)) ? Number(v) : null;
+}
+
 export class Vm {
   // release and snapshot: the bytes of release.bin and snapshot.bin, for a
   // VM that the global scope of a Worker restores (global.js).
@@ -1366,6 +1397,16 @@ export class Vm {
     this.conns = new Set();    // the open connections of bridge() (see die)
     this.sockets = 0;          // the open WebSockets: bridge() and /.tcp/PORT
     this.peak = 0;             // the memory (MB) of the last log of the peak
+    // The swap (swapDue): the mark in MB (0: none), and onSwap(request,
+    // ctx, env) of the owner, which gives a request to a new VM. swapping:
+    // the swap in progress (true when the VM stopped). parked: all the
+    // threads returned to the host (park). halted: the VM runs no more.
+    this.swapMark = this.checkMark(env, plain);
+    this.onSwap = null;
+    this.swapping = null;
+    this.parked = false;
+    this.halted = false;
+    this.up = false;
     // The VM stopped (erlang:halt, or a trap such as an allocation that
     // failed): dead is the reason, and died resolves. onDead: the owner of
     // the VM drops it, so that a new VM takes the next request.
@@ -1472,7 +1513,7 @@ export class Vm {
       // The version of the deploy (BEAM_VERSION): a test or an app sees in
       // the log when a Durable Object runs the code of a new deploy.
       const version = env.BEAM_VERSION?.id ? `, version ${env.BEAM_VERSION.id}` : '';
-      this.onready = () => { this.live(); this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms${version}), ${this.memory()}`); resolve(); };
+      this.onready = () => { this.live(); this.up = true; this.peak = this.megabytes(); console.log(`beam: ready in ${Date.now() - t0} ms (release ${release.byteLength >> 10} KB${snap ? `, snapshot ${snapKB} KB` : ''} in ${t1 - t0} ms${version}), ${this.memory()}`); resolve(); };
       createBeam({
         noInitialRun: !!snap,
         onRuntimeInitialized: snap ? () => {
@@ -1502,10 +1543,14 @@ export class Vm {
         arguments: [],
         jspiTurn: (f) => this.turn(f),
         // A plain Worker runs the jobs and timers of the threads in its
-        // open requests. After adopt() (a Durable Object), they run on a
-        // MessageChannel and on setTimeout.
-        jspiSchedule: this.plain ? {
+        // open requests. After adopt() (a Durable Object), and in the other
+        // hosts, they run on a MessageChannel and on setTimeout. The host
+        // keeps them all, so free() can stop them: the runtime then makes
+        // no channel of its own (jspiLater of jspi_lib.js), which would
+        // keep the VM in memory.
+        jspiSchedule: {
           later: (f) => {
+            if (this.halted) return;
             if (!this.plain) return this.post(f);
             this.jobs.push(f);
             this.handlers.at(-1)?.wake?.();
@@ -1514,6 +1559,7 @@ export class Vm {
           // a timer (see jspiTimer in jspi_lib.js).
           timer: (f, ms) => {
             const id = this.nextTimer++;
+            if (this.halted) return id;
             if (!this.plain) {
               this.handles.set(id, setTimeout(() => { this.handles.delete(id); f(); }, Math.max(1, ms)));
               return id;
@@ -1527,7 +1573,7 @@ export class Vm {
             clearTimeout(this.handles.get(id));
             this.handles.delete(id);
           },
-        } : undefined,
+        },
         preRun: [(m) => {
           this.beam = m;
           // .release.json: the name, the version, the boot arguments and the
@@ -1714,6 +1760,7 @@ export class Vm {
     this.vars = vars;
     this.envVars = { ...this.envVars, ...vars };
     this.plain = false;
+    this.swapMark = this.checkMark(this.env, false);
     for (const f of this.jobs.splice(0)) this.post(f);
     for (const [tid, t] of this.timers) {
       this.handles.set(tid, setTimeout(() => { this.handles.delete(tid); t.f(); }, Math.max(1, t.at - Date.now())));
@@ -1724,6 +1771,7 @@ export class Vm {
 
   // A job after the pending I/O and timers (a macrotask), as jspiLater.
   post(f) {
+    if (this.halted) return;
     if (!this.queue) {
       const ch = new MessageChannel();
       const fns = [];
@@ -1782,6 +1830,7 @@ export class Vm {
   // - a plain Worker: only tasks. A timer there resumes the thread in the
   //   request that fired it, and that request can end before the work.
   turn(f) {
+    if (this.halted) return;
     if (this.plain) {
       this.jobs.push(f);
       return void this.handlers.at(-1)?.wake?.();
@@ -1815,6 +1864,111 @@ export class Vm {
     this.peak = mb;
     const all = isolateMemory();
     this.log(`beam: memory ${mb} MB (a new peak of this VM${all ? `; ${all}` : ''})`);
+  }
+
+  // The mark of the swap (swapMark), with one log line for a value that is
+  // not correct.
+  checkMark(env, plain) {
+    const mark = swapMark(env, plain);
+    if (mark !== null) return mark;
+    console.log(`beam: BEAM_SWAP is "${env.BEAM_SWAP}", not a number of MB or "off": no swap`);
+    return 0;
+  }
+
+  // The bytes that malloc() of the VM gives out now (jspi_heap_used of
+  // jspi_pthread.c), or null with a runtime that does not have it. It
+  // walks all the chunks of malloc(): about 0.02 to 0.7 ms.
+  heapUsed() {
+    const f = this.exports?.jspi_heap_used;
+    return typeof f === 'function' ? f() >>> 0 : null;
+  }
+
+  // A swap is due now (see SWAP_DEFAULT_MB). A runtime with no
+  // jspi_heap_used gives no free part: then the mark alone decides.
+  swapDue() {
+    if (!this.swapMark || !this.onSwap || !this.up || this.dead || this.swapping) return false;
+    if (this.conns.size || this.sockets || this.ports.size || this.inFlight()) return false;
+    if (this.makeKey || this.bootKey || this.snapping || this.resume) return false;
+    const mb = this.megabytes();
+    if (mb < this.swapMark || Date.now() - lastSwap < SWAP_EVERY_MS) return false;
+    const used = this.heapUsed();
+    return used === null || mb - (used >> 20) >= SWAP_FREE_MB;
+  }
+
+  // A new VM in place of this one: the threads return (park), and the VM
+  // stops. The request that found the swap due, and the requests that
+  // come during the swap, then go to onSwap: the owner starts a new VM
+  // for them, from the snapshot of the store, or with a boot. true when
+  // the VM stopped. false when a thread did not return: the VM goes on.
+  async swap(ctx) {
+    const mb = this.megabytes(), used = this.heapUsed();
+    lastSwap = Date.now();
+    if (!await this.park(ctx)) {
+      try { this.exports?.erts_wasm_resume(); } catch {}
+      this.log(`beam: memory ${mb} MB: no swap, because a thread of the VM did not return`);
+      return false;
+    }
+    this.log(`beam: memory ${mb} MB${used === null ? '' : ` (${used >> 20} MB used)`}: a new VM takes the next requests`);
+    this.die('swap');
+    return true;
+  }
+
+  // All the threads return to the host (erts_wasm_hibernate, as for a
+  // snapshot), and do not start again: the swap stops the VM at a place
+  // where no thread is in a call. true when no thread is left after
+  // PARK_STEPS ms. A plain Worker runs the threads only in an open
+  // request: ctx is the request for that time.
+  async park(ctx) {
+    if (this.parked) return true;
+    const x = this.exports;
+    if (!x?.erts_wasm_hibernate || !x.jspi_live_threads) return false;
+    let done = () => {};
+    try {
+      if (this.plain) {
+        if (!ctx) return false;
+        this.serve(ctx, new Promise((r) => { done = r; }));
+      }
+      x.erts_wasm_hibernate();
+      for (let i = 0; x.jspi_live_threads() > 0; i++) {
+        if (i >= PARK_STEPS) return false;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      this.parked = true;
+      return true;
+    } catch (e) {
+      this.log(`beam: the threads of the VM did not return (${e?.message ?? e})`);
+      return false;
+    } finally {
+      done();
+    }
+  }
+
+  // The VM stopped: drop what holds its memory. The waits of its threads
+  // end (jspiHalt of jspi_lib.js), its timers, its jobs and its channel
+  // stop, and the host keeps no reference to the module of the runtime.
+  // After a swap, the threads returned (park) before the stop.
+  free() {
+    if (this.halted) return;
+    this.halted = true;
+    try {
+      if (this.beam?.jspiHalt) this.beam.jspiHalt();
+      else if (!this.parked) this.log('beam: this runtime cannot end the waits of the stopped VM: its memory stays in this isolate');
+    } catch (e) {
+      this.log(`beam: the stop of the threads failed (${e?.message ?? e})`);
+    }
+    for (const t of this.handles?.values() ?? []) clearTimeout(t);
+    this.handles?.clear();
+    this.timers?.clear();
+    if (this.jobs) this.jobs.length = 0;
+    if (this.queue) {
+      this.queue.ch.port1.close();
+      this.queue.ch.port2.close();
+      this.queue = null;
+    }
+    this.beam = null;
+    this.exports = null;
+    this.release = null;
+    this.given = null;
   }
 
   // The VM stopped: each open request gets 503, each WebSocket closes with
@@ -1862,6 +2016,7 @@ export class Vm {
     for (const resolve of this.stopWaits ?? []) resolve();
     this.stopWaits?.clear();
     this.onDead?.(reason);
+    this.free();
   }
 
   // A log line. In a plain Worker, a thread of the VM can run in the
@@ -1913,6 +2068,15 @@ export class Vm {
       this.inRequest = requestRunner();
     }
     if (env) this.bindings = env;
+    // The swap (swapDue): this request, and each request during the swap,
+    // goes to a new VM when this VM stopped.
+    if (!this.swapping && this.swapDue()) {
+      this.swapping = this.swap(ctx).then((stopped) => {
+        if (!stopped) this.swapping = null;
+        return stopped;
+      });
+    }
+    if (this.swapping && await this.swapping) return this.onSwap(request, ctx, env);
     let finished = () => {};
     const h = this.plain ? this.serve(ctx, new Promise((r) => { finished = r; })) : undefined;
     let response;

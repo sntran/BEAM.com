@@ -12,7 +12,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return spec in stub ? { url: 'data:text/javascript,' + encodeURIComponent(stub[spec]), shortCircuit: true }
                         : next(spec, ctx);
   }`)}`);
-const { Vm, openPort, portNames, PORT_DIR, PORT_CLAIM_MS } = await import('../../priv/wasm_host/worker/worker.js');
+const { Vm, openPort, portNames, PORTS } = await import('../../priv/wasm_host/worker/worker.js');
 
 const enc = (t) => new TextEncoder().encode(t);
 const dec = (parts) => new TextDecoder().decode(Buffer.concat(parts));
@@ -55,7 +55,7 @@ test('portNames: the bindings with port() and the Durable Object namespaces, not
   };
   assert.deepEqual(portNames(env), ['UPPER', 'OBJECTS']);
   assert.deepEqual(portNames(undefined), []);
-  assert.equal(PORT_DIR, '/env');
+  assert.equal(PORTS.dir, '/env');
 });
 
 test('a port to a binding: the bytes of the VM go to port(), and its bytes come back, then exit 0', async () => {
@@ -242,7 +242,7 @@ test('BEAM_PORT_OUTPUT=response: the result waits for claim(), and goes to the w
 });
 
 test('BEAM_PORT_OUTPUT=response: a port that ended drops its result after claimMs with no claim', async () => {
-  assert.equal(PORT_CLAIM_MS, 10000);
+  assert.equal(PORTS.claimMs, 10000);
   let cancelled = false;
   const env = { GIVE: { port: () => new ReadableStream({ pull(c) { c.enqueue(enc('x')); }, cancel() { cancelled = true; } }) } };
   const e = events();

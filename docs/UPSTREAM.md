@@ -7,7 +7,7 @@ Keep it up to date when a new problem or workaround comes.
 
 The groups, and the prefix of their ids: Cosmopolitan (C), WAMR (W),
 Erlang/OTP (O), Emscripten (EM), workerd and Cloudflare Workers (CF),
-websock_adapter (WS), Livebook (L), Elixir (EX), Elixir packages with
+V8 (V), websock_adapter (WS), Livebook (L), Elixir (EX), Elixir packages with
 NIFs (E), Blink (B), rustler (R), fine (F) and wasi-libc (WL).
 
 [`patches/README.md`](../patches/README.md) lists each patch file of
@@ -2859,7 +2859,11 @@ again soon after.
 the memory stays at that size after the hash, in the 128 MB of an
 isolate.
 
-**Workaround.** Lower argon2 costs (`m_cost`), or bcrypt.
+**Workaround.** Lower argon2 costs (`m_cost`), or bcrypt. The host also
+replaces a VM after a peak, when most of its memory is free in
+`malloc()` (BEAM_SWAP, "The swap of a VM" in [`WORKERS.md`](WORKERS.md)).
+The swap does not help a VM that uses its memory: it helps only after the
+peak.
 
 ### CF6. A `MessagePort` that only its handler holds stops getting messages
 
@@ -2951,6 +2955,37 @@ client of workerd or of Cloudflare.
 
 **Possible upstream fix.** When the body of a response fails, workerd
 closes the connection with no last chunk, as Deno does.
+
+## V8
+
+### V1. A suspended stack of JSPI is a root of the garbage collector
+
+**Status:** the design of JSPI in V8 (Node.js 26, workerd 2026-09-26 and
+2026-11-13).
+
+**Symptom.** A VM that stopped stays in memory with all of its memory,
+also after the host dropped each reference to it. In `wrangler dev`,
+four VMs of 120 MB that stopped one after the other grew workerd from
+216 MB to 653 MB. In Node.js, a forced garbage collection did not free
+them either.
+
+**Cause.** V8 visits each suspended stack of JSPI as a root. The other
+threads of the VM wait in imports that suspend (`jspi_suspend`,
+`jspi_poll_wait`), and their promises never settle after the stop. A
+heap snapshot showed the path: `(Stack roots)`, `WasmImportData` of
+`jspi_poll_wait`, the closure of `printErr`, and the `Vm`. The
+`MessageChannel` of `jspiLater` was a second root: an open port with a
+handler.
+
+**Workaround.** The runtime ends each wait at the stop (`jspiHalt` of
+`wasm/erts/jspi_lib.js`): the promise of each wait rejects, and the
+stack of its thread unwinds. The swap first makes the threads return
+(`erts_wasm_hibernate`). The host gives the runtime its own scheduler
+(`jspiSchedule`) in each host, so the runtime makes no channel of its
+own. With both, the memory of a stopped VM goes back at the next
+garbage collection. V8 does not count the memory of WebAssembly as
+external memory, so a collection can come late: in Node.js, 8 to 20 s
+later. In workerd, the memory went back before the next swap.
 
 ## websock_adapter
 
