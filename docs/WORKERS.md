@@ -1022,11 +1022,23 @@ has no swap.
 
 The swap waits for the threads of the VM (about 100 to 300 ms), and then
 for the restore or the boot of the new VM. The request that finds the
-swap due waits for both. Measured in `wrangler dev` (November 2026, a VM
-of 120 MB, no snapshot store): 107 to 132 ms for that request, with the
-boot of the new VM. The process of workerd stayed at about 200 to 300 MB
-after each swap, and also after each stop with `erlang:halt/1` or a
-trap.
+swap due waits for both. Measured (November 2026):
+
+- `wrangler dev`, a VM of 120 MB, no snapshot store: 107 to 132 ms for
+  that request, with the boot of the new VM. The process of workerd
+  stayed at about 200 to 300 MB after each swap, and also after each stop
+  with `erlang:halt/1` or a trap.
+- Cloudflare, one Durable Object with `BEAM_SWAP = "48"`: eight peaks of
+  80 MB, each one followed by a swap, in one instance of the object, with
+  no reset. With the memory of each old VM kept, the object would have
+  held 640 MB. The request of the swap took 0.43 to 0.72 s.
+- Cloudflare, a stateless Worker with the snapshot store: the request of
+  a swap used 74 to 227 ms of CPU time, for the threads and the restore.
+
+Caution: the request of a swap also restores the new VM, so it uses more
+CPU time than other requests. A request that goes over the CPU limit of
+the plan stops in the middle of that work. On the Free plan, a test with
+a boot or a restore and a large request in one request went over it.
 
 How the memory goes back: V8 keeps each suspended stack of JSPI as a
 root. A thread of the VM that waits is such a stack, so it keeps all the
