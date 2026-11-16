@@ -1649,12 +1649,24 @@ strip(Beam) ->
     {ok, Stripped} = beam_lib:build_module([C || {_, Data} = C <- Chunks, is_binary(Data)]),
     Stripped.
 
-%% The beam file has docs or debug information.
+%% The beam file has docs or debug information. A module that the
+%% compiler compiled without debug_info has a small Dbgi chunk with no
+%% code in it: {debug_info_v1, Backend, {none, Options}}.
 has_extra(File) ->
     {ok, Beam} = read_file(File),
     case beam_lib:chunks(Beam, ["Docs", "Dbgi"], [allow_missing_chunks]) of
-        {ok, {_, Chunks}} -> lists:any(fun({_, Data}) -> is_binary(Data) end, Chunks);
-        _ -> false
+        {ok, {_, [{"Docs", Docs}, {"Dbgi", Dbgi}]}} ->
+            is_binary(Docs) orelse (is_binary(Dbgi) andalso has_code(Dbgi));
+        _ ->
+            false
+    end.
+
+has_code(Dbgi) ->
+    try binary_to_term(Dbgi) of
+        {debug_info_v1, _, {none, _}} -> false;
+        _ -> true
+    catch
+        error:badarg -> true
     end.
 
 %% The entries of beam.com that the new executable keeps: everything

@@ -5,9 +5,10 @@ notes of its release.
 
 ## Unreleased
 
-- `beam.com` is about 16 MB smaller (56.7 MB in 0.1.0-rc.7). The code of
-  OTP in its zip has no debug information (the chunk `Dbgi`) and no docs
-  (the chunk `Docs`), and the code of Elixir has no debug information.
+- `beam.com` is about 16 MB smaller: 40.6 MB, from 56.7 MB in
+  0.1.0-rc.7. The code of OTP in its zip has no debug information (the
+  chunk `Dbgi`) and no docs (the chunk `Docs`), and the code of Elixir
+  has no debug information.
   Only the protocols of Elixir keep it, for the consolidation of Mix.
   `kernel` and `stdlib` stay stored, so a program starts as fast as
   before. A program that `beam.com` builds had neither already. Before,
