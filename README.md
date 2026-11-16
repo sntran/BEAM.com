@@ -282,7 +282,7 @@ npx beam.com app.erl -o app.com
 npx beam.com mix phx.server
 ```
 
-The package does not hold `beam.com` (about 50 MB). At the first run,
+The package does not hold `beam.com` (about 41 MB). At the first run,
 `npx beam.com` downloads `beam.com` of the same version from the GitHub
 release, and checks its SHA-256 against the value that the package
 holds. Then the file stays in the cache (`~/.cache/beam.com/npm/`). A

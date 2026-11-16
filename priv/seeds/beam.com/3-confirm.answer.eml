@@ -21,6 +21,8 @@ Cache-Control: no-store
 <tr><th>JIT</th><td>$jit</td></tr>
 <tr><th>SQLite</th><td>$sqlite</td></tr>
 <tr><th>WebAssembly</th><td>$wasm</td></tr>
+<tr><th>Debug information</th><td>$debug_info</td></tr>
+<tr><th>Docs of OTP</th><td>$otp_docs</td></tr>
 </table>
 <p>1 means yes, and 0 means no. An empty Elixir means no Elixir.</p>
 <form method="post" action="/beam.com">
@@ -34,6 +36,8 @@ Cache-Control: no-store
 <input type="hidden" name="jit" value="$jit">
 <input type="hidden" name="sqlite" value="$sqlite">
 <input type="hidden" name="wasm" value="$wasm">
+<input type="hidden" name="debug_info" value="$debug_info">
+<input type="hidden" name="otp_docs" value="$otp_docs">
 <input type="hidden" name="otp_version" value="$otp_version">
 <input type="hidden" name="elixir_version" value="$elixir_version">
 <input type="hidden" name="nifs" value="$dnifs $dnif1 $dnif2 $dnif3 $nif1 $nif2 $nif3 $nif4 $nif5 $nif6 $nif7 $nif8 $nif9">

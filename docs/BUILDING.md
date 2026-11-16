@@ -94,6 +94,14 @@ or rebar3. A custom build can have more, or less:
   named `rebar3.com` (or `beam.com rebar3`) runs it, and `mix.com` uses
   it for the dependencies that are rebar3 projects (`MIX_REBAR3`), so
   `mix local.rebar` is not needed either.
+- `DEBUG_INFO=1`: the debug information (the chunk `Dbgi`) of the code
+  of OTP and Elixir stays in the zip, for `cover` and `rr/1` of OTP
+  modules. The file is about 14 MB larger. By default, only the protocols
+  of Elixir keep it, because the consolidation of Mix reads it.
+- `OTP_DOCS=1`: the docs (the chunk `Docs`) of the code of OTP stay in
+  the zip, for `h/1` of OTP modules in `iex`. The file is about 2 MB
+  larger. The docs of Elixir stay in each build. A program that
+  `beam.com` builds gets neither the debug information nor the docs.
 - `NIFS_OMIT="bcrypt_elixir argon2_elixir"`: default NIFs to leave out,
   for a smaller file: `exqlite` (with `SQLITE=1`), `bcrypt_elixir` and
   `argon2_elixir`. `beam.com --version` names only the NIFs that the file
@@ -326,7 +334,7 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   | `elixir_version` | A version of Elixir of `ELIXIR_VERSIONS`. Empty, or `none`: no Elixir. |
   | `apps` | More OTP applications, with commas. |
   | `omit` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools and tools. |
-  | `hex`, `rebar3`, `jit`, `sqlite`, `wasm` | `0` or `1`. |
+  | `hex`, `rebar3`, `jit`, `sqlite`, `wasm`, `debug_info`, `otp_docs` | `0` or `1`. |
   | `nifs+` | NIFs to add to the default NIFs (exqlite, bcrypt_elixir and argon2_elixir). |
   | `nifs` | Only these NIFs. A query has `nifs+` or `nifs`, not both. |
 

@@ -149,7 +149,11 @@ NEEDS = {
     "rebar3": ("inets", "ssl"),
 }
 APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
-FLAGS = ("hex", "rebar3", "elixir", "jit", "sqlite", "wasm")
+FLAGS = ("hex", "rebar3", "elixir", "jit", "sqlite", "wasm", "debug_info", "otp_docs")
+# The flags of the code in the zip (DEBUG_INFO and OTP_DOCS of
+# scripts/steps.sh). An input that a form of before them does not send is
+# empty, and empty is 0.
+CODE_FLAGS = ("debug_info", "otp_docs")
 # The encrypted address of the requester: Base64 of a secretbox of
 # mkfifo.com (24 bytes of nonce, 16 of tag, and the address).
 REPLY = re.compile(r"[A-Za-z0-9+/]{4,684}={0,2}")
@@ -171,7 +175,7 @@ URL_PREFIX = "beam-u."
 # form of the FIFO, so a GET of the form is also a query. The FIFO drops
 # the fields email and website, and sorts the lines.
 QUERY_SHORT = ("otp_version", "elixir_version", "apps", "omit", "hex", "rebar3", "jit",
-               "sqlite", "wasm", "nifs", "nifs ", "nifs+")
+               "sqlite", "wasm", "debug_info", "otp_docs", "nifs", "nifs ", "nifs+")
 QUERY_FORM = re.compile(r"otp|dnifs|dnif[1-3]|nif[1-9]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}")
 QUERY_VALUE = re.compile(r"[a-z0-9_.,+ -]{0,200}")
 QUERY_LINES = 60
@@ -197,6 +201,7 @@ def issue(body):
     apps = [a.strip() for a in checked("More OTP applications")]
     apps += choice("Other OTP applications", "").split()
     tools = checked("Tools")
+    code = checked("Debug information and docs")
     return {
         "apps": apps,
         "omit": [a.split()[0] for a in checked("Leave out default OTP applications")],
@@ -211,6 +216,8 @@ def issue(body):
         "jit": not choice("Emulator", "").startswith("Interpreter"),
         "sqlite": choice("SQLite", "Yes") != "No",
         "wasm": choice("WebAssembly (WAMR)", "Yes") != "No",
+        "debug_info": any(c.startswith("Debug information") for c in code),
+        "otp_docs": any(c.startswith("Docs of OTP") for c in code),
         # "29.1.1 (default)": the first word.
         "otp_version": choice("Erlang/OTP version", "").split()[:1],
         "elixir_version": [] if choice("Elixir version", "").startswith("None")
@@ -224,6 +231,7 @@ def issue(body):
 URL_DEFAULTS = {
     "INPUT_APPS": "", "INPUT_KEEP": "", "INPUT_HEX": "0", "INPUT_REBAR3": "0",
     "INPUT_ELIXIR": "1", "INPUT_JIT": "1", "INPUT_SQLITE": "1", "INPUT_WASM": "1",
+    "INPUT_DEBUG_INFO": "0", "INPUT_OTP_DOCS": "0",
     "INPUT_NIFS": "", "INPUT_OTP_VERSION": "", "INPUT_ELIXIR_VERSION": "",
     "INPUT_REPLY": "",
 }
@@ -280,7 +288,7 @@ def query_inputs(digest, query):
         return out
 
     env = dict(URL_DEFAULTS)
-    for flag in ("hex", "rebar3", "jit", "sqlite", "wasm"):
+    for flag in ("hex", "rebar3", "jit", "sqlite", "wasm") + CODE_FLAGS:
         value = one(flag)
         if value is not None:
             env["INPUT_" + flag.upper()] = value
@@ -363,6 +371,8 @@ def dispatch(env):
 
     def flag(name):
         value = env.get("INPUT_" + name.upper(), "")
+        if value == "" and name in CODE_FLAGS:
+            value = "0"
         if value not in ("0", "1"):
             fail(f"The input {name} must be 0 or 1, not {value!r}")
         return value == "1"
@@ -540,6 +550,11 @@ def settings(choices, default=None):
     # The same for the default NIFs.
     if nifs_omit:
         env["NIFS_OMIT"] = " ".join(n for n in DEFAULT_NIFS if n in nifs_omit)
+    # The same for the debug information and the docs of OTP in the zip.
+    if choices.get("debug_info"):
+        env["DEBUG_INFO"] = "1"
+    if choices.get("otp_docs"):
+        env["OTP_DOCS"] = "1"
     env["OUT_NAME"] = "beam.com" if env["JIT"] == "1" else "beam-emu.com"
     return env
 
@@ -921,7 +936,7 @@ def notify(status, reason=""):
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     names = ("OTP_VERSION", "OTP_APPS", "OTP_OMIT", "HEX", "REBAR3", "ELIXIR",
              "ELIXIR_VERSION", "JIT", "SQLITE", "WASM", "NIFS_OMIT", "EXTRA_NIFS", "VIX_PARTS",
-             "FILE_NIFS")
+             "FILE_NIFS", "DEBUG_INFO", "OTP_DOCS")
     body = {
         "status": status,
         "reason": reason,

@@ -130,3 +130,11 @@ body:
       default: 0
     validations:
       required: true
+  - type: checkboxes
+    id: code
+    attributes:
+      label: Debug information and docs
+      description: The code of OTP in beam.com has neither by default. A program that beam.com builds gets neither.
+      options:
+        - label: Debug information of OTP and Elixir (the chunk Dbgi, for cover and rr/1; about 14 MB more)
+        - label: Docs of OTP (the chunk Docs, for h/1 of OTP modules in iex; about 2 MB more)

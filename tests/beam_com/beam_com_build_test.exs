@@ -2100,26 +2100,36 @@ defmodule BeamComBuildTest do
     end
 
     # An application whose code has docs (as the Elixir applications in
-    # beam.com), and one without them.
+    # beam.com), one with debug information and no docs (a custom build
+    # with DEBUG_INFO=1), and one without them.
     test "the docs are not in a program", %{dir: dir} do
       root = :filename.join(dir, ~c"docroot")
 
-      beam = fn app, src ->
+      beam = fn app, src, opts ->
         ebin = :filename.join([root, ~c"lib", app ++ ~c"-1.0", ~c"ebin"])
         file = write(dir, ~c"m_" ++ app ++ ~c".erl", src)
-        {:ok, _, b} = :compile.file(file, [:binary])
+        {:ok, _, b} = :compile.file(file, [:binary | opts])
         write(ebin, ~c"m_" ++ app ++ ~c".beam", b)
       end
 
       beam.(
         ~c"withdocs",
         ~c"-module(m_withdocs).\n-moduledoc \"Docs.\".\n-vsn(\"7\").\n" ++
-          ~c"-export([f/0]).\n-doc \"F.\".\nf() -> ok.\n"
+          ~c"-export([f/0]).\n-doc \"F.\".\nf() -> ok.\n",
+        []
       )
 
-      beam.(~c"plain", ~c"-module(m_plain).\n-export([f/0]).\nf() -> ok.\n")
-      base = %{withdocs: %{vsn: ~c"1.0"}, plain: %{vsn: ~c"1.0"}}
+      beam.(~c"plain", ~c"-module(m_plain).\n-export([f/0]).\nf() -> ok.\n", [])
+      beam.(~c"dbgi", ~c"-module(m_dbgi).\n-export([f/0]).\nf() -> ok.\n", [:debug_info])
+      base = %{withdocs: %{vsn: ~c"1.0"}, plain: %{vsn: ~c"1.0"}, dbgi: %{vsn: ~c"1.0"}}
       assert [] == :beam_com_build.without_docs([:plain], base, root)
+
+      [{~c"lib/dbgi-1.0/ebin/m_dbgi.beam", no_dbgi}] =
+        :beam_com_build.without_docs([:dbgi], base, root)
+
+      assert {:ok, {:m_dbgi, [{~c"Dbgi", :missing_chunk}]}} =
+               :beam_lib.chunks(no_dbgi, [~c"Dbgi"], [:allow_missing_chunks])
+
       [{name, stripped}] = :beam_com_build.without_docs([:plain, :withdocs], base, root)
       assert ~c"lib/withdocs-1.0/ebin/m_withdocs.beam" == name
 

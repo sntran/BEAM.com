@@ -18,3 +18,5 @@ deps/
 /runtime/
 /node_modules/
 /beam.com-*.tgz
+# The compiled files of Python (scripts/*.py).
+__pycache__/

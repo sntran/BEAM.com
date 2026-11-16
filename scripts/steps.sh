@@ -100,6 +100,13 @@
 #                    needs one of them stops the build.
 #   HEX              1: put Hex in the zip, for mix (a custom build;
 #                    default 0). Only with ELIXIR=1.
+#   DEBUG_INFO       1: keep the debug information (the chunk Dbgi) of the
+#                    code of OTP and Elixir in the zip, for cover and rr/1
+#                    of OTP modules (a custom build; default 0). A program
+#                    that beam.com builds does not get it.
+#   OTP_DOCS         1: keep the docs (the chunk Docs) of the code of OTP in
+#                    the zip, for h/1 of OTP modules in iex (a custom build;
+#                    default 0). The docs of Elixir stay in all builds.
 #   REBAR3           1: put rebar3 in the zip, as the tool rebar3 (and for
 #                    the rebar3 dependencies of mix; a custom build;
 #                    default 0)
@@ -175,6 +182,8 @@ ELIXIR_APPS="elixir eex ex_unit iex logger mix"
 OTP_APPS=${OTP_APPS:-}
 OTP_OMIT=${OTP_OMIT:-}
 HEX=${HEX:-0}
+DEBUG_INFO=${DEBUG_INFO:-0}
+OTP_DOCS=${OTP_DOCS:-0}
 REBAR3=${REBAR3:-0}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
@@ -1889,6 +1898,27 @@ step_bundle() {
             cp "$src/priv/styles.css" "$STAGE/lib/$app-$vsn/priv/"
         fi
     done
+    # The code of OTP without its debug information (Dbgi) and its docs
+    # (Docs): about 14 MB less in the zip. It keeps the chunks of strip/1
+    # of src/beam_com/beam_com_build.erl, as a program gets them: the
+    # chunks that the loader uses, the line numbers, the attributes, the
+    # types and the records. Do not use beam_lib:strip_files/2: it writes
+    # each file with gzip, and the boot must then inflate kernel and stdlib,
+    # which the zip keeps stored. DEBUG_INFO=1 keeps Dbgi, and OTP_DOCS=1
+    # keeps Docs (both: the files stay as OTP built them).
+    if [ "$DEBUG_INFO" != 1 ] || [ "$OTP_DOCS" != 1 ]; then
+        keep='"Atom", "AtU8", "Attr", "Code", "StrT", "ImpT", "ExpT", "FunT", "LitT", "Line", "Type", "Meta", "Recs"'
+        if [ "$DEBUG_INFO" = 1 ]; then keep="$keep, \"Dbgi\""; fi
+        if [ "$OTP_DOCS" = 1 ]; then keep="$keep, \"Docs\""; fi
+        "$ERL_TOP/bin/erl" -noshell -eval "
+            Strip = fun(F) ->
+                {ok, {_, Cs}} = beam_lib:chunks(F, [$keep], [allow_missing_chunks]),
+                {ok, B} = beam_lib:build_module([C || {_, D} = C <- Cs, is_binary(D)]),
+                ok = file:write_file(F, B)
+            end,
+            lists:foreach(Strip, filelib:wildcard(\"$STAGE/lib/*/ebin/*.beam\")),
+            halt()."
+    fi
 
     # SQLite: the Erlang code of esqlite (its NIF is in the emulator).
     if [ "$SQLITE" = 1 ]; then
@@ -1906,6 +1936,9 @@ step_bundle() {
     # __protocol__/1) keeps its debug information: the consolidation of
     # Mix reads it, else it fails with missing_chunk.
     if [ "$ELIXIR" = 1 ]; then
+        # DEBUG_INFO=1: each module keeps its debug information.
+        elixir_dbgi=
+        if [ "$DEBUG_INFO" = 1 ]; then elixir_dbgi=', "Dbgi"'; fi
         for app in $ELIXIR_APPS; do
             src=$BUILD/elixir-$ELIXIR_VERSION/lib/$app/ebin
             vsn=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' "$src/$app.app")
@@ -1916,7 +1949,7 @@ step_bundle() {
             Fs = [F || A <- string:lexemes(\"$ELIXIR_APPS\", \" \"), F <- filelib:wildcard(\"$STAGE/lib/\" ++ A ++ \"-*/ebin/*.beam\")],
             Protocol = fun(F) -> {ok, {_, [{exports, E}]}} = beam_lib:chunks(F, [exports]), lists:member({'__protocol__', 1}, E) end,
             {Protocols, Others} = lists:partition(Protocol, Fs),
-            {ok, _} = beam_lib:strip_files(Others, [\"Attr\", \"Docs\"]),
+            {ok, _} = beam_lib:strip_files(Others, [\"Attr\", \"Docs\" $elixir_dbgi]),
             {ok, _} = beam_lib:strip_files(Protocols, [\"Attr\", \"Docs\", \"Dbgi\"]),
             halt()."
         mkdir -p "$STAGE/bin"
