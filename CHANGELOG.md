@@ -35,6 +35,23 @@ notes of its release.
   `JSON` and `mix deps.partition` have fixes (CVE-2026-109821,
   CVE-2026-115274 and CVE-2026-97209). The default versions of a custom
   build are these versions too. 29.1.1 and 1.20.4 stay as choices.
+- The swap of a VM on Workers (`BEAM_SWAP`, "The swap of a VM" in
+  `docs/WORKERS.md`). The memory of WebAssembly does not shrink, so a VM
+  keeps the memory of its peak. When the memory of an idle VM is at the
+  mark, and at least 16 MB of it is free, a new VM takes the next
+  requests, and the old VM stops. A stateless Worker has the mark 64 MB
+  by default. A Durable Object has no swap unless `BEAM_SWAP` sets a
+  mark.
+- The memory of a VM that stopped goes back to the isolate. Before, V8
+  kept each VM that stopped (`erlang:halt/1`, a trap) in memory, because
+  a suspended stack of JSPI is a root (V1 in `docs/UPSTREAM.md`). Now the
+  runtime ends the waits of the threads at the stop (`jspiHalt`). The
+  runtime also gives the host the used part of `malloc()`
+  (`jspi_heap_used`).
+- A runtime directory (`beam.com INPUT -o DIR --target wasm32`) starts in
+  workerd again. Since 0.1.0-rc.6, `worker.js` exported a number and a
+  text (`PORT_CLAIM_MS`, `PORT_DIR`), and workerd refuses such an export
+  of the main module. They are now the object `PORTS`.
 
 ## 0.1.0-rc.7
 
