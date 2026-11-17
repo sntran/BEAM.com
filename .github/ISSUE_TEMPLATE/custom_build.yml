@@ -15,8 +15,8 @@ body:
       label: Erlang/OTP version
       description: The versions that the patches of beam.com apply to (OTP_VERSIONS of scripts/custom_build.py).
       options:
-        - 29.1.1 (default)
-        - 29.1.2
+        - 29.1.2 (default)
+        - 29.1.1
         - 29.0.6
       default: 0
     validations:
@@ -95,8 +95,8 @@ body:
       description: None for a file with no Elixir (ELIXIR_VERSIONS of scripts/custom_build.py).
       options:
         - None (no Elixir)
-        - 1.20.4 (default)
-        - 1.20.5
+        - 1.20.5 (default)
+        - 1.20.4
       default: 1
     validations:
       required: true

@@ -21,8 +21,8 @@ build does not depend on the make of the host.
 The build downloads:
 
 - cosmocc 4.0.2 (the compiler and Cosmopolitan Libc);
-- the source of Erlang/OTP 29.1.1, OpenSSL 4.0.3, SQLite 3.53.4,
-  esqlite, WAMR 2.4.5 and Elixir 1.20.4;
+- the source of Erlang/OTP 29.1.2, OpenSSL 4.0.3, SQLite 3.53.4,
+  esqlite, WAMR 2.4.5 and Elixir 1.20.5;
 - the hex.pm packages whose NIFs it links (exqlite, bcrypt_elixir and
   argon2_elixir), with a check of their SHA-256;
 - emsdk 6.0.10, for the WebAssembly runtime of `--target wasm32`.
@@ -210,7 +210,7 @@ or rebar3. A custom build can have more, or less:
     `config :rusty_csv, RustyCSV.Native, skip_compilation?: true`. Else a
     release stops at boot.
 
-- `OTP_VERSION=29.1.2 OTP_COMMIT=...` and `ELIXIR_VERSION=1.20.5
+- `OTP_VERSION=29.1.1 OTP_COMMIT=...` and `ELIXIR_VERSION=1.20.4
   ELIXIR_COMMIT=...`: other versions of Erlang/OTP and Elixir. The commit
   of the tag is necessary, because a tag can move. The patches of
   `patches/otp` apply to OTP 29.0 and later, not to OTP 28. Elixir 1.19

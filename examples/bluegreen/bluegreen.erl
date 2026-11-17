@@ -23,10 +23,10 @@
 %%    descriptor of the listening socket (beam_com_fd, SCM_RIGHTS). The
 %%    two servers then have one socket, but the new one does not accept
 %%    yet.
-%% 3. Hand off. The server stops its accept and closes its copy of the
-%%    socket, waits for its open requests, and writes its state to
-%%    HANDOFF. The new connections wait in the queue of the socket, and
-%%    no connection gets a reset.
+%% 3. Hand off. The acceptor of the server stops and closes its copy of
+%%    the socket. The server waits for its open requests, and writes its
+%%    state to HANDOFF. The new connections wait in the queue of the
+%%    socket, and no connection gets a reset.
 %% 4. The new server reads the state, calls its migrate/1, and accepts.
 %%    The old server stops.
 -module(bluegreen).
@@ -89,9 +89,9 @@ serve(Port, State0, Handoff) ->
                 {L, New}
         end,
     Self = self(),
-    spawn_link(fun() -> acceptor(Listen, Self) end),
+    Acceptor = spawn_link(fun() -> acceptor(Listen, Self) end),
     loop(#{listen => Listen, port => Port, state => State, handlers => #{},
-           handoff => undefined, acceptor => running}).
+           handoff => undefined, acceptor => Acceptor}).
 
 loop(#{state := State, handlers := Handlers} = S) ->
     receive
@@ -104,20 +104,25 @@ loop(#{state := State, handlers := Handlers} = S) ->
             loop(S#{handlers := Handlers#{Ref => Pid}});
         {'DOWN', Ref, process, _, _} when is_map_key(Ref, Handlers) ->
             maybe_finish(S#{handlers := maps:remove(Ref, Handlers)});
+        {upgrade, From, _} when map_get(handoff, S) =/= undefined ->
+            %% After a switch: the listener of this server closes.
+            From ! {upgrade, "upgrade refused: switched\n"},
+            loop(S);
         {upgrade, From, File} ->
             Self = self(),
             case inet:getfd(maps:get(listen, S)) of
                 {ok, Fd} ->
                     spawn(fun() -> upgrade(Self, From, File, maps:get(port, S), State, Fd) end);
                 {error, Reason} ->
-                    %% After a switch: the listener of this server is closed.
                     From ! {upgrade, io_lib:format("upgrade refused: ~0p~n", [{listen, Reason}])}
             end,
             loop(S);
         {switch, Handoff} ->
-            %% Step 3: this server accepts no more connections. The socket
-            %% stays open, because the new server has a copy of it.
-            ok = gen_tcp:close(maps:get(listen, S)),
+            %% Step 3: this server accepts no more connections. The
+            %% acceptor closes the socket, not this process: see
+            %% acceptor/2. The socket stays open, because the new server
+            %% has a copy of it.
+            maps:get(acceptor, S) ! stop,
             loop(S#{handoff := Handoff});
         acceptor_done ->
             maybe_finish(S#{acceptor := done});
@@ -134,16 +139,30 @@ maybe_finish(#{handoff := Handoff, acceptor := done, handlers := H, state := Sta
 maybe_finish(S) ->
     loop(S).
 
+%% Only the acceptor closes the listener. When another process closes it
+%% during an accept, the accept can get a connection and then fail on the
+%% closed listener with {error, einval}: prim_inet reads the options of
+%% the listener after the accept, and it closes the new connection. The
+%% client then gets a reset, and the acceptor stops. So the acceptor
+%% accepts with a timeout of 100 ms, and looks for stop between two
+%% accepts. A connection that it does not accept stays in the queue for
+%% the new server.
 acceptor(Listen, Server) ->
-    case gen_tcp:accept(Listen) of
-        {ok, Socket} ->
-            Pid = spawn(fun() -> receive go -> handle(Socket, Server) end end),
-            ok = gen_tcp:controlling_process(Socket, Pid),
-            Server ! {started, Pid},
-            Pid ! go,
-            acceptor(Listen, Server);
-        {error, closed} ->
+    receive
+        stop ->
+            ok = gen_tcp:close(Listen),
             Server ! acceptor_done
+    after 0 ->
+        case gen_tcp:accept(Listen, 100) of
+            {ok, Socket} ->
+                Pid = spawn(fun() -> receive go -> handle(Socket, Server) end end),
+                ok = gen_tcp:controlling_process(Socket, Pid),
+                Server ! {started, Pid},
+                Pid ! go,
+                acceptor(Listen, Server);
+            {error, timeout} ->
+                acceptor(Listen, Server)
+        end
     end.
 
 handle(Socket, Server) ->

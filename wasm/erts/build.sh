@@ -24,7 +24,7 @@ else
     WASM_TARGET=wasm32-unknown-emscripten WASM_ARCH_FLAGS= SP=sp.S OSSL_TARGET=linux-generic32
 fi
 export WASM_TARGET WASM_ARCH_FLAGS
-OTP_VERSION=${OTP_VERSION:-29.1.1}
+OTP_VERSION=${OTP_VERSION:-29.1.2}
 JOBS=${JOBS:-$(nproc)}
 : "${EMSDK:?set EMSDK}" "${BOOTSTRAP:?set BOOTSTRAP}"
 PATH=$BOOTSTRAP/bootstrap/bin:$EMSDK/upstream/emscripten:$PATH

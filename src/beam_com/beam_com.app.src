@@ -5,7 +5,7 @@
              beam_com_rustler, beam_com_zip, 'Elixir.Rustler']},
   {registered, []},
   {applications, [kernel, stdlib, compiler, sasl]},
-  %% build.sh sets the full version of Erlang/OTP (29.1.1), and the
+  %% build.sh sets the full version of Erlang/OTP (29.1.2), and the
   %% Elixir packages whose NIFs are linked into beam.com, with their
   %% versions ([{exqlite, "0.41.0"}, ...]; see beam_com_make).
   {env, [{otp_version, ""}, {nifs, []}]}]}.

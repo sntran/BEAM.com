@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  OTP_VERSION: "29.1.1"
+  OTP_VERSION: "29.1.2"
   COSMOCC_VERSION: "4.0.2"
   OPENSSL_VERSION: "4.0.3"
 
@@ -280,7 +280,7 @@ jobs:
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
-          elixir-version: "1.20.4"
+          elixir-version: "1.20.5"
       - name: Check and times
         working-directory: tests/programs/ex_pdfium_check
         run: |
