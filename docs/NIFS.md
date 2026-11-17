@@ -116,7 +116,12 @@ section, and the code takes its address.
   an object, compile the C files with `-mcmodel=large`: the code then
   reads each address of the program from the object. Each call of the
   program goes through a stub of the loader. Use this when no memory
-  near the program is free (macOS 27 on arm64 can have none).
+  near the program is free.
+- On macOS 27 on arm64, `mmap()` takes no hint below `0x7000000000`,
+  and `MAP_JIT` memory cannot go near the program. The loader then checks
+  the range with `mach_vm_region_recurse()` and maps it with
+  `MAP_FIXED`. The code of the module is plain memory, and `mprotect()`
+  makes it executable (C57 of `docs/UPSTREAM.md`).
 - When no memory near the program is free, the error of `load_nif/2`
   names the symbol of the program that keeps the object near: `no free
   memory near the program for N bytes (a PC-relative relocation of

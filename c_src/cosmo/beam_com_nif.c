@@ -55,6 +55,7 @@
 #include <unistd.h>
 #include <cosmo.h>
 #include <libc/dce.h>
+#include <libc/dlopen/dlfcn.h>
 /* "cosmocc -MM" (the dependency files of ERTS) removes the macros of the
  * CPU, and tls.h then stops with #error. */
 #if defined(__x86_64__) || defined(__aarch64__)
@@ -805,15 +806,103 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
 }
 
 /* Maps SIZE bytes at ADDR exactly, with PROT and FLAGS, or gives NULL. */
+#if defined(__aarch64__)
+/*
+ * macOS 27 on Apple silicon reserves the address space of the shared
+ * region up to 0xfc0000000, and the program (0x800000000) and the memory
+ * near it are in this reservation. Its mmap() takes no hint below
+ * 0x7000000000, also for free memory, so MAP_FIXED_NOREPLACE fails
+ * there. MAP_FIXED can map in the reservation: in a submap, with no
+ * access and no tag. The kernel puts no other mapping there, and
+ * xnu_lock keeps two loads of this file apart. The APE loader
+ * (patches/cosmo/ape-m1.patch) maps the program in the same way.
+ */
+static pthread_mutex_t xnu_lock = PTHREAD_MUTEX_INITIALIZER;
+static int (*xnu_region)(uint32_t task, uint64_t *addr, uint64_t *size, uint32_t *depth,
+                         int32_t *info, uint32_t *count);
+static uint32_t xnu_task;
+static int xnu_ready; /* 0: not tried, 1: ready, -1: not there */
+
+/* mach_vm_region_recurse() of libSystem. */
+static int xnu_init(void)
+{
+    void *lib, *f, *t;
+
+    if (!xnu_ready) {
+        xnu_ready = -1;
+        if ((lib = cosmo_dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY)) &&
+            (f = cosmo_dlsym(lib, "mach_vm_region_recurse")) &&
+            (t = cosmo_dlsym(lib, "mach_task_self_")) && (xnu_region = cosmo_dltramp(f))) {
+            xnu_task = *(const uint32_t *)t;
+            xnu_ready = 1;
+        }
+    }
+    return xnu_ready > 0;
+}
+
+/* 1 when MAP_FIXED can map [A, B): each part of it is free, or is the
+ * reservation of the shared region. */
+static int xnu_range_usable(uintptr_t a, uintptr_t b)
+{
+    uint64_t r = a;
+
+    while (r < b) {
+        uint64_t addr = r, size = 0;
+        uint32_t depth = 64, count = 21; /* VM_REGION_SUBMAP_INFO_COUNT_64 */
+        int32_t info[32];                /* vm_region_submap_info_data_64_t */
+        int kr = xnu_region(xnu_task, &addr, &size, &depth, info, &count);
+        if (kr == 1) /* KERN_INVALID_ADDRESS: nothing at or above R */
+            return 1;
+        if (kr != 0 || addr + size <= r)
+            return 0;
+        if (addr >= b)
+            return 1;
+        /* max_protection (offset 4), user_tag (20), is_submap (48). */
+        if (depth == 0 || info[1] != 0 || info[5] != 0 || info[12] != 0)
+            return 0;
+        r = addr + size;
+    }
+    return 1;
+}
+
+/* map_at() on macOS on Apple silicon, when the hint fails: MAP_FIXED in
+ * a range that xnu_range_usable() accepts. Not for MAP_JIT memory: XNU
+ * refuses MAP_JIT with MAP_FIXED. */
+static void *xnu_map_at(uintptr_t addr, size_t size, int prot, int flags)
+{
+    void *p = NULL;
+
+    if (!IsXnuSilicon() || (flags & MAP_JIT))
+        return NULL;
+    pthread_mutex_lock(&xnu_lock);
+    if (xnu_init() && xnu_range_usable(addr, addr + size)) {
+        p = mmap((void *)addr, size, prot, flags | MAP_FIXED, -1, 0);
+        if (p == MAP_FAILED)
+            p = NULL;
+        else if ((uintptr_t)p != addr) {
+            munmap(p, size);
+            p = NULL;
+        }
+    }
+    pthread_mutex_unlock(&xnu_lock);
+    return p;
+}
+#endif
+
 static void *map_at(uintptr_t addr, size_t size, int prot, int flags)
 {
     void *p = mmap((void *)addr, size, prot, flags | MAP_FIXED_NOREPLACE, -1, 0);
-    if (p == MAP_FAILED)
-        return NULL;
-    if ((uintptr_t)p != addr) {
+    if (p != MAP_FAILED && (uintptr_t)p != addr) {
         /* A system that takes the flag only as a hint. */
         munmap(p, size);
+        p = MAP_FAILED;
+    }
+    if (p == MAP_FAILED) {
+#if defined(__aarch64__)
+        return xnu_map_at(addr, size, prot, flags);
+#else
         return NULL;
+#endif
     }
     return p;
 }
@@ -824,12 +913,22 @@ static void *map_data(struct bcn_module *m, uintptr_t a)
     return map_at(a, m->data_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
 }
 
-/* Maps the code (with the stubs) at A, and the data after it. */
-static int map_pair(struct bcn_module *m, uintptr_t a, int code_prot, int code_flags)
+/* Maps the code (with the stubs) at A, and the data after it. On macOS
+ * 27, MAP_JIT memory cannot go near the program (xnu_map_at): the code
+ * is then plain memory, and mprotect() makes it executable after the
+ * relocations (L->jit becomes 0). */
+static int map_pair(bcn_load_t *l, struct bcn_module *m, uintptr_t a, int code_prot, int code_flags)
 {
     void *code = map_at(a, m->code_size, code_prot, code_flags);
     void *data;
+    int plain = 0;
 
+#if defined(__aarch64__)
+    if (!code && (code_flags & MAP_JIT)) {
+        code = xnu_map_at(a, m->code_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        plain = code != NULL;
+    }
+#endif
     if (!code)
         return 0;
     data = map_data(m, a + m->code_size);
@@ -839,6 +938,8 @@ static int map_pair(struct bcn_module *m, uintptr_t a, int code_prot, int code_f
     }
     m->code = code;
     m->data = data;
+    if (plain)
+        l->jit = 0;
     return 1;
 }
 
@@ -856,7 +957,7 @@ static int map_far(bcn_load_t *l, struct bcn_module *m, size_t total, int code_p
 
     if (hole != MAP_FAILED) {
         munmap(hole, total);
-        if (map_pair(m, (uintptr_t)hole, code_prot, code_flags))
+        if (map_pair(l, m, (uintptr_t)hole, code_prot, code_flags))
             return 1;
     }
     /* The system can put MAP_JIT memory at a random address. */
@@ -908,7 +1009,7 @@ static int map_module(bcn_load_t *l, struct bcn_module *m)
     hi = start + l->near_range;
 #endif
     for (a = lo; a + total <= hi && a + total > a; a += BCN_STEP)
-        if (map_pair(m, a, code_prot, code_flags))
+        if (map_pair(l, m, a, code_prot, code_flags))
             return 1;
 #if defined(__aarch64__)
     /* Below the program: the end of the program stays in the range of
@@ -918,7 +1019,7 @@ static int map_module(bcn_load_t *l, struct bcn_module *m)
         uintptr_t bottom = end > l->near_range + BCN_PAGE ? end - l->near_range : BCN_PAGE;
         for (a = (start - total - 16 * BCN_PAGE) & -(uintptr_t)BCN_PAGE; a >= bottom && a < start;
              a -= BCN_STEP)
-            if (map_pair(m, a, code_prot, code_flags))
+            if (map_pair(l, m, a, code_prot, code_flags))
                 return 1;
     }
     return fail(l, "no free memory near the program for %zu bytes (a PC-relative relocation of %s needs it)",
