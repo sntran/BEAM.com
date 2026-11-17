@@ -13,6 +13,17 @@ extern int host_add(int a, int b);
 extern int host_value;
 
 static const char far_text[] = "far module";
+
+/* An ADRP to __dso_handle, as C++ code has for __cxa_atexit. The loader
+ * puts __dso_handle in the module, so this reference does not keep the
+ * module near the program. */
+__asm__(".text\n"
+        ".globl far_dso\n"
+        ".type far_dso, %function\n"
+        "far_dso:\n"
+        "    adrp x0, __dso_handle\n"
+        "    add x0, x0, :lo12:__dso_handle\n"
+        "    ret\n");
 static int far_count;
 
 /* Calls, data and values of the program, and data of the module. */

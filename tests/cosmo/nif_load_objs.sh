@@ -33,6 +33,8 @@ x86_64-linux-cosmo-ld -r -o tlsbig.x86_64.o nif_load_tls_big.o
 aarch64-linux-cosmo-ld -r -o tlsbig.aarch64.o .aarch64/nif_load_tls_big.o
 # A module far from the program: aarch64 only (map_module).
 aarch64-unknown-cosmo-cc -O2 -mcmodel=large -c "$here/nif_load_far.c" -o far.aarch64.o
+# The range of PREL32 to the program: aarch64 only (map_module).
+aarch64-unknown-cosmo-cc -O2 -mcmodel=large -c "$here/nif_load_prel.c" -o prel.aarch64.o
 
 emit() {
     printf 'static const unsigned char %s[] __attribute__((aligned(16))) = {\n' "$1"
@@ -52,4 +54,5 @@ emit() {
     emit dead_aarch64 dead.aarch64.o
     emit tlsbig_aarch64 tlsbig.aarch64.o
     emit far_aarch64 far.aarch64.o
+    emit prel_aarch64 prel.aarch64.o
 } > nif_load_objs.h

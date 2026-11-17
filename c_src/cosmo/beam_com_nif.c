@@ -12,10 +12,11 @@
  *     references to the data of the program (EINVAL, O_CREAT: values of
  *     Cosmopolitan that change with the system). So the module goes near
  *     the program: below 2 GB on x86_64, and within 4 GB of the program
- *     on aarch64 (above or below it). On aarch64, an object with no
- *     PC-relative reference to the program (C code of the large code
- *     model, `-mcmodel=large`) can go far from the program when no
- *     memory near it is free (map_module).
+ *     on aarch64 (above or below it, within the smallest range of the
+ *     PC-relative references to the program). On aarch64, an object
+ *     with no PC-relative reference to the program (C code of the large
+ *     code model, `-mcmodel=large`) goes where the system has free
+ *     memory (map_module).
  *   - Only the sections that the NIF uses go into memory (bcn_gc), as
  *     "ld --gc-sections" finds them. A C++ object brings the members of
  *     libc++ that it uses, and the table gives libc++abi.
@@ -227,6 +228,8 @@ typedef struct {
 #define BCN_STEP (16u << 20) /* the step of the search for free memory */
 /* aarch64: the range of ADRP (4 GB), less a margin. */
 #define BCN_ADRP_RANGE 0xF0000000u
+/* aarch64: the range of PREL32 to a lower address (2 GB), less a margin. */
+#define BCN_PREL32_RANGE 0x7FFF0000u
 
 /* The start and the end of the image of the program (the linker script
  * of Cosmopolitan). */
@@ -416,8 +419,9 @@ typedef struct {
     char *error;
     size_t errsize;
     int jit;                 /* the code is MAP_JIT (macOS on Apple silicon) */
-    size_t near_sym;         /* aarch64: a symbol of the program that a PC-relative
-                              * relocation reaches, + 1, or 0 */
+    size_t near_sym;         /* aarch64: the symbol of the program of near_range, + 1, or 0 */
+    uint64_t near_range;     /* aarch64: the smallest range of a PC-relative relocation
+                              * to the program, or 0 for none */
     /* Thread-local data. */
     unsigned char *tlssym;   /* 1: the symbol is in a TLS section */
     uint64_t *tls_secoff;    /* the offset of each TLS section in the image */
@@ -629,27 +633,40 @@ static int is_call_reloc(uint32_t type)
 #endif
 }
 
-/* aarch64: a PC-relative relocation with a range of 4 GB or less. With a
- * symbol of the program, the module must be near the program. */
-static int is_near_reloc(uint32_t type)
+/* aarch64: the range of a PC-relative relocation, or 0 for another
+ * relocation. With a symbol of the program, the module must be within
+ * this range of the program. A range is the smaller of its two
+ * directions. */
+static uint64_t near_reloc_range(uint32_t type)
 {
 #if defined(__aarch64__)
     switch (type) {
     case R_AARCH64_ADR_PREL_PG_HI21:
     case R_AARCH64_ADR_PREL_PG_HI21_NC:
+        return BCN_ADRP_RANGE;
+    case R_AARCH64_PREL32:
+        return BCN_PREL32_RANGE;
+    case R_AARCH64_CALL26:
+    case R_AARCH64_JUMP26:
+        return 1u << 27;
     case R_AARCH64_ADR_PREL_LO21:
     case R_AARCH64_LD_PREL_LO19:
     case R_AARCH64_CONDBR19:
+        return 1u << 20;
     case R_AARCH64_TSTBR14:
-    case R_AARCH64_PREL32:
     case R_AARCH64_PREL16:
-    case R_AARCH64_CALL26:
-    case R_AARCH64_JUMP26:
-        return 1;
+        return 1u << 15;
     }
 #endif
     (void)type;
     return 0;
+}
+
+/* An undefined symbol that the loader puts in the module (sym_addr), not
+ * in the program. */
+static int is_module_symbol(const char *name)
+{
+    return !strcmp(name, "__dso_handle") || !strcmp(name, "_GLOBAL_OFFSET_TABLE_");
 }
 
 /* The kind of the GOT slot of a TLS relocation, or -1 for no slot. */
@@ -759,10 +776,15 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
             if (is_call_reloc(type) && (l->sh[r->sh_info].sh_flags & BCN_SHF_EXECINSTR) &&
                 sym_shndx(l, s) == BCN_SHN_UNDEF && s != 0 && !l->stub[s])
                 l->stub[s] = (uint32_t)++l->nstub;
-            /* A reference to the program that no stub takes. */
-            if (!l->near_sym && is_near_reloc(type) && sym_shndx(l, s) == BCN_SHN_UNDEF && s != 0 &&
-                !(is_call_reloc(type) && (l->sh[r->sh_info].sh_flags & BCN_SHF_EXECINSTR)))
+            /* A reference to the program that no stub takes: the
+             * smallest range sets the place of the module. */
+            if (near_reloc_range(type) && sym_shndx(l, s) == BCN_SHN_UNDEF && s != 0 &&
+                !(is_call_reloc(type) && (l->sh[r->sh_info].sh_flags & BCN_SHF_EXECINSTR)) &&
+                *sym_name(l, &l->syms[s]) && !is_module_symbol(sym_name(l, &l->syms[s])) &&
+                (!l->near_range || near_reloc_range(type) < l->near_range)) {
+                l->near_range = near_reloc_range(type);
                 l->near_sym = s + 1;
+            }
         }
     }
     *common_size = 0;
@@ -796,8 +818,13 @@ static void *map_at(uintptr_t addr, size_t size, int prot, int flags)
     return p;
 }
 
-/* Maps the code (with the stubs) at A, and the constants, the GOT and the
- * data after it. */
+/* Maps the constants, the GOT and the data at A. */
+static void *map_data(struct bcn_module *m, uintptr_t a)
+{
+    return map_at(a, m->data_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+}
+
+/* Maps the code (with the stubs) at A, and the data after it. */
 static int map_pair(struct bcn_module *m, uintptr_t a, int code_prot, int code_flags)
 {
     void *code = map_at(a, m->code_size, code_prot, code_flags);
@@ -805,8 +832,7 @@ static int map_pair(struct bcn_module *m, uintptr_t a, int code_prot, int code_f
 
     if (!code)
         return 0;
-    data = map_at(a + m->code_size, m->data_size, PROT_READ | PROT_WRITE,
-                  MAP_PRIVATE | MAP_ANONYMOUS);
+    data = map_data(m, a + m->code_size);
     if (!data) {
         munmap(code, m->code_size);
         return 0;
@@ -819,11 +845,11 @@ static int map_pair(struct bcn_module *m, uintptr_t a, int code_prot, int code_f
 #if defined(__aarch64__)
 /* aarch64: the module of an object with no PC-relative reference to the
  * program, where the system has free memory. The stubs and the GOT hold
- * the addresses of the program. The data must be in the range of ADRP
- * from the code: after the code when that memory is free. */
-static int map_far(bcn_load_t *l, struct bcn_module *m, int code_prot, int code_flags)
+ * the addresses of the program. The data comes after the code, and the
+ * end of the data must be in the range of PREL32 from the code: the
+ * FDEs of .eh_frame in the data refer to the code with PREL32. */
+static int map_far(bcn_load_t *l, struct bcn_module *m, size_t total, int code_prot, int code_flags)
 {
-    size_t total = m->code_size + m->data_size;
     void *hole = mmap(NULL, total, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     uint8_t *code;
     uintptr_t a, c;
@@ -838,8 +864,8 @@ static int map_far(bcn_load_t *l, struct bcn_module *m, int code_prot, int code_
     if (code == MAP_FAILED)
         return fail(l, "no memory for the %zu bytes of the code: %s", m->code_size, strerror(errno));
     c = (uintptr_t)code;
-    for (a = c + m->code_size; a > c && a - c + m->data_size <= BCN_ADRP_RANGE; a += BCN_STEP) {
-        void *data = map_at(a, m->data_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    for (a = c + m->code_size; a > c && a - c + m->data_size <= BCN_PREL32_RANGE; a += BCN_STEP) {
+        void *data = map_data(m, a);
         if (data) {
             m->code = code;
             m->data = data;
@@ -852,9 +878,10 @@ static int map_far(bcn_load_t *l, struct bcn_module *m, int code_prot, int code_
 #endif
 
 /* The two mappings of the module, near the program: the code (with the
- * stubs), then the constants, the GOT and the data. On aarch64, first
- * above the program, then below it, then far from it when the object
- * permits it. */
+ * stubs), then the constants, the GOT and the data. On aarch64, an object
+ * with no PC-relative reference to the program goes where the system has
+ * free memory. Another object goes within the smallest range of its
+ * references to the program: first above the program, then below it. */
 static int map_module(bcn_load_t *l, struct bcn_module *m)
 {
     uintptr_t start = (uintptr_t)__executable_start;
@@ -863,6 +890,10 @@ static int map_module(bcn_load_t *l, struct bcn_module *m)
     int code_prot = PROT_READ | PROT_WRITE, code_flags = MAP_PRIVATE | MAP_ANONYMOUS;
     uintptr_t hi, a;
 
+    if (l->jit) {
+        code_prot |= PROT_EXEC;
+        code_flags |= MAP_JIT;
+    }
 #if defined(__x86_64__)
     /* R_X86_64_32S: each address of the module is below 2 GB, and the
      * module is within 2 GB of the program. */
@@ -870,28 +901,26 @@ static int map_module(bcn_load_t *l, struct bcn_module *m)
     if (start >= hi)
         return fail(l, "the program is above 2 GB, and a NIF object of cosmocc needs it below");
 #else
-    /* ADRP reaches 4 GB from the module to the program. */
-    hi = start + BCN_ADRP_RANGE;
+    if (!l->near_range)
+        return map_far(l, m, total, code_prot, code_flags);
+    /* The end of the module stays in the range of the start of the
+     * program. */
+    hi = start + l->near_range;
 #endif
-    if (l->jit) {
-        code_prot |= PROT_EXEC;
-        code_flags |= MAP_JIT;
-    }
     for (a = lo; a + total <= hi && a + total > a; a += BCN_STEP)
         if (map_pair(m, a, code_prot, code_flags))
             return 1;
 #if defined(__aarch64__)
     /* Below the program: the end of the program stays in the range of
-     * ADRP from the module. */
+     * the start of the module. */
     if (start > total + 16 * BCN_PAGE) {
-        uintptr_t bottom = (uintptr_t)_end > BCN_ADRP_RANGE ? (uintptr_t)_end - BCN_ADRP_RANGE : BCN_PAGE;
+        uintptr_t end = (uintptr_t)_end;
+        uintptr_t bottom = end > l->near_range + BCN_PAGE ? end - l->near_range : BCN_PAGE;
         for (a = (start - total - 16 * BCN_PAGE) & -(uintptr_t)BCN_PAGE; a >= bottom && a < start;
              a -= BCN_STEP)
             if (map_pair(m, a, code_prot, code_flags))
                 return 1;
     }
-    if (!l->near_sym)
-        return map_far(l, m, code_prot, code_flags);
     return fail(l, "no free memory near the program for %zu bytes (a PC-relative relocation of %s needs it)",
                 total, sym_name(l, &l->syms[l->near_sym - 1]));
 #else

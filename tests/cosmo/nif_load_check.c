@@ -262,6 +262,36 @@ static void release(void)
         nheld--;
         munmap((void *)held[nheld].addr, held[nheld].size);
     }
+    free(held);
+    held = NULL;
+    held_cap = 0;
+}
+
+/* aarch64: a module within 2 GB of the program for an object with a
+ * PREL32 to the program, also when the memory above the program is free
+ * only after 2 GB. */
+static void prel_checks(void)
+{
+    uintptr_t start = (uintptr_t)__executable_start, lo, hi;
+    int (*prel_value)(void);
+    char err[512];
+    struct bcn_module *m;
+
+    reserve(align_up((uintptr_t)_end, BCN_PAGE), start + 0xA0000000u);
+    m = bcn_load(prel_aarch64, sizeof(prel_aarch64), lookup, err, sizeof(err));
+    CHECK(m != NULL);
+    if (m) {
+        bcn_range(m, &lo, &hi);
+        printf("nif_load_check: with a PREL32, the module is at %p to %p\n", (void *)lo, (void *)hi);
+        CHECK(hi <= start + 0x80000000u && (uintptr_t)_end <= lo + 0x80000000u);
+        CHECK((*(void **)&prel_value = bcn_symbol(m, "prel_value")) != NULL);
+        if (prel_value)
+            CHECK(prel_value() == host_value);
+        free_module(m);
+    } else {
+        fprintf(stderr, "nif_load_check: the load with a PREL32 failed: %s\n", err);
+    }
+    release();
 }
 
 /* aarch64: no free memory near the program (as on macOS 27, issue #27
@@ -274,9 +304,17 @@ static void far_checks(const unsigned char *obj, size_t objn)
     uintptr_t start = (uintptr_t)__executable_start, range = 0x100000000ull;
     uintptr_t bottom = start > range ? start - range : BCN_PAGE, lo, hi;
     int (*a_host)(void), (*far_call)(int, int *), e = 0, v;
+    void *(*far_dso)(void);
     char err[512];
     struct bcn_module *m;
 
+    /* The program must have room for the module below it. */
+    if (start < bottom + (64u << 20)) {
+        printf("nif_load_check: no room below the program at %p, no check of a module far from it\n",
+               (void *)start);
+        return;
+    }
+    prel_checks();
     reserve(align_up((uintptr_t)_end, BCN_PAGE), start + range);
     m = bcn_load(obj, objn, lookup, err, sizeof(err));
     CHECK(m != NULL);
@@ -309,6 +347,11 @@ static void far_checks(const unsigned char *obj, size_t objn)
             CHECK(far_call(5, &e) == 5 + v + 1 + 10 * 1000 + 100000);
             CHECK(e == EINVAL && host_value == v + 1);
             CHECK(far_call(5, &e) == 5 + v + 2 + 10 * 1000 + 200000);
+        }
+        CHECK((*(void **)&far_dso = bcn_symbol(m, "far_dso")) != NULL);
+        if (far_dso) {
+            void *d = far_dso();
+            CHECK((uintptr_t)d >= lo && (uintptr_t)d < hi);
         }
         free_module(m);
     } else {

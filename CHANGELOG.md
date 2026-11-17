@@ -6,9 +6,10 @@ notes of its release.
 ## Unreleased
 
 - Native NIF objects on aarch64: the loader also looks for free memory
-  below the program, and an object with no PC-relative reference to the
-  program (C code of `-mcmodel=large`) goes far from the program when no
-  memory near it is free. On macOS 27 arm64, the object of `tailwind`
+  below the program, within the smallest range of the PC-relative
+  references of the object to the program. An object with no such
+  reference (C code of `-mcmodel=large`) goes where the system has free
+  memory. On macOS 27 arm64, the object of `tailwind`
   did not load, with "no free memory near the program for 9764864
   bytes" (sntran/tailwind.com#27). The error now names the symbol that
   keeps an object near the program. See "Native NIF objects" in

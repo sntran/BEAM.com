@@ -108,15 +108,19 @@ section, and the code takes its address.
 - The module goes near the program: the code of `cosmocc` reads the
   data of the program (`EINVAL`, `O_CREAT`) with PC-relative
   instructions. On x86_64 that is below 2 GB. On aarch64 it is within
-  4 GB of the program, above it or below it. When no memory near the
-  program is free (macOS 27 on arm64 can have none), an aarch64 object
-  with no PC-relative reference to the program goes far from it. For
-  such an object, compile the C files with `-mcmodel=large`: the code
-  then reads each address of the program from the object. Each call of
-  the program goes through a stub of the loader. Else the error of
-  `load_nif/2` names the symbol of the program that keeps the object
-  near: `no free memory near the program for N bytes (a PC-relative
-  relocation of EINVAL needs it)`.
+  the smallest range of these instructions, above the program or below
+  it: 4 GB for ADRP, and 2 GB for a 32-bit offset in the data
+  (`PREL32`).
+- An aarch64 object with no PC-relative reference to the program goes
+  where the system has free memory, also far from the program. For such
+  an object, compile the C files with `-mcmodel=large`: the code then
+  reads each address of the program from the object. Each call of the
+  program goes through a stub of the loader. Use this when no memory
+  near the program is free (macOS 27 on arm64 can have none).
+- When no memory near the program is free, the error of `load_nif/2`
+  names the symbol of the program that keeps the object near: `no free
+  memory near the program for N bytes (a PC-relative relocation of
+  EINVAL needs it)`.
 
 `BEAM_COM_NIF_DEBUG=1` writes `nif_native: FILE` for each object that
 loads. `BEAM_COM_NIF_NATIVE=0` turns the loader off.
@@ -636,8 +640,9 @@ static, and the destructor of a `thread_local` object. `tests/run.sh` builds it 
 it on each system. `tests/cosmo/nif_load_check.c` (in `step_test` of
 `scripts/steps.sh`) checks the loader with no ERTS: the relocations of
 both CPUs, the errors, and 3,000 broken objects. On aarch64, it fills
-the memory near the program, and checks a module below the program and
-a module of the large code model far from it.
+the memory near the program. It checks a module below the program, the
+range of a `PREL32` to the program, and a module of the large code
+model far from it.
 
 [`tests/programs/store_nif_check`](../tests/programs/store_nif_check)
 loads the NIFs of the store as native NIF objects: vix, rusty_csv and
@@ -673,7 +678,7 @@ grow by their modules.
 - `c_src/cosmo/beam_com_nif.c`: the loader of native NIF objects. It
   checks the ELF object, maps its sections near the program (the code of
   `cosmocc` uses addresses of 32 bits; on aarch64 also below the
-  program, or far from it for an object of the large code model), does
+  program, or anywhere for an object of the large code model), does
   the relocations of x86_64
   and aarch64, adds a stub for a call that is too far, gives each FDE of
   `.eh_frame` to libunwind, and runs the constructors. Thread-local
