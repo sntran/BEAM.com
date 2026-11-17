@@ -21,6 +21,20 @@ notes of its release.
   file has debug information and no docs, for a program of such a build.
 - Remove `scripts/__pycache__/beam-fifo.cpython-311.pyc`, a file of
   Python that a commit added by mistake.
+- The NIF files of `nifs+=tailwind` are of tailwind.com 0.4.0, from
+  0.3.0. Its optimizer (`--minify` and `--optimize`) lowers CSS functions,
+  mixins, `if()`, `@when` and more math functions, and `mix format` can
+  sort the classes of HEEx templates. The NIF has the same names of libc
+  as 0.3.0. A project with the git dep of the tag `v0.3.0` gets no NIF
+  file now: change the dep to
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.4.0"}`.
+- `beam.com` has Erlang/OTP 29.1.2 and Elixir 1.20.5, from 29.1.1 and
+  1.20.4. Both are releases with security fixes: in OTP, `httpc` clears
+  the user info of a URL at a redirect to another origin, and `ssl`,
+  `ssh` and `snmp` have fixes. In Elixir, `URI.parse/1`, the decoder of
+  `JSON` and `mix deps.partition` have fixes (CVE-2026-109821,
+  CVE-2026-115274 and CVE-2026-97209). The default versions of a custom
+  build are these versions too. 29.1.1 and 1.20.4 stay as choices.
 - The swap of a VM on Workers (`BEAM_SWAP`, "The swap of a VM" in
   `docs/WORKERS.md`). The memory of WebAssembly does not shrink, so a VM
   keeps the memory of its peak. When the memory of an idle VM is at the

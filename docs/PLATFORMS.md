@@ -107,7 +107,7 @@ give the rule the file of your app, build a native file with `--target`
 - A release that you add with `zip` brings the applications that it
   needs, when they are not in the zip of `beam.com` (pure Erlang ones
   only).
-- A release must be for the same OTP as `beam.com` (29.1.1). BEAM.com
+- A release must be for the same OTP as `beam.com` (29.1.2). BEAM.com
   writes a warning when `start_erl.data` names another ERTS version.
 - `beam.com INPUT -o OUTPUT` takes only Hex packages (no git
   dependencies). For Elixir: no umbrella projects, no

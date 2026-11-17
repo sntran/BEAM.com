@@ -12,7 +12,7 @@ defmodule TailwindCheck.MixProject do
       app: :tailwind_check,
       version: "0.1.0",
       elixir: "~> 1.18",
-      deps: [{:tailwind, github: "sntran/tailwind.com", tag: "v0.3.0"}]
+      deps: [{:tailwind, github: "sntran/tailwind.com", tag: "v0.4.0"}]
     ]
   end
 

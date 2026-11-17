@@ -218,7 +218,7 @@ def issue(body):
         "wasm": choice("WebAssembly (WAMR)", "Yes") != "No",
         "debug_info": any(c.startswith("Debug information") for c in code),
         "otp_docs": any(c.startswith("Docs of OTP") for c in code),
-        # "29.1.1 (default)": the first word.
+        # "29.1.2 (default)": the first word.
         "otp_version": choice("Erlang/OTP version", "").split()[:1],
         "elixir_version": [] if choice("Elixir version", "").startswith("None")
                           else choice("Elixir version", "").split()[:1],

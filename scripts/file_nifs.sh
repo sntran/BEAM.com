@@ -22,10 +22,10 @@ set -eu
 # module tailwind_nif, for the git dep tailwind.com of the tag or of the
 # commit. FILE_NIFS_TAILWIND_URL gives another place of the same files
 # (for the tests).
-TAILWIND_TAG=v0.3.0
-TAILWIND_COMMIT=0d6061e69ecbb9c5cb7103d58fbebe46d3f7c3df
-TAILWIND_X86_64_SHA256=bf406360908a9522d3feaa680cd4dd884ecaf6b1ee5b9a6b72692e007ceaffc4
-TAILWIND_AARCH64_SHA256=da381e6e9c9bc529a83697e325d9cb87c6bc20fca8e16026ddd63b86858fc5a9
+TAILWIND_TAG=v0.4.0
+TAILWIND_COMMIT=7dfa07883992edebc42f16d205c678ef34d5be3d
+TAILWIND_X86_64_SHA256=b9218f7524b1181a22525572f6c7320e695ef858959da05fa334f8d719d0e920
+TAILWIND_AARCH64_SHA256=9044bfd1546b86067f35254f9dc9841779d02d46e4051fe60d02804ed5b0dc4b
 TAILWIND_URL=${FILE_NIFS_TAILWIND_URL:-https://github.com/sntran/tailwind.com/releases/download/$TAILWIND_TAG}
 
 usage() {

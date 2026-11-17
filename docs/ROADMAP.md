@@ -6,7 +6,7 @@ systems.
 
 ## What BEAM.com has now
 
-- ERTS of Erlang/OTP 29.1.1 as one Actually Portable Executable, with
+- ERTS of Erlang/OTP 29.1.2 as one Actually Portable Executable, with
   the JIT (BeamAsm) for x86_64 and aarch64 in one file, and no page that
   is writable and executable. See [`JIT.md`](JIT.md).
 - `beam.com INPUT` and `beam.com INPUT -o OUTPUT`: run and build `.erl`
@@ -14,7 +14,7 @@ systems.
   packages and git deps (over HTTPS and SSH, also with no `git`
   program), and with no Erlang installation. See
   [`PROGRAMS.md`](PROGRAMS.md).
-- Elixir 1.20.4 and its tools in the file (`mix`, `iex`, `elixir`,
+- Elixir 1.20.5 and its tools in the file (`mix`, `iex`, `elixir`,
   `elixirc`, `escript`), Phoenix from source with SQLite and
   `phx.gen.auth`, and a Phoenix app in one file (`beam.com . -o FILE`).
   See [`ELIXIR.md`](ELIXIR.md).
@@ -97,7 +97,7 @@ systems.
 ## Watch list (checked 2026-10-08)
 
 All the parts of the build are at their latest stable release (cosmocc
-4.0.2, Erlang/OTP 29.1.1, Elixir 1.20.4, OpenSSL 4.0.3, SQLite 3.53.4,
+4.0.2, Erlang/OTP 29.1.2, Elixir 1.20.5, OpenSSL 4.0.3, SQLite 3.53.4,
 WAMR 2.4.5, emsdk 6.0.10).
 
 - **Cosmopolitan master** has fixes that are not in a release yet: in

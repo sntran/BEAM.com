@@ -1,12 +1,12 @@
 # Elixir, its tools, and Phoenix
 
-`beam.com` has Elixir 1.20.4. It builds Elixir programs, and it is
+`beam.com` has Elixir 1.20.5. It builds Elixir programs, and it is
 also an Elixir installation in one file: `mix`, `iex`, `elixir`,
 `elixirc` and `escript`.
 
 ## Elixir programs
 
-Elixir is compiled with the Erlang/OTP 29.1.1 of `beam.com`, and its beam
+Elixir is compiled with the Erlang/OTP 29.1.2 of `beam.com`, and its beam
 files have no debug information: 2.8 MB in the zip, with the docs for
 `h/1` in `iex`. So `beam.com INPUT -o OUTPUT` compiles Elixir code
 without an Elixir installation:

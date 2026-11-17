@@ -26,7 +26,7 @@
 #   scripts/steps.sh part_keys      the keys of the parts of this build
 #
 # Environment:
-#   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.1)
+#   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.2)
 #   COSMOCC_VERSION  cosmocc release to download (default 4.0.2)
 #   OPENSSL_VERSION  OpenSSL git tag without "openssl-" (default 4.0.3)
 #   SQLITE           0: leave out SQLite (the esqlite NIF, linked into
@@ -80,7 +80,7 @@
 #                    logger and mix applications and bin/mix in the zip,
 #                    for "beam.com INPUT -o OUTPUT" of Elixir code and the tools
 #                    mix, iex, elixir and elixirc; default 1)
-#   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.4)
+#   ELIXIR_VERSION   Elixir git tag without "v" (default 1.20.5)
 #   COSMOCC          Directory of an unpacked cosmocc (default build/cosmocc)
 #   CC               C compiler (default cosmocc, which makes x86_64+aarch64
 #                    fat binaries; x86_64-unknown-cosmo-cc makes x86_64 only)
@@ -119,14 +119,14 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-OTP_VERSION=${OTP_VERSION:-29.1.1}
+OTP_VERSION=${OTP_VERSION:-29.1.2}
 COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
-OTP_COMMIT=${OTP_COMMIT:-ad05823719d77c8faee87348ea39513d4e2f99c5}
+OTP_COMMIT=${OTP_COMMIT:-d199a49a01a2079afb6f2c5c9ae047cd4555e68d}
 COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44}
 # libc/calls/pledge-linux.c and libc/calls/unveil.c of the tag
 # COSMOCC_VERSION (build_cosmo_file).
@@ -173,8 +173,8 @@ WASM=${WASM:-1}
 WAMR_VERSION=${WAMR_VERSION:-2.4.5}
 WAMR_COMMIT=${WAMR_COMMIT:-25bd7eb63e828e4bd242cc9b38d260b4b31c6605}
 ELIXIR=${ELIXIR:-1}
-ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.4}
-ELIXIR_COMMIT=${ELIXIR_COMMIT:-759443e724f55bf58e71c0603644e99058918d52}
+ELIXIR_VERSION=${ELIXIR_VERSION:-1.20.5}
+ELIXIR_COMMIT=${ELIXIR_COMMIT:-4a28692668bef879029291b7ff329a84a1f933bb}
 # rebar3 of a custom build (REBAR3=1).
 REBAR3_VERSION=${REBAR3_VERSION:-3.27.1}
 REBAR3_SHA256=${REBAR3_SHA256:-708407032479514dd68b581a0b09a68b5a781fb6f53dcf4ad81ce4ef6b92940f}
