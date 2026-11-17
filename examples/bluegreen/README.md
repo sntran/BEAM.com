@@ -42,8 +42,8 @@ as a probe: it shows the result, but a failure does not stop CI.
    (`serve PORT HANDOFF`). It connects to the Unix socket `HANDOFF.sock`
    of the old server, and gets the descriptor of the listening socket.
    It does not accept yet.
-3. **Hand off.** The old server stops its accept and closes its copy of
-   the socket. It waits for its open requests, and writes its state to
+3. **Hand off.** The acceptor of the old server stops and closes its
+   copy of the socket. The old server waits for its open requests, and writes its state to
    the file `HANDOFF` (a write and a rename). In this time, the new
    connections wait in the queue of the socket.
 4. **Take over.** The new server reads the state, calls its own
@@ -59,6 +59,15 @@ socket, with `beam_com_fd:send/2`. The new server receives it with
 then have one socket. When the old server closes its copy, the socket
 stays open, and its queue stays. The new server accepts each connection
 of that queue.
+
+Only the acceptor closes the listener of the old server. When another
+process closes it during an accept, the accept can get a connection
+and then fail with `{error, einval}`: `prim_inet` reads the options of
+the listener after the accept, and it closes the new connection. The
+client gets a reset, and the acceptor stops. So the acceptor accepts
+with a timeout of 100 ms, and looks for a stop message between two
+accepts. One CI run on Linux x86_64 had this failure, and a test of
+300 runs had it in 98 runs before the change and in 0 runs after.
 
 `beam_com_fd` is a module of `beam.com` (`src/beam_com_reload/`), with a
 static NIF (`c_src/fd/beam_com_fd.c`). The `socket` module of OTP can
