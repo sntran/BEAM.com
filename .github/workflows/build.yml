@@ -46,7 +46,7 @@ permissions:
   contents: read
 
 env:
-  OTP_VERSION: "29.1.1"
+  OTP_VERSION: "29.1.2"
   COSMOCC_VERSION: "4.0.2"
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
@@ -491,7 +491,7 @@ jobs:
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
-          elixir-version: "1.20.4"
+          elixir-version: "1.20.5"
       # tla2tools.jar v1.7.4 is the pinned stable release. v1.8.0 is a
       # pre-release that the project publishes again each night, so its
       # jar and its checksum change (docs/TESTING.md).

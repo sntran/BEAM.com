@@ -9,7 +9,7 @@ beam.com makes contains a part of it. The file keeps these notices and the licen
 zip, in the directory licenses/ ("unzip -l beam.com licenses/*" lists
 them). The source of this repository keeps the texts in licenses/.
 
-Erlang/OTP 29.1.1 (ERTS and the OTP applications in the zip)
+Erlang/OTP 29.1.2 (ERTS and the OTP applications in the zip)
   Copyright Ericsson AB and the contributors of Erlang/OTP.
   Apache License 2.0 (LICENSE). ERTS also contains code of other
   projects (for example zlib, PCRE2, Zstandard, AsmJit and Ryu) under
@@ -18,7 +18,7 @@ Erlang/OTP 29.1.1 (ERTS and the OTP applications in the zip)
   licenses/otp/.
   https://github.com/erlang/otp
 
-Elixir 1.20.4 (the elixir, eex, ex_unit, iex, logger and mix
+Elixir 1.20.5 (the elixir, eex, ex_unit, iex, logger and mix
 applications)
   Copyright The Elixir Team.
   Apache License 2.0 (LICENSE), and the license texts of its source in
@@ -89,7 +89,7 @@ the warning of --allow-net=*.DOMAIN; only beam.com contains it)
 
 The WebAssembly runtime (beam.wasm and beam.mjs in the zip, for
 --target wasm32)
-  Erlang/OTP 29.1.1 and OpenSSL 4.0.3, as above, compiled with
+  Erlang/OTP 29.1.2 and OpenSSL 4.0.3, as above, compiled with
   Emscripten. The runtime contains the system libraries of Emscripten:
   - Emscripten: MIT License and University of Illinois/NCSA Open Source
     License (licenses/emscripten.txt). https://github.com/emscripten-core/emscripten

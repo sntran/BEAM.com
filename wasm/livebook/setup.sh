@@ -55,8 +55,8 @@ cd "$DIR"
 # of beam.com. The patch turns off its port programs.
 OTP=$("$BEAM_COM" --version | sed -n 's/^ *Erlang\/OTP *: *//p')
 # The files of the commit of the tag, not of the tag (a tag can move).
-if [ -z "${OTP_COMMIT:-}" ] && [ "$OTP" = 29.1.1 ]; then
-    OTP_COMMIT=ad05823719d77c8faee87348ea39513d4e2f99c5
+if [ -z "${OTP_COMMIT:-}" ] && [ "$OTP" = 29.1.2 ]; then
+    OTP_COMMIT=d199a49a01a2079afb6f2c5c9ae047cd4555e68d
 fi
 : "${OTP_COMMIT:?set OTP_COMMIT, the commit of the tag OTP-$OTP}"
 OS_MON=https://raw.githubusercontent.com/erlang/otp/$OTP_COMMIT/lib/os_mon

@@ -127,7 +127,7 @@ lib/stdlib-8.1/{ebin,include}/...
 lib/.../                           sasl, compiler, parsetools, crypto, asn1,
                                    public_key, ssl, inets, ssh, xmerl,
                                    runtime_tools
-lib/elixir-1.20.4/ebin/...         and eex, ex_unit, iex, logger, mix
+lib/elixir-1.20.5/ebin/...         and eex, ex_unit, iex, logger, mix
 lib/esqlite-.../ebin/...           SQLite
 lib/wasm-0.1.0/ebin/...            WebAssembly
 lib/wasm_host-0.1.0/...            for the edge part, with the runtime
