@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- Native NIF objects on aarch64: the loader also looks for free memory
+  below the program, and an object with no PC-relative reference to the
+  program (C code of `-mcmodel=large`) goes far from the program when no
+  memory near it is free. On macOS 27 arm64, the object of `tailwind`
+  did not load, with "no free memory near the program for 9764864
+  bytes" (sntran/tailwind.com#27). The error now names the symbol that
+  keeps an object near the program. See "Native NIF objects" in
+  `docs/NIFS.md`.
 - `beam.com` is about 16 MB smaller: 40.6 MB, from 56.7 MB in
   0.1.0-rc.7. The code of OTP in its zip has no debug information (the
   chunk `Dbgi`) and no docs (the chunk `Docs`), and the code of Elixir

@@ -215,6 +215,109 @@ static void tls_checks(const unsigned char *tls, size_t tlsn, const unsigned cha
     refused(big, bign, "larger than");
 }
 
+#if defined(__aarch64__)
+/* The memory that reserve() takes. */
+static struct held {
+    uintptr_t addr;
+    size_t size;
+} *held;
+static size_t nheld, held_cap;
+
+static void hold(uintptr_t addr, size_t size)
+{
+    if (nheld == held_cap) {
+        held_cap = held_cap ? 2 * held_cap : 1024;
+        held = realloc(held, held_cap * sizeof(*held));
+        if (!held)
+            abort();
+    }
+    held[nheld].addr = addr;
+    held[nheld].size = size;
+    nheld++;
+}
+
+/* Takes each free part of [LO, HI) with PROT_NONE memory: a part of 16
+ * MiB, else each free page of 64 KiB of the part. Thus the loader finds
+ * no free memory there. */
+static void reserve(uintptr_t lo, uintptr_t hi)
+{
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+    uintptr_t a, b;
+
+    for (a = lo; a < hi; a += BCN_STEP) {
+        size_t n = hi - a < BCN_STEP ? hi - a : BCN_STEP;
+        if (map_at(a, n, PROT_NONE, flags)) {
+            hold(a, n);
+            continue;
+        }
+        for (b = a; b < a + n; b += BCN_PAGE)
+            if (map_at(b, BCN_PAGE, PROT_NONE, flags))
+                hold(b, BCN_PAGE);
+    }
+}
+
+static void release(void)
+{
+    while (nheld) {
+        nheld--;
+        munmap((void *)held[nheld].addr, held[nheld].size);
+    }
+}
+
+/* aarch64: no free memory near the program (as on macOS 27, issue #27
+ * of tailwind.com). An object goes below the program when the memory
+ * above it is in use. An object with a PC-relative reference to the
+ * program then gets an error that names the symbol, and an object of
+ * the large code model goes far from the program. */
+static void far_checks(const unsigned char *obj, size_t objn)
+{
+    uintptr_t start = (uintptr_t)__executable_start, range = 0x100000000ull;
+    uintptr_t bottom = start > range ? start - range : BCN_PAGE, lo, hi;
+    int (*a_host)(void), (*far_call)(int, int *), e = 0, v;
+    char err[512];
+    struct bcn_module *m;
+
+    reserve(align_up((uintptr_t)_end, BCN_PAGE), start + range);
+    m = bcn_load(obj, objn, lookup, err, sizeof(err));
+    CHECK(m != NULL);
+    if (m) {
+        bcn_range(m, &lo, &hi);
+        printf("nif_load_check: below the program, the module is at %p to %p\n", (void *)lo, (void *)hi);
+        CHECK(hi <= start && lo >= bottom);
+        CHECK((*(void **)&a_host = bcn_symbol(m, "a_host")) != NULL);
+        if (a_host) {
+            v = host_value;
+            CHECK(a_host() == v + 1 + 100 && host_value == v + 1);
+        }
+        free_module(m);
+    } else {
+        fprintf(stderr, "nif_load_check: the load below the program failed: %s\n", err);
+    }
+
+    reserve(bottom, start);
+    refused(obj, objn, "no free memory near the program");
+    refused(obj, objn, "a PC-relative relocation of");
+    m = bcn_load(far_aarch64, sizeof(far_aarch64), lookup, err, sizeof(err));
+    CHECK(m != NULL);
+    if (m) {
+        bcn_range(m, &lo, &hi);
+        printf("nif_load_check: far from the program, the module is at %p to %p\n", (void *)lo, (void *)hi);
+        CHECK(hi <= bottom || lo >= start + range);
+        CHECK((*(void **)&far_call = bcn_symbol(m, "far_call")) != NULL);
+        if (far_call) {
+            v = host_value;
+            CHECK(far_call(5, &e) == 5 + v + 1 + 10 * 1000 + 100000);
+            CHECK(e == EINVAL && host_value == v + 1);
+            CHECK(far_call(5, &e) == 5 + v + 2 + 10 * 1000 + 200000);
+        }
+        free_module(m);
+    } else {
+        fprintf(stderr, "nif_load_check: the load far from the program failed: %s\n", err);
+    }
+    release();
+}
+#endif
+
 /* The loader never crashes on a broken object: random changes in a copy
  * of the object with no constructors (so no broken code runs). */
 static void broken_objects(const unsigned char *obj, size_t size)
@@ -413,6 +516,9 @@ int main(void)
         memcpy(t + 20, (const uint8_t[]){ 12, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, 16);
         CHECK(eh_frame_ok(t, 36)); /* an FDE after its CIE */
     }
+#if defined(__aarch64__)
+    far_checks(obj, objn);
+#endif
     lookups = 0;
     bcn_unwind = 0;
     broken_objects(objb, objbn);
