@@ -201,6 +201,47 @@ defmodule BeamComBuildTest do
     end
 
     # The path of the running beam.com, else an error (a plain OTP).
+    # A compiled package goes into the code path, and its application is
+    # loaded, as Mix does before it compiles the next package: the code
+    # of reverse_proxy_plug reads Application.spec(:req, :vsn) when it
+    # compiles.
+    test "install_dep_test", %{dir: dir} do
+      pkg = :filename.join(dir, ~c"dep_app-2.3.4")
+      ebin = :filename.join(pkg, ~c"ebin")
+
+      props = [
+        description: ~c"dep_app",
+        vsn: ~c"2.3.4",
+        modules: [:dep_app_mod],
+        registered: [],
+        applications: [:kernel, :stdlib]
+      ]
+
+      {:ok, :dep_app_mod, beam} =
+        :compile.forms(
+          [{:attribute, 1, :module, :dep_app_mod}, {:attribute, 1, :export, []}],
+          [:binary]
+        )
+
+      app = %{props: props, beams: [{:dep_app_mod, beam}]}
+
+      try do
+        assert %{dir: ^pkg} = :beam_com_build.install_dep(:dep_app, pkg, app)
+        assert ~c"2.3.4" == Application.spec(:dep_app, :vsn)
+
+        assert {:ok, [{:application, :dep_app, ^props}]} =
+                 :file.consult(:filename.join(ebin, ~c"dep_app.app"))
+
+        assert :filelib.is_regular(:filename.join(ebin, ~c"dep_app_mod.beam"))
+        assert ebin in :code.get_path()
+        # A second install of a loaded application works.
+        assert %{dir: ^pkg} = :beam_com_build.install_dep(:dep_app, pkg, app)
+      after
+        :application.unload(:dep_app)
+        :code.del_path(ebin)
+      end
+    end
+
     test "executable_test" do
       case :init.get_argument(:beam_com_exe) do
         {:ok, [[exe]]} -> assert exe == :beam_com_build.executable()

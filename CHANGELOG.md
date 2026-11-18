@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com DIR -o FILE` builds a Mix project with the deps `castore` and
+  `reverse_proxy_plug`. The builder reads the `mix.exs` of a package in
+  the directory of the package, as Mix does: `castore` reads its file
+  `VERSION` there. The builder also loads the application of each
+  compiled package, as Mix does: `reverse_proxy_plug` reads the version
+  of `req` with `Application.spec/2` when it compiles. Before, the build
+  stopped with "could not read file \"VERSION\"" or "invalid version".
 - The workflow "Remote SSH" has the runner `xcode-27` (macOS 27 on
   Apple silicon).
 - macOS 27 on arm64: `beam.com` starts, and native NIF objects load.
