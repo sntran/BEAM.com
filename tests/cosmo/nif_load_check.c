@@ -215,6 +215,152 @@ static void tls_checks(const unsigned char *tls, size_t tlsn, const unsigned cha
     refused(big, bign, "larger than");
 }
 
+#if defined(__aarch64__)
+/* The memory that reserve() takes. */
+static struct held {
+    uintptr_t addr;
+    size_t size;
+} *held;
+static size_t nheld, held_cap;
+
+static void hold(uintptr_t addr, size_t size)
+{
+    if (nheld == held_cap) {
+        held_cap = held_cap ? 2 * held_cap : 1024;
+        held = realloc(held, held_cap * sizeof(*held));
+        if (!held)
+            abort();
+    }
+    held[nheld].addr = addr;
+    held[nheld].size = size;
+    nheld++;
+}
+
+/* Takes each free part of [LO, HI) with PROT_NONE memory: a part of 16
+ * MiB, else each free page of 64 KiB of the part. Thus the loader finds
+ * no free memory there. */
+static void reserve(uintptr_t lo, uintptr_t hi)
+{
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+    uintptr_t a, b;
+
+    for (a = lo; a < hi; a += BCN_STEP) {
+        size_t n = hi - a < BCN_STEP ? hi - a : BCN_STEP;
+        if (map_at(a, n, PROT_NONE, flags)) {
+            hold(a, n);
+            continue;
+        }
+        for (b = a; b < a + n; b += BCN_PAGE)
+            if (map_at(b, BCN_PAGE, PROT_NONE, flags))
+                hold(b, BCN_PAGE);
+    }
+}
+
+static void release(void)
+{
+    while (nheld) {
+        nheld--;
+        munmap((void *)held[nheld].addr, held[nheld].size);
+    }
+    free(held);
+    held = NULL;
+    held_cap = 0;
+}
+
+/* aarch64: a module within 2 GB of the program for an object with a
+ * PREL32 to the program, also when the memory above the program is free
+ * only after 2 GB. */
+static void prel_checks(void)
+{
+    uintptr_t start = (uintptr_t)__executable_start, lo, hi;
+    int (*prel_value)(void);
+    char err[512];
+    struct bcn_module *m;
+
+    reserve(align_up((uintptr_t)_end, BCN_PAGE), start + 0xA0000000u);
+    m = bcn_load(prel_aarch64, sizeof(prel_aarch64), lookup, err, sizeof(err));
+    CHECK(m != NULL);
+    if (m) {
+        bcn_range(m, &lo, &hi);
+        printf("nif_load_check: with a PREL32, the module is at %p to %p\n", (void *)lo, (void *)hi);
+        CHECK(hi <= start + 0x80000000u && (uintptr_t)_end <= lo + 0x80000000u);
+        CHECK((*(void **)&prel_value = bcn_symbol(m, "prel_value")) != NULL);
+        if (prel_value)
+            CHECK(prel_value() == host_value);
+        free_module(m);
+    } else {
+        fprintf(stderr, "nif_load_check: the load with a PREL32 failed: %s\n", err);
+    }
+    release();
+}
+
+/* aarch64: no free memory near the program (as on macOS 27, issue #27
+ * of tailwind.com). An object goes below the program when the memory
+ * above it is in use. An object with a PC-relative reference to the
+ * program then gets an error that names the symbol, and an object of
+ * the large code model goes far from the program. */
+static void far_checks(const unsigned char *obj, size_t objn)
+{
+    uintptr_t start = (uintptr_t)__executable_start, range = 0x100000000ull;
+    uintptr_t bottom = start > range ? start - range : BCN_PAGE, lo, hi;
+    int (*a_host)(void), (*far_call)(int, int *), e = 0, v;
+    void *(*far_dso)(void);
+    char err[512];
+    struct bcn_module *m;
+
+    /* The program must have room for the module below it. */
+    if (start < bottom + (64u << 20)) {
+        printf("nif_load_check: no room below the program at %p, no check of a module far from it\n",
+               (void *)start);
+        return;
+    }
+    prel_checks();
+    reserve(align_up((uintptr_t)_end, BCN_PAGE), start + range);
+    m = bcn_load(obj, objn, lookup, err, sizeof(err));
+    CHECK(m != NULL);
+    if (m) {
+        bcn_range(m, &lo, &hi);
+        printf("nif_load_check: below the program, the module is at %p to %p\n", (void *)lo, (void *)hi);
+        CHECK(hi <= start && lo >= bottom);
+        CHECK((*(void **)&a_host = bcn_symbol(m, "a_host")) != NULL);
+        if (a_host) {
+            v = host_value;
+            CHECK(a_host() == v + 1 + 100 && host_value == v + 1);
+        }
+        free_module(m);
+    } else {
+        fprintf(stderr, "nif_load_check: the load below the program failed: %s\n", err);
+    }
+
+    reserve(bottom, start);
+    refused(obj, objn, "no free memory near the program");
+    refused(obj, objn, "a PC-relative relocation of");
+    m = bcn_load(far_aarch64, sizeof(far_aarch64), lookup, err, sizeof(err));
+    CHECK(m != NULL);
+    if (m) {
+        bcn_range(m, &lo, &hi);
+        printf("nif_load_check: far from the program, the module is at %p to %p\n", (void *)lo, (void *)hi);
+        CHECK(hi <= bottom || lo >= start + range);
+        CHECK((*(void **)&far_call = bcn_symbol(m, "far_call")) != NULL);
+        if (far_call) {
+            v = host_value;
+            CHECK(far_call(5, &e) == 5 + v + 1 + 10 * 1000 + 100000);
+            CHECK(e == EINVAL && host_value == v + 1);
+            CHECK(far_call(5, &e) == 5 + v + 2 + 10 * 1000 + 200000);
+        }
+        CHECK((*(void **)&far_dso = bcn_symbol(m, "far_dso")) != NULL);
+        if (far_dso) {
+            void *d = far_dso();
+            CHECK((uintptr_t)d >= lo && (uintptr_t)d < hi);
+        }
+        free_module(m);
+    } else {
+        fprintf(stderr, "nif_load_check: the load far from the program failed: %s\n", err);
+    }
+    release();
+}
+#endif
+
 /* The loader never crashes on a broken object: random changes in a copy
  * of the object with no constructors (so no broken code runs). */
 static void broken_objects(const unsigned char *obj, size_t size)
@@ -413,6 +559,9 @@ int main(void)
         memcpy(t + 20, (const uint8_t[]){ 12, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, 16);
         CHECK(eh_frame_ok(t, 36)); /* an FDE after its CIE */
     }
+#if defined(__aarch64__)
+    far_checks(obj, objn);
+#endif
     lookups = 0;
     bcn_unwind = 0;
     broken_objects(objb, objbn);

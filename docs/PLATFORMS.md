@@ -11,6 +11,7 @@ each row, except WSL2 (see below) and OpenBSD 7.9.
 | Linux aarch64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | WSL2 (Linux x86_64) | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | macOS arm64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
+| macOS 27 arm64 | `sh ./beam.com` (remove an older `~/.ape-1.10` and `$TMPDIR/.ape-1.10` once, C57 of [`UPSTREAM.md`](UPSTREAM.md)) | ✅ | ✅ | ✅ | ✅ |
 | macOS x86_64 | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | FreeBSD | `sh ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | NetBSD | `ape-x86_64.elf ./beam.com` (its `sh` cannot read APE files) | ✅ | ✅ | ✅ | ✅ |

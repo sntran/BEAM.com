@@ -5,6 +5,22 @@ notes of its release.
 
 ## Unreleased
 
+- macOS 27 on arm64: `beam.com` starts, and native NIF objects load.
+  macOS 27 reserves the memory of the program for its shared region,
+  and its `mmap()` takes no hint below `0x7000000000`. The APE loader
+  stopped with "the fixed addresses of the program are in use", and
+  the object of `tailwind` did not load, with "no free memory near the
+  program for 9764864 bytes" (sntran/tailwind.com#27). Both loaders now
+  check the range with `mach_vm_region_recurse()` and map it with
+  `MAP_FIXED` (C57 of `docs/UPSTREAM.md`). Remove `$TMPDIR/.ape-1.10`
+  and `~/.ape-1.10` once on macOS 27: they can hold an older loader.
+  CI runs the tests on macOS 27 too (the runner `xcode-27`).
+- Native NIF objects on aarch64: the loader also looks for free memory
+  below the program, within the smallest range of the PC-relative
+  references of the object to the program. An object with no such
+  reference (C code of `-mcmodel=large`) goes where the system has free
+  memory. The error names the symbol that keeps an object near the
+  program. See "Native NIF objects" in `docs/NIFS.md`.
 - `beam.com` is about 16 MB smaller: 40.6 MB, from 56.7 MB in
   0.1.0-rc.7. The code of OTP in its zip has no debug information (the
   chunk `Dbgi`) and no docs (the chunk `Docs`), and the code of Elixir

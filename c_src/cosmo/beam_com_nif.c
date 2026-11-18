@@ -12,7 +12,11 @@
  *     references to the data of the program (EINVAL, O_CREAT: values of
  *     Cosmopolitan that change with the system). So the module goes near
  *     the program: below 2 GB on x86_64, and within 4 GB of the program
- *     on aarch64.
+ *     on aarch64 (above or below it, within the smallest range of the
+ *     PC-relative references to the program). On aarch64, an object
+ *     with no PC-relative reference to the program (C code of the large
+ *     code model, `-mcmodel=large`) goes where the system has free
+ *     memory (map_module).
  *   - Only the sections that the NIF uses go into memory (bcn_gc), as
  *     "ld --gc-sections" finds them. A C++ object brings the members of
  *     libc++ that it uses, and the table gives libc++abi.
@@ -51,6 +55,7 @@
 #include <unistd.h>
 #include <cosmo.h>
 #include <libc/dce.h>
+#include <libc/dlopen/dlfcn.h>
 /* "cosmocc -MM" (the dependency files of ERTS) removes the macros of the
  * CPU, and tls.h then stops with #error. */
 #if defined(__x86_64__) || defined(__aarch64__)
@@ -221,6 +226,11 @@ typedef struct {
 #endif
 
 #define BCN_PAGE 65536 /* the largest page of the systems (Windows: 64 KiB granularity) */
+#define BCN_STEP (16u << 20) /* the step of the search for free memory */
+/* aarch64: the range of ADRP (4 GB), less a margin. */
+#define BCN_ADRP_RANGE 0xF0000000u
+/* aarch64: the range of PREL32 to a lower address (2 GB), less a margin. */
+#define BCN_PREL32_RANGE 0x7FFF0000u
 
 /* The start and the end of the image of the program (the linker script
  * of Cosmopolitan). */
@@ -410,6 +420,9 @@ typedef struct {
     char *error;
     size_t errsize;
     int jit;                 /* the code is MAP_JIT (macOS on Apple silicon) */
+    size_t near_sym;         /* aarch64: the symbol of the program of near_range, + 1, or 0 */
+    uint64_t near_range;     /* aarch64: the smallest range of a PC-relative relocation
+                              * to the program, or 0 for none */
     /* Thread-local data. */
     unsigned char *tlssym;   /* 1: the symbol is in a TLS section */
     uint64_t *tls_secoff;    /* the offset of each TLS section in the image */
@@ -621,6 +634,42 @@ static int is_call_reloc(uint32_t type)
 #endif
 }
 
+/* aarch64: the range of a PC-relative relocation, or 0 for another
+ * relocation. With a symbol of the program, the module must be within
+ * this range of the program. A range is the smaller of its two
+ * directions. */
+static uint64_t near_reloc_range(uint32_t type)
+{
+#if defined(__aarch64__)
+    switch (type) {
+    case R_AARCH64_ADR_PREL_PG_HI21:
+    case R_AARCH64_ADR_PREL_PG_HI21_NC:
+        return BCN_ADRP_RANGE;
+    case R_AARCH64_PREL32:
+        return BCN_PREL32_RANGE;
+    case R_AARCH64_CALL26:
+    case R_AARCH64_JUMP26:
+        return 1u << 27;
+    case R_AARCH64_ADR_PREL_LO21:
+    case R_AARCH64_LD_PREL_LO19:
+    case R_AARCH64_CONDBR19:
+        return 1u << 20;
+    case R_AARCH64_TSTBR14:
+    case R_AARCH64_PREL16:
+        return 1u << 15;
+    }
+#endif
+    (void)type;
+    return 0;
+}
+
+/* An undefined symbol that the loader puts in the module (sym_addr), not
+ * in the program. */
+static int is_module_symbol(const char *name)
+{
+    return !strcmp(name, "__dso_handle") || !strcmp(name, "_GLOBAL_OFFSET_TABLE_");
+}
+
 /* The kind of the GOT slot of a TLS relocation, or -1 for no slot. */
 static int tls_slot_kind(uint32_t type)
 {
@@ -728,6 +777,15 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
             if (is_call_reloc(type) && (l->sh[r->sh_info].sh_flags & BCN_SHF_EXECINSTR) &&
                 sym_shndx(l, s) == BCN_SHN_UNDEF && s != 0 && !l->stub[s])
                 l->stub[s] = (uint32_t)++l->nstub;
+            /* A reference to the program that no stub takes: the
+             * smallest range sets the place of the module. */
+            if (near_reloc_range(type) && sym_shndx(l, s) == BCN_SHN_UNDEF && s != 0 &&
+                !(is_call_reloc(type) && (l->sh[r->sh_info].sh_flags & BCN_SHF_EXECINSTR)) &&
+                *sym_name(l, &l->syms[s]) && !is_module_symbol(sym_name(l, &l->syms[s])) &&
+                (!l->near_range || near_reloc_range(type) < l->near_range)) {
+                l->near_range = near_reloc_range(type);
+                l->near_sym = s + 1;
+            }
         }
     }
     *common_size = 0;
@@ -748,21 +806,183 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
 }
 
 /* Maps SIZE bytes at ADDR exactly, with PROT and FLAGS, or gives NULL. */
+#if defined(__aarch64__)
+/*
+ * macOS 27 on Apple silicon reserves the address space of the shared
+ * region up to 0xfc0000000, and the program (0x800000000) and the memory
+ * near it are in this reservation. Its mmap() takes no hint below
+ * 0x7000000000, also for free memory, so MAP_FIXED_NOREPLACE fails
+ * there. MAP_FIXED can map in the reservation: in a submap, with no
+ * access and no tag. The kernel puts no other mapping there, and
+ * xnu_lock keeps two loads of this file apart. The APE loader
+ * (patches/cosmo/ape-m1.patch) maps the program in the same way.
+ */
+static pthread_mutex_t xnu_lock = PTHREAD_MUTEX_INITIALIZER;
+static int (*xnu_region)(uint32_t task, uint64_t *addr, uint64_t *size, uint32_t *depth,
+                         int32_t *info, uint32_t *count);
+static uint32_t xnu_task;
+static int xnu_ready; /* 0: not tried, 1: ready, -1: not there */
+
+/* mach_vm_region_recurse() of libSystem. */
+static int xnu_init(void)
+{
+    void *lib, *f, *t;
+
+    if (!xnu_ready) {
+        xnu_ready = -1;
+        if ((lib = cosmo_dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY)) &&
+            (f = cosmo_dlsym(lib, "mach_vm_region_recurse")) &&
+            (t = cosmo_dlsym(lib, "mach_task_self_")) && (xnu_region = cosmo_dltramp(f))) {
+            xnu_task = *(const uint32_t *)t;
+            xnu_ready = 1;
+        }
+    }
+    return xnu_ready > 0;
+}
+
+/* 1 when MAP_FIXED can map [A, B): each part of it is free, or is the
+ * reservation of the shared region. */
+static int xnu_range_usable(uintptr_t a, uintptr_t b)
+{
+    uint64_t r = a;
+
+    while (r < b) {
+        uint64_t addr = r, size = 0;
+        uint32_t depth = 64, count = 21; /* VM_REGION_SUBMAP_INFO_COUNT_64 */
+        int32_t info[32];                /* vm_region_submap_info_data_64_t */
+        int kr = xnu_region(xnu_task, &addr, &size, &depth, info, &count);
+        if (kr == 1) /* KERN_INVALID_ADDRESS: nothing at or above R */
+            return 1;
+        if (kr != 0 || addr + size <= r)
+            return 0;
+        if (addr >= b)
+            return 1;
+        /* max_protection (offset 4), user_tag (20), is_submap (48). */
+        if (depth == 0 || info[1] != 0 || info[5] != 0 || info[12] != 0)
+            return 0;
+        r = addr + size;
+    }
+    return 1;
+}
+
+/* map_at() on macOS on Apple silicon, when the hint fails: MAP_FIXED in
+ * a range that xnu_range_usable() accepts. Not for MAP_JIT memory: XNU
+ * refuses MAP_JIT with MAP_FIXED. */
+static void *xnu_map_at(uintptr_t addr, size_t size, int prot, int flags)
+{
+    void *p = NULL;
+
+    if (!IsXnuSilicon() || (flags & MAP_JIT))
+        return NULL;
+    pthread_mutex_lock(&xnu_lock);
+    if (xnu_init() && xnu_range_usable(addr, addr + size)) {
+        p = mmap((void *)addr, size, prot, flags | MAP_FIXED, -1, 0);
+        if (p == MAP_FAILED)
+            p = NULL;
+        else if ((uintptr_t)p != addr) {
+            munmap(p, size);
+            p = NULL;
+        }
+    }
+    pthread_mutex_unlock(&xnu_lock);
+    return p;
+}
+#endif
+
 static void *map_at(uintptr_t addr, size_t size, int prot, int flags)
 {
     void *p = mmap((void *)addr, size, prot, flags | MAP_FIXED_NOREPLACE, -1, 0);
-    if (p == MAP_FAILED)
-        return NULL;
-    if ((uintptr_t)p != addr) {
+    if (p != MAP_FAILED && (uintptr_t)p != addr) {
         /* A system that takes the flag only as a hint. */
         munmap(p, size);
+        p = MAP_FAILED;
+    }
+    if (p == MAP_FAILED) {
+#if defined(__aarch64__)
+        return xnu_map_at(addr, size, prot, flags);
+#else
         return NULL;
+#endif
     }
     return p;
 }
 
+/* Maps the constants, the GOT and the data at A. */
+static void *map_data(struct bcn_module *m, uintptr_t a)
+{
+    return map_at(a, m->data_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+}
+
+/* Maps the code (with the stubs) at A, and the data after it. On macOS
+ * 27, MAP_JIT memory cannot go near the program (xnu_map_at): the code
+ * is then plain memory, and mprotect() makes it executable after the
+ * relocations (L->jit becomes 0). */
+static int map_pair(bcn_load_t *l, struct bcn_module *m, uintptr_t a, int code_prot, int code_flags)
+{
+    void *code = map_at(a, m->code_size, code_prot, code_flags);
+    void *data;
+    int plain = 0;
+
+#if defined(__aarch64__)
+    if (!code && (code_flags & MAP_JIT)) {
+        code = xnu_map_at(a, m->code_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        plain = code != NULL;
+    }
+#endif
+    if (!code)
+        return 0;
+    data = map_data(m, a + m->code_size);
+    if (!data) {
+        munmap(code, m->code_size);
+        return 0;
+    }
+    m->code = code;
+    m->data = data;
+    if (plain)
+        l->jit = 0;
+    return 1;
+}
+
+#if defined(__aarch64__)
+/* aarch64: the module of an object with no PC-relative reference to the
+ * program, where the system has free memory. The stubs and the GOT hold
+ * the addresses of the program. The data comes after the code, and the
+ * end of the data must be in the range of PREL32 from the code: the
+ * FDEs of .eh_frame in the data refer to the code with PREL32. */
+static int map_far(bcn_load_t *l, struct bcn_module *m, size_t total, int code_prot, int code_flags)
+{
+    void *hole = mmap(NULL, total, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t *code;
+    uintptr_t a, c;
+
+    if (hole != MAP_FAILED) {
+        munmap(hole, total);
+        if (map_pair(l, m, (uintptr_t)hole, code_prot, code_flags))
+            return 1;
+    }
+    /* The system can put MAP_JIT memory at a random address. */
+    code = mmap(NULL, m->code_size, code_prot, code_flags, -1, 0);
+    if (code == MAP_FAILED)
+        return fail(l, "no memory for the %zu bytes of the code: %s", m->code_size, strerror(errno));
+    c = (uintptr_t)code;
+    for (a = c + m->code_size; a > c && a - c + m->data_size <= BCN_PREL32_RANGE; a += BCN_STEP) {
+        void *data = map_data(m, a);
+        if (data) {
+            m->code = code;
+            m->data = data;
+            return 1;
+        }
+    }
+    munmap(code, m->code_size);
+    return fail(l, "no free memory near the code of the module for %zu bytes", m->data_size);
+}
+#endif
+
 /* The two mappings of the module, near the program: the code (with the
- * stubs), then the constants, the GOT and the data. */
+ * stubs), then the constants, the GOT and the data. On aarch64, an object
+ * with no PC-relative reference to the program goes where the system has
+ * free memory. Another object goes within the smallest range of its
+ * references to the program: first above the program, then below it. */
 static int map_module(bcn_load_t *l, struct bcn_module *m)
 {
     uintptr_t start = (uintptr_t)__executable_start;
@@ -771,6 +991,10 @@ static int map_module(bcn_load_t *l, struct bcn_module *m)
     int code_prot = PROT_READ | PROT_WRITE, code_flags = MAP_PRIVATE | MAP_ANONYMOUS;
     uintptr_t hi, a;
 
+    if (l->jit) {
+        code_prot |= PROT_EXEC;
+        code_flags |= MAP_JIT;
+    }
 #if defined(__x86_64__)
     /* R_X86_64_32S: each address of the module is below 2 GB, and the
      * module is within 2 GB of the program. */
@@ -778,29 +1002,31 @@ static int map_module(bcn_load_t *l, struct bcn_module *m)
     if (start >= hi)
         return fail(l, "the program is above 2 GB, and a NIF object of cosmocc needs it below");
 #else
-    /* ADRP reaches 4 GB from the module to the program. */
-    hi = start + 0xF0000000u;
+    if (!l->near_range)
+        return map_far(l, m, total, code_prot, code_flags);
+    /* The end of the module stays in the range of the start of the
+     * program. */
+    hi = start + l->near_range;
 #endif
-    if (l->jit) {
-        code_prot |= PROT_EXEC;
-        code_flags |= MAP_JIT;
+    for (a = lo; a + total <= hi && a + total > a; a += BCN_STEP)
+        if (map_pair(l, m, a, code_prot, code_flags))
+            return 1;
+#if defined(__aarch64__)
+    /* Below the program: the end of the program stays in the range of
+     * the start of the module. */
+    if (start > total + 16 * BCN_PAGE) {
+        uintptr_t end = (uintptr_t)_end;
+        uintptr_t bottom = end > l->near_range + BCN_PAGE ? end - l->near_range : BCN_PAGE;
+        for (a = (start - total - 16 * BCN_PAGE) & -(uintptr_t)BCN_PAGE; a >= bottom && a < start;
+             a -= BCN_STEP)
+            if (map_pair(l, m, a, code_prot, code_flags))
+                return 1;
     }
-    for (a = lo; a + total <= hi && a + total > a; a += 16u << 20) {
-        void *code = map_at(a, m->code_size, code_prot, code_flags);
-        void *data;
-        if (!code)
-            continue;
-        data = map_at(a + m->code_size, m->data_size, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS);
-        if (!data) {
-            munmap(code, m->code_size);
-            continue;
-        }
-        m->code = code;
-        m->data = data;
-        return 1;
-    }
+    return fail(l, "no free memory near the program for %zu bytes (a PC-relative relocation of %s needs it)",
+                total, sym_name(l, &l->syms[l->near_sym - 1]));
+#else
     return fail(l, "no free memory near the program for %zu bytes", total);
+#endif
 }
 
 /* The address of the symbol I. */

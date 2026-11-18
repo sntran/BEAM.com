@@ -1724,6 +1724,58 @@ memfd still `FD_CLOEXEC`, so the program does not get the descriptor.
 magic `MZqFpD='` or `jartsr='`), and call `fexecve_impl()` for an ELF
 file.
 
+### C57. macOS 27 arm64: no hint below 0x7000000000, and the program is in the shared region
+
+**Status:** 4.0.2, APE loader 1.10 (`ape/ape-m1.c`), macOS 27.0.1
+(26A434), the runner `xcode-27` of GitHub.
+
+**Symptom.** The patched APE loader of C51 stops with "the fixed
+addresses of the program are in use" after 64 starts. A program with an
+older loader starts, but `load_nif/2` of a native NIF object fails with
+"no free memory near the program" (sntran/tailwind.com#27).
+
+**Cause.** macOS 27 reserves the address space of the shared region
+from its end (about `0x33b0dc000`) to `0xfc0000000`: one entry in the
+submap of the shared region, with no access (`---/---`) and no tag.
+`vmmap` does not show it. A guard follows, from `0xfc0000000` to
+`0x7000000000`. The fixed addresses of a program (`0x800000000`) and
+all memory within 4 GB of them are in the reservation. A probe on the
+runner gave:
+
+| Call at `0x800000000` | Result |
+|---|---|
+| `mmap()` with a hint, also with `MAP_JIT` | `0x7000000000` |
+| `mmap()` with `MAP_FIXED` | `0x800000000` |
+| `mmap()` with `MAP_FIXED` and `MAP_JIT` | `EINVAL` |
+| `mach_vm_allocate()` with `VM_FLAGS_FIXED` | `KERN_NO_SPACE` |
+| `mmap()` with `MAP_FIXED` in the guard (`0x1000000000`) | `EACCES` |
+
+So a hint never works below `0x7000000000`, also for free memory, and
+`MAP_FIXED_NOREPLACE` of Cosmopolitan (a hint on XNU) fails there.
+`MAP_FIXED` replaces the reservation in the process, and the kernel
+puts no other mapping in it.
+
+**Workaround in BEAM.com.**
+
+1. `patches/cosmo/ape-m1.patch`: when the hint for a range of the
+   program fails, `RangeUsable()` checks the range with
+   `mach_vm_region_recurse()`. Each part of the range must be free, or
+   must be in a submap with no access and no tag. Then `MAP_FIXED` maps
+   it. Else the loader starts again, as for C51.
+2. `c_src/cosmo/beam_com_nif.c`: `map_at()` does the same check
+   through `cosmo_dlsym()` of libSystem. `MAP_JIT` cannot go near the
+   program, so the code of such a module is plain memory, and
+   `mprotect()` makes it executable after the relocations.
+
+`tests/cosmo/nif_load_check.c` passes on the runner `xcode-27` with
+this loader. Caution: a Mac that ran an older APE file keeps the old
+loader in `$TMPDIR/.ape-1.10` or `~/.ape-1.10` (C51). Remove it once on
+macOS 27.
+
+**Possible upstream fix.** A check of the ranges in the loader and in
+`mmap()` of Cosmopolitan for `MAP_FIXED_NOREPLACE` on XNU, or a base
+address of the programs above `0x7000000000`.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

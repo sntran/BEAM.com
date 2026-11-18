@@ -103,7 +103,7 @@ loader of macOS arm64 that apelink puts in each APE file.
 |---|---|---|---|
 | `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
 | `unveil.patch` | `libc/calls/unveil.c` | The permission "c" also gives Landlock the rights of the removal of a file and of a directory. | C50 |
-| `ape-m1.patch` | `bin/ape-m1.c` of cosmocc | The loader reserves the fixed addresses of the program at its start, checks that each range is free before it maps the program, and starts again when a range is in use. | C51 |
+| `ape-m1.patch` | `bin/ape-m1.c` of cosmocc | The loader reserves the fixed addresses of the program at its start, checks that each range is free before it maps the program, and starts again when a range is in use. On macOS 27, it checks a range with `mach_vm_region_recurse()` and maps it with `MAP_FIXED`. | C51, C57 |
 
 ## Changes that are not patch files
 
