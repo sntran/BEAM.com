@@ -37,13 +37,17 @@ notes of its release.
   file has debug information and no docs, for a program of such a build.
 - Remove `scripts/__pycache__/beam-fifo.cpython-311.pyc`, a file of
   Python that a commit added by mistake.
-- The NIF files of `nifs+=tailwind` are of tailwind.com 0.4.0, from
+- The NIF files of `nifs+=tailwind` are of tailwind.com 0.5.0, from
   0.3.0. Its optimizer (`--minify` and `--optimize`) lowers CSS functions,
   mixins, `if()`, `@when` and more math functions, and `mix format` can
-  sort the classes of HEEx templates. The NIF has the same names of libc
-  as 0.3.0. A project with the git dep of the tag `v0.3.0` gets no NIF
-  file now: change the dep to
-  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.4.0"}`.
+  sort the classes of HEEx templates. The new option `timeout` of
+  `tailwind_nif:run/2` stops a build, and a build also stops when its
+  caller stops. A stylesheet that nests too deep gives an error, and does
+  not stop the VM. The aarch64 object has no PC-relative reference to
+  `beam.com`, so it also loads on macOS 27. `beam.com` has each name of
+  libc that the NIF needs. A project with the git dep of the tag `v0.3.0` or
+  `v0.4.0` gets no NIF file now: change the dep to
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.5.0"}`.
 - `beam.com` has Erlang/OTP 29.1.2 and Elixir 1.20.5, from 29.1.1 and
   1.20.4. Both are releases with security fixes: in OTP, `httpc` clears
   the user info of a URL at a redirect to another origin, and `ssl`,

@@ -223,7 +223,7 @@ A custom build with `nifs+=tailwind` ([`BUILDING.md`](BUILDING.md),
 `FILE_NIFS`) does this with the objects of a release of tailwind.com.
 `scripts/file_nifs.sh` has the tag, the commit and the SHA-256 of each
 object, and writes `SOURCE` with `commit=` and `tag=`. Thus the dep
-`{:tailwind, github: "sntran/tailwind.com", tag: "v0.4.0"}` gets the
+`{:tailwind, github: "sntran/tailwind.com", tag: "v0.5.0"}` gets the
 NIF, and the version of Tailwind CSS (4.x) stays a choice of the
 project (`config :tailwind, version:`). The Hex package `tailwind` gets
 no file, and it uses its own program, as before.
