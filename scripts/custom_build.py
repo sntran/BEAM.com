@@ -137,7 +137,7 @@ NOT_SOURCE_FILES = ("scripts/custom_build.py",)
 # default applications (kernel, stdlib, sasl, compiler and crypto) are
 # for beam.com itself.
 OMITTABLE = ("parsetools", "asn1", "public_key", "ssl", "inets", "ssh", "xmerl",
-             "runtime_tools", "tools")
+             "runtime_tools", "tools", "syntax_tools")
 NEEDS = {
     "public_key": ("asn1",),
     "ssl": ("public_key",),
@@ -474,7 +474,7 @@ def version(words, table, default, name):
 
 def settings(choices, default=None):
     # An application that a chosen application needs, and that is not a
-    # default application, goes in too (syntax_tools for edoc).
+    # default application, goes in too.
     apps = sorted(needed(choices["apps"]) - set(OMITTABLE))
     bad = [a for a in apps if not APP.fullmatch(a)]
     if bad:

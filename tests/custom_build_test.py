@@ -142,6 +142,31 @@ class ShortNames(unittest.TestCase):
             build_settings(["apps: 9bad"])
 
 
+class SyntaxTools(unittest.TestCase):
+    """syntax_tools is a default application (x509 and parse_trans need it
+    when they compile, and edoc needs it)."""
+
+    def test_a_default_build_keeps_it(self):
+        env = build_settings(["hex: 0"])
+        self.assertEqual(env["OTP_OMIT"], "")
+        self.assertEqual(env["OTP_APPS"], "")
+        env = build_settings(["apps: edoc"])
+        self.assertEqual((env["OTP_APPS"], env["OTP_OMIT"]), ("edoc", ""))
+
+    def test_a_build_can_leave_it_out(self):
+        self.assertEqual(build_settings(["omit: syntax_tools"])["OTP_OMIT"], "syntax_tools")
+
+    def test_edoc_needs_it(self):
+        with self.assertRaisesRegex(SystemExit, "edoc needs syntax_tools. Keep syntax_tools"):
+            build_settings(["apps: edoc", "omit: syntax_tools"])
+
+    def test_a_form_of_before_leaves_it_out(self):
+        # A confirm link of before this change has no box k_syntax_tools,
+        # and its input keep names the default applications of then.
+        old = ["keep"] + [a for a in cb.OMITTABLE if a != "syntax_tools"]
+        self.assertEqual(cb.omitted(" ".join(old)), ["syntax_tools"])
+
+
 class CodeFlags(unittest.TestCase):
     """The debug information and the docs of OTP in the zip (DEBUG_INFO and
     OTP_DOCS of scripts/steps.sh)."""

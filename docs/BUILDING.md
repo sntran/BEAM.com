@@ -82,10 +82,11 @@ or rebar3. A custom build can have more, or less:
   is not built).
 - `OTP_OMIT="ssh xmerl"`: default OTP applications to leave out of the
   zip, for a smaller file. Only `parsetools`, `asn1`, `public_key`,
-  `ssl`, `inets`, `ssh`, `xmerl`, `runtime_tools` and `tools`: beam.com
-  itself needs `kernel`, `stdlib`, `sasl`, `compiler` and `crypto`. The
+  `ssl`, `inets`, `ssh`, `xmerl`, `runtime_tools`, `tools` and
+  `syntax_tools`: beam.com itself needs `kernel`, `stdlib`, `sasl`, `compiler` and `crypto`. The
   build stops when an application of the zip needs an application of
-  `OTP_OMIT` (`ssl` needs `public_key`, which needs `asn1`). Hex, rebar3
+  `OTP_OMIT` (`ssl` needs `public_key`, which needs `asn1`, and `edoc`
+  needs `syntax_tools`). Hex, rebar3
   and the downloads of packages need `inets` and `ssl`.
 - `HEX=1`: Hex in the zip (the newest, from `mix local.hex`). The tools
   of Elixir have it in their code path, so `mix.com deps.get` needs no
@@ -333,7 +334,7 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   | `otp_version` | A version of Erlang/OTP of `OTP_VERSIONS` of `scripts/custom_build.py`. |
   | `elixir_version` | A version of Elixir of `ELIXIR_VERSIONS`. Empty, or `none`: no Elixir. |
   | `apps` | More OTP applications, with commas. |
-  | `omit` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools and tools. |
+  | `omit` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools, tools and syntax_tools. |
   | `hex`, `rebar3`, `jit`, `sqlite`, `wasm`, `debug_info`, `otp_docs` | `0` or `1`. |
   | `nifs+` | NIFs to add to the default NIFs (exqlite, bcrypt_elixir and argon2_elixir). |
   | `nifs` | Only these NIFs. A query has `nifs+` or `nifs`, not both. |

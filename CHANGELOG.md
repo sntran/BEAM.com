@@ -5,6 +5,11 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com` has the OTP application `syntax_tools` (about 0.2 MB). Packages
+  such as `x509` (a dep of `site_encrypt`) and `parse_trans` need it when
+  they compile, and `edoc` needs it. A custom build can leave it out: the
+  box `syntax_tools` of the default applications, or `omit=syntax_tools`
+  in a build URL.
 - The workflow "Remote SSH" has the runner `xcode-27` (macOS 27 on
   Apple silicon).
 - macOS 27 on arm64: `beam.com` starts, and native NIF objects load.

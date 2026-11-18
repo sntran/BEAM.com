@@ -47,10 +47,12 @@ form:has(#elixir_version option[value=""]:checked) .no-elixir { display: block; 
 .warn { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid #d97706; border-radius: .375rem; color: inherit; background: rgba(217, 119, 6, .12); }
 form:has([name=k_public_key]:not(:checked)):has(:is([name=k_ssl], [name=k_ssh]):checked) .w-public-key,
 form:has([name=k_asn1]:not(:checked)):has(:is([name=k_public_key], [name=a_eldap]):checked) .w-asn1,
+form:has([name=k_syntax_tools]:not(:checked)):has([name=a_edoc]:checked) .w-syntax-tools,
 form:has(#rebar3 option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) .w-rebar3,
 form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) .w-hex { display: block; }
 form:has([name=k_public_key]:not(:checked)):has(:is([name=k_ssl], [name=k_ssh]):checked) button,
 form:has([name=k_asn1]:not(:checked)):has(:is([name=k_public_key], [name=a_eldap]):checked) button,
+form:has([name=k_syntax_tools]:not(:checked)):has([name=a_edoc]:checked) button,
 form:has(#rebar3 option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) button,
 form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="1"]:checked):has(:is([name=k_inets], [name=k_ssl]):not(:checked)) button { opacity: .45; pointer-events: none; }
 </style>
@@ -79,6 +81,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <label class="check"><input type="checkbox" name="k_xmerl" value="xmerl" checked> <span>xmerl <span class="tag">default</span> <span class="muted">XML</span></span></label>
 <label class="check"><input type="checkbox" name="k_runtime_tools" value="runtime_tools" checked> <span>runtime_tools <span class="tag">default</span> <span class="muted">in the apps of Phoenix</span></span></label>
 <label class="check"><input type="checkbox" name="k_tools" value="tools" checked> <span>tools <span class="tag">default</span> <span class="muted">cover, for <code class="nw">mix test --cover</code></span></span></label>
+<label class="check"><input type="checkbox" name="k_syntax_tools" value="syntax_tools" checked> <span>syntax_tools <span class="tag">default</span> <span class="muted">for edoc, and for packages such as x509 when they compile</span></span></label>
 </div>
 <p class="sub">More applications</p>
 <div class="checks">
@@ -90,8 +93,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 <label class="check"><input type="checkbox" name="a_diameter" value="diameter"> <span>diameter <span class="muted">Diameter protocol</span></span></label>
 <label class="check"><input type="checkbox" name="a_eunit" value="eunit"> <span>eunit <span class="muted">unit tests</span></span></label>
 <label class="check"><input type="checkbox" name="a_common_test" value="common_test"> <span>common_test <span class="muted">test framework</span></span></label>
-<label class="check"><input type="checkbox" name="a_syntax_tools" value="syntax_tools"> <span>syntax_tools <span class="muted">for edoc</span></span></label>
-<label class="check"><input type="checkbox" name="a_edoc" value="edoc"> <span>edoc <span class="muted">documentation; adds syntax_tools</span></span></label>
+<label class="check"><input type="checkbox" name="a_edoc" value="edoc"> <span>edoc <span class="muted">documentation; needs syntax_tools</span></span></label>
 </div>
 <label for="apps">Other OTP applications, with spaces</label>
 <input id="apps" name="apps" placeholder="snmp megaco" maxlength="1000" pattern="([a-z][a-z0-9_]{0,63}( [a-z][a-z0-9_]{0,63}){0,39})?" autocomplete="off">
@@ -162,6 +164,7 @@ form:has(#elixir_version option:not([value=""]):checked):has(#hex option[value="
 
 <p class="warn w-public-key">ssl and ssh need public_key. Keep public_key, or clear ssl and ssh.</p>
 <p class="warn w-asn1">public_key and eldap need asn1. Keep asn1, or clear public_key and eldap.</p>
+<p class="warn w-syntax-tools">edoc needs syntax_tools. Keep syntax_tools, or clear edoc.</p>
 <p class="warn w-rebar3">rebar3 needs inets and ssl. Keep inets and ssl, or choose No for rebar3.</p>
 <p class="warn w-hex">Hex needs inets and ssl. Keep inets and ssl, or choose No for Hex.</p>
 <button formmethod="post">Send me the link</button>
