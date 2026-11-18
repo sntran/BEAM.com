@@ -127,7 +127,7 @@ class ShortNames(unittest.TestCase):
             (["hex: 1", "hex: 0"], "more than one time"),
             (["hex: ;"], "Not a value"),
             (["omit: kernel"], "leave out"),
-            (["otp: keep", "omit: ssh"], "no field omit"),
+            (["otp: keep", "omit: ssh"], "no field apps-="),
             (["k_ssl: ssh", "otp: keep"], "Not a value of the field k_ssl"),
             (["dnif1: exqlite"], "need dnifs=default"),
         ]
@@ -165,6 +165,55 @@ class SyntaxTools(unittest.TestCase):
         # and its input keep names the default applications of then.
         old = ["keep"] + [a for a in cb.OMITTABLE if a != "syntax_tools"]
         self.assertEqual(cb.omitted(" ".join(old)), ["syntax_tools"])
+
+
+class PlusMinus(unittest.TestCase):
+    """NAME+= adds to the defaults and NAME-= takes from them. In a query,
+    "+" is a space, so apps+= is the field "apps "."""
+
+    def test_apps_minus_leaves_out_default_applications(self):
+        env = inputs(["apps-: ssh,xmerl"])
+        self.assertEqual(env["INPUT_KEEP"].split(),
+                         ["keep"] + [a for a in cb.OMITTABLE if a not in ("ssh", "xmerl")])
+        self.assertEqual(build_settings(["apps-: ssh,xmerl"])["OTP_OMIT"], "ssh xmerl")
+        # omit is the older name, and gives the same inputs.
+        self.assertEqual(inputs(["omit: ssh,xmerl"])["INPUT_KEEP"], env["INPUT_KEEP"])
+        with self.assertRaisesRegex(SystemExit, "Not default applications"):
+            inputs(["apps-: kernel"])
+        with self.assertRaisesRegex(SystemExit, "no field apps-="):
+            inputs(["apps-: ssh", "k_ssh: ", "otp: keep"])
+
+    def test_apps_plus_adds_applications(self):
+        for name in ("apps ", "apps+", "apps"):
+            self.assertEqual(inputs([f"{name}: mnesia,eldap"])["INPUT_APPS"], "mnesia eldap")
+        env = build_settings(["apps : mnesia", "apps-: ssh"])
+        self.assertEqual((env["OTP_APPS"], env["OTP_OMIT"]), ("mnesia", "ssh"))
+
+    def test_nifs_minus_leaves_out_default_nifs(self):
+        env = inputs(["nifs-: bcrypt_elixir,argon2_elixir"])
+        self.assertEqual(env["INPUT_NIFS"], "default exqlite")
+        self.assertEqual(build_settings(["nifs-: bcrypt_elixir,argon2_elixir"])["NIFS_OMIT"],
+                         "bcrypt_elixir argon2_elixir")
+        env = inputs(["nifs : vix", "nifs-: exqlite"])
+        self.assertEqual(env["INPUT_NIFS"], "default bcrypt_elixir argon2_elixir vix")
+        with self.assertRaisesRegex(SystemExit, "Not default NIFs: vix"):
+            inputs(["nifs-: vix"])
+        with self.assertRaisesRegex(SystemExit, "not both"):
+            inputs(["nifs: vix", "nifs-: exqlite"])
+        with self.assertRaisesRegex(SystemExit, "no field nifs-="):
+            inputs(["dnifs: default", "nifs-: exqlite"])
+
+    def test_the_envelopes_take_the_new_fields(self):
+        # The regex of the fields of a query in the envelopes of the FIFO
+        # has the names of QUERY_SHORT.
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        seeds = os.path.join(root, "priv", "seeds", "beam.com")
+        for name in ("27-query-build.eml", "28-query.eml", "30-query-bad.eml",
+                     "32-query-refused.eml", "33-query-not-yet.eml", "34-query-page.eml"):
+            with open(os.path.join(seeds, name)) as f:
+                text = f.read()
+            self.assertIn("apps ?|apps[+-]|omit|", text, name)
+            self.assertIn("|nifs ?|nifs[+-]|", text, name)
 
 
 class CodeFlags(unittest.TestCase):

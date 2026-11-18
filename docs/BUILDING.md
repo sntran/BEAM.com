@@ -318,7 +318,8 @@ no form:
 curl -fo beam.com https://mkfifo.com/beam.com                        # the default build
 curl -fo beam.com 'https://mkfifo.com/beam.com?nifs+=rusty_csv'      # the default NIFs and rusty_csv
 curl -fo beam.com 'https://mkfifo.com/beam.com?nifs=rusty_csv,vix'   # only rusty_csv and vix
-curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&hex=1&nifs+=vix'
+curl -fo beam.com 'https://mkfifo.com/beam.com?nifs-=bcrypt_elixir,argon2_elixir'  # only exqlite
+curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps+=mnesia&apps-=ssh&hex=1&nifs+=vix'
 ```
 
 - `GET /beam.com` with no query gives the file `beam.com` of the
@@ -333,11 +334,12 @@ curl -fo beam.com 'https://mkfifo.com/beam.com?otp_version=29.1.2&apps=mnesia&he
   |---|---|
   | `otp_version` | A version of Erlang/OTP of `OTP_VERSIONS` of `scripts/custom_build.py`. |
   | `elixir_version` | A version of Elixir of `ELIXIR_VERSIONS`. Empty, or `none`: no Elixir. |
-  | `apps` | More OTP applications, with commas. |
-  | `omit` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools, tools and syntax_tools. |
+  | `apps+` | More OTP applications, with commas (also `apps`). |
+  | `apps-` | The default OTP applications to leave out, with commas: parsetools, asn1, public_key, ssl, inets, ssh, xmerl, runtime_tools, tools and syntax_tools (also `omit`, the older name). |
   | `hex`, `rebar3`, `jit`, `sqlite`, `wasm`, `debug_info`, `otp_docs` | `0` or `1`. |
   | `nifs+` | NIFs to add to the default NIFs (exqlite, bcrypt_elixir and argon2_elixir). |
-  | `nifs` | Only these NIFs. A query has `nifs+` or `nifs`, not both. |
+  | `nifs-` | Default NIFs to leave out. |
+  | `nifs` | Only these NIFs. A query has `nifs`, or `nifs+` and `nifs-`, not both. |
 
   The names of the NIFs are `exqlite`, `bcrypt_elixir`, `argon2_elixir`,
   `picosat_elixir`, `vix`, `vix-icc`, `vix-gif`, `vix-avif`, `vix-svg`,

@@ -174,8 +174,12 @@ URL_PREFIX = "beam-u."
 # are for a person or a script; the other names are the fields of the
 # form of the FIFO, so a GET of the form is also a query. The FIFO drops
 # the fields email and website, and sorts the lines.
-QUERY_SHORT = ("otp_version", "elixir_version", "apps", "omit", "hex", "rebar3", "jit",
-               "sqlite", "wasm", "debug_info", "otp_docs", "nifs", "nifs ", "nifs+")
+# NAME+=VALUE adds to the defaults and NAME-=VALUE takes from them: in a
+# query, "+" is a space, so apps+= is the field "apps ". omit is the older
+# name of apps-=.
+QUERY_SHORT = ("otp_version", "elixir_version", "apps", "apps ", "apps+", "apps-", "omit",
+               "hex", "rebar3", "jit", "sqlite", "wasm", "debug_info", "otp_docs", "nifs",
+               "nifs ", "nifs+", "nifs-")
 QUERY_FORM = re.compile(r"otp|dnifs|dnif[1-3]|nif[1-9]|k_[a-z0-9_]{1,64}|a_[a-z0-9_]{1,64}")
 QUERY_VALUE = re.compile(r"[a-z0-9_.,+ -]{0,200}")
 QUERY_LINES = 60
@@ -300,27 +304,30 @@ def query_inputs(digest, query):
     if elixir is not None:
         env["INPUT_ELIXIR"] = ""
         env["INPUT_ELIXIR_VERSION"] = "" if elixir == "none" else elixir
-    env["INPUT_APPS"] = " ".join(words("apps") + checks("a_"))
+    env["INPUT_APPS"] = " ".join(words("apps", "apps ", "apps+") + checks("a_"))
     # The default applications: "otp=keep" and the check boxes k_NAME of
-    # the form, or the short field omit.
-    omit = words("omit")
+    # the form, or the short field apps-= (or omit).
+    omit = words("apps-", "omit")
     if one("otp") is not None:
         if one("otp") != "keep" or omit:
-            fail("The field otp is keep, with the fields k_NAME, and no field omit")
+            fail("The field otp is keep, with the fields k_NAME, and no field apps-=")
         env["INPUT_KEEP"] = " ".join(["keep"] + checks("k_", OMITTABLE))
     elif omit:
         bad = [a for a in omit if a not in OMITTABLE]
         if bad:
             fail(f"Not default applications that a build can leave out: {', '.join(bad)}")
         env["INPUT_KEEP"] = " ".join(["keep"] + [a for a in OMITTABLE if a not in omit])
-    # The NIFs: nifs= gives only these, and nifs+= adds them to the default
-    # NIFs. The form sends dnifs=default, the default NIFs to keep, and
-    # the others.
-    only, plus = words("nifs"), words("nifs ", "nifs+")
+    # The NIFs: nifs= gives only these, nifs+= adds them to the default
+    # NIFs, and nifs-= takes default NIFs away. The form sends
+    # dnifs=default, the default NIFs to keep, and the others.
+    only, plus, minus = words("nifs"), words("nifs ", "nifs+"), words("nifs-")
     chosen = [v for n, v in fields if re.fullmatch(r"nif[1-9]", n) and v]
     kept = [v for n, v in fields if re.fullmatch(r"dnif[1-3]", n) and v]
-    if only and plus:
-        fail("A query has nifs= or nifs+=, not both")
+    if only and (plus or minus):
+        fail("A query has nifs= or nifs+= and nifs-=, not both")
+    bad = [n for n in minus if n not in DEFAULT_NIFS]
+    if bad:
+        fail(f"Not default NIFs: {', '.join(bad)}. The default NIFs: {', '.join(DEFAULT_NIFS)}")
     # In the short fields, a part of vix also chooses vix, as in an issue.
     # The form hides the parts when vix is off, so its fields do not.
     for short in (only, plus):
@@ -329,11 +336,16 @@ def query_inputs(digest, query):
     if one("dnifs") is not None:
         if one("dnifs") != "default":
             fail("Not a value of the field dnifs")
+        if minus:
+            fail("The fields of the form (dnifs) take no field nifs-=")
         env["INPUT_NIFS"] = " ".join(["default"] + kept + chosen + only + plus)
     elif kept:
         fail("The fields dnif1 to dnif3 need dnifs=default")
     elif only:
         env["INPUT_NIFS"] = " ".join(["default"] + only + chosen)
+    elif minus:
+        env["INPUT_NIFS"] = " ".join(["default"] + [n for n in DEFAULT_NIFS if n not in minus]
+                                     + plus + chosen)
     else:
         env["INPUT_NIFS"] = " ".join(plus + chosen)
     return env
