@@ -15,10 +15,12 @@ name: Remote SSH
 on:
   workflow_dispatch:
     inputs:
+      # xcode-27 is macOS 27 on Apple silicon. GitHub gives it the label
+      # of its Xcode, and no label macos-27.
       os:
         description: The runner
         type: choice
-        options: [macos-latest, macos-15-intel, ubuntu-26.04, ubuntu-24.04-arm, windows-latest]
+        options: [macos-latest, macos-15-intel, xcode-27, ubuntu-26.04, ubuntu-24.04-arm, windows-latest]
         default: macos-latest
       key:
         description: The public key that can log in (one line, ssh-ed25519 ...)

@@ -5,6 +5,8 @@ notes of its release.
 
 ## Unreleased
 
+- The workflow "Remote SSH" has the runner `xcode-27` (macOS 27 on
+  Apple silicon).
 - macOS 27 on arm64: `beam.com` starts, and native NIF objects load.
   macOS 27 reserves the memory of the program for its shared region,
   and its `mmap()` takes no hint below `0x7000000000`. The APE loader
