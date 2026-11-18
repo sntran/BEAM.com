@@ -37,6 +37,7 @@ k_ssh: ^(?<k_ssh>|ssh)$
 k_xmerl: ^(?<k_xmerl>|xmerl)$
 k_runtime_tools: ^(?<k_runtime_tools>|runtime_tools)$
 k_tools: ^(?<k_tools>|tools)$
+k_syntax_tools: ^(?<k_syntax_tools>|syntax_tools)$
 a_mnesia: ^(?<a_mnesia>|mnesia)$
 a_os_mon: ^(?<a_os_mon>|os_mon)$
 a_eldap: ^(?<a_eldap>|eldap)$
@@ -45,7 +46,6 @@ a_tftp: ^(?<a_tftp>|tftp)$
 a_diameter: ^(?<a_diameter>|diameter)$
 a_eunit: ^(?<a_eunit>|eunit)$
 a_common_test: ^(?<a_common_test>|common_test)$
-a_syntax_tools: ^(?<a_syntax_tools>|syntax_tools)$
 a_edoc: ^(?<a_edoc>|edoc)$
 website: ^$
 step: ^$

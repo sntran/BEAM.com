@@ -5,6 +5,15 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com` has the OTP application `syntax_tools` (about 0.2 MB). Packages
+  such as `x509` (a dep of `site_encrypt`) and `parse_trans` need it when
+  they compile, and `edoc` needs it. A custom build can leave it out: the
+  box `syntax_tools` of the default applications, or `apps-=syntax_tools`
+  in a build URL.
+- A build URL takes `apps-=` for the default OTP applications to leave
+  out, as `nifs+=` adds NIFs: `?apps-=ssh,xmerl`. `apps+=` adds OTP
+  applications, as `apps=`, and `nifs-=` leaves out default NIFs:
+  `?nifs-=bcrypt_elixir`. `omit` stays, as the older name of `apps-=`.
 - `beam.com DIR -o FILE` builds a Mix project with the deps `castore` and
   `reverse_proxy_plug`. The builder reads the `mix.exs` of a package in
   the directory of the package, as Mix does: `castore` reads its file
