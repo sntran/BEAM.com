@@ -28,6 +28,7 @@
          tool/2, main/3, with_main/2, priv_files/1, extract/3, hash/1,
          without_docs/3,
          with_extract/2, compile_all/2, first_names/1, mix_release/3, why/1,
+         install_dep/3,
          programs/1, release_programs/2, release_extract/3, boot_extract/5]).
 -endif.
 
@@ -1239,22 +1240,30 @@ rebar_dir(Dir, Options) ->
       priv => Priv, priv_exec => PrivExec, config => Config, script => false}.
 
 %% The Hex packages of rebar.config (beam_com_hex), compiled in order.
-%% Each one is written to its directory (ebin/ with the .app file), and
-%% its ebin/ goes into the code path, for the parse transforms and the
-%% include_lib of the packages and of the program that come after it.
 deps(Dir, LibDir, Tool) ->
-    [begin
-         App = app_dir(PkgDir, #{vsn => Vsn, dep => true}),
-         Ebin = filename:join(PkgDir, "ebin"),
-         ok = filelib:ensure_path(Ebin),
-         #{props := Props, beams := Beams} = App,
-         write_file(filename:join(Ebin, atom_to_list(Name) ++ ".app"),
-                    io_lib:format("~tp.~n", [{application, Name, Props}])),
-         [write_file(filename:join(Ebin, atom_to_list(M) ++ ".beam"), B)
-          || {M, B} <- Beams],
-         true = code:add_patha(Ebin),
-         App#{dir => PkgDir}
-     end || #{name := Name, vsn := Vsn, dir := PkgDir} <- fetch(Dir, LibDir, Tool)].
+    [install_dep(Name, PkgDir, app_dir(PkgDir, #{vsn => Vsn, dep => true}))
+     || #{name := Name, vsn := Vsn, dir := PkgDir} <- fetch(Dir, LibDir, Tool)].
+
+%% One compiled package: written to its directory (ebin/ with the .app
+%% file), with its ebin/ in the code path, for the parse transforms and
+%% the include_lib of the packages and of the program that come after
+%% it. Its application is loaded, as Mix loads the applications of the
+%% deps before it compiles a package: the code of a package can read
+%% Application.spec/2 of a dep when it compiles (reverse_proxy_plug
+%% reads the version of req).
+install_dep(Name, PkgDir, #{props := Props, beams := Beams} = App) ->
+    Ebin = filename:join(PkgDir, "ebin"),
+    ok = filelib:ensure_path(Ebin),
+    write_file(filename:join(Ebin, atom_to_list(Name) ++ ".app"),
+               io_lib:format("~tp.~n", [{application, Name, Props}])),
+    [write_file(filename:join(Ebin, atom_to_list(M) ++ ".beam"), B)
+     || {M, B} <- Beams],
+    true = code:add_patha(Ebin),
+    case application:load({application, Name, Props}) of
+        ok -> ok;
+        {error, {already_loaded, _}} -> ok
+    end,
+    App#{dir => PkgDir}.
 
 fetch(Dir, LibDir, Tool) ->
     case Tool =:= mix of
