@@ -138,6 +138,37 @@ defmodule BeamComElixirTest do
       assert Mix.Project.get() == project
     end
 
+    @tag timeout: 120_000
+    test "a mix.exs that reads a file of its package", %{dir: dir} do
+      # As Mix runs the mix.exs of a dependency: in the directory of the
+      # package. castore reads "VERSION" in project/0, and other packages
+      # read a file when mix.exs compiles.
+      d = :filename.join(dir, ~c"files")
+      write(d, ~c"VERSION", "3.4.5\n")
+      write(d, ~c"APP", "files\n")
+
+      write(
+        d,
+        ~c"mix.exs",
+        "defmodule Files.MixProject do\n  use Mix.Project\n" <>
+          "  @app \"APP\" |> File.read!() |> String.trim() |> String.to_atom()\n" <>
+          "  def project, do: [app: @app, version: version()]\n" <>
+          "  defp version, do: \"VERSION\" |> File.read!() |> String.trim()\n" <>
+          "end\n"
+      )
+
+      {:ok, cwd} = :file.get_cwd()
+      assert %{app: :files, version: ~c"3.4.5"} = :beam_com_elixir.mix_project(d)
+      assert [app: :files, version: "3.4.5"] == :beam_com_elixir.mix_config(d)
+      assert {:ok, cwd} == :file.get_cwd()
+
+      # The current directory comes back also after an error.
+      :ok = :file.delete(:filename.join(d, ~c"VERSION"))
+      assert {:error, ~c"~ts: ~ts", [_, text]} = catch_throw(:beam_com_elixir.mix_config(d))
+      assert text =~ "VERSION"
+      assert {:ok, cwd} == :file.get_cwd()
+    end
+
     test "the deps of mix.exs" do
       d = &:beam_com_elixir.mix_deps/1
       assert [{:a, "a", ~c"~> 1.0", true}] == d.([{:a, "~> 1.0"}])

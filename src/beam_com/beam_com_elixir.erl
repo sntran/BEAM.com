@@ -93,18 +93,22 @@ is_mix(Dir) ->
 %% erlc_paths, application}. deps are for beam_com_hex:
 %% [{Name, Package, Requirement}].
 mix_project(Dir) ->
-    with_project(Dir, fun mix_project/2).
+    with_project(Dir, fun(File, Project) ->
+                              in_dir(Dir, fun() -> mix_project(File, Project) end)
+                      end).
 
 %% The project/0 of mix.exs as it is, with the deps of each source
 %% (beam_com_mix).
 mix_config(Dir) ->
     with_project(Dir, fun(File, Project) ->
-                              try Project:project()
-                              catch C:R:S ->
-                                      throw({error, "~ts: ~ts",
-                                             [File, 'Elixir.Exception':format(C, R, S)]})
-                              end
+                              in_dir(Dir, fun() -> project_config(File, Project) end)
                       end).
+
+project_config(File, Project) ->
+    try Project:project()
+    catch C:R:S ->
+            throw({error, "~ts: ~ts", [File, 'Elixir.Exception':format(C, R, S)]})
+    end.
 
 %% Fun() with the Mix project of Dir on the project stack of Mix, as Mix
 %% compiles a package: the code of a package can read
@@ -117,10 +121,7 @@ with_project(Dir, Fun) ->
     'Elixir.Mix':'env'(prod),
     File = unicode:characters_to_binary(filename:absname(filename:join(Dir, "mix.exs"))),
     Old = code:all_loaded(),
-    Mods = try 'Elixir.Code':compile_file(File)
-           catch Class:Reason:Stack ->
-                   throw({error, "~ts: ~ts", [File, 'Elixir.Exception':format(Class, Reason, Stack)]})
-           end,
+    Mods = in_dir(Dir, fun() -> compile_mix_exs(File) end),
     Project = case [M || {M, _} <- Mods, erlang:function_exported(M, project, 0)] of
                   [P | _] -> P;
                   [] -> throw({error, "~ts: no Mix project", [File]})
@@ -138,6 +139,29 @@ with_project(Dir, Fun) ->
         end,
         [begin code:purge(M), code:delete(M) end
          || {M, _} <- Mods, not lists:keymember(M, 1, Old)]
+    end.
+
+compile_mix_exs(File) ->
+    try 'Elixir.Code':compile_file(File)
+    catch Class:Reason:Stack ->
+            throw({error, "~ts: ~ts", [File, 'Elixir.Exception':format(Class, Reason, Stack)]})
+    end.
+
+%% Fun() with Dir as the current directory, as Mix.Project.in_project/4
+%% runs the mix.exs of a dependency: a mix.exs can read a file of its
+%% package with a relative path when it compiles, or in project/0
+%% (castore reads "VERSION"). The current directory of the VM is
+%% global, so only a step that uses no relative path of the caller runs
+%% in it.
+in_dir(Dir, Fun) ->
+    {ok, Cwd} = file:get_cwd(),
+    case file:set_cwd(Dir) of
+        ok ->
+            try Fun()
+            after file:set_cwd(Cwd)
+            end;
+        {error, _} ->
+            Fun()
     end.
 
 mix_project(File, Project) ->
