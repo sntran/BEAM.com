@@ -14,6 +14,7 @@ notes of its release.
   check the range with `mach_vm_region_recurse()` and map it with
   `MAP_FIXED` (C57 of `docs/UPSTREAM.md`). Remove `$TMPDIR/.ape-1.10`
   and `~/.ape-1.10` once on macOS 27: they can hold an older loader.
+  CI runs the tests on macOS 27 too (the runner `xcode-27`).
 - Native NIF objects on aarch64: the loader also looks for free memory
   below the program, within the smallest range of the PC-relative
   references of the object to the program. An object with no such
