@@ -31,6 +31,12 @@
 %% about 110 MB (4.3). The URL is the URL of the Hex package tailwind.
 -define(TAILWIND, "https://github.com/tailwindlabs/tailwindcss/releases/download/v").
 -define(TAILWIND_MAX, 512 * 1024 * 1024).
+%% The time limit of that download. The default of beam_com_hex:http/5
+%% (60 s for the complete request) was too short: on the Windows runners
+%% of CI, the 112 MB took about 3 minutes (also with one plain request
+%% of httpc, as the Hex package does). The limit of 120
+%% s with no data stays.
+-define(TAILWIND_TIMEOUT, 10 * 60 * 1000).
 %% The replacement of a byte that is not UTF-8 in the output of Mix.
 -define(BAD_CHAR, <<16#FFFD/utf8>>).
 
@@ -412,7 +418,11 @@ windows_assets(_Os, _Config) ->
 windows_asset(tailwind) ->
     case tailwind_version(application:get_all_env(tailwind)) of
         {ok, Version} ->
-            Path = tailwind_exe(Version, filename:absname("_build"), fun beam_com_hex:http/5),
+            Http = fun(Method, Url, Headers, Body, Max) ->
+                           beam_com_hex:http(Method, Url, Headers, Body, Max,
+                                             #{timeout => ?TAILWIND_TIMEOUT})
+                   end,
+            Path = tailwind_exe(Version, filename:absname("_build"), Http),
             io:format("beam.com: tailwind for Windows: ~ts~n", [Path]),
             set_env(tailwind, path, unicode:characters_to_binary(Path));
         none ->
@@ -472,7 +482,7 @@ version_char(C) ->
 %% The program tailwindcss-windows-x64.exe of the release Version of
 %% tailwindcss, at Dir/tailwind-windows-x64-VERSION.exe: the path. This
 %% is the name and the URL of the Hex package tailwind, so a second
-%% build, or tailwind itself, uses the file again. Http: the function of
+%% build, or tailwind itself, uses the file again. Http: a function as
 %% beam_com_hex:http/5. The Hex package checks only TLS, and so does
 %% this function.
 tailwind_exe(Version, Dir, Http) ->
