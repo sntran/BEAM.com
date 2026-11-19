@@ -14,6 +14,8 @@
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <spawn.h>
@@ -132,6 +134,64 @@ static void *Server(void *arg) {
   close(fd);
   return (void *)n;
 }
+
+// The store buffer test of checks 19 and 20. Thread a sets x with an
+// acquire compare-and-swap, then reads y. Thread b sets y, then reads x.
+// When each thread reads 0, the store of one thread came after the load
+// of that thread. The scheduler of ERTS expects that this does not
+// occur, else it can lose a wakeup.
+static _Alignas(64) atomic_int sb_x;
+static _Alignas(64) atomic_int sb_y;
+static _Alignas(64) atomic_long sb_go;
+static _Alignas(64) atomic_int sb_done;
+static int sb_a, sb_b;
+static long sb_rounds;
+
+static void SbWait(atomic_long *p, long want) {
+  for (int i = 1; atomic_load_explicit(p, memory_order_acquire) != want; i++)
+    if (!(i % 1000)) sched_yield();
+}
+
+static void *SbSide(void *arg) {
+  atomic_int *mine = arg ? &sb_x : &sb_y;
+  atomic_int *other = arg ? &sb_y : &sb_x;
+  for (long i = 1; i <= sb_rounds; i++) {
+    SbWait(&sb_go, i);
+    int expect = 0;
+    atomic_compare_exchange_strong_explicit(mine, &expect, 1, memory_order_acquire,
+                                            memory_order_acquire);
+    *(arg ? &sb_a : &sb_b) = atomic_load_explicit(other, memory_order_relaxed);
+    atomic_fetch_add_explicit(&sb_done, 1, memory_order_release);
+  }
+  return 0;
+}
+
+// Gives the number of the rounds where each thread read 0.
+static long StoreBuffer(long rounds) {
+  pthread_t a, b;
+  long both = 0;
+  sb_rounds = rounds;
+  atomic_store(&sb_go, 0);
+  if (pthread_create(&a, 0, SbSide, (void *)1)) return -1;
+  if (pthread_create(&b, 0, SbSide, 0)) return -1;
+  for (long i = 1; i <= rounds; i++) {
+    atomic_store(&sb_x, 0);
+    atomic_store(&sb_y, 0);
+    atomic_store(&sb_done, 0);
+    atomic_store_explicit(&sb_go, i, memory_order_release);
+    for (int k = 1; atomic_load_explicit(&sb_done, memory_order_acquire) != 2; k++)
+      if (!(k % 1000)) sched_yield();
+    both += !sb_a && !sb_b;
+  }
+  pthread_join(a, 0);
+  pthread_join(b, 0);
+  return both;
+}
+
+#ifdef __aarch64__
+extern bool __aarch64_have_lse_atomics;
+int IsProcessorFeaturePresent(unsigned);
+#endif
 
 // The checks have numbers. A check that is not in the list of the
 // second argument does not run: thus a run can go around a crash.
@@ -393,6 +453,29 @@ int main(int argc, char **argv) {
     long ms = (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000;
     printf("  100000 calls of sched_yield: %ld ms\n", ms);
     Check("18 sched_yield: 100000 calls give 0 in less than 10 s", ok && ms < 10000);
+  }
+
+  if (Wanted(list, 19)) {
+    long both = StoreBuffer(200000);
+    printf("  store buffer test: %ld of 200000 rounds read 0 in each thread\n", both);
+    Check("19 an acquire compare-and-swap comes before a later load", both == 0);
+  }
+
+  if (Wanted(list, 20)) {
+#ifdef __aarch64__
+    // the exclusive loop of the libc, which a cpu with no LSE uses
+    bool lse = __aarch64_have_lse_atomics;
+    __aarch64_have_lse_atomics = false;
+    long both = StoreBuffer(200000);
+    __aarch64_have_lse_atomics = lse;
+    int want = IsWindows() ? !!IsProcessorFeaturePresent(34) : lse;
+    printf("  LSE atomic instructions: %d (the system gives %d)\n", lse, want);
+    printf("  store buffer test of the exclusive loop: %ld of 200000 rounds\n", both);
+    Check("20 the libc finds LSE, and its exclusive loop has the order of LSE",
+          lse == want && both == 0);
+#else
+    Check("20 the libc finds LSE, and its exclusive loop has the order of LSE (aarch64 only)", 1);
+#endif
   }
 
   printf("%s\n", failures ? "some checks failed" : "all checks passed");

@@ -10,6 +10,9 @@ notes of its release.
   x86_64 half under its x64 emulation. The file starts its aarch64 half
   itself, with a loader of 7 KB from its zip (`bin/ape-arm64.exe`), and
   the libc of that half has a Windows layer (C58 of `docs/UPSTREAM.md`).
+  The libc uses the LSE atomic instructions of the CPU, and its
+  exclusive loops end with a barrier, so the scheduler of ERTS does not
+  lose a wakeup (C58).
   `BEAM_COM_NATIVE=0` keeps the x86_64 half. See "Windows on ARM64" in
   `docs/PLATFORMS.md` and `docs/BENCHMARKS.md`. CI runs the tests on
   Windows 11 on ARM64 too (the runner `windows-11-arm`).

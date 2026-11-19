@@ -1805,7 +1805,7 @@ for aarch64. The x86_64 half does not change.
    aarch64 ELF half at its fixed addresses and starts it. The program
    gets a pointer to `LoadLibraryA()` and `GetProcAddress()` in `x15`,
    and the number 4 (`_HOSTWINDOWS`) in `x3`.
-2. `patches/cosmo-libc/win-arm64.patch` (about 70 files) and
+2. `patches/cosmo-libc/win-arm64.patch` (about 80 files) and
    `patches/cosmo-libc/generated.py` (735 files that
    `libc/nt/codegen.sh` and `libc/sysv/gen.sh` made) change the libc of
    aarch64:
@@ -1833,6 +1833,24 @@ for aarch64. The x86_64 half does not change.
      of the NT kernel, with other numbers. Without this change,
      `chown()` gave `ENOENT` or `ENOTDIR`, and OTP calls `chown()`
      before each change of a mode or of a time of a file.
+   - The constructor of `libc/intrin/armlse.c` asks
+     `IsProcessorFeaturePresent()` (feature 34,
+     `PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE`) for the LSE atomic
+     instructions. Windows gives no auxiliary vector, so `AT_HWCAP` is
+     0 there, and each atomic operation used the exclusive loop
+     (`ldaxr` and `stxr`) of `libc/intrin/aarch64/atomics.S`.
+   - The exclusive loop of each acquire operation (`_acq` and
+     `_acq_rel`) ends with `dmb ish`. Without the barrier, a later load
+     can occur before the store of the loop. The scheduler of ERTS sets
+     its sleep flag with an acquire compare-and-swap, and then reads
+     its work flags. The thread that adds work writes the work flags,
+     and then reads the sleep flag. When both reads see the old value,
+     the scheduler sleeps with work, and the VM can stop. About 1 start
+     of `beam.com` in 100 stopped this way on some runners. In the
+     store buffer test of `hello.c`, the loop with no barrier gave
+     this result in 2 % to 4 % of the rounds. With LSE, and with the
+     barrier, it gave none in 2,000,000 rounds. On other systems, a
+     CPU with no LSE (for example the Cortex-A72) also uses the loop.
 3. `patches/otp/0002-jit.patch`: the JIT uses fixed cache line sizes
    and `__clear_cache()` on Windows, as on macOS, for the same reason.
 4. The step `libc` of `scripts/steps.sh` builds the libc at the commit
@@ -1844,7 +1862,7 @@ for aarch64. The x86_64 half does not change.
    the loader to the cache and starts it with its own file
    (`win_arm64_start()` in `c_src/cosmo/beam_com.c`).
 
-The checks: `tests/programs/win_arm64/hello.c` (18 checks of the libc)
+The checks: `tests/programs/win_arm64/hello.c` (20 checks of the libc)
 and `tests/programs/win_arm64/vm.erl` (13 checks of the VM). CI runs
 them, and all of `tests/run.ps1`, on `windows-11-arm`.
 
