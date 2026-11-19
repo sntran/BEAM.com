@@ -843,8 +843,16 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     New-Item -ItemType Directory -Force -Path $Store | Out-Null
     tar -xzf $StoreNifs -C $Store
     Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
-    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.$half.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
-    Check "nif_needs.com" "libex_pdfium\.$half\.o: ok@@librustycsv\.$half\.o: ok@@vix\.$half\.o: ok@@libtailwind_nif\.$half\.o: ok" $Objects
+    # nif_needs.com is a C program: it does not start its aarch64 half
+    # itself. On ARM64, the loader runs that half with the aarch64 objects.
+    $needsHalf = if ($arm64 -and (Test-Path (Join-Path $Dir "ape-arm64.exe"))) { "aarch64" } else { "x86_64" }
+    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.$needsHalf.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
+    $needsOk = "libex_pdfium\.$needsHalf\.o: ok@@librustycsv\.$needsHalf\.o: ok@@vix\.$needsHalf\.o: ok@@libtailwind_nif\.$needsHalf\.o: ok"
+    if ($needsHalf -eq "aarch64") {
+        Check "ape-arm64.exe" $needsOk (@((Join-Path $Dir "nif_needs.com")) + $Objects)
+    } else {
+        Check "nif_needs.com" $needsOk $Objects
+    }
     $Priv = "tests/programs/store_nif_check/priv"
     if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
     New-Item -ItemType Directory -Force -Path $Priv | Out-Null

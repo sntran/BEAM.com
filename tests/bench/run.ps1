@@ -42,7 +42,7 @@ foreach ($v in $variants) {
         $r = [ordered]@{}
         $r["size_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $v)).Length / 1MB)
         $r["program_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $prog)).Length / 1MB)
-        $r["start_version"] = StartTime $exe @("version")
+        $r["start_version"] = StartTime $exe @("--version")
         $r["start_program"] = StartTime $progExe @("none")
         foreach ($line in (& $progExe)) {
             if ($line -match '^bench (\S+) (\d+)') { $r[$Matches[1]] = $Matches[2] }
@@ -54,7 +54,7 @@ Remove-Item Env:BEAM_COM_NATIVE -ErrorAction SilentlyContinue
 
 $labels = @{
     "size_mb" = "file size (MB)"; "program_mb" = "size of a program (MB)";
-    "start_version" = "start: ``version`` (ms)"; "start_program" = "start: a program (ms)"
+    "start_version" = "start: ``--version`` (ms)"; "start_program" = "start: a program (ms)"
 }
 Write-Output ("| | " + ($columns -join " | ") + " |")
 Write-Output ("|---|" + (($columns | ForEach-Object { "---:" }) -join "|") + "|")
