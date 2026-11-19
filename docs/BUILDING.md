@@ -7,7 +7,10 @@ for a custom build.
 ## Build
 
 You need Linux (x86_64), `git`, GNU make 4.3 or later, `perl`, `curl`,
-`zip` and `unzip`. The [`Makefile`](../Makefile) downloads the sources,
+`zip` and `unzip`. The native start on Windows on ARM64 (the default)
+also needs `python3`, `clang`, `lld-link` and `llvm-dlltool` (the
+packages `clang`, `lld` and `llvm` of Debian). `WIN_ARM64=0` builds with
+none of them. The [`Makefile`](../Makefile) downloads the sources,
 applies the patches, builds a small OTP and makes `build/beam.com`:
 
 ```sh
@@ -21,6 +24,8 @@ build does not depend on the make of the host.
 The build downloads:
 
 - cosmocc 4.0.2 (the compiler and Cosmopolitan Libc);
+- the source of Cosmopolitan 4.0.2 and its bootstrap toolchain
+  (cosmocc 3.9.2), for the libc of Windows on ARM64;
 - the source of Erlang/OTP 29.1.2, OpenSSL 4.0.3, SQLite 3.53.4,
   esqlite, WAMR 2.4.5 and Elixir 1.20.5;
 - the hex.pm packages whose NIFs it links (exqlite, bcrypt_elixir and
@@ -33,7 +38,8 @@ The steps, in order. The code of each step is in
 | Step | Needs | What it does |
 |---|---|---|
 | `toolchain` | | Downloads cosmocc. |
-| `openssl` | `toolchain` | Builds a static `libcrypto`. |
+| `libc` | `toolchain` | Builds the aarch64 libc of Cosmopolitan with the Windows layer of `patches/cosmo-libc` and the loader `ape-arm64.exe`, and puts the libc into cosmocc (nothing with `WIN_ARM64=0`). See C58 of [`UPSTREAM.md`](UPSTREAM.md). |
+| `openssl` | `libc` | Builds a static `libcrypto`. |
 | `otp` | | Clones OTP and applies `patches/otp/*.patch`. |
 | `configure` | `otp`, `openssl` | Configures OTP for Cosmopolitan. |
 | `sqlite` | `configure` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
@@ -62,7 +68,8 @@ compiles of cosmocc and cosmoc++ go through ccache, in `build/ccache`
 The settings are environment variables or variables of the make command
 line. See the top of [`scripts/steps.sh`](../scripts/steps.sh): the
 versions, `JIT=0` (the interpreter, `beam-emu.com`), `SQLITE=0`,
-`WASM=0`, `ELIXIR=0` and `WASM_RUNTIME=none`. For example:
+`WASM=0`, `ELIXIR=0`, `WASM_RUNTIME=none` and `WIN_ARM64=0` (no native
+start on Windows on ARM64). For example:
 
 ```sh
 build/cosmocc/bin/make JIT=0 OUT=build/beam-emu.com
@@ -516,7 +523,8 @@ part never goes stale. `PARTS_URL=... make` uses a store, and
 
 | Part | The output of | Its key has |
 |---|---|---|
-| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the code of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
+| `libc` | the step `libc`: the libc and the loader for Windows on ARM64 (`build/cosmo-libc`) | the commit of Cosmopolitan, its bootstrap toolchain, the code of the step, `patches/cosmo-libc` and `c_src/win-arm64` |
+| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, the key of `libc`, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the code of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
 | `elixir` | the step `elixir` | the version of Elixir, `patches/elixir`, the code of the step, and the key of `otp` |
 | `nif-PACKAGE` | one NIF of the step `nifs`: `LIB.a` and `.aarch64/LIB.a` | the recipe of the package, the NIF API (the headers of the OTP tree), cosmocc, the code that builds it, and its files (`scripts/libvips.sh`, `patches/libvips`, `c_src/vips` and `native/vips_resvg` for vix with its parts; `scripts/pdfium.sh` and `patches/pdfium` for ex_pdfium; `c_src/rust` and `scripts/rust_link.sh` for a NIF of Rust) |
 
@@ -576,7 +584,7 @@ The commands:
 | `sh scripts/steps.sh key STEP...` | Prints the key of each step. |
 | `sh scripts/steps.sh inputs STEP` | Prints the inputs of a step. Compare it with `build/stamps/STEP.inputs`, the inputs of the last key, to see why a step runs again. |
 | `sh scripts/steps.sh check_keys` | Finds each path of the repository in the code of a step that is not in its list of files. CI runs it. |
-| `sh scripts/steps.sh cache_keys` | Prints the keys of the caches of CI (libvips, libpdfium.a and ccache). |
+| `sh scripts/steps.sh cache_keys` | Prints the keys of the caches of CI (the libc for Windows on ARM64, libvips, libpdfium.a and ccache). |
 
 - Caution: a file that a step starts to read must be in its list in
   `step_files`. `check_keys` finds a path that the code writes with
@@ -624,6 +632,8 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
 
 1. **Build** and **Build the interpreter**: `beam.com` (the JIT) and
    `beam-emu.com` (the interpreter), on Ubuntu with cosmocc. A cache
+   keeps the libc for Windows on ARM64 (the step `libc`, about 4
+   minutes; the action `.github/actions/cosmo-libc`). A cache
    keeps the WebAssembly runtime (the step `wasm_runtime`, about 4
    minutes). The step uses it only when the SHA-256 of its inputs (the
    file `build/wasm-runtime/inputs`) is the same, so a local build with
@@ -636,8 +646,8 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
    copies of `beam.com` with `zip`.
 4. **Run on ...**: the behavior tests ([`tests/run.sh`](../tests/run.sh),
    [`tests/run.ps1`](../tests/run.ps1)) and the benchmarks on Linux
-   (x86_64, aarch64), macOS (arm64, x86_64), Windows, FreeBSD, NetBSD and
-   OpenBSD 7.3. See [`TESTING.md`](TESTING.md). **Run on Linux x86_64
+   (x86_64, aarch64), macOS (arm64, x86_64), Windows (x86_64, ARM64),
+   FreeBSD, NetBSD and OpenBSD 7.3. See [`TESTING.md`](TESTING.md). **Run on Linux x86_64
    with no Landlock** runs `tests/run.sh` in a VM of QEMU (virtme-ng)
    with the kernel of the runner and `lsm=` with no `landlock`, as the
    kernel of Apple `container`. `tests/run.sh` sees the warning of

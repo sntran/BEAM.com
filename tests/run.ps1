@@ -799,7 +799,7 @@ if (Test-Path "examples") {
     Check "beam.com" 'wrote .*nif_check.com' @("tests/programs/nif_check", "--main", "nif_check", "-o", "$Dir/nif_check.com")
     if (Test-Path (Join-Path $Dir "nif_check.com")) {
         $env:BEAM_COM_NIF_DEBUG = "1"
-        Check "nif_check.com" 'nif_wasm: .*nif_check\.(x86_64\.aot|wasm)@@nif_check: all [0-9]+ passed' @()
+        Check "nif_check.com" "nif_wasm: .*nif_check\.($half\.aot|wasm)@@nif_check: all [0-9]+ passed" @()
         $env:BEAM_COM_NIF_AOT = "0"
         Check "nif_check.com" 'nif_wasm: .*nif_check\.wasm@@nif_check: all [0-9]+ passed' @()
         Remove-Item Env:BEAM_COM_NIF_DEBUG, Env:BEAM_COM_NIF_AOT
@@ -807,14 +807,15 @@ if (Test-Path "examples") {
 }
 
 # Native NIF objects (docs/NIFS.md), as in run.sh: load_nif/2 loads
-# priv/native_nif_check.x86_64.o from the zip of the program. On Windows the
-# loader also changes the TLS instructions of the object (the TLS slot of
-# the thread).
+# priv/native_nif_check.x86_64.o from the zip of the program. On x86_64,
+# the loader also changes the TLS instructions of the object (the TLS slot
+# of the thread). The native half of Windows on ARM64 loads the aarch64
+# object (the variable half above).
 if (Test-Path "examples") {
     Check "beam.com" 'wrote .*native_nif_check.com' @("tests/programs/native_nif_check", "--main", "native_nif_check", "-o", "$Dir/native_nif_check.com")
     if (Test-Path (Join-Path $Dir "native_nif_check.com")) {
         $env:BEAM_COM_NIF_DEBUG = "1"
-        Check "native_nif_check.com" 'nif_native: .*native_nif_check\.x86_64\.o@@native_nif_check: all [0-9]+ passed' @()
+        Check "native_nif_check.com" "nif_native: .*native_nif_check\.$half\.o@@native_nif_check: all [0-9]+ passed" @()
         Remove-Item Env:BEAM_COM_NIF_DEBUG
     }
 }
@@ -842,8 +843,8 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     New-Item -ItemType Directory -Force -Path $Store | Out-Null
     tar -xzf $StoreNifs -C $Store
     Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
-    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.x86_64.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
-    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok@@libtailwind_nif\.x86_64\.o: ok' $Objects
+    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.$half.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
+    Check "nif_needs.com" "libex_pdfium\.$half\.o: ok@@librustycsv\.$half\.o: ok@@vix\.$half\.o: ok@@libtailwind_nif\.$half\.o: ok" $Objects
     $Priv = "tests/programs/store_nif_check/priv"
     if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
     New-Item -ItemType Directory -Force -Path $Priv | Out-Null

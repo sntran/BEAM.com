@@ -1718,7 +1718,12 @@ nif_part_key() (
 otp_part_key() (
     code=$(steps_code text step_otp step_configure step_make)
     files=$(key_files patches/otp c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc)
+    # The libc of step_libc changes libc/dce.h of cosmocc: IsWindows() in
+    # the aarch64 code of OTP (the JIT) is a constant 0 without it.
+    libc=none
+    [ "$WIN_ARM64" != 1 ] || libc=$(libc_part_key)
     {
+        echo "LIBC $libc"
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 CC $CC CXX $CXX AR $AR"
         echo "JIT $JIT CCACHE ${CCACHE:-0} BUILD $BUILD ERL_TOP $ERL_TOP"

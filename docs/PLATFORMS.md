@@ -18,6 +18,7 @@ each row, except WSL2 (see below) and OpenBSD 7.9.
 | OpenBSD 7.3 | `ape-x86_64.elf ./beam.com` | ✅ | ✅ | ✅ | ✅ |
 | OpenBSD 7.9 | Not supported by Cosmopolitan (7.3 or earlier only) | ❌ | ❌ | ❌ | ❌ |
 | Windows x86_64 | `beam.exe` (a copy with an `.exe` name) | ✅ | ✅ | ✅ | ❌ |
+| Windows 11 ARM64 | `beam.exe` (native code: the file starts its aarch64 half, see below) | ✅ | ✅ | ✅ | ❌ |
 
 `ape-x86_64.elf` is the APE loader from cosmocc (`bin/ape-x86_64.elf`).
 On NetBSD and OpenBSD, also install it where Cosmopolitan's `execve()`
@@ -58,6 +59,35 @@ Windows to a PEM file that `public_key:cacerts_get/0` reads
 (`-public_key cacerts_path File`; give that parameter yourself, or set
 `SSL_CERT_FILE`, to use your own file). Both files are in the temp directory of the user and
 are removed when the node stops.
+
+## Windows on ARM64
+
+On Windows 11 on ARM64, `beam.exe` runs as native ARM64 code, with the
+aarch64 JIT. Windows starts the x86_64 half of the file under its x64
+emulation. That half finds the ARM64 machine and starts the aarch64 half
+of the same file with a small loader from its zip
+(`bin/ape-arm64.exe`). The loader goes to the cache directory once
+(`%LOCALAPPDATA%\beam.com\ape-arm64-HASH.exe`, or `BEAM_COM_CACHE`).
+See "Windows on ARM64" in [`INTERNALS.md`](INTERNALS.md).
+
+- A program that `beam.com INPUT -o OUTPUT` makes starts in the same
+  way, also when you build it on another system.
+- The task manager shows two processes for one start: the x86_64
+  process waits, and the loader runs the VM.
+- `BEAM_COM_NATIVE=0` keeps the x86_64 half under the emulation, as
+  the versions before did. Use it to compare the two, or when the
+  native half shows a fault.
+- `erlang:system_info(system_architecture)` starts with `aarch64` in
+  the native half and with `x86_64` under the emulation.
+- The native half loads the `aarch64` file of a native NIF object and
+  of an AOT file of WebAssembly ([`NIFS.md`](NIFS.md)).
+- A Phoenix build uses the x64 programs of `tailwind` and `esbuild` for
+  Windows. They run under the emulation.
+- In the aarch64 code of a native NIF object, `IsWindows()` of
+  `libc/dce.h` is always false with the headers of cosmocc 4.0.2. An
+  object that asks for the system must use the cosmocc of the build
+  (after the step `libc`), or read `__hostos`.
+- Windows 10 on ARM64 has no x64 emulation, and it runs no APE file.
 
 ## In a sandbox that terminates TLS (OpenShell)
 

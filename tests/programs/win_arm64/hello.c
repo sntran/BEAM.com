@@ -12,6 +12,7 @@
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <setjmp.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -360,6 +361,38 @@ int main(int argc, char **argv) {
     if (copy >= 0) close(copy);
     close(fds[0]);
     Check("16 pipes: poll, read, write, dup and the end of the data", ok);
+  }
+
+  if (Wanted(list, 17)) {
+    // chown() is a call that Windows does not have: the libc must give
+    // ENOSYS, and not start a system call of another kernel. OTP calls
+    // chown() before each change of a mode or of a time.
+    const char *name = "win_arm64_check.17.tmp", *to = "win_arm64_check.17b.tmp";
+    struct timeval tv[2] = {{1767225600, 0}, {1767225600, 0}};
+    struct stat st = {0};
+    int fd = open(name, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    int ok = fd >= 0 && write(fd, "abc", 3) == 3 && !close(fd);
+    errno = 0;
+    int rc = chown(name, -1, -1);
+    ok = ok && (rc == 0 || (rc == -1 && errno == ENOSYS));
+    ok = ok && !chmod(name, 0444) && !chmod(name, 0644);
+    ok = ok && !utimes(name, tv) && !stat(name, &st) && st.st_mtime == 1767225600;
+    ok = ok && !truncate(name, 1) && !stat(name, &st) && st.st_size == 1;
+    ok = ok && !rename(name, to) && access(name, F_OK) == -1 && !access(to, F_OK);
+    unlink(name);
+    ok = !unlink(to) && ok;
+    Check("17 file data: chown gives 0 or ENOSYS; chmod, utimes, truncate and rename", ok);
+  }
+
+  if (Wanted(list, 18)) {
+    struct timespec a, b;
+    int i, ok = 1;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    for (i = 0; i < 100000; i++) ok = ok && !sched_yield();
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    long ms = (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000;
+    printf("  100000 calls of sched_yield: %ld ms\n", ms);
+    Check("18 sched_yield: 100000 calls give 0 in less than 10 s", ok && ms < 10000);
   }
 
   printf("%s\n", failures ? "some checks failed" : "all checks passed");

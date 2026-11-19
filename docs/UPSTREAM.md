@@ -1776,6 +1776,82 @@ macOS 27.
 `mmap()` of Cosmopolitan for `MAP_FIXED_NOREPLACE` on XNU, or a base
 address of the programs above `0x7000000000`.
 
+### C58. Windows on ARM64: the aarch64 half has no Windows layer
+
+**Status:** 4.0.2, Windows 11 on ARM64 (the runner `windows-11-arm`
+of GitHub).
+
+**Symptom.** An APE file on Windows on ARM64 always runs its x86_64
+half, under the x64 emulation of Windows. The aarch64 half, and the
+aarch64 JIT of BEAM.com, never run there.
+
+**Cause.** There are three causes:
+
+1. Windows starts an APE file as a PE file, and the PE header of an APE
+   file names only x86_64 code. No loader for Windows on ARM64 exists
+   (`ape-m1.c` is the loader for macOS on ARM64).
+2. `SUPPORT_VECTOR` of aarch64 has no `_HOSTWINDOWS` (`libc/dce.h`).
+   The Windows code of the libc is x86_64 code, in three forms:
+   `#ifdef __x86_64__` in about 50 C files, the import table of a PE
+   file (`.idata`, 675 stubs of `libc/nt`), and assembly files.
+3. The start code, the signals, the threads and `fork()` of Windows
+   use the registers and the context record of x86_64.
+
+**Workaround in BEAM.com.** A loader, and a libc with a Windows layer
+for aarch64. The x86_64 half does not change.
+
+1. `c_src/win-arm64/ape_arm64.c` is the loader `ape-arm64.exe`, a
+   native program of Windows on ARM64 with no C library. It maps the
+   aarch64 ELF half at its fixed addresses and starts it. The program
+   gets a pointer to `LoadLibraryA()` and `GetProcAddress()` in `x15`,
+   and the number 4 (`_HOSTWINDOWS`) in `x3`.
+2. `patches/cosmo-libc/win-arm64.patch` (about 70 files) and
+   `patches/cosmo-libc/generated.py` (735 files that
+   `libc/nt/codegen.sh` and `libc/sysv/gen.sh` made) change the libc of
+   aarch64:
+   - Each function of Windows is a slot that the start code fills with
+     `GetProcAddress()`. A stub jumps through its slot
+     (`adrp`, `ldr`, `br`).
+   - `cosmo()` moves the program to its own stack and does the work of
+     `WinMain()`: the arguments, the environment and the standard
+     handles.
+   - A signal handler returns with `NtContinue()` and the full context
+     record of ARM64. A thread starts with `CreateThread()` and the
+     thread pointer in `x28`.
+   - Windows checks the stack pointer against the limits of the TEB.
+     The start code and each new thread set wide limits, because a
+     signal handler can run on an alternate stack.
+   - `fork()` starts the loader again with the variable `_APE_FORK`,
+     and the parent writes its memory into the child.
+   - `posix_spawn()` and `execve()` start an APE file with an aarch64
+     half through the loader of the current process.
+   - `__clear_cache()` calls `NtFlushInstructionCache()`. A read of
+     `ctr_el0` is an illegal instruction in a process of Windows.
+   - The entry of the System V calls (`systemfive()`) gives `ENOSYS` on
+     Windows, as `__systemfive` of x86_64 does, and `sched_yield()`
+     calls `SleepEx()`. An `svc` instruction on Windows is a system call
+     of the NT kernel, with other numbers. Without this change,
+     `chown()` gave `ENOENT` or `ENOTDIR`, and OTP calls `chown()`
+     before each change of a mode or of a time of a file.
+3. `patches/otp/0002-jit.patch`: the JIT uses fixed cache line sizes
+   and `__clear_cache()` on Windows, as on macOS, for the same reason.
+4. The step `libc` of `scripts/steps.sh` builds the libc at the commit
+   of 4.0.2 with the bootstrap toolchain 3.9.2 of that commit, and puts
+   `libcosmo.a`, `crt.o`, `aarch64.lds` and 5 headers into the
+   `aarch64-linux-cosmo` tree of cosmocc.
+5. `beam.com` holds the loader at `/zip/bin/ape-arm64.exe`. The x86_64
+   half asks `IsWow64Process2()` for the machine. On ARM64 it writes
+   the loader to the cache and starts it with its own file
+   (`win_arm64_start()` in `c_src/cosmo/beam_com.c`).
+
+The checks: `tests/programs/win_arm64/hello.c` (18 checks of the libc)
+and `tests/programs/win_arm64/vm.erl` (13 checks of the VM). CI runs
+them, and all of `tests/run.ps1`, on `windows-11-arm`.
+
+**Possible upstream fix.** `_HOSTWINDOWS` in the support vector of
+aarch64, with a loader as `ape-m1.c`, or an ARM64 PE header that
+Windows on ARM64 selects. The patch shows the parts that need a change.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2561,7 +2637,8 @@ the system at run time (`IsXnu()`, `IsFreebsd()`, `IsOpenbsd()`,
 `IsNetbsd()`): `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, `x86_64-unknown-freebsd`,
 `x86_64-unknown-openbsd`, `x86_64-unknown-netbsd`. Linux x86_64 and
-Windows keep the text of `configure`.
+Windows keep the text of `configure`. The native half on Windows on
+ARM64 (C58) gives `aarch64-unknown-linux-gnu`.
 
 **Possible upstream fix.** None needed for a native build.
 

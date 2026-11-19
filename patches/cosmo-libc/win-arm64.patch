@@ -604,6 +604,42 @@ index a303723c..18029d35 100644
    // this isn't a cancelation point because we don't acknowledge eintr
    // on xnu we use the "nocancel" version of the system call for safety
    register long r0 asm("x0") = kloghandle();
+diff --git a/libc/intrin/pthread_yield_np.c b/libc/intrin/pthread_yield_np.c
+index 4fa0c988..486895dc 100644
+--- a/libc/intrin/pthread_yield_np.c
++++ b/libc/intrin/pthread_yield_np.c
+@@ -18,12 +18,18 @@
+ ╚─────────────────────────────────────────────────────────────────────────────*/
+ #include "libc/calls/calls.h"
+ #include "libc/dce.h"
++#include "libc/nt/synchronization.h"
++#include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/runtime.h"
+ #include "libc/runtime/syslib.internal.h"
+ #include "libc/thread/thread.h"
+ 
+ void sys_sched_yield(void);
+ 
++#ifdef __aarch64__
++__msabi extern typeof(SleepEx) *const __imp_SleepEx;
++#endif
++
+ /**
+  * Yields current thread's remaining timeslice to operating system.
+  *
+@@ -32,6 +38,12 @@ void sys_sched_yield(void);
+ int pthread_yield_np(void) {
+   if (IsXnuSilicon()) {
+     __syslib->__pthread_yield_np();
++#ifdef __aarch64__
++  } else if (IsWindows()) {
++    // the code of x86_64 for windows is in sys_sched_yield. an svc
++    // instruction on windows is a system call of the nt kernel.
++    __imp_SleepEx(0, false);
++#endif
+   } else if (IsOpenbsd()) {
+     // sched_yield() is punishingly slow on OpenBSD
+     // it's ruinously slow it'll destroy everything
 diff --git a/libc/intrin/restore.S b/libc/intrin/restore.S
 index 596b01f7..4ac7e3ef 100644
 --- a/libc/intrin/restore.S
@@ -2077,6 +2113,24 @@ index 32a7e0c8..86b74248 100644
  }
 -
 -#endif /* __x86_64__ */
+diff --git a/libc/sysv/sysv.c b/libc/sysv/sysv.c
+index 8c78202b..52f6bf62 100644
+--- a/libc/sysv/sysv.c
++++ b/libc/sysv/sysv.c
+@@ -114,6 +114,13 @@ dontinline long systemfive_cancellable(void) {
+  */
+ long systemfive(void) {
+ 
++  // windows has no system five system calls. an svc instruction there
++  // is a system call of the nt kernel, with other numbers. x86_64 gets
++  // the same result from __systemfive.
++  if (IsWindows()) {
++    return _sysret(-ENOSYS);
++  }
++
+   // handle special cases
+   if (IsLinux() || IsFreebsd()) {
+     if (IsFreebsd()) {
 diff --git a/libc/thread/itimer.c b/libc/thread/itimer.c
 index fd93cf00..f2ce9881 100644
 --- a/libc/thread/itimer.c

@@ -5,6 +5,17 @@ notes of its release.
 
 ## Unreleased
 
+- Windows 11 on ARM64: `beam.com` and each program that it builds run
+  as native ARM64 code, with the aarch64 JIT. Before, Windows ran the
+  x86_64 half under its x64 emulation. The file starts its aarch64 half
+  itself, with a loader of 7 KB from its zip (`bin/ape-arm64.exe`), and
+  the libc of that half has a Windows layer (C58 of `docs/UPSTREAM.md`).
+  `BEAM_COM_NATIVE=0` keeps the x86_64 half. See "Windows on ARM64" in
+  `docs/PLATFORMS.md` and `docs/BENCHMARKS.md`. CI runs the tests on
+  Windows 11 on ARM64 too (the runner `windows-11-arm`).
+- The build has the step `libc`. It needs `python3`, `clang`, `lld` and
+  `llvm` on the build computer. `WIN_ARM64=0` builds `beam.com` with no
+  native start on Windows on ARM64, and needs none of them.
 - `beam.com` has the OTP application `syntax_tools` (about 0.2 MB). Packages
   such as `x509` (a dep of `site_encrypt`) and `parse_trans` need it when
   they compile, and `edoc` needs it. A custom build can leave it out: the
