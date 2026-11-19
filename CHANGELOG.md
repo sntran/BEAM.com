@@ -10,6 +10,9 @@ notes of its release.
   x86_64 half under its x64 emulation. The file starts its aarch64 half
   itself, with a loader of 7 KB from its zip (`bin/ape-arm64.exe`), and
   the libc of that half has a Windows layer (C58 of `docs/UPSTREAM.md`).
+  On Windows, the builder gives tailwind the path of the program
+  `tailwindcss-windows-x64.exe` of its version: tailwind 0.5 refused
+  the architecture `aarch64` of the native half.
   The libc uses the LSE atomic instructions of the CPU, and its
   exclusive loops end with a barrier, so the scheduler of ERTS does not
   lose a wakeup (C58).

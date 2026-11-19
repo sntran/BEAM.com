@@ -280,7 +280,14 @@ directory.
   port program (for example `rebar3`) runs with the `escript` of
   `beam.com`, or with the `sh` in `PATH`. tailwind and esbuild get their
   programs for Windows. When the config gives no target and no path, the
-  builder sets the target `windows-x64.exe` of tailwind. It also sets the
+  builder downloads `tailwindcss-windows-x64.exe` of the version of
+  `config :tailwind` from the releases of tailwindcss, as the tailwind
+  package does, to `_build/tailwind-windows-x64-VERSION.exe`, and sets
+  the path of tailwind. With no version, or with a version in a profile,
+  it sets the target `windows-x64.exe` in place of the path. The target
+  is not sufficient in the native half on Windows on ARM64: tailwind 0.5
+  also asks for the target of the system there, and it refuses the
+  architecture `aarch64`. The builder also sets the
   path of `esbuild.exe` of the npm package `@esbuild/win32-x64` in
   `_build`, with the version of `config :esbuild`. For esbuild before
   0.16.0, the package is `esbuild-windows-64`. The builder does this only

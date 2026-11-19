@@ -668,7 +668,7 @@ function PhoenixCheck {
         # 10 minutes, and the other checks.
         $script:Limit = 600
         Check "beam.com" ('Mix gets the deps of \. and makes its release \(config/runtime.exs, deps that are not Hex packages: heroicons daisyui' +
-            '@@tailwind for Windows \(target windows-x64.exe\)@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
+            '@@tailwind for Windows: .*tailwind-windows-x64-.*\.exe@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
             '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net -Tries 2
         $script:Limit = 120
     }
