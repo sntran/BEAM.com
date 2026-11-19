@@ -480,6 +480,542 @@ index c84aeeba..613b975c 100644
  o/$(MODE)/libc/intrin/aarch64/%.o: libc/intrin/aarch64/%.S
  	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) -c $<
  o/$(MODE)/libc/intrin/fenv.o: libc/intrin/fenv.S
+diff --git a/libc/intrin/aarch64/atomics.S b/libc/intrin/aarch64/atomics.S
+index 17bc04fc..22a51503 100644
+--- a/libc/intrin/aarch64/atomics.S
++++ b/libc/intrin/aarch64/atomics.S
+@@ -20,6 +20,11 @@
+ // armv8.1 introduced atomic instructions that go considerably faster.
+ // you can pass the -mno-outline-atomics flag to the compiler to avoid
+ // this runtime, however that'll go slower.
++//
++// the exclusive loop of an acquire operation ends with dmb ish. with
++// no barrier, a later load can occur before the store of the loop,
++// and code that expects the order of an lse instruction (for example
++// the scheduler of erts) can lose a wakeup
+ 
+ .arch armv8-a+lse
+ 
+@@ -63,6 +68,7 @@
+ 0:	ldaxrb	w0,[x1]
+ 	stxrb	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp1_acq,globl
+ 
+@@ -85,6 +91,7 @@
+ 0:	ldaxrb	w0,[x1]
+ 	stlxrb	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp1_acq_rel,globl
+ 
+@@ -124,7 +131,8 @@
+ 	bne	1f
+ 	stxrb	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas1_acq,globl
+ 
+ .begfn __aarch64_cas1_rel
+@@ -150,7 +158,8 @@
+ 	bne	1f
+ 	stlxrb	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas1_acq_rel,globl
+ 
+ .begfn __aarch64_cas1_sync
+@@ -189,6 +198,7 @@
+ 	add	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd1_acq,globl
+ 
+@@ -213,6 +223,7 @@
+ 	add	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd1_acq_rel,globl
+ 
+@@ -251,6 +262,7 @@
+ 	orr	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset1_acq,globl
+ 
+@@ -275,6 +287,7 @@
+ 	orr	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset1_acq_rel,globl
+ 
+@@ -313,6 +326,7 @@
+ 	bic	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr1_acq,globl
+ 
+@@ -337,6 +351,7 @@
+ 	bic	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr1_acq_rel,globl
+ 
+@@ -375,6 +390,7 @@
+ 	eor	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor1_acq,globl
+ 
+@@ -399,6 +415,7 @@
+ 	eor	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor1_acq_rel,globl
+ 
+@@ -435,6 +452,7 @@
+ 0:	ldaxrh	w0,[x1]
+ 	stxrh	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp2_acq,globl
+ 
+@@ -457,6 +475,7 @@
+ 0:	ldaxrh	w0,[x1]
+ 	stlxrh	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp2_acq_rel,globl
+ 
+@@ -496,7 +515,8 @@
+ 	bne	1f
+ 	stxrh	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas2_acq,globl
+ 
+ .begfn __aarch64_cas2_rel
+@@ -522,7 +542,8 @@
+ 	bne	1f
+ 	stlxrh	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas2_acq_rel,globl
+ 
+ .begfn __aarch64_cas2_sync
+@@ -561,6 +582,7 @@
+ 	add	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd2_acq,globl
+ 
+@@ -585,6 +607,7 @@
+ 	add	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd2_acq_rel,globl
+ 
+@@ -623,6 +646,7 @@
+ 	orr	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset2_acq,globl
+ 
+@@ -647,6 +671,7 @@
+ 	orr	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset2_acq_rel,globl
+ 
+@@ -685,6 +710,7 @@
+ 	bic	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr2_acq,globl
+ 
+@@ -709,6 +735,7 @@
+ 	bic	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr2_acq_rel,globl
+ 
+@@ -747,6 +774,7 @@
+ 	eor	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor2_acq,globl
+ 
+@@ -771,6 +799,7 @@
+ 	eor	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor2_acq_rel,globl
+ 
+@@ -807,6 +836,7 @@
+ 0:	ldaxr	w0,[x1]
+ 	stxr	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp4_acq,globl
+ 
+@@ -829,6 +859,7 @@
+ 0:	ldaxr	w0,[x1]
+ 	stlxr	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp4_acq_rel,globl
+ 
+@@ -868,7 +899,8 @@
+ 	bne	1f
+ 	stxr	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas4_acq,globl
+ 
+ .begfn __aarch64_cas4_rel
+@@ -894,7 +926,8 @@
+ 	bne	1f
+ 	stlxr	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas4_acq_rel,globl
+ 
+ .begfn __aarch64_cas4_sync
+@@ -933,6 +966,7 @@
+ 	add	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd4_acq,globl
+ 
+@@ -957,6 +991,7 @@
+ 	add	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd4_acq_rel,globl
+ 
+@@ -995,6 +1030,7 @@
+ 	orr	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset4_acq,globl
+ 
+@@ -1019,6 +1055,7 @@
+ 	orr	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset4_acq_rel,globl
+ 
+@@ -1057,6 +1094,7 @@
+ 	bic	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr4_acq,globl
+ 
+@@ -1081,6 +1119,7 @@
+ 	bic	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr4_acq_rel,globl
+ 
+@@ -1119,6 +1158,7 @@
+ 	eor	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor4_acq,globl
+ 
+@@ -1143,6 +1183,7 @@
+ 	eor	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor4_acq_rel,globl
+ 
+@@ -1179,6 +1220,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp8_acq,globl
+ 
+@@ -1201,6 +1243,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stlxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp8_acq_rel,globl
+ 
+@@ -1266,7 +1309,8 @@
+ 	bne	1f
+ 	stlxr	w17,x1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas8_acq_rel,globl
+ 
+ .begfn __aarch64_cas8_sync
+@@ -1305,6 +1349,7 @@
+ 	add	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd8_acq,globl
+ 
+@@ -1329,6 +1374,7 @@
+ 	add	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd8_acq_rel,globl
+ 
+@@ -1367,6 +1413,7 @@
+ 	orr	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset8_acq,globl
+ 
+@@ -1391,6 +1438,7 @@
+ 	orr	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset8_acq_rel,globl
+ 
+@@ -1429,6 +1477,7 @@
+ 	bic	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr8_acq,globl
+ 
+@@ -1453,6 +1502,7 @@
+ 	bic	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr8_acq_rel,globl
+ 
+@@ -1491,6 +1541,7 @@
+ 	eor	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor8_acq,globl
+ 
+@@ -1515,6 +1566,7 @@
+ 	eor	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor8_acq_rel,globl
+ 
+@@ -1551,6 +1603,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp16_acq,globl
+ 
+@@ -1573,6 +1626,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stlxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp16_acq_rel,globl
+ 
+@@ -1618,6 +1672,7 @@
+ 	csel	x14,x3,x1,eq
+ 	stxp	w13,x15,x14,[x4]
+ 	cbnz	w13,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_cas16_acq,globl
+ 
+@@ -1650,6 +1705,7 @@
+ 	csel	x14,x3,x1,eq
+ 	stlxp	w13,x15,x14,[x4]
+ 	cbnz	w13,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_cas16_acq_rel,globl
+ 
+@@ -1692,6 +1748,7 @@
+ 	add	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd16_acq,globl
+ 
+@@ -1716,6 +1773,7 @@
+ 	add	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd16_acq_rel,globl
+ 
+@@ -1754,6 +1812,7 @@
+ 	orr	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset16_acq,globl
+ 
+@@ -1778,6 +1837,7 @@
+ 	orr	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset16_acq_rel,globl
+ 
+@@ -1816,6 +1876,7 @@
+ 	bic	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr16_acq,globl
+ 
+@@ -1840,6 +1901,7 @@
+ 	bic	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr16_acq_rel,globl
+ 
+@@ -1878,6 +1940,7 @@
+ 	eor	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor16_acq,globl
+ 
+@@ -1902,6 +1965,7 @@
+ 	eor	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor16_acq_rel,globl
+ 
+diff --git a/libc/intrin/armlse.c b/libc/intrin/armlse.c
+index b05bf070..5c2042e7 100644
+--- a/libc/intrin/armlse.c
++++ b/libc/intrin/armlse.c
+@@ -16,15 +16,29 @@
+ │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
+ │ PERFORMANCE OF THIS SOFTWARE.                                                │
+ ╚─────────────────────────────────────────────────────────────────────────────*/
++#include "libc/dce.h"
+ #include "libc/intrin/getauxval.h"
++#include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/runtime.h"
+ #include "libc/sysv/consts/auxv.h"
+ #include "libc/sysv/consts/hwcap.h"
+ #ifdef __aarch64__
+ 
++// windows gives no auxiliary vector. the feature 34 of windows is
++// PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE. the start code fills the
++// import slot before the constructors run
++#define kNtPfArmV81AtomicInstructionsAvailable 34
++__msabi extern bool32 (*const __imp_IsProcessorFeaturePresent)(uint32_t);
++
+ bool __aarch64_have_lse_atomics;
+ 
+ static __attribute__((__constructor__(1))) void __aarch64_atomics_init(void) {
++  if (IsWindows()) {
++    __aarch64_have_lse_atomics =
++        __imp_IsProcessorFeaturePresent &&
++        __imp_IsProcessorFeaturePresent(kNtPfArmV81AtomicInstructionsAvailable);
++    return;
++  }
+   struct AuxiliaryValue x = __getauxval(AT_HWCAP);
+   __aarch64_have_lse_atomics = !!(x.value & HWCAP_ATOMICS);
+ }
 diff --git a/libc/intrin/clock_gettime-nt.c b/libc/intrin/clock_gettime-nt.c
 index 9020e9cf..bcdfd716 100644
 --- a/libc/intrin/clock_gettime-nt.c
@@ -1020,6 +1556,43 @@ index 38d5d358..080b7b62 100644
 +#endif
  
  #endif /* COSMOPOLITAN_LIBC_NT_ENUM_CONTEXT_H_ */
+diff --git a/libc/nt/kernel32/IsProcessorFeaturePresent.S b/libc/nt/kernel32/IsProcessorFeaturePresent.S
+new file mode 100644
+index 00000000..c66861a3
+--- /dev/null
++++ b/libc/nt/kernel32/IsProcessorFeaturePresent.S
+@@ -0,0 +1,19 @@
++#include "libc/nt/codegen.h"
++.imp	kernel32,__imp_IsProcessorFeaturePresent,IsProcessorFeaturePresent
++
++	.text.windows
++	.ftrace1
++IsProcessorFeaturePresent:
++	.ftrace2
++#ifdef __x86_64__
++	push	%rbp
++	mov	%rsp,%rbp
++	mov	__imp_IsProcessorFeaturePresent(%rip),%rax
++	jmp	__sysv2nt
++#elif defined(__aarch64__)
++	adrp	x16,__imp_IsProcessorFeaturePresent
++	ldr	x16,[x16,#:lo12:__imp_IsProcessorFeaturePresent]
++	br	x16
++#endif
++	.endfn	IsProcessorFeaturePresent,globl
++	.previous
+diff --git a/libc/nt/master.sh b/libc/nt/master.sh
+index 9d3ae3d3..d37f1561 100755
+--- a/libc/nt/master.sh
++++ b/libc/nt/master.sh
+@@ -203,6 +203,7 @@ imp	'InitializeCriticalSectionAndSpinCount'			InitializeCriticalSectionAndSpinCo
+ imp	'InitializeProcThreadAttributeList'			InitializeProcThreadAttributeList			kernel32	4
+ imp	'InitializeSRWLock'					InitializeSRWLock					kernel32	1
+ imp	'IsWow64Process2'					IsWow64Process2						kernel32	3
++imp	'IsProcessorFeaturePresent'				IsProcessorFeaturePresent				kernel32	1
+ imp	'LeaveCriticalSection'					LeaveCriticalSection					kernel32	1
+ imp	'LoadLibrary'						LoadLibraryW						kernel32	1
+ imp	'LoadLibraryA'						LoadLibraryA						kernel32	1
 diff --git a/libc/nt/ntdllimport.h b/libc/nt/ntdllimport.h
 index 657ed05e..12c13a4c 100644
 --- a/libc/nt/ntdllimport.h
