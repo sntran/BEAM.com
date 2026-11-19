@@ -1,7 +1,9 @@
 defmodule BeamCom.CheckFormatTest do
   @moduledoc """
   The tests of tests/check_format.sh: a built beam.com passes, and each
-  of four broken copies fails with the correct message. The tests make
+  of four broken copies fails with the correct message. When the file has
+  the loader of Windows on ARM64, the loader passes, and a copy with
+  HIGH_ENTROPY_VA fails. The tests make
   sure that the checks stay live when the output of a tool changes.
 
   The tests need BEAM_COM_FORMAT_FILE (a built beam.com), COSMOCC (the
@@ -23,11 +25,11 @@ defmodule BeamCom.CheckFormatTest do
     copies = Path.join(dir, "copies")
 
     good = write(dir, "good.com", data)
-    {out, status} = check(good, copies)
-    assert status == 0, out
+    {good_out, status} = check(good, copies)
+    assert status == 0, good_out
 
     for part <- ["zip", "pe", "elf x86_64", "elf aarch64", "macho x86_64"],
-        do: assert(out =~ "ok   #{good}: #{part}")
+        do: assert(good_out =~ "ok   #{good}: #{part}")
 
     # The ELF program headers of x86_64 are in the file, at e_phoff of the
     # ELF copy of assimilate.
@@ -48,6 +50,29 @@ defmodule BeamCom.CheckFormatTest do
       assert out =~ "FAIL #{file}: #{message}"
       File.rm!(file)
     end
+
+    case :zip.extract(data, [:memory, {:file_list, [~c"bin/ape-arm64.exe"]}]) do
+      {:ok, [{_, loader}]} ->
+        assert good_out =~ "ok   #{good}: pe arm64 (bin/ape-arm64.exe)"
+        exe = write(dir, "loader.exe", loader)
+        {out, status} = check(exe, copies)
+        assert status == 0, out
+        assert out =~ "ok   #{exe}: pe arm64"
+        exe = write(dir, "high.exe", high_entropy(loader))
+        {out, status} = check(exe, copies)
+        assert status == 1, out
+        assert out =~ "FAIL #{exe}: pe arm64: HIGH_ENTROPY_VA"
+
+      {:ok, []} ->
+        refute good_out =~ "pe arm64"
+    end
+  end
+
+  # The flag IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA (0x20) of the PE.
+  defp high_entropy(data) do
+    <<pe::little-32>> = binary_part(data, 0x3C, 4)
+    <<flags::little-16>> = binary_part(data, pe + 94, 2)
+    patch(data, pe + 94, <<Bitwise.bor(flags, 0x20)::little-16>>)
   end
 
   defp write(dir, name, bytes) do

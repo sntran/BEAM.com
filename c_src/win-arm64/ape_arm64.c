@@ -321,7 +321,9 @@ void Entry(void) {
   }
   if (lo >= hi) Die("no PT_LOAD segment", 0);
   // One reservation for the image. The fixed addresses of the program
-  // must be free: Windows gives memory at an address of 64 KiB.
+  // must be free: Windows gives memory at an address of 64 KiB. The
+  // file has no high entropy (/highentropyva:no of build_arm64_loader),
+  // so the stacks and the heaps of this process are below 4 GiB.
   if (VirtualAlloc((void *)lo, hi - lo, 0x3000, 4) != (void *)lo) Die("cannot map the image at", lo);
   image_lo = lo, image_hi = hi;
   wchar debug[4];

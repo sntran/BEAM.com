@@ -13,6 +13,8 @@ notes of its release.
   On Windows, the builder gives tailwind the path of the program
   `tailwindcss-windows-x64.exe` of its version: tailwind 0.5 refused
   the architecture `aarch64` of the native half.
+  The loader has no high-entropy ASLR, so the fixed addresses of the
+  aarch64 half are always free.
   The libc uses the LSE atomic instructions of the CPU, and its
   exclusive loops end with a barrier, so the scheduler of ERTS does not
   lose a wakeup (C58).

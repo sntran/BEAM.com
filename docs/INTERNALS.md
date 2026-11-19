@@ -114,6 +114,11 @@ The aarch64 half of `beam.com` also runs on Windows (C58 in
    ([`ape_arm64.c`](../c_src/win-arm64/ape_arm64.c)) maps the aarch64
    half of that file at its fixed addresses and starts it. The x86_64
    process waits and gives the exit status of the native process.
+   The loader has no high-entropy ASLR (`/highentropyva:no`). Thus
+   Windows puts the stacks and the heaps of its process below 4 GiB,
+   and the fixed addresses of the aarch64 half (from 32 GiB) are free.
+   With high entropy, these blocks went to random addresses up to some
+   TiB, and about 1 start in 4000 failed with "cannot map the image".
 
 When a step fails (no cache directory, a write error), the x86_64 half
 runs, as before. `BEAM_COM_NATIVE=0` also keeps the x86_64 half.

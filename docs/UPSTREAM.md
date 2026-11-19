@@ -1804,7 +1804,14 @@ for aarch64. The x86_64 half does not change.
    native program of Windows on ARM64 with no C library. It maps the
    aarch64 ELF half at its fixed addresses and starts it. The program
    gets a pointer to `LoadLibraryA()` and `GetProcAddress()` in `x15`,
-   and the number 4 (`_HOSTWINDOWS`) in `x3`.
+   and the number 4 (`_HOSTWINDOWS`) in `x3`. The loader has no
+   high-entropy ASLR (`/highentropyva:no`; ARM64 refuses
+   `/dynamicbase:no`). With high entropy, Windows put the stacks and the
+   heaps of the new process at random addresses up to about 3 TiB, and
+   1 start in 4000 found a block at 32 GiB, the address of the aarch64
+   half ("cannot map the image", error 487). Without it, the highest of
+   these blocks was below 2 GiB in each of 4000 starts of a test
+   program.
 2. `patches/cosmo-libc/win-arm64.patch` (about 80 files) and
    `patches/cosmo-libc/generated.py` (735 files that
    `libc/nt/codegen.sh` and `libc/sysv/gen.sh` made) change the libc of

@@ -506,8 +506,12 @@ build_arm64_loader() {
         -fno-builtin -O2 -Wall -Werror -c "$src/ape_arm64.c" -o "$obj/ape_arm64.obj"
     # The stack is committed: the code of cosmocc has no stack probes.
     # /Brepro: no time in the file, so the same source gives the same file.
+    # /highentropyva:no: Windows puts the stacks and the heaps of the
+    # process below 4 GiB. With high entropy, they go to random addresses
+    # up to some TiB, and about 1 start in 4000 found a block at the fixed
+    # address of the aarch64 half (32 GiB). ARM64 refuses /dynamicbase:no.
     lld-link /machine:arm64 /subsystem:console /entry:Entry /nodefaultlib \
-        /stack:8388608,8388608 /Brepro "/out:$COSMO_LIBC/ape-arm64.exe" \
+        /stack:8388608,8388608 /highentropyva:no /Brepro "/out:$COSMO_LIBC/ape-arm64.exe" \
         "$obj/ape_arm64.obj" "$obj/kernel32.lib" "$obj/shell32.lib"
     rm -rf "$obj"
 }
