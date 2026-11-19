@@ -632,7 +632,7 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
 
 1. **Build** and **Build the interpreter**: `beam.com` (the JIT) and
    `beam-emu.com` (the interpreter), on Ubuntu with cosmocc. A cache
-   keeps the libc for Windows on ARM64 (the step `libc`, about 4
+   keeps the libc for Windows on ARM64 (the step `libc`, about 3
    minutes; the action `.github/actions/cosmo-libc`). A cache
    keeps the WebAssembly runtime (the step `wasm_runtime`, about 4
    minutes). The step uses it only when the SHA-256 of its inputs (the
