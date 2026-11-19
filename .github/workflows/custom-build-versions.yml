@@ -112,6 +112,11 @@ jobs:
       - name: Download cosmocc
         run: make toolchain
 
+      # Windows on ARM64: the libc and the loader of the step libc.
+      - name: The libc for Windows on ARM64
+        id: cosmo_libc
+        uses: ./.github/actions/cosmo-libc
+
       - name: Cache OpenSSL
         id: cache_openssl
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

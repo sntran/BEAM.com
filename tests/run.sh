@@ -255,6 +255,20 @@ tls_check='ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
 hashsum='^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
 calc='calc: 1 + 2 \* (3 - 1) - 8 / 4 = 3$@@calc: asn1 ber 300980044245414d810103$@@calc: asn1 decoded BEAM 3$'
 
+# The checks of Windows on ARM64 (tests/programs/win_arm64) also run
+# here: win_arm64_check.com has the libc of Cosmopolitan with the Windows
+# layer for aarch64, and its aarch64 half must also run on Linux and
+# macOS. The build job of CI makes it.
+if [ -f "$dir/win_arm64_check.com" ]; then
+    case $(uname -s) in
+        Linux|Darwin) check win_arm64_check.com 'all checks passed' one "two words" ;;
+    esac
+fi
+if [ -f "$dir/beam.com" ]; then
+    check beam.com 'cpu of the process=not Windows @@all checks passed' \
+        tests/programs/win_arm64/vm.erl -- one "two words"
+fi
+
 # The commands of the default beam.com. os:type() names this system.
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 # With no input, beam.com runs the project in the current directory. The

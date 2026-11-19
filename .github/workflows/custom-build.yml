@@ -233,6 +233,11 @@ jobs:
         # runs the build.
         run: make toolchain
 
+      # Windows on ARM64: the libc and the loader of the step libc.
+      - name: The libc for Windows on ARM64
+        id: cosmo_libc
+        uses: ./.github/actions/cosmo-libc
+
       - name: Cache OpenSSL
         if: env.REUSE != '1' && env.REFUSED == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

@@ -146,7 +146,7 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     Write-Host "==> $Name"
     # Windows runs an APE file as a PE executable. Use an .exe name.
     $exe = Join-Path $Dir ($Name -replace '\.com$', '.exe')
-    Copy-Item (Join-Path $Dir $Name) $exe -Force
+    if ($Name -match '\.com$') { Copy-Item (Join-Path $Dir $Name) $exe -Force }
 
     # Run with a time limit. Read the output line by line, so that we see
     # the output before a hang too.
@@ -267,6 +267,35 @@ if ((Test-Path (Join-Path $Dir "agent_check.com")) -or (Skip "agent_check.com: n
 # programs at the same time, and a run of the copy.
 if ((Test-Path (Join-Path $Dir "zipexec_check.com")) -or (Skip "zipexec_check.com: not in $Dir")) {
     Check "zipexec_check.com" '(?m)^zipexec_check: ok' @()
+}
+
+# Windows on ARM64 (docs/PLATFORMS.md): a program starts its aarch64 half,
+# which runs as native code. On x86_64, the x86_64 half runs. The build job
+# of CI makes win_arm64_check.com (tests/programs/win_arm64/hello.c: the
+# libc with the Windows layer for aarch64), and it gives the loader
+# ape-arm64.exe.
+$arm64 = $env:PROCESSOR_ARCHITECTURE -eq "ARM64"
+$half = if ($arm64) { "aarch64" } else { "x86_64" }
+$cpu = if ($arm64) { "ARM64" } else { "AMD64" }
+$vm = @("tests/programs/win_arm64/vm.erl", "--", "one", "two words")
+if ((Test-Path (Join-Path $Dir "win_arm64_check.com")) -or (Skip "win_arm64_check.com: not in $Dir")) {
+    Check "win_arm64_check.com" "hello from the $half half on Windows@@all checks passed" @("one", "two words")
+}
+Check "beam.com" "cpu of the process=$cpu @@all checks passed" $vm
+if ($arm64) {
+    # BEAM_COM_NATIVE=0: the x86_64 half, under the emulation of Windows.
+    $env:BEAM_COM_NATIVE = "0"
+    Check "beam.com" 'cpu of the process=AMD64 @@all checks passed' $vm
+    Remove-Item Env:BEAM_COM_NATIVE
+    # The three C checks above ran their x86_64 half. With the loader,
+    # their aarch64 half runs.
+    if ((Test-Path (Join-Path $Dir "ape-arm64.exe")) -or (Skip "ape-arm64.exe: not in $Dir")) {
+        foreach ($c in @("pipe_check", "agent_check", "zipexec_check")) {
+            if (Test-Path (Join-Path $Dir "$c.com")) {
+                Check "ape-arm64.exe" "(?m)^${c}: ok" @((Join-Path $Dir "$c.com"))
+            }
+        }
+    }
 }
 
 # The commands of the default beam.com.
