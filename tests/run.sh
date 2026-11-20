@@ -633,7 +633,8 @@ if [ -d examples ]; then
         tests/programs/send_check.erl
     # Many sockets in the set of the poll thread (C61 to C63): 300 sockets
     # get events, the idle VM uses little CPU, and a reset reaches a send.
-    check beam.com '^fds_check: 150 pairs, one message on each: ok$@@^fds_check: idle with 300 sockets, [0-9]* ms of CPU in 3 s: ok$@@^fds_check: a reset while a send waits: .*: ok$@@^fds_check: ok$' \
+    # Fewer pairs with a lower limit of open files (128 on OpenBSD).
+    check beam.com '^fds_check: [0-9]* pairs, one message on each: ok$@@^fds_check: idle with [0-9]* sockets, [0-9]* ms of CPU in 3 s: ok$@@^fds_check: a reset while a send waits: .*: ok$@@^fds_check: ok$' \
         tests/programs/fds_check.erl
     # The close of a written file does not wait for the disk (C64), and
     # the close of a socket with a linger ends the connection (C65).

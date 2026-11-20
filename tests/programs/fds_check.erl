@@ -7,8 +7,10 @@
 %%   beam.com tests/programs/fds_check.erl
 %%
 %% 1. 150 pairs of loopback sockets in the mode {active, true}: after each
-%%    new pair, one message on it must arrive in 5 s.
-%% 2. With these 300 sockets idle, the VM uses less than 1 s of CPU in 3 s.
+%%    new pair, one message on it must arrive in 5 s. With a lower limit of
+%%    open files (max_fds of check_io: 128 on OpenBSD), fewer pairs, with
+%%    room for 32 other fds of the VM. On Windows, max_fds is 1024.
+%% 2. With these sockets idle, the VM uses less than 1 s of CPU in 3 s.
 %% 3. A send waits for room, and the peer resets the connection: the send
 %%    ends with an error in 10 s.
 %%
@@ -21,24 +23,30 @@
 main(_) ->
     %% With too many fds, each turn of the poll thread logs one report.
     logger:set_primary_config(level, none),
-    Pairs = pairs(1, []),
-    io:format("fds_check: ~b pairs, one message on each: ok~n", [?PAIRS]),
+    Count = min(?PAIRS, (max_fds() - 32) div 2),
+    Pairs = pairs(1, Count, []),
+    io:format("fds_check: ~b pairs, one message on each: ok~n", [Count]),
     timer:sleep(500),
     {R0, _} = erlang:statistics(runtime),
     timer:sleep(3000),
     {R1, _} = erlang:statistics(runtime),
     Cpu = R1 - R0,
     io:format("fds_check: idle with ~b sockets, ~b ms of CPU in 3 s: ~s~n",
-              [2 * ?PAIRS, Cpu, if Cpu < 1000 -> "ok"; true -> "too much" end]),
+              [2 * Count, Cpu, if Cpu < 1000 -> "ok"; true -> "too much" end]),
     [begin gen_tcp:close(C), gen_tcp:close(A) end || {C, A} <- Pairs],
     Cpu < 1000 orelse halt(1),
     reset(),
     io:format("fds_check: ok~n"),
     halt(0).
 
-pairs(N, Ps) when N > ?PAIRS ->
+%% The limit of fds of the poll set of the VM (the limit of open files).
+max_fds() ->
+    Info = lists:flatten(erlang:system_info(check_io)),
+    proplists:get_value(max_fds, Info, 1024).
+
+pairs(N, Count, Ps) when N > Count ->
     Ps;
-pairs(N, Ps) ->
+pairs(N, Count, Ps) ->
     {ok, L} = gen_tcp:listen(0, [binary, {ip, {127, 0, 0, 1}}, {active, false}]),
     {ok, Port} = inet:port(L),
     {ok, C} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}], 5000),
@@ -48,7 +56,7 @@ pairs(N, Ps) ->
     ok = inet:setopts(C, [{active, true}]),
     ok = gen_tcp:send(C, <<"q">>),
     receive
-        {tcp, A, <<"q">>} -> pairs(N + 1, [{C, A} | Ps])
+        {tcp, A, <<"q">>} -> pairs(N + 1, Count, [{C, A} | Ps])
     after 5000 ->
         io:format("fds_check: no message on pair ~b (~b sockets) in 5 s~n", [N, 2 * N]),
         halt(1)
