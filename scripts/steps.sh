@@ -145,6 +145,8 @@ COSMO_POLL_NT_SHA256=${COSMO_POLL_NT_SHA256:-abdc5a963f470d6ca5e35103d45cdb5012f
 COSMO_SELECT_NT_SHA256=${COSMO_SELECT_NT_SHA256:-19065309308d5c4189e39696d073ecc3f5c11adcb130ec2611f16a5943647596}
 # close() of Windows, with patches/cosmo/close-nt.patch (C64).
 COSMO_CLOSE_NT_SHA256=${COSMO_CLOSE_NT_SHA256:-b8a53bfaf0cfbbff8c0701b08d311ea0909f77ca3916f384e53ee24c27f2ab82}
+# rmdir() of Windows, with patches/cosmo/unlinkat-nt.patch (C68).
+COSMO_UNLINKAT_NT_SHA256=${COSMO_UNLINKAT_NT_SHA256:-d58a2756bf77f67268ba14a08de6dcdd36d326c21b4d71f58537920d14856edb}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
@@ -236,6 +238,9 @@ PIPE_WRAPS="-Wl,--wrap=write -Wl,--wrap=writev -Wl,--wrap=select"
 # send() of a non-blocking socket on Windows (c_src/cosmo/beam_com_sock.c,
 # C60 of docs/UPSTREAM.md).
 SOCK_WRAPS="-Wl,--wrap=send"
+# The timer resolution of Windows: the libc must not release the request
+# of the VM (c_src/cosmo/beam_com.c, C67 of docs/UPSTREAM.md).
+TIMER_WRAPS="-Wl,--wrap=NtSetTimerResolution"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -1906,6 +1911,9 @@ step_make() {
 #                 defines sys_select_nt.
 #   close-nt      close() of Windows with no flush of a written file
 #                 (C64). It defines sys_close_nt.
+#   unlinkat-nt   rmdir() of Windows, which fails at once for a directory
+#                 with a real entry (C68). It defines sys_unlinkat_nt and
+#                 sys_unlinkat_nt_impl.
 build_cosmo_file() {
     src=$BUILD/cosmo-$1-$COSMOCC_VERSION
     # The mark has the SHA-256 of the patch, so a new patch applies again.
@@ -1947,8 +1955,11 @@ step_multicall() {
     # close() of Windows with no flush (C64). This file has no
     # #ifdef __x86_64__: its object has both halves.
     build_cosmo_file close-nt "$COSMO_CLOSE_NT_SHA256" "$objdir/beam_com_close_nt.o"
+    # rmdir() of Windows (C68). This file also has no #ifdef __x86_64__.
+    build_cosmo_file unlinkat-nt "$COSMO_UNLINKAT_NT_SHA256" "$objdir/beam_com_unlinkat_nt.o"
     objs="$objs $objdir/beam_com_pledge.o $objdir/beam_com_unveil.o"
     objs="$objs $objdir/beam_com_poll_nt.o $objdir/beam_com_select_nt.o $objdir/beam_com_close_nt.o"
+    objs="$objs $objdir/beam_com_unlinkat_nt.o"
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it (neither for driver_tab.c nor for its object).
@@ -1973,9 +1984,10 @@ step_multicall() {
     # the wraps of FS_WRAPS (the paths on Windows) in beam_com_fs.c, and
     # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c,
     # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c,
-    # and the wrap of SOCK_WRAPS (sockets on Windows) in beam_com_sock.c.
+    # and the wrap of SOCK_WRAPS (sockets on Windows) in beam_com_sock.c,
+    # and the wrap of TIMER_WRAPS (the timer of Windows) in beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS $TIMER_WRAPS" \
         "STATIC_NIFS=$nifs" "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 

@@ -401,6 +401,12 @@ if (Test-Path "examples") {
     # The close of a written file does not wait for the disk (C64), and
     # the close of a socket with a linger ends the connection (C65).
     Check "beam.com" '(?m)^close_check: close of a written file, median [0-9]+ us: ok@@(?m)^close_check: close with a linger, .*: ok@@(?m)^close_check: ok' @("tests/programs/close_check.erl", "--", $Dir)
+    # reuseaddr and reuseport as in Erlang/OTP for Windows (C66).
+    Check "beam.com" '(?m)^reuse_check: two UDP sockets on one port: ok@@(?m)^reuse_check: a second TCP listener .*: ok@@(?m)^reuse_check: ok' @("tests/programs/reuse_check.erl")
+    # 100 timers of 1 ms take less than 800 ms, not 1.5 s (C67).
+    Check "beam.com" '(?m)^timer_check: 100 calls of timer:sleep\(1\) in [0-9]+ ms: ok@@(?m)^timer_check: 100 waits of receive after 1 in [0-9]+ ms: ok@@(?m)^timer_check: ok' @("tests/programs/timer_check.erl", "--", "800")
+    # The removal of a directory with a file fails at once (C68).
+    Check "beam.com" '(?m)^rmdir_check: del_dir of a directory with a file, 10 times, at most [0-9]+ ms: ok@@(?m)^rmdir_check: ok' @("tests/programs/rmdir_check.erl", "--", $Dir)
     Check "beam.com" 'none.erl: no such file' @("none.erl") 1
     Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
     Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1

@@ -48,6 +48,7 @@
 /* Cosmopolitan internals used for the Windows setup (see below). */
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
 #include "libc/nt/dll.h"                    /* LoadLibrary(), GetProcAddress() */
+#include "libc/nt/ntdll.h"                  /* NtSetTimerResolution() */
 #include "libc/nt/runtime.h"                /* ExitProcess() */
 #include "libc/runtime/runtime.h"           /* __get_tmpdir() */
 #include <pthread.h>                        /* pthread_attr_t */
@@ -2175,6 +2176,48 @@ static int cert_file_setup(const struct arglist *init, struct arglist *out)
 }
 
 /*
+ * The timer resolution of Windows (C67 of docs/UPSTREAM.md). Windows ends
+ * a wait at a tick of the system timer, about 15.6 ms by default. ERTS
+ * waits in select(), in futexes and in condition variables, so
+ * timer:sleep(1) took about 15 ms. The VM asks for 1 ms for its process
+ * at the start (windows_timer_setup()). The libc asks for its finest step
+ * in clock_nanosleep(), and at the end of the sleep it releases the
+ * request of the process, also the request of the VM. Thus after the
+ * request of the VM, the wrap of NtSetTimerResolution() (TIMER_WRAPS of
+ * scripts/steps.sh) ignores the calls of the libc. The main thread sets
+ * timer_held before ERTS starts other threads.
+ */
+NtStatus __real_NtSetTimerResolution(uint32_t want, bool32 set, uint32_t *now);
+NtStatus __wrap_NtSetTimerResolution(uint32_t want, bool32 set, uint32_t *now);
+
+static int timer_held;
+
+NtStatus __wrap_NtSetTimerResolution(uint32_t want, bool32 set, uint32_t *now)
+{
+    uint32_t coarse, fine;
+
+    if (!timer_held)
+        return __real_NtSetTimerResolution(want, set, now);
+    if (now)
+        NtQueryTimerResolution(&coarse, &fine, now);
+    return 0;
+}
+
+static void windows_timer_setup(void)
+{
+    uint32_t coarse, fine, now;
+
+    /* The units are 100 ns. "coarse" is the default step of the system,
+     * and "fine" is its finest step. */
+    if (NtQueryTimerResolution(&coarse, &fine, &now) < 0)
+        return;
+    if (fine < 10000)
+        fine = 10000;
+    if (__real_NtSetTimerResolution(fine, 1, &now) >= 0)
+        timer_held = 1;
+}
+
+/*
  * The arguments go to *out, which comes before the arguments of the user
  * (after "-extra", every argument is a plain argument). *init holds the
  * arguments of the user, to see if they give -public_key themselves.
@@ -2183,6 +2226,8 @@ static int cert_file_setup(const struct arglist *init, struct arglist *out)
 static void windows_setup(const struct arglist *init, struct arglist *out)
 {
     char *path;
+
+    windows_timer_setup();
 
     if (!getenv("ERL_INETRC")) {
         path = windows_write_inetrc();

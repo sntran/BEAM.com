@@ -2168,58 +2168,90 @@ the fd when `closesocket()` fails.
 
 ### C66. Windows: SO_REUSEADDR is SO_EXCLUSIVEADDRUSE, and SO_REUSEPORT is missing
 
-**Status:** 4.0.2 (`libc/sysv/consts.sh`), Windows. Not fixed.
+**Status:** 4.0.2 (`libc/sysv/consts.sh`, `libc/sock/setsockopt.c`),
+Windows.
 
 **Symptom.** On Windows, a second UDP socket on one port with
-`[{reuseaddr, true}, {reuseport, true}]` gives `{error, eaddrinuse}`
-(Linux, and Erlang/OTP for Windows: `{ok, Socket}`). A new listen socket
-on the port of a closed listener still works.
+`[{reuseaddr, true}, {reuseport, true}]` gave `{error, eaddrinuse}`
+(Linux, and Erlang/OTP for Windows: `{ok, Socket}`). Two programs that
+receive one UDP multicast port (mDNS, SSDP) could not run on one Windows
+host. A new listen socket on the port of a closed listener still worked.
 
 **Cause.** `SO_REUSEADDR` has the value of `SO_EXCLUSIVEADDRUSE` on
-Windows, and `SO_REUSEPORT` is 0, so `setsockopt()` refuses it. Erlang/OTP
-for Windows sets `SO_REUSEADDR` only for `reuseaddr` together with
-`reuseport`.
+Windows, and `SO_REUSEPORT` is 0. `setsockopt()` refuses 0 with
+`ENOPROTOOPT`, and its fallback (`setsockopt_polyfill()`) then tries
+`SO_REUSEADDR`, which is again `SO_EXCLUSIVEADDRUSE`. Thus
+`{reuseport, true}` made the port exclusive. The real `SO_REUSEADDR` of
+Winsock acts as `SO_REUSEADDR` and `SO_REUSEPORT` together on BSD, so
+Erlang/OTP for Windows sets it only when a program gives both options
+(`inet_drv.c`, the code of `__WIN32__`).
 
-**Workaround in BEAM.com.** None yet. Two programs that receive the
-same UDP multicast port (mDNS, SSDP) cannot run on one Windows host.
+**Workaround in BEAM.com.** `patches/otp/0009-windows-reuse.patch`: on
+Windows, the inet driver does what Erlang/OTP for Windows does. It sets
+`SO_REUSEADDR` of Winsock (the value 4, which `setsockopt()` passes as
+it is) only when both options are on, and `inet:getopts/2` gives the two
+options from that state. `reuseaddr` alone sets nothing, as on Windows
+with Erlang/OTP. `tests/programs/reuse_check.erl` opens two UDP sockets
+on one port, and checks that a second TCP listener with `reuseaddr`
+alone still gets `eaddrinuse`.
 
 **Possible upstream fix.** A value for `SO_REUSEPORT` on Windows, and
-the real `SO_REUSEADDR` when a program asks for both.
+no fallback from `SO_REUSEPORT` to `SO_EXCLUSIVEADDRUSE`.
 
 ### C67. Windows: a timer of 1 ms takes about 15 ms
 
-**Status:** 4.0.2, Windows. Not fixed: the same as Erlang/OTP for
-Windows.
+**Status:** 4.0.2 (`libc/calls/clock_nanosleep-nt.c`), Windows. Erlang/OTP
+for Windows has the same behavior.
 
 **Symptom.** On Windows, 100 calls of `timer:sleep(1)` took 1.45 s
 (x86_64) and 1.6 s (ARM64); on Linux, 0.2 s.
 
-**Cause.** The waits of ERTS (`pthread_cond_timedwait()`, and the timeout
-of `select()`) end at the tick of the system timer, about 15.6 ms. The
-libc raises the timer resolution only during `clock_nanosleep()`.
-Erlang/OTP for Windows does not raise it either.
+**Cause.** The waits of ERTS (`select()`, futexes and
+`pthread_cond_timedwait()`) end at a tick of the system timer, about
+15.6 ms by default. The libc raises the timer resolution only during
+`clock_nanosleep()`, and at the end of the sleep it releases the request
+of the whole process with `NtSetTimerResolution(0, false)`. Erlang/OTP
+for Windows does not raise the resolution.
 
-**Workaround in BEAM.com.** None. A program that needs short timers on
-Windows can call `timeBeginPeriod(1)` from a NIF; it costs power.
+**Workaround in BEAM.com.** At the start of the VM on Windows,
+`windows_timer_setup()` of `c_src/cosmo/beam_com.c` asks for 1 ms with
+`NtSetTimerResolution()`, for the life of the process. Since Windows 10
+2004, such a request has an effect on this process only (Microsoft
+documents it for `timeBeginPeriod()`). The link wraps
+`NtSetTimerResolution()` (`TIMER_WRAPS` of `scripts/steps.sh`): after
+the request of the VM, the wrap ignores the calls of the libc, so a
+`nanosleep()` of a NIF does not release the request. The helper programs
+(`erl_child_setup`, `inet_gethost`, `epmd`) do not ask.
+`tests/programs/timer_check.erl` fails on Windows when 100 timers of
+1 ms take 800 ms or more.
+
+**Possible upstream fix.** In `clock_nanosleep()`, count the requests,
+and release only a request of the libc.
 
 ### C68. Windows: rmdir() of a directory that is not empty waits 2 s
 
-**Status:** 4.0.2 (`libc/calls/unlinkat-nt.c`), Windows. Not fixed.
+**Status:** 4.0.2 (`libc/calls/unlinkat-nt.c`), Windows.
 
 **Symptom.** On Windows, `file:del_dir/1` of a directory with a file
-took 2.1 s and gave `{error, eexist}` (Linux: 40 us).
+took 2.1 s and gave `{error, eexist}` (Linux: 40 us). It held a dirty
+I/O scheduler for that time.
 
-**Cause.** `sys_unlinkat_nt()` tries `RemoveDirectory()` again after a
-sleep of 1, 2, 4 ... 1024 ms when it fails with
-`ERROR_DIR_NOT_EMPTY`. The retry covers a child that is deleted but
-still open. A directory with a real entry thus waits 2 s, and holds a
-dirty I/O scheduler for that time.
+**Cause.** `sys_rmdir_nt()` tries `RemoveDirectory()` again after a
+sleep of 1, 2, 4 ... 1024 ms when it fails with `ERROR_DIR_NOT_EMPTY`.
+The retry covers a child that is deleted but still open: its deletion
+waits until the last handle closes. A directory with a real entry thus
+waited 2 s for no gain.
 
-**Workaround in BEAM.com.** None yet. `File.rm_rf/1` and Mix delete the
-children first, so they do not wait.
+**Workaround in BEAM.com.** `patches/cosmo/unlinkat-nt.patch`: before
+each wait, the libc opens each entry of the directory with
+`FILE_READ_ATTRIBUTES`. An entry whose deletion waits does not open, and
+a real entry opens. With a real entry, `rmdir()` fails at once with
+`ENOTEMPTY`. The file has no `#ifdef __x86_64__`, so `build_cosmo_file`
+gives one object for both halves. `tests/programs/rmdir_check.erl`
+fails when `file:del_dir/1` of a directory with a file takes 500 ms or
+more.
 
-**Possible upstream fix.** Retry only when each entry of the directory
-is in the state "delete pending".
+**Possible upstream fix.** The same.
 
 ## WAMR (WebAssembly Micro Runtime)
 
@@ -3051,6 +3083,26 @@ FreeBSD, OpenBSD and Windows (Linux x86_64: 19 ms in all).
 
 **Possible upstream fix.** The same in `inet_stop_select()`, or a
 `close()` of a lingering socket in an async thread.
+
+### O30. inet_drv.c on Windows: bsd_compat has no start value
+
+**Status:** OTP 29.1.2 (`erts/emulator/drivers/common/inet_drv.c`),
+Windows. Found by a read of the code; not tested with Erlang/OTP for
+Windows.
+
+**Cause.** The inet driver of Windows keeps the options `reuseaddr` and
+`reuseport` in the field `bsd_compat` of the descriptor (C66).
+`inet_start()` takes the descriptor from `ALLOC()`, which does not clear
+the memory, and no code sets the field before its first use. A socket
+can thus start with a random state of the two options. Also,
+`inet:getopts/2` in the form of a map gives the tag `reuseaddr` for the
+option `reuseport` on Windows.
+
+**Workaround in BEAM.com.** `patches/otp/0009-windows-reuse.patch` sets
+the field to 0 in `inet_start()`. The code of BEAM.com for Windows gives
+the tag `reuseport`.
+
+**Possible upstream fix.** The same, and the tag `am_reuseport`.
 
 ## Emscripten
 

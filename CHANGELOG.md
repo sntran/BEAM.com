@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- Windows: two UDP sockets can share one port with `{reuseaddr, true}`
+  and `{reuseport, true}`, as with Erlang/OTP for Windows, so two
+  programs can receive mDNS or SSDP on one host. Before, `reuseport` made
+  the port exclusive, and the second socket got `eaddrinuse` (C66 of
+  `docs/UPSTREAM.md`).
+- Windows: a timer of 1 ms takes about 1 ms. The VM asks Windows for a
+  timer resolution of 1 ms at its start. Before, each wait ended at a tick
+  of about 15.6 ms, and 100 calls of `timer:sleep(1)` took 1.5 s (C67).
+- Windows: `file:del_dir/1` of a directory that is not empty fails at
+  once. The libc waited about 2 s before it failed (C68).
 - The close of a socket with `{linger, {true, T}}` does not stop the
   I/O of the VM. With data that the peer did not take yet, `close()` of
   the system waited for up to T seconds in the poll thread of ERTS, and

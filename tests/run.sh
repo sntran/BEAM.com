@@ -640,6 +640,15 @@ if [ -d examples ]; then
     # the close of a socket with a linger ends the connection (C65).
     check beam.com '^close_check: close of a written file, median [0-9]* us: ok$@@^close_check: close with a linger, .*: ok$@@^close_check: ok$' \
         tests/programs/close_check.erl -- "$dir"
+    # reuseaddr and reuseport: two UDP sockets on one port (C66).
+    check beam.com '^reuse_check: two UDP sockets on one port: ok$@@^reuse_check: a second TCP listener .*: ok$@@^reuse_check: ok$' \
+        tests/programs/reuse_check.erl
+    # Short timers (C67). No limit here: OpenBSD and NetBSD have a timer
+    # of 10 ms. tests/run.ps1 gives a limit on Windows.
+    check beam.com '^timer_check: ok$' tests/programs/timer_check.erl
+    # The removal of a directory with a file fails at once (C68).
+    check beam.com '^rmdir_check: del_dir of a directory with a file, 10 times, at most [0-9]* ms: ok$@@^rmdir_check: ok$' \
+        tests/programs/rmdir_check.erl -- "$dir"
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o
