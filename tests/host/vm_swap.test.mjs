@@ -141,10 +141,23 @@ test('a swap: the threads return, the VM stops, and the request goes to a new VM
   let reason = null;
   v.onDead = (r) => { reason = r; };
   v.timers.set(1, { at: 0, f: () => {} });
-  // A timer after the park: free() stops it.
-  let ran = false;
-  v.handles.set(2, setTimeout(() => { ran = true; }, 200));
-  const r = await v.fetch(new Request('https://app.example.com/'));
+  // A timer after the park: free() stops it with clearTimeout. The delay
+  // of the timer is long, because a slow machine can take more than 200 ms
+  // for the swap, and then a short timer runs before free().
+  const handle = setTimeout(() => {}, 60000);
+  handle.unref();
+  v.handles.set(2, handle);
+  const cleared = [];
+  const clear = globalThis.clearTimeout;
+  globalThis.clearTimeout = (t) => { cleared.push(t); return clear(t); };
+  let r;
+  try {
+    r = await v.fetch(new Request('https://app.example.com/'));
+  } finally {
+    globalThis.clearTimeout = clear;
+    clear(handle);
+  }
+  assert.ok(cleared.includes(handle), 'free() did not stop a timer of the stopped VM');
   assert.equal(await r.text(), 'new');
   assert.deepEqual(exports.calls, ['hibernate']);
   assert.equal(reason, 'swap');
@@ -159,8 +172,6 @@ test('a swap: the threads return, the VM stops, and the request goes to a new VM
   assert.match(logs[0], /^beam: memory 100 MB \(8 MB used\): a new VM takes the next requests$/);
   // A request that comes to the old VM later also goes to the new VM.
   assert.equal(await (await v.fetch(new Request('https://app.example.com/x'))).text(), 'new');
-  await new Promise((r) => setTimeout(r, 250));
-  assert.equal(ran, false, 'a timer of the stopped VM ran');
 });
 
 test('the requests during a swap wait for it, and go to the new VM', async () => {
