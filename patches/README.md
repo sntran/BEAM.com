@@ -94,23 +94,25 @@ order, with `git apply`.
 |---|---|---|---|
 | `glib-cosmopolitan.patch` | `glib/glib-unix.c`, `gio/gsocket.c` of glib 2.90.0 | No static assertion on `O_NONBLOCK`, `G_FILE_ERROR_NOSYS` from `g_unix_fd_query_path()`, and no source-specific multicast for IPv6, with Cosmopolitan. | C38, C39, G1 |
 
-## Cosmopolitan (`patches/cosmo/`)
+## Cosmopolitan
 
-`build_cosmo_file` of `scripts/steps.sh` applies a patch of `libc/`,
-with `patch -p1`, to the file of Cosmopolitan that it gets for the tag
-of cosmocc, and links the object into the emulator. `fix_ape_m1` applies
-`ape-m1.patch` to `bin/ape-m1.c` of cosmocc, the source of the APE
-loader of macOS arm64 that apelink puts in each APE file.
+The fixes of Cosmopolitan are in the toolchain, not in this directory:
+the build uses cosmocc 4.0.2-patched.1 of
+[sntran/cosmopolitan](https://github.com/sntran/cosmopolitan). Its
+[`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md)
+lists one commit for each fix:
 
-| Patch | File | What it does | Items |
-|---|---|---|---|
-| `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
-| `unveil.patch` | `libc/calls/unveil.c` | The permission "c" also gives Landlock the rights of the removal of a file and of a directory. | C50 |
-| `poll-nt.patch` | `libc/calls/poll-nt.c` | `poll()` of Windows: one `WSAPoll()` for any count of sockets (the libc did it only for 63 fds or fewer), and the path for more than 63 files and pipes waits with a time of the wall clock (it used the monotonic time, so it did not wait). Also applied to the libc of Windows ARM64 (`build_cosmo_libc`). | C61, C62 |
-| `select-nt.patch` | `libc/calls/select-nt.c` | `select()` of Windows: an entry for each fd of the sets, on the heap above 128 fds (it failed with `E2BIG` above 128 fds), and an error or a hangup is reported in each set that asked for it. Also applied to the libc of Windows ARM64. | C61, C63 |
-| `close-nt.patch` | `libc/calls/close-nt.c` | `close()` of Windows does not flush a written file to the disk. | C64 |
-| `unlinkat-nt.patch` | `libc/calls/unlinkat-nt.c` | `rmdir()` of Windows waits and tries again only when no entry of the directory opens, so a directory with a real entry fails at once (it waited about 2 s). | C68 |
-| `ape-m1.patch` | `bin/ape-m1.c` of cosmocc | The loader reserves the fixed addresses of the program at its start, checks that each range is free before it maps the program, and starts again when a range is in use. On macOS 27, it checks a range with `mach_vm_region_recurse()` and maps it with `MAP_FIXED`. | C51, C57 |
+| Fix | Items |
+|---|---|
+| The code of the x86_64 APE loader can be read. | C49 |
+| The APE loader of macOS arm64 checks that the fixed addresses of the program are free. | C51, C57 |
+| `pledge()` "inet" allows the buffer options of a socket. | C47 |
+| `unveil()` "c" controls the removal of files. | C50 |
+| `poll()` of Windows for any count of sockets, with a wait of the wall clock. | C61, C62 |
+| `select()` of Windows above 128 fds, and an error in each set that asked for it. | C61, C63 |
+| `close()` of Windows does not flush a written file. | C64 |
+| `rmdir()` of Windows fails at once for a directory with a real entry. | C68 |
+| The Windows layer of the aarch64 libc, and the loader `bin/ape-arm64.exe`. | C58 |
 
 ## Changes that are not patch files
 

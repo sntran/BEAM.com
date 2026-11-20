@@ -1,6 +1,6 @@
 // The check of the libc for Windows on ARM64 (win_arm64_check.com): a
 // normal C program. Its aarch64 half has the libc of Cosmopolitan with
-// the Windows layer of patches/cosmo-libc. On Windows on ARM64, the
+// the Windows layer of sntran/cosmopolitan. On Windows on ARM64, the
 // x86_64 half starts the loader ape-arm64.exe of its zip, and the loader
 // starts the aarch64 half through the normal start code (_start, cosmo,
 // main). APE_NO_ARM64=1 keeps the x86_64 half.

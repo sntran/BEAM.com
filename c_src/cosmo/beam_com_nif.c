@@ -814,8 +814,8 @@ static int count_slots(bcn_load_t *l, uint64_t *common_size)
  * 0x7000000000, also for free memory, so MAP_FIXED_NOREPLACE fails
  * there. MAP_FIXED can map in the reservation: in a submap, with no
  * access and no tag. The kernel puts no other mapping there, and
- * xnu_lock keeps two loads of this file apart. The APE loader
- * (patches/cosmo/ape-m1.patch) maps the program in the same way.
+ * xnu_lock keeps two loads of this file apart. The APE loader (ape-m1.c
+ * of the cosmocc of sntran/cosmopolitan) maps the program in the same way.
  */
 static pthread_mutex_t xnu_lock = PTHREAD_MUTEX_INITIALIZER;
 static int (*xnu_region)(uint32_t task, uint64_t *addr, uint64_t *size, uint32_t *depth,

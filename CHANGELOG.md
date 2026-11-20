@@ -7,8 +7,8 @@ notes of its release.
 
 The main changes: Erlang/OTP 29.1.2 and Elixir 1.20.5 with security
 fixes, native ARM64 code on Windows 11 on ARM64, macOS 27, ten fixes of
-the Windows layer of Cosmopolitan, and a `beam.com` that is 16 MB
-smaller.
+the Windows layer of Cosmopolitan, a build with the cosmocc of the fork
+sntran/cosmopolitan, and a `beam.com` that is 16 MB smaller.
 
 ### Action needed
 
@@ -17,8 +17,6 @@ smaller.
 - A project with the git dep of tailwind.com at the tag `v0.3.0` or
   `v0.4.0` gets no NIF file now. Change the dep to
   `{:tailwind, github: "sntran/tailwind.com", tag: "v0.5.0"}`.
-- A build of `beam.com` from source needs `python3`, `clang`, `lld` and
-  `llvm`, or `WIN_ARM64=0`.
 
 ### Security
 
@@ -183,9 +181,16 @@ smaller.
 
 ### Build and CI
 
-- The build has the step `libc`. It needs `python3`, `clang`, `lld` and
-  `llvm` on the build computer. `WIN_ARM64=0` builds `beam.com` with no
-  native start on Windows on ARM64, and needs none of them.
+- The build uses cosmocc 4.0.2-patched.1 of
+  [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan), a fork
+  of Cosmopolitan: the official cosmocc 4.0.2 with one commit for each
+  fix of its `PATCHES.md`. These fixes were patches of BEAM.com before:
+  `patches/cosmo/`, `patches/cosmo-libc/`, the loader of
+  `c_src/win-arm64/`, and the step `libc`. Now they are in the libc of
+  each mode of cosmocc, and in its loaders. Other projects that use
+  cosmocc can take them too. The build needs no `python3`, `clang`,
+  `lld` or `llvm`, and it does not build a libc (C47, C49, C50, C51,
+  C57, C58, C61 to C64 and C68 of `docs/UPSTREAM.md`).
 - The workflow "Remote SSH" has the runner `xcode-27` (macOS 27 on
   Apple silicon).
 - Remove `scripts/__pycache__/beam-fifo.cpython-311.pyc`, a file of
