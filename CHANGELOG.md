@@ -3,46 +3,35 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
-## Unreleased
+## 0.1.0-rc.8
 
-- Windows: two UDP sockets can share one port with `{reuseaddr, true}`
-  and `{reuseport, true}`, as with Erlang/OTP for Windows, so two
-  programs can receive mDNS or SSDP on one host. Before, `reuseport` made
-  the port exclusive, and the second socket got `eaddrinuse` (C66 of
-  `docs/UPSTREAM.md`).
-- Windows: a timer of 1 ms takes about 1 ms. The VM asks Windows for a
-  timer resolution of 1 ms at its start. Before, each wait ended at a tick
-  of about 15.6 ms, and 100 calls of `timer:sleep(1)` took 1.5 s (C67).
-- Windows: `file:del_dir/1` of a directory that is not empty fails at
-  once. The libc waited about 2 s before it failed (C68).
-- The close of a socket with `{linger, {true, T}}` does not stop the
-  I/O of the VM. With data that the peer did not take yet, `close()` of
-  the system waited for up to T seconds in the poll thread of ERTS, and
-  no socket or port got an event for that time (O29 of
-  `docs/UPSTREAM.md`). Now the system sends the data and the end of the
-  stream after the close, on each system.
-- Windows: a VM with many sockets works. `select()` of Cosmopolitan
-  failed with `E2BIG` for more than 128 fds, and then no socket or port
-  of the VM got an event (C61 of `docs/UPSTREAM.md`). A server with
-  about 125 idle connections stopped all of its network I/O. With 64 to
-  128 fds, `poll()` did not wait, and an idle VM used most of a CPU
-  (C62). An error of a socket that waited only to send is now reported
-  for that socket (C63).
-- Windows: the close of a written file does not wait for the disk. The
-  libc flushed each written file at its close (C64). On the Windows
-  ARM64 runner, 100 calls of `file:write_file/2` took 1.0 s, and the
-  poll thread waited for the flush.
-- Windows: the close of a socket with `{linger, {true, T}}` sends the
-  end of the stream. Winsock refused the close, and the libc freed the
-  fd, so the connection stayed open with no owner (C65).
-- Windows: a send on a socket does not wait for the peer. The libc of
-  Cosmopolitan waited for the end of each send, also on a non-blocking
-  socket, and the scheduler thread of the port waited with it (C60 of
-  `docs/UPSTREAM.md`). A transfer of 64 MiB between two processes of one
-  VM got about 1.1 MB/s, or it did not end, and a server that sent a
-  large response to a slow client held a scheduler. Now a send of a
-  non-blocking socket sends what fits and gives `EAGAIN` for the rest,
-  as on Unix.
+The main changes: Erlang/OTP 29.1.2 and Elixir 1.20.5 with security
+fixes, native ARM64 code on Windows 11 on ARM64, macOS 27, ten fixes of
+the Windows layer of Cosmopolitan, and a `beam.com` that is 16 MB
+smaller.
+
+### Action needed
+
+- On macOS 27, remove `$TMPDIR/.ape-1.10` and `~/.ape-1.10` once: they
+  can hold an older APE loader.
+- A project with the git dep of tailwind.com at the tag `v0.3.0` or
+  `v0.4.0` gets no NIF file now. Change the dep to
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.5.0"}`.
+- A build of `beam.com` from source needs `python3`, `clang`, `lld` and
+  `llvm`, or `WIN_ARM64=0`.
+
+### Security
+
+- `beam.com` has Erlang/OTP 29.1.2 and Elixir 1.20.5, from 29.1.1 and
+  1.20.4. Both are releases with security fixes: in OTP, `httpc` clears
+  the user info of a URL at a redirect to another origin, and `ssl`,
+  `ssh` and `snmp` have fixes. In Elixir, `URI.parse/1`, the decoder of
+  `JSON` and `mix deps.partition` have fixes (CVE-2026-109821,
+  CVE-2026-115274 and CVE-2026-97209). The default versions of a custom
+  build are these versions too. 29.1.1 and 1.20.4 stay as choices.
+
+### New platforms
+
 - Windows 11 on ARM64: `beam.com` and each program that it builds run
   as native ARM64 code, with the aarch64 JIT. Before, Windows ran the
   x86_64 half under its x64 emulation. The file starts its aarch64 half
@@ -59,9 +48,19 @@ notes of its release.
   `BEAM_COM_NATIVE=0` keeps the x86_64 half. See "Windows on ARM64" in
   `docs/PLATFORMS.md` and `docs/BENCHMARKS.md`. CI runs the tests on
   Windows 11 on ARM64 too (the runner `windows-11-arm`).
-- The build has the step `libc`. It needs `python3`, `clang`, `lld` and
-  `llvm` on the build computer. `WIN_ARM64=0` builds `beam.com` with no
-  native start on Windows on ARM64, and needs none of them.
+- macOS 27 on arm64: `beam.com` starts, and native NIF objects load.
+  macOS 27 reserves the memory of the program for its shared region,
+  and its `mmap()` takes no hint below `0x7000000000`. The APE loader
+  stopped with "the fixed addresses of the program are in use", and
+  the object of `tailwind` did not load, with "no free memory near the
+  program for 9764864 bytes" (sntran/tailwind.com#27). Both loaders now
+  check the range with `mach_vm_region_recurse()` and map it with
+  `MAP_FIXED` (C57 of `docs/UPSTREAM.md`). Remove `$TMPDIR/.ape-1.10`
+  and `~/.ape-1.10` once on macOS 27: they can hold an older loader.
+  CI runs the tests on macOS 27 too (the runner `xcode-27`).
+
+### Windows
+
 - Windows: downloads of `beam.com` are about 100 times faster. A
   download of 129 MB with `httpc` took 212 s (0.6 MB/s) on the Windows
   runners of CI, and now takes about 2 s. The poll thread of ERTS saw
@@ -70,6 +69,70 @@ notes of its release.
   10 ms for its sockets (C59 of `docs/UPSTREAM.md`). Now the wake-up of
   the poll thread is a pair of loopback sockets in place of a pipe. Mix,
   Hex and the build of a Phoenix project download faster too.
+- Windows: a send on a socket does not wait for the peer. The libc of
+  Cosmopolitan waited for the end of each send, also on a non-blocking
+  socket, and the scheduler thread of the port waited with it (C60 of
+  `docs/UPSTREAM.md`). A transfer of 64 MiB between two processes of one
+  VM got about 1.1 MB/s, or it did not end, and a server that sent a
+  large response to a slow client held a scheduler. Now a send of a
+  non-blocking socket sends what fits and gives `EAGAIN` for the rest,
+  as on Unix.
+- Windows: a VM with many sockets works. `select()` of Cosmopolitan
+  failed with `E2BIG` for more than 128 fds, and then no socket or port
+  of the VM got an event (C61 of `docs/UPSTREAM.md`). A server with
+  about 125 idle connections stopped all of its network I/O. With 64 to
+  128 fds, `poll()` did not wait, and an idle VM used most of a CPU
+  (C62). An error of a socket that waited only to send is now reported
+  for that socket (C63).
+- Windows: the close of a written file does not wait for the disk. The
+  libc flushed each written file at its close (C64). On the Windows
+  ARM64 runner, 100 calls of `file:write_file/2` took 1.0 s, and the
+  poll thread waited for the flush.
+- Windows: the close of a socket with `{linger, {true, T}}` sends the
+  end of the stream. Winsock refused the close, and the libc freed the
+  fd, so the connection stayed open with no owner (C65).
+- Windows: two UDP sockets can share one port with `{reuseaddr, true}`
+  and `{reuseport, true}`, as with Erlang/OTP for Windows, so two
+  programs can receive mDNS or SSDP on one host. Before, `reuseport` made
+  the port exclusive, and the second socket got `eaddrinuse` (C66 of
+  `docs/UPSTREAM.md`).
+- Windows: a timer of 1 ms takes about 1 ms. The VM asks Windows for a
+  timer resolution of 1 ms at its start. Before, each wait ended at a tick
+  of about 15.6 ms, and 100 calls of `timer:sleep(1)` took 1.5 s (C67).
+- Windows: `file:del_dir/1` of a directory that is not empty fails at
+  once. The libc waited about 2 s before it failed (C68).
+
+### All systems
+
+- The close of a socket with `{linger, {true, T}}` does not stop the
+  I/O of the VM. With data that the peer did not take yet, `close()` of
+  the system waited for up to T seconds in the poll thread of ERTS, and
+  no socket or port got an event for that time (O29 of
+  `docs/UPSTREAM.md`). Now the system sends the data and the end of the
+  stream after the close, on each system.
+- `beam.com` is about 16 MB smaller: 40.6 MB, from 56.7 MB in
+  0.1.0-rc.7. The code of OTP in its zip has no debug information (the
+  chunk `Dbgi`) and no docs (the chunk `Docs`), and the code of Elixir
+  has no debug information.
+  Only the protocols of Elixir keep it, for the consolidation of Mix.
+  `kernel` and `stdlib` stay stored, so a program starts as fast as
+  before. A program that `beam.com` builds had neither already. Before,
+  the zip kept them for `h/1` of OTP modules, `cover` and `rr/1`.
+- A custom build can keep them: the choices "Debug information" and "Docs
+  of OTP" of the form of mkfifo.com/beam.com and of the issue form, the
+  fields `debug_info=1` and `otp_docs=1` of a build URL, and
+  `DEBUG_INFO=1` and `OTP_DOCS=1` of `scripts/steps.sh`.
+- The builder also strips the code of an application whose first beam
+  file has debug information and no docs, for a program of such a build.
+- Native NIF objects on aarch64: the loader also looks for free memory
+  below the program, within the smallest range of the PC-relative
+  references of the object to the program. An object with no such
+  reference (C code of `-mcmodel=large`) goes where the system has free
+  memory. The error names the symbol that keeps an object near the
+  program. See "Native NIF objects" in `docs/NIFS.md`.
+
+### Programs, the builder and custom builds
+
 - `beam.com` has the OTP application `syntax_tools` (about 0.2 MB). Packages
   such as `x509` (a dep of `site_encrypt`) and `parse_trans` need it when
   they compile, and `edoc` needs it. A custom build can leave it out: the
@@ -86,40 +149,6 @@ notes of its release.
   compiled package, as Mix does: `reverse_proxy_plug` reads the version
   of `req` with `Application.spec/2` when it compiles. Before, the build
   stopped with "could not read file \"VERSION\"" or "invalid version".
-- The workflow "Remote SSH" has the runner `xcode-27` (macOS 27 on
-  Apple silicon).
-- macOS 27 on arm64: `beam.com` starts, and native NIF objects load.
-  macOS 27 reserves the memory of the program for its shared region,
-  and its `mmap()` takes no hint below `0x7000000000`. The APE loader
-  stopped with "the fixed addresses of the program are in use", and
-  the object of `tailwind` did not load, with "no free memory near the
-  program for 9764864 bytes" (sntran/tailwind.com#27). Both loaders now
-  check the range with `mach_vm_region_recurse()` and map it with
-  `MAP_FIXED` (C57 of `docs/UPSTREAM.md`). Remove `$TMPDIR/.ape-1.10`
-  and `~/.ape-1.10` once on macOS 27: they can hold an older loader.
-  CI runs the tests on macOS 27 too (the runner `xcode-27`).
-- Native NIF objects on aarch64: the loader also looks for free memory
-  below the program, within the smallest range of the PC-relative
-  references of the object to the program. An object with no such
-  reference (C code of `-mcmodel=large`) goes where the system has free
-  memory. The error names the symbol that keeps an object near the
-  program. See "Native NIF objects" in `docs/NIFS.md`.
-- `beam.com` is about 16 MB smaller: 40.6 MB, from 56.7 MB in
-  0.1.0-rc.7. The code of OTP in its zip has no debug information (the
-  chunk `Dbgi`) and no docs (the chunk `Docs`), and the code of Elixir
-  has no debug information.
-  Only the protocols of Elixir keep it, for the consolidation of Mix.
-  `kernel` and `stdlib` stay stored, so a program starts as fast as
-  before. A program that `beam.com` builds had neither already. Before,
-  the zip kept them for `h/1` of OTP modules, `cover` and `rr/1`.
-- A custom build can keep them: the choices "Debug information" and "Docs
-  of OTP" of the form of mkfifo.com/beam.com and of the issue form, the
-  fields `debug_info=1` and `otp_docs=1` of a build URL, and
-  `DEBUG_INFO=1` and `OTP_DOCS=1` of `scripts/steps.sh`.
-- The builder also strips the code of an application whose first beam
-  file has debug information and no docs, for a program of such a build.
-- Remove `scripts/__pycache__/beam-fifo.cpython-311.pyc`, a file of
-  Python that a commit added by mistake.
 - The NIF files of `nifs+=tailwind` are of tailwind.com 0.5.0, from
   0.3.0. Its optimizer (`--minify` and `--optimize`) lowers CSS functions,
   mixins, `if()`, `@when` and more math functions, and `mix format` can
@@ -131,13 +160,9 @@ notes of its release.
   libc that the NIF needs. A project with the git dep of the tag `v0.3.0` or
   `v0.4.0` gets no NIF file now: change the dep to
   `{:tailwind, github: "sntran/tailwind.com", tag: "v0.5.0"}`.
-- `beam.com` has Erlang/OTP 29.1.2 and Elixir 1.20.5, from 29.1.1 and
-  1.20.4. Both are releases with security fixes: in OTP, `httpc` clears
-  the user info of a URL at a redirect to another origin, and `ssl`,
-  `ssh` and `snmp` have fixes. In Elixir, `URI.parse/1`, the decoder of
-  `JSON` and `mix deps.partition` have fixes (CVE-2026-109821,
-  CVE-2026-115274 and CVE-2026-97209). The default versions of a custom
-  build are these versions too. 29.1.1 and 1.20.4 stay as choices.
+
+### Workers (WebAssembly)
+
 - The swap of a VM on Workers (`BEAM_SWAP`, "The swap of a VM" in
   `docs/WORKERS.md`). The memory of WebAssembly does not shrink, so a VM
   keeps the memory of its peak. When the memory of an idle VM is at the
@@ -155,6 +180,16 @@ notes of its release.
   workerd again. Since 0.1.0-rc.6, `worker.js` exported a number and a
   text (`PORT_CLAIM_MS`, `PORT_DIR`), and workerd refuses such an export
   of the main module. They are now the object `PORTS`.
+
+### Build and CI
+
+- The build has the step `libc`. It needs `python3`, `clang`, `lld` and
+  `llvm` on the build computer. `WIN_ARM64=0` builds `beam.com` with no
+  native start on Windows on ARM64, and needs none of them.
+- The workflow "Remote SSH" has the runner `xcode-27` (macOS 27 on
+  Apple silicon).
+- Remove `scripts/__pycache__/beam-fifo.cpython-311.pyc`, a file of
+  Python that a commit added by mistake.
 
 ## 0.1.0-rc.7
 
