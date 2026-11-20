@@ -68,7 +68,10 @@ emulation. That half finds the ARM64 machine and starts the aarch64 half
 of the same file with a small loader from its zip
 (`bin/ape-arm64.exe`). The loader goes to the cache directory once
 (`%LOCALAPPDATA%\beam.com\ape-arm64-HASH.exe`, or `BEAM_COM_CACHE`).
-See "Windows on ARM64" in [`INTERNALS.md`](INTERNALS.md).
+See "Windows on ARM64" in [`INTERNALS.md`](INTERNALS.md). In CI, the
+native code was 2 to 12 times faster than the x64 emulation, and it
+started 3 times faster (see "Windows on ARM64" in
+[`BENCHMARKS.md`](BENCHMARKS.md)).
 
 - A program that `beam.com INPUT -o OUTPUT` makes starts in the same
   way, also when you build it on another system.
