@@ -1776,6 +1776,128 @@ macOS 27.
 `mmap()` of Cosmopolitan for `MAP_FIXED_NOREPLACE` on XNU, or a base
 address of the programs above `0x7000000000`.
 
+### C59. Windows: select() sees a pipe up to 10 ms late when the set has sockets
+
+**Status:** 4.0.2 (`libc/calls/poll-nt.c`), Windows on x86_64 and on
+ARM64.
+
+**Symptom.** On Windows, a download with `httpc` got about 0.6 MB/s. A
+ping-pong of one byte over loopback TCP in the mode `{active, once}`
+took 13 to 15 ms for each round trip (Linux: 0.05 ms). This C file
+measures the time from a `write()` to the return of `select()`, with a
+listening socket in the set:
+
+```c
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+static int p[2];
+static double sent;
+static double ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+static void *writer(void *arg) {
+  usleep(2000);
+  sent = ms();
+  write(p[1], "x", 1);
+  return 0;
+}
+int main(void) {
+  struct sockaddr_in a = {.sin_family = AF_INET};
+  int s = socket(AF_INET, SOCK_STREAM, 0), i;
+  double total = 0;
+  char c;
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  bind(s, (struct sockaddr *)&a, sizeof(a));
+  listen(s, 1);
+  pipe(p);
+  for (i = 0; i < 100; i++) {
+    pthread_t t;
+    fd_set r;
+    pthread_create(&t, 0, writer, 0);
+    FD_ZERO(&r);
+    FD_SET(p[0], &r);
+    FD_SET(s, &r);
+    select((p[0] > s ? p[0] : s) + 1, &r, 0, 0, 0);
+    total += ms() - sent;
+    read(p[0], &c, 1);
+    pthread_join(t, 0);
+  }
+  printf("%.3f ms late\n", total / 100); /* Windows: 10 to 15; Linux: 0.08 */
+}
+```
+
+**Cause.** On Windows, `select()` uses `poll()`
+(`libc/calls/poll-nt.c`). Its loop checks each pipe with
+`PeekNamedPipe()`, and then waits in `WSAPoll()` for the sockets, for
+at most `POLL_INTERVAL_MS` (10 ms,
+`libc/calls/syscall_support-nt.internal.h`). A write to a pipe does
+not stop `WSAPoll()`, so `poll()` sees the pipe only at the next turn
+of the loop. ERTS has no `poll()` with Cosmopolitan (C3), so its poll
+thread uses `select()`, with a pipe that wakes it when its set changes
+(`create_wakeup_pipe()` of `erts/emulator/sys/common/erl_poll.c`). In
+the mode `{active, once}`, each read arms the socket again, and that
+change of the set waited up to 10 ms. `socketpair()` is not a fix,
+because on Windows it gives named pipes (C16).
+
+**Workaround in BEAM.com.** On Windows, the wake-up of the poll thread
+is a TCP connection on `127.0.0.1` in place of a pipe
+(`patches/otp/0007-windows-wakeup.patch`, `beam_com_wakeup_pair()` of
+`c_src/cosmo/beam_com_net.c`). Both sockets go into `WSAPoll()`, so a
+wake-up stops the wait at once. The pair uses the real `socket()`,
+`bind()` and `connect()`, not the wraps of `--allow-net`, because it
+is not a network connection of the program. The accepted socket must
+be the socket of the `connect()`: another program can connect to the
+port first. When the pair fails, the pipe stays.
+
+On the Windows runners of CI, the round trip of the ping-pong now takes
+0.1 to 0.4 ms. A download of 129 MB with `httpc` took 212 s
+(0.6 MB/s), and now takes about 2 s (50 to 70 MB/s), on x86_64 and on
+ARM64. `tests/programs/poll_check.erl` (in `tests/run.ps1` and
+`tests/run.sh`) fails when a round trip takes 2 ms or more.
+
+**Possible upstream fix.** Wait for the pipes and the sockets at the
+same time, for example with `WSAEventSelect()` for the sockets and one
+`WaitForMultipleObjects()` for their events and the handles of the
+pipes.
+
+### C60. Windows: send() on a non-blocking socket blocks
+
+**Status:** 4.0.2 (`libc/sock/send-nt.c`, `libc/sock/sendto-nt.c`),
+Windows. Found by reading the code; the symptom fits.
+
+**Symptom.** On Windows, a transfer of 64 MB over loopback TCP between
+two processes of one VM got about 1.1 MB/s, and in some runs it did not
+end. In one run, a `receive ... after` of 120 s in the receiver did not
+end either.
+
+**Cause.** `sys_send_nt()` calls `__winsock_block()` with `nonblock`
+false, also for a socket with `O_NONBLOCK`. A comment in
+`libc/sock/winsockblock.c` gives the reason: `CancelIoEx()` of a send
+can make `WSAGetOverlappedResult()` report an error for a send that
+completed. `writev()` of a socket calls `sys_send_nt()`
+(`libc/calls/writev-nt.c`). Thus a send of ERTS (`writev()` in
+`inet_drv.c`) waits until the peer reads, and the scheduler thread that
+runs the port waits with it. When the reader is in the same VM, its
+port task or its timer can be on that scheduler.
+
+**Workaround in BEAM.com.** None yet. A download sends little data, so
+it does not have this problem (see C59). A server that sends a large
+response to a slow client holds a scheduler for the time of the send.
+
+**Possible upstream fix.** For a socket with `O_NONBLOCK`, call
+`WSASend()` with no overlapped structure, on a socket in the
+non-blocking mode of Winsock (`ioctlsocket(FIONBIO)`). Then
+`WSAEWOULDBLOCK` gives `EAGAIN`, and the count of a partial send is
+exact.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

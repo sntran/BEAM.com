@@ -213,6 +213,28 @@ The rows of the NIFs compare the builds of `rust.yml`, `vix.yml` and
 `pdfium.yml` (`SQLITE=0 WASM=0`, with Elixir). With `ex_pdfium`, that
 `beam.com` is 68.3 MB, and `ex_pdfium_check.com` is 48.6 MB.
 
+## Downloads on Windows
+
+[`tests/bench/net_bench.erl`](../tests/bench/net_bench.erl) measures
+the round trip of a ping-pong of one byte over loopback TCP in the mode
+`{active, once}`, and HTTPS downloads from GitHub: with `httpc`, and
+with `ssl` in the passive mode (as Mint and Req read). The table has
+the download of 129 MB (`tailwindcss-windows-x64.exe` 4.1.18). The rows
+come from runs of 20 November 2026 on the Windows runners of GitHub
+(`windows-2025` and `windows-11-arm`), on shared machines. "Before" is
+the `beam.com` before the fix of C59 of [`UPSTREAM.md`](UPSTREAM.md).
+
+| beam.com, system | round trip | `httpc` | `ssl`, passive |
+|---|---:|---:|---:|
+| before, Windows x86_64 | 14.6 ms | 0.61 MB/s (211 s) | 0.60 MB/s (217 s) |
+| after, Windows x86_64 | 0.19 ms | 54.7 MB/s (2.4 s) | 68.1 MB/s (1.9 s) |
+| after, Windows ARM64 (x64 emulation) | 0.33 ms | 69.3 MB/s (1.9 s) | 59.1 MB/s (2.2 s) |
+
+Before the fix, the poll thread saw each new read of a socket up to
+10 ms late. Thus the speed of a download did not depend on the network.
+The speed of the network now limits a download. On Linux x86_64, the
+round trip takes about 0.05 ms.
+
 ## ex_pdfium (PDFium)
 
 [`tests/programs/ex_pdfium_check`](../tests/programs/ex_pdfium_check)

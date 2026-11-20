@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- Windows: downloads of `beam.com` are about 100 times faster. A
+  download of 129 MB with `httpc` took 212 s (0.6 MB/s) on the Windows
+  runners of CI, and now takes about 2 s. The poll thread of ERTS saw
+  each change of its set up to 10 ms late, because `select()` of
+  Cosmopolitan on Windows checks a pipe only after a wait of up to
+  10 ms for its sockets (C59 of `docs/UPSTREAM.md`). Now the wake-up of
+  the poll thread is a pair of loopback sockets in place of a pipe. Mix,
+  Hex and the build of a Phoenix project download faster too.
 - `beam.com` has the OTP application `syntax_tools` (about 0.2 MB). Packages
   such as `x509` (a dep of `site_encrypt`) and `parse_trans` need it when
   they compile, and `edoc` needs it. A custom build can leave it out: the
