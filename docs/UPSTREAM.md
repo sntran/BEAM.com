@@ -16,14 +16,21 @@ BEAM.com, and the ids of the items that it is for.
 Status words of the Cosmopolitan items:
 
 - **3.3.2**: seen with cosmocc 3.3.2 (an older local toolchain).
-- **4.0.2**: seen in CI with cosmocc 4.0.2 (the release that BEAM.com
-  uses).
+- **4.0.2**: seen in CI with the official cosmocc 4.0.2.
 - **HEAD**: checked in the Cosmopolitan source, commit `3293fad0`
   (2026-07-19), which is still version 4.0.2.
 
 An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
+
+BEAM.com uses cosmocc 4.0.2-patched.1 of
+[sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
+official cosmocc 4.0.2 with one commit for each fix of its
+[`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
+The status of such an item starts with "fixed in sntran/cosmopolitan
+4.0.2-patched.1", and its part "Fix in sntran/cosmopolitan" names the
+commit.
 
 The reproducers are small C files. Compile them with `cosmocc` (the fat
 x86_64 + aarch64 compiler) unless the text says something else.
@@ -1366,7 +1373,7 @@ Rust set their own sizes.
 
 ### C47. pledge() "inet" refuses the buffer options of a socket
 
-**Status:** 4.0.2. The branch master of 2026-11-02 has the same lists.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2. The branch master of 2026-11-02 has the same lists.
 
 **Symptom.** In a sandbox with the network (`--allow-net`, or
 `BEAM_COM_ALLOW=net`), `inet:getopts/2` gives no `sndbuf`, `recbuf`,
@@ -1386,19 +1393,16 @@ are in neither list, and `TCP_NODELAY` is not in the list of
 options of `SOL_SOCKET` except `SO_RTABLE` with "inet", and `TCP_NODELAY`
 of `IPPROTO_TCP`.
 
-**Workaround in BEAM.com.** `build_cosmo_file` of `scripts/steps.sh` gets
-`libc/calls/pledge-linux.c` of the tag of cosmocc, applies
-`patches/cosmo/pledge-linux.patch`, and links the object into the
-emulator. The patch adds one BPF fragment after each of the two
-fragments of upstream:
+**Fix in sntran/cosmopolitan.** The commit "pledge: "inet" allows the
+buffer options of a socket on Linux" adds one BPF fragment after each of
+the two fragments of upstream:
 
 - `setsockopt()`: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER` of
   `SOL_SOCKET`.
 - `getsockopt()`: the same three options, and `TCP_NODELAY` of
   `SOL_TCP`.
 
-The object defines `kPledge` and `sys_pledge_linux`, so the linker does
-not take `pledge-linux.o` of `libcosmo.a`. `tests/run.sh` checks the
+`tests/run.sh` checks the
 options with `sandbox_check sockopts`, and checks with
 `sandbox_check rawopt` that the sandbox still refuses another option
 (`TCP_CONGESTION`).
@@ -1424,7 +1428,7 @@ with the numbers of each CPU.
 
 ### C49. x86_64: the APE loader has a code segment that cannot be read
 
-**Status:** 4.0.2.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2.
 
 **Symptom.** In a Linux container of Apple `container --arch amd64`
 (Rosetta), an APE file stops with SIGSEGV before the program starts. The
@@ -1438,10 +1442,9 @@ arm64, which has pages that can be executed but not read, and it must
 read the x86_64 code to translate it. The segments of `ape-aarch64.elf`
 and of the programs have `PF_R`.
 
-**Workaround in BEAM.com.** `fix_ape_loader()` of `scripts/steps.sh`
-adds `PF_R` to each `PT_LOAD` segment of `bin/ape-x86_64.elf`, after
-the download of cosmocc and on each use of a cosmocc that is already
-there. apelink then puts the changed loader in the APE file.
+**Fix in sntran/cosmopolitan.** The commit "ape: make the code of the
+x86_64 loader readable" gives the code segment `PF_R` and `PF_X` in
+`ape/loader.lds`. apelink puts this loader in each APE file.
 `step_test` checks the loader in `beam.com`. A loader that an older file
 wrote to `~/.ape-1.10` stays there: remove it once.
 
@@ -1450,7 +1453,7 @@ linker script of the loader (`ape/loader.lds`).
 
 ### C50. unveil() of Linux does not control the removal of files
 
-**Status:** 4.0.2.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2.
 
 **Symptom.** In each sandbox on Linux, also with `--allow-read` only, the
 program can delete each file and each empty directory that its user can
@@ -1466,21 +1469,17 @@ so Landlock does not control `unlink()` and `rmdir()`. On OpenBSD, the
 permission "c" of `unveil()` allows both the creation and the removal of
 files.
 
-**Workaround in BEAM.com.** `build_cosmo_file` of `scripts/steps.sh`
-gets `libc/calls/unveil.c` of the tag of cosmocc, applies
-`patches/cosmo/unveil.patch`, and links the object into the emulator,
-as for C47. The patch adds the two rights of removal to
+**Fix in sntran/cosmopolitan.** The commit "unveil: "c" controls the
+removal of files on Linux" adds the two rights of removal to
 `UNVEIL_CREATE`. The paths of `--allow-write` have "c", so the program
-can remove a file there, and nowhere else. The object defines `unveil`,
-`sys_unveil_linux` and `init_landlock_version`, so the linker does not
-take `unveil.o` of `libcosmo.a`.
+can remove a file there, and nowhere else.
 
 **Possible upstream fix.** Add `LANDLOCK_ACCESS_FS_REMOVE_FILE` and
 `LANDLOCK_ACCESS_FS_REMOVE_DIR` to `UNVEIL_CREATE`.
 
 ### C51. macOS arm64: the APE loader maps the program over regions of malloc
 
-**Status:** 4.0.2, APE loader 1.10 (`ape/ape-m1.c`), macOS 26.6.2
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2, APE loader 1.10 (`ape/ape-m1.c`), macOS 26.6.2
 (25G83).
 
 **Symptom.** About 1 start in 300 to 1 in 600 of a program with a
@@ -1514,8 +1513,9 @@ in the program, and `calloc()` or a free writes over its data. A probe
 of the range at the start of `main()` of the loader found it in use in
 about 7 starts of 10.
 
-**Workaround in BEAM.com.** `fix_ape_m1` of `scripts/steps.sh` applies
-`patches/cosmo/ape-m1.patch` to `bin/ape-m1.c` of cosmocc. The loader:
+**Fix in sntran/cosmopolitan.** The commit "ape-m1: check that the fixed
+addresses of a program are free" changes `ape/ape-m1.c`, which is
+`bin/ape-m1.c` of cosmocc. The loader:
 
 1. reserves `0x800000000`-`0x801000000` with `PROT_NONE` at the start of
    `main()`, when the range is free;
@@ -1726,7 +1726,7 @@ file.
 
 ### C57. macOS 27 arm64: no hint below 0x7000000000, and the program is in the shared region
 
-**Status:** 4.0.2, APE loader 1.10 (`ape/ape-m1.c`), macOS 27.0.1
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2, APE loader 1.10 (`ape/ape-m1.c`), macOS 27.0.1
 (26A434), the runner `xcode-27` of GitHub.
 
 **Symptom.** The patched APE loader of C51 stops with "the fixed
@@ -1755,9 +1755,9 @@ So a hint never works below `0x7000000000`, also for free memory, and
 `MAP_FIXED` replaces the reservation in the process, and the kernel
 puts no other mapping in it.
 
-**Workaround in BEAM.com.**
+**Fix in sntran/cosmopolitan, and workaround in BEAM.com.**
 
-1. `patches/cosmo/ape-m1.patch`: when the hint for a range of the
+1. The commit of C51 in sntran/cosmopolitan: when the hint for a range of the
    program fails, `RangeUsable()` checks the range with
    `mach_vm_region_recurse()`. Each part of the range must be free, or
    must be in a submap with no access and no tag. Then `MAP_FIXED` maps
@@ -1778,7 +1778,7 @@ address of the programs above `0x7000000000`.
 
 ### C58. Windows on ARM64: the aarch64 half has no Windows layer
 
-**Status:** 4.0.2, Windows 11 on ARM64 (the runner `windows-11-arm`
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2, Windows 11 on ARM64 (the runner `windows-11-arm`
 of GitHub).
 
 **Symptom.** An APE file on Windows on ARM64 always runs its x86_64
@@ -1797,10 +1797,12 @@ aarch64 JIT of BEAM.com, never run there.
 3. The start code, the signals, the threads and `fork()` of Windows
    use the registers and the context record of x86_64.
 
-**Workaround in BEAM.com.** A loader, and a libc with a Windows layer
-for aarch64. The x86_64 half does not change.
+**Fix in sntran/cosmopolitan, and its use in BEAM.com.** A loader, and
+a libc with a Windows layer for aarch64. The x86_64 half does not
+change.
 
-1. `c_src/win-arm64/ape_arm64.c` is the loader `ape-arm64.exe`, a
+1. `ape/ape-arm64.c` of sntran/cosmopolitan is the loader
+   `bin/ape-arm64.exe` of cosmocc, a
    native program of Windows on ARM64 with no C library. It maps the
    aarch64 ELF half at its fixed addresses and starts it. The program
    gets a pointer to `LoadLibraryA()` and `GetProcAddress()` in `x15`,
@@ -1812,10 +1814,10 @@ for aarch64. The x86_64 half does not change.
    half ("cannot map the image", error 487). Without it, the highest of
    these blocks was below 2 GiB in each of 4000 starts of a test
    program.
-2. `patches/cosmo-libc/win-arm64.patch` (about 80 files) and
-   `patches/cosmo-libc/generated.py` (735 files that
-   `libc/nt/codegen.sh` and `libc/sysv/gen.sh` made) change the libc of
-   aarch64:
+2. The commit "Windows on ARM64: a Windows layer for the aarch64 libc"
+   of sntran/cosmopolitan (about 80 files, and 735 files that
+   `libc/nt/codegen.sh` and `libc/sysv/gen.sh` make) changes the libc
+   of aarch64:
    - Each function of Windows is a slot that the start code fills with
      `GetProcAddress()`. A stub jumps through its slot
      (`adrp`, `ldr`, `br`).
@@ -1860,10 +1862,9 @@ for aarch64. The x86_64 half does not change.
      CPU with no LSE (for example the Cortex-A72) also uses the loop.
 3. `patches/otp/0002-jit.patch`: the JIT uses fixed cache line sizes
    and `__clear_cache()` on Windows, as on macOS, for the same reason.
-4. The step `libc` of `scripts/steps.sh` builds the libc at the commit
-   of 4.0.2 with the bootstrap toolchain 3.9.2 of that commit, and puts
-   `libcosmo.a`, `crt.o`, `aarch64.lds` and 5 headers into the
-   `aarch64-linux-cosmo` tree of cosmocc.
+4. The workflow of sntran/cosmopolitan builds cosmocc 4.0.2-patched.1
+   with this libc, in each mode of `tool/cosmocc/package.sh`, and adds
+   the loader as `bin/ape-arm64.exe`.
 5. `beam.com` holds the loader at `/zip/bin/ape-arm64.exe`. The x86_64
    half asks `IsWow64Process2()` for the machine. On ARM64 it writes
    the loader to the cache and starts it with its own file
@@ -2024,7 +2025,7 @@ of one VM, and 16 MiB with one scheduler online.
 
 ### C61. Windows: select() fails with E2BIG above 128 fds
 
-**Status:** 4.0.2 (`libc/calls/select-nt.c`), Windows.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2 (`libc/calls/select-nt.c`), Windows.
 
 **Symptom.** On Windows, with about 64 pairs of loopback sockets in one
 VM, the next socket got no event: each turn of the poll thread logged
@@ -2037,7 +2038,8 @@ waits for an event, each listen socket, the pipes of the ports and the
 wake-up pair. A server with about 125 idle connections thus stopped all
 of its network I/O.
 
-**Workaround in BEAM.com.** `patches/cosmo/select-nt.patch`: the array
+**Fix in sntran/cosmopolitan.** The commit "Windows: select() above 128
+fds, and errors in each set": the array
 has an entry for each fd of the sets. It stays on the stack for 128 fds
 or fewer, and is on the heap for more. An array of `FD_SETSIZE` entries
 on the stack (8 KiB) is above the limit of 4096 bytes for a frame of the
@@ -2050,7 +2052,7 @@ pair 65.
 
 ### C62. Windows: poll() of 64 fds or more does not wait
 
-**Status:** 4.0.2 (`libc/calls/poll-nt.c`), Windows.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2 (`libc/calls/poll-nt.c`), Windows.
 
 **Symptom.** On Windows, with 40 idle pairs of loopback sockets in one
 VM, the VM used 1.8 s (x86_64) to 3.0 s (ARM64) of CPU in 5 s. With 25
@@ -2065,7 +2067,8 @@ is a time of the monotonic clock: a date in 1970. Thus the wait ended at
 once, and the loop used a CPU. Also, a part of 64 files gave `EINVAL`,
 because a wait takes at most 63 files and the event of the signals.
 
-**Workaround in BEAM.com.** `patches/cosmo/poll-nt.patch`:
+**Fix in sntran/cosmopolitan.** The commit "Windows: poll() of any count
+of sockets, and a wait with the wall clock":
 
 - The fast path takes any count of sockets, because `WSAPoll()` has no
   limit. Only the files and pipes of `WaitForMultipleObjects()` have a
@@ -2074,9 +2077,6 @@ because a wait takes at most 63 files and the event of the signals.
   `_park_norestart()` a time of the wall clock, and its parts have 63
   fds.
 
-The libc of `cosmocc` stays as it is for the x86_64 half:
-`build_cosmo_file` links the patched file into the emulator. The libc of
-Windows ARM64 (`build_cosmo_libc`) gets the same patch.
 `tests/programs/fds_check.erl` fails when the VM with 300 idle sockets
 uses 1 s of CPU or more in 3 s. With the fix, the VM with 40 idle pairs
 used 0 ms of CPU in 5 s on both Windows runners of CI.
@@ -2085,7 +2085,7 @@ used 0 ms of CPU in 5 s on both Windows runners of CI.
 
 ### C63. Windows: select() reports an error only in readfds
 
-**Status:** 4.0.2 (`libc/calls/select-nt.c`), Windows. Found by reading
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2 (`libc/calls/select-nt.c`), Windows. Found by reading
 the code; no symptom seen.
 
 **Cause.** `sys_select_nt()` sets the bit of `readfds` for `POLLIN`,
@@ -2099,7 +2099,7 @@ once again. In the CI runs, `WSAPoll()` also gave `POLLWRNORM` for a
 reset connection, so the send ended: a reset while a send waits gave
 `{error, closed}` in 1 ms.
 
-**Workaround in BEAM.com.** `patches/cosmo/select-nt.patch`: an error or
+**Fix in sntran/cosmopolitan.** The commit of C61: an error or
 a hangup makes the fd ready in each set that asked for it, and an fd is
 ready only in a set that asked for it. `tests/programs/fds_check.erl`
 checks the reset while a send waits.
@@ -2108,7 +2108,7 @@ checks the reset while a send waits.
 
 ### C64. Windows: close() of a written file waits for the disk
 
-**Status:** 4.0.2 (`libc/calls/close-nt.c`), Windows.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2 (`libc/calls/close-nt.c`), Windows.
 
 **Symptom.** On the Windows ARM64 runner of CI, the close of a file
 after a write of 1 byte took 8.7 ms (Linux: 26 us), and 100 calls of
@@ -2123,10 +2123,10 @@ it, a later `unlink()` could fail with an access error. Also
 fd table during the close, and `select()` (C59) and each new fd take
 that lock. Thus the poll thread waited for the flush.
 
-**Workaround in BEAM.com.** `patches/cosmo/close-nt.patch`: no flush at
-`close()`, as on Linux and as in native Windows programs, also Erlang/OTP
-for Windows. `fsync()` still flushes. The file has no
-`#ifdef __x86_64__`, so `build_cosmo_file` gives both halves.
+**Fix in sntran/cosmopolitan.** The commit "Windows: close() does not
+flush a written file to the disk": no flush at `close()`, as on Linux
+and as in native Windows programs, also Erlang/OTP for Windows.
+`fsync()` still flushes.
 `tests/programs/close_check.erl` fails when the median of the close of a
 written file is 2 ms or more. With the fix, on the ARM64 runner, the close
 took 71 us (median), 100 calls of `file:write_file/2` took 37 ms, and the
@@ -2230,7 +2230,7 @@ and release only a request of the libc.
 
 ### C68. Windows: rmdir() of a directory that is not empty waits 2 s
 
-**Status:** 4.0.2 (`libc/calls/unlinkat-nt.c`), Windows.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.1. Open in 4.0.2 (`libc/calls/unlinkat-nt.c`), Windows.
 
 **Symptom.** On Windows, `file:del_dir/1` of a directory with a file
 took 2.1 s and gave `{error, eexist}` (Linux: 40 us). It held a dirty
@@ -2242,12 +2242,12 @@ The retry covers a child that is deleted but still open: its deletion
 waits until the last handle closes. A directory with a real entry thus
 waited 2 s for no gain.
 
-**Workaround in BEAM.com.** `patches/cosmo/unlinkat-nt.patch`: before
+**Fix in sntran/cosmopolitan.** The commit "Windows: rmdir() of a
+directory with a real entry fails at once": before
 each wait, the libc opens each entry of the directory with
 `FILE_READ_ATTRIBUTES`. An entry whose deletion waits does not open, and
 a real entry opens. With a real entry, `rmdir()` fails at once with
-`ENOTEMPTY`. The file has no `#ifdef __x86_64__`, so `build_cosmo_file`
-gives one object for both halves. `tests/programs/rmdir_check.erl`
+`ENOTEMPTY`. `tests/programs/rmdir_check.erl`
 fails when `file:del_dir/1` of a directory with a file takes 500 ms or
 more.
 

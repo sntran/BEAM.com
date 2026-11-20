@@ -87,9 +87,9 @@ started 3 times faster (see "Windows on ARM64" in
 - A Phoenix build uses the x64 programs of `tailwind` and `esbuild` for
   Windows. They run under the emulation.
 - In the aarch64 code of a native NIF object, `IsWindows()` of
-  `libc/dce.h` is always false with the headers of cosmocc 4.0.2. An
-  object that asks for the system must use the cosmocc of the build
-  (after the step `libc`), or read `__hostos`.
+  `libc/dce.h` is always false with the headers of the official cosmocc
+  4.0.2. An object that asks for the system must use the cosmocc of the
+  build (4.0.2-patched.1 of sntran/cosmopolitan), or read `__hostos`.
 - Windows 10 on ARM64 has no x64 emulation, and it runs no APE file.
 
 ## In a sandbox that terminates TLS (OpenShell)

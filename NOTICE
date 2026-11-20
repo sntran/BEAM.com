@@ -25,13 +25,15 @@ applications)
   licenses/elixir/.
   https://github.com/elixir-lang/elixir
 
-Cosmopolitan Libc 4.0.2 (the C runtime of the APE file)
+Cosmopolitan Libc 4.0.2 (the C runtime of the APE file), with the
+changes of cosmocc 4.0.2-patched.1 of sntran/cosmopolitan
   Copyright 2020 Justine Alexandra Roberts Tunney.
   ISC License (licenses/cosmopolitan.txt). Cosmopolitan also links code
   of other projects (for example musl, FreeBSD and zlib). Its linker puts
   their notices into the file: "strings beam.com | grep -i copyright"
   shows them.
   https://github.com/jart/cosmopolitan
+  https://github.com/sntran/cosmopolitan
 
 OpenSSL 4.0.3 (libcrypto, for the crypto NIF)
   Copyright The OpenSSL Project Authors.

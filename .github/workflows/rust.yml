@@ -34,7 +34,7 @@ concurrency:
 
 env:
   OTP_VERSION: "29.1.2"
-  COSMOCC_VERSION: "4.0.2"
+  COSMOCC_VERSION: "4.0.2-patched.1"
   OPENSSL_VERSION: "4.0.3"
 
 jobs:
@@ -133,11 +133,6 @@ jobs:
 
       - name: Download cosmocc
         run: make toolchain
-
-      # Windows on ARM64: the libc and the loader of the step libc.
-      - name: The libc for Windows on ARM64
-        id: cosmo_libc
-        uses: ./.github/actions/cosmo-libc
 
       - name: Cache OpenSSL
         id: cache_openssl
