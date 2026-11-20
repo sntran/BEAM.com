@@ -31,11 +31,11 @@
 %% about 110 MB (4.3). The URL is the URL of the Hex package tailwind.
 -define(TAILWIND, "https://github.com/tailwindlabs/tailwindcss/releases/download/v").
 -define(TAILWIND_MAX, 512 * 1024 * 1024).
-%% The time limit of that download. The default of beam_com_hex:http/5
-%% (60 s for the complete request) was too short: on the Windows runners
-%% of CI, the 112 MB took about 3 minutes (also with one plain request
-%% of httpc, as the Hex package does). The limit of 120
-%% s with no data stays.
+%% The time limit of that download: 10 minutes, for a slow network. The
+%% default of beam_com_hex:http/5 is 60 s for the complete request. On the
+%% Windows runners of CI, the download took about 3 minutes before the fix
+%% of C59 of docs/UPSTREAM.md, and about 2 s after it. The limit of 120 s
+%% with no data stays.
 -define(TAILWIND_TIMEOUT, 10 * 60 * 1000).
 %% The replacement of a byte that is not UTF-8 in the output of Mix.
 -define(BAD_CHAR, <<16#FFFD/utf8>>).

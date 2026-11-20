@@ -278,6 +278,7 @@ the `beam.com` before the fix of C59 of [`UPSTREAM.md`](UPSTREAM.md).
 |---|---:|---:|---:|
 | before, Windows x86_64 | 14.6 ms | 0.61 MB/s (211 s) | 0.60 MB/s (217 s) |
 | after, Windows x86_64 | 0.19 ms | 54.7 MB/s (2.4 s) | 68.1 MB/s (1.9 s) |
+| after, Windows ARM64 (native) | 0.24 ms | 78.4 MB/s (1.6 s) | 58.3 MB/s (2.2 s) |
 | after, Windows ARM64 (x64 emulation) | 0.33 ms | 69.3 MB/s (1.9 s) | 59.1 MB/s (2.2 s) |
 
 Before the fix, the poll thread saw each new read of a socket up to
