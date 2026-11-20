@@ -160,6 +160,15 @@ check_once() {
                 bad=1
             fi
         done
+        # The wake-up of the poll thread works up to the exit (C59 of
+        # docs/UPSTREAM.md).
+        if grep -q -e 'on wakeup pipe' "$tmp"; then
+            echo "FAIL: $name: an error of the wake-up of the poll thread"
+            pending="$pending
+  $name $*: an error of the wake-up of the poll thread"
+            ok=0
+            bad=1
+        fi
         [ $ok -eq 1 ] && echo "PASS: $name"
     fi
 }
