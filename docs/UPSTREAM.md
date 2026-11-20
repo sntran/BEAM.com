@@ -2022,6 +2022,198 @@ of one VM, and 16 MiB with one scheduler online.
 `sys_sendto_nt()`: for a socket with `O_NONBLOCK`, a `WSASend()` with no
 `OVERLAPPED`, in the place of an overlapped call that waits.
 
+### C61. Windows: select() fails with E2BIG above 128 fds
+
+**Status:** 4.0.2 (`libc/calls/select-nt.c`), Windows.
+
+**Symptom.** On Windows, with about 64 pairs of loopback sockets in one
+VM, the next socket got no event: each turn of the poll thread logged
+"erts_poll_wait() failed: e2big", and no socket or port got an event.
+
+**Cause.** `sys_select_nt()` copies the bits of the `fd_set`s into
+`struct pollfd fds[128]`, and gives `E2BIG` for fd 129 and more. ERTS
+uses the `select()` back-end (C3), and its set has each socket that
+waits for an event, each listen socket, the pipes of the ports and the
+wake-up pair. A server with about 125 idle connections thus stopped all
+of its network I/O.
+
+**Workaround in BEAM.com.** `patches/cosmo/select-nt.patch`: the array
+has an entry for each fd of the sets. It stays on the stack for 128 fds
+or fewer, and is on the heap for more. An array of `FD_SETSIZE` entries
+on the stack (8 KiB) is above the limit of 4096 bytes for a frame of the
+libc. `tests/programs/fds_check.erl` makes 150 pairs (300 sockets), and
+one message on each pair must arrive.
+
+**Possible upstream fix.** The same.
+
+### C62. Windows: poll() of 64 fds or more does not wait
+
+**Status:** 4.0.2 (`libc/calls/poll-nt.c`), Windows.
+
+**Symptom.** On Windows, with 40 idle pairs of loopback sockets in one
+VM, the VM used 1.8 s (x86_64) to 3.0 s (ARM64) of CPU in 5 s. With 25
+pairs, it used 0 to 31 ms.
+
+**Cause.** `sys_poll_nt()` takes its fast path, one `WSAPoll()` and one
+`WaitForMultipleObjects()`, only for 63 fds or fewer. For more fds, it
+polls parts of 64 fds with the timeout 0, and then waits with
+`_park_norestart(target)`. That function takes a time of the wall clock
+(`libc/calls/park.c`, as `clock_nanosleep-nt.c` gives it), but `target`
+is a time of the monotonic clock: a date in 1970. Thus the wait ended at
+once, and the loop used a CPU. Also, a part of 64 files gave `EINVAL`,
+because a wait takes at most 63 files and the event of the signals.
+
+**Workaround in BEAM.com.** `patches/cosmo/poll-nt.patch`:
+
+- The fast path takes any count of sockets, because `WSAPoll()` has no
+  limit. Only the files and pipes of `WaitForMultipleObjects()` have a
+  limit of 63. Above 64 sockets, the arrays are on the heap.
+- With more than 63 files and pipes, the other path gives
+  `_park_norestart()` a time of the wall clock, and its parts have 63
+  fds.
+
+The libc of `cosmocc` stays as it is for the x86_64 half:
+`build_cosmo_file` links the patched file into the emulator. The libc of
+Windows ARM64 (`build_cosmo_libc`) gets the same patch.
+`tests/programs/fds_check.erl` fails when the VM with 300 idle sockets
+uses 1 s of CPU or more in 3 s.
+
+**Possible upstream fix.** The same.
+
+### C63. Windows: select() reports an error only in readfds
+
+**Status:** 4.0.2 (`libc/calls/select-nt.c`), Windows. Found by reading
+the code; no symptom seen.
+
+**Cause.** `sys_select_nt()` sets the bit of `readfds` for `POLLIN`,
+`POLLHUP`, `POLLERR` and `POLLNVAL`, also for an fd that was not in
+`readfds`, and the bit of `writefds` only for `POLLOUT`. On Linux, an fd
+with an error or a hangup is ready in each set that asked for it, and
+only there. ERTS removes the events that it does not wait for
+(`erl_check_io.c`), so a socket that waits only for `POLLOUT` (a send
+that waits for room) did not see the error, and `select()` returned at
+once again. In the CI runs, `WSAPoll()` also gave `POLLWRNORM` for a
+reset connection, so the send ended: a reset while a send waits gave
+`{error, closed}` in 1 ms.
+
+**Workaround in BEAM.com.** `patches/cosmo/select-nt.patch`: an error or
+a hangup makes the fd ready in each set that asked for it, and an fd is
+ready only in a set that asked for it. `tests/programs/fds_check.erl`
+checks the reset while a send waits.
+
+**Possible upstream fix.** The same.
+
+### C64. Windows: close() of a written file waits for the disk
+
+**Status:** 4.0.2 (`libc/calls/close-nt.c`), Windows.
+
+**Symptom.** On the Windows ARM64 runner of CI, the close of a file
+after a write of 1 byte took 8.7 ms (Linux: 26 us), and 100 calls of
+`file:write_file/2` took 1.0 s (Linux: 26 ms). While another process
+wrote files, a round trip over loopback took up to 70 ms. On the x86_64
+runner, the close took 0.26 ms.
+
+**Cause.** `sys_close_nt()` calls `FlushFileBuffers()` for each disk
+file that was open for writing. Its comment gives the reason: without
+it, a later `unlink()` could fail with an access error. Also
+`__wrap_close()` of `c_src/cosmo/beam_com.c` (C25) holds the lock of the
+fd table during the close, and `select()` (C59) and each new fd take
+that lock. Thus the poll thread waited for the flush.
+
+**Workaround in BEAM.com.** `patches/cosmo/close-nt.patch`: no flush at
+`close()`, as on Linux and as in native Windows programs, also Erlang/OTP
+for Windows. `fsync()` still flushes. The file has no
+`#ifdef __x86_64__`, so `build_cosmo_file` gives both halves.
+`tests/programs/close_check.erl` fails when the median of the close of a
+written file is 2 ms or more.
+
+**Possible upstream fix.** The same. An `unlink()` that fails with a
+sharing error can wait and try again, as `rmdir()` does (C68).
+
+### C65. Windows: close() of a socket with a linger leaks the connection
+
+**Status:** 4.0.2 (`libc/sock/closesocket-nt.c`, `libc/calls/close.c`),
+Windows.
+
+**Symptom.** On Windows, after `gen_tcp:close/1` of a socket with
+`{linger, {true, 10}}` and data in flight, the peer got the data but
+never the end of the stream (Linux: `{error, closed}` at once).
+
+**Cause.** The libc puts each socket in the non-blocking mode of Winsock
+(`connect-nt.c`, `accept-nt.c`). Winsock refuses `closesocket()` of a
+non-blocking socket with `SO_LINGER` on and a time above 0, with
+`WSAEWOULDBLOCK`, and the socket stays open. `close()` frees the fd for
+each result of `closesocket()`, so the connection stayed open with no
+owner, and its handle leaked.
+
+**Workaround in BEAM.com.** `beam_com_sock_close()` of
+`c_src/cosmo/beam_com_sock.c`, which `__wrap_close()` calls: before the
+close of such a socket, it turns the linger off. Then `closesocket()`
+returns at once, and Windows sends the data that waits and the end of
+the stream in the background. On Linux, `close()` waits for the linger;
+ERTS does not use the result. A linger with the time 0 (a reset) does
+not change. `tests/programs/close_check.erl` checks that the peer gets
+all the data and the end.
+
+**Possible upstream fix.** In `sys_closesocket_nt()`, put the socket in
+the blocking mode before `closesocket()` when the linger is on, or keep
+the fd when `closesocket()` fails.
+
+### C66. Windows: SO_REUSEADDR is SO_EXCLUSIVEADDRUSE, and SO_REUSEPORT is missing
+
+**Status:** 4.0.2 (`libc/sysv/consts.sh`), Windows. Not fixed.
+
+**Symptom.** On Windows, a second UDP socket on one port with
+`[{reuseaddr, true}, {reuseport, true}]` gives `{error, eaddrinuse}`
+(Linux, and Erlang/OTP for Windows: `{ok, Socket}`). A new listen socket
+on the port of a closed listener still works.
+
+**Cause.** `SO_REUSEADDR` has the value of `SO_EXCLUSIVEADDRUSE` on
+Windows, and `SO_REUSEPORT` is 0, so `setsockopt()` refuses it. Erlang/OTP
+for Windows sets `SO_REUSEADDR` only for `reuseaddr` together with
+`reuseport`.
+
+**Workaround in BEAM.com.** None yet. Two programs that receive the
+same UDP multicast port (mDNS, SSDP) cannot run on one Windows host.
+
+**Possible upstream fix.** A value for `SO_REUSEPORT` on Windows, and
+the real `SO_REUSEADDR` when a program asks for both.
+
+### C67. Windows: a timer of 1 ms takes about 15 ms
+
+**Status:** 4.0.2, Windows. Not fixed: the same as Erlang/OTP for
+Windows.
+
+**Symptom.** On Windows, 100 calls of `timer:sleep(1)` took 1.45 s
+(x86_64) and 1.6 s (ARM64); on Linux, 0.2 s.
+
+**Cause.** The waits of ERTS (`pthread_cond_timedwait()`, and the timeout
+of `select()`) end at the tick of the system timer, about 15.6 ms. The
+libc raises the timer resolution only during `clock_nanosleep()`.
+Erlang/OTP for Windows does not raise it either.
+
+**Workaround in BEAM.com.** None. A program that needs short timers on
+Windows can call `timeBeginPeriod(1)` from a NIF; it costs power.
+
+### C68. Windows: rmdir() of a directory that is not empty waits 2 s
+
+**Status:** 4.0.2 (`libc/calls/unlinkat-nt.c`), Windows. Not fixed.
+
+**Symptom.** On Windows, `file:del_dir/1` of a directory with a file
+took 2.1 s and gave `{error, eexist}` (Linux: 40 us).
+
+**Cause.** `sys_unlinkat_nt()` tries `RemoveDirectory()` again after a
+sleep of 1, 2, 4 ... 1024 ms when it fails with
+`ERROR_DIR_NOT_EMPTY`. The retry covers a child that is deleted but
+still open. A directory with a real entry thus waits 2 s, and holds a
+dirty I/O scheduler for that time.
+
+**Workaround in BEAM.com.** None yet. `File.rm_rf/1` and Mix delete the
+children first, so they do not wait.
+
+**Possible upstream fix.** Retry only when each entry of the directory
+is in the state "delete pending".
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

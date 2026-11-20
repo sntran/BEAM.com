@@ -139,6 +139,12 @@ COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615
 # COSMOCC_VERSION (build_cosmo_file).
 COSMO_PLEDGE_SHA256=${COSMO_PLEDGE_SHA256:-b8cc37f3d9047863abea3a42577d84eafa523d4eafaf98e4d3facbea73461a60}
 COSMO_UNVEIL_SHA256=${COSMO_UNVEIL_SHA256:-d7456340c5f4bf0f1acef3458930d15b210fade2124d0a4f968fc01c1b236127}
+# poll() and select() of Windows, with patches/cosmo/poll-nt.patch and
+# select-nt.patch (C61 to C63 of docs/UPSTREAM.md).
+COSMO_POLL_NT_SHA256=${COSMO_POLL_NT_SHA256:-abdc5a963f470d6ca5e35103d45cdb5012f1c0e05003fd03d9a26715b8e1cb01}
+COSMO_SELECT_NT_SHA256=${COSMO_SELECT_NT_SHA256:-19065309308d5c4189e39696d073ecc3f5c11adcb130ec2611f16a5943647596}
+# close() of Windows, with patches/cosmo/close-nt.patch (C64).
+COSMO_CLOSE_NT_SHA256=${COSMO_CLOSE_NT_SHA256:-b8a53bfaf0cfbbff8c0701b08d311ea0909f77ca3916f384e53ee24c27f2ab82}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
@@ -472,6 +478,9 @@ build_cosmo_libc() {
     git -C "$src" checkout -q FETCH_HEAD
     check_commit "$src" "$COSMO_COMMIT" "Cosmopolitan $COSMOCC_VERSION"
     git -C "$src" apply "$ROOT/patches/cosmo-libc/win-arm64.patch"
+    # poll() and select() of Windows (C61 to C63 of docs/UPSTREAM.md). The
+    # x86_64 half gets them from build_cosmo_file in step_multicall.
+    git -C "$src" apply "$ROOT/patches/cosmo/poll-nt.patch" "$ROOT/patches/cosmo/select-nt.patch"
     python3 "$ROOT/patches/cosmo-libc/generated.py" "$src"
     (cd "$src" &&
      build/download-cosmocc.sh ".cosmocc/$COSMO_BOOTSTRAP_VERSION" \
@@ -524,7 +533,8 @@ build_arm64_loader() {
 # repository that it reads.
 libc_part_key() (
     code=$(steps_code text build_cosmo_libc build_arm64_loader)
-    sums=$(key_files patches/cosmo-libc c_src/win-arm64)
+    sums=$(key_files patches/cosmo-libc c_src/win-arm64 patches/cosmo/poll-nt.patch \
+        patches/cosmo/select-nt.patch)
     printf '%s\n' "libc 1" "$COSMO_COMMIT" "$COSMO_BOOTSTRAP_VERSION" \
         "$COSMO_BOOTSTRAP_SHA256" "$LIBC_OBJECTS" "$LIBC_HEADERS" "$code" "$sums" |
         sha256sum | cut -d' ' -f1
@@ -1508,7 +1518,8 @@ step_roots() {
 step_files() {
     case $1 in
         toolchain) echo "patches/cosmo/ape-m1.patch" ;;
-        libc) echo "patches/cosmo-libc c_src/win-arm64" ;;
+        libc) echo "patches/cosmo-libc c_src/win-arm64 patches/cosmo/poll-nt.patch
+                    patches/cosmo/select-nt.patch" ;;
         openssl|release) ;;
         otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h c_src/cosmo/sha1dc" ;;
         configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
@@ -1887,6 +1898,14 @@ step_make() {
 #   unveil        unveil() of Linux, which also controls the removal of a
 #                 file and of a directory (C50). It defines unveil,
 #                 sys_unveil_linux and init_landlock_version.
+#   poll-nt       poll() of Windows: one WSAPoll() for any count of
+#                 sockets, and a wait with the time of the wall clock (C61,
+#                 C62). It defines sys_poll_nt.
+#   select-nt     select() of Windows: an entry for each fd of the sets, and
+#                 an error in each set that asked for it (C61, C63). It
+#                 defines sys_select_nt.
+#   close-nt      close() of Windows with no flush of a written file
+#                 (C64). It defines sys_close_nt.
 build_cosmo_file() {
     src=$BUILD/cosmo-$1-$COSMOCC_VERSION
     # The mark has the SHA-256 of the patch, so a new patch applies again.
@@ -1919,7 +1938,17 @@ step_multicall() {
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"
     build_cosmo_file unveil "$COSMO_UNVEIL_SHA256" "$objdir/beam_com_unveil.o"
+    # poll() and select() of Windows for the x86_64 half (C61 to C63 of
+    # docs/UPSTREAM.md). These files of the libc have #ifdef __x86_64__,
+    # so their aarch64 objects are empty; the aarch64 half gets the same
+    # patches in the libc of step_libc.
+    build_cosmo_file poll-nt "$COSMO_POLL_NT_SHA256" "$objdir/beam_com_poll_nt.o"
+    build_cosmo_file select-nt "$COSMO_SELECT_NT_SHA256" "$objdir/beam_com_select_nt.o"
+    # close() of Windows with no flush (C64). This file has no
+    # #ifdef __x86_64__: its object has both halves.
+    build_cosmo_file close-nt "$COSMO_CLOSE_NT_SHA256" "$objdir/beam_com_close_nt.o"
     objs="$objs $objdir/beam_com_pledge.o $objdir/beam_com_unveil.o"
+    objs="$objs $objdir/beam_com_poll_nt.o $objdir/beam_com_select_nt.o $objdir/beam_com_close_nt.o"
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it (neither for driver_tab.c nor for its object).

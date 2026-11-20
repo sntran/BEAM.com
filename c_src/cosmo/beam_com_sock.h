@@ -18,7 +18,7 @@ int beam_com_sock_nonblock(int fd);
  * the socket, or -1 with errno (EAGAIN when no byte fits). */
 ssize_t beam_com_sock_send(int fd, const struct iovec *iov, int iovcnt, int flags);
 
-/* The close of FD (__wrap_close() of beam_com.c). */
-void beam_com_sock_forget(int fd);
+/* Before the close of FD (__wrap_close() of beam_com.c). */
+void beam_com_sock_close(int fd);
 
 #endif

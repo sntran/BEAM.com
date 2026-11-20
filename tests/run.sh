@@ -631,6 +631,14 @@ if [ -d examples ]; then
     # scheduler online (C60): a send does not wait for the peer.
     check beam.com '^send_check: passive, 64 MiB in [0-9]* ms: ok$@@^send_check: once, 64 MiB in [0-9]* ms: ok$@@^send_check: late, 16 MiB in [0-9]* ms: ok$@@^send_check: ok$' \
         tests/programs/send_check.erl
+    # Many sockets in the set of the poll thread (C61 to C63): 300 sockets
+    # get events, the idle VM uses little CPU, and a reset reaches a send.
+    check beam.com '^fds_check: 150 pairs, one message on each: ok$@@^fds_check: idle with 300 sockets, [0-9]* ms of CPU in 3 s: ok$@@^fds_check: a reset while a send waits: .*: ok$@@^fds_check: ok$' \
+        tests/programs/fds_check.erl
+    # The close of a written file does not wait for the disk (C64), and
+    # the close of a socket with a linger ends the connection (C65).
+    check beam.com '^close_check: close of a written file, median [0-9]* us: ok$@@^close_check: close with a linger, .*: ok$@@^close_check: ok$' \
+        tests/programs/close_check.erl -- "$dir"
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o

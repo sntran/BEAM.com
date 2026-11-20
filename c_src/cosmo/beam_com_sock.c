@@ -23,6 +23,16 @@
  *
  * A send to an address (sendto() and sendmsg() with an address, for UDP)
  * stays with the libc: a datagram does not wait for the peer.
+ *
+ * The close of a socket with SO_LINGER on and a time above 0 (C65 of
+ * docs/UPSTREAM.md): Winsock refuses closesocket() of a non-blocking
+ * socket in this state with WSAEWOULDBLOCK, and the socket stays open.
+ * The libc frees the fd all the same, so the connection stayed open with
+ * no owner: the peer never got the end of the stream, and the handle
+ * leaked. beam_com_sock_close() turns the linger off before the close.
+ * Then closesocket() returns at once, and Windows sends the data that
+ * waits and the end of the stream in the background, as with no linger.
+ * A linger with the time 0 (a reset) does not change.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -75,10 +85,20 @@ int beam_com_sock_nonblock(int fd)
     return f->kind == kFdSocket && (f->flags & O_NONBLOCK);
 }
 
-void beam_com_sock_forget(int fd)
+void beam_com_sock_close(int fd)
 {
+    struct linger l;
+    socklen_t len = sizeof(l);
+
     if (fd >= 0 && fd < SOCK_FDS)
         sock_nbio[fd] = 0;
+    if (!IsWindows() || fd < 0 || (size_t)fd >= g_fds.n || g_fds.p[fd].kind != kFdSocket)
+        return;
+    if (getsockopt(fd, SOL_SOCKET, SO_LINGER, &l, &len) == 0 && l.l_onoff && l.l_linger > 0) {
+        l.l_onoff = 0;
+        l.l_linger = 0;
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &l, sizeof(l));
+    }
 }
 
 /* Puts the socket of FD in the non-blocking mode of Winsock. */

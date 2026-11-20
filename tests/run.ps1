@@ -395,6 +395,12 @@ if (Test-Path "examples") {
     # Large sends between two processes of one VM end, also with one
     # scheduler online (C60): a send does not wait for the peer.
     Check "beam.com" '(?m)^send_check: passive, 64 MiB in [0-9]+ ms: ok@@(?m)^send_check: once, 64 MiB in [0-9]+ ms: ok@@(?m)^send_check: late, 16 MiB in [0-9]+ ms: ok@@(?m)^send_check: ok' @("tests/programs/send_check.erl")
+    # Many sockets in the set of the poll thread (C61 to C63): 300 sockets
+    # get events, the idle VM uses little CPU, and a reset reaches a send.
+    Check "beam.com" '(?m)^fds_check: 150 pairs, one message on each: ok@@(?m)^fds_check: idle with 300 sockets, [0-9]+ ms of CPU in 3 s: ok@@(?m)^fds_check: a reset while a send waits: .*: ok@@(?m)^fds_check: ok' @("tests/programs/fds_check.erl")
+    # The close of a written file does not wait for the disk (C64), and
+    # the close of a socket with a linger ends the connection (C65).
+    Check "beam.com" '(?m)^close_check: close of a written file, median [0-9]+ us: ok@@(?m)^close_check: close with a linger, .*: ok@@(?m)^close_check: ok' @("tests/programs/close_check.erl", "--", $Dir)
     Check "beam.com" 'none.erl: no such file' @("none.erl") 1
     Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
     Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1

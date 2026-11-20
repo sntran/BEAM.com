@@ -5,6 +5,20 @@ notes of its release.
 
 ## Unreleased
 
+- Windows: a VM with many sockets works. `select()` of Cosmopolitan
+  failed with `E2BIG` for more than 128 fds, and then no socket or port
+  of the VM got an event (C61 of `docs/UPSTREAM.md`). A server with
+  about 125 idle connections stopped all of its network I/O. With 64 to
+  128 fds, `poll()` did not wait, and an idle VM used most of a CPU
+  (C62). An error of a socket that waited only to send is now reported
+  for that socket (C63).
+- Windows: the close of a written file does not wait for the disk. The
+  libc flushed each written file at its close (C64). On the Windows
+  ARM64 runner, 100 calls of `file:write_file/2` took 1.0 s, and the
+  poll thread waited for the flush.
+- Windows: the close of a socket with `{linger, {true, T}}` sends the
+  end of the stream. Winsock refused the close, and the libc freed the
+  fd, so the connection stayed open with no owner (C65).
 - Windows: a send on a socket does not wait for the peer. The libc of
   Cosmopolitan waited for the end of each send, also on a non-blocking
   socket, and the scheduler thread of the port waited with it (C60 of

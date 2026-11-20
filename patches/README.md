@@ -104,6 +104,9 @@ loader of macOS arm64 that apelink puts in each APE file.
 |---|---|---|---|
 | `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
 | `unveil.patch` | `libc/calls/unveil.c` | The permission "c" also gives Landlock the rights of the removal of a file and of a directory. | C50 |
+| `poll-nt.patch` | `libc/calls/poll-nt.c` | `poll()` of Windows: one `WSAPoll()` for any count of sockets (the libc did it only for 63 fds or fewer), and the path for more than 63 files and pipes waits with a time of the wall clock (it used the monotonic time, so it did not wait). Also applied to the libc of Windows ARM64 (`build_cosmo_libc`). | C61, C62 |
+| `select-nt.patch` | `libc/calls/select-nt.c` | `select()` of Windows: an entry for each fd of the sets, on the heap above 128 fds (it failed with `E2BIG` above 128 fds), and an error or a hangup is reported in each set that asked for it. Also applied to the libc of Windows ARM64. | C61, C63 |
+| `close-nt.patch` | `libc/calls/close-nt.c` | `close()` of Windows does not flush a written file to the disk. | C64 |
 | `ape-m1.patch` | `bin/ape-m1.c` of cosmocc | The loader reserves the fixed addresses of the program at its start, checks that each range is free before it maps the program, and starts again when a range is in use. On macOS 27, it checks a range with `mach_vm_region_recurse()` and maps it with `MAP_FIXED`. | C51, C57 |
 
 ## Changes that are not patch files
