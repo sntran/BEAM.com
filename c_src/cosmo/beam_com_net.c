@@ -63,6 +63,7 @@
 #include "libc/calls/struct/bpf.internal.h"
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
 #include "libc/dce.h"                       /* IsLinux() */
+#include "libc/nt/winsock.h"                /* WSAStartup() */
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
 #endif
 #include "beam_com_net.h"
@@ -479,9 +480,18 @@ void beam_com_net_deny(void)
  * The accepted socket must be the socket of this connect: another
  * program can connect to the port first. Gives 0, with the read end in
  * fds[0] and the write end in fds[1], or -1 with errno.
+ *
+ * The libc calls WSACleanup() in a handler of atexit(), while the poll
+ * thread still waits on the pair: its read then gives ENETDOWN, and
+ * ERTS stops with "Failed to read on wakeup pipe" (one run of CI also
+ * aborted). Winsock counts the calls of WSAStartup(), and only the last
+ * WSACleanup() ends it. So this function calls WSAStartup() one more
+ * time, and Winsock stays until the end of the process.
  */
 int beam_com_wakeup_pair(int fds[2])
 {
+    static int started;
+    struct NtWsaData wsa;
     struct sockaddr_in addr, mine, peer;
     socklen_t len;
     int lsn = -1, rd = -1, wr = -1, one = 1, e;
@@ -489,6 +499,13 @@ int beam_com_wakeup_pair(int fds[2])
     if (!IsWindows()) {
         errno = ENOTSUP;
         return -1;
+    }
+    if (!started) {
+        if (WSAStartup(0x0202, &wsa) != 0) {
+            errno = ENETDOWN;
+            return -1;
+        }
+        started = 1;
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;

@@ -238,6 +238,13 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
             $script:pending.Add("${Name}: kernel did not accept the inetrc")
             $ok = $false
         }
+        # The wake-up of the poll thread works up to the exit (C59 of
+        # docs/UPSTREAM.md).
+        if ($out -match 'on wakeup pipe') {
+            Write-Host "FAIL: ${Name}: an error of the wake-up of the poll thread"
+            $script:pending.Add("${Name}: an error of the wake-up of the poll thread`n$tail")
+            $ok = $false
+        }
         if ($ok) { Write-Host "PASS: $Name" }
     }
 }

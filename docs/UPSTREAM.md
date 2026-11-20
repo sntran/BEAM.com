@@ -1956,7 +1956,14 @@ wake-up stops the wait at once. The pair uses the real `socket()`,
 `bind()` and `connect()`, not the wraps of `--allow-net`, because it
 is not a network connection of the program. The accepted socket must
 be the socket of the `connect()`: another program can connect to the
-port first. When the pair fails, the pipe stays.
+port first. When the pair fails, the pipe stays. The libc calls
+`WSACleanup()` in a handler of `atexit()` (`libc/sock/kntwsadata.c`),
+while the poll thread still waits on the pair. Its read then gave
+`ENETDOWN`, and ERTS stopped with "Failed to read on wakeup pipe" (one
+run aborted). Winsock counts the calls of `WSAStartup()`, so the pair
+calls it one more time, and Winsock stays until the end of the
+process. `tests/run.ps1` and `tests/run.sh` fail each check whose
+output has this message.
 
 On the Windows runners of CI, the round trip of the ping-pong now takes
 0.1 to 0.4 ms. A download of 129 MB with `httpc` took 212 s
