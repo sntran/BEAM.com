@@ -601,6 +601,9 @@ if [ -d examples ]; then
     # and the exit status of the program.
     check beam.com "$hashsum" examples/hashsum.erl -- abc
     check_status 2 beam.com '^usage: hashsum TEXT' examples/hashsum.erl
+    # The poll thread of ERTS sees each change of its set at once (C59 of
+    # docs/UPSTREAM.md): a round trip over loopback takes less than 2 ms.
+    check beam.com '^poll: 500 round trips, [0-9.]* ms each: ok$' tests/programs/poll_check.erl
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o

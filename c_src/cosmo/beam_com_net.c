@@ -41,6 +41,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -458,6 +459,73 @@ int __wrap_socket(int domain, int type, int protocol)
 void beam_com_net_deny(void)
 {
     net_deny = 1;
+}
+
+/*
+ * The wake-up of the poll thread of ERTS on Windows
+ * (patches/otp/0007-windows-wakeup.patch). ERTS has no poll() here, so
+ * its poll thread uses select(), with a pipe that wakes it when its set
+ * changes. On Windows, poll() and select() of Cosmopolitan wait in
+ * WSAPoll() for up to 10 ms (POLL_INTERVAL_MS) when the set has sockets,
+ * and they check a pipe only after that wait. Thus each change of the set
+ * (for example, each new read of a socket in the mode {active, once})
+ * waited up to 10 ms, and a download got about 0.6 MB/s.
+ *
+ * The two sockets of this pair go into WSAPoll(), so a write wakes the
+ * poll thread at once. The pair is a TCP connection on 127.0.0.1. The
+ * calls are the real calls, not the wraps: the pair is not a network
+ * connection of the program, and it also works with no permission net.
+ * The accepted socket must be the socket of this connect: another
+ * program can connect to the port first. Gives 0, with the read end in
+ * fds[0] and the write end in fds[1], or -1 with errno.
+ */
+int beam_com_wakeup_pair(int fds[2])
+{
+    struct sockaddr_in addr, mine, peer;
+    socklen_t len;
+    int lsn = -1, rd = -1, wr = -1, one = 1, e;
+
+    if (!IsWindows()) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    len = sizeof(addr);
+    if ((lsn = __real_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0 ||
+        __real_bind(lsn, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(lsn, 1) < 0 ||
+        getsockname(lsn, (struct sockaddr *)&addr, &len) < 0)
+        goto fail;
+    len = sizeof(mine);
+    if ((wr = __real_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0 ||
+        __real_connect(wr, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        getsockname(wr, (struct sockaddr *)&mine, &len) < 0)
+        goto fail;
+    len = sizeof(peer);
+    if ((rd = accept4(lsn, (struct sockaddr *)&peer, &len, SOCK_CLOEXEC)) < 0)
+        goto fail;
+    if (len < sizeof(peer) || peer.sin_port != mine.sin_port ||
+        peer.sin_addr.s_addr != mine.sin_addr.s_addr) {
+        errno = EACCES;
+        goto fail;
+    }
+    /* A wake-up is one byte: send it at once. */
+    setsockopt(wr, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    close(lsn);
+    fds[0] = rd;
+    fds[1] = wr;
+    return 0;
+fail:
+    e = errno;
+    if (lsn >= 0)
+        close(lsn);
+    if (rd >= 0)
+        close(rd);
+    if (wr >= 0)
+        close(wr);
+    errno = e;
+    return -1;
 }
 
 /* --- Messages of DNS --------------------------------------------------- */

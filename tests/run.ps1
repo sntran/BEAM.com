@@ -347,6 +347,9 @@ if (Test-Path "examples") {
     # and the exit status of the program (no port program: also here).
     Check "beam.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("examples/hashsum.erl", "--", "abc")
     Check "beam.com" '(?m)^usage: hashsum TEXT' @("examples/hashsum.erl") 2
+    # The poll thread of ERTS sees each change of its set at once (C59 of
+    # docs/UPSTREAM.md). Before, a round trip over loopback took up to 10 ms.
+    Check "beam.com" '(?m)^poll: 500 round trips, [0-9.]* ms each: ok$' @("tests/programs/poll_check.erl")
     Check "beam.com" 'none.erl: no such file' @("none.erl") 1
     Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
     Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1
