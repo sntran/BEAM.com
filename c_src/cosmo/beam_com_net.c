@@ -461,6 +461,7 @@ void beam_com_net_deny(void)
     net_deny = 1;
 }
 
+#ifndef BEAM_COM_NET_TEST /* tests/cosmo/net_check.c does not check it. */
 /*
  * The wake-up of the poll thread of ERTS on Windows
  * (patches/otp/0007-windows-wakeup.patch). ERTS has no poll() here, so
@@ -527,6 +528,7 @@ fail:
     errno = e;
     return -1;
 }
+#endif
 
 /* --- Messages of DNS --------------------------------------------------- */
 
