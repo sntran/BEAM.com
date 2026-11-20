@@ -5,6 +5,14 @@ notes of its release.
 
 ## Unreleased
 
+- Windows: a send on a socket does not wait for the peer. The libc of
+  Cosmopolitan waited for the end of each send, also on a non-blocking
+  socket, and the scheduler thread of the port waited with it (C60 of
+  `docs/UPSTREAM.md`). A transfer of 64 MiB between two processes of one
+  VM got about 1.1 MB/s, or it did not end, and a server that sent a
+  large response to a slow client held a scheduler. Now a send of a
+  non-blocking socket sends what fits and gives `EAGAIN` for the rest,
+  as on Unix.
 - Windows 11 on ARM64: `beam.com` and each program that it builds run
   as native ARM64 code, with the aarch64 JIT. Before, Windows ran the
   x86_64 half under its x64 emulation. The file starts its aarch64 half

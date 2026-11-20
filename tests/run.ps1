@@ -269,6 +269,12 @@ if ((Test-Path (Join-Path $Dir "pipe_check.com")) -or (Skip "pipe_check.com: not
 if ((Test-Path (Join-Path $Dir "agent_check.com")) -or (Skip "agent_check.com: not in $Dir")) {
     Check "agent_check.com" '(?m)^agent_check: ok' @()
 }
+# The sends on a non-blocking socket (c_src/cosmo/beam_com_sock.c, C60
+# of docs/UPSTREAM.md): they never wait, and the count of a partial send
+# is exact.
+if ((Test-Path (Join-Path $Dir "sock_check.com")) -or (Skip "sock_check.com: not in $Dir")) {
+    Check "sock_check.com" '(?m)^sock_check: EAGAIN after [0-9]+ bytes@@(?m)^sock_check: ok' @()
+}
 # The copies of the programs of the zip in the cache
 # (c_src/cosmo/beam_com_zipexec.c): the name with .exe, the copy of 8
 # programs at the same time, and a run of the copy.
@@ -297,7 +303,7 @@ if ($arm64) {
     # The three C checks above ran their x86_64 half. With the loader,
     # their aarch64 half runs.
     if ((Test-Path (Join-Path $Dir "ape-arm64.exe")) -or (Skip "ape-arm64.exe: not in $Dir")) {
-        foreach ($c in @("pipe_check", "agent_check", "zipexec_check")) {
+        foreach ($c in @("pipe_check", "agent_check", "zipexec_check", "sock_check")) {
             if (Test-Path (Join-Path $Dir "$c.com")) {
                 Check "ape-arm64.exe" "(?m)^${c}: ok" @((Join-Path $Dir "$c.com"))
             }
@@ -386,6 +392,9 @@ if (Test-Path "examples") {
     # The poll thread of ERTS sees each change of its set at once (C59 of
     # docs/UPSTREAM.md). Before, a round trip over loopback took up to 10 ms.
     Check "beam.com" '(?m)^poll: 500 round trips, [0-9.]* ms each: ok$' @("tests/programs/poll_check.erl")
+    # Large sends between two processes of one VM end, also with one
+    # scheduler online (C60): a send does not wait for the peer.
+    Check "beam.com" '(?m)^send_check: passive, 64 MiB in [0-9]+ ms: ok@@(?m)^send_check: once, 64 MiB in [0-9]+ ms: ok@@(?m)^send_check: late, 16 MiB in [0-9]+ ms: ok@@(?m)^send_check: ok' @("tests/programs/send_check.erl")
     Check "beam.com" 'none.erl: no such file' @("none.erl") 1
     Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
     Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1

@@ -67,6 +67,9 @@
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
 #endif
 #include "beam_com_net.h"
+#ifndef BEAM_COM_NET_TEST
+#include "beam_com_sock.h"
+#endif
 
 int __real_connect(int, const struct sockaddr *, socklen_t);
 int __real_bind(int, const struct sockaddr *, socklen_t);
@@ -435,6 +438,13 @@ ssize_t __wrap_sendto(int fd, const void *buf, size_t n, int flags,
         errno = EACCES;
         return -1;
     }
+#ifndef BEAM_COM_NET_TEST
+    /* A non-blocking socket with no address (beam_com_sock.c). */
+    if (!sa && beam_com_sock_nonblock(fd)) {
+        struct iovec iov = {(void *)buf, n};
+        return beam_com_sock_send(fd, &iov, 1, flags);
+    }
+#endif
     return __real_sendto(fd, buf, n, flags, sa, len);
 }
 
@@ -444,6 +454,13 @@ ssize_t __wrap_sendmsg(int fd, const struct msghdr *msg, int flags)
         errno = EACCES;
         return -1;
     }
+#ifndef BEAM_COM_NET_TEST
+    /* A non-blocking socket with no address and no control data
+     * (beam_com_sock.c). The libc refuses control data on Windows. */
+    if (msg && !msg->msg_name && !msg->msg_control && msg->msg_iovlen <= 0x7fffffff &&
+        beam_com_sock_nonblock(fd))
+        return beam_com_sock_send(fd, msg->msg_iov, (int)msg->msg_iovlen, flags);
+#endif
     return __real_sendmsg(fd, msg, flags);
 }
 

@@ -221,7 +221,8 @@ jobs:
           if-no-files-found: error
 
       # The check of the writes to a pipe (c_src/cosmo/beam_com_pipe.c),
-      # of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c), and of
+      # of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c), of the
+      # sends on a non-blocking socket (c_src/cosmo/beam_com_sock.c), and of
       # the copies of the programs of the zip (c_src/cosmo/beam_com_zipexec.c),
       # for the job test: tests/run.ps1 runs them on Windows.
       - name: Build the check of the pipe writes
@@ -230,6 +231,7 @@ jobs:
           build/cosmocc/bin/cosmocc -O2 -Wno-unused-function -o build/pipe_check.com \
             tests/cosmo/pipe_check.c
           build/cosmocc/bin/cosmocc -O2 -o build/agent_check.com tests/cosmo/agent_check.c
+          build/cosmocc/bin/cosmocc -O2 -Wl,--wrap=send -o build/sock_check.com tests/cosmo/sock_check.c
           CC=build/cosmocc/bin/cosmocc sh tests/cosmo/zipexec_check.sh build
           # Windows on ARM64: the check of the libc with the Windows layer
           # for aarch64, with the loader in its zip, and the loader.
@@ -246,6 +248,7 @@ jobs:
           path: |
             build/pipe_check.com
             build/agent_check.com
+            build/sock_check.com
             build/zipexec_check.com
             build/win_arm64_check.com
             build/ape-arm64.exe

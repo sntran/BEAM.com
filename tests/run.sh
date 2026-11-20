@@ -627,6 +627,10 @@ if [ -d examples ]; then
     # The poll thread of ERTS sees each change of its set at once (C59 of
     # docs/UPSTREAM.md): a round trip over loopback takes less than 2 ms.
     check beam.com '^poll: 500 round trips, [0-9.]* ms each: ok$' tests/programs/poll_check.erl
+    # Large sends between two processes of one VM end, also with one
+    # scheduler online (C60): a send does not wait for the peer.
+    check beam.com '^send_check: passive, 64 MiB in [0-9]* ms: ok$@@^send_check: once, 64 MiB in [0-9]* ms: ok$@@^send_check: late, 16 MiB in [0-9]* ms: ok$@@^send_check: ok$' \
+        tests/programs/send_check.erl
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o

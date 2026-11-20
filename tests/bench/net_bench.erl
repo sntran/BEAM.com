@@ -11,8 +11,11 @@
 %% - The same two downloads with ssl in the passive mode, as Mint and Req
 %%   read.
 %%
-%% It needs the network. It has no test of a large send over loopback in
-%% one VM: on Windows, send() of Cosmopolitan blocks (C60).
+%% - 64 MB over loopback between two processes of one VM, to a reader in
+%%   the passive mode and in the mode {active, once} (C60 of
+%%   docs/UPSTREAM.md). Each one stops after 120 s.
+%%
+%% It needs the network.
 -module(net_bench).
 -export([main/1]).
 
@@ -26,6 +29,8 @@ main(_) ->
     ping_pong(1000),
     lists:foreach(fun download/1, ?FILES),
     lists:foreach(fun passive_download/1, ?FILES),
+    bulk(passive),
+    bulk(once),
     halt(0).
 
 pair() ->
@@ -60,6 +65,43 @@ pong(C, N) ->
     ok = gen_tcp:send(C, <<"x">>),
     receive {tcp, C, _} -> ok = inet:setopts(C, [{active, once}]) end,
     pong(C, N - 1).
+
+bulk(Mode) ->
+    {C, A} = pair(),
+    Size = 64 * 1024 * 1024,
+    Chunk = binary:copy(<<"0123456789abcdef">>, 4096),
+    Sender = spawn(fun() -> send_all(A, Size, Chunk), gen_tcp:close(A) end),
+    ok = gen_tcp:controlling_process(A, Sender),
+    T = erlang:monotonic_time(millisecond),
+    End = T + 120000,
+    {Got, How} = case Mode of
+                     passive -> recv_passive(C, 0, End);
+                     once -> ok = inet:setopts(C, [{active, once}]), recv_once(C, 0, End)
+                 end,
+    Ms = erlang:monotonic_time(millisecond) - T,
+    exit(Sender, kill),
+    gen_tcp:close(C),
+    io:format("BENCH loopback ~p: ~b MB in ~b ms, ~.1f MB/s (~s)~n",
+              [Mode, Got div (1024 * 1024), Ms, Got / Ms / 1000, How]).
+
+send_all(_, Left, _) when Left =< 0 -> ok;
+send_all(S, Left, Chunk) -> ok = gen_tcp:send(S, Chunk), send_all(S, Left - byte_size(Chunk), Chunk).
+
+left(End) -> max(0, End - erlang:monotonic_time(millisecond)).
+
+recv_passive(S, N, End) ->
+    case gen_tcp:recv(S, 0, left(End)) of
+        {ok, D} -> recv_passive(S, N + byte_size(D), End);
+        {error, closed} -> {N, "all"};
+        {error, timeout} -> {N, "stopped at 120 s"}
+    end.
+
+recv_once(S, N, End) ->
+    receive
+        {tcp, S, D} -> ok = inet:setopts(S, [{active, once}]), recv_once(S, N + byte_size(D), End);
+        {tcp_closed, S} -> {N, "all"}
+    after left(End) -> {N, "stopped at 120 s"}
+    end.
 
 download(Url) ->
     Tls = [{verify, verify_peer}, {cacerts, public_key:cacerts_get()},

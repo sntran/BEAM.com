@@ -1979,7 +1979,7 @@ pipes.
 ### C60. Windows: send() on a non-blocking socket blocks
 
 **Status:** 4.0.2 (`libc/sock/send-nt.c`, `libc/sock/sendto-nt.c`),
-Windows. Found by reading the code; the symptom fits.
+Windows on x86_64 and on ARM64.
 
 **Symptom.** On Windows, a transfer of 64 MB over loopback TCP between
 two processes of one VM got about 1.1 MB/s, and in some runs it did not
@@ -1996,15 +1996,31 @@ completed. `writev()` of a socket calls `sys_send_nt()`
 runs the port waits with it. When the reader is in the same VM, its
 port task or its timer can be on that scheduler.
 
-**Workaround in BEAM.com.** None yet. A download sends little data, so
-it does not have this problem (see C59). A server that sends a large
-response to a slow client holds a scheduler for the time of the send.
+Also a server that sends a large response to a slow client held a
+scheduler for the time of the send. A download sends little data, so it
+did not have this problem (see C59).
 
-**Possible upstream fix.** For a socket with `O_NONBLOCK`, call
-`WSASend()` with no overlapped structure, on a socket in the
-non-blocking mode of Winsock (`ioctlsocket(FIONBIO)`). Then
-`WSAEWOULDBLOCK` gives `EAGAIN`, and the count of a partial send is
-exact.
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com_sock.c`. For a socket
+with `O_NONBLOCK`, the wraps of `send()`, `write()`, `writev()`, and
+`sendto()` and `sendmsg()` with no address call `beam_com_sock_send()`.
+It puts the socket in the non-blocking mode of Winsock
+(`ioctlsocket(FIONBIO)`), and calls `WSASend()` with no `OVERLAPPED`.
+Such a call never waits: it sends the bytes that fit and gives their
+exact count, or it fails with `WSAEWOULDBLOCK` (`EAGAIN`). The libc
+already puts each socket of `connect()` and `accept()` in this mode
+(`libc/sock/connect-nt.c`, `accept-nt.c`), and its overlapped calls
+(`recv()`) still wait as before. A send to an address (UDP) stays with
+the libc. On the Windows runners of CI, `tests/cosmo/sock_check.c`
+moves 32 MiB through a non-blocking loopback pair in one thread in
+43 ms (x86_64) and 65 ms (ARM64, x64 emulation), and a send into a full
+socket gives `EAGAIN`. With the calls of the libc, the check stops at
+the first send that does not fit. `tests/programs/send_check.erl` (in
+`tests/run.ps1` and `tests/run.sh`) moves 64 MiB between two processes
+of one VM, and 16 MiB with one scheduler online.
+
+**Possible upstream fix.** The same in `sys_send_nt()` and
+`sys_sendto_nt()`: for a socket with `O_NONBLOCK`, a `WSASend()` with no
+`OVERLAPPED`, in the place of an overlapped call that waits.
 
 ## WAMR (WebAssembly Micro Runtime)
 

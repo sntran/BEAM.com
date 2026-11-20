@@ -117,6 +117,7 @@ int sys_close(int fd);
  * stays until the reader takes it. Weak: not each program of this file
  * has beam_com_pipe.o. */
 void beam_com_pipe_forget(int fd) __attribute__((__weak__));
+void beam_com_sock_forget(int fd) __attribute__((__weak__));
 
 static int close_pid;
 
@@ -133,6 +134,8 @@ int __wrap_close(int fd)
     __fds_lock();
     if (beam_com_pipe_forget)
         beam_com_pipe_forget(fd);
+    if (beam_com_sock_forget)
+        beam_com_sock_forget(fd);
     if (fd >= 0 && (size_t)fd < g_fds.n && g_fds.p[fd].kind == kFdZip &&
         !beam_com_is_windows() && getpid() == close_pid) {
         h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;
