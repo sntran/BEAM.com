@@ -3044,9 +3044,10 @@ sends the data and the end of the stream after the close. A linger with
 the time 0 (a reset) does not change. Under `pledge()` with no
 promise `inet`, `getsockopt()` gives `EPERM`, and the close stays as
 before. `tests/programs/close_check.erl` closes a socket in the mode
-`{active, true}` 10 times while the peer does not read, and each round
-must end in less than 5 s; without the fix, a round took 10 s in 6 runs
-of 6.
+`{active, true}` 20 times while the peer does not read, and each round
+must end in less than 5 s; without the fix, a round took 10 s in 8 runs
+of 8. With the fix, CI run 748 passed 10 such rounds on Linux, macOS,
+FreeBSD, OpenBSD and Windows (Linux x86_64: 19 ms in all).
 
 **Possible upstream fix.** The same in `inet_stop_select()`, or a
 `close()` of a lingering socket in an async thread.
