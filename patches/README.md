@@ -39,6 +39,7 @@ order, with `git apply`.
 | `0006-windows-spawn.patch` | `erts/emulator/sys/unix/sys_drivers.c` | On Windows, the spawn driver starts a port program with `posix_spawn()`, with no `erl_child_setup`, and a thread gives the exit status to the forker port. The write end of a port is non-blocking (with the wraps of `c_src/cosmo/beam_com_pipe.c`). | C16 |
 | | `lib/kernel/src/os.erl` | With `{unix, windows}`, `os:find_executable/1` tries the suffixes of Windows (`.exe`, `.com`, `.cmd`, `.bat`). | C16 |
 | `0007-windows-wakeup.patch` | `erts/emulator/sys/common/erl_poll.c` | On Windows, the wake-up of the poll thread is a pair of loopback TCP sockets (`beam_com_wakeup_pair()` of `c_src/cosmo/beam_com_net.c`) in place of a pipe, so a change of the set of the poll thread does not wait up to 10 ms. | C59 |
+| `0008-linger-close.patch` | `erts/emulator/drivers/common/inet_drv.c` | Before the close of a socket, `inet_stop_select()` turns off a linger with a time above 0, so `close()` does not wait for the peer in the poll thread or in a scheduler. A linger with the time 0 does not change. | O29 |
 
 ## Elixir (`patches/elixir/`)
 

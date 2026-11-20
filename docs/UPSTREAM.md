@@ -2156,9 +2156,9 @@ owner, and its handle leaked.
 `c_src/cosmo/beam_com_sock.c`, which `__wrap_close()` calls: before the
 close of such a socket, it turns the linger off. Then `closesocket()`
 returns at once, and Windows sends the data that waits and the end of
-the stream in the background. On Linux, `close()` waits for the linger;
-ERTS does not use the result. A linger with the time 0 (a reset) does
-not change. `tests/programs/close_check.erl` checks that the peer gets
+the stream in the background. On Linux, `close()` waits for the linger,
+and that wait can hold the poll thread (O29). A linger with the time 0
+(a reset) does not change. `tests/programs/close_check.erl` checks that the peer gets
 all the data and the end. With the fix, the peer got the 200000 bytes and
 the end of the stream in 1 ms on both Windows runners of CI.
 
@@ -3010,6 +3010,46 @@ Windows keep the text of `configure`. The native half on Windows on
 ARM64 (C58) gives `aarch64-unknown-linux-gnu`.
 
 **Possible upstream fix.** None needed for a native build.
+
+### O29. The close of a socket with a linger holds the poll thread
+
+**Status:** OTP 29.1.2 (`erts/emulator/drivers/common/inet_drv.c`,
+`erts/emulator/sys/common/erl_check_io.c`), with the `select()`
+back-end of BEAM.com (C3). Not tested with epoll or kqueue, the default
+back-ends of native builds.
+
+**Symptom.** On Linux, after `gen_tcp:close/1` of a socket with
+`{linger, {true, 10}}` and data that the peer did not take yet, no
+socket or port of the VM got an event for 10 s. The peer got 8 to 24 KB
+and then nothing, so `tests/programs/close_check.erl` failed in about
+one run of four (CI run 747). `strace` showed `close()` for 10.1 s in
+the thread `erts_poll_0`.
+
+**Cause.** `inet_stop_select()`, the `stop_select` callback of the inet
+driver, closes the fd. With a back-end that has no concurrent updates,
+the poll thread removes an fd that is in its set, and then calls this
+callback. With `SO_LINGER` on and a time above 0, the `close()` of
+Linux waits until the peer takes the data, also for a non-blocking
+socket. The peer is a socket of the same VM (or a peer that waits for
+an answer of the VM), and its events come from the poll thread that
+waits. When ERTS calls the callback in a scheduler, the `close()` can
+hold that scheduler for up to the linger time. `prim_inet:close/1` already
+waits for the queue of the driver, as its comment tells, and ERTS does
+not read the result of `close()`.
+
+**Workaround in BEAM.com.** `patches/otp/0008-linger-close.patch`:
+before the close, `inet_stop_select()` turns the linger off when it is
+on with a time above 0. Then `close()` returns at once, and the system
+sends the data and the end of the stream after the close. A linger with
+the time 0 (a reset) does not change. Under `pledge()` with no
+promise `inet`, `getsockopt()` gives `EPERM`, and the close stays as
+before. `tests/programs/close_check.erl` closes a socket in the mode
+`{active, true}` 10 times while the peer does not read, and each round
+must end in less than 5 s; without the fix, a round took 10 s in 6 runs
+of 6.
+
+**Possible upstream fix.** The same in `inet_stop_select()`, or a
+`close()` of a lingering socket in an async thread.
 
 ## Emscripten
 

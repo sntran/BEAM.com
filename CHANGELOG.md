@@ -5,6 +5,12 @@ notes of its release.
 
 ## Unreleased
 
+- The close of a socket with `{linger, {true, T}}` does not stop the
+  I/O of the VM. With data that the peer did not take yet, `close()` of
+  the system waited for up to T seconds in the poll thread of ERTS, and
+  no socket or port got an event for that time (O29 of
+  `docs/UPSTREAM.md`). Now the system sends the data and the end of the
+  stream after the close, on each system.
 - Windows: a VM with many sockets works. `select()` of Cosmopolitan
   failed with `E2BIG` for more than 128 fds, and then no socket or port
   of the VM got an event (C61 of `docs/UPSTREAM.md`). A server with
