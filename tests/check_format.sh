@@ -19,6 +19,10 @@
 #   for x86_64. No segment starts writable and executable, each segment is
 #   inside the file, and the start address is in an executable segment.
 #   (macOS on arm64 runs the APE loader, not a Mach-O in the file.)
+# - The loader of Windows on ARM64 (the entry bin/ape-arm64.exe of the
+#   zip, when the file has it): a PE32+ for ARM64 with NX_COMPAT and
+#   DYNAMIC_BASE, and without HIGH_ENTROPY_VA (see build_arm64_loader in
+#   scripts/steps.sh). A FILE that ends in .exe gets only this check.
 #
 # Needs: COSMOCC (the directory of cosmocc, default build/cosmocc), GNU
 # binutils, unzip, and llvm-objdump (LLVM_OBJDUMP, llvm-objdump on the
@@ -138,13 +142,40 @@ check_macho() {
     pass "macho x86_64"
 }
 
+# A number of 4 or 2 bytes (little endian) at an offset of a file.
+u4() { od -An -tu4 -j"$2" -N4 "$1" | tr -d ' '; }
+u2() { od -An -tu2 -j"$2" -N2 "$1" | tr -d ' '; }
+
+check_arm64_loader() {
+    exe=$1 what=$2 before=$failures
+    pe=$(u4 "$exe" 60)
+    # "PE\0\0" is 17744. The machine ARM64 is 0xaa64, and PE32+ is 0x20b.
+    [ -n "$pe" ] && [ "$(u4 "$exe" "$pe")" = 17744 ] || { fail "$what: no PE header"; return; }
+    [ "$(u2 "$exe" $((pe + 4)))" = 43620 ] || fail "$what: not ARM64"
+    [ "$(u2 "$exe" $((pe + 24)))" = 523 ] || fail "$what: not PE32+"
+    # DllCharacteristics: 70 bytes into the optional header.
+    ch=$(u2 "$exe" $((pe + 94)))
+    [ $((ch & 0x100)) -ne 0 ] || fail "$what: no NX_COMPAT"
+    [ $((ch & 0x40)) -ne 0 ] || fail "$what: no DYNAMIC_BASE"
+    [ $((ch & 0x20)) -eq 0 ] || fail "$what: HIGH_ENTROPY_VA"
+    [ "$failures" != "$before" ] || pass "$what"
+}
+
 for file in "$@"; do
     [ -f "$file" ] || { echo "FAIL $file: no such file"; failures=$((failures + 1)); continue; }
+    case $file in
+        *.exe) check_arm64_loader "$file" "pe arm64"; continue ;;
+    esac
     check_zip
     check_pe
     check_elf x86_64 -x 'Advanced Micro Devices X86-64'
     check_elf aarch64 -a 'AArch64'
     check_macho
+    if unzip -Z1 "$file" | grep -qx 'bin/ape-arm64.exe'; then
+        loader=$tmp/$(basename "$file").ape-arm64.exe
+        unzip -p "$file" bin/ape-arm64.exe > "$loader"
+        check_arm64_loader "$loader" "pe arm64 (bin/ape-arm64.exe)"
+    fi
 done
 if [ "$failures" -gt 0 ]; then
     echo "check_format: $failures failures"

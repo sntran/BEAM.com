@@ -1,0 +1,191 @@
+inet_drv.c: reuseaddr and reuseport on Windows as in Erlang/OTP for
+Windows. The libc of Cosmopolitan has SO_EXCLUSIVEADDRUSE in place of
+SO_REUSEADDR on Windows, and SO_REUSEPORT is 0 there: setsockopt() then
+fails with ENOPROTOOPT and tries SO_REUSEADDR, which is again
+SO_EXCLUSIVEADDRUSE. Thus {reuseport, true} made the port exclusive, and
+a second UDP socket on one port gave eaddrinuse. With BEAM.com on
+Windows, the driver now does what the code of __WIN32__ does: it sets
+SO_REUSEADDR of Winsock (4) only when both options are on, and
+inet:getopts/2 gives the two options from that state. Also, the field
+bsd_compat starts at 0: ALLOC() does not clear it. See C66 and O30 of
+docs/UPSTREAM.md.
+
+diff --git a/erts/emulator/drivers/common/inet_drv.c b/erts/emulator/drivers/common/inet_drv.c
+--- a/erts/emulator/drivers/common/inet_drv.c
++++ b/erts/emulator/drivers/common/inet_drv.c
+@@ -1239,7 +1239,7 @@ typedef struct {
+ 				   (affect how to interpret hsz) */
+     int   exitf;                /* exit port on close or not */
+     int   deliver;              /* Delivery mode, TERM or PORT */
+-#ifdef __WIN32__
++#if defined(__WIN32__) || defined(__COSMOPOLITAN__)
+     /* placed here in order to not consume more memory in 64-bit case... */
+     int bsd_compat;             /* State for Windows compatibility with BSD */
+ #endif
+@@ -6868,6 +6868,38 @@ int inet_setopt(int fd,
+ static int sctp_set_opts(inet_descriptor* desc, char* ptr, int len);
+ #endif
+ 
++#ifdef __COSMOPOLITAN__
++/* BEAM.com: on Windows, reuseaddr and reuseport as in Erlang/OTP for
++ * Windows (the code of __WIN32__ below). SO_REUSEADDR of Winsock goes
++ * on only when both options are on, because it acts as SO_REUSEADDR
++ * and SO_REUSEPORT together on BSD. The libc cannot set it: its
++ * SO_REUSEADDR is SO_EXCLUSIVEADDRUSE on Windows, and its SO_REUSEPORT
++ * is 0, which also sets SO_EXCLUSIVEADDRUSE. Gives the option name for
++ * setsockopt() (4, SO_REUSEADDR of Winsock), or -1 when the state of
++ * Winsock does not change. See C66 of docs/UPSTREAM.md. */
++static int beam_com_windows_reuse(inet_descriptor* desc, int opt, int ival,
++                                  int* compat_set, int* compat_unset)
++{
++    int old_ra, new_ra, compat, ra_bits, opt_bit;
++
++    ra_bits = (1<<INET_OPT_REUSEADDR) | (1<<INET_OPT_REUSEPORT);
++    opt_bit = (1<<opt);
++    compat = desc->bsd_compat;
++    old_ra = (compat & ra_bits) == ra_bits;
++    if (ival) {
++        *compat_set = opt_bit;
++        compat |= opt_bit;
++    }
++    else {
++        *compat_unset = opt_bit;
++        compat &= ~opt_bit;
++    }
++    new_ra = (compat & ra_bits) == ra_bits;
++    desc->bsd_compat = compat;
++    return old_ra == new_ra ? -1 : 4;
++}
++#endif
++
+ static int inet_set_opts(inet_descriptor* desc, char* ptr, int len)
+ {
+     int type;
+@@ -6907,7 +6939,7 @@ static int inet_set_opts(inet_descriptor* desc, char* ptr, int len)
+ 
+     while(len >= 5) {
+         int recv_cmsgflags;
+-#ifdef __WIN32__
++#if defined(__WIN32__) || defined(__COSMOPOLITAN__)
+         int bsd_compat_set = 0;
+         int bsd_compat_unset = 0;
+ #endif
+@@ -7243,6 +7275,16 @@ static int inet_set_opts(inet_descriptor* desc, char* ptr, int len)
+ #if defined(__WIN32__)
+             ERTS_FALLTHROUGH(); /* to INET_OPT_REUSEADDR */
+ #elif defined(SO_REUSEPORT)
++#ifdef __COSMOPOLITAN__
++            if (beam_com_is_windows()) {
++                type = beam_com_windows_reuse(desc, opt, ival,
++                                              &bsd_compat_set,
++                                              &bsd_compat_unset);
++                if (type < 0)
++                    continue;
++                break;
++            }
++#endif
+             type = SO_REUSEPORT;
+             break;
+ #else
+@@ -7279,6 +7321,16 @@ static int inet_set_opts(inet_descriptor* desc, char* ptr, int len)
+                 if (old_ra == new_ra)
+                     continue;
+             }
++#endif
++#ifdef __COSMOPOLITAN__
++            if (beam_com_is_windows()) {
++                type = beam_com_windows_reuse(desc, opt, ival,
++                                              &bsd_compat_set,
++                                              &bsd_compat_unset);
++                if (type < 0)
++                    continue;
++                break;
++            }
+ #endif
+             type = SO_REUSEADDR;
+ 	    break;
+@@ -7931,7 +7983,7 @@ static int inet_set_opts(inet_descriptor* desc, char* ptr, int len)
+             desc->recv_cmsgflags = recv_cmsgflags;
+         }
+         else {
+-#ifdef __WIN32__
++#if defined(__WIN32__) || defined(__COSMOPOLITAN__)
+             if (bsd_compat_set)
+                 desc->bsd_compat &= ~bsd_compat_set;
+             if (bsd_compat_unset)
+@@ -9384,6 +9436,15 @@ static ErlDrvSSizeT inet_fill_opts(inet_descriptor* desc,
+ 	    put_int32(res, ptr);
+             continue;
+ #else
++#ifdef __COSMOPOLITAN__
++            /* BEAM.com: on Windows, the state of C66. */
++            if (beam_com_is_windows()) {
++                int res = !!(desc->bsd_compat & (1<<INET_OPT_REUSEADDR));
++                *ptr++ = opt;
++                put_int32(res, ptr);
++                continue;
++            }
++#endif
+ 	    type = SO_REUSEADDR;
+ #endif
+ 	    break;
+@@ -9409,6 +9470,15 @@ static ErlDrvSSizeT inet_fill_opts(inet_descriptor* desc,
+ 	    put_int32(res, ptr);
+             continue;
+ #elif defined(SO_REUSEPORT)
++#ifdef __COSMOPOLITAN__
++            /* BEAM.com: on Windows, the state of C66. */
++            if (beam_com_is_windows()) {
++                int res = !!(desc->bsd_compat & (1<<INET_OPT_REUSEPORT));
++                *ptr++ = opt;
++                put_int32(res, ptr);
++                continue;
++            }
++#endif
+ 	    type = SO_REUSEPORT;
+ 	    break;
+ #else
+@@ -10153,6 +10223,15 @@ static ErlDrvSSizeT sctp_fill_opts(inet_descriptor* desc,
+ 		tag    = am_reuseaddr;
+                 goto form_result;
+ #elif defined(SO_REUSEPORT)
++#ifdef __COSMOPOLITAN__
++                /* BEAM.com: on Windows, the state of C66. */
++                if (beam_com_is_windows()) {
++                    res = !!(desc->bsd_compat & (1<<INET_OPT_REUSEPORT));
++                    is_int = 0;
++                    tag    = am_reuseport;
++                    goto form_result;
++                }
++#endif
+ 		proto  = SOL_SOCKET;
+ 		type   = SO_REUSEPORT;
+ 		is_int = 0;
+@@ -10170,6 +10249,15 @@ static ErlDrvSSizeT sctp_fill_opts(inet_descriptor* desc,
+ 		tag    = am_reuseaddr;
+                 goto form_result;
+ #else
++#ifdef __COSMOPOLITAN__
++                /* BEAM.com: on Windows, the state of C66. */
++                if (beam_com_is_windows()) {
++                    res = !!(desc->bsd_compat & (1<<INET_OPT_REUSEADDR));
++                    is_int = 0;
++                    tag    = am_reuseaddr;
++                    goto form_result;
++                }
++#endif
+ 		proto  = SOL_SOCKET;
+ 		type   = SO_REUSEADDR;
+ 		is_int = 0;
+@@ -10907,6 +10995,11 @@ static ErlDrvData inet_start(ErlDrvPort port, int size, int protocol)
+     desc->dport = driver_mk_port(port);
+     desc->state = INET_STATE_CLOSED;
+     desc->prebound = 0;
++#if defined(__WIN32__) || defined(__COSMOPOLITAN__)
++    /* BEAM.com: ALLOC() does not clear the memory, and no other code sets
++     * this field before its first use. See O30 of docs/UPSTREAM.md. */
++    desc->bsd_compat = 0;
++#endif
+ 
+     if (protocol == IPPROTO_TCP)
+         desc->bufsz = INET_BUFFER_TCP_DEFAULT;

@@ -27,12 +27,22 @@
 %% without compression (0.25.4).
 -define(ESBUILD_MAX, 64 * 1024 * 1024).
 -define(ESBUILD_UNPACKED, 128 * 1024 * 1024).
+%% The program of tailwindcss for Windows x64 (one file of Bun) has
+%% about 110 MB (4.3). The URL is the URL of the Hex package tailwind.
+-define(TAILWIND, "https://github.com/tailwindlabs/tailwindcss/releases/download/v").
+-define(TAILWIND_MAX, 512 * 1024 * 1024).
+%% The time limit of that download: 10 minutes, for a slow network. The
+%% default of beam_com_hex:http/5 is 60 s for the complete request. On the
+%% Windows runners of CI, the download took about 3 minutes before the fix
+%% of C59 of docs/UPSTREAM.md, and about 2 s after it. The limit of 120 s
+%% with no data stays.
+-define(TAILWIND_TIMEOUT, 10 * 60 * 1000).
 %% The replacement of a byte that is not UTF-8 in the output of Mix.
 -define(BAD_CHAR, <<16#FFFD/utf8>>).
 
 -ifdef(TEST).
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
-         asset_tools/2, esbuild_exe/3, esbuild_exe/4, verify_npm/4, npm_keys/0, cache_env/1,
+         asset_tools/2, esbuild_exe/3, esbuild_exe/4, tailwind_exe/3, tailwind_version/1, verify_npm/4, npm_keys/0, cache_env/1,
          windows_assets/2, steps/5, relay/1, status/1, watch_input/2, write_nif_files/3,
          deps/2]).
 -endif.
@@ -379,10 +389,16 @@ write_new(Path, Data) ->
 %% On Windows, os:type() is {unix, windows}, so the Hex packages
 %% tailwind and esbuild choose their programs for Linux. For a package
 %% that the project does not configure, use the program for Windows:
-%% tailwind gets the target "windows-x64.exe" (it downloads that
-%% program itself), and esbuild gets the path of esbuild.exe from npm,
-%% because esbuild has no setting for the target. Cosmopolitan runs
-%% only x86-64 programs on Windows. Only the step assets.deploy runs
+%% tailwind gets the path of tailwindcss-windows-x64.exe of its version,
+%% and esbuild gets the path of esbuild.exe from npm, because esbuild
+%% has no setting for the target. A tailwind with no version in the
+%% config gets the target "windows-x64.exe", and it downloads that
+%% program itself. The target is not sufficient in the aarch64 half on
+%% Windows on ARM64: tailwind 0.5 also asks for the target of the
+%% system, and it refuses the architecture aarch64 with the system
+%% windows. Windows on ARM64 runs these x64 programs under its
+%% emulation. Cosmopolitan runs only x86-64 programs on Windows on
+%% x86-64. Only the step assets.deploy runs
 %% these programs: with no such alias, or with a dep that is not in the
 %% environment of Mix, nothing changes, and nothing is downloaded.
 windows_assets({_, windows}, Config) ->
@@ -400,8 +416,19 @@ windows_assets(_Os, _Config) ->
     ok.
 
 windows_asset(tailwind) ->
-    io:format("beam.com: tailwind for Windows (target windows-x64.exe)~n"),
-    set_env(tailwind, target, <<"windows-x64.exe">>);
+    case tailwind_version(application:get_all_env(tailwind)) of
+        {ok, Version} ->
+            Http = fun(Method, Url, Headers, Body, Max) ->
+                           beam_com_hex:http(Method, Url, Headers, Body, Max,
+                                             #{timeout => ?TAILWIND_TIMEOUT})
+                   end,
+            Path = tailwind_exe(Version, filename:absname("_build"), Http),
+            io:format("beam.com: tailwind for Windows: ~ts~n", [Path]),
+            set_env(tailwind, path, unicode:characters_to_binary(Path));
+        none ->
+            io:format("beam.com: tailwind for Windows (target windows-x64.exe)~n"),
+            set_env(tailwind, target, <<"windows-x64.exe">>)
+    end;
 windows_asset(esbuild) ->
     Version = unicode:characters_to_list(application:get_env(esbuild, version, <<>>)),
     Path = esbuild_exe(Version, filename:absname("_build"), fun beam_com_hex:http/5),
@@ -431,6 +458,44 @@ esbuild_exe(Version, Dir, Http) ->
 esbuild_exe(Version, Dir, Http, Limits) ->
     Path = filename:join(Dir, "esbuild-win32-x64-" ++ Version ++ ".exe"),
     filelib:is_regular(Path) orelse write_exe(Path, esbuild_package(Version, Http, Limits)),
+    Path.
+
+%% The version of the config of tailwind (Env, its application env):
+%% {ok, Version}, or none when the config has no version, or when a
+%% profile has its own version. One path is for one version.
+tailwind_version(Env) ->
+    Profiles = [P || {_, P} <- Env, is_list(P), lists:all(fun is_tuple/1, P),
+                     lists:keymember(version, 1, P)],
+    Version = try unicode:characters_to_list(proplists:get_value(version, Env, ""))
+              catch error:_ -> error
+              end,
+    case Profiles =:= [] andalso is_list(Version) andalso Version =/= [] andalso
+         lists:all(fun version_char/1, Version) of
+        true -> {ok, Version};
+        false -> none
+    end.
+
+%% A character of a version in a URL and in a file name.
+version_char(C) ->
+    (C >= $0 andalso C =< $9) orelse (C >= $a andalso C =< $z) orelse lists:member(C, ".-+").
+
+%% The program tailwindcss-windows-x64.exe of the release Version of
+%% tailwindcss, at Dir/tailwind-windows-x64-VERSION.exe: the path. This
+%% is the name and the URL of the Hex package tailwind, so a second
+%% build, or tailwind itself, uses the file again. Http: a function as
+%% beam_com_hex:http/5. The Hex package checks only TLS, and so does
+%% this function.
+tailwind_exe(Version, Dir, Http) ->
+    Path = filename:join(Dir, "tailwind-windows-x64-" ++ Version ++ ".exe"),
+    filelib:is_regular(Path) orelse
+        begin
+            Url = ?TAILWIND ++ Version ++ "/tailwindcss-windows-x64.exe",
+            Exe = Http(get, Url, [], none, ?TAILWIND_MAX),
+            case Exe of
+                <<"MZ", _/binary>> -> write_exe(Path, Exe);
+                _ -> throw({error, "~ts: not a program of Windows", [Url]})
+            end
+        end,
     Path.
 
 %% The npm package of esbuild for Windows x64: @esbuild/win32-x64 since

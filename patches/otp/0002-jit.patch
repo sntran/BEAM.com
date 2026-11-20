@@ -299,9 +299,9 @@ index 73bc507..b0c0664 100644
      UWord ctr_el0;
  
 +#    ifdef __COSMOPOLITAN__
-+    /* BEAM.com: macOS clears the caches with sys_icache_invalidate(), see
-+     * beamasm_flush_icache(). */
-+    if (IsXnuSilicon()) {
++    /* BEAM.com: macOS and Windows clear the caches with a system call, see
++     * beamasm_flush_icache(). Windows does not permit a read of ctr_el0. */
++    if (IsXnuSilicon() || IsWindows()) {
 +        return;
 +    }
 +#    endif
@@ -329,9 +329,9 @@ index 73bc507..b0c0664 100644
          sys_icache_invalidate((char *)address, size);
  #elif defined(__aarch64__) && defined(BEAMASM_MANUAL_ICACHE_FLUSHING)
 +#    ifdef __COSMOPOLITAN__
-+        /* BEAM.com: on macOS, Cosmopolitan's __clear_cache() calls
-+         * sys_icache_invalidate(), as the __APPLE__ branch above. */
-+        if (IsXnuSilicon()) {
++        /* BEAM.com: on macOS and Windows, Cosmopolitan's __clear_cache()
++         * calls the system, as the WIN32 and __APPLE__ branches above. */
++        if (IsXnuSilicon() || IsWindows()) {
 +            __builtin___clear_cache((char *)address, (char *)address + size);
 +            return;
 +        }

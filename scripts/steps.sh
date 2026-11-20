@@ -11,7 +11,7 @@
 # This script runs the steps that it gets, with no check of their needs:
 #
 #   scripts/steps.sh step...
-#   Steps: toolchain openssl otp configure sqlite nifs wasm make elixir
+#   Steps: toolchain libc openssl otp configure sqlite nifs wasm make elixir
 #          release multicall wasm_runtime bundle test unit hex_nifs
 #          nif_edge
 #   With no step, all steps run in order (not hex_nifs and nif_edge).
@@ -89,6 +89,13 @@
 #   CXX              C++ compiler, for the JIT (default: CC with c++ for cc)
 #   JIT              0: build the interpreter instead of the JIT (BeamAsm)
 #                    (default 1). With cosmocc, the JIT has both backends.
+#   WIN_ARM64        0: no native start on Windows on ARM64 (default 1). With
+#                    1, the step libc builds the libc of Cosmopolitan for
+#                    aarch64 with the Windows layer of patches/cosmo-libc
+#                    and puts it into COSMOCC, and it builds the loader
+#                    ape-arm64.exe (clang, lld-link and llvm-dlltool).
+#                    Then the aarch64 half of beam.com also runs on
+#                    Windows (docs/PLATFORMS.md)
 #   OTP_APPS         More OTP applications in the zip, with spaces (for a
 #                    custom build: "mnesia eldap"); their Erlang code only
 #                    (the C code of an application, as the port programs of
@@ -132,6 +139,14 @@ COSMOCC_SHA256=${COSMOCC_SHA256:-85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615
 # COSMOCC_VERSION (build_cosmo_file).
 COSMO_PLEDGE_SHA256=${COSMO_PLEDGE_SHA256:-b8cc37f3d9047863abea3a42577d84eafa523d4eafaf98e4d3facbea73461a60}
 COSMO_UNVEIL_SHA256=${COSMO_UNVEIL_SHA256:-d7456340c5f4bf0f1acef3458930d15b210fade2124d0a4f968fc01c1b236127}
+# poll() and select() of Windows, with patches/cosmo/poll-nt.patch and
+# select-nt.patch (C61 to C63 of docs/UPSTREAM.md).
+COSMO_POLL_NT_SHA256=${COSMO_POLL_NT_SHA256:-abdc5a963f470d6ca5e35103d45cdb5012f1c0e05003fd03d9a26715b8e1cb01}
+COSMO_SELECT_NT_SHA256=${COSMO_SELECT_NT_SHA256:-19065309308d5c4189e39696d073ecc3f5c11adcb130ec2611f16a5943647596}
+# close() of Windows, with patches/cosmo/close-nt.patch (C64).
+COSMO_CLOSE_NT_SHA256=${COSMO_CLOSE_NT_SHA256:-b8a53bfaf0cfbbff8c0701b08d311ea0909f77ca3916f384e53ee24c27f2ab82}
+# rmdir() of Windows, with patches/cosmo/unlinkat-nt.patch (C68).
+COSMO_UNLINKAT_NT_SHA256=${COSMO_UNLINKAT_NT_SHA256:-d58a2756bf77f67268ba14a08de6dcdd36d326c21b4d71f58537920d14856edb}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
 SQLITE=${SQLITE:-1}
@@ -187,6 +202,13 @@ OTP_DOCS=${OTP_DOCS:-0}
 REBAR3=${REBAR3:-0}
 BUILD=${BUILD:-$ROOT/build}
 COSMOCC=${COSMOCC:-$BUILD/cosmocc}
+WIN_ARM64=${WIN_ARM64:-1}
+# The commit of the tag COSMOCC_VERSION of jart/cosmopolitan, and the
+# toolchain that its Makefile downloads (build/download-cosmocc.sh).
+COSMO_COMMIT=5907304049f37c9ed77593974d13202829443bea
+COSMO_BOOTSTRAP_VERSION=3.9.2
+COSMO_BOOTSTRAP_SHA256=f4ff13af65fcd309f3f1cfd04275996fb7f72a4897726628a8c9cf732e850193
+COSMO_LIBC=$BUILD/cosmo-libc
 CC=${CC:-cosmocc}
 AR=${AR:-cosmoar}
 CXX=${CXX:-${CC%cc}c++}
@@ -213,6 +235,12 @@ MAC_WRAPS="-Wl,--wrap=getcwd"
 # The writes to a non-blocking pipe on Windows, and select() for such a
 # pipe (c_src/cosmo/beam_com_pipe.c).
 PIPE_WRAPS="-Wl,--wrap=write -Wl,--wrap=writev -Wl,--wrap=select"
+# send() of a non-blocking socket on Windows (c_src/cosmo/beam_com_sock.c,
+# C60 of docs/UPSTREAM.md).
+SOCK_WRAPS="-Wl,--wrap=send"
+# The timer resolution of Windows: the libc must not release the request
+# of the VM (c_src/cosmo/beam_com.c, C67 of docs/UPSTREAM.md).
+TIMER_WRAPS="-Wl,--wrap=NtSetTimerResolution"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -435,6 +463,125 @@ step_toolchain() {
     fix_ape_m1
 }
 
+# The files of the libc that step_libc puts into COSMOCC: the library of
+# aarch64, its start file and its linker script, and the headers that the
+# patch changes.
+LIBC_OBJECTS="o/aarch64/cosmopolitan.a o/aarch64/libc/crt/crt.o o/aarch64/ape/aarch64.lds"
+LIBC_HEADERS="ape/idata.internal.h libc/dce.h libc/nt/enum/context.h
+    libc/nt/ntdllimport.h libc/nt/struct/context.h"
+
+# build_cosmo_libc: the libc of Cosmopolitan for aarch64 with the Windows
+# layer, in COSMO_LIBC. The source is the commit of the tag
+# COSMOCC_VERSION, with patches/cosmo-libc/win-arm64.patch and the
+# changes of patches/cosmo-libc/generated.py.
+build_cosmo_libc() {
+    src=$BUILD/cosmo-libc-src
+    rm -rf "$src"
+    log "Building the libc of Cosmopolitan for aarch64 with the Windows layer"
+    git init -q "$src"
+    git -C "$src" fetch -q --depth 1 https://github.com/jart/cosmopolitan "$COSMO_COMMIT"
+    git -C "$src" checkout -q FETCH_HEAD
+    check_commit "$src" "$COSMO_COMMIT" "Cosmopolitan $COSMOCC_VERSION"
+    git -C "$src" apply "$ROOT/patches/cosmo-libc/win-arm64.patch"
+    # poll() and select() of Windows (C61 to C63 of docs/UPSTREAM.md). The
+    # x86_64 half gets them from build_cosmo_file in step_multicall.
+    git -C "$src" apply "$ROOT/patches/cosmo/poll-nt.patch" "$ROOT/patches/cosmo/select-nt.patch"
+    python3 "$ROOT/patches/cosmo-libc/generated.py" "$src"
+    (cd "$src" &&
+     build/download-cosmocc.sh ".cosmocc/$COSMO_BOOTSTRAP_VERSION" \
+         "$COSMO_BOOTSTRAP_VERSION" "$COSMO_BOOTSTRAP_SHA256" &&
+     if ! ".cosmocc/$COSMO_BOOTSTRAP_VERSION/bin/make" m=aarch64 -j"$JOBS" \
+             $LIBC_OBJECTS > make.log 2>&1; then
+         tail -n 60 make.log
+         exit 1
+     fi &&
+     cp --parents $LIBC_OBJECTS $LIBC_HEADERS "$COSMO_LIBC/")
+    rm -rf "$src"
+}
+
+# build_arm64_loader: ape-arm64.exe, the native program of Windows on
+# ARM64 that loads the aarch64 half of an APE file
+# (c_src/win-arm64/ape_arm64.c), in COSMO_LIBC. It needs no C library and
+# no Windows SDK: clang compiles it, llvm-dlltool makes the import
+# libraries, and lld-link links it.
+build_arm64_loader() {
+    for tool in clang lld-link llvm-dlltool; do
+        if ! command -v "$tool" > /dev/null; then
+            echo "The loader of Windows on ARM64 needs $tool (the packages clang, lld and llvm)." >&2
+            echo "WIN_ARM64=0 builds beam.com with no native start on Windows on ARM64." >&2
+            exit 1
+        fi
+    done
+    log "Building the loader of Windows on ARM64"
+    src=$ROOT/c_src/win-arm64
+    obj=$BUILD/cosmo-libc-loader
+    rm -rf "$obj"
+    mkdir -p "$obj"
+    llvm-dlltool -m arm64 -d "$src/kernel32.def" -l "$obj/kernel32.lib"
+    llvm-dlltool -m arm64 -d "$src/shell32.def" -l "$obj/shell32.lib"
+    clang --target=aarch64-pc-windows-msvc -ffreestanding -fno-stack-protector \
+        -fno-builtin -O2 -Wall -Werror -c "$src/ape_arm64.c" -o "$obj/ape_arm64.obj"
+    # The stack is committed: the code of cosmocc has no stack probes.
+    # /Brepro: no time in the file, so the same source gives the same file.
+    # /highentropyva:no: Windows puts the stacks and the heaps of the
+    # process below 4 GiB. With high entropy, they go to random addresses
+    # up to some TiB, and about 1 start in 4000 found a block at the fixed
+    # address of the aarch64 half (32 GiB). ARM64 refuses /dynamicbase:no.
+    lld-link /machine:arm64 /subsystem:console /entry:Entry /nodefaultlib \
+        /stack:8388608,8388608 /highentropyva:no /Brepro "/out:$COSMO_LIBC/ape-arm64.exe" \
+        "$obj/ape_arm64.obj" "$obj/kernel32.lib" "$obj/shell32.lib"
+    rm -rf "$obj"
+}
+
+# The key of the part libc (COSMO_LIBC): the source of Cosmopolitan, its
+# toolchain, the code that builds the part, and the files of this
+# repository that it reads.
+libc_part_key() (
+    code=$(steps_code text build_cosmo_libc build_arm64_loader)
+    sums=$(key_files patches/cosmo-libc c_src/win-arm64 patches/cosmo/poll-nt.patch \
+        patches/cosmo/select-nt.patch)
+    printf '%s\n' "libc 1" "$COSMO_COMMIT" "$COSMO_BOOTSTRAP_VERSION" \
+        "$COSMO_BOOTSTRAP_SHA256" "$LIBC_OBJECTS" "$LIBC_HEADERS" "$code" "$sums" |
+        sha256sum | cut -d' ' -f1
+)
+
+# Windows on ARM64: the libc of cosmocc has no Windows layer for aarch64.
+# This step puts a libc with that layer into COSMOCC (the x86_64 half does
+# not change), and it builds the loader ape-arm64.exe. COSMO_LIBC is the
+# part "libc" of the store.
+step_libc() {
+    [ "$WIN_ARM64" = 1 ] || return 0
+    key=$(libc_part_key)
+    if [ "$(cat "$COSMO_LIBC/.beam_com_part" 2>/dev/null)" != "$key" ]; then
+        rm -rf "$COSMO_LIBC"
+        if part_get libc "$key" "$BUILD" &&
+            [ "$(cat "$COSMO_LIBC/.beam_com_part" 2>/dev/null)" = "$key" ]; then
+            :
+        else
+            rm -rf "$COSMO_LIBC"
+            mkdir -p "$COSMO_LIBC"
+            build_cosmo_libc
+            build_arm64_loader
+            echo "$key" > "$COSMO_LIBC/.beam_com_part"
+            part_put libc "$key" "$BUILD" "$(basename "$COSMO_LIBC")"
+        fi
+    fi
+    if [ "$(cat "$COSMOCC/.beam_com_libc" 2>/dev/null)" != "$key" ]; then
+        log "Putting the libc with the Windows layer for aarch64 into $COSMOCC"
+        lib=$COSMOCC/aarch64-linux-cosmo/lib
+        # A new file each time, not a write into a file with more links.
+        rm -f "$lib/libcosmo.a" "$lib/crt.o" "$lib/aarch64.lds"
+        cp "$COSMO_LIBC/o/aarch64/cosmopolitan.a" "$lib/libcosmo.a"
+        cp "$COSMO_LIBC/o/aarch64/libc/crt/crt.o" "$lib/crt.o"
+        cp "$COSMO_LIBC/o/aarch64/ape/aarch64.lds" "$lib/aarch64.lds"
+        for h in $LIBC_HEADERS; do
+            rm -f "$COSMOCC/include/$h"
+            cp "$COSMO_LIBC/$h" "$COSMOCC/include/$h"
+        done
+        echo "$key" > "$COSMOCC/.beam_com_libc"
+    fi
+}
+
 step_openssl() {
     if [ -f "$OPENSSL/lib/libcrypto.a" ]; then
         log "Using OpenSSL in $OPENSSL"
@@ -511,7 +658,8 @@ step_otp() {
        "$ROOT"/c_src/cosmo/beam_com_nif.h "$ROOT"/c_src/cosmo/beam_com_nif_syms.c \
        "$ROOT"/c_src/cosmo/beam_com_nif_libc.h "$ROOT"/c_src/cosmo/beam_com_nif_cxx.h \
        "$ROOT"/c_src/cosmo/beam_com_sha1dc.c "$ROOT"/c_src/cosmo/beam_com_zipexec.c \
-       "$ROOT"/c_src/cosmo/beam_com_zipexec.h \
+       "$ROOT"/c_src/cosmo/beam_com_zipexec.h "$ROOT"/c_src/cosmo/beam_com_sock.c \
+       "$ROOT"/c_src/cosmo/beam_com_sock.h \
        "$ERL_TOP/erts/emulator/sys/unix/"
     # The library of beam_com_sha1dc.c (sha1collisiondetection), which it
     # includes as sha1dc/sha1.c and sha1dc/ubc_check.c.
@@ -1256,14 +1404,14 @@ check_static_nifs() {
 KEY_IGNORE="PATH JOBS PARTS_URL PARTS_PUT CCACHE CCACHE_DIR CCACHE_MAXSIZE"
 
 # The steps of the Makefile, each with a key.
-KEY_STEPS="toolchain openssl otp configure sqlite nifs wasm make elixir release
+KEY_STEPS="toolchain libc openssl otp configure sqlite nifs wasm make elixir release
     multicall wasm_runtime bundle"
 
 # The functions that find keys. Their code names the steps only to find
 # a key, so steps_code does not follow these names.
 KEY_FUNCS="steps_code key_settings key_files step_roots step_files step_inputs step_key
     write_keys step_check_keys wasm_runtime_inputs step_wasm_runtime_key step_cache_keys
-    nif_part_key otp_part_key elixir_part_key step_part_keys otp_from_part"
+    nif_part_key otp_part_key elixir_part_key libc_part_key step_part_keys otp_from_part"
 
 # steps_code MODE NAME...: the functions NAME... of scripts/steps.sh, and
 # each function that their code names, again and again. A NAME with "-"
@@ -1375,6 +1523,8 @@ step_roots() {
 step_files() {
     case $1 in
         toolchain) echo "patches/cosmo/ape-m1.patch" ;;
+        libc) echo "patches/cosmo-libc c_src/win-arm64 patches/cosmo/poll-nt.patch
+                    patches/cosmo/select-nt.patch" ;;
         openssl|release) ;;
         otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h c_src/cosmo/sha1dc" ;;
         configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
@@ -1490,10 +1640,12 @@ step_wasm_runtime_key() {
 #   PDFIUM_INPUTS   libpdfium.a (scripts/pdfium.sh).
 #   LIBVIPS_INPUTS  libvips of VIX_PARTS (scripts/libvips.sh).
 #   CCACHE_INPUTS   ccache of OTP: the files that change the objects.
+#   LIBC_INPUTS     the part libc of step_libc (COSMO_LIBC).
 step_cache_keys() {
     pdfium=$(key_files scripts/pdfium.sh patches/pdfium)
     libvips=$(key_files scripts/libvips.sh patches/libvips c_src/vips)
     ccache=$(key_files patches/otp c_src/cosmo)
+    echo "LIBC_INPUTS=$(libc_part_key)"
     parts=$(printf '%s\n' $VIX_PARTS | LC_ALL=C sort -u | tr '\n' ' ')
     echo "PDFIUM_INPUTS=$(printf '%s\n' "$pdfium" | sha256sum | cut -d' ' -f1)"
     echo "LIBVIPS_INPUTS=$(printf '%s\n%s\n' "$parts" "$libvips" | sha256sum | cut -d' ' -f1)"
@@ -1590,7 +1742,12 @@ nif_part_key() (
 otp_part_key() (
     code=$(steps_code text step_otp step_configure step_make)
     files=$(key_files patches/otp c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc)
+    # The libc of step_libc changes libc/dce.h of cosmocc: IsWindows() in
+    # the aarch64 code of OTP (the JIT) is a constant 0 without it.
+    libc=none
+    [ "$WIN_ARM64" != 1 ] || libc=$(libc_part_key)
     {
+        echo "LIBC $libc"
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 CC $CC CXX $CXX AR $AR"
         echo "JIT $JIT CCACHE ${CCACHE:-0} BUILD $BUILD ERL_TOP $ERL_TOP"
@@ -1633,6 +1790,10 @@ step_nif_recipes() (
 # the logs of CI). It needs the steps otp and configure: the NIF keys read
 # the headers of the OTP tree.
 step_part_keys() (
+    if [ "$WIN_ARM64" = 1 ]; then
+        k=$(libc_part_key)
+        echo "libc $k"
+    fi
     k=$(otp_part_key)
     echo "otp $k"
     if [ "$ELIXIR" = 1 ]; then
@@ -1742,6 +1903,17 @@ step_make() {
 #   unveil        unveil() of Linux, which also controls the removal of a
 #                 file and of a directory (C50). It defines unveil,
 #                 sys_unveil_linux and init_landlock_version.
+#   poll-nt       poll() of Windows: one WSAPoll() for any count of
+#                 sockets, and a wait with the time of the wall clock (C61,
+#                 C62). It defines sys_poll_nt.
+#   select-nt     select() of Windows: an entry for each fd of the sets, and
+#                 an error in each set that asked for it (C61, C63). It
+#                 defines sys_select_nt.
+#   close-nt      close() of Windows with no flush of a written file
+#                 (C64). It defines sys_close_nt.
+#   unlinkat-nt   rmdir() of Windows, which fails at once for a directory
+#                 with a real entry (C68). It defines sys_unlinkat_nt and
+#                 sys_unlinkat_nt_impl.
 build_cosmo_file() {
     src=$BUILD/cosmo-$1-$COSMOCC_VERSION
     # The mark has the SHA-256 of the patch, so a new patch applies again.
@@ -1770,11 +1942,24 @@ step_multicall() {
     objs="$objs $objdir/beam_com_watch.o $objdir/beam_com_agent.o $objdir/beam_com_net.o"
     objs="$objs $objdir/beam_com_fs.o $objdir/beam_com_pipe.o $objdir/beam_com_sha1dc.o"
     objs="$objs $objdir/beam_com_seatbelt.o $objdir/beam_com_nif.o $objdir/beam_com_nif_syms.o"
-    objs="$objs $objdir/beam_com_zipexec.o"
+    objs="$objs $objdir/beam_com_zipexec.o $objdir/beam_com_sock.o"
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR $objs
     build_cosmo_file pledge-linux "$COSMO_PLEDGE_SHA256" "$objdir/beam_com_pledge.o"
     build_cosmo_file unveil "$COSMO_UNVEIL_SHA256" "$objdir/beam_com_unveil.o"
+    # poll() and select() of Windows for the x86_64 half (C61 to C63 of
+    # docs/UPSTREAM.md). These files of the libc have #ifdef __x86_64__,
+    # so their aarch64 objects are empty; the aarch64 half gets the same
+    # patches in the libc of step_libc.
+    build_cosmo_file poll-nt "$COSMO_POLL_NT_SHA256" "$objdir/beam_com_poll_nt.o"
+    build_cosmo_file select-nt "$COSMO_SELECT_NT_SHA256" "$objdir/beam_com_select_nt.o"
+    # close() of Windows with no flush (C64). This file has no
+    # #ifdef __x86_64__: its object has both halves.
+    build_cosmo_file close-nt "$COSMO_CLOSE_NT_SHA256" "$objdir/beam_com_close_nt.o"
+    # rmdir() of Windows (C68). This file also has no #ifdef __x86_64__.
+    build_cosmo_file unlinkat-nt "$COSMO_UNLINKAT_NT_SHA256" "$objdir/beam_com_unlinkat_nt.o"
     objs="$objs $objdir/beam_com_pledge.o $objdir/beam_com_unveil.o"
+    objs="$objs $objdir/beam_com_poll_nt.o $objdir/beam_com_select_nt.o $objdir/beam_com_close_nt.o"
+    objs="$objs $objdir/beam_com_unlinkat_nt.o"
     rm -f "$ERL_TOP/bin/$t/beam.$FLAVOR"
     # The table of static NIFs depends on STATIC_NIFS, and make does not
     # know it (neither for driver_tab.c nor for its object).
@@ -1798,9 +1983,11 @@ step_multicall() {
     # wraps of NET_WRAPS (--allow-net=HOST,...) in beam_com_net.c, and
     # the wraps of FS_WRAPS (the paths on Windows) in beam_com_fs.c, and
     # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c,
-    # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c.
+    # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c,
+    # and the wrap of SOCK_WRAPS (sockets on Windows) in beam_com_sock.c,
+    # and the wrap of TIMER_WRAPS (the timer of Windows) in beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS $TIMER_WRAPS" \
         "STATIC_NIFS=$nifs" "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 
@@ -1882,6 +2069,12 @@ step_bundle() {
     cp "$RELEASE"/bin/start_clean.boot "$RELEASE"/bin/no_dot_erlang.boot \
        "$STAGE/bin/"
     cp "$ROOT/c_src/cosmo/windows.inetrc" "$ROOT/c_src/cosmo/sandbox.inetrc" "$STAGE/bin/"
+    # The loader of Windows on ARM64 (step_libc): the x86_64 half of
+    # beam.com starts the aarch64 half with it (win_arm64_start() in
+    # c_src/cosmo/beam_com.c).
+    if [ "$WIN_ARM64" = 1 ]; then
+        cp "$COSMO_LIBC/ape-arm64.exe" "$STAGE/bin/ape-arm64.exe"
+    fi
     check_omitted_apps
     for app in $BUNDLE_APPS; do
         src=$ERL_TOP/lib/$app
@@ -2216,6 +2409,12 @@ step_test() {
         cosmocc -O2 -Wno-unused-function -o "$BUILD/pipe_check.com" "$ROOT/tests/cosmo/pipe_check.c"
         "$BUILD/pipe_check.com" | tee "$BUILD/test.out"
         grep -q '^pipe_check: ok$' "$BUILD/test.out"
+        # The sends on a non-blocking socket (c_src/cosmo/beam_com_sock.c).
+        # Here only the data; tests/run.ps1 runs the check on Windows.
+        log "Checking the sends on a non-blocking socket"
+        cosmocc -O2 -Wl,--wrap=send -o "$BUILD/sock_check.com" "$ROOT/tests/cosmo/sock_check.c"
+        "$BUILD/sock_check.com" | tee "$BUILD/test.out"
+        grep -q '^sock_check: ok$' "$BUILD/test.out"
         # The programs of the zip (c_src/cosmo/beam_com_zipexec.c): the
         # copy in the cache, and the memfd of Linux. tests/run.ps1 runs the
         # check on Windows, and tests/run.sh runs the programs of a zip.
@@ -2278,7 +2477,7 @@ step_test() {
 }
 
 if [ $# -eq 0 ]; then
-    set -- toolchain openssl otp configure sqlite nifs wasm make elixir release \
+    set -- toolchain libc openssl otp configure sqlite nifs wasm make elixir release \
         multicall wasm_runtime bundle test unit
 fi
 # "keys STEP...": write the key of each step for the Makefile. "key

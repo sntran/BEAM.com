@@ -140,8 +140,13 @@ interpreter → JIT, in milliseconds (less is better).
 | NetBSD x86_64 | 151 → 221 (1) | 130 → 191 (1) | 70 → 32 | 303 → 215 | 285 → 168 | 101 → 81 | 94 → 100 | 114 → 123 |
 | OpenBSD 7.3 x86_64 | 256 → 447 (1) | 222 → 384 (1) | 41 → 20 | 313 → 259 | 270 → 214 | 83 → 74 | 84 → 81 | 98 → 106 |
 
+| Windows arm64, native ARM64 (2) | 189 → 250 | 174 → 237 | 151 → 13 | 406 → 78 | 273 → 95 | 76 → 55 | 92 → 68 | 144 → 151 |
+| Windows arm64, x64 emulation (2) | 428 → 766 | 380 → 698 | 187 → 158 | 664 → 481 | 847 → 483 | 204 → 187 | 234 → 226 | 410 → 402 |
+
 (1) From the next CI run: in the first run, the benchmark did not find
 the APE loader from its relative path (fixed in `bench.erl`).
+(2) From a later CI run (run 737, 19 November 2026). See "Windows on
+ARM64" below.
 
 The code in C does not change with the JIT (crypto, SQLite, WebAssembly;
 the full tables are in the summary of each CI run): the differences are
@@ -165,6 +170,51 @@ What this says, for all platforms:
 So the JIT is worth it for long-running Erlang code, most of all on
 aarch64 (Apple Silicon, ARM servers). It costs 2.8 MB and the slower
 start, which matters for small command-line programs.
+
+## Windows on ARM64: native code against the x64 emulation
+
+On Windows 11 on ARM64, `beam.com` runs its aarch64 half as native code
+(see "Windows on ARM64" in [`PLATFORMS.md`](PLATFORMS.md)).
+`BEAM_COM_NATIVE=0` keeps the x86_64 half, which Windows runs under its
+x64 emulation, as the versions before did. `tests/bench/run.ps1` measures
+each variant both ways on the same machine. The numbers come from CI run
+737 (19 November 2026), on the runner `windows-11-arm` (Cobalt 100,
+4 cores), in milliseconds (less is better):
+
+| | `beam-emu.com` native | `beam-emu.com` emulation | `beam.com` native | `beam.com` emulation | `beam.com`: emulation / native |
+|---|---:|---:|---:|---:|---:|
+| start: `--version` | 189 | 428 | 250 | 766 | 3.1 |
+| start: a program | 174 | 380 | 237 | 698 | 2.9 |
+| fib | 151 | 187 | 13 | 158 | 12 |
+| lists | 406 | 664 | 78 | 481 | 6.2 |
+| maps | 76 | 204 | 55 | 187 | 3.4 |
+| ets | 92 | 234 | 68 | 226 | 3.3 |
+| binary | 273 | 847 | 95 | 483 | 5.1 |
+| messages | 144 | 410 | 151 | 402 | 2.7 |
+| crypto | 144 | 815 | 143 | 817 | 5.7 |
+| sqlite | 123 | 540 | 128 | 351 | 2.7 |
+| wasm_calls | 324 | 737 | 337 | 684 | 2.0 |
+| wasm_loop | 99 | 486 | 99 | 488 | 4.9 |
+
+The files are the same in both columns: 38.9 MB for `beam.com`, and
+29.4 MB for a program that it builds.
+
+What this says:
+
+- **Each workload is faster natively**, 2 to 12 times with the JIT.
+  Erlang code gains the most (fib 12 times, lists 6 times, binary 5
+  times), because the emulation translates the x86_64 code of the JIT
+  again. Code in C gains 2.7 to 5.7 times (crypto, SQLite, WebAssembly).
+- **The start is about 3 times faster** natively (250 ms against
+  766 ms), although a native start has two processes: the x86_64 half
+  starts under the emulation, and it starts the loader of the aarch64
+  half.
+- **The interpreter gains less** (fib 1.2 times, lists 1.6 times), but
+  the code in C gains as much as with the JIT.
+
+In the same run, the runner `windows-latest` (x86_64) gave 305 ms for
+`--version`, 30 ms for fib, 119 ms for lists, and 254 ms for crypto with
+`beam.com`. That is another machine, so compare these numbers with care.
 
 ## Stored `kernel` and `stdlib` (a faster start)
 
@@ -212,6 +262,29 @@ the programs was stripped, the same programs were 34.9 MB (188 ms) and
 The rows of the NIFs compare the builds of `rust.yml`, `vix.yml` and
 `pdfium.yml` (`SQLITE=0 WASM=0`, with Elixir). With `ex_pdfium`, that
 `beam.com` is 68.3 MB, and `ex_pdfium_check.com` is 48.6 MB.
+
+## Downloads on Windows
+
+[`tests/bench/net_bench.erl`](../tests/bench/net_bench.erl) measures
+the round trip of a ping-pong of one byte over loopback TCP in the mode
+`{active, once}`, and HTTPS downloads from GitHub: with `httpc`, and
+with `ssl` in the passive mode (as Mint and Req read). The table has
+the download of 129 MB (`tailwindcss-windows-x64.exe` 4.1.18). The rows
+come from runs of 20 November 2026 on the Windows runners of GitHub
+(`windows-2025` and `windows-11-arm`), on shared machines. "Before" is
+the `beam.com` before the fix of C59 of [`UPSTREAM.md`](UPSTREAM.md).
+
+| beam.com, system | round trip | `httpc` | `ssl`, passive |
+|---|---:|---:|---:|
+| before, Windows x86_64 | 14.6 ms | 0.61 MB/s (211 s) | 0.60 MB/s (217 s) |
+| after, Windows x86_64 | 0.19 ms | 54.7 MB/s (2.4 s) | 68.1 MB/s (1.9 s) |
+| after, Windows ARM64 (native) | 0.24 ms | 78.4 MB/s (1.6 s) | 58.3 MB/s (2.2 s) |
+| after, Windows ARM64 (x64 emulation) | 0.33 ms | 69.3 MB/s (1.9 s) | 59.1 MB/s (2.2 s) |
+
+Before the fix, the poll thread saw each new read of a socket up to
+10 ms late. Thus the speed of a download did not depend on the network.
+The speed of the network now limits a download. On Linux x86_64, the
+round trip takes about 0.05 ms.
 
 ## ex_pdfium (PDFium)
 

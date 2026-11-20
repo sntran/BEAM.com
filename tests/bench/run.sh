@@ -29,7 +29,7 @@ for v in $variants; do
     {
         echo "size_mb $(wc -c < "$dir/$v" | awk '{printf "%.1f", $1 / 1048576}')"
         echo "program_mb $(wc -c < "$prog" | awk '{printf "%.1f", $1 / 1048576}')"
-        $runner "$prog" start "$runner_path" "$dir/$v" version | sed 's/^start/start_version/'
+        $runner "$prog" start "$runner_path" "$dir/$v" --version | sed 's/^start/start_version/'
         $runner "$prog" start "$runner_path" "$prog" none | sed 's/^start/start_program/'
         $runner "$prog" | sed 's/^bench //'
     } > "$out/$v.log" 2>&1
@@ -44,7 +44,7 @@ label() {
     case $1 in
         size_mb) echo "file size (MB)" ;;
         program_mb) echo "size of a program (MB)" ;;
-        start_version) echo "start: \`version\` (ms)" ;;
+        start_version) echo "start: \`--version\` (ms)" ;;
         start_program) echo "start: a program (ms)" ;;
         *) echo "$1 (ms)" ;;
     esac

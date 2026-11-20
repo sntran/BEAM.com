@@ -23,31 +23,43 @@ function StartTime($Exe, [string[]]$Arguments) {
 }
 
 $variants = @("beam-emu.com", "beam.com") | Where-Object { Test-Path (Join-Path $Dir $_) }
+
+# Windows on ARM64: a file starts its aarch64 half, which runs as native
+# code. With BEAM_COM_NATIVE=0, its x86_64 half runs under the emulation of
+# Windows. The table has one column for each of the two.
+$modes = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { @("native ARM64", "x64 emulation") } else { @("") }
+$columns = @()
 $results = @{}
 foreach ($v in $variants) {
-    $exe = Exe $v
-    $prog = "bench." + ($v -replace '\.com$', '') + ".com"
-    & $exe tests/bench/bench.erl -o (Join-Path $Dir $prog) | Out-Null
-    $progExe = Exe $prog
-    $r = [ordered]@{}
-    $r["size_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $v)).Length / 1MB)
-    $r["program_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $prog)).Length / 1MB)
-    $r["start_version"] = StartTime $exe @("version")
-    $r["start_program"] = StartTime $progExe @("none")
-    foreach ($line in (& $progExe)) {
-        if ($line -match '^bench (\S+) (\d+)') { $r[$Matches[1]] = $Matches[2] }
+    foreach ($mode in $modes) {
+        if ($mode -eq "x64 emulation") { $env:BEAM_COM_NATIVE = "0" } else { Remove-Item Env:BEAM_COM_NATIVE -ErrorAction SilentlyContinue }
+        $column = if ($mode) { "$v ($mode)" } else { $v }
+        $columns += $column
+        $exe = Exe $v
+        $prog = "bench." + ($v -replace '\.com$', '') + ".com"
+        & $exe tests/bench/bench.erl -o (Join-Path $Dir $prog) | Out-Null
+        $progExe = Exe $prog
+        $r = [ordered]@{}
+        $r["size_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $v)).Length / 1MB)
+        $r["program_mb"] = "{0:N1}" -f ((Get-Item (Join-Path $Dir $prog)).Length / 1MB)
+        $r["start_version"] = StartTime $exe @("--version")
+        $r["start_program"] = StartTime $progExe @("none")
+        foreach ($line in (& $progExe)) {
+            if ($line -match '^bench (\S+) (\d+)') { $r[$Matches[1]] = $Matches[2] }
+        }
+        $results[$column] = $r
     }
-    $results[$v] = $r
 }
+Remove-Item Env:BEAM_COM_NATIVE -ErrorAction SilentlyContinue
 
 $labels = @{
     "size_mb" = "file size (MB)"; "program_mb" = "size of a program (MB)";
-    "start_version" = "start: ``version`` (ms)"; "start_program" = "start: a program (ms)"
+    "start_version" = "start: ``--version`` (ms)"; "start_program" = "start: a program (ms)"
 }
-Write-Output ("| | " + ($variants -join " | ") + " |")
-Write-Output ("|---|" + (($variants | ForEach-Object { "---:" }) -join "|") + "|")
-foreach ($key in $results[$variants[0]].Keys) {
+Write-Output ("| | " + ($columns -join " | ") + " |")
+Write-Output ("|---|" + (($columns | ForEach-Object { "---:" }) -join "|") + "|")
+foreach ($key in $results[$columns[0]].Keys) {
     $label = if ($labels.ContainsKey($key)) { $labels[$key] } else { "$key (ms)" }
-    $row = foreach ($v in $variants) { $results[$v][$key] }
+    $row = foreach ($c in $columns) { $results[$c][$key] }
     Write-Output ("| $label | " + ($row -join " | ") + " |")
 }

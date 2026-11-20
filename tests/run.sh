@@ -160,6 +160,15 @@ check_once() {
                 bad=1
             fi
         done
+        # The wake-up of the poll thread works up to the exit (C59 of
+        # docs/UPSTREAM.md).
+        if grep -q -e 'on wakeup pipe' "$tmp"; then
+            echo "FAIL: $name: an error of the wake-up of the poll thread"
+            pending="$pending
+  $name $*: an error of the wake-up of the poll thread"
+            ok=0
+            bad=1
+        fi
         [ $ok -eq 1 ] && echo "PASS: $name"
     fi
 }
@@ -254,6 +263,20 @@ crypto_check='sha256(abc) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410
 tls_check='ports: ok@@tls: local handshake ok@@tls: remote [^ ]* ok'
 hashsum='^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$'
 calc='calc: 1 + 2 \* (3 - 1) - 8 / 4 = 3$@@calc: asn1 ber 300980044245414d810103$@@calc: asn1 decoded BEAM 3$'
+
+# The checks of Windows on ARM64 (tests/programs/win_arm64) also run
+# here: win_arm64_check.com has the libc of Cosmopolitan with the Windows
+# layer for aarch64, and its aarch64 half must also run on Linux and
+# macOS. The build job of CI makes it.
+if [ -f "$dir/win_arm64_check.com" ]; then
+    case $(uname -s) in
+        Linux|Darwin) check win_arm64_check.com 'all checks passed' one "two words" ;;
+    esac
+fi
+if [ -f "$dir/beam.com" ]; then
+    check beam.com 'cpu of the process=not Windows @@all checks passed' \
+        tests/programs/win_arm64/vm.erl -- one "two words"
+fi
 
 # The commands of the default beam.com. os:type() names this system.
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -601,6 +624,31 @@ if [ -d examples ]; then
     # and the exit status of the program.
     check beam.com "$hashsum" examples/hashsum.erl -- abc
     check_status 2 beam.com '^usage: hashsum TEXT' examples/hashsum.erl
+    # The poll thread of ERTS sees each change of its set at once (C59 of
+    # docs/UPSTREAM.md): a round trip over loopback takes less than 2 ms.
+    check beam.com '^poll: 500 round trips, [0-9.]* ms each: ok$' tests/programs/poll_check.erl
+    # Large sends between two processes of one VM end, also with one
+    # scheduler online (C60): a send does not wait for the peer.
+    check beam.com '^send_check: passive, 64 MiB in [0-9]* ms: ok$@@^send_check: once, 64 MiB in [0-9]* ms: ok$@@^send_check: late, 16 MiB in [0-9]* ms: ok$@@^send_check: ok$' \
+        tests/programs/send_check.erl
+    # Many sockets in the set of the poll thread (C61 to C63): 300 sockets
+    # get events, the idle VM uses little CPU, and a reset reaches a send.
+    # Fewer pairs with a lower limit of open files (128 on OpenBSD).
+    check beam.com '^fds_check: [0-9]* pairs, one message on each: ok$@@^fds_check: idle with [0-9]* sockets, [0-9]* ms of CPU in 3 s: ok$@@^fds_check: a reset while a send waits: .*: ok$@@^fds_check: ok$' \
+        tests/programs/fds_check.erl
+    # The close of a written file does not wait for the disk (C64), and
+    # the close of a socket with a linger ends the connection (C65).
+    check beam.com '^close_check: close of a written file, median [0-9]* us: ok$@@^close_check: close with a linger, .*: ok$@@^close_check: ok$' \
+        tests/programs/close_check.erl -- "$dir"
+    # reuseaddr and reuseport: two UDP sockets on one port (C66).
+    check beam.com '^reuse_check: two UDP sockets on one port: ok$@@^reuse_check: a second TCP listener .*: ok$@@^reuse_check: ok$' \
+        tests/programs/reuse_check.erl
+    # Short timers (C67). No limit here: OpenBSD and NetBSD have a timer
+    # of 10 ms. tests/run.ps1 gives a limit on Windows.
+    check beam.com '^timer_check: ok$' tests/programs/timer_check.erl
+    # The removal of a directory with a file fails at once (C68).
+    check beam.com '^rmdir_check: del_dir of a directory with a file, 10 times, at most [0-9]* ms: ok$@@^rmdir_check: ok$' \
+        tests/programs/rmdir_check.erl -- "$dir"
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o

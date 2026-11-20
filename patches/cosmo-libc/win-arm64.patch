@@ -1,0 +1,2771 @@
+diff --git a/ape/aarch64.lds b/ape/aarch64.lds
+index 0a232a2d..6b539974 100644
+--- a/ape/aarch64.lds
++++ b/ape/aarch64.lds
+@@ -200,6 +200,10 @@ SECTIONS {
+   .data : {
+     __data_start = .;
+     KEEP(*(SORT_BY_NAME(.piro.data.sort.*)))
++    . = ALIGN(8);
++    __ntimp_start = .;
++    *(SORT_BY_NAME(.ntimp.*))
++    __ntimp_end = .;
+     *(.data .data.* .gnu.linkonce.d.*)
+     KEEP(*(SORT_BY_NAME(.sort.data.*)))
+     SORT(CONSTRUCTORS)
+diff --git a/ape/idata.internal.h b/ape/idata.internal.h
+index de00baa6..7fedf739 100644
+--- a/ape/idata.internal.h
++++ b/ape/idata.internal.h
+@@ -59,11 +59,19 @@
+ 	.size	"\dll\().\actual",.-"\dll\().\actual"
+ 	.previous
+ #else
+-	.section ".data.nt.\actual","aw",@progbits
++	.section ".rodata.ntimpstr.\dll\().\actual","a",@progbits
++"ntimp.fn.\dll\().\actual":
++	.asciz	"\actual"
++"ntimp.dll.\dll\().\actual":
++	.asciz	"\dll"
++	.previous
++	.section ".ntimp.\dll\().\actual","aw",@progbits
+ 	.globl	"\fn"
+ 	.balign	8
+-	.weak	"\actual"
+-"\fn":	.quad	"\actual"
++"\fn":	.quad	0
++	.quad	"ntimp.fn.\dll\().\actual"
++	.quad	"ntimp.dll.\dll\().\actual"
++	.previous
+ #endif
+ .endm
+ 
+diff --git a/libc/calls/checksignal.c b/libc/calls/checksignal.c
+index be222167..8a926a0b 100644
+--- a/libc/calls/checksignal.c
++++ b/libc/calls/checksignal.c
+@@ -20,7 +20,6 @@
+ #include "libc/calls/sig.internal.h"
+ #include "libc/intrin/weaken.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int _check_signal(bool restartable) {
+   int status;
+@@ -36,5 +35,3 @@ textwindows int _check_signal(bool restartable) {
+     return 0;
+   return eintr();
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/clock_nanosleep-nt.c b/libc/calls/clock_nanosleep-nt.c
+index 1e1a09cb..7e867a54 100644
+--- a/libc/calls/clock_nanosleep-nt.c
++++ b/libc/calls/clock_nanosleep-nt.c
+@@ -30,7 +30,6 @@
+ #include "libc/sysv/consts/clock.h"
+ #include "libc/sysv/consts/timer.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ static atomic_int usingRes;
+ static atomic_bool changedRes;
+@@ -81,5 +80,3 @@ BailOut:
+   __sig_unblock(m);
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/fdatasync-nt.c b/libc/calls/fdatasync-nt.c
+index ae48d945..073db63f 100644
+--- a/libc/calls/fdatasync-nt.c
++++ b/libc/calls/fdatasync-nt.c
+@@ -23,7 +23,6 @@
+ #include "libc/nt/files.h"
+ #include "libc/nt/struct/byhandlefileinformation.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int sys_fdatasync_nt(int fd, bool fake) {
+   struct NtByHandleFileInformation wst;
+@@ -46,5 +45,3 @@ textwindows int sys_fdatasync_nt(int fd, bool fake) {
+     return -1;
+   return FlushFileBuffers(g_fds.p[fd].handle) ? 0 : __winerr();
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/getprogramexecutablename.greg.c b/libc/calls/getprogramexecutablename.greg.c
+index 8589bb09..325cb3e0 100644
+--- a/libc/calls/getprogramexecutablename.greg.c
++++ b/libc/calls/getprogramexecutablename.greg.c
+@@ -138,6 +138,13 @@ static inline void InitProgramExecutableNameImpl(void) {
+   ssize_t got;
+   char c, *q, *b;
+ 
++#ifdef __aarch64__
++  // windows on arm64: the module of the process is the loader
++  // ape-arm64.exe, and the loader gives the path of the program
++  if (IsWindows() && __program_executable_name)
++    return;
++#endif
++
+   if (IsWindows()) {
+     int n = GetModuleFileName(0, g_prog.u.buf16, ARRAYLEN(g_prog.u.buf16));
+     for (int i = 0; i < n; ++i) {
+diff --git a/libc/calls/ntspawn.c b/libc/calls/ntspawn.c
+index cd753114..71e8afca 100644
+--- a/libc/calls/ntspawn.c
++++ b/libc/calls/ntspawn.c
+@@ -44,7 +44,6 @@
+ #include "libc/stdalign.h"
+ #include "libc/str/str.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(CloseHandle) *const __imp_CloseHandle;
+ 
+@@ -76,6 +75,26 @@ static textwindows ssize_t ntspawn_read(intptr_t fh, char *buf, size_t len) {
+   return ok ? got : -1;
+ }
+ 
++#ifdef __aarch64__
++// returns true if the head of an ape file has an elf header for aarch64
++// the head is shell text, in which printf writes each elf header. the
++// fields e_machine (183) and e_version (1) are \267\0\1\0\0\0 there
++static textwindows bool ntspawn_is_arm64_ape(const char *p, ssize_t n) {
++  static const char kNeedle[] = "\\267\\0\\1\\0\\0\\0";
++  if (n < 6 || p[0] != 'M' || p[1] != 'Z' || p[2] != 'q' || p[3] != 'F' ||
++      p[4] != 'p' || p[5] != 'D')
++    return false;
++  for (ssize_t i = 0; i + (ssize_t)sizeof(kNeedle) - 1 <= n; ++i) {
++    size_t j = 0;
++    while (j < sizeof(kNeedle) - 1 && p[i + j] == kNeedle[j])
++      ++j;
++    if (j == sizeof(kNeedle) - 1)
++      return true;
++  }
++  return false;
++}
++#endif
++
+ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
+ 
+   // make executable path
+@@ -99,6 +118,32 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
+ 
+   // handle shebang
+   size_t i = 0;  // represents space of sb->cmdline consumed
++#ifdef __aarch64__
++  if (ntspawn_is_arm64_ape(p, got)) {
++    // windows on arm64: an ape file with an aarch64 half starts with the
++    // native loader of this process (ape-arm64.exe PROGRAM ARGUMENTS).
++    // without the loader, windows starts the x86-64 half of the file
++    // under its emulation. the head of the file is not necessary now, so
++    // its buffer holds the two paths as utf-8
++    char *argv[3];
++    char *prog8 = sb->envbuf;
++    char *loader8 = sb->envbuf + 8192;
++    tprecode16to8(prog8, 8192, sb->path);
++    if (!GetModuleFileName(0, sb->path, PATH_MAX))
++      return __winerr();
++    tprecode16to8(loader8, 8192, sb->path);
++    argv[0] = loader8;
++    argv[1] = prog8;
++    argv[2] = 0;
++    // ignore argv[0]
++    if (*a->argv)
++      ++a->argv;
++    if ((i += mkntcmdline(sb->cmdline + i, argv, 32767 - i)) >= 32767 - 1)
++      return e2big();
++    sb->cmdline[i++] = ' ';
++    sb->cmdline[i] = 0;
++  } else
++#endif
+   if (p[0] == 'M' && p[1] == 'Z') {
+     // it's a windows executable
+   } else if (p[0] == '#' && p[1] == '!') {
+@@ -251,5 +296,3 @@ textwindows int ntspawn(struct NtSpawnArgs *args) {
+   ALLOW_SIGNALS;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/park.c b/libc/calls/park.c
+index 103a6cbd..a6b88d8b 100644
+--- a/libc/calls/park.c
++++ b/libc/calls/park.c
+@@ -32,7 +32,6 @@
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/posixthread.internal.h"
+ 
+-#ifdef __x86_64__
+ 
+ // returns 0 if deadline is reached
+ // raises EINTR if a signal delivery interrupted wait operation
+@@ -110,5 +109,3 @@ textwindows int _park_norestart(struct timespec deadline, sigset_t waitmask) {
+ textwindows int _park_restartable(struct timespec deadline, sigset_t waitmask) {
+   return _park_thread(deadline, waitmask, true);
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/pause-nt.c b/libc/calls/pause-nt.c
+index 28e5e418..de748816 100644
+--- a/libc/calls/pause-nt.c
++++ b/libc/calls/pause-nt.c
+@@ -20,7 +20,6 @@
+ #include "libc/calls/struct/sigset.internal.h"
+ #include "libc/calls/struct/timespec.h"
+ #include "libc/calls/syscall_support-nt.internal.h"
+-#ifdef __x86_64__
+ 
+ textwindows int sys_pause_nt(void) {
+   // we don't strictly need to block signals, but it reduces signal
+@@ -33,5 +32,3 @@ textwindows int sys_pause_nt(void) {
+   ALLOW_SIGNALS;
+   return -1;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/poll-nt.c b/libc/calls/poll-nt.c
+index cc015f04..e07cd4d2 100644
+--- a/libc/calls/poll-nt.c
++++ b/libc/calls/poll-nt.c
+@@ -46,7 +46,6 @@
+ #include "libc/sysv/consts/sicode.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/posixthread.internal.h"
+-#ifdef __x86_64__
+ 
+ // <sync libc/sysv/consts.sh>
+ #define POLLERR_    0x0001  // implied in events
+@@ -371,5 +370,3 @@ textwindows int sys_poll_nt(struct pollfd *fds, uint64_t nfds,
+   ALLOW_SIGNALS;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/read-nt.c b/libc/calls/read-nt.c
+index e66e54c3..7e4bc975 100644
+--- a/libc/calls/read-nt.c
++++ b/libc/calls/read-nt.c
+@@ -62,7 +62,6 @@
+ #include "libc/thread/posixthread.internal.h"
+ #include "libc/thread/thread.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ /**
+  * @fileoverview Cosmopolitan Standard Input
+@@ -1064,5 +1063,3 @@ textwindows ssize_t sys_read_nt(int fd, const struct iovec *iov, size_t iovlen,
+   __sig_unblock(m);
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/readv-nt.c b/libc/calls/readv-nt.c
+index af4de532..19618668 100644
+--- a/libc/calls/readv-nt.c
++++ b/libc/calls/readv-nt.c
+@@ -22,7 +22,6 @@
+ #include "libc/sock/internal.h"
+ #include "libc/sock/syscall_fd.internal.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows ssize_t sys_readv_nt(int fd, const struct iovec *iov, int iovlen) {
+   switch (g_fds.p[fd].kind) {
+@@ -37,5 +36,3 @@ textwindows ssize_t sys_readv_nt(int fd, const struct iovec *iov, int iovlen) {
+       return ebadf();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/readwrite-nt.c b/libc/calls/readwrite-nt.c
+index 1c983ca8..fb6b7d5b 100644
+--- a/libc/calls/readwrite-nt.c
++++ b/libc/calls/readwrite-nt.c
+@@ -37,7 +37,6 @@
+ #include "libc/stdio/sysparam.h"
+ #include "libc/sysv/consts/sicode.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ /**
+  * Runs code that's common to read/write/pread/pwrite/etc on Windows.
+@@ -206,5 +205,3 @@ sys_readwrite_nt(int fd, void *data, size_t size, ssize_t offset,
+     // otherwise try the i/o operation again
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/select-nt.c b/libc/calls/select-nt.c
+index 0d9e2f2e..773a96a3 100644
+--- a/libc/calls/select-nt.c
++++ b/libc/calls/select-nt.c
+@@ -27,7 +27,6 @@
+ #include "libc/sock/struct/pollfd.internal.h"
+ #include "libc/sysv/consts/poll.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ // <sync libc/sysv/consts.sh>
+ #define POLLERR_    0x0001  // implied in events
+@@ -103,5 +102,3 @@ int sys_select_nt(int nfds, fd_set *readfds, fd_set *writefds,
+ 
+   return bits;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/sigtimedwait-nt.c b/libc/calls/sigtimedwait-nt.c
+index 9deaa9d3..175309ff 100644
+--- a/libc/calls/sigtimedwait-nt.c
++++ b/libc/calls/sigtimedwait-nt.c
+@@ -33,7 +33,6 @@
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/posixthread.internal.h"
+-#ifdef __x86_64__
+ 
+ textwindows static int sys_sigtimedwait_nt_check(sigset_t syncsigs,
+                                                  siginfo_t *opt_info,
+@@ -113,5 +112,3 @@ textwindows int sys_sigtimedwait_nt(const sigset_t *set, siginfo_t *opt_info,
+   ALLOW_SIGNALS;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/tcflush.c b/libc/calls/tcflush.c
+index e9a171b2..b2f8cabf 100644
+--- a/libc/calls/tcflush.c
++++ b/libc/calls/tcflush.c
+@@ -52,7 +52,6 @@ static const char *DescribeFlush(char buf[12], int action) {
+ }
+ 
+ static dontinline textwindows int sys_tcflush_nt(int fd, int queue) {
+-#ifdef __x86_64__
+   if (!sys_isatty(fd)) {
+     return -1;  // ebadf, enotty
+   }
+@@ -60,9 +59,6 @@ static dontinline textwindows int sys_tcflush_nt(int fd, int queue) {
+     return 0;  // windows console output is never buffered
+   }
+   return FlushConsoleInputBytes();
+-#else
+-  return enosys();
+-#endif
+ }
+ 
+ /**
+diff --git a/libc/calls/tcgetattr-nt.c b/libc/calls/tcgetattr-nt.c
+index 8e4c7294..b1cc6fb6 100644
+--- a/libc/calls/tcgetattr-nt.c
++++ b/libc/calls/tcgetattr-nt.c
+@@ -28,7 +28,6 @@
+ #include "libc/sysv/consts/baud.internal.h"
+ #include "libc/sysv/consts/termios.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int tcgetattr_nt(int fd, struct termios *tio) {
+   int64_t hInput, hOutput;
+@@ -89,5 +88,3 @@ textwindows int tcgetattr_nt(int fd, struct termios *tio) {
+ 
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/tcgetwinsize-nt.c b/libc/calls/tcgetwinsize-nt.c
+index 3b9bfe4e..c9276e4c 100644
+--- a/libc/calls/tcgetwinsize-nt.c
++++ b/libc/calls/tcgetwinsize-nt.c
+@@ -23,7 +23,6 @@
+ #include "libc/nt/console.h"
+ #include "libc/nt/struct/consolescreenbufferinfoex.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int tcgetwinsize_nt(int fd, struct winsize *ws) {
+ 
+@@ -41,5 +40,3 @@ textwindows int tcgetwinsize_nt(int fd, struct winsize *ws) {
+     return enotty();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/tcsetattr-nt.c b/libc/calls/tcsetattr-nt.c
+index 984ff48e..49037119 100644
+--- a/libc/calls/tcsetattr-nt.c
++++ b/libc/calls/tcsetattr-nt.c
+@@ -29,7 +29,6 @@
+ #include "libc/sysv/consts/baud.internal.h"
+ #include "libc/sysv/consts/termios.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int tcsetattr_nt(int fd, int opt, const struct termios *tio) {
+   int64_t hInput, hOutput;
+@@ -112,5 +111,3 @@ textwindows int tcsetattr_nt(int fd, int opt, const struct termios *tio) {
+   unassert(SetConsoleMode(hOutput, outmode));
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/write-nt.c b/libc/calls/write-nt.c
+index cbd72148..81e1b2c2 100644
+--- a/libc/calls/write-nt.c
++++ b/libc/calls/write-nt.c
+@@ -36,7 +36,6 @@
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ static inline void RaiseSignal(int sig) {
+   if (_weaken(__sig_raise)) {
+@@ -131,5 +130,3 @@ textwindows ssize_t sys_write_nt(int fd, const struct iovec *iov, size_t iovlen,
+   __sig_unblock(m);
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/calls/writev-nt.c b/libc/calls/writev-nt.c
+index edf7cdd2..ac3800ef 100644
+--- a/libc/calls/writev-nt.c
++++ b/libc/calls/writev-nt.c
+@@ -21,7 +21,6 @@
+ #include "libc/intrin/weaken.h"
+ #include "libc/sock/internal.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows ssize_t sys_writev_nt(int fd, const struct iovec *iov, int iovlen) {
+   switch (g_fds.p[fd].kind) {
+@@ -36,5 +35,3 @@ textwindows ssize_t sys_writev_nt(int fd, const struct iovec *iov, int iovlen) {
+       return ebadf();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/dce.h b/libc/dce.h
+index 53b9098a..557faa76 100644
+--- a/libc/dce.h
++++ b/libc/dce.h
+@@ -13,7 +13,7 @@
+  */
+ #define SUPPORT_VECTOR 255
+ #else
+-#define SUPPORT_VECTOR (_HOSTLINUX | _HOSTXNU | _HOSTFREEBSD)
++#define SUPPORT_VECTOR (_HOSTLINUX | _HOSTXNU | _HOSTFREEBSD | _HOSTWINDOWS)
+ #endif
+ #endif
+ 
+diff --git a/libc/intrin/BUILD.mk b/libc/intrin/BUILD.mk
+index c84aeeba..613b975c 100644
+--- a/libc/intrin/BUILD.mk
++++ b/libc/intrin/BUILD.mk
+@@ -30,6 +30,7 @@ LIBC_INTRIN_A_CHECKS =					\
+ LIBC_INTRIN_A_DIRECTDEPS =				\
+ 	LIBC_NEXGEN32E					\
+ 	LIBC_NT_KERNEL32				\
++	LIBC_NT_NTDLL					\
+ 	LIBC_NT_REALTIME				\
+ 	LIBC_NT_SYNCHRONIZATION				\
+ 	LIBC_NT_WS2_32					\
+@@ -125,6 +126,8 @@ o/$(MODE)/libc/intrin/swapcontext.o: libc/intrin/swapcontext.S
+ 	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) -c $<
+ o/$(MODE)/libc/intrin/tailcontext.o: libc/intrin/tailcontext.S
+ 	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) -c $<
++o/$(MODE)/libc/intrin/restore.o: libc/intrin/restore.S
++	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) -c $<
+ o/$(MODE)/libc/intrin/aarch64/%.o: libc/intrin/aarch64/%.S
+ 	@$(COMPILE) -AOBJECTIFY.S $(OBJECTIFY.S) $(OUTPUT_OPTION) -c $<
+ o/$(MODE)/libc/intrin/fenv.o: libc/intrin/fenv.S
+diff --git a/libc/intrin/aarch64/atomics.S b/libc/intrin/aarch64/atomics.S
+index 17bc04fc..22a51503 100644
+--- a/libc/intrin/aarch64/atomics.S
++++ b/libc/intrin/aarch64/atomics.S
+@@ -20,6 +20,11 @@
+ // armv8.1 introduced atomic instructions that go considerably faster.
+ // you can pass the -mno-outline-atomics flag to the compiler to avoid
+ // this runtime, however that'll go slower.
++//
++// the exclusive loop of an acquire operation ends with dmb ish. with
++// no barrier, a later load can occur before the store of the loop,
++// and code that expects the order of an lse instruction (for example
++// the scheduler of erts) can lose a wakeup
+ 
+ .arch armv8-a+lse
+ 
+@@ -63,6 +68,7 @@
+ 0:	ldaxrb	w0,[x1]
+ 	stxrb	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp1_acq,globl
+ 
+@@ -85,6 +91,7 @@
+ 0:	ldaxrb	w0,[x1]
+ 	stlxrb	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp1_acq_rel,globl
+ 
+@@ -124,7 +131,8 @@
+ 	bne	1f
+ 	stxrb	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas1_acq,globl
+ 
+ .begfn __aarch64_cas1_rel
+@@ -150,7 +158,8 @@
+ 	bne	1f
+ 	stlxrb	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas1_acq_rel,globl
+ 
+ .begfn __aarch64_cas1_sync
+@@ -189,6 +198,7 @@
+ 	add	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd1_acq,globl
+ 
+@@ -213,6 +223,7 @@
+ 	add	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd1_acq_rel,globl
+ 
+@@ -251,6 +262,7 @@
+ 	orr	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset1_acq,globl
+ 
+@@ -275,6 +287,7 @@
+ 	orr	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset1_acq_rel,globl
+ 
+@@ -313,6 +326,7 @@
+ 	bic	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr1_acq,globl
+ 
+@@ -337,6 +351,7 @@
+ 	bic	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr1_acq_rel,globl
+ 
+@@ -375,6 +390,7 @@
+ 	eor	w17,w0,w16
+ 	stxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor1_acq,globl
+ 
+@@ -399,6 +415,7 @@
+ 	eor	w17,w0,w16
+ 	stlxrb	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor1_acq_rel,globl
+ 
+@@ -435,6 +452,7 @@
+ 0:	ldaxrh	w0,[x1]
+ 	stxrh	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp2_acq,globl
+ 
+@@ -457,6 +475,7 @@
+ 0:	ldaxrh	w0,[x1]
+ 	stlxrh	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp2_acq_rel,globl
+ 
+@@ -496,7 +515,8 @@
+ 	bne	1f
+ 	stxrh	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas2_acq,globl
+ 
+ .begfn __aarch64_cas2_rel
+@@ -522,7 +542,8 @@
+ 	bne	1f
+ 	stlxrh	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas2_acq_rel,globl
+ 
+ .begfn __aarch64_cas2_sync
+@@ -561,6 +582,7 @@
+ 	add	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd2_acq,globl
+ 
+@@ -585,6 +607,7 @@
+ 	add	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd2_acq_rel,globl
+ 
+@@ -623,6 +646,7 @@
+ 	orr	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset2_acq,globl
+ 
+@@ -647,6 +671,7 @@
+ 	orr	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset2_acq_rel,globl
+ 
+@@ -685,6 +710,7 @@
+ 	bic	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr2_acq,globl
+ 
+@@ -709,6 +735,7 @@
+ 	bic	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr2_acq_rel,globl
+ 
+@@ -747,6 +774,7 @@
+ 	eor	w17,w0,w16
+ 	stxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor2_acq,globl
+ 
+@@ -771,6 +799,7 @@
+ 	eor	w17,w0,w16
+ 	stlxrh	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor2_acq_rel,globl
+ 
+@@ -807,6 +836,7 @@
+ 0:	ldaxr	w0,[x1]
+ 	stxr	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp4_acq,globl
+ 
+@@ -829,6 +859,7 @@
+ 0:	ldaxr	w0,[x1]
+ 	stlxr	w17,w16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp4_acq_rel,globl
+ 
+@@ -868,7 +899,8 @@
+ 	bne	1f
+ 	stxr	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas4_acq,globl
+ 
+ .begfn __aarch64_cas4_rel
+@@ -894,7 +926,8 @@
+ 	bne	1f
+ 	stlxr	w17,w1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas4_acq_rel,globl
+ 
+ .begfn __aarch64_cas4_sync
+@@ -933,6 +966,7 @@
+ 	add	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd4_acq,globl
+ 
+@@ -957,6 +991,7 @@
+ 	add	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd4_acq_rel,globl
+ 
+@@ -995,6 +1030,7 @@
+ 	orr	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset4_acq,globl
+ 
+@@ -1019,6 +1055,7 @@
+ 	orr	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset4_acq_rel,globl
+ 
+@@ -1057,6 +1094,7 @@
+ 	bic	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr4_acq,globl
+ 
+@@ -1081,6 +1119,7 @@
+ 	bic	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr4_acq_rel,globl
+ 
+@@ -1119,6 +1158,7 @@
+ 	eor	w17,w0,w16
+ 	stxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor4_acq,globl
+ 
+@@ -1143,6 +1183,7 @@
+ 	eor	w17,w0,w16
+ 	stlxr	w15,w17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor4_acq_rel,globl
+ 
+@@ -1179,6 +1220,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp8_acq,globl
+ 
+@@ -1201,6 +1243,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stlxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp8_acq_rel,globl
+ 
+@@ -1266,7 +1309,8 @@
+ 	bne	1f
+ 	stlxr	w17,x1,[x2]
+ 	cbnz	w17,0b
+-1:	ret
++1:	dmb	ish
++	ret
+ .endfn __aarch64_cas8_acq_rel,globl
+ 
+ .begfn __aarch64_cas8_sync
+@@ -1305,6 +1349,7 @@
+ 	add	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd8_acq,globl
+ 
+@@ -1329,6 +1374,7 @@
+ 	add	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd8_acq_rel,globl
+ 
+@@ -1367,6 +1413,7 @@
+ 	orr	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset8_acq,globl
+ 
+@@ -1391,6 +1438,7 @@
+ 	orr	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset8_acq_rel,globl
+ 
+@@ -1429,6 +1477,7 @@
+ 	bic	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr8_acq,globl
+ 
+@@ -1453,6 +1502,7 @@
+ 	bic	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr8_acq_rel,globl
+ 
+@@ -1491,6 +1541,7 @@
+ 	eor	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor8_acq,globl
+ 
+@@ -1515,6 +1566,7 @@
+ 	eor	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor8_acq_rel,globl
+ 
+@@ -1551,6 +1603,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp16_acq,globl
+ 
+@@ -1573,6 +1626,7 @@
+ 0:	ldaxr	x0,[x1]
+ 	stlxr	w17,x16,[x1]
+ 	cbnz	w17,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_swp16_acq_rel,globl
+ 
+@@ -1618,6 +1672,7 @@
+ 	csel	x14,x3,x1,eq
+ 	stxp	w13,x15,x14,[x4]
+ 	cbnz	w13,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_cas16_acq,globl
+ 
+@@ -1650,6 +1705,7 @@
+ 	csel	x14,x3,x1,eq
+ 	stlxp	w13,x15,x14,[x4]
+ 	cbnz	w13,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_cas16_acq_rel,globl
+ 
+@@ -1692,6 +1748,7 @@
+ 	add	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd16_acq,globl
+ 
+@@ -1716,6 +1773,7 @@
+ 	add	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldadd16_acq_rel,globl
+ 
+@@ -1754,6 +1812,7 @@
+ 	orr	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset16_acq,globl
+ 
+@@ -1778,6 +1837,7 @@
+ 	orr	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldset16_acq_rel,globl
+ 
+@@ -1816,6 +1876,7 @@
+ 	bic	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr16_acq,globl
+ 
+@@ -1840,6 +1901,7 @@
+ 	bic	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldclr16_acq_rel,globl
+ 
+@@ -1878,6 +1940,7 @@
+ 	eor	x17,x0,x16
+ 	stxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor16_acq,globl
+ 
+@@ -1902,6 +1965,7 @@
+ 	eor	x17,x0,x16
+ 	stlxr	w15,x17,[x1]
+ 	cbnz	w15,0b
++	dmb	ish
+ 	ret
+ .endfn __aarch64_ldeor16_acq_rel,globl
+ 
+diff --git a/libc/intrin/armlse.c b/libc/intrin/armlse.c
+index b05bf070..5c2042e7 100644
+--- a/libc/intrin/armlse.c
++++ b/libc/intrin/armlse.c
+@@ -16,15 +16,29 @@
+ │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
+ │ PERFORMANCE OF THIS SOFTWARE.                                                │
+ ╚─────────────────────────────────────────────────────────────────────────────*/
++#include "libc/dce.h"
+ #include "libc/intrin/getauxval.h"
++#include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/runtime.h"
+ #include "libc/sysv/consts/auxv.h"
+ #include "libc/sysv/consts/hwcap.h"
+ #ifdef __aarch64__
+ 
++// windows gives no auxiliary vector. the feature 34 of windows is
++// PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE. the start code fills the
++// import slot before the constructors run
++#define kNtPfArmV81AtomicInstructionsAvailable 34
++__msabi extern bool32 (*const __imp_IsProcessorFeaturePresent)(uint32_t);
++
+ bool __aarch64_have_lse_atomics;
+ 
+ static __attribute__((__constructor__(1))) void __aarch64_atomics_init(void) {
++  if (IsWindows()) {
++    __aarch64_have_lse_atomics =
++        __imp_IsProcessorFeaturePresent &&
++        __imp_IsProcessorFeaturePresent(kNtPfArmV81AtomicInstructionsAvailable);
++    return;
++  }
+   struct AuxiliaryValue x = __getauxval(AT_HWCAP);
+   __aarch64_have_lse_atomics = !!(x.value & HWCAP_ATOMICS);
+ }
+diff --git a/libc/intrin/clock_gettime-nt.c b/libc/intrin/clock_gettime-nt.c
+index 9020e9cf..bcdfd716 100644
+--- a/libc/intrin/clock_gettime-nt.c
++++ b/libc/intrin/clock_gettime-nt.c
+@@ -26,7 +26,7 @@
+ #include "libc/nt/synchronization.h"
+ #include "libc/nt/thread.h"
+ #include "libc/nt/time.h"
+-#ifdef __x86_64__
++// (the x86_64 guard was here)
+ 
+ #define _CLOCK_REALTIME           0
+ #define _CLOCK_MONOTONIC          1
+@@ -114,4 +114,4 @@ textwindows int sys_clock_gettime_nt(int clock, struct timespec *ts) {
+   }
+ }
+ 
+-#endif  // __x86_64__
++// (the end of the x86_64 guard was here)
+diff --git a/libc/intrin/clock_gettime.c b/libc/intrin/clock_gettime.c
+index c087d814..147a13a7 100644
+--- a/libc/intrin/clock_gettime.c
++++ b/libc/intrin/clock_gettime.c
+@@ -38,11 +38,11 @@ static clock_gettime_f *__clock_gettime_get(void) {
+   clock_gettime_f *cgt;
+   if (IsLinux() && (cgt = CGT_VDSO)) {
+     return cgt;
++  } else if (IsWindows()) {
++    return sys_clock_gettime_nt;
+   } else if (__syslib) {
+     return (void *)__syslib->__clock_gettime;
+ #ifdef __x86_64__
+-  } else if (IsWindows()) {
+-    return sys_clock_gettime_nt;
+   } else if (IsXnu()) {
+     return sys_clock_gettime_xnu;
+ #endif
+diff --git a/libc/intrin/cosmo_futex.c b/libc/intrin/cosmo_futex.c
+index 0c053189..e5f47d8d 100644
+--- a/libc/intrin/cosmo_futex.c
++++ b/libc/intrin/cosmo_futex.c
+@@ -144,7 +144,6 @@ static int cosmo_futex_wait_win32 (atomic_int *w, int expect, char pshare,
+ 				   int clock, const struct timespec *timeout,
+ 				   struct PosixThread *pt,
+ 				   sigset_t waitmask) {
+-#ifdef __x86_64__
+ 	int sig;
+ 	bool32 ok;
+ 	struct timespec deadline, wait, now;
+@@ -192,9 +191,6 @@ static int cosmo_futex_wait_win32 (atomic_int *w, int expect, char pshare,
+ 			unassert (GetLastError () == ETIMEDOUT);
+ 		}
+ 	}
+-#else
+-	return 0;
+-#endif /* __x86_64__ */
+ }
+ 
+ static int cosmo_futex_fix_timeout (struct timespec *memory, int clock,
+diff --git a/libc/intrin/dos2errno.c b/libc/intrin/dos2errno.c
+index 2cbca8f1..4f120932 100644
+--- a/libc/intrin/dos2errno.c
++++ b/libc/intrin/dos2errno.c
+@@ -36,7 +36,14 @@ privileged errno_t __dos2errno(uint32_t error) {
+   if (error) {
+     for (i = 0; kDos2Errno[i].doscode; ++i) {
+       if (error == kDos2Errno[i].doscode) {
++#ifdef __aarch64__
++        // the image is above 4 gb, so the field is the distance from
++        // itself to the errno value
++        return *(const int *)((intptr_t)&kDos2Errno[i] + 2 +
++                              kDos2Errno[i].systemv);
++#else
+         return *(const int *)((intptr_t)kDos2Errno[i].systemv);
++#endif
+       }
+     }
+   }
+diff --git a/libc/intrin/exit1.greg.c b/libc/intrin/exit1.greg.c
+index 92274d5c..cd7ca489 100644
+--- a/libc/intrin/exit1.greg.c
++++ b/libc/intrin/exit1.greg.c
+@@ -97,6 +97,9 @@ wontreturn void _Exit1(int rc) {
+     }
+   } else if (IsXnu()) {
+     __syslib->__pthread_exit(0);
++  } else if (IsWindows()) {
++    __imp_ExitThread(rc);
++    __builtin_unreachable();
+   }
+   notpossible;
+ #else
+diff --git a/libc/intrin/kprintf.greg.c b/libc/intrin/kprintf.greg.c
+index a303723c..18029d35 100644
+--- a/libc/intrin/kprintf.greg.c
++++ b/libc/intrin/kprintf.greg.c
+@@ -384,6 +384,27 @@ ABI void klog(const char *b, size_t n) {
+     }
+   }
+ #elif defined(__aarch64__)
++  if (IsWindows()) {
++    long h;
++    bool32 ok;
++    intptr_t ev;
++    uint32_t wrote;
++    if ((h = kloghandle()) == -1)
++      return;
++    int e = __imp_GetLastError();
++    if ((ev = __imp_CreateEventW(0, 0, 0, 0))) {
++      struct NtOverlapped overlap = {.hEvent = ev};
++      ok = !!__imp_WriteFile(h, b, n, 0, &overlap);
++      if (!ok && __imp_GetLastError() == kNtErrorIoPending)
++        ok = true;
++      ok &= !!__imp_GetOverlappedResult(h, &overlap, &wrote, true);
++      if (!ok)
++        __klog_handle = 0;
++      __imp_CloseHandle(ev);
++    }
++    __imp_SetLastError(e);
++    return;
++  }
+   // this isn't a cancelation point because we don't acknowledge eintr
+   // on xnu we use the "nocancel" version of the system call for safety
+   register long r0 asm("x0") = kloghandle();
+diff --git a/libc/intrin/pthread_yield_np.c b/libc/intrin/pthread_yield_np.c
+index 4fa0c988..486895dc 100644
+--- a/libc/intrin/pthread_yield_np.c
++++ b/libc/intrin/pthread_yield_np.c
+@@ -18,12 +18,18 @@
+ ╚─────────────────────────────────────────────────────────────────────────────*/
+ #include "libc/calls/calls.h"
+ #include "libc/dce.h"
++#include "libc/nt/synchronization.h"
++#include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/runtime.h"
+ #include "libc/runtime/syslib.internal.h"
+ #include "libc/thread/thread.h"
+ 
+ void sys_sched_yield(void);
+ 
++#ifdef __aarch64__
++__msabi extern typeof(SleepEx) *const __imp_SleepEx;
++#endif
++
+ /**
+  * Yields current thread's remaining timeslice to operating system.
+  *
+@@ -32,6 +38,12 @@ void sys_sched_yield(void);
+ int pthread_yield_np(void) {
+   if (IsXnuSilicon()) {
+     __syslib->__pthread_yield_np();
++#ifdef __aarch64__
++  } else if (IsWindows()) {
++    // the code of x86_64 for windows is in sys_sched_yield. an svc
++    // instruction on windows is a system call of the nt kernel.
++    __imp_SleepEx(0, false);
++#endif
+   } else if (IsOpenbsd()) {
+     // sched_yield() is punishingly slow on OpenBSD
+     // it's ruinously slow it'll destroy everything
+diff --git a/libc/intrin/restore.S b/libc/intrin/restore.S
+index 596b01f7..4ac7e3ef 100644
+--- a/libc/intrin/restore.S
++++ b/libc/intrin/restore.S
+@@ -24,6 +24,8 @@
+ //	@param	rdi	points to ucontext_t with machine state
+ //	@noreturn
+ __sig_restore:
++#ifdef __x86_64__
++
+ 
+ //	restore vector registers
+ 	lea	608(%rdi),%rax
+@@ -70,4 +72,10 @@ __sig_restore:
+ 	pop	%rax
+ 	ret
+ 
++#elif defined(__aarch64__)
++
++//	The register x16 is not restored. This is a gap of the spike.
++	b	__tailcontext
++
++#endif
+ 	.endfn	__sig_restore,globl
+diff --git a/libc/intrin/sig.c b/libc/intrin/sig.c
+index 0cf56902..2567009c 100644
+--- a/libc/intrin/sig.c
++++ b/libc/intrin/sig.c
+@@ -16,6 +16,11 @@
+ │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
+ │ PERFORMANCE OF THIS SOFTWARE.                                                │
+ ╚─────────────────────────────────────────────────────────────────────────────*/
++#ifdef __aarch64__
++// the signal frame of aarch64 has the 4 kb of the fp state of linux
++#pragma GCC diagnostic ignored "-Wframe-larger-than="
++#pragma GCC diagnostic ignored "-Walloca-larger-than="
++#endif
+ #include "libc/sysv/consts/sig.h"
+ #include "ape/sections.internal.h"
+ #include "libc/calls/calls.h"
+@@ -66,7 +71,6 @@
+ #include "libc/sysv/consts/ss.h"
+ #include "libc/sysv/consts/termios.h"
+ #include "libc/thread/posixthread.internal.h"
+-#ifdef __x86_64__
+ 
+ /**
+  * @fileoverview Cosmopolitan Signals for Windows.
+@@ -80,8 +84,32 @@ struct SignalFrame {
+   unsigned flags;
+   siginfo_t si;
+   ucontext_t ctx;
++#ifdef __aarch64__
++  // each register of the thread, also the vector registers, for the
++  // return to the code that the signal stopped
++  struct NtContext nc;
++#endif
+ };
+ 
++#ifdef __aarch64__
++__msabi extern int32_t (*const __imp_NtContinue)(struct NtContext *, int32_t);
++
++// windows on arm64: returns to the code that the signal stopped. the
++// signal handler can change the general registers in its ucontext_t.
++// the system call puts back each register of the thread, which the
++// assembly of __sig_restore() cannot do (x16, x17, v0 to v31)
++textwindows wontreturn static void __sig_resume(struct SignalFrame *sf) {
++  for (int i = 0; i < 31; ++i)
++    if (i != 18)  // x18 is the teb of windows
++      sf->nc.X[i] = sf->ctx.uc_mcontext.regs[i];
++  sf->nc.Sp = sf->ctx.uc_mcontext.sp;
++  sf->nc.Pc = sf->ctx.uc_mcontext.pc;
++  sf->nc.Cpsr = sf->ctx.uc_mcontext.pstate;
++  __imp_NtContinue(&sf->nc, 0);
++  __builtin_trap();
++}
++#endif
++
+ __msabi extern typeof(GetStdHandle) *const __imp_GetStdHandle;
+ __msabi extern typeof(VirtualProtectEx) *const __imp_VirtualProtectEx;
+ __msabi extern typeof(VirtualQuery) *const __imp_VirtualQuery;
+@@ -297,8 +325,13 @@ textwindows wontreturn static void __sig_tramp(struct SignalFrame *sf) {
+ 
+     // jump back into original code if there aren't any pending signals
+     do {
+-      if (!(sig = __sig_get(sf->ctx.uc_sigmask)))
++      if (!(sig = __sig_get(sf->ctx.uc_sigmask))) {
++#ifdef __aarch64__
++        __sig_resume(sf);
++#else
+         __sig_restore(&sf->ctx);
++#endif
++      }
+     } while (!__sig_start(pt, sig, &sf->rva, &sf->flags));
+ 
+     // tail recurse into another signal handler
+@@ -313,6 +346,13 @@ textwindows wontreturn static void __sig_tramp(struct SignalFrame *sf) {
+ 
+ HAIRY optimizespeed void __sig_translate(ucontext_t *ctx,
+                                          const struct NtContext *cr) {
++#ifdef __aarch64__
++  for (int i = 0; i < 31; ++i)
++    ctx->uc_mcontext.regs[i] = cr->X[i];
++  ctx->uc_mcontext.sp = cr->Sp;
++  ctx->uc_mcontext.pc = cr->Pc;
++  ctx->uc_mcontext.pstate = cr->Cpsr;
++#else
+   ctx->uc_mcontext.eflags = cr->EFlags;
+   ctx->uc_mcontext.rax = cr->Rax;
+   ctx->uc_mcontext.rbx = cr->Rbx;
+@@ -337,6 +377,7 @@ HAIRY optimizespeed void __sig_translate(ucontext_t *ctx,
+   ctx->uc_mcontext.fpregs = &ctx->__fpustate;
+   __repmovsb(&ctx->__fpustate, &cr->FltSave, sizeof(ctx->__fpustate));
+   ctx->__fpustate.mxcsr = cr->MxCsr;
++#endif
+ }
+ 
+ // sends signal to another specific thread which is ref'd
+@@ -422,8 +463,15 @@ textwindows static int __sig_killer(struct PosixThread *pt, int sig, int sic) {
+   // we can't preempt threads that masked sig or are blocked
+   // we can't preempt threads that are running in win32 code
+   // so we shall unblock the thread and let it signal itself
+-  if (!((uintptr_t)__executable_start <= nc.Rip &&
+-        nc.Rip < (uintptr_t)__privileged_start)) {
++#ifdef __aarch64__
++#define NC_PC nc.Pc
++#define NC_SP nc.Sp
++#else
++#define NC_PC nc.Rip
++#define NC_SP nc.Rsp
++#endif
++  if (!((uintptr_t)__executable_start <= NC_PC &&
++        NC_PC < (uintptr_t)__privileged_start)) {
+     atomic_fetch_or_explicit(&pt->tib->tib_sigpending, 1ull << (sig - 1),
+                              memory_order_relaxed);
+     ResumeThread(th);
+@@ -444,21 +492,31 @@ textwindows static int __sig_killer(struct PosixThread *pt, int sig, int sic) {
+   if (__sig_should_use_altstack(flags, pt->tib)) {
+     sp = (uintptr_t)pt->tib->tib_sigstack_addr + pt->tib->tib_sigstack_size;
+   } else {
+-    sp = nc.Rsp;
++    sp = NC_SP;
+   }
+   sp -= sizeof(struct SignalFrame);
+   sp &= -16;
+   struct SignalFrame *sf = (struct SignalFrame *)sp;
+   __repstosb(sf, 0, sizeof(*sf));
+   __sig_translate(&sf->ctx, &nc);
++#ifdef __aarch64__
++  sf->nc = nc;
++#endif
+   sf->rva = rva;
+   sf->flags = flags;
+   sf->si.si_code = sic;
+   sf->si.si_signo = sig;
++#ifdef __aarch64__
++  nc.X[30] = nc.Pc;
++  nc.Pc = (intptr_t)__sig_tramp;
++  nc.X[0] = (intptr_t)sf;
++  nc.Sp = sp;
++#else
+   *(uintptr_t *)(sp -= sizeof(uintptr_t)) = nc.Rip;
+   nc.Rip = (intptr_t)__sig_tramp;
+   nc.Rdi = (intptr_t)sf;
+   nc.Rsp = sp;
++#endif
+   if (!SetThreadContext(th, &nc)) {
+     STRACE("SetThreadContext failed w/ %d", GetLastError());
+     atomic_store_explicit(&pt->pt_intoff, 0, memory_order_release);
+@@ -583,9 +641,14 @@ textwindows static void __sig_unmaskable(struct SignalFrame *sf) {
+          sf->si.si_errno, sf->si.si_signo,
+          _weaken(FindDebugBinary) ? _weaken(FindDebugBinary)()
+                                   : program_invocation_name,
++#ifdef __aarch64__
++         sf->ctx.uc_mcontext.pc,
++         DescribeBacktrace((struct StackFrame *)sf->ctx.uc_mcontext.regs[29]));
++#else
+          sf->ctx.uc_mcontext.gregs[REG_RIP],
+          DescribeBacktrace(
+              (struct StackFrame *)sf->ctx.uc_mcontext.gregs[REG_RBP]));
++#endif
+ 
+   // kills process if the user did not specify a handler for this signal
+   // we also don't allow unmaskable signals to be ignored by the program
+@@ -613,8 +676,12 @@ textwindows static void __sig_unmaskable(struct SignalFrame *sf) {
+   __sig_handler(sf->rva)(sf->si.si_signo, &sf->si, &sf->ctx);
+   atomic_store_explicit(&__get_tls()->tib_sigmask, sf->ctx.uc_sigmask,
+                         memory_order_release);
++#ifdef __aarch64__
++  __sig_resume(sf);
++#else
+   setcontext(&sf->ctx);
+   __builtin_unreachable();
++#endif
+ }
+ 
+ //                         abashed the devil stood
+@@ -626,8 +693,13 @@ __msabi HAIRY static unsigned __sig_crash(struct NtExceptionPointers *ep) {
+ 
+   // advances the instruction pointer, to skip over debugger breakpoints
+   // this makes windows consistent with how unix kernels are implemented
++#ifdef __aarch64__
++  if (sig == SIGTRAP)
++    ep->ContextRecord->Pc += 4;
++#else
+   if (sig == SIGTRAP)
+     ep->ContextRecord->Rip++;
++#endif
+ 
+   // clears signal handler if user asked sigaction for one-shot behavior
+   unsigned rva = __sighandrvas[sig];
+@@ -654,6 +726,9 @@ __msabi HAIRY static unsigned __sig_crash(struct NtExceptionPointers *ep) {
+   struct SignalFrame *sf = (struct SignalFrame *)sp;
+   __repstosb(sf, 0, sizeof(*sf));
+   __sig_translate(&sf->ctx, ep->ContextRecord);
++#ifdef __aarch64__
++  sf->nc = *ep->ContextRecord;
++#endif
+   sf->rva = rva;
+   sf->flags = flags;
+   sf->si.si_code = sic;
+@@ -664,10 +739,17 @@ __msabi HAIRY static unsigned __sig_crash(struct NtExceptionPointers *ep) {
+   } else {
+     sf->si.si_addr = ep->ExceptionRecord->ExceptionAddress;
+   }
++#ifdef __aarch64__
++  ep->ContextRecord->X[30] = ep->ContextRecord->Pc;
++  ep->ContextRecord->Pc = (intptr_t)__sig_unmaskable;
++  ep->ContextRecord->X[0] = (intptr_t)sf;
++  ep->ContextRecord->Sp = sp;
++#else
+   *(uintptr_t *)(sp -= sizeof(uintptr_t)) = ep->ContextRecord->Rip;
+   ep->ContextRecord->Rip = (intptr_t)__sig_unmaskable;
+   ep->ContextRecord->Rdi = (intptr_t)sf;
+   ep->ContextRecord->Rsp = sp;
++#endif
+   return kNtExceptionContinueExecution;
+ }
+ 
+@@ -824,5 +906,3 @@ __attribute__((__constructor__(10))) textstartup void __sig_init(void) {
+   SetConsoleCtrlHandler((void *)__sig_console, true);
+   CreateThread(0, STKSZ, __sig_worker, 0, kNtStackSizeParamIsAReservation, 0);
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/intrin/sigproc.c b/libc/intrin/sigproc.c
+index e3f6d067..8c7bf607 100644
+--- a/libc/intrin/sigproc.c
++++ b/libc/intrin/sigproc.c
+@@ -32,7 +32,6 @@
+ #include "libc/nt/process.h"
+ #include "libc/nt/runtime.h"
+ #include "libc/nt/thunk/msabi.h"
+-#ifdef __x86_64__
+ 
+ #define ABI __msabi textwindows dontinstrument
+ 
+@@ -122,5 +121,3 @@ ABI atomic_ulong *__sig_map_process(int pid, int disposition) {
+   __imp_CloseHandle(hand);
+   return sigs;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/intrin/sigprocmask-nt.c b/libc/intrin/sigprocmask-nt.c
+index 38246b43..e92438a7 100644
+--- a/libc/intrin/sigprocmask-nt.c
++++ b/libc/intrin/sigprocmask-nt.c
+@@ -23,7 +23,6 @@
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ textwindows int __sig_mask(int how, const sigset_t *neu, sigset_t *old) {
+   if (how != SIG_BLOCK && how != SIG_UNBLOCK && how != SIG_SETMASK)
+@@ -47,5 +46,3 @@ textwindows int __sig_mask(int how, const sigset_t *neu, sigset_t *old) {
+     *old = oldmask;
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/intrin/sys_gettid.greg.c b/libc/intrin/sys_gettid.greg.c
+index fbc4dadd..6dd0a951 100644
+--- a/libc/intrin/sys_gettid.greg.c
++++ b/libc/intrin/sys_gettid.greg.c
+@@ -68,6 +68,8 @@ dontinstrument int sys_gettid(void) {
+   return tid;
+ #elif defined(__aarch64__)
+   // this can't be used on xnu
++  if (IsWindows())
++    return __imp_GetCurrentThreadId();
+   register long res asm("x0");
+   if (IsLinux()) {
+     asm volatile("mov\tx8,%1\n\t"
+diff --git a/libc/intrin/terminatethisprocess.c b/libc/intrin/terminatethisprocess.c
+index 2f61cdb2..4bb759bc 100644
+--- a/libc/intrin/terminatethisprocess.c
++++ b/libc/intrin/terminatethisprocess.c
+@@ -24,7 +24,6 @@
+ #include "libc/nt/runtime.h"
+ #include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/internal.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(DeleteFile) *const __imp_DeleteFileW;
+ __msabi extern typeof(TerminateProcess) *const __imp_TerminateProcess;
+@@ -49,5 +48,3 @@ textwindows dontinstrument void TerminateThisProcess(uint32_t dwWaitStatus) {
+   __imp_TerminateProcess(-1, dwWaitStatus);
+   __builtin_unreachable();
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/intrin/tls.c b/libc/intrin/tls.c
+index 3a6d82db..30009b73 100644
+--- a/libc/intrin/tls.c
++++ b/libc/intrin/tls.c
+@@ -51,4 +51,14 @@ privileged optimizespeed struct CosmoTib *__get_tls_win32(void) {
+ privileged void __set_tls_win32(void *tls) {
+   asm("mov\t%1,%%gs:%0" : "=m"(*((long *)0x1480 + __tls_index)) : "r"(tls));
+ }
++#elif defined(__aarch64__)
++// On ARM64, the register x28 holds the thread pointer on each system.
++// Windows does not use x28, and the compiler keeps it (-ffixed-x28).
++struct CosmoTib *__get_tls_win32(void) {
++  return __get_tls();
++}
++void __set_tls_win32(void *tls) {
++  register long x28 asm("x28") = (long)__adj_tls(tls);
++  asm volatile("" : "+r"(x28));
++}
+ #endif
+diff --git a/libc/intrin/wintlsinit.c b/libc/intrin/wintlsinit.c
+index eb19331f..50f0335c 100644
+--- a/libc/intrin/wintlsinit.c
++++ b/libc/intrin/wintlsinit.c
+@@ -22,7 +22,6 @@
+ #include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/runtime.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(GetCurrentThreadId) *const __imp_GetCurrentThreadId;
+ 
+@@ -44,5 +43,3 @@ textwindows dontinstrument void __bootstrap_tls(struct CosmoTib *tib,
+   atomic_init(&tib->tib_ctid, tid);
+   __set_tls_win32(tib);
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/nt/enum/context.h b/libc/nt/enum/context.h
+index 38d5d358..080b7b62 100644
+--- a/libc/nt/enum/context.h
++++ b/libc/nt/enum/context.h
+@@ -1,6 +1,19 @@
+ #ifndef COSMOPOLITAN_LIBC_NT_ENUM_CONTEXT_H_
+ #define COSMOPOLITAN_LIBC_NT_ENUM_CONTEXT_H_
+ 
++#ifdef __aarch64__
++#define kNtContextArm64          0x00400000
++#define kNtContextControl        (kNtContextArm64 | 0x00000001)
++#define kNtContextInteger        (kNtContextArm64 | 0x00000002)
++#define kNtContextFloatingPoint  (kNtContextArm64 | 0x00000004)
++#define kNtContextDebugRegisters (kNtContextArm64 | 0x00000008)
++#define kNtContextSegments       0
++#define kNtContextFull \
++  (kNtContextControl | kNtContextInteger | kNtContextFloatingPoint)
++#define kNtContextAll \
++  (kNtContextControl | kNtContextInteger | kNtContextFloatingPoint | \
++   kNtContextDebugRegisters)
++#else
+ #define kNtContextAmd64 0x00100000
+ 
+ #define kNtContextControl        (kNtContextAmd64 | 0x00000001)
+@@ -17,5 +30,6 @@
+    kNtContextFloatingPoint | kNtContextDebugRegisters)
+ 
+ #define kNtContextXstate (kNtContextAmd64 | 0x00000040)
++#endif
+ 
+ #endif /* COSMOPOLITAN_LIBC_NT_ENUM_CONTEXT_H_ */
+diff --git a/libc/nt/kernel32/IsProcessorFeaturePresent.S b/libc/nt/kernel32/IsProcessorFeaturePresent.S
+new file mode 100644
+index 00000000..c66861a3
+--- /dev/null
++++ b/libc/nt/kernel32/IsProcessorFeaturePresent.S
+@@ -0,0 +1,19 @@
++#include "libc/nt/codegen.h"
++.imp	kernel32,__imp_IsProcessorFeaturePresent,IsProcessorFeaturePresent
++
++	.text.windows
++	.ftrace1
++IsProcessorFeaturePresent:
++	.ftrace2
++#ifdef __x86_64__
++	push	%rbp
++	mov	%rsp,%rbp
++	mov	__imp_IsProcessorFeaturePresent(%rip),%rax
++	jmp	__sysv2nt
++#elif defined(__aarch64__)
++	adrp	x16,__imp_IsProcessorFeaturePresent
++	ldr	x16,[x16,#:lo12:__imp_IsProcessorFeaturePresent]
++	br	x16
++#endif
++	.endfn	IsProcessorFeaturePresent,globl
++	.previous
+diff --git a/libc/nt/master.sh b/libc/nt/master.sh
+index 9d3ae3d3..d37f1561 100755
+--- a/libc/nt/master.sh
++++ b/libc/nt/master.sh
+@@ -203,6 +203,7 @@ imp	'InitializeCriticalSectionAndSpinCount'			InitializeCriticalSectionAndSpinCo
+ imp	'InitializeProcThreadAttributeList'			InitializeProcThreadAttributeList			kernel32	4
+ imp	'InitializeSRWLock'					InitializeSRWLock					kernel32	1
+ imp	'IsWow64Process2'					IsWow64Process2						kernel32	3
++imp	'IsProcessorFeaturePresent'				IsProcessorFeaturePresent				kernel32	1
+ imp	'LeaveCriticalSection'					LeaveCriticalSection					kernel32	1
+ imp	'LoadLibrary'						LoadLibraryW						kernel32	1
+ imp	'LoadLibraryA'						LoadLibraryA						kernel32	1
+diff --git a/libc/nt/ntdllimport.h b/libc/nt/ntdllimport.h
+index 657ed05e..12c13a4c 100644
+--- a/libc/nt/ntdllimport.h
++++ b/libc/nt/ntdllimport.h
+@@ -39,12 +39,20 @@ __imp_\fn:
+ 	.asciz	"\fn"
+ 	.previous
+ #elif defined(__aarch64__)
+-	.section .data.nt.\fn,"aw",@progbits
++	.section ".rodata.ntimpstr.ntdll.\fn","a",@progbits
++"ntimp.fn.ntdll.\fn":
++	.asciz	"\fn"
++"ntimp.dll.ntdll.\fn":
++	.asciz	"ntdll"
++	.previous
++	.section ".ntimp.ntdll.\fn","aw",@progbits
+ 	.globl	__imp_\fn
+ 	.balign	8
+ __imp_\fn:
+-	.quad	\name
+-	.weak	\name
++	.quad	0
++	.quad	"ntimp.fn.ntdll.\fn"
++	.quad	"ntimp.dll.ntdll.\fn"
++	.previous
+ #endif
+ .endm
+ 
+diff --git a/libc/nt/struct/context.h b/libc/nt/struct/context.h
+index 406b33c7..4adec4a4 100644
+--- a/libc/nt/struct/context.h
++++ b/libc/nt/struct/context.h
+@@ -25,6 +25,22 @@ struct NtXmmSaveArea32 { /* basically same as struct FpuState */
+   uint8_t Reserved4[96];
+ };
+ 
++#ifdef __aarch64__
++struct NtContext {
++  uint32_t ContextFlags;
++  uint32_t Cpsr;
++  uint64_t X[31]; /* X[29] is Fp, X[30] is Lr */
++  uint64_t Sp;
++  uint64_t Pc;
++  struct NtM128A V[32];
++  uint32_t Fpcr;
++  uint32_t Fpsr;
++  uint32_t Bcr[8];
++  uint64_t Bvr[8];
++  uint32_t Wcr[2];
++  uint64_t Wvr[2];
++} forcealign(16);
++#else
+ struct NtContext {
+   uint64_t P1Home, P2Home, P3Home, P4Home, P5Home, P6Home;
+   uint32_t ContextFlags;
+@@ -53,5 +69,6 @@ struct NtContext {
+   uint64_t LastExceptionToRip;
+   uint64_t LastExceptionFromRip;
+ } forcealign(16);
++#endif
+ 
+ #endif /* COSMOPOLITAN_LIBC_NT_STRUCT_CONTEXT_H_ */
+diff --git a/libc/proc/execve-nt.greg.c b/libc/proc/execve-nt.greg.c
+index 42cb01c6..79f3b493 100644
+--- a/libc/proc/execve-nt.greg.c
++++ b/libc/proc/execve-nt.greg.c
+@@ -53,7 +53,6 @@
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/posixthread.internal.h"
+ #include "libc/thread/thread.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(CloseHandle) *const __imp_CloseHandle;
+ __msabi extern typeof(TerminateProcess) *const __imp_TerminateProcess;
+@@ -209,5 +208,3 @@ textwindows int sys_execve_nt(const char *program, char *const argv[],
+     }
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/proc/fork-nt.c b/libc/proc/fork-nt.c
+index 7f0ddca2..d73c3276 100644
+--- a/libc/proc/fork-nt.c
++++ b/libc/proc/fork-nt.c
+@@ -53,12 +53,16 @@
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ extern long __klog_handle;
+ extern bool __winmain_isfork;
+ extern intptr_t __winmain_jmpbuf[5];
+ extern struct CosmoTib *__winmain_tib;
++#ifdef __aarch64__
++void __winfork_aarch64(void *);
++extern unsigned char __executable_start[] __attribute__((__weak__));
++extern unsigned char _end[] __attribute__((__weak__));
++#endif
+ 
+ __msabi extern typeof(TlsAlloc) *const __imp_TlsAlloc;
+ __msabi extern typeof(MapViewOfFileEx) *const __imp_MapViewOfFileEx;
+@@ -90,9 +94,13 @@ textwindows static void sys_fork_nt_child(void) {
+   // setup runtime
+   __klog_handle = 0;
+   __tls_index = __imp_TlsAlloc();
++#ifdef __x86_64__
+   __morph_tls();
+   __set_tls_win32(__winmain_tib);
+   __tls_enabled = true;
++#else
++  __set_tls(__winmain_tib);
++#endif
+ 
+   // resurrect shared memory mappings
+   struct Map *next;
+@@ -156,7 +164,9 @@ textwindows static void sys_fork_nt_child(void) {
+   }
+ 
+   // function tracing is now safe
+-  ftrace_enabled(+1);
++#ifdef __x86_64__
++  ftrace_enabled(+1);  // WinMain() did -1
++#endif
+ 
+   // initialize winsock
+   void WinSockFork(void);
+@@ -195,6 +205,18 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
+       .hStdOutput = g_fds.p[1].handle,
+       .hStdError = g_fds.p[2].handle,
+   };
++#ifdef __aarch64__
++  // windows on arm64: the module of this process is the loader
++  // ape-arm64.exe, so the child is the loader too. with this variable,
++  // the loader does not load the program: it calls __winfork_aarch64()
++  // at the address of the value
++  char16_t entry[20];
++  uintptr_t addr = (uintptr_t)__winfork_aarch64;
++  for (int i = 0; i < 16; ++i)
++    entry[i] = u"0123456789abcdef"[(addr >> (60 - 4 * i)) & 15];
++  entry[16] = 0;
++  SetEnvironmentVariable(u"_APE_FORK", entry);
++#endif
+   if (!CreateProcess(prog, 0, 0, 0, true,
+                      dwCreationFlags | kNtCreateSuspended |
+                          kNtInheritParentAffinity |
+@@ -213,6 +235,16 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
+ 
+   // let's go
+   bool ok = true;
++#ifdef __aarch64__
++  // no system loader made the memory of the image in the child. make it
++  // here, at the addresses of the loader: 64 kb blocks from the start
++  // of the image to its end. the loop below writes its content
++  SetEnvironmentVariable(u"_APE_FORK", 0);
++  char *image_lo = (char *)((uintptr_t)__executable_start & -65536);
++  char *image_hi = (char *)(((uintptr_t)_end + 65535) & -65536);
++  ok = ok && !!VirtualAllocEx(procinfo.hProcess, image_lo, image_hi - image_lo,
++                              kNtMemReserve | kNtMemCommit, kNtPageReadwrite);
++#endif
+ 
+   // copy memory manager maps
+   for (struct MapSlab *slab =
+@@ -231,6 +263,20 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
+       continue;  // shared memory doesn't need to be copied to subprocess
+     if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) != MAP_FILE)
+       continue;  // ignore things like signal worker stack memory
++#ifdef __aarch64__
++    if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) == MAP_FILE) {
++      // a part of the image (code or data): its memory is there, with
++      // the protection read and write
++      uint32_t child_old_protect;
++      ok = ok &&
++           !!WriteProcessMemory(procinfo.hProcess, map->addr, map->addr,
++                                (map->size + __pagesize - 1) & -__pagesize, 0);
++      ok = ok &&
++           !!VirtualProtectEx(procinfo.hProcess, map->addr, map->size,
++                              __prot2nt(map->prot, false), &child_old_protect);
++      continue;
++    }
++#endif
+     if (__maps_isalloc(map)) {
+       size_t allocsize = map->size;
+       for (struct Map *m2 = __maps_next(map); m2; m2 = __maps_next(m2)) {
+@@ -318,5 +364,3 @@ textwindows int sys_fork_nt(uint32_t dwCreationFlags) {
+   __winmain_isfork = false;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/proc/getpriority.c b/libc/proc/getpriority.c
+index fcaa7b75..99ac48b4 100644
+--- a/libc/proc/getpriority.c
++++ b/libc/proc/getpriority.c
+@@ -79,9 +79,13 @@ int getpriority(int which, unsigned who) {
+     rc = enosys();
+   }
+ #else
+-  rc = sys_getpriority(which, who);
+-  if (rc != -1) {
+-    rc = NZERO - rc;
++  if (IsWindows()) {
++    rc = sys_getpriority_nt(which, who);
++  } else {
++    rc = sys_getpriority(which, who);
++    if (rc != -1) {
++      rc = NZERO - rc;
++    }
+   }
+ #endif
+   STRACE("getpriority(%s, %u) → %d% m", DescribeWhichPrio(which), who, rc);
+diff --git a/libc/proc/getrusage-nt.c b/libc/proc/getrusage-nt.c
+index 07bde103..9a1cc96c 100644
+--- a/libc/proc/getrusage-nt.c
++++ b/libc/proc/getrusage-nt.c
+@@ -33,7 +33,6 @@
+ #include "libc/str/str.h"
+ #include "libc/sysv/consts/rusage.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int sys_getrusage_nt(int who, struct rusage *usage) {
+   int64_t me;
+@@ -86,5 +85,3 @@ textwindows int sys_getrusage_nt(int who, struct rusage *usage) {
+ 
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/proc/kill-nt.c b/libc/proc/kill-nt.c
+index a820bf93..84cc155a 100644
+--- a/libc/proc/kill-nt.c
++++ b/libc/proc/kill-nt.c
+@@ -36,7 +36,6 @@
+ #include "libc/proc/proc.h"
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows int sys_kill_nt(int pid, int sig) {
+ 
+@@ -123,5 +122,3 @@ textwindows int sys_kill_nt(int pid, int sig) {
+     return 0;
+   return esrch();
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/proc/posix_spawn.c b/libc/proc/posix_spawn.c
+index 4dbbdcea..5bbed228 100644
+--- a/libc/proc/posix_spawn.c
++++ b/libc/proc/posix_spawn.c
+@@ -99,7 +99,6 @@
+ 
+ static atomic_bool has_vfork;  // i.e. not qemu/wsl/xnu/openbsd
+ 
+-#ifdef __x86_64__
+ 
+ struct Closer {
+   int64_t handle;
+@@ -461,7 +460,6 @@ static textwindows dontinline errno_t posix_spawn_nt(
+   return err;
+ }
+ 
+-#endif  // __x86_64__
+ 
+ /**
+  * Spawns process, the POSIX way, e.g.
+@@ -594,10 +592,8 @@ errno_t posix_spawn(int *pid, const char *path,
+                     const posix_spawn_file_actions_t *file_actions,
+                     const posix_spawnattr_t *attrp, char *const argv[],
+                     char *const envp[]) {
+-#ifdef __x86_64__
+   if (IsWindows())
+     return posix_spawn_nt(pid, path, file_actions, attrp, argv, envp);
+-#endif
+   int pfds[2];
+   bool use_pipe;
+   volatile int status = 0;
+diff --git a/libc/proc/proc.c b/libc/proc/proc.c
+index 0288075d..72f4f1af 100644
+--- a/libc/proc/proc.c
++++ b/libc/proc/proc.c
+@@ -59,7 +59,6 @@
+ #include "libc/thread/thread.h"
+ #include "libc/thread/tls.h"
+ #include "third_party/nsync/mu.h"
+-#ifdef __x86_64__
+ 
+ /**
+  * @fileoverview Windows Subprocess Management.
+@@ -332,5 +331,3 @@ textwindows int64_t __proc_search(int pid) {
+   ALLOW_SIGNALS;
+   return handle;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/proc/vfork.S b/libc/proc/vfork.S
+index 3f87d74e..20b61659 100644
+--- a/libc/proc/vfork.S
++++ b/libc/proc/vfork.S
+@@ -91,6 +91,8 @@ vfork:
+ 	ldr	w8,[x8,#:lo12:__hostos]
+ 	tbz	x8,3,1f			// bit 3 is xnu
+ 	b	fork			// which doesn't support vfork()
++1:	tbz	x8,2,1f			// bit 2 is windows
++	b	fork			// as on x86-64
+ 1:
+ 
+ #if SYSDEBUG
+diff --git a/libc/proc/wait4-nt.c b/libc/proc/wait4-nt.c
+index fe8e0d85..1e77baab 100644
+--- a/libc/proc/wait4-nt.c
++++ b/libc/proc/wait4-nt.c
+@@ -33,7 +33,6 @@
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/consts/w.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows static int __proc_reap(struct Proc *pr, int *wstatus,
+                                    struct rusage *opt_out_rusage) {
+@@ -223,5 +222,3 @@ textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
+   __sig_unblock(m);
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/runtime/clone.c b/libc/runtime/clone.c
+index c2325896..fd4739ca 100644
+--- a/libc/runtime/clone.c
++++ b/libc/runtime/clone.c
+@@ -517,6 +517,68 @@ static errno_t CloneSilicon(int (*fn)(void *), char *stk, size_t stksz,
+   return res;
+ }
+ 
++////////////////////////////////////////////////////////////////////////////////
++// WINDOWS ON ARM64
++
++__msabi extern typeof(ExitThread) *const __imp_ExitThread;
++__msabi extern typeof(GetCurrentThreadId) *const __imp_GetCurrentThreadId;
++__msabi extern typeof(WakeByAddressAll) *const __imp_WakeByAddressAll;
++
++textwindows dontinstrument static uint32_t WinArmThreadMain(void *arg) {
++  struct CloneArgs *wt = arg;
++  asm volatile("mov\tx28,%0" : /* no outputs */ : "r"(wt->tls));
++  int tid = __imp_GetCurrentThreadId();
++  atomic_int *ctid = wt->ctid;
++  atomic_init(ctid, tid);
++  atomic_init(wt->ptid, tid);
++  // windows compares the stack pointer with the limits of the stack in
++  // the teb (x18), at the offsets 8 and 16. the limits permit each
++  // address of the user space (see __winstack_aarch64)
++  register char **teb asm("x18");
++  asm volatile("" : "=r"(teb));
++  char *base = teb[1];
++  char *limit = teb[2];
++  teb[1] = (char *)0x7ffffffe0000;
++  teb[2] = (char *)0x10000;
++  int rc = __stack_call(wt->arg, tid, 0, 0, wt->func, wt->sp);
++  teb[1] = base;
++  teb[2] = limit;
++  // the stack of the thread can be free now, so use only registers
++  atomic_store_explicit(ctid, 0, memory_order_release);
++  __imp_WakeByAddressAll(ctid);
++  __imp_ExitThread(rc);
++  __builtin_unreachable();
++}
++
++textwindows static errno_t CloneWindowsArm(int (*func)(void *), char *stk,
++                                           size_t stksz, void *arg, void *tls,
++                                           atomic_int *ptid, atomic_int *ctid) {
++  long sp;
++  int64_t h;
++  intptr_t tip;
++  uint32_t utid;
++  struct CloneArgs *wt;
++  sp = tip = (intptr_t)stk + stksz;
++  sp -= sizeof(struct CloneArgs);
++  sp &= -alignof(struct CloneArgs);
++  wt = (struct CloneArgs *)sp;
++  wt->ctid = ctid;
++  wt->ptid = ptid;
++  wt->func = func;
++  wt->arg = arg;
++  wt->tls = tls;
++  wt->sp = tip & -16;
++  if ((h = CreateThread(0, 65536, (void *)WinArmThreadMain, wt,
++                        kNtStackSizeParamIsAReservation, &utid))) {
++    atomic_init(ptid, utid);
++    struct CosmoTib *tib = tls;
++    atomic_store_explicit(&tib[-1].tib_syshand, h, memory_order_release);
++    return 0;
++  } else {
++    return __dos2errno(GetLastError());
++  }
++}
++
+ #endif /* __aarch64__ */
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -598,6 +660,10 @@ errno_t clone(void *func, void *stk, size_t stksz, int flags, void *arg,
+ #endif
+   } else if (IsFreebsd()) {
+     err = CloneFreebsd(func, stk, stksz, arg, tls, ptid, ctid);
++#if defined(__aarch64__)
++  } else if (IsWindows()) {
++    err = CloneWindowsArm(func, stk, stksz, arg, tls, ptid, ctid);
++#endif
+ #if defined(__x86_64__)
+   } else if (IsWindows()) {
+     err = CloneWindows(func, stk, stksz, arg, tls, ptid, ctid);
+diff --git a/libc/runtime/cosmo2.c b/libc/runtime/cosmo2.c
+index a218af57..b846317d 100644
+--- a/libc/runtime/cosmo2.c
++++ b/libc/runtime/cosmo2.c
+@@ -67,6 +67,9 @@ extern pthread_mutex_t __mmi_lock_obj;
+ extern int hostos asm("__hostos");
+ 
+ void __pagesize_init(unsigned long *auxv);
++void __winmain_aarch64(void *, char **, int *, char ***, char ***,
++                       unsigned long **);
++void __winstack_aarch64(long *, void *, char *);
+ 
+ static const char *DecodeMagnum(const char *p, long *r) {
+   int k = 0;
+@@ -82,6 +85,12 @@ static const char *DecodeMagnum(const char *p, long *r) {
+ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
+                                   int os, long *is_freebsd) {
+ 
++  // windows on arm64: the first call is on the stack of the loader
++  // ape-arm64.exe. this function maps the stack of the program and
++  // calls cosmo() again on it. the second call returns here
++  if (SupportsWindows() && os == _HOSTWINDOWS)
++    __winstack_aarch64(sp, m1, exename);
++
+   // get startup timestamp as early as possible
+   // its used by --strace and also kprintf() %T
+   kStartTsc = rdtsc();
+@@ -111,15 +120,6 @@ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
+   while (*auxv++)
+     donothing;
+ 
+-  // set helpful globals
+-  __argc = argc;
+-  __argv = argv;
+-  __envp = envp;
+-  __auxv = auxv;
+-  environ = envp;
+-  __program_executable_name = exename;
+-  program_invocation_name = argv[0];
+-  __oldstack = (intptr_t)sp;
+   if (!(hostos = os)) {
+     if (SupportsFreebsd() && is_freebsd) {
+       hostos = _HOSTFREEBSD;
+@@ -142,6 +142,8 @@ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
+     magnums = syscon_xnu;
+   } else if (IsLinux()) {
+     magnums = syscon_linux;
++  } else if (IsWindows()) {
++    magnums = syscon_windows;
+   } else {
+     notpossible;
+   }
+@@ -151,6 +153,24 @@ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
+     magnums = DecodeMagnum(magnums, mp);
+   }
+ 
++  // windows on arm64: the loader ape-arm64.exe gives the two functions
++  // that fill the import slots (in m1). the arguments and the
++  // environment come from win32, as on x86-64
++  if (IsWindows()) {
++    __winmain_aarch64(m1, &exename, &argc, &argv, &envp, &auxv);
++    sp = (long *)__builtin_frame_address(0);
++  }
++
++  // set helpful globals
++  __argc = argc;
++  __argv = argv;
++  __envp = envp;
++  __auxv = auxv;
++  environ = envp;
++  __program_executable_name = exename;
++  program_invocation_name = argv[0];
++  __oldstack = (intptr_t)sp;
++
+   // check system call abi compatibility
+   if (IsXnu() && __syslib->__version < SYSLIB_VERSION_MANDATORY) {
+     sys_write(2, "need newer ape loader\n", 22);
+@@ -164,7 +184,8 @@ wontreturn textstartup void cosmo(long *sp, struct Syslib *m1, char *exename,
+   }
+ 
+   // needed by kisdangerous()
+-  __pid = sys_getpid().ax;
++  if (!IsWindows())
++    __pid = sys_getpid().ax;
+ 
+   // initialize file system
+   __pagesize_init(auxv);
+diff --git a/libc/runtime/morph.c b/libc/runtime/morph.c
+index c3bcc4ae..6348af35 100644
+--- a/libc/runtime/morph.c
++++ b/libc/runtime/morph.c
+@@ -58,6 +58,11 @@ __funline void __morph_mprotect(void *addr, size_t size, int prot, int ntprot) {
+     __imp_VirtualProtectEx(GetCurrentProcess(), addr, size, ntprot, &op);
+   }
+ #elif defined(__aarch64__)
++  if (IsWindows()) {
++    uint32_t op;
++    __imp_VirtualProtectEx(GetCurrentProcess(), addr, size, ntprot, &op);
++    return;
++  }
+   register long r0 asm("x0") = (long)addr;
+   register long r1 asm("x1") = (long)size;
+   register long r2 asm("x2") = (long)prot;
+diff --git a/libc/runtime/winmain.greg.c b/libc/runtime/winmain.greg.c
+index 640314f9..9155629e 100644
+--- a/libc/runtime/winmain.greg.c
++++ b/libc/runtime/winmain.greg.c
+@@ -53,12 +53,11 @@
+ #include "libc/str/str.h"
+ #include "libc/sysv/consts/prot.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+-
+ #define abi __msabi textwindows dontinstrument
+ 
+ // clang-format off
+ __msabi extern typeof(AddVectoredExceptionHandler) *const __imp_AddVectoredExceptionHandler;
++__msabi extern typeof(VirtualQuery) *const __imp_VirtualQuery;
+ __msabi extern typeof(CreateFileMapping) *const __imp_CreateFileMappingW;
+ __msabi extern typeof(DuplicateHandle) *const __imp_DuplicateHandle;
+ __msabi extern typeof(FreeEnvironmentStrings) *const __imp_FreeEnvironmentStringsW;
+@@ -83,10 +82,12 @@ __msabi extern typeof(VirtualProtectEx) *const __imp_VirtualProtectEx;
+ __msabi extern typeof(WriteFile) *const __imp_WriteFile;
+ // clang-format on
+ 
++#ifdef __x86_64__
+ void cosmo(int, char **, char **, long (*)[2]) wontreturn;
+ void __stack_call(int, char **, char **, long (*)[2],
+                   void (*)(int, char **, char **, long (*)[2]),
+                   intptr_t) wontreturn;
++#endif
+ 
+ bool __winmain_isfork;
+ intptr_t __winmain_jmpbuf[5];
+@@ -165,6 +166,7 @@ abi static unsigned OnWinCrash(struct NtExceptionPointers *ep) {
+   TerminateThisProcess(sig);
+ }
+ 
++#ifdef __x86_64__
+ // main function of windows init process
+ // i.e. first process spawned that isn't forked
+ abi wontreturn static void WinInit(const char16_t *cmdline) {
+@@ -306,6 +308,8 @@ abi wontreturn static void WinInit(const char16_t *cmdline) {
+                (uintptr_t)(stackaddr + (stacksize - sizeof(struct WinArgs))));
+ }
+ 
++#endif /* __x86_64__ */
++
+ static int Atoi(const char16_t *str) {
+   int c;
+   unsigned x = 0;
+@@ -337,6 +341,7 @@ abi static int WinGetPid(const char16_t *var, bool *out_is_inherited) {
+   return __imp_GetCurrentProcessId();
+ }
+ 
++#ifdef __x86_64__
+ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
+                     const char *lpCmdLine, int64_t nCmdShow) {
+   static atomic_ulong fake_process_signals;
+@@ -377,3 +382,252 @@ abi int64_t WinMain(int64_t hInstance, int64_t hPrevInstance,
+ }
+ 
+ #endif /* __x86_64__ */
++
++#ifdef __aarch64__
++
++// windows on arm64. the native loader ape-arm64.exe maps the aarch64
++// half of the file, and gives this struct to _start() in x15
++
++struct WinLib {
++  uint32_t magic;
++  uint32_t version;
++  void *(*LoadLibraryA)(const char *);
++  void *(*GetProcAddress)(void *, const char *);
++};
++
++struct NtImp {
++  void *slot;
++  const char *fn;
++  const char *dll;
++};
++
++extern struct NtImp __ntimp_start[] __attribute__((__weak__));
++extern struct NtImp __ntimp_end[] __attribute__((__weak__));
++
++static struct WinArgs g_winargs;
++
++static bool SameStr(const char *a, const char *b) {
++  while (*a && *a == *b)
++    ++a, ++b;
++  return *a == *b;
++}
++
++// fills each import slot of the image (see .imp in ape/idata.internal.h)
++// the slot of a function that its dll does not have stays zero
++static void WinImports(struct WinLib *lib) {
++  void *h = 0;
++  const char *dll = 0;
++  for (struct NtImp *p = __ntimp_start; p < __ntimp_end; ++p) {
++    if (!dll || !SameStr(dll, p->dll))
++      h = lib->LoadLibraryA((dll = p->dll));
++    p->slot = h ? lib->GetProcAddress(h, p->fn) : 0;
++  }
++}
++
++extern char ape_stack_vaddr[] __attribute__((__weak__));
++void cosmo(long *, void *, char *, int, long *) wontreturn;
++int __stack_call(long *, void *, char *, long, void (*)(long *, void *, char *, long),
++                 long);
++
++static struct {
++  char *addr;
++  size_t size;
++  intptr_t hand;
++} g_winstack;
++
++static void WinReenter(long *sp, void *winlib, char *exename, long os) {
++  cosmo(sp, winlib, exename, os, 0);
++}
++
++// maps the stack of the main thread, as WinInit() does on x86-64, and
++// calls cosmo() again on that stack. the stack of the loader is near
++// memory of windows that the memory manager does not know
++void __winstack_aarch64(long *sp, void *winlib, char *exename) {
++  static bool once;
++  if (once)
++    return;
++  once = true;
++  WinImports(winlib);
++  struct NtSystemInfo si;
++  __imp_GetSystemInfo(&si);
++  __pagesize = si.dwPageSize;
++  __gransize = si.dwAllocationGranularity;
++  char *stackaddr = (char *)ape_stack_vaddr;
++  size_t stacksize = GetStaticStackSize();
++  intptr_t stackhand = __imp_CreateFileMappingW(
++      -1, 0, kNtPageExecuteReadwrite, stacksize >> 32, stacksize, NULL);
++  if (!__imp_MapViewOfFileEx(stackhand, kNtFileMapWrite | kNtFileMapExecute, 0,
++                             0, stacksize, stackaddr))
++    return;  // stay on the stack of the loader
++  uint32_t old;
++  if (~(intptr_t)ape_stack_prot & PROT_EXEC)
++    __imp_VirtualProtectEx(GetCurrentProcess(), stackaddr, stacksize,
++                           kNtPageReadwrite, &old);
++  __imp_VirtualProtectEx(GetCurrentProcess(), stackaddr, GetGuardSize(),
++                         kNtPageReadwrite | kNtPageGuard, &old);
++  g_winstack.addr = stackaddr;
++  g_winstack.size = stacksize;
++  g_winstack.hand = stackhand;
++  // windows compares the stack pointer with the limits of the stack in
++  // the teb (x18), for example when a handler changes the context of
++  // an exception. the two limits are at the offsets 8 and 16. a signal
++  // handler can run on an alternate stack, and siglongjmp() can leave
++  // it, so the limits permit each address of the user space
++  register char **teb asm("x18");
++  asm volatile("" : "=r"(teb));
++  teb[1] = (char *)0x7ffffffe0000;
++  teb[2] = (char *)0x10000;
++  __stack_call(sp, winlib, exename, _HOSTWINDOWS, WinReenter,
++               (long)(stackaddr + stacksize));
++  __builtin_unreachable();
++}
++
++// the start of a child of fork(). the loader ape-arm64.exe calls it in
++// place of the program, when the variable _APE_FORK has its address.
++// the parent wrote each part of its memory into this process (see
++// sys_fork_nt_parent). this code runs on the stack of the loader
++void __winfork_aarch64(struct WinLib *lib) {
++  static atomic_ulong fake_process_signals;
++  WinImports(lib);
++  __imp_SetEnvironmentVariableW(u"_APE_FORK", NULL);
++  bool pid_is_inherited;
++  __pid = WinGetPid(u"_COSMO_PID", &pid_is_inherited);
++  if (!(__sig.process = __sig_map_process(__pid, kNtOpenAlways)))
++    __sig.process = &fake_process_signals;
++  register char **teb asm("x18");
++  asm volatile("" : "=r"(teb));
++  teb[1] = (char *)0x7ffffffe0000;
++  teb[2] = (char *)0x10000;
++  __builtin_longjmp(__winmain_jmpbuf, 1);
++}
++
++// does the work of WinMain() and WinInit()
++void __winmain_aarch64(void *winlib, char **exenamep, int *out_argc,
++                       char ***out_argv, char ***out_envp,
++                       unsigned long **out_auxv) {
++  // the path of the program is in the memory of the loader. a child of
++  // fork() gets only the memory of the image, so keep a copy there
++  static char exebuf[PATH_MAX];
++  char *exename = *exenamep;
++  if (exename) {
++    int n = 0;
++    while (exename[n] && n < PATH_MAX - 1)
++      exebuf[n] = exename[n], ++n;
++    exebuf[n] = 0;
++    *exenamep = exename = exebuf;
++  }
++  static atomic_ulong fake_process_signals;
++  struct WinArgs *wa = &g_winargs;
++  struct NtSystemInfo si;
++  __imp_GetSystemInfo(&si);
++  bool pid_is_inherited;
++  __pid = WinGetPid(u"_COSMO_PID", &pid_is_inherited);
++  if (!(__sig.process = __sig_map_process(__pid, kNtOpenAlways)))
++    __sig.process = &fake_process_signals;
++  if (!pid_is_inherited)
++    atomic_store_explicit(__sig.process, 0, memory_order_release);
++  if (_weaken(WinSockInit))
++    _weaken(WinSockInit)();
++  DeduplicateStdioHandles();
++
++  // make console into utf-8 ansi/xterm style tty
++  __imp_SetConsoleCP(kNtCpUtf8);
++  __imp_SetConsoleOutputCP(kNtCpUtf8);
++  for (int i = 0; i <= 2; ++i) {
++    uint32_t m;
++    intptr_t h = __imp_GetStdHandle(kNtStdio[i]);
++    if (__imp_GetConsoleMode(h, &m)) {
++      if (!i) {
++        m |= kNtEnableMouseInput | kNtEnableWindowInput |
++             kNtEnableProcessedInput;
++      } else {
++        m &= ~kNtDisableNewlineAutoReturn;
++        m |= kNtEnableProcessedOutput | kNtEnableVirtualTerminalProcessing;
++      }
++      __imp_SetConsoleMode(h, m);
++    }
++  }
++
++  // so crash signals can be reported to cosmopolitan bash
++  __imp_AddVectoredExceptionHandler(true, (void *)OnWinCrash);
++
++  // the stack of the thread of the loader: x18 is the teb, which has
++  // the base of the stack at offset 8
++  if (_weaken(__maps_stack) && g_winstack.addr) {
++    _weaken(__maps_stack)(g_winstack.addr, si.dwPageSize, GetGuardSize(),
++                          g_winstack.size, (intptr_t)ape_stack_prot,
++                          g_winstack.hand);
++  } else if (_weaken(__maps_stack)) {
++    struct NtMemoryBasicInformation mi;
++    register char *teb asm("x18");
++    char *stackbase = *(char **)(teb + 8);
++    if (__imp_VirtualQuery(&mi, &mi, sizeof(mi))) {
++      char *stackaddr = (char *)mi.AllocationBase;
++      _weaken(__maps_stack)(stackaddr, si.dwPageSize, 0, stackbase - stackaddr,
++                            PROT_READ | PROT_WRITE, 0);
++    }
++  }
++
++  if (!HasEnvironmentVariable(u"TERM"))
++    __imp_SetEnvironmentVariableW(u"TERM", u"xterm-256color");
++  uint32_t vsize = ARRAYLEN(wa->tmp16);
++  if (!HasEnvironmentVariable(u"USER") &&
++      __imp_GetUserNameW(&wa->tmp16, &vsize))
++    __imp_SetEnvironmentVariableW(u"USER", wa->tmp16);
++  uint32_t vlen;
++  if (!HasEnvironmentVariable(u"HOME") &&
++      (vlen = __imp_GetEnvironmentVariableW(u"HOMEDRIVE", wa->tmp16,
++                                            ARRAYLEN(wa->tmp16))) <
++          ARRAYLEN(wa->tmp16) &&
++      (vlen += __imp_GetEnvironmentVariableW(u"HOMEPATH", wa->tmp16 + vlen,
++                                             ARRAYLEN(wa->tmp16) - vlen)) <
++          ARRAYLEN(wa->tmp16) &&
++      vlen)
++    __imp_SetEnvironmentVariableW(u"HOME", wa->tmp16);
++
++  // the path of the program from the loader: c:\\foo\\bar is /c/foo/bar
++  if (exename && !(exename[0] == '\\' && exename[1] == '\\')) {
++    for (int j = 0; exename[j]; ++j)
++      if (exename[j] == '\\')
++        exename[j] = '/';
++    if (IsAlpha(exename[0]) && exename[1] == ':' && exename[2] == '/') {
++      exename[1] = exename[0];
++      exename[0] = '/';
++    }
++  }
++
++  // parse utf-16 command into utf-8 argv array in argument block
++  // the first word is the loader, and the program starts at the second
++  int count = GetDosArgv(__imp_GetCommandLineW(), wa->argblock,
++                         ARRAYLEN(wa->argblock), wa->argv, ARRAYLEN(wa->argv));
++  char **argv = wa->argv;
++  if (count > 1)
++    ++argv, --count;
++
++  // munge argv so dos paths become cosmo paths
++  for (int i = 0; argv[i]; ++i) {
++    if (argv[i][0] == '\\' && argv[i][1] == '\\')
++      continue;
++    if (!WinFileExists(argv[i]))
++      continue;
++    for (int j = 0; argv[i][j]; ++j)
++      if (argv[i][j] == '\\')
++        argv[i][j] = '/';
++    if (IsAlpha(argv[i][0]) && argv[i][1] == ':' && argv[i][2] == '/') {
++      argv[i][1] = argv[i][0];
++      argv[i][0] = '/';
++    }
++  }
++
++  // translate utf-16 win32 environment into utf-8 environment variables
++  char16_t *env16 = __imp_GetEnvironmentStringsW();
++  GetDosEnviron(env16, wa->envblock, ARRAYLEN(wa->envblock) - 8, wa->envp,
++                ARRAYLEN(wa->envp) - 1);
++  __imp_FreeEnvironmentStringsW(env16);
++  *out_argc = count;
++  *out_argv = argv;
++  *out_envp = wa->envp;
++  *out_auxv = (unsigned long *)wa->auxv;
++}
++
++#endif /* __aarch64__ */
+diff --git a/libc/sock/accept-nt.c b/libc/sock/accept-nt.c
+index 1fef186d..6eee6289 100644
+--- a/libc/sock/accept-nt.c
++++ b/libc/sock/accept-nt.c
+@@ -32,7 +32,6 @@
+ #include "libc/sysv/consts/sock.h"
+ #include "libc/sysv/consts/sol.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_ioctlsocket_nt) *const __imp_ioctlsocket;
+ 
+@@ -112,5 +111,3 @@ textwindows int sys_accept_nt(struct Fd *f, struct sockaddr_storage *addr,
+   ALLOW_SIGNALS;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/bind-nt.c b/libc/sock/bind-nt.c
+index 1b3279a9..22b86572 100644
+--- a/libc/sock/bind-nt.c
++++ b/libc/sock/bind-nt.c
+@@ -19,7 +19,6 @@
+ #include "libc/nt/thunk/msabi.h"
+ #include "libc/sock/internal.h"
+ #include "libc/sock/syscall_fd.internal.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_bind_nt) *const __imp_bind;
+ 
+@@ -31,5 +30,3 @@ textwindows int sys_bind_nt(struct Fd *f, const void *addr, uint32_t addrsize) {
+     return __winsockerr();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/closesocket-nt.c b/libc/sock/closesocket-nt.c
+index 1084ac36..996735ea 100644
+--- a/libc/sock/closesocket-nt.c
++++ b/libc/sock/closesocket-nt.c
+@@ -20,7 +20,6 @@
+ #include "libc/nt/winsock.h"
+ #include "libc/sock/internal.h"
+ #include "libc/sock/syscall_fd.internal.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_closesocket_nt) *const __imp_closesocket;
+ 
+@@ -36,5 +35,3 @@ textwindows int sys_closesocket_nt(struct Fd *f) {
+     return __winsockerr();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/connect-nt.c b/libc/sock/connect-nt.c
+index 473066d0..822745e2 100644
+--- a/libc/sock/connect-nt.c
++++ b/libc/sock/connect-nt.c
+@@ -37,7 +37,6 @@
+ #include "libc/sysv/consts/so.h"
+ #include "libc/sysv/consts/sol.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ #define UNCONNECTED 0
+ #define CONNECTING  1
+@@ -180,5 +179,3 @@ textwindows int sys_connect_nt(struct Fd *f, const void *addr,
+   ALLOW_SIGNALS;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/getsockopt-nt.c b/libc/sock/getsockopt-nt.c
+index 631cd25e..b7dab2ff 100644
+--- a/libc/sock/getsockopt-nt.c
++++ b/libc/sock/getsockopt-nt.c
+@@ -29,7 +29,6 @@
+ #include "libc/sysv/consts/so.h"
+ #include "libc/sysv/consts/sol.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_getsockopt_nt) *const __imp_getsockopt;
+ 
+@@ -95,5 +94,3 @@ textwindows int sys_getsockopt_nt(struct Fd *fd, int level, int optname,
+ 
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/listen-nt.c b/libc/sock/listen-nt.c
+index f39c9b31..13a5b5c8 100644
+--- a/libc/sock/listen-nt.c
++++ b/libc/sock/listen-nt.c
+@@ -24,7 +24,6 @@
+ #include "libc/sock/syscall_fd.internal.h"
+ #include "libc/sysv/consts/af.h"
+ #include "libc/sysv/consts/fio.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_listen_nt) *const __imp_listen;
+ 
+@@ -43,5 +42,3 @@ textwindows int sys_listen_nt(struct Fd *f, int backlog) {
+ 
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/recv-nt.c b/libc/sock/recv-nt.c
+index 013fc930..4fb23be8 100644
+--- a/libc/sock/recv-nt.c
++++ b/libc/sock/recv-nt.c
+@@ -28,7 +28,6 @@
+ #include "libc/sysv/consts/o.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/vga/vga.internal.h"
+-#ifdef __x86_64__
+ 
+ #define _MSG_OOB      1
+ #define _MSG_PEEK     2
+@@ -78,5 +77,3 @@ textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
+ 
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/recvfrom-nt.c b/libc/sock/recvfrom-nt.c
+index e40e6ed6..eda1bd81 100644
+--- a/libc/sock/recvfrom-nt.c
++++ b/libc/sock/recvfrom-nt.c
+@@ -28,7 +28,6 @@
+ #include "libc/sysv/consts/msg.h"
+ #include "libc/sysv/consts/o.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ #define _MSG_OOB      1
+ #define _MSG_PEEK     2
+@@ -68,5 +67,3 @@ textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
+   __sig_unblock(waitmask);
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/send-nt.c b/libc/sock/send-nt.c
+index ba057066..77466c78 100644
+--- a/libc/sock/send-nt.c
++++ b/libc/sock/send-nt.c
+@@ -30,7 +30,6 @@
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/vga/vga.internal.h"
+-#ifdef __x86_64__
+ 
+ #define _MSG_OOB       1
+ #define _MSG_DONTROUTE 4
+@@ -75,5 +74,3 @@ textwindows ssize_t sys_send_nt(int fd, const struct iovec *iov, size_t iovlen,
+ 
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/sendto-nt.c b/libc/sock/sendto-nt.c
+index f0be2f4c..95633db6 100644
+--- a/libc/sock/sendto-nt.c
++++ b/libc/sock/sendto-nt.c
+@@ -31,7 +31,6 @@
+ #include "libc/sysv/consts/sicode.h"
+ #include "libc/sysv/consts/sig.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ #define _MSG_OOB       1
+ #define _MSG_DONTROUTE 4
+@@ -80,5 +79,3 @@ textwindows ssize_t sys_sendto_nt(int fd, const struct iovec *iov,
+ 
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/setsockopt-nt.c b/libc/sock/setsockopt-nt.c
+index 670c9a15..e319d48f 100644
+--- a/libc/sock/setsockopt-nt.c
++++ b/libc/sock/setsockopt-nt.c
+@@ -28,7 +28,6 @@
+ #include "libc/sysv/consts/so.h"
+ #include "libc/sysv/consts/sol.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_setsockopt_nt) *const __imp_setsockopt;
+ 
+@@ -75,5 +74,3 @@ textwindows int sys_setsockopt_nt(struct Fd *fd, int level, int optname,
+     return __winsockerr();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/shutdown-nt.c b/libc/sock/shutdown-nt.c
+index 32d4fd04..edfabf5f 100644
+--- a/libc/sock/shutdown-nt.c
++++ b/libc/sock/shutdown-nt.c
+@@ -20,7 +20,6 @@
+ #include "libc/nt/winsock.h"
+ #include "libc/sock/internal.h"
+ #include "libc/sock/syscall_fd.internal.h"
+-#ifdef __x86_64__
+ 
+ __msabi extern typeof(__sys_shutdown_nt) *const __imp_shutdown;
+ 
+@@ -31,5 +30,3 @@ textwindows int sys_shutdown_nt(struct Fd *fd, int how) {
+     return __winsockerr();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/socket-nt.c b/libc/sock/socket-nt.c
+index 31954a70..19edcc81 100644
+--- a/libc/sock/socket-nt.c
++++ b/libc/sock/socket-nt.c
+@@ -21,7 +21,6 @@
+ #include "libc/sock/internal.h"
+ #include "libc/sysv/consts/o.h"
+ #include "libc/sysv/consts/sock.h"
+-#ifdef __x86_64__
+ #include "libc/sock/yoink.inc"
+ 
+ // ioctl(SIOCGIFCONFIG) for Windows need to access the following
+@@ -57,5 +56,3 @@ textwindows int sys_socket_nt(int family, int type, int protocol) {
+     return __winsockerr();
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/socketpair-nt.c b/libc/sock/socketpair-nt.c
+index 833de4b8..144640b4 100644
+--- a/libc/sock/socketpair-nt.c
++++ b/libc/sock/socketpair-nt.c
+@@ -32,7 +32,6 @@
+ #include "libc/sysv/consts/o.h"
+ #include "libc/sysv/consts/sock.h"
+ #include "libc/sysv/errfuns.h"
+-#ifdef __x86_64__
+ 
+ textwindows static int sys_socketpair_nt_impl(int family, int type, int proto,
+                                               int sv[2]) {
+@@ -120,5 +119,3 @@ textwindows int sys_socketpair_nt(int family, int type, int proto, int sv[2]) {
+   ALLOW_SIGNALS;
+   return rc;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sock/winsockblock.c b/libc/sock/winsockblock.c
+index 32a7e0c8..86b74248 100644
+--- a/libc/sock/winsockblock.c
++++ b/libc/sock/winsockblock.c
+@@ -39,7 +39,6 @@
+ #include "libc/sysv/consts/sicode.h"
+ #include "libc/sysv/errfuns.h"
+ #include "libc/thread/posixthread.internal.h"
+-#ifdef __x86_64__
+ 
+ textwindows ssize_t
+ __winsock_block(int64_t handle, uint32_t flags, bool nonblock,
+@@ -189,5 +188,3 @@ __winsock_block(int64_t handle, uint32_t flags, bool nonblock,
+     // otherwise try the i/o operation again
+   }
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/libc/sysv/sysv.c b/libc/sysv/sysv.c
+index 8c78202b..52f6bf62 100644
+--- a/libc/sysv/sysv.c
++++ b/libc/sysv/sysv.c
+@@ -114,6 +114,13 @@ dontinline long systemfive_cancellable(void) {
+  */
+ long systemfive(void) {
+ 
++  // windows has no system five system calls. an svc instruction there
++  // is a system call of the nt kernel, with other numbers. x86_64 gets
++  // the same result from __systemfive.
++  if (IsWindows()) {
++    return _sysret(-ENOSYS);
++  }
++
+   // handle special cases
+   if (IsLinux() || IsFreebsd()) {
+     if (IsFreebsd()) {
+diff --git a/libc/thread/itimer.c b/libc/thread/itimer.c
+index fd93cf00..f2ce9881 100644
+--- a/libc/thread/itimer.c
++++ b/libc/thread/itimer.c
+@@ -40,7 +40,6 @@
+ #include "libc/thread/posixthread.internal.h"
+ #include "libc/thread/thread2.h"
+ #include "libc/thread/tls.h"
+-#ifdef __x86_64__
+ 
+ #define STACK_SIZE 65536
+ 
+@@ -119,5 +118,3 @@ textwindows int sys_setitimer_nt(int which, const struct itimerval *neu,
+   ALLOW_SIGNALS;
+   return 0;
+ }
+-
+-#endif /* __x86_64__ */
+diff --git a/third_party/compiler_rt/BUILD.mk b/third_party/compiler_rt/BUILD.mk
+index dc933ee6..abe638f6 100644
+--- a/third_party/compiler_rt/BUILD.mk
++++ b/third_party/compiler_rt/BUILD.mk
+@@ -29,6 +29,7 @@ THIRD_PARTY_COMPILER_RT_A_CHECKS =				\
+ THIRD_PARTY_COMPILER_RT_A_DIRECTDEPS =				\
+ 	LIBC_INTRIN						\
+ 	LIBC_NEXGEN32E						\
++	LIBC_NT_NTDLL						\
+ 	LIBC_SYSV
+ 
+ THIRD_PARTY_COMPILER_RT_A_DEPS :=				\
+diff --git a/third_party/compiler_rt/clear_cache.c b/third_party/compiler_rt/clear_cache.c
+index 8f3cd9cb..ba34dd7d 100644
+--- a/third_party/compiler_rt/clear_cache.c
++++ b/third_party/compiler_rt/clear_cache.c
+@@ -8,6 +8,8 @@
+ 
+ #include "int_lib.h"
+ #include "libc/dce.h"
++#include "libc/nt/ntdll.h"
++#include "libc/nt/thunk/msabi.h"
+ #include "libc/runtime/syslib.internal.h"
+ 
+ // The compiler generates calls to __clear_cache() when creating
+@@ -15,6 +17,9 @@
+ // It is expected to invalidate the instruction cache for the
+ // specified range.
+ 
++__msabi extern typeof(NtFlushInstructionCache)
++    *const __imp_NtFlushInstructionCache;
++
+ privileged void __clear_cache(void *start, void *end) {
+ 
+ #ifdef __aarch64__
+@@ -23,6 +28,11 @@ privileged void __clear_cache(void *start, void *end) {
+                                       (char *)end - (char *)start);
+     return;
+   }
++  // windows on arm64: the system does the work for each processor
++  if (IsWindows()) {
++    __imp_NtFlushInstructionCache(-1, start, (char *)end - (char *)start);
++    return;
++  }
+   uint64_t xstart = (uint64_t)(uintptr_t)start;
+   uint64_t xend = (uint64_t)(uintptr_t)end;
+   uint64_t addr;

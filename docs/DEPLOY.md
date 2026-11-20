@@ -252,8 +252,9 @@ For a restart with no failed request, see the spike
   Windows: `elixir_make` needs `make` and a C compiler there. The
   tailwind and esbuild packages choose their Linux programs on Windows,
   because `os:type()` is `{unix, windows}`. Thus the builder gives
-  tailwind the target `windows-x64.exe`, and esbuild the path of
-  `esbuild.exe` from npm, when your config gives no target and no path.
+  tailwind the path of `tailwindcss-windows-x64.exe` of its version,
+  and esbuild the path of `esbuild.exe` from npm, when your config
+  gives no target and no path.
   The builder checks the signature of npm and the SHA-512 of
   `esbuild.exe`, as the esbuild package does (see "Phoenix in one file"
   in [`ELIXIR.md`](ELIXIR.md)).

@@ -5,6 +5,71 @@ notes of its release.
 
 ## Unreleased
 
+- Windows: two UDP sockets can share one port with `{reuseaddr, true}`
+  and `{reuseport, true}`, as with Erlang/OTP for Windows, so two
+  programs can receive mDNS or SSDP on one host. Before, `reuseport` made
+  the port exclusive, and the second socket got `eaddrinuse` (C66 of
+  `docs/UPSTREAM.md`).
+- Windows: a timer of 1 ms takes about 1 ms. The VM asks Windows for a
+  timer resolution of 1 ms at its start. Before, each wait ended at a tick
+  of about 15.6 ms, and 100 calls of `timer:sleep(1)` took 1.5 s (C67).
+- Windows: `file:del_dir/1` of a directory that is not empty fails at
+  once. The libc waited about 2 s before it failed (C68).
+- The close of a socket with `{linger, {true, T}}` does not stop the
+  I/O of the VM. With data that the peer did not take yet, `close()` of
+  the system waited for up to T seconds in the poll thread of ERTS, and
+  no socket or port got an event for that time (O29 of
+  `docs/UPSTREAM.md`). Now the system sends the data and the end of the
+  stream after the close, on each system.
+- Windows: a VM with many sockets works. `select()` of Cosmopolitan
+  failed with `E2BIG` for more than 128 fds, and then no socket or port
+  of the VM got an event (C61 of `docs/UPSTREAM.md`). A server with
+  about 125 idle connections stopped all of its network I/O. With 64 to
+  128 fds, `poll()` did not wait, and an idle VM used most of a CPU
+  (C62). An error of a socket that waited only to send is now reported
+  for that socket (C63).
+- Windows: the close of a written file does not wait for the disk. The
+  libc flushed each written file at its close (C64). On the Windows
+  ARM64 runner, 100 calls of `file:write_file/2` took 1.0 s, and the
+  poll thread waited for the flush.
+- Windows: the close of a socket with `{linger, {true, T}}` sends the
+  end of the stream. Winsock refused the close, and the libc freed the
+  fd, so the connection stayed open with no owner (C65).
+- Windows: a send on a socket does not wait for the peer. The libc of
+  Cosmopolitan waited for the end of each send, also on a non-blocking
+  socket, and the scheduler thread of the port waited with it (C60 of
+  `docs/UPSTREAM.md`). A transfer of 64 MiB between two processes of one
+  VM got about 1.1 MB/s, or it did not end, and a server that sent a
+  large response to a slow client held a scheduler. Now a send of a
+  non-blocking socket sends what fits and gives `EAGAIN` for the rest,
+  as on Unix.
+- Windows 11 on ARM64: `beam.com` and each program that it builds run
+  as native ARM64 code, with the aarch64 JIT. Before, Windows ran the
+  x86_64 half under its x64 emulation. The file starts its aarch64 half
+  itself, with a loader of 7 KB from its zip (`bin/ape-arm64.exe`), and
+  the libc of that half has a Windows layer (C58 of `docs/UPSTREAM.md`).
+  On Windows, the builder gives tailwind the path of the program
+  `tailwindcss-windows-x64.exe` of its version: tailwind 0.5 refused
+  the architecture `aarch64` of the native half.
+  The loader has no high-entropy ASLR, so the fixed addresses of the
+  aarch64 half are always free.
+  The libc uses the LSE atomic instructions of the CPU, and its
+  exclusive loops end with a barrier, so the scheduler of ERTS does not
+  lose a wakeup (C58).
+  `BEAM_COM_NATIVE=0` keeps the x86_64 half. See "Windows on ARM64" in
+  `docs/PLATFORMS.md` and `docs/BENCHMARKS.md`. CI runs the tests on
+  Windows 11 on ARM64 too (the runner `windows-11-arm`).
+- The build has the step `libc`. It needs `python3`, `clang`, `lld` and
+  `llvm` on the build computer. `WIN_ARM64=0` builds `beam.com` with no
+  native start on Windows on ARM64, and needs none of them.
+- Windows: downloads of `beam.com` are about 100 times faster. A
+  download of 129 MB with `httpc` took 212 s (0.6 MB/s) on the Windows
+  runners of CI, and now takes about 2 s. The poll thread of ERTS saw
+  each change of its set up to 10 ms late, because `select()` of
+  Cosmopolitan on Windows checks a pipe only after a wait of up to
+  10 ms for its sockets (C59 of `docs/UPSTREAM.md`). Now the wake-up of
+  the poll thread is a pair of loopback sockets in place of a pipe. Mix,
+  Hex and the build of a Phoenix project download faster too.
 - `beam.com` has the OTP application `syntax_tools` (about 0.2 MB). Packages
   such as `x509` (a dep of `site_encrypt`) and `parse_trans` need it when
   they compile, and `edoc` needs it. A custom build can leave it out: the

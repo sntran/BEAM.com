@@ -1,0 +1,44 @@
+inet_drv.c: the close of a socket with a linger does not hold the poll
+thread. With the select() back-end of BEAM.com (C3 of docs/UPSTREAM.md),
+the poll thread calls the stop_select callback, which closes the fd.
+With SO_LINGER on and a time above 0, close() waits until the peer takes
+the data, but the peer cannot read while the poll thread waits. Thus no
+fd of the VM got an event for up to the linger time: on Linux, close()
+took 10 s for {linger, {true, 10}}. The callback now turns the linger
+off before the close, and the system sends the data and the end of the
+stream after the close. A linger with the time 0 (a reset) does not
+change. See O29 of docs/UPSTREAM.md.
+
+diff --git a/erts/emulator/drivers/common/inet_drv.c b/erts/emulator/drivers/common/inet_drv.c
+--- a/erts/emulator/drivers/common/inet_drv.c
++++ b/erts/emulator/drivers/common/inet_drv.c
+@@ -12775,6 +12775,29 @@ static void inet_stop_select(ErlDrvEvent event, void* _)
+ #ifdef __WIN32__
+     WSACloseEvent((HANDLE)event);
+ #else
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: with the select() back-end, the poll thread can call this
++     * function. With SO_LINGER on and a time above 0, close() waits until
++     * the peer takes the data, and the peer cannot read while the poll
++     * thread waits: no fd of the VM gets an event for up to the linger
++     * time. prim_inet:close/1 already waited for the queue of the driver,
++     * and ERTS does not read the result of close(). Thus the linger goes
++     * off, and the system sends the data and the end of the stream after
++     * the close. A linger with the time 0 (a reset) does not change. See
++     * O29 of docs/UPSTREAM.md. */
++    {
++        struct linger lg;
++        unsigned int sz = sizeof(lg);
++
++        if (sock_getopt((SOCKET)(long)event, SOL_SOCKET, SO_LINGER,
++                        &lg, &sz) == 0 && lg.l_onoff && lg.l_linger > 0) {
++            lg.l_onoff = 0;
++            lg.l_linger = 0;
++            (void) sock_setopt((SOCKET)(long)event, SOL_SOCKET, SO_LINGER,
++                               &lg, sizeof(lg));
++        }
++    }
++#endif
+     sock_close((SOCKET)(long)event);
+ #endif
+ }

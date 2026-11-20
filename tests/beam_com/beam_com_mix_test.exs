@@ -146,6 +146,62 @@ defmodule BeamComMixTest do
              )
   end
 
+  test "tailwind_version: the version of the config, with no version of a profile" do
+    assert {:ok, ~c"4.1.12"} == :beam_com_mix.tailwind_version(version: "4.1.12")
+
+    assert {:ok, ~c"4.1.12"} ==
+             :beam_com_mix.tailwind_version(version: "4.1.12", hello: [args: ["--minify"]])
+
+    assert :none == :beam_com_mix.tailwind_version([])
+    assert :none == :beam_com_mix.tailwind_version(version: "")
+    assert :none == :beam_com_mix.tailwind_version(version: :latest)
+    # A version that is not safe in a URL and in a file name.
+    assert :none == :beam_com_mix.tailwind_version(version: "4.1/../x")
+    assert :none == :beam_com_mix.tailwind_version(version: "4.1 x")
+    # One path is for one version.
+    assert :none ==
+             :beam_com_mix.tailwind_version(version: "4.1.12", hello: [version: "3.4.0"])
+  end
+
+  describe "tailwind_exe" do
+    setup %{dir: dir} do
+      %{out: Path.join(dir, "_build") |> String.to_charlist()}
+    end
+
+    test "the program of the release, and the file again", c do
+      parent = self()
+
+      http = fn :get, url, [], :none, max ->
+        send(parent, {:get, url, max})
+        "MZ tailwind"
+      end
+
+      path = :beam_com_mix.tailwind_exe(~c"4.1.12", c.out, http)
+      assert path == Path.join(c.out, "tailwind-windows-x64-4.1.12.exe") |> String.to_charlist()
+      assert "MZ tailwind" == File.read!(path)
+      assert {:ok, %File.Stat{mode: mode}} = File.stat(path)
+      assert Bitwise.band(mode, 0o777) == 0o755
+
+      assert_received {:get,
+                       ~c"https://github.com/tailwindlabs/tailwindcss/releases/download/v4.1.12/tailwindcss-windows-x64.exe",
+                       536_870_912}
+
+      assert path ==
+               :beam_com_mix.tailwind_exe(~c"4.1.12", c.out, fn _, _, _, _, _ -> flunk() end)
+
+      refute File.exists?(path ++ ~c".new")
+    end
+
+    test "a file that is not a program of Windows", c do
+      http = fn :get, _url, [], :none, _max -> "<html>" end
+
+      assert {:error, ~c"~ts: not a program of Windows", [_url]} =
+               catch_throw(:beam_com_mix.tailwind_exe(~c"4.1.12", c.out, http))
+
+      refute File.exists?(Path.join(c.out, "tailwind-windows-x64-4.1.12.exe"))
+    end
+  end
+
   describe "esbuild_exe" do
     # A package of npm as the registry gives it: the metadata of the
     # version, with the integrity and a signature over "ID:INTEGRITY",

@@ -131,6 +131,11 @@ jobs:
         # runs the build (the Makefile).
         run: make toolchain
 
+      # Windows on ARM64: the libc and the loader of the step libc.
+      - name: The libc for Windows on ARM64
+        id: cosmo_libc
+        uses: ./.github/actions/cosmo-libc
+
       - name: Cache OpenSSL
         id: cache_openssl
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -216,7 +221,8 @@ jobs:
           if-no-files-found: error
 
       # The check of the writes to a pipe (c_src/cosmo/beam_com_pipe.c),
-      # of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c), and of
+      # of the pipe of the SSH agent (c_src/cosmo/beam_com_agent.c), of the
+      # sends on a non-blocking socket (c_src/cosmo/beam_com_sock.c), and of
       # the copies of the programs of the zip (c_src/cosmo/beam_com_zipexec.c),
       # for the job test: tests/run.ps1 runs them on Windows.
       - name: Build the check of the pipe writes
@@ -225,7 +231,14 @@ jobs:
           build/cosmocc/bin/cosmocc -O2 -Wno-unused-function -o build/pipe_check.com \
             tests/cosmo/pipe_check.c
           build/cosmocc/bin/cosmocc -O2 -o build/agent_check.com tests/cosmo/agent_check.c
+          build/cosmocc/bin/cosmocc -O2 -Wl,--wrap=send -o build/sock_check.com tests/cosmo/sock_check.c
           CC=build/cosmocc/bin/cosmocc sh tests/cosmo/zipexec_check.sh build
+          # Windows on ARM64: the check of the libc with the Windows layer
+          # for aarch64, with the loader in its zip, and the loader.
+          build/cosmocc/bin/cosmocc -mcosmo -Os -o build/win_arm64_check.com \
+            tests/programs/win_arm64/hello.c
+          cp build/cosmo-libc/ape-arm64.exe build/ape-arm64.exe
+          zip -qj build/win_arm64_check.com build/ape-arm64.exe tests/programs/win_arm64/hello.txt
 
       - name: Upload the check of the pipe writes
         if: matrix.out == 'beam.com'
@@ -235,7 +248,10 @@ jobs:
           path: |
             build/pipe_check.com
             build/agent_check.com
+            build/sock_check.com
             build/zipexec_check.com
+            build/win_arm64_check.com
+            build/ape-arm64.exe
           if-no-files-found: error
 
       - name: Upload the APE loader
@@ -372,6 +388,13 @@ jobs:
         with:
           path: build/cosmocc
           key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
+
+      - name: Save the cache of the libc for Windows on ARM64
+        if: github.event_name != 'pull_request' && steps.cosmo_libc.outputs.cache-hit != 'true' && matrix.out == 'beam.com'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/cosmo-libc
+          key: ${{ steps.cosmo_libc.outputs.cache-primary-key }}
 
       - name: Save the cache of OpenSSL
         if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'
@@ -852,6 +875,9 @@ jobs:
           - { name: macOS x86_64, os: macos-15-intel }
           # The Phoenix check of tests/run.ps1 has 2 tries of 10 minutes.
           - { name: Windows x86_64, os: windows-latest, timeout: 40 }
+          # Windows on ARM64: beam.com starts its aarch64 half, which runs
+          # as native code (docs/PLATFORMS.md).
+          - { name: Windows arm64, os: windows-11-arm, timeout: 40 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout || 25 }}
     steps:

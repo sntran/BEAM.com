@@ -78,6 +78,9 @@
 #include "libc/nt/struct/filepipelocalinformation.h"
 #include "libc/nt/struct/iostatusblock.h"
 #include "libc/nt/synchronization.h"
+#ifndef BEAM_COM_PIPE_TEST
+#include "beam_com_sock.h"
+#endif
 
 /* The longest wait of select() for a full pipe. */
 #define PIPE_STEP_MS 5
@@ -342,6 +345,14 @@ ssize_t __wrap_write(int fd, const void *buf, size_t size)
     struct iovec iov;
     uint32_t quota;
 
+#ifndef BEAM_COM_PIPE_TEST
+    /* A non-blocking socket (beam_com_sock.c). */
+    if (beam_com_sock_nonblock(fd)) {
+        iov.iov_base = (void *)buf;
+        iov.iov_len = size;
+        return beam_com_sock_send(fd, &iov, 1, 0);
+    }
+#endif
     if (size == 0 || !pipe_quota(fd, &quota))
         return __real_write(fd, buf, size);
     iov.iov_base = (void *)buf;
@@ -355,6 +366,11 @@ ssize_t __wrap_writev(int fd, const struct iovec *iov, int iovcnt)
     size_t size = 0;
     int i;
 
+#ifndef BEAM_COM_PIPE_TEST
+    /* A non-blocking socket (beam_com_sock.c). */
+    if (iovcnt >= 0 && beam_com_sock_nonblock(fd))
+        return beam_com_sock_send(fd, iov, iovcnt, 0);
+#endif
     if (iovcnt <= 0 || !pipe_quota(fd, &quota))
         return __real_writev(fd, iov, iovcnt);
     for (i = 0; i < iovcnt; i++)

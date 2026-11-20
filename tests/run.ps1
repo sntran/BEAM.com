@@ -146,7 +146,7 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
     Write-Host "==> $Name"
     # Windows runs an APE file as a PE executable. Use an .exe name.
     $exe = Join-Path $Dir ($Name -replace '\.com$', '.exe')
-    Copy-Item (Join-Path $Dir $Name) $exe -Force
+    if ($Name -match '\.com$') { Copy-Item (Join-Path $Dir $Name) $exe -Force }
 
     # Run with a time limit. Read the output line by line, so that we see
     # the output before a hang too.
@@ -238,6 +238,13 @@ function CheckOnce($Name, $Pattern, [string[]]$Arguments, [int]$Expect) {
             $script:pending.Add("${Name}: kernel did not accept the inetrc")
             $ok = $false
         }
+        # The wake-up of the poll thread works up to the exit (C59 of
+        # docs/UPSTREAM.md).
+        if ($out -match 'on wakeup pipe') {
+            Write-Host "FAIL: ${Name}: an error of the wake-up of the poll thread"
+            $script:pending.Add("${Name}: an error of the wake-up of the poll thread`n$tail")
+            $ok = $false
+        }
         if ($ok) { Write-Host "PASS: $Name" }
     }
 }
@@ -262,11 +269,46 @@ if ((Test-Path (Join-Path $Dir "pipe_check.com")) -or (Skip "pipe_check.com: not
 if ((Test-Path (Join-Path $Dir "agent_check.com")) -or (Skip "agent_check.com: not in $Dir")) {
     Check "agent_check.com" '(?m)^agent_check: ok' @()
 }
+# The sends on a non-blocking socket (c_src/cosmo/beam_com_sock.c, C60
+# of docs/UPSTREAM.md): they never wait, and the count of a partial send
+# is exact.
+if ((Test-Path (Join-Path $Dir "sock_check.com")) -or (Skip "sock_check.com: not in $Dir")) {
+    Check "sock_check.com" '(?m)^sock_check: EAGAIN after [0-9]+ bytes@@(?m)^sock_check: ok' @()
+}
 # The copies of the programs of the zip in the cache
 # (c_src/cosmo/beam_com_zipexec.c): the name with .exe, the copy of 8
 # programs at the same time, and a run of the copy.
 if ((Test-Path (Join-Path $Dir "zipexec_check.com")) -or (Skip "zipexec_check.com: not in $Dir")) {
     Check "zipexec_check.com" '(?m)^zipexec_check: ok' @()
+}
+
+# Windows on ARM64 (docs/PLATFORMS.md): a program starts its aarch64 half,
+# which runs as native code. On x86_64, the x86_64 half runs. The build job
+# of CI makes win_arm64_check.com (tests/programs/win_arm64/hello.c: the
+# libc with the Windows layer for aarch64), and it gives the loader
+# ape-arm64.exe.
+$arm64 = $env:PROCESSOR_ARCHITECTURE -eq "ARM64"
+$half = if ($arm64) { "aarch64" } else { "x86_64" }
+$cpu = if ($arm64) { "ARM64" } else { "AMD64" }
+$vm = @("tests/programs/win_arm64/vm.erl", "--", "one", "two words")
+if ((Test-Path (Join-Path $Dir "win_arm64_check.com")) -or (Skip "win_arm64_check.com: not in $Dir")) {
+    Check "win_arm64_check.com" "hello from the $half half on Windows@@all checks passed" @("one", "two words")
+}
+Check "beam.com" "cpu of the process=$cpu @@all checks passed" $vm
+if ($arm64) {
+    # BEAM_COM_NATIVE=0: the x86_64 half, under the emulation of Windows.
+    $env:BEAM_COM_NATIVE = "0"
+    Check "beam.com" 'cpu of the process=AMD64 @@all checks passed' $vm
+    Remove-Item Env:BEAM_COM_NATIVE
+    # The three C checks above ran their x86_64 half. With the loader,
+    # their aarch64 half runs.
+    if ((Test-Path (Join-Path $Dir "ape-arm64.exe")) -or (Skip "ape-arm64.exe: not in $Dir")) {
+        foreach ($c in @("pipe_check", "agent_check", "zipexec_check", "sock_check")) {
+            if (Test-Path (Join-Path $Dir "$c.com")) {
+                Check "ape-arm64.exe" "(?m)^${c}: ok" @((Join-Path $Dir "$c.com"))
+            }
+        }
+    }
 }
 
 # The commands of the default beam.com.
@@ -347,6 +389,24 @@ if (Test-Path "examples") {
     # and the exit status of the program (no port program: also here).
     Check "beam.com" '(?m)^ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc$' @("examples/hashsum.erl", "--", "abc")
     Check "beam.com" '(?m)^usage: hashsum TEXT' @("examples/hashsum.erl") 2
+    # The poll thread of ERTS sees each change of its set at once (C59 of
+    # docs/UPSTREAM.md). Before, a round trip over loopback took up to 10 ms.
+    Check "beam.com" '(?m)^poll: 500 round trips, [0-9.]* ms each: ok$' @("tests/programs/poll_check.erl")
+    # Large sends between two processes of one VM end, also with one
+    # scheduler online (C60): a send does not wait for the peer.
+    Check "beam.com" '(?m)^send_check: passive, 64 MiB in [0-9]+ ms: ok@@(?m)^send_check: once, 64 MiB in [0-9]+ ms: ok@@(?m)^send_check: late, 16 MiB in [0-9]+ ms: ok@@(?m)^send_check: ok' @("tests/programs/send_check.erl")
+    # Many sockets in the set of the poll thread (C61 to C63): 300 sockets
+    # get events, the idle VM uses little CPU, and a reset reaches a send.
+    Check "beam.com" '(?m)^fds_check: 150 pairs, one message on each: ok@@(?m)^fds_check: idle with 300 sockets, [0-9]+ ms of CPU in 3 s: ok@@(?m)^fds_check: a reset while a send waits: .*: ok@@(?m)^fds_check: ok' @("tests/programs/fds_check.erl")
+    # The close of a written file does not wait for the disk (C64), and
+    # the close of a socket with a linger ends the connection (C65).
+    Check "beam.com" '(?m)^close_check: close of a written file, median [0-9]+ us: ok@@(?m)^close_check: close with a linger, .*: ok@@(?m)^close_check: ok' @("tests/programs/close_check.erl", "--", $Dir)
+    # reuseaddr and reuseport as in Erlang/OTP for Windows (C66).
+    Check "beam.com" '(?m)^reuse_check: two UDP sockets on one port: ok@@(?m)^reuse_check: a second TCP listener .*: ok@@(?m)^reuse_check: ok' @("tests/programs/reuse_check.erl")
+    # 100 timers of 1 ms take less than 800 ms, not 1.5 s (C67).
+    Check "beam.com" '(?m)^timer_check: 100 calls of timer:sleep\(1\) in [0-9]+ ms: ok@@(?m)^timer_check: 100 waits of receive after 1 in [0-9]+ ms: ok@@(?m)^timer_check: ok' @("tests/programs/timer_check.erl", "--", "800")
+    # The removal of a directory with a file fails at once (C68).
+    Check "beam.com" '(?m)^rmdir_check: del_dir of a directory with a file, 10 times, at most [0-9]+ ms: ok@@(?m)^rmdir_check: ok' @("tests/programs/rmdir_check.erl", "--", $Dir)
     Check "beam.com" 'none.erl: no such file' @("none.erl") 1
     Check "beam.com" 'unknown option -z' @("x.erl", "-z") 1
     Check "beam.com" 'option -o needs a value' @("x.erl", "-o") 1
@@ -639,7 +699,7 @@ function PhoenixCheck {
         # 10 minutes, and the other checks.
         $script:Limit = 600
         Check "beam.com" ('Mix gets the deps of \. and makes its release \(config/runtime.exs, deps that are not Hex packages: heroicons daisyui' +
-            '@@tailwind for Windows \(target windows-x64.exe\)@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
+            '@@tailwind for Windows: .*tailwind-windows-x64-.*\.exe@@esbuild for Windows: .*esbuild-win32-x64-.*\.exe' +
             '@@Check your digested files@@wrote .*hello.com@@applications: .*hello .*phoenix') @(".", "-o", $out) -Net -Tries 2
         $script:Limit = 120
     }
@@ -770,7 +830,7 @@ if (Test-Path "examples") {
     Check "beam.com" 'wrote .*nif_check.com' @("tests/programs/nif_check", "--main", "nif_check", "-o", "$Dir/nif_check.com")
     if (Test-Path (Join-Path $Dir "nif_check.com")) {
         $env:BEAM_COM_NIF_DEBUG = "1"
-        Check "nif_check.com" 'nif_wasm: .*nif_check\.(x86_64\.aot|wasm)@@nif_check: all [0-9]+ passed' @()
+        Check "nif_check.com" "nif_wasm: .*nif_check\.($half\.aot|wasm)@@nif_check: all [0-9]+ passed" @()
         $env:BEAM_COM_NIF_AOT = "0"
         Check "nif_check.com" 'nif_wasm: .*nif_check\.wasm@@nif_check: all [0-9]+ passed' @()
         Remove-Item Env:BEAM_COM_NIF_DEBUG, Env:BEAM_COM_NIF_AOT
@@ -778,14 +838,15 @@ if (Test-Path "examples") {
 }
 
 # Native NIF objects (docs/NIFS.md), as in run.sh: load_nif/2 loads
-# priv/native_nif_check.x86_64.o from the zip of the program. On Windows the
-# loader also changes the TLS instructions of the object (the TLS slot of
-# the thread).
+# priv/native_nif_check.x86_64.o from the zip of the program. On x86_64,
+# the loader also changes the TLS instructions of the object (the TLS slot
+# of the thread). The native half of Windows on ARM64 loads the aarch64
+# object (the variable half above).
 if (Test-Path "examples") {
     Check "beam.com" 'wrote .*native_nif_check.com' @("tests/programs/native_nif_check", "--main", "native_nif_check", "-o", "$Dir/native_nif_check.com")
     if (Test-Path (Join-Path $Dir "native_nif_check.com")) {
         $env:BEAM_COM_NIF_DEBUG = "1"
-        Check "native_nif_check.com" 'nif_native: .*native_nif_check\.x86_64\.o@@native_nif_check: all [0-9]+ passed' @()
+        Check "native_nif_check.com" "nif_native: .*native_nif_check\.$half\.o@@native_nif_check: all [0-9]+ passed" @()
         Remove-Item Env:BEAM_COM_NIF_DEBUG
     }
 }
@@ -813,8 +874,16 @@ if ((Test-Path "examples") -and (Test-Path $StoreNifs)) {
     New-Item -ItemType Directory -Force -Path $Store | Out-Null
     tar -xzf $StoreNifs -C $Store
     Copy-Item (Join-Path $Store "nif_needs.com") (Join-Path $Dir "nif_needs.com") -Force
-    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.x86_64.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
-    Check "nif_needs.com" 'libex_pdfium\.x86_64\.o: ok@@librustycsv\.x86_64\.o: ok@@vix\.x86_64\.o: ok@@libtailwind_nif\.x86_64\.o: ok' $Objects
+    # nif_needs.com is a C program: it does not start its aarch64 half
+    # itself. On ARM64, the loader runs that half with the aarch64 objects.
+    $needsHalf = if ($arm64 -and (Test-Path (Join-Path $Dir "ape-arm64.exe"))) { "aarch64" } else { "x86_64" }
+    $Objects = @(Get-ChildItem -Recurse -File -Filter "*.$needsHalf.o" (Join-Path $Store "nifs") | Sort-Object FullName | ForEach-Object { $_.FullName })
+    $needsOk = "libex_pdfium\.$needsHalf\.o: ok@@librustycsv\.$needsHalf\.o: ok@@vix\.$needsHalf\.o: ok@@libtailwind_nif\.$needsHalf\.o: ok"
+    if ($needsHalf -eq "aarch64") {
+        Check "ape-arm64.exe" $needsOk (@((Join-Path $Dir "nif_needs.com")) + $Objects)
+    } else {
+        Check "nif_needs.com" $needsOk $Objects
+    }
     $Priv = "tests/programs/store_nif_check/priv"
     if (Test-Path $Priv) { Remove-Item -Recurse -Force $Priv }
     New-Item -ItemType Directory -Force -Path $Priv | Out-Null

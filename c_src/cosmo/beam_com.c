@@ -48,6 +48,7 @@
 /* Cosmopolitan internals used for the Windows setup (see below). */
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
 #include "libc/nt/dll.h"                    /* LoadLibrary(), GetProcAddress() */
+#include "libc/nt/ntdll.h"                  /* NtSetTimerResolution() */
 #include "libc/nt/runtime.h"                /* ExitProcess() */
 #include "libc/runtime/runtime.h"           /* __get_tmpdir() */
 #include <pthread.h>                        /* pthread_attr_t */
@@ -117,6 +118,7 @@ int sys_close(int fd);
  * stays until the reader takes it. Weak: not each program of this file
  * has beam_com_pipe.o. */
 void beam_com_pipe_forget(int fd) __attribute__((__weak__));
+void beam_com_sock_close(int fd) __attribute__((__weak__));
 
 static int close_pid;
 
@@ -130,6 +132,9 @@ int __wrap_close(int fd)
     struct ZiposHandle *h;
     int rc;
 
+    /* Before the lock: it can call getsockopt() and setsockopt(). */
+    if (beam_com_sock_close)
+        beam_com_sock_close(fd);
     __fds_lock();
     if (beam_com_pipe_forget)
         beam_com_pipe_forget(fd);
@@ -781,14 +786,25 @@ static void net_start(int helper, int hosts)
         sandbox_error(helper, "--allow-net:", step);
 }
 
+/*
+ * The calling convention of a function of Windows that GetProcAddress()
+ * gives: the Microsoft x64 convention in the x86_64 half. In the aarch64
+ * half (Windows on ARM64), Windows has the standard convention of the
+ * CPU.
+ */
 #ifdef __x86_64__
+#define BEAM_COM_NT_ABI __attribute__((__ms_abi__))
+#else
+#define BEAM_COM_NT_ABI
+#endif
+
 /*
  * No new process on Windows (no permission run): a job object with
  * JOB_OBJECT_LIMIT_ACTIVE_PROCESS and a limit of one process. The limit
  * is in the kernel, also for native code: CreateProcess() fails. The
  * job cannot end, and a process cannot leave it (no BREAKAWAY_OK).
- * kernel32.dll is loaded already; the functions have the Microsoft x64
- * calling convention (__ms_abi__).
+ * kernel32.dll is loaded already; the functions have the calling
+ * convention BEAM_COM_NT_ABI.
  */
 struct nt_job_basic_limits {
     int64_t PerProcessUserTimeLimit;
@@ -804,11 +820,11 @@ struct nt_job_basic_limits {
 #define NT_JOB_BASIC_LIMIT_INFORMATION 2
 #define NT_JOB_LIMIT_ACTIVE_PROCESS 0x8u
 
-typedef int64_t(__attribute__((__ms_abi__)) *nt_CreateJobObjectW)(void *attributes,
+typedef int64_t(BEAM_COM_NT_ABI *nt_CreateJobObjectW)(void *attributes,
                                                                     const char16_t *name);
-typedef int(__attribute__((__ms_abi__)) *nt_SetInformationJobObject)(int64_t job, int info_class,
+typedef int(BEAM_COM_NT_ABI *nt_SetInformationJobObject)(int64_t job, int info_class,
                                                                     void *info, uint32_t size);
-typedef int(__attribute__((__ms_abi__)) *nt_AssignProcessToJobObject)(int64_t job,
+typedef int(BEAM_COM_NT_ABI *nt_AssignProcessToJobObject)(int64_t job,
                                                                      int64_t process);
 
 /* Gives NULL, or the step that failed. */
@@ -838,12 +854,6 @@ static const char *windows_no_process(void)
         return "AssignProcessToJobObject";
     return NULL;
 }
-#else
-static const char *windows_no_process(void)
-{
-    return NULL;
-}
-#endif
 
 /* The parts of the sandbox that pledge() and unveil() have on Linux and
  * OpenBSD. On macOS, the profile of Seatbelt. On Windows, the check of
@@ -1603,22 +1613,32 @@ static char **run_argv;
 static int run_argc;
 static char *run_file;
 
-static void run_setup(void)
+/* The directory of the cache of beam.com, or NULL: BEAM_COM_CACHE, or
+ * beam.com in XDG_CACHE_HOME or LOCALAPPDATA, or HOME/.cache/beam.com. */
+static char *cache_dir(void)
 {
     const char *cache = getenv("BEAM_COM_CACHE"), *xdg = getenv("XDG_CACHE_HOME"),
                *local = getenv("LOCALAPPDATA"), *home = getenv("HOME");
-    char pid[32], *dir;
 
     if (cache && *cache)
-        dir = join(cache, "/run", "");
-    else if (xdg && *xdg)
-        dir = join(xdg, "/beam.com/run", "");
-    else if (local && *local)
-        dir = join(local, "/beam.com/run", "");
-    else if (home && *home)
-        dir = join(home, "/.cache/beam.com/run", "");
-    else
+        return strdup(cache);
+    if (xdg && *xdg)
+        return join(xdg, "/beam.com", "");
+    if (local && *local)
+        return join(local, "/beam.com", "");
+    if (home && *home)
+        return join(home, "/.cache/beam.com", "");
+    return NULL;
+}
+
+static void run_setup(void)
+{
+    char pid[32], *dir, *cache = cache_dir();
+
+    if (!cache)
         return;
+    dir = join(cache, "/run", "");
+    free(cache);
     snprintf(pid, sizeof(pid), "%d", (int)getpid());
     run_file = join(dir, "/.exec.", pid);
     setenv("BEAM_COM_RUN_FILE", run_file, 1);
@@ -1996,11 +2016,10 @@ static char *windows_write_inetrc(void)
     return path;
 }
 
-#ifdef __x86_64__
 /*
  * The trusted root certificates of Windows, as PEM. crypt32.dll is not
  * among the DLLs that Cosmopolitan imports, so it is loaded here. The
- * functions have the Microsoft x64 calling convention (__ms_abi__).
+ * functions have the calling convention BEAM_COM_NT_ABI.
  * This is what lib/public_key/c_src/public_key.c does on a Windows
  * build of OTP (current user "ROOT" store, X509_ASN_ENCODING).
  */
@@ -2013,12 +2032,12 @@ struct nt_cert_context {
 };
 #define NT_X509_ASN_ENCODING 1u
 
-typedef void *(__attribute__((__ms_abi__)) *nt_CertOpenSystemStoreW)(
+typedef void *(BEAM_COM_NT_ABI *nt_CertOpenSystemStoreW)(
     uintptr_t hProv, const char16_t *szSubsystemProtocol);
-typedef const struct nt_cert_context *(__attribute__((__ms_abi__))
+typedef const struct nt_cert_context *(BEAM_COM_NT_ABI
                                        *nt_CertEnumCertificatesInStore)(
     void *hCertStore, const struct nt_cert_context *pPrevCertContext);
-typedef int (__attribute__((__ms_abi__)) *nt_CertCloseStore)(
+typedef int (BEAM_COM_NT_ABI *nt_CertCloseStore)(
     void *hCertStore, uint32_t dwFlags);
 
 static void write_pem_certificate(FILE *f, const uint8_t *der, size_t len)
@@ -2066,13 +2085,6 @@ static int windows_export_cacerts(FILE *f)
     close_store(store, 0);
     return count;
 }
-#else
-static int windows_export_cacerts(FILE *f)
-{
-    (void)f;
-    return -1;
-}
-#endif
 
 /* Returns the PEM file name, or NULL when there are no certificates. */
 static char *windows_write_cacerts(void)
@@ -2164,6 +2176,48 @@ static int cert_file_setup(const struct arglist *init, struct arglist *out)
 }
 
 /*
+ * The timer resolution of Windows (C67 of docs/UPSTREAM.md). Windows ends
+ * a wait at a tick of the system timer, about 15.6 ms by default. ERTS
+ * waits in select(), in futexes and in condition variables, so
+ * timer:sleep(1) took about 15 ms. The VM asks for 1 ms for its process
+ * at the start (windows_timer_setup()). The libc asks for its finest step
+ * in clock_nanosleep(), and at the end of the sleep it releases the
+ * request of the process, also the request of the VM. Thus after the
+ * request of the VM, the wrap of NtSetTimerResolution() (TIMER_WRAPS of
+ * scripts/steps.sh) ignores the calls of the libc. The main thread sets
+ * timer_held before ERTS starts other threads.
+ */
+NtStatus __real_NtSetTimerResolution(uint32_t want, bool32 set, uint32_t *now);
+NtStatus __wrap_NtSetTimerResolution(uint32_t want, bool32 set, uint32_t *now);
+
+static int timer_held;
+
+NtStatus __wrap_NtSetTimerResolution(uint32_t want, bool32 set, uint32_t *now)
+{
+    uint32_t coarse, fine;
+
+    if (!timer_held)
+        return __real_NtSetTimerResolution(want, set, now);
+    if (now)
+        NtQueryTimerResolution(&coarse, &fine, now);
+    return 0;
+}
+
+static void windows_timer_setup(void)
+{
+    uint32_t coarse, fine, now;
+
+    /* The units are 100 ns. "coarse" is the default step of the system,
+     * and "fine" is its finest step. */
+    if (NtQueryTimerResolution(&coarse, &fine, &now) < 0)
+        return;
+    if (fine < 10000)
+        fine = 10000;
+    if (__real_NtSetTimerResolution(fine, 1, &now) >= 0)
+        timer_held = 1;
+}
+
+/*
  * The arguments go to *out, which comes before the arguments of the user
  * (after "-extra", every argument is a plain argument). *init holds the
  * arguments of the user, to see if they give -public_key themselves.
@@ -2172,6 +2226,8 @@ static int cert_file_setup(const struct arglist *init, struct arglist *out)
 static void windows_setup(const struct arglist *init, struct arglist *out)
 {
     char *path;
+
+    windows_timer_setup();
 
     if (!getenv("ERL_INETRC")) {
         path = windows_write_inetrc();
@@ -2555,16 +2611,128 @@ static void start_epmd(struct arglist *all)
         waitpid(pid, &status, 0);
 }
 
+#ifdef __x86_64__
+/*
+ * Windows on ARM64. Windows runs this x86_64 half of the file under its
+ * x64 emulation. The aarch64 half runs as native code, when its libc has
+ * the Windows layer (WIN_ARM64=1 in scripts/steps.sh). Then the zip has
+ * the loader of that half, bin/ape-arm64.exe
+ * (c_src/win-arm64/ape_arm64.c).
+ *
+ * This function writes the loader to a file of the cache, and this
+ * process becomes the loader (execv), with this file and the arguments.
+ * The name of the file has a hash of the loader. Each start compares the
+ * file with the loader of the zip, and writes a file that is different
+ * again: a changed file does not run.
+ *
+ * It returns when the system is not Windows on ARM64, when the zip has
+ * no loader, with BEAM_COM_NATIVE=0, and on an error. Then the x86_64
+ * half continues.
+ */
+#define BEAM_COM_ARM64_LOADER BEAM_COM_BINDIR "/ape-arm64.exe"
+#define BEAM_COM_MACHINE_ARM64 0xAA64 /* IMAGE_FILE_MACHINE_ARM64 */
+
+typedef int(BEAM_COM_NT_ABI *nt_IsWow64Process2)(int64_t process, uint16_t *process_machine,
+                                                 uint16_t *native_machine);
+
+/* The content of a file, or NULL. */
+static char *read_whole_file(const char *path, size_t *size)
+{
+    struct stat st;
+    char *data = NULL;
+    int fd = open(path, O_RDONLY);
+
+    if (fd < 0)
+        return NULL;
+    if (fstat(fd, &st) == 0 && st.st_size > 0 && st.st_size < (1 << 20) &&
+        (data = malloc(st.st_size)) && read(fd, data, st.st_size) != st.st_size) {
+        free(data);
+        data = NULL;
+    }
+    close(fd);
+    if (data)
+        *size = st.st_size;
+    return data;
+}
+
+static void win_arm64_start(int argc, char **argv)
+{
+    const char *native = getenv("BEAM_COM_NATIVE");
+    nt_IsWow64Process2 is_wow64;
+    uint16_t process_machine = 0, native_machine = 0;
+    uint64_t hash = 14695981039346656037ull; /* FNV-1a */
+    char *loader, *old, *dir, *path, *tmp, *self, **args, name[64];
+    size_t size, old_size = 0, i;
+    int fd, named;
+
+    if (!beam_com_is_windows() || (native && strcmp(native, "0") == 0))
+        return;
+    /* -1: the pseudo handle of this process (GetCurrentProcess()). */
+    is_wow64 = (nt_IsWow64Process2)GetProcAddress(GetModuleHandle("kernel32.dll"),
+                                                  "IsWow64Process2");
+    if (!is_wow64 || !is_wow64(-1, &process_machine, &native_machine) ||
+        native_machine != BEAM_COM_MACHINE_ARM64)
+        return;
+    if (!(loader = read_whole_file(BEAM_COM_ARM64_LOADER, &size)) || !(dir = cache_dir()))
+        return;
+    for (i = 0; i < size; i++)
+        hash = (hash ^ (unsigned char)loader[i]) * 1099511628211ull;
+    snprintf(name, sizeof(name), "/ape-arm64-%016llx.exe", (unsigned long long)hash);
+    path = join(dir, name, "");
+    old = read_whole_file(path, &old_size);
+    if (!old || old_size != size || memcmp(old, loader, size) != 0) {
+        snprintf(name, sizeof(name), ".%d.tmp", (int)getpid());
+        tmp = join(path, name, "");
+        make_dirs(dir);
+        fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+        if (fd < 0 || write(fd, loader, size) != (ssize_t)size || close(fd) != 0 ||
+            rename(tmp, path) != 0) {
+            unlink(tmp);
+            return;
+        }
+    }
+    /* The path of this file for Windows: /C/dir/file is C:/dir/file. */
+    self = strdup(GetProgramExecutableName());
+    if (self[0] == '/' && self[1] && self[2] == '/') {
+        self[0] = self[1];
+        self[1] = ':';
+    }
+    /* The native half gets the path of this file as argv[0]. The name of
+     * the program in argv[0] (the name of a link) goes in the
+     * environment, as from beam_com_exec_helper(). */
+    if (!(args = calloc(argc + 2, sizeof(char *))))
+        return;
+    named = !getenv("BEAM_COM_PROGRAM");
+    if (named)
+        setenv("BEAM_COM_PROGRAM", beam_com_basename(argv[0]), 1);
+    args[0] = path;
+    args[1] = self;
+    for (i = 1; i < (size_t)argc; i++)
+        args[i + 1] = argv[i];
+    fflush(stdout);
+    fflush(stderr);
+    execv(path, args);
+    if (named)
+        unsetenv("BEAM_COM_PROGRAM");
+}
+#endif
+
 void beam_com_main(int *argcp, char ***argvp)
 {
     int argc = *argcp;
     char **argv = *argvp;
-    const char *name = beam_com_basename(argv[0]);
-    char *program = getenv("BEAM_COM_PROGRAM");
+    const char *name;
+    char *program;
     struct arglist file = {0}, emu = {0}, init = {0}, certs = {0}, all = {0};
     int i, extra = 0, used_cli = 0, has_release, has_args, erl_mode, make_mode;
     int is_program = 0;
     const char *tool;
+
+#ifdef __x86_64__
+    win_arm64_start(argc, argv);
+#endif
+    name = beam_com_basename(argv[0]);
+    program = getenv("BEAM_COM_PROGRAM");
 
     /* Set by beam_com_exec_helper(). Remove it, so that the programs
      * that the helper starts do not see it. */

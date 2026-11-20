@@ -38,6 +38,9 @@ order, with `git apply`.
 | `0005-architecture.patch` | `erts/emulator/beam/erl_bif_info.c` | `erlang:system_info(system_architecture)` gives the CPU and the system where the file runs. | O28 |
 | `0006-windows-spawn.patch` | `erts/emulator/sys/unix/sys_drivers.c` | On Windows, the spawn driver starts a port program with `posix_spawn()`, with no `erl_child_setup`, and a thread gives the exit status to the forker port. The write end of a port is non-blocking (with the wraps of `c_src/cosmo/beam_com_pipe.c`). | C16 |
 | | `lib/kernel/src/os.erl` | With `{unix, windows}`, `os:find_executable/1` tries the suffixes of Windows (`.exe`, `.com`, `.cmd`, `.bat`). | C16 |
+| `0007-windows-wakeup.patch` | `erts/emulator/sys/common/erl_poll.c` | On Windows, the wake-up of the poll thread is a pair of loopback TCP sockets (`beam_com_wakeup_pair()` of `c_src/cosmo/beam_com_net.c`) in place of a pipe, so a change of the set of the poll thread does not wait up to 10 ms. | C59 |
+| `0008-linger-close.patch` | `erts/emulator/drivers/common/inet_drv.c` | Before the close of a socket, `inet_stop_select()` turns off a linger with a time above 0, so `close()` does not wait for the peer in the poll thread or in a scheduler. A linger with the time 0 does not change. | O29 |
+| `0009-windows-reuse.patch` | `erts/emulator/drivers/common/inet_drv.c` | On Windows, `reuseaddr` and `reuseport` as in Erlang/OTP for Windows: `SO_REUSEADDR` of Winsock only for both options together, and `inet:getopts/2` from that state. The field `bsd_compat` starts at 0. | C66, O30 |
 
 ## Elixir (`patches/elixir/`)
 
@@ -103,6 +106,10 @@ loader of macOS arm64 that apelink puts in each APE file.
 |---|---|---|---|
 | `pledge-linux.patch` | `libc/calls/pledge-linux.c` | The promise "inet" also allows the options of a socket that inet sets and reads: `SO_SNDBUF`, `SO_RCVBUF` and `SO_LINGER`, and `TCP_NODELAY` for `getsockopt()`. | C47 |
 | `unveil.patch` | `libc/calls/unveil.c` | The permission "c" also gives Landlock the rights of the removal of a file and of a directory. | C50 |
+| `poll-nt.patch` | `libc/calls/poll-nt.c` | `poll()` of Windows: one `WSAPoll()` for any count of sockets (the libc did it only for 63 fds or fewer), and the path for more than 63 files and pipes waits with a time of the wall clock (it used the monotonic time, so it did not wait). Also applied to the libc of Windows ARM64 (`build_cosmo_libc`). | C61, C62 |
+| `select-nt.patch` | `libc/calls/select-nt.c` | `select()` of Windows: an entry for each fd of the sets, on the heap above 128 fds (it failed with `E2BIG` above 128 fds), and an error or a hangup is reported in each set that asked for it. Also applied to the libc of Windows ARM64. | C61, C63 |
+| `close-nt.patch` | `libc/calls/close-nt.c` | `close()` of Windows does not flush a written file to the disk. | C64 |
+| `unlinkat-nt.patch` | `libc/calls/unlinkat-nt.c` | `rmdir()` of Windows waits and tries again only when no entry of the directory opens, so a directory with a real entry fails at once (it waited about 2 s). | C68 |
 | `ape-m1.patch` | `bin/ape-m1.c` of cosmocc | The loader reserves the fixed addresses of the program at its start, checks that each range is free before it maps the program, and starts again when a range is in use. On macOS 27, it checks a range with `mach_vm_region_recurse()` and maps it with `MAP_FIXED`. | C51, C57 |
 
 ## Changes that are not patch files

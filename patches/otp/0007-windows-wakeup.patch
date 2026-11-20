@@ -1,0 +1,29 @@
+erl_poll.c: on Windows, the wake-up of the poll thread is a pair of
+loopback sockets in place of a pipe. ERTS has no poll() with
+Cosmopolitan, so the poll thread uses select(). On Windows, select() of
+Cosmopolitan waits in WSAPoll() for up to 10 ms when the set has
+sockets, and it checks a pipe only after that wait. Each change of the
+set woke the poll thread up to 10 ms late, and a download got about
+0.6 MB/s. beam_com_wakeup_pair() of c_src/cosmo/beam_com_net.c makes the
+pair. See C59 of docs/UPSTREAM.md.
+
+diff --git a/erts/emulator/sys/common/erl_poll.c b/erts/emulator/sys/common/erl_poll.c
+--- a/erts/emulator/sys/common/erl_poll.c
++++ b/erts/emulator/sys/common/erl_poll.c
+@@ -499,6 +499,16 @@
+     }
+     erts_atomic32_init_nob(&ps->wakeup_state,
+                            (erts_aint32_t) ERTS_POLL_NOT_WOKEN);
++#ifdef __COSMOPOLITAN__
++    /* BEAM.com: on Windows, select() of Cosmopolitan sees a pipe only
++     * after a wait of up to 10 ms in WSAPoll(). A pair of loopback
++     * sockets wakes the poll thread at once (beam_com_wakeup_pair() of
++     * c_src/cosmo/beam_com_net.c). A failure gives the pipe. */
++    if (beam_com_is_windows() && beam_com_wakeup_pair &&
++        beam_com_wakeup_pair(wake_fds) == 0)
++        ;
++    else
++#endif
+     if (pipe(wake_fds) < 0) {
+ 	fatal_error("%s:%d:create_wakeup_pipe(): "
+ 		    "Failed to create pipe: %s (%d)\n",

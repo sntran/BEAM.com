@@ -31,7 +31,7 @@ STAMPS := $(BUILD)/stamps
 STEP = unset MAKEFLAGS MFLAGS MAKELEVEL MAKEOVERRIDES; sh $(CURDIR)/scripts/steps.sh
 
 # The steps with a key: KEY_STEPS of scripts/steps.sh has the same list.
-STEPS := toolchain openssl otp configure sqlite nifs wasm make elixir release \
+STEPS := toolchain libc openssl otp configure sqlite nifs wasm make elixir release \
   multicall wasm_runtime bundle
 KEYS := $(STEPS:%=$(STAMPS)/%.key)
 
@@ -58,7 +58,8 @@ $(STAMPS)/$(1): $(STAMPS)/$(1).key $(2) | $(STAMPS)
 endef
 
 $(eval $(call step,toolchain))
-$(eval $(call step,openssl,$(STAMPS)/toolchain))
+$(eval $(call step,libc,$(STAMPS)/toolchain))
+$(eval $(call step,openssl,$(STAMPS)/libc))
 $(eval $(call step,otp))
 $(eval $(call step,configure,$(STAMPS)/otp $(STAMPS)/openssl))
 $(eval $(call step,sqlite,$(STAMPS)/configure))

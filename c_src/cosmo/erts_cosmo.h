@@ -130,6 +130,14 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
     __attribute__((__weak__));
 
 /*
+ * Defined in beam_com_net.c. On Windows, a pair of connected TCP sockets
+ * on 127.0.0.1 for the wake-up of the poll thread of ERTS, in place of a
+ * pipe (patches/otp/0007-windows-wakeup.patch). fds[0] is the read end,
+ * fds[1] the write end. Returns 0, or -1 with errno.
+ */
+int beam_com_wakeup_pair(int fds[2]) __attribute__((__weak__));
+
+/*
  * Defined in beam_com.c. execve() that starts an APE file with the APE
  * loader of this process when a loader runs it on Linux, so that the
  * kernel does not see the APE file (on WSL, binfmt_misc gives it to

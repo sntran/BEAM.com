@@ -41,6 +41,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -62,9 +63,13 @@
 #include "libc/calls/struct/bpf.internal.h"
 #include "libc/calls/sysdir.internal.h"     /* GetHostsTxtPath() */
 #include "libc/dce.h"                       /* IsLinux() */
+#include "libc/nt/winsock.h"                /* WSAStartup() */
 #include "third_party/musl/lookup.internal.h" /* __get_resolv_conf() */
 #endif
 #include "beam_com_net.h"
+#ifndef BEAM_COM_NET_TEST
+#include "beam_com_sock.h"
+#endif
 
 int __real_connect(int, const struct sockaddr *, socklen_t);
 int __real_bind(int, const struct sockaddr *, socklen_t);
@@ -433,6 +438,13 @@ ssize_t __wrap_sendto(int fd, const void *buf, size_t n, int flags,
         errno = EACCES;
         return -1;
     }
+#ifndef BEAM_COM_NET_TEST
+    /* A non-blocking socket with no address (beam_com_sock.c). */
+    if (!sa && beam_com_sock_nonblock(fd)) {
+        struct iovec iov = {(void *)buf, n};
+        return beam_com_sock_send(fd, &iov, 1, flags);
+    }
+#endif
     return __real_sendto(fd, buf, n, flags, sa, len);
 }
 
@@ -442,6 +454,13 @@ ssize_t __wrap_sendmsg(int fd, const struct msghdr *msg, int flags)
         errno = EACCES;
         return -1;
     }
+#ifndef BEAM_COM_NET_TEST
+    /* A non-blocking socket with no address and no control data
+     * (beam_com_sock.c). The libc refuses control data on Windows. */
+    if (msg && !msg->msg_name && !msg->msg_control && msg->msg_iovlen <= 0x7fffffff &&
+        beam_com_sock_nonblock(fd))
+        return beam_com_sock_send(fd, msg->msg_iov, (int)msg->msg_iovlen, flags);
+#endif
     return __real_sendmsg(fd, msg, flags);
 }
 
@@ -459,6 +478,91 @@ void beam_com_net_deny(void)
 {
     net_deny = 1;
 }
+
+#ifndef BEAM_COM_NET_TEST /* tests/cosmo/net_check.c does not check it. */
+/*
+ * The wake-up of the poll thread of ERTS on Windows
+ * (patches/otp/0007-windows-wakeup.patch). ERTS has no poll() here, so
+ * its poll thread uses select(), with a pipe that wakes it when its set
+ * changes. On Windows, poll() and select() of Cosmopolitan wait in
+ * WSAPoll() for up to 10 ms (POLL_INTERVAL_MS) when the set has sockets,
+ * and they check a pipe only after that wait. Thus each change of the set
+ * (for example, each new read of a socket in the mode {active, once})
+ * waited up to 10 ms, and a download got about 0.6 MB/s.
+ *
+ * The two sockets of this pair go into WSAPoll(), so a write wakes the
+ * poll thread at once. The pair is a TCP connection on 127.0.0.1. The
+ * calls are the real calls, not the wraps: the pair is not a network
+ * connection of the program, and it also works with no permission net.
+ * The accepted socket must be the socket of this connect: another
+ * program can connect to the port first. Gives 0, with the read end in
+ * fds[0] and the write end in fds[1], or -1 with errno.
+ *
+ * The libc calls WSACleanup() in a handler of atexit(), while the poll
+ * thread still waits on the pair: its read then gives ENETDOWN, and
+ * ERTS stops with "Failed to read on wakeup pipe" (one run of CI also
+ * aborted). Winsock counts the calls of WSAStartup(), and only the last
+ * WSACleanup() ends it. So this function calls WSAStartup() one more
+ * time, and Winsock stays until the end of the process.
+ */
+int beam_com_wakeup_pair(int fds[2])
+{
+    static int started;
+    struct NtWsaData wsa;
+    struct sockaddr_in addr, mine, peer;
+    socklen_t len;
+    int lsn = -1, rd = -1, wr = -1, one = 1, e;
+
+    if (!IsWindows()) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (!started) {
+        if (WSAStartup(0x0202, &wsa) != 0) {
+            errno = ENETDOWN;
+            return -1;
+        }
+        started = 1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    len = sizeof(addr);
+    if ((lsn = __real_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0 ||
+        __real_bind(lsn, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(lsn, 1) < 0 ||
+        getsockname(lsn, (struct sockaddr *)&addr, &len) < 0)
+        goto fail;
+    len = sizeof(mine);
+    if ((wr = __real_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0 ||
+        __real_connect(wr, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        getsockname(wr, (struct sockaddr *)&mine, &len) < 0)
+        goto fail;
+    len = sizeof(peer);
+    if ((rd = accept4(lsn, (struct sockaddr *)&peer, &len, SOCK_CLOEXEC)) < 0)
+        goto fail;
+    if (len < sizeof(peer) || peer.sin_port != mine.sin_port ||
+        peer.sin_addr.s_addr != mine.sin_addr.s_addr) {
+        errno = EACCES;
+        goto fail;
+    }
+    /* A wake-up is one byte: send it at once. */
+    setsockopt(wr, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    close(lsn);
+    fds[0] = rd;
+    fds[1] = wr;
+    return 0;
+fail:
+    e = errno;
+    if (lsn >= 0)
+        close(lsn);
+    if (rd >= 0)
+        close(rd);
+    if (wr >= 0)
+        close(wr);
+    errno = e;
+    return -1;
+}
+#endif
 
 /* --- Messages of DNS --------------------------------------------------- */
 

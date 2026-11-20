@@ -93,6 +93,43 @@ programs, `epmd`, a port that starts an APE file (erl mode), and the
 file watcher of the tools. A native file (`--assimilate`, `--target`)
 is `/proc/self/exe`, and the kernel starts it.
 
+## Windows on ARM64
+
+Windows starts an APE file as a PE file, and the PE header names the
+x86_64 half. Windows on ARM64 runs that half under its x64 emulation.
+The aarch64 half of `beam.com` also runs on Windows (C58 in
+[`UPSTREAM.md`](UPSTREAM.md)), so the file starts that half itself:
+
+1. The x86_64 half starts first. `win_arm64_start()` of
+   [`beam_com.c`](../c_src/cosmo/beam_com.c) asks Windows for the
+   machine with `IsWow64Process2()`. On x86_64, the function returns,
+   and nothing changes.
+2. On ARM64, it reads the loader `/zip/bin/ape-arm64.exe` (7 KB) and
+   writes it to the cache directory as `ape-arm64-HASH.exe`, when the
+   file is not there with the same bytes. HASH is the FNV-1a hash of
+   the loader. The cache directory is `BEAM_COM_CACHE`, else `beam.com`
+   in `XDG_CACHE_HOME` or in `LOCALAPPDATA`.
+3. It starts the loader with the path of its own file and its
+   arguments (`execv()`). The loader
+   ([`ape_arm64.c`](../c_src/win-arm64/ape_arm64.c)) maps the aarch64
+   half of that file at its fixed addresses and starts it. The x86_64
+   process waits and gives the exit status of the native process.
+   The loader has no high-entropy ASLR (`/highentropyva:no`). Thus
+   Windows puts the stacks and the heaps of its process below 4 GiB,
+   and the fixed addresses of the aarch64 half (from 32 GiB) are free.
+   With high entropy, these blocks went to random addresses up to some
+   TiB, and about 1 start in 4000 failed with "cannot map the image".
+
+When a step fails (no cache directory, a write error), the x86_64 half
+runs, as before. `BEAM_COM_NATIVE=0` also keeps the x86_64 half.
+
+The native process starts each helper program, each port program and
+each other APE file with the same loader: `posix_spawn()` and `execve()`
+of the patched libc put the loader of the current process before an APE
+file that has an aarch64 half. Thus a program that `beam.com` builds,
+and a second VM from the same file, are native too. An x86_64 program of
+Windows (`cmd.exe`, `git.exe`) starts as it is.
+
 ## Crypto and TLS
 
 The step `openssl` (`scripts/steps.sh`) builds a static `libcrypto` (OpenSSL 4.0.3, no assembly, so

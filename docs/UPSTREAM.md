@@ -1776,6 +1776,483 @@ macOS 27.
 `mmap()` of Cosmopolitan for `MAP_FIXED_NOREPLACE` on XNU, or a base
 address of the programs above `0x7000000000`.
 
+### C58. Windows on ARM64: the aarch64 half has no Windows layer
+
+**Status:** 4.0.2, Windows 11 on ARM64 (the runner `windows-11-arm`
+of GitHub).
+
+**Symptom.** An APE file on Windows on ARM64 always runs its x86_64
+half, under the x64 emulation of Windows. The aarch64 half, and the
+aarch64 JIT of BEAM.com, never run there.
+
+**Cause.** There are three causes:
+
+1. Windows starts an APE file as a PE file, and the PE header of an APE
+   file names only x86_64 code. No loader for Windows on ARM64 exists
+   (`ape-m1.c` is the loader for macOS on ARM64).
+2. `SUPPORT_VECTOR` of aarch64 has no `_HOSTWINDOWS` (`libc/dce.h`).
+   The Windows code of the libc is x86_64 code, in three forms:
+   `#ifdef __x86_64__` in about 50 C files, the import table of a PE
+   file (`.idata`, 675 stubs of `libc/nt`), and assembly files.
+3. The start code, the signals, the threads and `fork()` of Windows
+   use the registers and the context record of x86_64.
+
+**Workaround in BEAM.com.** A loader, and a libc with a Windows layer
+for aarch64. The x86_64 half does not change.
+
+1. `c_src/win-arm64/ape_arm64.c` is the loader `ape-arm64.exe`, a
+   native program of Windows on ARM64 with no C library. It maps the
+   aarch64 ELF half at its fixed addresses and starts it. The program
+   gets a pointer to `LoadLibraryA()` and `GetProcAddress()` in `x15`,
+   and the number 4 (`_HOSTWINDOWS`) in `x3`. The loader has no
+   high-entropy ASLR (`/highentropyva:no`; ARM64 refuses
+   `/dynamicbase:no`). With high entropy, Windows put the stacks and the
+   heaps of the new process at random addresses up to about 3 TiB, and
+   1 start in 4000 found a block at 32 GiB, the address of the aarch64
+   half ("cannot map the image", error 487). Without it, the highest of
+   these blocks was below 2 GiB in each of 4000 starts of a test
+   program.
+2. `patches/cosmo-libc/win-arm64.patch` (about 80 files) and
+   `patches/cosmo-libc/generated.py` (735 files that
+   `libc/nt/codegen.sh` and `libc/sysv/gen.sh` made) change the libc of
+   aarch64:
+   - Each function of Windows is a slot that the start code fills with
+     `GetProcAddress()`. A stub jumps through its slot
+     (`adrp`, `ldr`, `br`).
+   - `cosmo()` moves the program to its own stack and does the work of
+     `WinMain()`: the arguments, the environment and the standard
+     handles.
+   - A signal handler returns with `NtContinue()` and the full context
+     record of ARM64. A thread starts with `CreateThread()` and the
+     thread pointer in `x28`.
+   - Windows checks the stack pointer against the limits of the TEB.
+     The start code and each new thread set wide limits, because a
+     signal handler can run on an alternate stack.
+   - `fork()` starts the loader again with the variable `_APE_FORK`,
+     and the parent writes its memory into the child.
+   - `posix_spawn()` and `execve()` start an APE file with an aarch64
+     half through the loader of the current process.
+   - `__clear_cache()` calls `NtFlushInstructionCache()`. A read of
+     `ctr_el0` is an illegal instruction in a process of Windows.
+   - The entry of the System V calls (`systemfive()`) gives `ENOSYS` on
+     Windows, as `__systemfive` of x86_64 does, and `sched_yield()`
+     calls `SleepEx()`. An `svc` instruction on Windows is a system call
+     of the NT kernel, with other numbers. Without this change,
+     `chown()` gave `ENOENT` or `ENOTDIR`, and OTP calls `chown()`
+     before each change of a mode or of a time of a file.
+   - The constructor of `libc/intrin/armlse.c` asks
+     `IsProcessorFeaturePresent()` (feature 34,
+     `PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE`) for the LSE atomic
+     instructions. Windows gives no auxiliary vector, so `AT_HWCAP` is
+     0 there, and each atomic operation used the exclusive loop
+     (`ldaxr` and `stxr`) of `libc/intrin/aarch64/atomics.S`.
+   - The exclusive loop of each acquire operation (`_acq` and
+     `_acq_rel`) ends with `dmb ish`. Without the barrier, a later load
+     can occur before the store of the loop. The scheduler of ERTS sets
+     its sleep flag with an acquire compare-and-swap, and then reads
+     its work flags. The thread that adds work writes the work flags,
+     and then reads the sleep flag. When both reads see the old value,
+     the scheduler sleeps with work, and the VM can stop. About 1 start
+     of `beam.com` in 100 stopped this way on some runners. In the
+     store buffer test of `hello.c`, the loop with no barrier gave
+     this result in 2 % to 4 % of the rounds. With LSE, and with the
+     barrier, it gave none in 2,000,000 rounds. On other systems, a
+     CPU with no LSE (for example the Cortex-A72) also uses the loop.
+3. `patches/otp/0002-jit.patch`: the JIT uses fixed cache line sizes
+   and `__clear_cache()` on Windows, as on macOS, for the same reason.
+4. The step `libc` of `scripts/steps.sh` builds the libc at the commit
+   of 4.0.2 with the bootstrap toolchain 3.9.2 of that commit, and puts
+   `libcosmo.a`, `crt.o`, `aarch64.lds` and 5 headers into the
+   `aarch64-linux-cosmo` tree of cosmocc.
+5. `beam.com` holds the loader at `/zip/bin/ape-arm64.exe`. The x86_64
+   half asks `IsWow64Process2()` for the machine. On ARM64 it writes
+   the loader to the cache and starts it with its own file
+   (`win_arm64_start()` in `c_src/cosmo/beam_com.c`).
+
+The checks: `tests/programs/win_arm64/hello.c` (20 checks of the libc)
+and `tests/programs/win_arm64/vm.erl` (13 checks of the VM). CI runs
+them, and all of `tests/run.ps1`, on `windows-11-arm`.
+
+**Possible upstream fix.** `_HOSTWINDOWS` in the support vector of
+aarch64, with a loader as `ape-m1.c`, or an ARM64 PE header that
+Windows on ARM64 selects. The patch shows the parts that need a change.
+
+### C59. Windows: select() sees a pipe up to 10 ms late when the set has sockets
+
+**Status:** 4.0.2 (`libc/calls/poll-nt.c`), Windows on x86_64 and on
+ARM64.
+
+**Symptom.** On Windows, a download with `httpc` got about 0.6 MB/s. A
+ping-pong of one byte over loopback TCP in the mode `{active, once}`
+took 13 to 15 ms for each round trip (Linux: 0.05 ms). This C file
+measures the time from a `write()` to the return of `select()`, with a
+listening socket in the set:
+
+```c
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+static int p[2];
+static double sent;
+static double ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+static void *writer(void *arg) {
+  usleep(2000);
+  sent = ms();
+  write(p[1], "x", 1);
+  return 0;
+}
+int main(void) {
+  struct sockaddr_in a = {.sin_family = AF_INET};
+  int s = socket(AF_INET, SOCK_STREAM, 0), i;
+  double total = 0;
+  char c;
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  bind(s, (struct sockaddr *)&a, sizeof(a));
+  listen(s, 1);
+  pipe(p);
+  for (i = 0; i < 100; i++) {
+    pthread_t t;
+    fd_set r;
+    pthread_create(&t, 0, writer, 0);
+    FD_ZERO(&r);
+    FD_SET(p[0], &r);
+    FD_SET(s, &r);
+    select((p[0] > s ? p[0] : s) + 1, &r, 0, 0, 0);
+    total += ms() - sent;
+    read(p[0], &c, 1);
+    pthread_join(t, 0);
+  }
+  printf("%.3f ms late\n", total / 100); /* Windows: 10 to 15; Linux: 0.08 */
+}
+```
+
+**Cause.** On Windows, `select()` uses `poll()`
+(`libc/calls/poll-nt.c`). Its loop checks each pipe with
+`PeekNamedPipe()`, and then waits in `WSAPoll()` for the sockets, for
+at most `POLL_INTERVAL_MS` (10 ms,
+`libc/calls/syscall_support-nt.internal.h`). A write to a pipe does
+not stop `WSAPoll()`, so `poll()` sees the pipe only at the next turn
+of the loop. ERTS has no `poll()` with Cosmopolitan (C3), so its poll
+thread uses `select()`, with a pipe that wakes it when its set changes
+(`create_wakeup_pipe()` of `erts/emulator/sys/common/erl_poll.c`). In
+the mode `{active, once}`, each read arms the socket again, and that
+change of the set waited up to 10 ms. `socketpair()` is not a fix,
+because on Windows it gives named pipes (C16).
+
+**Workaround in BEAM.com.** On Windows, the wake-up of the poll thread
+is a TCP connection on `127.0.0.1` in place of a pipe
+(`patches/otp/0007-windows-wakeup.patch`, `beam_com_wakeup_pair()` of
+`c_src/cosmo/beam_com_net.c`). Both sockets go into `WSAPoll()`, so a
+wake-up stops the wait at once. The pair uses the real `socket()`,
+`bind()` and `connect()`, not the wraps of `--allow-net`, because it
+is not a network connection of the program. The accepted socket must
+be the socket of the `connect()`: another program can connect to the
+port first. When the pair fails, the pipe stays. The libc calls
+`WSACleanup()` in a handler of `atexit()` (`libc/sock/kntwsadata.c`),
+while the poll thread still waits on the pair. Its read then gave
+`ENETDOWN`, and ERTS stopped with "Failed to read on wakeup pipe" (one
+run aborted). Winsock counts the calls of `WSAStartup()`, so the pair
+calls it one more time, and Winsock stays until the end of the
+process. `tests/run.ps1` and `tests/run.sh` fail each check whose
+output has this message.
+
+On the Windows runners of CI, the round trip of the ping-pong now takes
+0.1 to 0.4 ms. A download of 129 MB with `httpc` took 212 s
+(0.6 MB/s), and now takes about 2 s (50 to 70 MB/s), on x86_64 and on
+ARM64. `tests/programs/poll_check.erl` (in `tests/run.ps1` and
+`tests/run.sh`) fails when a round trip takes 2 ms or more.
+
+**Possible upstream fix.** Wait for the pipes and the sockets at the
+same time, for example with `WSAEventSelect()` for the sockets and one
+`WaitForMultipleObjects()` for their events and the handles of the
+pipes.
+
+### C60. Windows: send() on a non-blocking socket blocks
+
+**Status:** 4.0.2 (`libc/sock/send-nt.c`, `libc/sock/sendto-nt.c`),
+Windows on x86_64 and on ARM64.
+
+**Symptom.** On Windows, a transfer of 64 MB over loopback TCP between
+two processes of one VM got about 1.1 MB/s, and in some runs it did not
+end. In one run, a `receive ... after` of 120 s in the receiver did not
+end either.
+
+**Cause.** `sys_send_nt()` calls `__winsock_block()` with `nonblock`
+false, also for a socket with `O_NONBLOCK`. A comment in
+`libc/sock/winsockblock.c` gives the reason: `CancelIoEx()` of a send
+can make `WSAGetOverlappedResult()` report an error for a send that
+completed. `writev()` of a socket calls `sys_send_nt()`
+(`libc/calls/writev-nt.c`). Thus a send of ERTS (`writev()` in
+`inet_drv.c`) waits until the peer reads, and the scheduler thread that
+runs the port waits with it. When the reader is in the same VM, its
+port task or its timer can be on that scheduler.
+
+Also a server that sends a large response to a slow client held a
+scheduler for the time of the send. A download sends little data, so it
+did not have this problem (see C59).
+
+**Workaround in BEAM.com.** `c_src/cosmo/beam_com_sock.c`. For a socket
+with `O_NONBLOCK`, the wraps of `send()`, `write()`, `writev()`, and
+`sendto()` and `sendmsg()` with no address call `beam_com_sock_send()`.
+It puts the socket in the non-blocking mode of Winsock
+(`ioctlsocket(FIONBIO)`), and calls `WSASend()` with no `OVERLAPPED`.
+Such a call never waits: it sends the bytes that fit and gives their
+exact count, or it fails with `WSAEWOULDBLOCK` (`EAGAIN`). The libc
+already puts each socket of `connect()` and `accept()` in this mode
+(`libc/sock/connect-nt.c`, `accept-nt.c`), and its overlapped calls
+(`recv()`) still wait as before. A send to an address (UDP) stays with
+the libc. On the Windows runners of CI, `tests/cosmo/sock_check.c`
+moves 32 MiB through a non-blocking loopback pair in one thread in
+43 ms (x86_64) and 65 ms (ARM64, x64 emulation), and a send into a full
+socket gives `EAGAIN`. With the calls of the libc, the check stops at
+the first send that does not fit. `tests/programs/send_check.erl` (in
+`tests/run.ps1` and `tests/run.sh`) moves 64 MiB between two processes
+of one VM, and 16 MiB with one scheduler online.
+
+**Possible upstream fix.** The same in `sys_send_nt()` and
+`sys_sendto_nt()`: for a socket with `O_NONBLOCK`, a `WSASend()` with no
+`OVERLAPPED`, in the place of an overlapped call that waits.
+
+### C61. Windows: select() fails with E2BIG above 128 fds
+
+**Status:** 4.0.2 (`libc/calls/select-nt.c`), Windows.
+
+**Symptom.** On Windows, with about 64 pairs of loopback sockets in one
+VM, the next socket got no event: each turn of the poll thread logged
+"erts_poll_wait() failed: e2big", and no socket or port got an event.
+
+**Cause.** `sys_select_nt()` copies the bits of the `fd_set`s into
+`struct pollfd fds[128]`, and gives `E2BIG` for fd 129 and more. ERTS
+uses the `select()` back-end (C3), and its set has each socket that
+waits for an event, each listen socket, the pipes of the ports and the
+wake-up pair. A server with about 125 idle connections thus stopped all
+of its network I/O.
+
+**Workaround in BEAM.com.** `patches/cosmo/select-nt.patch`: the array
+has an entry for each fd of the sets. It stays on the stack for 128 fds
+or fewer, and is on the heap for more. An array of `FD_SETSIZE` entries
+on the stack (8 KiB) is above the limit of 4096 bytes for a frame of the
+libc. `tests/programs/fds_check.erl` makes 150 pairs (300 sockets), and
+one message on each pair must arrive. With the fix, the probe of 100
+pairs passed on both Windows runners of CI; before, it stopped at the
+pair 65.
+
+**Possible upstream fix.** The same.
+
+### C62. Windows: poll() of 64 fds or more does not wait
+
+**Status:** 4.0.2 (`libc/calls/poll-nt.c`), Windows.
+
+**Symptom.** On Windows, with 40 idle pairs of loopback sockets in one
+VM, the VM used 1.8 s (x86_64) to 3.0 s (ARM64) of CPU in 5 s. With 25
+pairs, it used 0 to 31 ms.
+
+**Cause.** `sys_poll_nt()` takes its fast path, one `WSAPoll()` and one
+`WaitForMultipleObjects()`, only for 63 fds or fewer. For more fds, it
+polls parts of 64 fds with the timeout 0, and then waits with
+`_park_norestart(target)`. That function takes a time of the wall clock
+(`libc/calls/park.c`, as `clock_nanosleep-nt.c` gives it), but `target`
+is a time of the monotonic clock: a date in 1970. Thus the wait ended at
+once, and the loop used a CPU. Also, a part of 64 files gave `EINVAL`,
+because a wait takes at most 63 files and the event of the signals.
+
+**Workaround in BEAM.com.** `patches/cosmo/poll-nt.patch`:
+
+- The fast path takes any count of sockets, because `WSAPoll()` has no
+  limit. Only the files and pipes of `WaitForMultipleObjects()` have a
+  limit of 63. Above 64 sockets, the arrays are on the heap.
+- With more than 63 files and pipes, the other path gives
+  `_park_norestart()` a time of the wall clock, and its parts have 63
+  fds.
+
+The libc of `cosmocc` stays as it is for the x86_64 half:
+`build_cosmo_file` links the patched file into the emulator. The libc of
+Windows ARM64 (`build_cosmo_libc`) gets the same patch.
+`tests/programs/fds_check.erl` fails when the VM with 300 idle sockets
+uses 1 s of CPU or more in 3 s. With the fix, the VM with 40 idle pairs
+used 0 ms of CPU in 5 s on both Windows runners of CI.
+
+**Possible upstream fix.** The same.
+
+### C63. Windows: select() reports an error only in readfds
+
+**Status:** 4.0.2 (`libc/calls/select-nt.c`), Windows. Found by reading
+the code; no symptom seen.
+
+**Cause.** `sys_select_nt()` sets the bit of `readfds` for `POLLIN`,
+`POLLHUP`, `POLLERR` and `POLLNVAL`, also for an fd that was not in
+`readfds`, and the bit of `writefds` only for `POLLOUT`. On Linux, an fd
+with an error or a hangup is ready in each set that asked for it, and
+only there. ERTS removes the events that it does not wait for
+(`erl_check_io.c`), so a socket that waits only for `POLLOUT` (a send
+that waits for room) did not see the error, and `select()` returned at
+once again. In the CI runs, `WSAPoll()` also gave `POLLWRNORM` for a
+reset connection, so the send ended: a reset while a send waits gave
+`{error, closed}` in 1 ms.
+
+**Workaround in BEAM.com.** `patches/cosmo/select-nt.patch`: an error or
+a hangup makes the fd ready in each set that asked for it, and an fd is
+ready only in a set that asked for it. `tests/programs/fds_check.erl`
+checks the reset while a send waits.
+
+**Possible upstream fix.** The same.
+
+### C64. Windows: close() of a written file waits for the disk
+
+**Status:** 4.0.2 (`libc/calls/close-nt.c`), Windows.
+
+**Symptom.** On the Windows ARM64 runner of CI, the close of a file
+after a write of 1 byte took 8.7 ms (Linux: 26 us), and 100 calls of
+`file:write_file/2` took 1.0 s (Linux: 26 ms). While another process
+wrote files, a round trip over loopback took up to 70 ms. On the x86_64
+runner, the close took 0.26 ms.
+
+**Cause.** `sys_close_nt()` calls `FlushFileBuffers()` for each disk
+file that was open for writing. Its comment gives the reason: without
+it, a later `unlink()` could fail with an access error. Also
+`__wrap_close()` of `c_src/cosmo/beam_com.c` (C25) holds the lock of the
+fd table during the close, and `select()` (C59) and each new fd take
+that lock. Thus the poll thread waited for the flush.
+
+**Workaround in BEAM.com.** `patches/cosmo/close-nt.patch`: no flush at
+`close()`, as on Linux and as in native Windows programs, also Erlang/OTP
+for Windows. `fsync()` still flushes. The file has no
+`#ifdef __x86_64__`, so `build_cosmo_file` gives both halves.
+`tests/programs/close_check.erl` fails when the median of the close of a
+written file is 2 ms or more. With the fix, on the ARM64 runner, the close
+took 71 us (median), 100 calls of `file:write_file/2` took 37 ms, and the
+longest round trip over loopback while another process wrote files took
+0.64 ms (before: 8.7 ms, 1.0 s and 64 ms).
+
+**Possible upstream fix.** The same. An `unlink()` that fails with a
+sharing error can wait and try again, as `rmdir()` does (C68).
+
+### C65. Windows: close() of a socket with a linger leaks the connection
+
+**Status:** 4.0.2 (`libc/sock/closesocket-nt.c`, `libc/calls/close.c`),
+Windows.
+
+**Symptom.** On Windows, after `gen_tcp:close/1` of a socket with
+`{linger, {true, 10}}` and data in flight, the peer got the data but
+never the end of the stream (Linux: `{error, closed}` at once).
+
+**Cause.** The libc puts each socket in the non-blocking mode of Winsock
+(`connect-nt.c`, `accept-nt.c`). Winsock refuses `closesocket()` of a
+non-blocking socket with `SO_LINGER` on and a time above 0, with
+`WSAEWOULDBLOCK`, and the socket stays open. `close()` frees the fd for
+each result of `closesocket()`, so the connection stayed open with no
+owner, and its handle leaked.
+
+**Workaround in BEAM.com.** `beam_com_sock_close()` of
+`c_src/cosmo/beam_com_sock.c`, which `__wrap_close()` calls: before the
+close of such a socket, it turns the linger off. Then `closesocket()`
+returns at once, and Windows sends the data that waits and the end of
+the stream in the background. On Linux, `close()` waits for the linger,
+and that wait can hold the poll thread (O29). A linger with the time 0
+(a reset) does not change. `tests/programs/close_check.erl` checks that the peer gets
+all the data and the end. With the fix, the peer got the 200000 bytes and
+the end of the stream in 1 ms on both Windows runners of CI.
+
+**Possible upstream fix.** In `sys_closesocket_nt()`, put the socket in
+the blocking mode before `closesocket()` when the linger is on, or keep
+the fd when `closesocket()` fails.
+
+### C66. Windows: SO_REUSEADDR is SO_EXCLUSIVEADDRUSE, and SO_REUSEPORT is missing
+
+**Status:** 4.0.2 (`libc/sysv/consts.sh`, `libc/sock/setsockopt.c`),
+Windows.
+
+**Symptom.** On Windows, a second UDP socket on one port with
+`[{reuseaddr, true}, {reuseport, true}]` gave `{error, eaddrinuse}`
+(Linux, and Erlang/OTP for Windows: `{ok, Socket}`). Two programs that
+receive one UDP multicast port (mDNS, SSDP) could not run on one Windows
+host. A new listen socket on the port of a closed listener still worked.
+
+**Cause.** `SO_REUSEADDR` has the value of `SO_EXCLUSIVEADDRUSE` on
+Windows, and `SO_REUSEPORT` is 0. `setsockopt()` refuses 0 with
+`ENOPROTOOPT`, and its fallback (`setsockopt_polyfill()`) then tries
+`SO_REUSEADDR`, which is again `SO_EXCLUSIVEADDRUSE`. Thus
+`{reuseport, true}` made the port exclusive. The real `SO_REUSEADDR` of
+Winsock acts as `SO_REUSEADDR` and `SO_REUSEPORT` together on BSD, so
+Erlang/OTP for Windows sets it only when a program gives both options
+(`inet_drv.c`, the code of `__WIN32__`).
+
+**Workaround in BEAM.com.** `patches/otp/0009-windows-reuse.patch`: on
+Windows, the inet driver does what Erlang/OTP for Windows does. It sets
+`SO_REUSEADDR` of Winsock (the value 4, which `setsockopt()` passes as
+it is) only when both options are on, and `inet:getopts/2` gives the two
+options from that state. `reuseaddr` alone sets nothing, as on Windows
+with Erlang/OTP. `tests/programs/reuse_check.erl` opens two UDP sockets
+on one port, and checks that a second TCP listener with `reuseaddr`
+alone still gets `eaddrinuse`.
+
+**Possible upstream fix.** A value for `SO_REUSEPORT` on Windows, and
+no fallback from `SO_REUSEPORT` to `SO_EXCLUSIVEADDRUSE`.
+
+### C67. Windows: a timer of 1 ms takes about 15 ms
+
+**Status:** 4.0.2 (`libc/calls/clock_nanosleep-nt.c`), Windows. Erlang/OTP
+for Windows has the same behavior.
+
+**Symptom.** On Windows, 100 calls of `timer:sleep(1)` took 1.45 s
+(x86_64) and 1.6 s (ARM64); on Linux, 0.2 s.
+
+**Cause.** The waits of ERTS (`select()`, futexes and
+`pthread_cond_timedwait()`) end at a tick of the system timer, about
+15.6 ms by default. The libc raises the timer resolution only during
+`clock_nanosleep()`, and at the end of the sleep it releases the request
+of the whole process with `NtSetTimerResolution(0, false)`. Erlang/OTP
+for Windows does not raise the resolution.
+
+**Workaround in BEAM.com.** At the start of the VM on Windows,
+`windows_timer_setup()` of `c_src/cosmo/beam_com.c` asks for 1 ms with
+`NtSetTimerResolution()`, for the life of the process. Since Windows 10
+2004, such a request has an effect on this process only (Microsoft
+documents it for `timeBeginPeriod()`). The link wraps
+`NtSetTimerResolution()` (`TIMER_WRAPS` of `scripts/steps.sh`): after
+the request of the VM, the wrap ignores the calls of the libc, so a
+`nanosleep()` of a NIF does not release the request. The helper programs
+(`erl_child_setup`, `inet_gethost`, `epmd`) do not ask.
+`tests/programs/timer_check.erl` fails on Windows when 100 timers of
+1 ms take 800 ms or more.
+
+**Possible upstream fix.** In `clock_nanosleep()`, count the requests,
+and release only a request of the libc.
+
+### C68. Windows: rmdir() of a directory that is not empty waits 2 s
+
+**Status:** 4.0.2 (`libc/calls/unlinkat-nt.c`), Windows.
+
+**Symptom.** On Windows, `file:del_dir/1` of a directory with a file
+took 2.1 s and gave `{error, eexist}` (Linux: 40 us). It held a dirty
+I/O scheduler for that time.
+
+**Cause.** `sys_rmdir_nt()` tries `RemoveDirectory()` again after a
+sleep of 1, 2, 4 ... 1024 ms when it fails with `ERROR_DIR_NOT_EMPTY`.
+The retry covers a child that is deleted but still open: its deletion
+waits until the last handle closes. A directory with a real entry thus
+waited 2 s for no gain.
+
+**Workaround in BEAM.com.** `patches/cosmo/unlinkat-nt.patch`: before
+each wait, the libc opens each entry of the directory with
+`FILE_READ_ATTRIBUTES`. An entry whose deletion waits does not open, and
+a real entry opens. With a real entry, `rmdir()` fails at once with
+`ENOTEMPTY`. The file has no `#ifdef __x86_64__`, so `build_cosmo_file`
+gives one object for both halves. `tests/programs/rmdir_check.erl`
+fails when `file:del_dir/1` of a directory with a file takes 500 ms or
+more.
+
+**Possible upstream fix.** The same.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -2561,9 +3038,71 @@ the system at run time (`IsXnu()`, `IsFreebsd()`, `IsOpenbsd()`,
 `IsNetbsd()`): `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, `x86_64-unknown-freebsd`,
 `x86_64-unknown-openbsd`, `x86_64-unknown-netbsd`. Linux x86_64 and
-Windows keep the text of `configure`.
+Windows keep the text of `configure`. The native half on Windows on
+ARM64 (C58) gives `aarch64-unknown-linux-gnu`.
 
 **Possible upstream fix.** None needed for a native build.
+
+### O29. The close of a socket with a linger holds the poll thread
+
+**Status:** OTP 29.1.2 (`erts/emulator/drivers/common/inet_drv.c`,
+`erts/emulator/sys/common/erl_check_io.c`), with the `select()`
+back-end of BEAM.com (C3). Not tested with epoll or kqueue, the default
+back-ends of native builds.
+
+**Symptom.** On Linux, after `gen_tcp:close/1` of a socket with
+`{linger, {true, 10}}` and data that the peer did not take yet, no
+socket or port of the VM got an event for 10 s. The peer got 8 to 24 KB
+and then nothing, so `tests/programs/close_check.erl` failed in about
+one run of four (CI run 747). `strace` showed `close()` for 10.1 s in
+the thread `erts_poll_0`.
+
+**Cause.** `inet_stop_select()`, the `stop_select` callback of the inet
+driver, closes the fd. With a back-end that has no concurrent updates,
+the poll thread removes an fd that is in its set, and then calls this
+callback. With `SO_LINGER` on and a time above 0, the `close()` of
+Linux waits until the peer takes the data, also for a non-blocking
+socket. The peer is a socket of the same VM (or a peer that waits for
+an answer of the VM), and its events come from the poll thread that
+waits. When ERTS calls the callback in a scheduler, the `close()` can
+hold that scheduler for up to the linger time. `prim_inet:close/1` already
+waits for the queue of the driver, as its comment tells, and ERTS does
+not read the result of `close()`.
+
+**Workaround in BEAM.com.** `patches/otp/0008-linger-close.patch`:
+before the close, `inet_stop_select()` turns the linger off when it is
+on with a time above 0. Then `close()` returns at once, and the system
+sends the data and the end of the stream after the close. A linger with
+the time 0 (a reset) does not change. Under `pledge()` with no
+promise `inet`, `getsockopt()` gives `EPERM`, and the close stays as
+before. `tests/programs/close_check.erl` closes a socket in the mode
+`{active, true}` 20 times while the peer does not read, and each round
+must end in less than 5 s; without the fix, a round took 10 s in 8 runs
+of 8. With the fix, CI run 748 passed 10 such rounds on Linux, macOS,
+FreeBSD, OpenBSD and Windows (Linux x86_64: 19 ms in all).
+
+**Possible upstream fix.** The same in `inet_stop_select()`, or a
+`close()` of a lingering socket in an async thread.
+
+### O30. inet_drv.c on Windows: bsd_compat has no start value
+
+**Status:** OTP 29.1.2 (`erts/emulator/drivers/common/inet_drv.c`),
+Windows. Found by a read of the code; not tested with Erlang/OTP for
+Windows.
+
+**Cause.** The inet driver of Windows keeps the options `reuseaddr` and
+`reuseport` in the field `bsd_compat` of the descriptor (C66).
+`inet_start()` takes the descriptor from `ALLOC()`, which does not clear
+the memory, and no code sets the field before its first use. A socket
+can thus start with a random state of the two options. Also,
+`inet:getopts/2` in the form of a map gives the tag `reuseaddr` for the
+option `reuseport` on Windows.
+
+**Workaround in BEAM.com.** `patches/otp/0009-windows-reuse.patch` sets
+the field to 0 in `inet_start()`. The code of BEAM.com for Windows gives
+the tag `reuseport`.
+
+**Possible upstream fix.** The same, and the tag `am_reuseport`.
 
 ## Emscripten
 
