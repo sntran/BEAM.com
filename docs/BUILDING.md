@@ -7,10 +7,7 @@ for a custom build.
 ## Build
 
 You need Linux (x86_64), `git`, GNU make 4.3 or later, `perl`, `curl`,
-`zip` and `unzip`. The native start on Windows on ARM64 (the default)
-also needs `python3`, `clang`, `lld-link` and `llvm-dlltool` (the
-packages `clang`, `lld` and `llvm` of Debian). `WIN_ARM64=0` builds with
-none of them. The [`Makefile`](../Makefile) downloads the sources,
+`zip` and `unzip`. The [`Makefile`](../Makefile) downloads the sources,
 applies the patches, builds a small OTP and makes `build/beam.com`:
 
 ```sh
@@ -23,9 +20,12 @@ build does not depend on the make of the host.
 
 The build downloads:
 
-- cosmocc 4.0.2 (the compiler and Cosmopolitan Libc);
-- the source of Cosmopolitan 4.0.2 and its bootstrap toolchain
-  (cosmocc 3.9.2), for the libc of Windows on ARM64;
+- cosmocc 4.0.2-patched.1 (the compiler and Cosmopolitan Libc) of
+  [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
+  official cosmocc 4.0.2 with the fixes of its
+  [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md),
+  the Windows layer of the aarch64 libc, and the loader
+  `bin/ape-arm64.exe` of Windows on ARM64;
 - the source of Erlang/OTP 29.1.2, OpenSSL 4.0.3, SQLite 3.53.4,
   esqlite, WAMR 2.4.5 and Elixir 1.20.5;
 - the hex.pm packages whose NIFs it links (exqlite, bcrypt_elixir and
@@ -37,9 +37,8 @@ The steps, in order. The code of each step is in
 
 | Step | Needs | What it does |
 |---|---|---|
-| `toolchain` | | Downloads cosmocc. |
-| `libc` | `toolchain` | Builds the aarch64 libc of Cosmopolitan with the Windows layer of `patches/cosmo-libc` and the loader `ape-arm64.exe`, and puts the libc into cosmocc (nothing with `WIN_ARM64=0`). See C58 of [`UPSTREAM.md`](UPSTREAM.md). |
-| `openssl` | `libc` | Builds a static `libcrypto`. |
+| `toolchain` | | Downloads cosmocc, and checks its SHA-256. |
+| `openssl` | `toolchain` | Builds a static `libcrypto`. |
 | `otp` | | Clones OTP and applies `patches/otp/*.patch`. |
 | `configure` | `otp`, `openssl` | Configures OTP for Cosmopolitan. |
 | `sqlite` | `configure` | Builds SQLite and the esqlite NIF (nothing with `SQLITE=0`). |
@@ -523,8 +522,7 @@ part never goes stale. `PARTS_URL=... make` uses a store, and
 
 | Part | The output of | Its key has |
 |---|---|---|
-| `libc` | the step `libc`: the libc and the loader for Windows on ARM64 (`build/cosmo-libc`) | the commit of Cosmopolitan, its bootstrap toolchain, the code of the step, `patches/cosmo-libc` and `c_src/win-arm64` |
-| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, the key of `libc`, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the code of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
+| `otp` | the steps `otp`, `configure` and `make`: the built OTP tree | the versions of OTP, OpenSSL and cosmocc, `CC`, `CXX`, `AR`, `JIT`, `CCACHE`, the path of the tree, the applications (`SRC_APPS`), the code of these steps, `patches/otp`, `erts_cosmo.h`, `noshared` and `depcc` |
 | `elixir` | the step `elixir` | the version of Elixir, `patches/elixir`, the code of the step, and the key of `otp` |
 | `nif-PACKAGE` | one NIF of the step `nifs`: `LIB.a` and `.aarch64/LIB.a` | the recipe of the package, the NIF API (the headers of the OTP tree), cosmocc, the code that builds it, and its files (`scripts/libvips.sh`, `patches/libvips`, `c_src/vips` and `native/vips_resvg` for vix with its parts; `scripts/pdfium.sh` and `patches/pdfium` for ex_pdfium; `c_src/rust` and `scripts/rust_link.sh` for a NIF of Rust) |
 
@@ -574,7 +572,7 @@ again only when its key changed, or when a step that it needs ran again.
   the work tree has it.
 
 Thus a change of a function of `scripts/steps.sh` runs again only the
-steps that use it. For example, a change of `build_cosmo_file` runs
+steps that use it. For example, a change of `step_multicall` runs
 `multicall` and the steps after it.
 
 The commands:
@@ -632,9 +630,7 @@ scope. For an `app.com`, `npx beam.com --snapshot` does the same.
 
 1. **Build** and **Build the interpreter**: `beam.com` (the JIT) and
    `beam-emu.com` (the interpreter), on Ubuntu with cosmocc. A cache
-   keeps the libc for Windows on ARM64 (the step `libc`, about 3
-   minutes; the action `.github/actions/cosmo-libc`). A cache
-   keeps the WebAssembly runtime (the step `wasm_runtime`, about 4
+   keeps cosmocc, and a cache keeps the WebAssembly runtime (the step `wasm_runtime`, about 4
    minutes). The step uses it only when the SHA-256 of its inputs (the
    file `build/wasm-runtime/inputs`) is the same, so a local build with
    another runtime builds it again.

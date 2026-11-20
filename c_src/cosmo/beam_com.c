@@ -2614,10 +2614,10 @@ static void start_epmd(struct arglist *all)
 #ifdef __x86_64__
 /*
  * Windows on ARM64. Windows runs this x86_64 half of the file under its
- * x64 emulation. The aarch64 half runs as native code, when its libc has
- * the Windows layer (WIN_ARM64=1 in scripts/steps.sh). Then the zip has
- * the loader of that half, bin/ape-arm64.exe
- * (c_src/win-arm64/ape_arm64.c).
+ * x64 emulation. The aarch64 half runs as native code: its libc has the
+ * Windows layer of the cosmocc of sntran/cosmopolitan. With WIN_ARM64=1
+ * in scripts/steps.sh, the zip has the loader of that half,
+ * bin/ape-arm64.exe of cosmocc (ape/ape-arm64.c of sntran/cosmopolitan).
  *
  * This function writes the loader to a file of the cache, and this
  * process becomes the loader (execv), with this file and the arguments.

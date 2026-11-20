@@ -47,7 +47,7 @@ permissions:
 
 env:
   OTP_VERSION: "29.1.2"
-  COSMOCC_VERSION: "4.0.2"
+  COSMOCC_VERSION: "4.0.2-patched.1"
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
 
@@ -130,11 +130,6 @@ jobs:
         # The GNU make of the host gets cosmocc. Then the make of cosmocc
         # runs the build (the Makefile).
         run: make toolchain
-
-      # Windows on ARM64: the libc and the loader of the step libc.
-      - name: The libc for Windows on ARM64
-        id: cosmo_libc
-        uses: ./.github/actions/cosmo-libc
 
       - name: Cache OpenSSL
         id: cache_openssl
@@ -237,7 +232,7 @@ jobs:
           # for aarch64, with the loader in its zip, and the loader.
           build/cosmocc/bin/cosmocc -mcosmo -Os -o build/win_arm64_check.com \
             tests/programs/win_arm64/hello.c
-          cp build/cosmo-libc/ape-arm64.exe build/ape-arm64.exe
+          cp build/cosmocc/bin/ape-arm64.exe build/ape-arm64.exe
           zip -qj build/win_arm64_check.com build/ape-arm64.exe tests/programs/win_arm64/hello.txt
 
       - name: Upload the check of the pipe writes
@@ -388,13 +383,6 @@ jobs:
         with:
           path: build/cosmocc
           key: ${{ steps.cache_cosmocc.outputs.cache-primary-key }}
-
-      - name: Save the cache of the libc for Windows on ARM64
-        if: github.event_name != 'pull_request' && steps.cosmo_libc.outputs.cache-hit != 'true' && matrix.out == 'beam.com'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: build/cosmo-libc
-          key: ${{ steps.cosmo_libc.outputs.cache-primary-key }}
 
       - name: Save the cache of OpenSSL
         if: github.event_name != 'pull_request' && steps.cache_openssl.outputs.cache-hit != 'true'

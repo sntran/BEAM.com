@@ -5,6 +5,16 @@ notes of its release.
 
 ## Unreleased
 
+- The build uses cosmocc 4.0.2-patched.1 of
+  [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan), a fork
+  of Cosmopolitan: the official cosmocc 4.0.2 with one commit for each
+  fix of its `PATCHES.md`. These fixes were patches of BEAM.com before:
+  `patches/cosmo/`, `patches/cosmo-libc/`, the loader of
+  `c_src/win-arm64/`, and the step `libc`. Now they are in the libc of
+  each mode of cosmocc, and in its loaders. Other projects that use
+  cosmocc can take them too. The build needs no `python3`, `clang`,
+  `lld` or `llvm`, and it does not build a libc (C47, C49, C50, C51,
+  C57, C58, C61 to C64 and C68 of `docs/UPSTREAM.md`).
 - Windows: two UDP sockets can share one port with `{reuseaddr, true}`
   and `{reuseport, true}`, as with Erlang/OTP for Windows, so two
   programs can receive mDNS or SSDP on one host. Before, `reuseport` made
@@ -59,9 +69,6 @@ notes of its release.
   `BEAM_COM_NATIVE=0` keeps the x86_64 half. See "Windows on ARM64" in
   `docs/PLATFORMS.md` and `docs/BENCHMARKS.md`. CI runs the tests on
   Windows 11 on ARM64 too (the runner `windows-11-arm`).
-- The build has the step `libc`. It needs `python3`, `clang`, `lld` and
-  `llvm` on the build computer. `WIN_ARM64=0` builds `beam.com` with no
-  native start on Windows on ARM64, and needs none of them.
 - Windows: downloads of `beam.com` are about 100 times faster. A
   download of 129 MB with `httpc` took 212 s (0.6 MB/s) on the Windows
   runners of CI, and now takes about 2 s. The poll thread of ERTS saw

@@ -110,8 +110,9 @@ The aarch64 half of `beam.com` also runs on Windows (C58 in
    the loader. The cache directory is `BEAM_COM_CACHE`, else `beam.com`
    in `XDG_CACHE_HOME` or in `LOCALAPPDATA`.
 3. It starts the loader with the path of its own file and its
-   arguments (`execv()`). The loader
-   ([`ape_arm64.c`](../c_src/win-arm64/ape_arm64.c)) maps the aarch64
+   arguments (`execv()`). The loader `bin/ape-arm64.exe` of cosmocc
+   ([`ape/ape-arm64.c`](https://github.com/sntran/cosmopolitan/blob/main/ape/ape-arm64.c)
+   of sntran/cosmopolitan) maps the aarch64
    half of that file at its fixed addresses and starts it. The x86_64
    process waits and gives the exit status of the native process.
    The loader has no high-entropy ASLR (`/highentropyva:no`). Thus

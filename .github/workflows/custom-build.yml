@@ -123,7 +123,7 @@ concurrency:
 # The step "Read the choices" sets OTP_VERSION and ELIXIR_VERSION, with
 # their commits.
 env:
-  COSMOCC_VERSION: "4.0.2"
+  COSMOCC_VERSION: "4.0.2-patched.1"
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
 
@@ -232,11 +232,6 @@ jobs:
         # The GNU make of the host gets cosmocc. Then the make of cosmocc
         # runs the build.
         run: make toolchain
-
-      # Windows on ARM64: the libc and the loader of the step libc.
-      - name: The libc for Windows on ARM64
-        id: cosmo_libc
-        uses: ./.github/actions/cosmo-libc
 
       - name: Cache OpenSSL
         if: env.REUSE != '1' && env.REFUSED == ''
