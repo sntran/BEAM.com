@@ -24,12 +24,12 @@ An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
 
-BEAM.com uses cosmocc 4.0.2-patched.1 of
+BEAM.com uses cosmocc 4.0.2-patched.2 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
 official cosmocc 4.0.2 with one commit for each fix of its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
 The status of such an item starts with "fixed in sntran/cosmopolitan
-4.0.2-patched.1", and its part "Fix in sntran/cosmopolitan" names the
+4.0.2-patched.N" (the first release with the fix), and its part "Fix in sntran/cosmopolitan" names the
 commit.
 
 The reproducers are small C files. Compile them with `cosmocc` (the fat
@@ -1862,8 +1862,8 @@ change.
      CPU with no LSE (for example the Cortex-A72) also uses the loop.
 3. `patches/otp/0002-jit.patch`: the JIT uses fixed cache line sizes
    and `__clear_cache()` on Windows, as on macOS, for the same reason.
-4. The workflow of sntran/cosmopolitan builds cosmocc 4.0.2-patched.1
-   with this libc, in each mode of `tool/cosmocc/package.sh`, and adds
+4. The workflow of sntran/cosmopolitan builds cosmocc with this libc,
+   in each mode of `tool/cosmocc/package.sh`, and adds
    the loader as `bin/ape-arm64.exe`.
 5. `beam.com` holds the loader at `/zip/bin/ape-arm64.exe`. The x86_64
    half asks `IsWow64Process2()` for the machine. On ARM64 it writes
@@ -2252,6 +2252,39 @@ fails when `file:del_dir/1` of a directory with a file takes 500 ms or
 more.
 
 **Possible upstream fix.** The same.
+
+### C69. macOS: a wait with a deadline that passed never ends
+
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.2. Open in 4.0.2 (`libc/intrin/cosmo_futex.c`), macOS x86_64 and arm64. The branch master of 2026-11-19 has the commit 7e35bc85 "Fix past timestamp lock bug on Windows and XNU": a deadline before the current time gives `ETIMEDOUT`, but a deadline equal to the current time still waits forever.
+
+**Symptom.** On macOS x86_64 (the runner `macos-15-intel`),
+`tests/programs/timer_check.erl` (200 waits of 1 ms) stopped in about 1
+run in 350, with no output. Each thread of the VM waited, and the
+timer did not run. The CI of PR 215 hit it once, and the watchdog of
+`tests/run.sh` killed the program after 120 s.
+
+**Cause.** On XNU, `cosmo_futex_wait()` gives `ulock_wait()` a relative
+timeout in microseconds. When the deadline passed after the check of
+the caller, `cosmo_futex_fix_timeout()` gives a timeout of 0, and
+`ulock_wait()` waits forever for a timeout of 0. A scheduler of ERTS
+waits up to its next timer with `ethr_event_twait()`, and that timer can
+be due a few microseconds before the call. In a VM that stopped, the
+thread of the timer waited in system call 515 (`ulock_wait`) with the
+timeout register `r10` at 0. A program that calls `cosmo_futex_wait()`
+with a deadline 1 ms in the past never returns on macOS, and returns
+`ETIMEDOUT` at once on Linux.
+
+**Fix in sntran/cosmopolitan.** The commit "cosmo_futex: a wait with a
+deadline that passed ends on XNU (C69)": a timeout of 0 gives
+`ETIMEDOUT` at once, with no call of `ulock_wait()`. The check C69 of
+`tool/cosmocc/check/fixes.c` waits with a futex and with
+`pthread_cond_timedwait()` 1 s after the deadline. On macOS, it fails
+with the libc of 4.0.2 (the child waits until its alarm) and passes
+with the fix.
+
+**Possible upstream fix.** In `cosmo_futex_fix_timeout()` of master,
+`<= 0` in place of `< 0`, so that a deadline equal to the current time
+also gives `ETIMEDOUT`.
 
 ## WAMR (WebAssembly Micro Runtime)
 

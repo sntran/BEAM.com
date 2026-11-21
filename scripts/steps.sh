@@ -27,7 +27,7 @@
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.2)
-#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.1:
+#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.2:
 #                    the cosmocc of github.com/sntran/cosmopolitan, with
 #                    the changes of its PATCHES.md). For another release,
 #                    give COSMOCC_URL and COSMOCC_SHA256 too
@@ -127,14 +127,14 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.2}
-COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.1}
+COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.2}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-d199a49a01a2079afb6f2c5c9ae047cd4555e68d}
-COSMOCC_SHA256=${COSMOCC_SHA256:-9393ba3beba565c6007edadfd29cfaa16f31e80ad9f1d65b7cbb6ad0740b6bec}
+COSMOCC_SHA256=${COSMOCC_SHA256:-75d9f3cc9b9f67422e88463206fef80b96919fda42dd52b599d21c13f8803557}
 COSMOCC_URL=${COSMOCC_URL:-https://github.com/sntran/cosmopolitan/releases/download/$COSMOCC_VERSION/cosmocc-$COSMOCC_VERSION.zip}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
