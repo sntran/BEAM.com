@@ -97,7 +97,7 @@ order, with `git apply`.
 ## Cosmopolitan
 
 The fixes of Cosmopolitan are in the toolchain, not in this directory:
-the build uses cosmocc 4.0.2-patched.1 of
+the build uses cosmocc 4.0.2-patched.2 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan). Its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md)
 lists one commit for each fix:
@@ -113,6 +113,7 @@ lists one commit for each fix:
 | `close()` of Windows does not flush a written file. | C64 |
 | `rmdir()` of Windows fails at once for a directory with a real entry. | C68 |
 | The Windows layer of the aarch64 libc, and the loader `bin/ape-arm64.exe`. | C58 |
+| A wait of macOS with a deadline that passed ends at once. | C69 |
 
 ## Changes that are not patch files
 
