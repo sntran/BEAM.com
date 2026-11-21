@@ -5,7 +5,15 @@ notes of its release.
 
 ## Unreleased
 
-- The build uses cosmocc 4.0.2-patched.1 of
+- macOS: a VM does not stop for good in a short wait. On macOS, a wait
+  of the libc with a deadline that passed waited forever: the libc gave
+  the system a timeout of 0, and macOS waits forever for a timeout of 0.
+  A scheduler of ERTS can wait for a timer that is due a few
+  microseconds before the call, so about 1 run in 350 of 200 calls of
+  `timer:sleep(1)` stopped with each thread idle. The build uses cosmocc
+  4.0.2-patched.2, which gives `ETIMEDOUT` at once there (C69 of
+  `docs/UPSTREAM.md`).
+- The build uses cosmocc 4.0.2-patched.2 of
   [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan), a fork
   of Cosmopolitan: the official cosmocc 4.0.2 with one commit for each
   fix of its `PATCHES.md`. These fixes were patches of BEAM.com before:
