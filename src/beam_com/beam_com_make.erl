@@ -34,7 +34,8 @@
 -module(beam_com_make).
 
 -export([main/0, force_build/0, nif_files/2, nif_files/3, file_nifs/0, file_nifs/1,
-         priv/0, linked_nifs/0, nif_dirs/1, match_nifs/2, source_text/1, has_link/2]).
+         priv/0, linked_nifs/0, nif_dirs/1, match_nifs/2, source_text/1, has_link/2,
+         link_text/3]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -144,11 +145,7 @@ file_nif(Args, App, Vsns, #{app_path := AppPath, cwd := Cwd, priv := Priv}) ->
                 lists:any(fun({F, _}) -> has_link(AppPath, filename:join("priv", F)) end,
                           New) of
                 true ->
-                    throw({error, "the priv directory of ~ts in ~ts has a symbolic link "
-                           "to the source of the dep, and a write there changes the dep. "
-                           "beam.com writes no NIF file. Use a source of ~ts with no priv "
-                           "directory, such as the Hex package ~ts ~ts",
-                           [App, AppPath, App, App, Vsn]});
+                    throw({error, "~ts", [link_text(App, AppPath, Vsn)]});
                 false ->
                     write_files(Dst, New)
             end
@@ -162,6 +159,14 @@ write_files(Dir, Files) ->
          ok = file:write_file(Path, Data)
      end || {F, Data} <- Files],
     ok.
+
+%% The error for a package App of version Vsn whose priv directory in
+%% the build directory AppDir has a symbolic link.
+link_text(App, AppDir, Vsn) ->
+    io_lib:format("the priv directory of ~ts in ~ts has a symbolic link to the source of "
+                  "the dep, and a write there changes the dep. beam.com writes no NIF "
+                  "file. Use a source of ~ts with no priv directory, such as the Hex "
+                  "package ~ts ~ts", [App, AppDir, App, App, Vsn]).
 
 %% True when a part of the path Rel under Base (each directory, and the
 %% file) is a symbolic link.

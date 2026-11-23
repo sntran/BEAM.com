@@ -250,11 +250,11 @@ no file, and it uses its own program, as before.
   ex_pdfium) copies them into the priv directory of the package and
   loads `code:priv_dir(APP)/native/libCRATE`. For `make`, a file with
   the same bytes stays.
-  - Caution: `make` writes no file through a symbolic link of
-    `MIX_APP_PATH`. A package whose priv directory is a link to
+  - Caution: `make` and `Rustler` write no file through a symbolic link
+    in the build path. A package whose priv directory is a link to
     `deps/APP/priv` gets an error, and no file changes. The Hex packages
-    vix and lazy_html have no priv directory in their source, so Mix
-    makes a real directory for them.
+    vix, lazy_html, rusty_csv and ex_pdfium have no priv directory in
+    their source, so Mix makes a real directory for them.
 
 The version of the package must be a version of its directory. A
 linked NIF of the same package wins: ERTS finds a static NIF first.
