@@ -221,8 +221,9 @@ The git client speaks SSH with the `ssh` application of OTP, with no
 of scp, `[user@]host:path` (for example `git@github.com:org/repo.git`).
 On Windows, a host of one letter is a drive, as for `git`: `C:/repos/dep`
 is a path, not an SSH URL.
-The same client gets the git deps of Mix with no `git` program (see
-"Phoenix in one file" in [`ELIXIR.md`](ELIXIR.md)).
+The same client gets the git deps of Mix with no `git` program, in the
+Mix build and in `beam.com mix` (see "Phoenix in one file" in
+[`ELIXIR.md`](ELIXIR.md)).
 
 - **Settings.** It reads `~/.ssh/config` as `ssh` does, the first value
   of each keyword: `Host`, `Match all`, `Include`, `HostName`, `User`,

@@ -19,8 +19,8 @@
 -module(beam_com_mix).
 
 -export([reasons/1, release/2, child/0]).
-%% The hook of Mix in the tools of Elixir (patches/elixir/0004).
--export([start_hook/1, compiled/0]).
+%% The hooks of Mix in the tools of Elixir (patches/elixir/0004 and 0005).
+-export([start_hook/1, compiled/0, started/0]).
 
 -define(NPM, "https://registry.npmjs.org").
 %% The metadata of one version of a package on npm has some KB.
@@ -46,7 +46,7 @@
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
          asset_tools/2, esbuild_exe/3, esbuild_exe/4, tailwind_exe/3, tailwind_version/1, verify_npm/4, npm_keys/0, cache_env/1,
          windows_assets/2, steps/5, relay/1, status/1, watch_input/2, write_nif_files/3,
-         deps/2, compiled/4, dependency/2]).
+         deps/2, compiled/4, dependency/2, started/2, git_client/2, git_scm/2]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -267,15 +267,52 @@ build(Dir, Out) when is_list(Dir), is_list(Out) ->
 
 %% The git client of beam.com (beam_com_git_scm) gets the git deps of an
 %% https or SSH URL when PATH has no git, or with BEAM_COM_GIT=client. It
-%% comes before Mix.SCM.Git, which gets the other git deps.
-git_scm("client", _Git) ->
-    'Elixir.Mix.SCM':prepend(beam_com_git_scm);
-git_scm(_, false) ->
-    io:format("beam.com: no git program: the git deps of an https or SSH URL come with "
-              "the git client of beam.com~n"),
-    'Elixir.Mix.SCM':prepend(beam_com_git_scm);
-git_scm(_, _Git) ->
+%% comes before Mix.SCM.Git, which gets the other git deps. The start of
+%% Mix in the child already added it (started/0). This adds the line.
+git_scm(Env, Git) ->
+    case {Env, Git} of
+        {"client", _} ->
+            ok;
+        {_, false} ->
+            io:format("beam.com: no git program: the git deps of an https or SSH URL come "
+                      "with the git client of beam.com~n");
+        _ ->
+            ok
+    end,
+    started(Env, Git).
+
+%% After each start of Mix ("beam.com mix", Mix.install, the child of the
+%% Mix build), the call of patches/elixir/0005: the git client of beam.com
+%% gets the git deps of an https or SSH URL when PATH has no git, or with
+%% BEAM_COM_GIT=client, as in the Mix build. No line: the output of a
+%% task such as "mix run -e" stays the same. A tool of Elixir must start
+%% also when this fails.
+started() ->
+    try
+        started(os:getenv("BEAM_COM_GIT"), os:find_executable("git"))
+    catch
+        Class:Reason ->
+            io:format(standard_error, "beam.com: the git client of beam.com is not available "
+                      "to Mix: ~p~n", [{Class, Reason}])
+    end,
     ok.
+
+%% Env: the value of BEAM_COM_GIT. Git: the path of the git program, or
+%% false. Mix removes the code path of beam_com before a compile, so the
+%% modules of the source are loaded now.
+started(Env, Git) ->
+    case git_client(Env, Git) of
+        true ->
+            {module, _} = code:ensure_loaded(beam_com_git_scm),
+            {module, _} = code:ensure_loaded(beam_com_git_ssh),
+            {module, _} = code:ensure_loaded(beam_com_git),
+            'Elixir.Mix.SCM':prepend(beam_com_git_scm);
+        false ->
+            ok
+    end.
+
+git_client("client", _Git) -> true;
+git_client(_Env, Git) -> Git =:= false.
 
 %% The steps of "mix setup" and of a deploy: the config, the deps, the
 %% code, the assets (when the project has the alias assets.deploy), and

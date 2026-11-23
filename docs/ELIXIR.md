@@ -330,6 +330,11 @@ directory.
   the SSH agent: see "Git over SSH" in [`PROGRAMS.md`](PROGRAMS.md).
 - A git dep of another URL (for example `git://`), and `submodules:
   true`, need the `git` program.
+- `beam.com mix` (`mix deps.get`, `mix compile`, `mix test`, also
+  `Mix.install/2` in `beam.com elixir`) uses the same client with the
+  same rules: with no `git` program in `PATH`, or with
+  `BEAM_COM_GIT=client`. The client reads a checkout of the `git`
+  program, and `git` reads a checkout of the client.
 - To deploy the file to a server, from the server itself or from CI, see
   [`DEPLOY.md`](DEPLOY.md).
 

@@ -1,7 +1,9 @@
 %% A source of Mix (the callbacks of Mix.SCM) for the git deps of an
 %% https or SSH URL, with the git client of beam.com (beam_com_git) and no
-%% git program. The child of beam_com_mix puts it before Mix.SCM.Git when
-%% PATH has no git, or when BEAM_COM_GIT is "client".
+%% git program. At each start of Mix in beam.com ("beam.com mix", the
+%% child of the Mix build), beam_com_mix:started/0 (patches/elixir/0005)
+%% puts it before Mix.SCM.Git when PATH has no git, or when BEAM_COM_GIT
+%% is "client".
 %%
 %% It accepts the options of Mix.SCM.Git (git, github, ref, branch, tag,
 %% sparse, subdir, depth), and its lock entries are the entries of
