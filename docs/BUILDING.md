@@ -128,8 +128,8 @@ or rebar3. A custom build can have more, or less:
   the NIF files" puts them into the zip of the new file with
   `scripts/assemble.erl`, after the step test. `scripts/file_nifs.sh` has
   the pins: the tag, the commit and the SHA-256 of each file. `tailwind`
-  is the NIF of tailwind.com 0.5.0 (`tailwind_nif`), for the git dep
-  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.5.0"}` (or that
+  is the NIF of tailwind.com 0.6.0 (`tailwind_nif`), for the git dep
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.6.0"}` (or that
   commit): see "The NIF files of beam.com" in [`NIFS.md`](NIFS.md). A
   new pin changes the KEY of a build, because `scripts/` is a source of
   the build.
