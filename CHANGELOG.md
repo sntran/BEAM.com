@@ -23,6 +23,13 @@ notes of its release.
   names a dep only when a file is new or changed. `BEAM_COM_NIF_FILES=0`
   stops it. With the usual Mix and Elixir, the project works as before
   (`docs/NIFS.md`, "The NIF files of beam.com").
+- The `make` of `elixir_make` in `beam.com` (vix, lazy_html) writes no
+  NIF file through a symbolic link in `_build`. Before, it wrote the
+  files through a link of Mix into `deps/APP/priv`, the source of the
+  dep. Such a package now gets an error, and no file changes. A file
+  with the same bytes stays.
+- `docs/NIFS.md` has a section "Leave BEAM.com": how a project that
+  used the NIF files of `beam.com` builds with the usual Elixir and OTP.
 
 ## 0.1.0-rc.8
 

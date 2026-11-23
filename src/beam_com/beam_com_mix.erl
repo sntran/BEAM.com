@@ -18,8 +18,6 @@
 %% options of the release stay.
 -module(beam_com_mix).
 
--include_lib("kernel/include/file.hrl").
-
 -export([reasons/1, release/2, child/0]).
 %% The hook of Mix in the tools of Elixir (patches/elixir/0004).
 -export([start_hook/1, compiled/0]).
@@ -434,12 +432,12 @@ write_nif_files(Priv, Deps, Build) ->
               Name = atom_to_list(App),
               Lib = filename:join(Build, "lib"),
               Rel = fun(F) -> filename:join([Name, "priv", F]) end,
-              %% A file with the bytes of beam.com is done, also behind a
-              %% link: the hook of make (beam_com_make) writes the objects
-              %% of a package such as vix there when it compiles.
+              %% A file with the bytes of beam.com is done: the hook of
+              %% make (beam_com_make) writes the objects of a package
+              %% such as vix there when it compiles.
               New = [{F, D} || {F, D} <- Files,
                                file:read_file(filename:join(Lib, Rel(F))) =/= {ok, D}],
-              case [F || {F, _} <- New, has_link(Lib, Rel(F))] of
+              case [F || {F, _} <- New, beam_com_make:has_link(Lib, Rel(F))] of
                   [] when New =:= [] ->
                       ok;
                   [] ->
@@ -466,20 +464,6 @@ once(Key, Fun) ->
             persistent_term:put({?MODULE, once, Key}, true),
             Fun()
     end.
-
-%% True when a part of the path Rel under Base (each directory, and the
-%% file) is a symbolic link.
-has_link(Base, Rel) ->
-    {_, Link} = lists:foldl(
-                  fun(Part, {Dir, Found}) ->
-                          Path = filename:join(Dir, Part),
-                          {Path, Found orelse
-                               case file:read_link_info(Path) of
-                                   {ok, #file_info{type = symlink}} -> true;
-                                   _ -> false
-                               end}
-                  end, {Base, false}, filename:split(Rel)),
-    Link.
 
 dep_text({hex, Package}) -> ["hex ", Package];
 dep_text({git, Url, Commit, _Opts}) -> ["git ", Url, " ", string:slice(Commit, 0, 12)];
