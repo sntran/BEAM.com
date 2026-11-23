@@ -676,6 +676,52 @@ defmodule BeamComMixTest do
              StringIO.contents(out)
   end
 
+  describe "the git client of beam.com at the start of Mix" do
+    setup do
+      scm = Mix.SCM.available()
+      on_exit(fn -> Mix.State.put(:scm, scm) end)
+      Mix.State.put(:scm, [Mix.SCM.Git, Mix.SCM.Path])
+      :ok
+    end
+
+    test "git_client/2: with BEAM_COM_GIT=client, or with no git program" do
+      assert :beam_com_mix.git_client(~c"client", ~c"/usr/bin/git")
+      assert :beam_com_mix.git_client(~c"client", false)
+      assert :beam_com_mix.git_client(false, false)
+      assert :beam_com_mix.git_client(~c"", false)
+      refute :beam_com_mix.git_client(false, ~c"/usr/bin/git")
+      refute :beam_com_mix.git_client(~c"git", ~c"/usr/bin/git")
+    end
+
+    test "started/2: the client comes before Mix.SCM.Git, one time, and with no line" do
+      assert "" == capture_io(fn -> :ok = :beam_com_mix.started(false, ~c"/usr/bin/git") end)
+      assert [Mix.SCM.Git, Mix.SCM.Path] == Mix.SCM.available()
+
+      assert "" == capture_io(fn -> :ok = :beam_com_mix.started(false, false) end)
+      assert [:beam_com_git_scm, Mix.SCM.Git, Mix.SCM.Path] == Mix.SCM.available()
+      # The child of the Mix build starts Mix (the hook), and then adds
+      # the client again with its line.
+      assert capture_io(fn -> :ok = :beam_com_mix.git_scm(false, false) end) =~
+               "beam.com: no git program"
+
+      assert [:beam_com_git_scm, Mix.SCM.Git, Mix.SCM.Path] == Mix.SCM.available()
+      assert "" == capture_io(fn -> :ok = :beam_com_mix.git_scm(~c"client", ~c"/usr/bin/git") end)
+      assert [:beam_com_git_scm, Mix.SCM.Git, Mix.SCM.Path] == Mix.SCM.available()
+    end
+
+    test "started/0: a git dep of an https URL goes to the client when Mix has it" do
+      :ok = :beam_com_mix.started()
+      opts = [git: "https://github.com/sntran/tailwind.com.git", tag: "v0.6.0", dest: "d"]
+
+      if System.find_executable("git") && System.get_env("BEAM_COM_GIT") != "client" do
+        assert [Mix.SCM.Git, Mix.SCM.Path] == Mix.SCM.available()
+      else
+        assert [:beam_com_git_scm | _] = Mix.SCM.available()
+        assert :beam_com_git_scm.accepts_options(:tailwind, opts)
+      end
+    end
+  end
+
   describe "the output and the errors of the child" do
     test "relay: a character in two parts, and bytes that are not UTF-8" do
       port = make_ref()

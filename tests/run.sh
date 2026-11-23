@@ -2339,21 +2339,23 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
         # above fetched the deps of tailwind_check.
         # The check runs in the project, so dir and runner are absolute
         # for that time (as for the check in an empty directory above).
-        # Mix checks the lock of a git dep with the program git, which
-        # the BSD systems of CI do not have. The Mix build above uses the
-        # git client of beam.com, but "beam.com mix" uses Mix.SCM.Git.
-        if [ -d "$dir/tailwind_check/deps/tailwind" ] && ! command -v git >/dev/null 2>&1; then
-            echo "SKIP: beam_nifs.com mix compile (no git in PATH)"
-        elif [ -d "$dir/tailwind_check/deps/tailwind" ]; then
+        # Mix checks the lock of the git dep. "beam.com mix" uses the git
+        # client of beam.com for it (patches/elixir/0005), as the Mix
+        # build above: BEAM_COM_GIT=client on each system, and the BSD
+        # systems of CI have no git program.
+        if [ -d "$dir/tailwind_check/deps/tailwind" ]; then
             here=$PWD here_dir=$dir here_runner=$runner
             dir=$(cd "$dir" && pwd)
             case $runner in /*) ;; */*) runner=$here/$runner ;; esac
             cd "$dir/tailwind_check"
             rm -rf _build/dev/lib/tailwind/priv
+            BEAM_COM_GIT=client
+            export BEAM_COM_GIT
             limit=600
             check beam_nifs.com 'beam.com: the NIF files of tailwind .* in its priv directory' mix compile
             limit=${LIMIT:-120}
             check beam_nifs.com '^nif: true$' mix run --no-start -e 'IO.puts("nif: #{:tailwind_nif.available()}")'
+            unset BEAM_COM_GIT
             cd "$here"
             dir=$here_dir runner=$here_runner
         fi

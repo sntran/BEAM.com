@@ -1,0 +1,36 @@
+Mix: a hook of beam.com after the start of Mix
+
+beam.com has a git client of its own (beam_com_git_scm, a source of
+Mix). The Mix build of beam.com ("beam.com DIR -o FILE") adds it to the
+sources of Mix when PATH has no git program. A user who runs Mix itself
+("beam.com mix deps.get", "beam.com mix compile") got Mix.SCM.Git, which
+stops with :enoent with no git program.
+
+After the start of the supervisor of Mix, call :beam_com_mix.started/0
+when it is exported. beam.com loads that module at the start of each
+tool of Elixir. A usual install of Elixir has no such module, so nothing
+changes there.
+
+--- a/lib/mix/lib/mix.ex
++++ b/lib/mix/lib/mix.ex
+@@ -463,7 +463,19 @@
+     Mix.Local.append_paths()
+     children = [Mix.Sync.PubSub, Mix.State, Mix.TasksServer, Mix.ProjectStack]
+     opts = [strategy: :one_for_one, name: Mix.Supervisor, max_restarts: 0]
+-    Supervisor.start_link(children, opts)
++
++    with {:ok, _} = ok <- Supervisor.start_link(children, opts) do
++      # A hook of beam.com (one file with OTP and Elixir): after the start
++      # of Mix, :beam_com_mix.started/0 adds the git client of the file
++      # to the sources of Mix when PATH has no git. A usual install has
++      # no module :beam_com_mix, and the module is not loaded in a plain
++      # run of this Mix.
++      if function_exported?(:beam_com_mix, :started, 0) do
++        :beam_com_mix.started()
++      end
++
++      ok
++    end
+   end
+ 
+   @impl true

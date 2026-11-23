@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- `beam.com mix` uses the git client of `beam.com` for the git deps of
+  an `https` or SSH URL when `PATH` has no `git` program, or with
+  `BEAM_COM_GIT=client`, as the Mix build does. Before, `beam.com mix
+  deps.get`, `mix compile` and `mix test` of a project with a git dep
+  stopped with `:enoent` with no `git` program, for example on a BSD
+  system. `Mix.install/2` in `beam.com elixir` gets the same client.
+  `mix.lock` stays the same (`docs/ELIXIR.md`, "Phoenix in one file").
 - The option `tailwind` of a custom build (`nifs+=tailwind`) has the NIF
   of tailwind.com 0.6.0, for the git dep
   `{:tailwind, github: "sntran/tailwind.com", tag: "v0.6.0"}`. That

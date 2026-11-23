@@ -52,6 +52,7 @@ The step `elixir` of the build applies them.
 | `0002-mix-consolidate-elixir-protocols-in-otp-lib.patch` | `lib/mix/lib/mix/compilers/protocol.ex` | Mix consolidates the protocols of Elixir when Elixir is in the lib directory of OTP. | EX2 |
 | `0003-mix-keep-elixir-code-paths.patch` | `lib/mix/lib/mix/tasks/compile.all.ex` | The compile keeps the code paths of the applications of Elixir, also for a project with `language: :erlang`. | EX3 |
 | `0004-mix-beam-com-hook-after-compile.patch` | `lib/mix/lib/mix/tasks/compile.all.ex` | After a compile with no error, Mix calls `:beam_com_mix.compiled/0` when `beam.com` loaded it: the NIF files of `beam.com` go into the priv directories of the deps (`docs/NIFS.md`, "The NIF files of beam.com"). A usual Elixir has no such module. | - |
+| `0005-mix-beam-com-hook-at-start.patch` | `lib/mix/lib/mix.ex` | After the start of Mix, Mix calls `:beam_com_mix.started/0` when `beam.com` loaded it: with no `git` program, or with `BEAM_COM_GIT=client`, the git client of `beam.com` gets the git deps of an `https` or SSH URL (`docs/ELIXIR.md`, "Phoenix in one file"). A usual Elixir has no such module. | - |
 
 ## rustler (`patches/rustler/`)
 
