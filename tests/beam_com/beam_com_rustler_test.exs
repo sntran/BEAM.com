@@ -243,6 +243,39 @@ defmodule BeamComRustlerTest do
       end
     end
 
+    test "no object goes through a symbolic link", ctx do
+      lib = :filename.join([ctx.dir, ~c"lib", ~c"ex_pdfium-0.6.0"])
+      ebin = :filename.join(lib, ~c"ebin")
+      :ok = :filelib.ensure_path(ebin)
+      # Mix links the priv directory of the build path to the source.
+      src_priv = :filename.join([ctx.dir, ~c"deps", ~c"ex_pdfium", ~c"priv"])
+      :ok = :filelib.ensure_path(src_priv)
+      :ok = :file.make_symlink(src_priv, :filename.join(lib, ~c"priv"))
+      true = :code.add_patha(ebin)
+
+      try do
+        error =
+          assert_raise RuntimeError, fn ->
+            :beam_com_rustler.config(ExPdfium.Native, otp_app: :ex_pdfium, crate: "ex_pdfium")
+          end
+
+        assert error.message =~ "the priv directory of ex_pdfium in #{lib} has a symbolic link"
+        assert {:ok, []} == :file.list_dir(src_priv)
+        # A file that is there stays, also behind the link: no write.
+        write(:filename.join(src_priv, ~c"native"), ~c"libex_pdfium.x86_64.o", "built")
+
+        {_, 0} =
+          :beam_com_rustler.config(ExPdfium.Native, otp_app: :ex_pdfium, crate: "ex_pdfium")
+
+        assert {:ok, "built"} ==
+                 :file.read_file(
+                   :filename.join([src_priv, ~c"native", ~c"libex_pdfium.x86_64.o"])
+                 )
+      after
+        :code.del_path(ebin)
+      end
+    end
+
     test "a linked crate wins: ERTS finds the static NIF first" do
       assert {~c"rusty_csv/priv/native/librustycsv", 0} ==
                :beam_com_rustler.config(RustyCSV.Native, otp_app: :rusty_csv, crate: "rustycsv")

@@ -19,6 +19,8 @@
 -module(beam_com_mix).
 
 -export([reasons/1, release/2, child/0]).
+%% The hook of Mix in the tools of Elixir (patches/elixir/0004).
+-export([start_hook/1, compiled/0]).
 
 -define(NPM, "https://registry.npmjs.org").
 %% The metadata of one version of a package on npm has some KB.
@@ -44,7 +46,7 @@
 -export([reasons/2, releases/3, child_env/3, hex_deps/1, has_alias/2, no_input/1,
          asset_tools/2, esbuild_exe/3, esbuild_exe/4, tailwind_exe/3, tailwind_version/1, verify_npm/4, npm_keys/0, cache_env/1,
          windows_assets/2, steps/5, relay/1, status/1, watch_input/2, write_nif_files/3,
-         deps/2]).
+         deps/2, compiled/4, dependency/2]).
 -endif.
 
 %% The parts of a Mix project that only Mix can build: [] for a project
@@ -350,41 +352,126 @@ lock_source({git, Url, Commit, Opts}) when is_binary(Url), is_binary(Commit), is
 lock_source(_) ->
     other.
 
+%% The start of a tool of Elixir (beam_com_make:force_build/0): this
+%% module stays loaded, also when Mix removes the code path of beam_com
+%% before a compile, and the priv directory of beam_com is kept for
+%% compiled/0. Thus the call of patches/elixir/0004 finds compiled/0.
+start_hook(Priv) ->
+    persistent_term:put({?MODULE, priv}, Priv),
+    {module, ?MODULE} = code:ensure_loaded(?MODULE),
+    ok.
+
+%% After each compile of Mix that has no error ("beam.com mix compile",
+%% "beam.com mix test", "beam.com mix release"), the call of
+%% patches/elixir/0004: the NIF files of beam.com go into the priv
+%% directories of the deps of the project, as in the Mix build
+%% (nif_files/1). Thus dev, the tests and a release of Mix get the files
+%% of the beam.com that runs Mix. Nothing for the compile of a dep (Mix
+%% compiles each dep as a project), and nothing with
+%% BEAM_COM_NIF_FILES=0. The files go into the build path only: mix.exs,
+%% mix.lock and deps/ do not change.
+compiled() ->
+    compiled(os:getenv("BEAM_COM_NIF_FILES"),
+             text('Elixir.Mix.Project':project_file()),
+             text('Elixir.Mix.Project':deps_path()),
+             fun() ->
+                     Priv = persistent_term:get({?MODULE, priv}, beam_com_make:priv()),
+                     Build = unicode:characters_to_list('Elixir.Mix.Project':build_path()),
+                     write_nif_files(Priv, deps(Build, 'Elixir.Mix.Dep.Lock':read()), Build)
+             end).
+
+compiled("0", _ProjectFile, _DepsPath, _Write) ->
+    ok;
+compiled(_Env, ProjectFile, DepsPath, Write) ->
+    case dependency(ProjectFile, DepsPath) of
+        true ->
+            ok;
+        false ->
+            _ = Write(),
+            ok
+    end.
+
+text(Bin) when is_binary(Bin) -> unicode:characters_to_list(Bin);
+text(_) -> undefined.
+
+%% True when the project file is in the directory of the deps: Mix
+%% compiles a dep as a project of its own. A project with no file
+%% (Mix.Project.project_file/0 gives nil) is not a dep.
+dependency(ProjectFile, DepsPath) when is_list(ProjectFile), is_list(DepsPath) ->
+    lists:prefix(filename:split(filename:absname(DepsPath)),
+                 filename:split(filename:absname(ProjectFile)));
+dependency(_ProjectFile, _DepsPath) ->
+    false.
+
 %% Write the NIF files of Priv for the deps Deps ([{App, Vsn, Source}])
-%% into Build/lib/App/priv. A file with the same bytes stays. A dep of an
+%% into Build/lib/App/priv. A file with the same bytes stays, and a line
+%% names the dep only when a file is new or changed. A dep of an
 %% application with NIF files of no matching version or source gets no
 %% files, and one line names the two.
+%%
+%% Caution: no write goes through a symbolic link. Mix makes the priv
+%% directory of a dep in the build path a link to the priv directory of
+%% its source (deps/APP/priv), and a write there changes the dep. Such a
+%% dep gets no files, and one line tells why.
 write_nif_files(Priv, Deps, Build) ->
     lists:foreach(
       fun({App, nomatch, Dirs}) ->
               {Vsn, Source} = hd([{V, S} || {A, V, S} <- Deps, A =:= App]),
-              io:format("beam.com: the NIF files of beam.com are for ~ts, and the project "
-                        "has ~ts ~ts (~ts): no NIF files~n",
-                        [lists:join(", ", [[atom_to_list(App), " ", V, " (",
-                                            beam_com_make:source_text(S), ")"]
-                                           || {V, S} <- Dirs]),
-                         atom_to_list(App), Vsn, dep_text(Source)]);
+              %% One line in a VM: the Mix build also writes after its
+              %% compile (nif_files/1), and its compile calls compiled/0.
+              Line = fun() ->
+                             io:format("beam.com: the NIF files of beam.com are for ~ts, and the "
+                                       "project has ~ts ~ts (~ts): no NIF files~n",
+                                       [lists:join(", ", [[atom_to_list(App), " ", V, " (",
+                                                           beam_com_make:source_text(S), ")"]
+                                                          || {V, S} <- Dirs]),
+                                        atom_to_list(App), Vsn, dep_text(Source)])
+                     end,
+              once({App, Vsn, Source}, Line);
          ({App, DirVsn, Files}) ->
               Name = atom_to_list(App),
-              Dir = filename:join([Build, "lib", Name, "priv"]),
-              [write_new(filename:join(Dir, F), D) || {F, D} <- Files],
-              io:format("beam.com: the NIF files of ~ts ~ts (~b) in its priv directory~n",
-                        [Name, DirVsn, length(Files)])
+              Lib = filename:join(Build, "lib"),
+              Rel = fun(F) -> filename:join([Name, "priv", F]) end,
+              %% A file with the bytes of beam.com is done: the hook of
+              %% make (beam_com_make) writes the objects of a package
+              %% such as vix there when it compiles.
+              New = [{F, D} || {F, D} <- Files,
+                               file:read_file(filename:join(Lib, Rel(F))) =/= {ok, D}],
+              case [F || {F, _} <- New, beam_com_make:has_link(Lib, Rel(F))] of
+                  [] when New =:= [] ->
+                      ok;
+                  [] ->
+                      [write(filename:join(Lib, Rel(F)), D) || {F, D} <- New],
+                      io:format("beam.com: the NIF files of ~ts ~ts (~b) in its priv "
+                                "directory~n", [Name, DirVsn, length(Files)]);
+                  _ ->
+                      once({link, App, Build},
+                           fun() ->
+                                   io:format("beam.com: the priv directory of ~ts in ~ts has "
+                                             "a symbolic link: no NIF files (a write there "
+                                             "changes the dep)~n", [Name, Build])
+                           end)
+              end
       end,
       beam_com_make:match_nifs(Priv, Deps)).
+
+%% Fun() one time in a VM for Key.
+once(Key, Fun) ->
+    case persistent_term:get({?MODULE, once, Key}, false) of
+        true ->
+            ok;
+        false ->
+            persistent_term:put({?MODULE, once, Key}, true),
+            Fun()
+    end.
 
 dep_text({hex, Package}) -> ["hex ", Package];
 dep_text({git, Url, Commit, _Opts}) -> ["git ", Url, " ", string:slice(Commit, 0, 12)];
 dep_text(other) -> "not of hex.pm or git".
 
-write_new(Path, Data) ->
-    case file:read_file(Path) of
-        {ok, Data} ->
-            ok;
-        _ ->
-            ok = filelib:ensure_dir(Path),
-            ok = file:write_file(Path, Data)
-    end.
+write(Path, Data) ->
+    ok = filelib:ensure_dir(Path),
+    ok = file:write_file(Path, Data).
 
 %% On Windows, os:type() is {unix, windows}, so the Hex packages
 %% tailwind and esbuild choose their programs for Linux. For a package

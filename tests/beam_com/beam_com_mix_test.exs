@@ -520,9 +520,74 @@ defmodule BeamComMixTest do
       # file with other bytes gets the bytes of beam.com.
       File.touch!(Path.join(target, "libtailwind_nif.x86_64.o"), {{2000, 1, 1}, {0, 0, 0}})
       File.write!(Path.join(target, "libtailwind_nif.aarch64.o"), "old")
-      capture_io(fn -> :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build) end)
+      out = capture_io(fn -> :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build) end)
+      assert out == "beam.com: the NIF files of tailwind 0.2.0 (2) in its priv directory\n"
       assert {{2000, 1, 1}, _} = File.stat!(Path.join(target, "libtailwind_nif.x86_64.o")).mtime
       assert "aarch64" == File.read!(Path.join(target, "libtailwind_nif.aarch64.o"))
+
+      # Each file has the bytes of beam.com: no line, as at each compile of
+      # "beam.com mix" (compiled/0). The line of vix came once in this VM.
+      assert "" ==
+               capture_io(fn ->
+                 :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build)
+               end)
+    end
+
+    test "write_nif_files/3: no write through a symbolic link in the build path", ctx do
+      ctx.app.(:tailwind, ~c"0.2.0")
+      # Mix makes the priv directory of a dep a link to the priv directory
+      # of its source: a write there changes the dep.
+      source = Path.join(ctx.build, "../../deps/tailwind/priv")
+      File.mkdir_p!(source)
+      priv = Path.join(ctx.build, "lib/tailwind/priv")
+      File.ln_s!(Path.expand(source), priv)
+
+      deps = [
+        {:tailwind, ~c"0.2.0",
+         {:git, ~c"https://github.com/sntran/tailwind.com.git",
+          ~c"c0be5530906454fbd3ff5b9dca9af32fb87b24af", []}}
+      ]
+
+      out = capture_io(fn -> :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build) end)
+
+      assert out ==
+               "beam.com: the priv directory of tailwind in #{ctx.build} has a symbolic " <>
+                 "link: no NIF files (a write there changes the dep)\n"
+
+      assert [] == File.ls!(source)
+
+      # The same files behind the link (the hook of make wrote them): no
+      # write and no line.
+      File.mkdir_p!(Path.join(source, "native"))
+      File.write!(Path.join(source, "native/libtailwind_nif.x86_64.o"), "x86_64")
+      File.write!(Path.join(source, "native/libtailwind_nif.aarch64.o"), "aarch64")
+
+      assert "" ==
+               capture_io(fn ->
+                 :ok = :beam_com_mix.write_nif_files(ctx.priv, deps, ctx.build)
+               end)
+    end
+
+    test "compiled/4: the files for the project, not for a dep, and not with the value 0" do
+      me = self()
+      write = fn -> send(me, :write) end
+      :ok = :beam_com_mix.compiled(false, ~c"/p/mix.exs", ~c"/p/deps", write)
+      assert_received :write
+      :ok = :beam_com_mix.compiled(~c"1", ~c"/p/mix.exs", ~c"/p/deps", write)
+      assert_received :write
+      :ok = :beam_com_mix.compiled(~c"0", ~c"/p/mix.exs", ~c"/p/deps", write)
+      :ok = :beam_com_mix.compiled(false, ~c"/p/deps/tailwind/mix.exs", ~c"/p/deps", write)
+      refute_received :write
+    end
+
+    test "dependency/2: a project file in the directory of the deps" do
+      assert :beam_com_mix.dependency(~c"/p/deps/tailwind/mix.exs", ~c"/p/deps")
+      assert :beam_com_mix.dependency(~c"/p/deps/a/b/mix.exs", ~c"/p/deps/")
+      refute :beam_com_mix.dependency(~c"/p/mix.exs", ~c"/p/deps")
+      refute :beam_com_mix.dependency(~c"/p/apps/web/mix.exs", ~c"/p/deps")
+      # A directory whose name starts with the name of the deps.
+      refute :beam_com_mix.dependency(~c"/p/deps2/x/mix.exs", ~c"/p/deps")
+      refute :beam_com_mix.dependency(:undefined, ~c"/p/deps")
     end
 
     test "write_nif_files/3: the Hex package tailwind of the same version gets no files", ctx do

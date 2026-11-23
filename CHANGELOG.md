@@ -12,6 +12,25 @@ notes of its release.
   `Tailwind.Formatter` for `mix format`. A build with JavaScript plugins
   is faster. A project with the tag `v0.5.0` gets no NIF file now:
   change the dep to the tag `v0.6.0`.
+- `beam.com mix` writes the NIF files of `beam.com` into the priv
+  directories of the deps of the project after each compile, with the
+  rule of `beam.com DIR -o FILE`: a dep of the source and the version of
+  the files, for example the git dep tailwind.com of the tag of the NIF
+  files. Before, only the Mix build of `beam.com` did this, so
+  `beam.com mix test`, `beam.com mix phx.server` and `mix release` got no
+  NIF, and a project needed a task of its own to copy the objects. The
+  files go into `_build` only, never through a symbolic link, and a line
+  names a dep only when a file is new or changed. `BEAM_COM_NIF_FILES=0`
+  stops it. With the usual Mix and Elixir, the project works as before
+  (`docs/NIFS.md`, "The NIF files of beam.com").
+- The `make` of `elixir_make` in `beam.com` (vix, lazy_html) and its
+  module `Rustler` (rusty_csv, ex_pdfium) write no NIF file through a
+  symbolic link in `_build`. Before, it wrote the
+  files through a link of Mix into `deps/APP/priv`, the source of the
+  dep. Such a package now gets an error, and no file changes. A file
+  with the same bytes stays.
+- `docs/NIFS.md` has a section "Leave BEAM.com": how a project that
+  used the NIF files of `beam.com` builds with the usual Elixir and OTP.
 
 ## 0.1.0-rc.8
 

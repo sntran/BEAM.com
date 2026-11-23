@@ -34,7 +34,10 @@
 -module(beam_com_make).
 
 -export([main/0, force_build/0, nif_files/2, nif_files/3, file_nifs/0, file_nifs/1,
-         priv/0, linked_nifs/0, nif_dirs/1, match_nifs/2, source_text/1]).
+         priv/0, linked_nifs/0, nif_dirs/1, match_nifs/2, source_text/1, has_link/2,
+         link_text/3]).
+
+-include_lib("kernel/include/file.hrl").
 
 -ifdef(TEST).
 -export([run/2, dep_version/1, force_build/1, app_file_nifs/1, source/1, url/1,
@@ -104,7 +107,14 @@ run(Args, App, Nifs, #{cwd := Cwd} = Env) ->
 
 %% A package with NIF files in beam.com (Vsns: the versions in
 %% priv/nifs): "all" (or no target) copies its files into
-%% MIX_APP_PATH/priv, "clean" does nothing.
+%% MIX_APP_PATH/priv, "clean" does nothing. A file with the same bytes
+%% stays.
+%%
+%% Caution: no write goes through a symbolic link in MIX_APP_PATH. Mix
+%% makes the priv directory of a dep in the build path a link to the
+%% priv directory of its source (deps/APP/priv), and a write there
+%% changes the dep. Such a package gets an error, and no file changes.
+%% The Hex packages of today (lazy_html, vix) have no priv directory.
 file_nif(Args, App, Vsns, #{app_path := AppPath, cwd := Cwd, priv := Priv}) ->
     Vsn = case dep_version(Cwd) of
               Other when is_list(Other) ->
@@ -129,7 +139,16 @@ file_nif(Args, App, Vsns, #{app_path := AppPath, cwd := Cwd, priv := Priv}) ->
                         [] -> throw({error, "~ts: no NIF files of ~ts ~ts",
                                      [filename:join([Priv, "nifs", App ++ "-" ++ Vsn]), App, Vsn]})
                     end,
-            write_files(Dst, Files)
+            New = [{F, D} || {F, D} <- Files,
+                             file:read_file(filename:join(Dst, F)) =/= {ok, D}],
+            case AppPath =/= "" andalso
+                lists:any(fun({F, _}) -> has_link(AppPath, filename:join("priv", F)) end,
+                          New) of
+                true ->
+                    throw({error, "~ts", [link_text(App, AppPath, Vsn)]});
+                false ->
+                    write_files(Dst, New)
+            end
     end.
 
 %% Writes the files [{Name, Data}] (Name can have directories) into Dir.
@@ -140,6 +159,28 @@ write_files(Dir, Files) ->
          ok = file:write_file(Path, Data)
      end || {F, Data} <- Files],
     ok.
+
+%% The error for a package App of version Vsn whose priv directory in
+%% the build directory AppDir has a symbolic link.
+link_text(App, AppDir, Vsn) ->
+    io_lib:format("the priv directory of ~ts in ~ts has a symbolic link to the source of "
+                  "the dep, and a write there changes the dep. beam.com writes no NIF "
+                  "file. Use a source of ~ts with no priv directory, such as the Hex "
+                  "package ~ts ~ts", [App, AppDir, App, App, Vsn]).
+
+%% True when a part of the path Rel under Base (each directory, and the
+%% file) is a symbolic link.
+has_link(Base, Rel) ->
+    {_, Link} = lists:foldl(
+                  fun(Part, {Dir, Found}) ->
+                          Path = filename:join(Dir, Part),
+                          {Path, Found orelse
+                               case file:read_link_info(Path) of
+                                   {ok, #file_info{type = symlink}} -> true;
+                                   _ -> false
+                               end}
+                  end, {Base, false}, filename:split(Rel)),
+    Link.
 
 %% The NIF files of the Hex package App in beam.com, for the version Vsn:
 %% [{Name, Data}], with Name relative to the priv directory of App, or []
@@ -346,6 +387,9 @@ priv() ->
 force_build() ->
     Nifs = start_nifs(),
     beam_com_rustler:force_build(Nifs),
+    %% The hook after each compile of Mix (patches/elixir/0004). A tool
+    %% must start also when the hook cannot load.
+    try beam_com_mix:start_hook(priv()) catch error:_ -> ok end,
     force_build(file_nifs() ++ Nifs).
 
 %% The linked NIFs ([{App, Vsn}]), also when beam_com is not loaded.

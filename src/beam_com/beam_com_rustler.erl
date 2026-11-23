@@ -154,15 +154,31 @@ config(Module, Opts) when is_list(Opts) ->
 %% The native NIF objects of App in beam.com, in the priv directory of App
 %% while it compiles (beam_com_build puts them there too). A file that is
 %% there stays.
+%%
+%% Caution: no write goes through a symbolic link. Mix makes the priv
+%% directory of a dep in the build path a link to the priv directory of
+%% its source (deps/APP/priv), and a write there changes the dep. Such a
+%% package gets an error (a RuntimeError of Elixir), and no file changes.
 copy_objects(App, Vsn, BeamComPriv) ->
     case code:priv_dir(App) of
         Priv when is_list(Priv) ->
-            [begin
-                 Path = filename:join(Priv, F),
-                 ok = filelib:ensure_dir(Path),
-                 ok = file:write_file(Path, Data)
-             end || {F, Data} <- beam_com_make:nif_files(App, Vsn, BeamComPriv),
-                    not filelib:is_regular(filename:join(Priv, F))],
+            New = [{F, Data} || {F, Data} <- beam_com_make:nif_files(App, Vsn, BeamComPriv),
+                                not filelib:is_regular(filename:join(Priv, F))],
+            AppDir = filename:dirname(Priv),
+            case lists:any(fun({F, _}) ->
+                                   beam_com_make:has_link(AppDir, filename:join("priv", F))
+                           end, New) of
+                true ->
+                    erlang:error('Elixir.RuntimeError':exception(
+                                   unicode:characters_to_binary(
+                                     beam_com_make:link_text(App, AppDir, Vsn))));
+                false ->
+                    [begin
+                         Path = filename:join(Priv, F),
+                         ok = filelib:ensure_dir(Path),
+                         ok = file:write_file(Path, Data)
+                     end || {F, Data} <- New]
+            end,
             ok;
         {error, _} ->
             ok

@@ -186,6 +186,38 @@ defmodule BeamComMakeTest do
                "vix 0.40.0 has a NIF, and beam.com has the NIF of vix 0.41.0"
     end
 
+    test "a file with the same bytes stays, and no write goes through a link", ctx do
+      pkg = :filename.join(ctx.dir, ~c"vix")
+      write(pkg, ~c"mix.exs", "@version \"0.42.0\"\n")
+      app_path = :filename.join([ctx.dir, ~c"_build", ~c"dev", ~c"lib", ~c"vix"])
+      # Mix links the priv directory of the build path to the source.
+      src_priv = :filename.join(pkg, ~c"priv")
+      :ok = :filelib.ensure_path(src_priv)
+      :ok = :filelib.ensure_path(app_path)
+      :ok = :file.make_symlink(src_priv, :filename.join(app_path, ~c"priv"))
+      text = error_text(fn -> files_run([~c"all"], pkg, app_path, ctx.priv) end)
+
+      assert List.to_string(text) =~
+               "the priv directory of vix in #{app_path} has a symbolic link"
+
+      assert {:ok, []} == :file.list_dir(src_priv)
+      # The files have the bytes of beam.com: nothing to write.
+      write(src_priv, ~c"vix.x86_64.o", "x86_64")
+      write(src_priv, ~c"vix.aarch64.o", "aarch64")
+      assert :ok == files_run([~c"all"], pkg, app_path, ctx.priv)
+      # One file differs: an error, and the file stays.
+      write(src_priv, ~c"vix.aarch64.o", "changed")
+      assert error_text(fn -> files_run([~c"all"], pkg, app_path, ctx.priv) end)
+      assert {:ok, "changed"} == :file.read_file(:filename.join(src_priv, ~c"vix.aarch64.o"))
+      # A build path with no link: the file that differs changes.
+      :ok = :file.delete(:filename.join(app_path, ~c"priv"))
+      priv = :filename.join(app_path, ~c"priv")
+      write(priv, ~c"vix.aarch64.o", "changed")
+      assert :ok == files_run([~c"all"], pkg, app_path, ctx.priv)
+      assert {:ok, "aarch64"} == :file.read_file(:filename.join(priv, ~c"vix.aarch64.o"))
+      assert {:ok, "x86_64"} == :file.read_file(:filename.join(priv, ~c"vix.x86_64.o"))
+    end
+
     test "native objects: no version is known, a file in a subdirectory", ctx do
       pkg = :filename.join(ctx.dir, ~c"rusty_csv")
       :ok = :filelib.ensure_path(pkg)

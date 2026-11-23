@@ -187,6 +187,23 @@ so a `beam.com` with more files in its zip needs no other build:
   of its application. A file with the same bytes stays. For a dep of
   another source or version, the builder writes no file, and one line
   names the two.
+- Mix itself, with `beam.com mix` (`compile`, `test`, `run`, `release`,
+  `phx.server`): after each compile of the project with no error, Mix
+  writes the same files, with the same rule, into
+  `_build/ENV/lib/APP/priv` (`patches/elixir/0004`). Thus dev, the tests,
+  CI and `mix release` load the NIF of the `beam.com` that runs Mix, with
+  no task of the project. A line names a dep only when a file is new or
+  changed. `BEAM_COM_NIF_FILES=0` stops it.
+  - The files go into the build path only: `mix.exs`, `mix.lock` and
+    `deps/` do not change. `mix clean` removes them.
+  - Caution: no write goes through a symbolic link. In dev and test, Mix
+    makes the priv directory of a dep that has one a link to
+    `deps/APP/priv`, and a write there changes the source of the dep.
+    Such a dep gets no files, and one line tells why. tailwind.com has
+    no priv directory in its source, so it gets a real directory.
+  - The usual Mix and Elixir keep working on the same project:
+    `erlang:load_nif/2` of the usual OTP looks for `.so` or `.dll`, not
+    for the `.o` objects of beam.com, so tailwind.com runs its program.
 
 A directory `APP-VSN` is for the Hex package `APP` of version `VSN`,
 unless it has a file `SOURCE`. Its one line names the package of the
@@ -231,7 +248,13 @@ no file, and it uses its own program, as before.
 - `beam.com mix compile`: `make` of `elixir_make` (vix) copies them into
   `MIX_APP_PATH/priv`, and the module `Rustler` of `beam.com` (rusty_csv,
   ex_pdfium) copies them into the priv directory of the package and
-  loads `code:priv_dir(APP)/native/libCRATE`.
+  loads `code:priv_dir(APP)/native/libCRATE`. For `make`, a file with
+  the same bytes stays.
+  - Caution: `make` and `Rustler` write no file through a symbolic link
+    in the build path. A package whose priv directory is a link to
+    `deps/APP/priv` gets an error, and no file changes. The Hex packages
+    vix, lazy_html, rusty_csv and ex_pdfium have no priv directory in
+    their source, so Mix makes a real directory for them.
 
 The version of the package must be a version of its directory. A
 linked NIF of the same package wins: ERTS finds a static NIF first.
@@ -239,6 +262,39 @@ linked NIF of the same package wins: ERTS finds a static NIF first.
 The NIF of vix sends each object that a resource destructor frees to
 the process `Elixir.Vix.Nif.Janitor`, as `Vix.Nif` starts it. Without
 this process, the destructor makes new resources with no end.
+
+### Leave BEAM.com
+
+A project that uses the NIF files of `beam.com` stays a usual Mix
+project. `beam.com` does not change `mix.exs`, `mix.lock` or `deps/`. It
+writes the NIF files into the build path only. To build the project with
+the usual Elixir and OTP:
+
+1. Remove the build path that `beam.com` made: `rm -rf _build`. To keep
+   the other deps, rebuild each package with NIF files only, for example
+   `mix deps.compile vix --force`.
+2. Compile the project with the usual Mix: `mix deps.get`, then
+   `mix compile`.
+
+Do step 1 first. The build path holds the `.o` objects of `beam.com`,
+and `erlang:load_nif/2` of the usual OTP loads only a `.so` or a `.dll`.
+Mix can see a dep as compiled, for example with the same version of
+Elixir. Then the module of the NIF fails at its load (`Vix.Nif`). A CI
+job or a `mix release` that starts with no build path needs no step.
+
+With no `beam.com`, each package gets its NIF as in any project:
+
+- vix and lazy_html: `elixir_make` gets the precompiled NIF of the
+  release of the package for the system, with its checksum (vix also
+  gets libvips). `beam.com` adds these packages to the env
+  `force_build` of `elixir_make` only in its own VM.
+- rusty_csv and ex_pdfium: `rustler_precompiled` gets the precompiled
+  NIF, or Rustler compiles the crate with `cargo`.
+- A package with a NIF that is linked into `beam.com` (exqlite,
+  bcrypt_elixir, argon2_elixir): the package gets its precompiled NIF,
+  or compiles its C code with `make` and the C compiler of the system.
+- tailwind.com: its module finds no NIF, and it runs the program of
+  Tailwind CSS.
 
 ### A program assembled from parts
 
