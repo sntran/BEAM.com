@@ -187,6 +187,23 @@ so a `beam.com` with more files in its zip needs no other build:
   of its application. A file with the same bytes stays. For a dep of
   another source or version, the builder writes no file, and one line
   names the two.
+- Mix itself, with `beam.com mix` (`compile`, `test`, `run`, `release`,
+  `phx.server`): after each compile of the project with no error, Mix
+  writes the same files, with the same rule, into
+  `_build/ENV/lib/APP/priv` (`patches/elixir/0004`). Thus dev, the tests,
+  CI and `mix release` load the NIF of the `beam.com` that runs Mix, with
+  no task of the project. A line names a dep only when a file is new or
+  changed. `BEAM_COM_NIF_FILES=0` stops it.
+  - The files go into the build path only: `mix.exs`, `mix.lock` and
+    `deps/` do not change. `mix clean` removes them.
+  - Caution: no write goes through a symbolic link. In dev and test, Mix
+    makes the priv directory of a dep that has one a link to
+    `deps/APP/priv`, and a write there changes the source of the dep.
+    Such a dep gets no files, and one line tells why. tailwind.com has
+    no priv directory in its source, so it gets a real directory.
+  - The usual Mix and Elixir keep working on the same project:
+    `erlang:load_nif/2` of the usual OTP looks for `.so` or `.dll`, not
+    for the `.o` objects of beam.com, so tailwind.com runs its program.
 
 A directory `APP-VSN` is for the Hex package `APP` of version `VSN`,
 unless it has a file `SOURCE`. Its one line names the package of the

@@ -2314,6 +2314,25 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
                 check "$nif_prog.com" "^$nif_prog: ok"
             fi
         done
+        # "beam.com mix" (patches/elixir/0004): each compile of Mix writes
+        # the NIF files of beam.com into the priv directory of a dep of
+        # their source, so dev and the tests load the NIF too. The build
+        # above fetched the deps of tailwind_check.
+        # The check runs in the project, so dir and runner are absolute
+        # for that time (as for the check in an empty directory above).
+        if [ -d "$dir/tailwind_check/deps/tailwind" ]; then
+            here=$PWD here_dir=$dir here_runner=$runner
+            dir=$(cd "$dir" && pwd)
+            case $runner in /*) ;; */*) runner=$here/$runner ;; esac
+            cd "$dir/tailwind_check"
+            rm -rf _build/dev/lib/tailwind/priv
+            limit=600
+            check beam_nifs.com 'beam.com: the NIF files of tailwind .* in its priv directory' mix compile
+            limit=${LIMIT:-120}
+            check beam_nifs.com '^nif: true$' mix run --no-start -e 'IO.puts("nif: #{:tailwind_nif.available()}")'
+            cd "$here"
+            dir=$here_dir runner=$here_runner
+        fi
     fi
 elif [ -d examples ]; then
     echo "SKIP: store_nif_check.com (no $dir/store_nifs.tar.gz)"

@@ -3,6 +3,20 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+- `beam.com mix` writes the NIF files of `beam.com` into the priv
+  directories of the deps of the project after each compile, with the
+  rule of `beam.com DIR -o FILE`: a dep of the source and the version of
+  the files, for example the git dep tailwind.com of the tag of the NIF
+  files. Before, only the Mix build of `beam.com` did this, so
+  `beam.com mix test`, `beam.com mix phx.server` and `mix release` got no
+  NIF, and a project needed a task of its own to copy the objects. The
+  files go into `_build` only, never through a symbolic link, and a line
+  names a dep only when a file is new or changed. `BEAM_COM_NIF_FILES=0`
+  stops it. With the usual Mix and Elixir, the project works as before
+  (`docs/NIFS.md`, "The NIF files of beam.com").
+
 ## 0.1.0-rc.8
 
 The main changes: Erlang/OTP 29.1.2 and Elixir 1.20.5 with security

@@ -1,0 +1,32 @@
+Mix.Tasks.Compile.All: a hook of beam.com after each compile
+
+beam.com has NIF files in its zip (priv/nifs of the application
+beam_com): native NIF objects for packages such as tailwind.com, whose
+module loads priv/native/libtailwind_nif of its application. The Mix
+build of beam.com ("beam.com DIR -o FILE") writes them into the priv
+directories of the deps in the build path after its compile. A user
+who runs Mix itself ("beam.com mix compile", "beam.com mix test") got
+no files.
+
+After a compile that has no error, call :beam_com_mix.compiled/0 when it
+is exported. beam.com loads that module at the start of each tool of
+Elixir. A usual install of Elixir has no such module, so nothing
+changes there.
+
+--- a/lib/mix/lib/mix/tasks/compile.all.ex
++++ b/lib/mix/lib/mix/tasks/compile.all.ex
+@@ -79,6 +79,14 @@
+       exit({:shutdown, 1})
+     end
+ 
++    # A hook of beam.com (one file with OTP and Elixir): after a compile,
++    # :beam_com_mix.compiled/0 writes the NIF files of the file into the
++    # build path. A usual install has no module :beam_com_mix, and the
++    # module is not loaded in a plain run of this Mix.
++    if status != :error and function_exported?(:beam_com_mix, :compiled, 0) do
++      :beam_com_mix.compiled()
++    end
++
+     if app_cache do
+       Mix.AppLoader.write_cache(app_cache, Map.new(loaded_modules))
+     end

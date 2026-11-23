@@ -346,6 +346,9 @@ priv() ->
 force_build() ->
     Nifs = start_nifs(),
     beam_com_rustler:force_build(Nifs),
+    %% The hook after each compile of Mix (patches/elixir/0004). A tool
+    %% must start also when the hook cannot load.
+    try beam_com_mix:start_hook(priv()) catch error:_ -> ok end,
     force_build(file_nifs() ++ Nifs).
 
 %% The linked NIFs ([{App, Vsn}]), also when beam_com is not loaded.
