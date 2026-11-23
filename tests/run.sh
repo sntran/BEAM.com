@@ -2339,7 +2339,12 @@ if [ -d examples ] && [ -f "$dir/store_nifs.tar.gz" ]; then
         # above fetched the deps of tailwind_check.
         # The check runs in the project, so dir and runner are absolute
         # for that time (as for the check in an empty directory above).
-        if [ -d "$dir/tailwind_check/deps/tailwind" ]; then
+        # Mix checks the lock of a git dep with the program git, which
+        # the BSD systems of CI do not have. The Mix build above uses the
+        # git client of beam.com, but "beam.com mix" uses Mix.SCM.Git.
+        if [ -d "$dir/tailwind_check/deps/tailwind" ] && ! command -v git >/dev/null 2>&1; then
+            echo "SKIP: beam_nifs.com mix compile (no git in PATH)"
+        elif [ -d "$dir/tailwind_check/deps/tailwind" ]; then
             here=$PWD here_dir=$dir here_runner=$runner
             dir=$(cd "$dir" && pwd)
             case $runner in /*) ;; */*) runner=$here/$runner ;; esac
