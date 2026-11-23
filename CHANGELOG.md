@@ -3,6 +3,16 @@
 The release job of CI puts the section of a version at the start of the
 notes of its release.
 
+## Unreleased
+
+- The option `tailwind` of a custom build (`nifs+=tailwind`) has the NIF
+  of tailwind.com 0.6.0, for the git dep
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.6.0"}`. That
+  release adds the command `canonicalize`, and `canonicalize: true` of
+  `Tailwind.Formatter` for `mix format`. A build with JavaScript plugins
+  is faster. A project with the tag `v0.5.0` gets no NIF file now:
+  change the dep to the tag `v0.6.0`.
+
 ## 0.1.0-rc.8
 
 The main changes: Erlang/OTP 29.1.2 and Elixir 1.20.5 with security
