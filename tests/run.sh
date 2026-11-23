@@ -43,21 +43,40 @@ tree() {
         }'
 }
 
-# The sample of macOS of a process: PID LINES. sample gives no names for
+# The sample of macOS of a process: PID [LINES]. sample gives no names for
 # the functions of an APE file, so tests/symtab.py adds them from the
 # symbol table in the zip of the file (.symtab.arm64 or .symtab.amd64).
 # Without python3 or a table, the sample has only the addresses.
+#
+# Only the call graph and its two summaries go out: the header and the
+# list of the binary images tell nothing about a hang. A VM has more
+# than 20 threads, and its call graph has about 450 lines. A limit of
+# 400 cut the poll thread of a VM that stopped (C69 of docs/UPSTREAM.md).
+# LINES (default 4000) only keeps the size of the log, and a line tells
+# when it cuts.
 sample_named() {
+    limit=${2:-4000}
     com=$(lsof -p "$1" 2>/dev/null | awk '$4 == "txt" && $NF ~ /\.com$/ {print $NF; exit}')
     case $(uname -m) in arm64) table=.symtab.arm64 ;; *) table=.symtab.amd64 ;; esac
     if [ -n "$com" ] && command -v python3 >/dev/null 2>&1 &&
         unzip -p "$com" "$table" > "$tmp.symtab" 2>/dev/null && [ -s "$tmp.symtab" ]; then
         echo "(the names are from $table of $com)"
-        sample "$1" 1 2>&1 | python3 "$symtab_py" "$tmp.symtab" | head -n "$2"
+        sample "$1" 1 2>&1 | python3 "$symtab_py" "$tmp.symtab" > "$tmp.sampled"
     else
-        sample "$1" 1 2>&1 | head -n "$2"
+        sample "$1" 1 > "$tmp.sampled" 2>&1
     fi
-    rm -f "$tmp.symtab"
+    awk '/^Call graph:/ {f = 1} /^Binary [Ii]mages/ {f = 0} f' "$tmp.sampled" > "$tmp.callgraph"
+    # No call graph: sample failed. Its message tells why.
+    if [ ! -s "$tmp.callgraph" ]; then
+        head -n 40 "$tmp.sampled"
+    else
+        head -n "$limit" "$tmp.callgraph"
+        n=$(wc -l < "$tmp.callgraph")
+        if [ "$n" -gt "$limit" ]; then
+            echo "... (the call graph has $n lines: cut at $limit)"
+        fi
+    fi
+    rm -f "$tmp.symtab" "$tmp.sampled" "$tmp.callgraph"
 }
 
 # Called by the watchdog before it kills a program: the processes, and
@@ -72,7 +91,7 @@ diagnose() {
     for q in $pids; do
         if command -v sample >/dev/null 2>&1; then
             echo "--- sample $q (macOS)"
-            sample_named "$q" 400
+            sample_named "$q"
         elif command -v procstat >/dev/null 2>&1; then
             echo "--- procstat -kk $q (FreeBSD)"
             procstat -kk "$q" 2>&1 | head -100
@@ -2452,7 +2471,7 @@ if [ -n "$left" ]; then
     fi
     if command -v sample >/dev/null 2>&1; then
         echo "--- sample $first (macOS)"
-        sample_named "$first" 400 > "$tmp.sample"
+        sample_named "$first" > "$tmp.sample"
         head -80 "$tmp.sample"
         # A child of fork() in a fork handler of libSystem: C32 of docs/UPSTREAM.md.
         if grep -q '_atfork_child' "$tmp.sample"; then

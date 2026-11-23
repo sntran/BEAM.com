@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- The option `tailwind` of a custom build (`nifs+=tailwind`) has the NIF
+  of tailwind.com 0.6.0, for the git dep
+  `{:tailwind, github: "sntran/tailwind.com", tag: "v0.6.0"}`. That
+  release adds the command `canonicalize`, and `canonicalize: true` of
+  `Tailwind.Formatter` for `mix format`. A build with JavaScript plugins
+  is faster. A project with the tag `v0.5.0` gets no NIF file now:
+  change the dep to the tag `v0.6.0`.
 - `beam.com mix` writes the NIF files of `beam.com` into the priv
   directories of the deps of the project after each compile, with the
   rule of `beam.com DIR -o FILE`: a dep of the source and the version of

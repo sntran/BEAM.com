@@ -1,4 +1,4 @@
 import Config
 
-# The newest version of Tailwind CSS of tailwind.com 0.5.0.
+# The newest version of Tailwind CSS of tailwind.com 0.6.0.
 config :tailwind, version: "4.3.5"
