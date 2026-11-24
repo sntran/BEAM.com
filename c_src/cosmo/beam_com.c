@@ -2435,9 +2435,17 @@ int beam_com_spawn_nt(const char *cmd, char *const argv[], char *const envp[],
  * hang in the handlers of libobjc or libxpc before its execve(). The
  * posix_spawn() of libSystem runs no fork handlers. The loader gives
  * dlopen() and dlsym(), so this file calls it through cosmo_dlopen().
+ *
+ * Caution: the trampoline of cosmo_dltramp() blocks all signals during
+ * the call, and posix_spawn() gives the new program the signal mask of
+ * the caller. Thus the attributes set an empty mask (C70): else
+ * erl_child_setup, and each port program after it, starts with HUP, INT,
+ * QUIT, USR1, USR2, TERM and the other signals blocked.
  */
 typedef void *xnu_spawn_actions_t; /* posix_spawn_file_actions_t of XNU */
 typedef void *xnu_spawn_attr_t;    /* posix_spawnattr_t of XNU */
+typedef uint32_t xnu_sigset_t;     /* sigset_t of XNU: 32 bits */
+#define XNU_POSIX_SPAWN_SETSIGMASK 0x0008
 #define XNU_POSIX_SPAWN_SETSID 0x0400
 
 struct xnu_spawn {
@@ -2450,6 +2458,7 @@ struct xnu_spawn {
     int (*attr_init)(xnu_spawn_attr_t *);
     int (*attr_destroy)(xnu_spawn_attr_t *);
     int (*attr_setflags)(xnu_spawn_attr_t *, short);
+    int (*attr_setsigmask)(xnu_spawn_attr_t *, const xnu_sigset_t *);
     int (*executable_path)(char *, unsigned *);
 };
 
@@ -2461,7 +2470,7 @@ static int xnu_spawn_load(struct xnu_spawn *x)
         "posix_spawn_file_actions_destroy", "posix_spawn_file_actions_adddup2",
         "posix_spawn_file_actions_addclose", "posix_spawnattr_init",
         "posix_spawnattr_destroy", "posix_spawnattr_setflags",
-        "_NSGetExecutablePath"};
+        "posix_spawnattr_setsigmask", "_NSGetExecutablePath"};
     void *fns[sizeof(names) / sizeof(names[0])];
     void *lib;
     size_t i;
@@ -2481,7 +2490,8 @@ static int xnu_spawn_load(struct xnu_spawn *x)
  * Starts the helper program PATH (a /zip/bin path) with ARGV, as
  * beam_com_exec_helper() does, but with posix_spawn() of libSystem on
  * macOS arm64: FD3 at fd 3, OTHER and FD3 closed (as the child of
- * forker_start() does), in a new session. The loader runs the file again
+ * forker_start() does), in a new session, with no signal blocked. The
+ * loader runs the file again
  * ("LOADER - FILE ARGV0 ARGV1 ..."). Returns the pid, or -1 on the other
  * systems and on an error (then the caller uses fork()).
  */
@@ -2491,6 +2501,7 @@ int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
     struct xnu_spawn x;
     xnu_spawn_actions_t actions;
     xnu_spawn_attr_t attr;
+    xnu_sigset_t no_signals = 0;
     struct arglist args = {0};
     char loader[4096];
     unsigned size = sizeof(loader);
@@ -2520,7 +2531,8 @@ int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
         rc |= x.actions_addclose(&actions, other);
     if (fd3 != 3)
         rc |= x.actions_addclose(&actions, fd3);
-    rc |= x.attr_setflags(&attr, XNU_POSIX_SPAWN_SETSID);
+    rc |= x.attr_setsigmask(&attr, &no_signals);
+    rc |= x.attr_setflags(&attr, XNU_POSIX_SPAWN_SETSID | XNU_POSIX_SPAWN_SETSIGMASK);
     if (rc == 0)
         rc = x.spawn(&pid, loader, &actions, &attr, args.v, helper_env(path, NULL));
     x.attr_destroy(&attr);

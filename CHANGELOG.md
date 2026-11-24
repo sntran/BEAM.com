@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- On macOS arm64, a port program gets each signal. Before, each program
+  that a port started (`open_port/2`, `System.cmd/3`, `os:cmd/1`) had
+  HUP, INT, QUIT, USR1, USR2, TERM and the other signals blocked. A trap
+  of `/bin/sh` did not run, and TERM did not stop a program, for example
+  a fake release in a test of `mix.com test`. The cause was the signal
+  mask of `posix_spawn()` for `erl_child_setup` (C70 of
+  `docs/UPSTREAM.md`).
 - `beam.com mix` uses the git client of `beam.com` for the git deps of
   an `https` or SSH URL when `PATH` has no `git` program, or with
   `BEAM_COM_GIT=client`, as the Mix build does. Before, `beam.com mix

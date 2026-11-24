@@ -2286,6 +2286,41 @@ with the fix.
 `<= 0` in place of `< 0`, so that a deadline equal to the current time
 also gives `ETIMEDOUT`.
 
+### C70. macOS arm64: a program from posix_spawn() through cosmo_dltramp() has each signal blocked
+
+**Status:** 4.0.2 (`libc/dlopen/foreign_tramp.S`), macOS arm64. Fixed in
+BEAM.com.
+
+**Symptom.** Under `beam.com` on macOS arm64, each port program started
+with HUP, INT, QUIT, USR1, USR2, TERM and the other signals blocked. A
+trap of `/bin/sh` did not run, and `kill -TERM` did not stop a program.
+For example, a test of `mix.com test` started a fake release
+(`/bin/sh` with `trap 'exit 0' TERM`), and the release did not stop
+when the test sent it TERM. `ps` showed the mask as 0, but Perl
+(`sigprocmask`) in the port program showed each signal blocked. On
+Linux, the mask of a port program is empty.
+
+**Cause.** The trampoline of `cosmo_dltramp()` blocks all signals during
+the call of a function of a foreign library (`__sig_block` in
+`foreign_tramp.S`). The `posix_spawn()` of libSystem gives the new
+program the signal mask of the caller, unless its attributes set a
+mask. `beam_com_spawn_helper()` (C32) starts `erl_child_setup` with that
+`posix_spawn()` through the trampoline. `erl_child_setup` unblocks only
+SIGCHLD, and each port program gets its mask.
+
+**Fix in BEAM.com.** `beam_com_spawn_helper()` sets
+`POSIX_SPAWN_SETSIGMASK` with an empty mask
+(`posix_spawnattr_setsigmask()`). The dispositions do not change: as on
+Linux, a port program gets SIGPIPE ignored and the other signals with
+their default action. `tests/programs/signal_check.erl` traps each
+signal in `/bin/sh`, stops a shell with TERM, and stops a fake release
+with TERM from another port program.
+
+**Possible upstream fix.** A caller of `cosmo_dltramp()` cannot know
+the mask that the foreign function sees. Cosmopolitan can document it
+next to `cosmo_dltramp()`, or give the foreign function the mask of the
+caller.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +

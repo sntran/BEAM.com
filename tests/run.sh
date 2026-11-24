@@ -668,6 +668,10 @@ if [ -d examples ]; then
     # The removal of a directory with a file fails at once (C68).
     check beam.com '^rmdir_check: del_dir of a directory with a file, 10 times, at most [0-9]* ms: ok$@@^rmdir_check: ok$' \
         tests/programs/rmdir_check.erl -- "$dir"
+    # A port program gets each signal: a trap of /bin/sh runs, and TERM
+    # stops a fake release (C70).
+    check beam.com '^signal_check: a trap of TERM: ok$@@^signal_check: a fake release stops with TERM from another port program: ok$@@^signal_check: ok$' \
+        tests/programs/signal_check.erl
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o
