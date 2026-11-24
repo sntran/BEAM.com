@@ -2370,10 +2370,18 @@ ignored. `beam.com` does not ignore it.
 **Test.** `tests/programs/signal_check.erl`:
 
 1. A port program reads its whole mask and its dispositions, signals 1
-   to 31 (`/proc/self/status` on Linux, else `perl`): no signal is
-   blocked, and only SIGPIPE is ignored.
+   to 31 (`/proc/self/status` on Linux, else `perl`, else `ps` on FreeBSD
+   and NetBSD): no signal is blocked, and only SIGPIPE is ignored.
 2. `/bin/sh` traps each catchable signal of POSIX that it sends to
    itself.
+
+`tests/run.sh` first finds the signals that a shell cannot trap there
+also with no VM, in the background as `check_once` starts a program, and
+gives them to the check as `skip`. Such a signal can be ignored in step
+1, and step 2 skips it. In CI, a shell with no job control gives a
+background program TSTP, TTIN and TTOU ignored on FreeBSD, NetBSD and
+OpenBSD (`perl` on OpenBSD showed them ignored). The VM passes that on,
+as the usual OTP does: ERTS does not set these three signals.
 3. TERM stops a shell with no trap.
 4. TERM from another port program stops a fake release.
 5. The VM gets HUP, USR2, ALRM and TSTP from a port program.
@@ -2381,8 +2389,34 @@ ignored. `beam.com` does not ignore it.
 On macOS 27 arm64, from a clean start, rc.8 fails 25 checks, and the
 Erlang/OTP of Homebrew passes the mask check. The traps of SIGFPE (it
 ignores SIGFPE) and of SIGCHLD fail there. The bash 3.2 of macOS also
-fails the trap of SIGCHLD with no VM, so the check does not trap SIGCHLD
-on macOS.
+fails the trap of SIGCHLD with no VM, so the baseline of `tests/run.sh`
+skips it there.
+
+In CI run 773 (`fix/port-signal-mask`), the check passed on macOS
+arm64, macOS 27 arm64, macOS x86_64, Linux x86_64 and Linux aarch64. The
+BSD systems failed the traps of TSTP, TTIN and TTOU, from the background
+shell (the baseline above came after that run). On NetBSD, step 5 also
+stopped the VM (C71).
+
+### C71. NetBSD: a signal handler stops a thread that waits in nsync
+
+**Status:** open in 4.0.2 (`third_party/nsync/mu_semaphore_sem.c`),
+NetBSD x86_64. Seen in CI run 773, in `tests/programs/signal_check.erl`.
+
+**Symptom.** A port program sent SIGHUP to the VM, with
+`os:set_signal(sighup, handle)`. Three threads stopped at once with
+`unassert(result == ETIMEDOUT || result == ECANCELED) failed` in
+`mu_semaphore_sem.c:127`, and then the VM stopped with SIGILL (exit 132).
+
+**Cause.** On NetBSD, nsync waits with the kernel semaphores
+(`sys_sem_wait()`, `sys_sem_timedwait()`). When a signal handler runs on
+a thread that waits there, the system call gives EINTR. The two waits
+accept only ECANCELED (and ETIMEDOUT), so EINTR stops the process. A
+handled signal of the VM can come to any thread that does not block it.
+
+**Possible fix.** In `nsync_mu_semaphore_p_sem()` and
+`nsync_mu_semaphore_p_with_deadline_sem()`, wait again after EINTR, with
+the same deadline. This needs a release of the fork of Cosmopolitan.
 
 **Possible upstream fix.** A caller of `cosmo_dltramp()` cannot know
 the mask that the foreign function sees. Cosmopolitan can document it
