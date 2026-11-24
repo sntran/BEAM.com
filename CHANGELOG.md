@@ -12,6 +12,9 @@ notes of its release.
   a fake release in a test of `mix.com test`. The cause was the signal
   mask of `posix_spawn()` for `erl_child_setup` (C70 of
   `docs/UPSTREAM.md`).
+- On macOS and the BSD systems, a port program gets the default action
+  of SIGSYS, as with the usual OTP. Before, it got SIGSYS ignored,
+  because the runtime of `beam.com` ignores it.
 - `beam.com mix` uses the git client of `beam.com` for the git deps of
   an `https` or SSH URL when `PATH` has no `git` program, or with
   `BEAM_COM_GIT=client`, as the Mix build does. Before, `beam.com mix

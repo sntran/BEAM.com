@@ -2336,24 +2336,42 @@ on purpose: the threads of the resolver and of the supervisor of
 `--allow-net` take no signals, and the old mask comes back after their
 `pthread_create()`.
 
-**A difference that stays.** On macOS and the BSD systems, the runtime
-of Cosmopolitan ignores SIGSYS at its start (`libc/runtime/cosmo2.c`,
-"disable enosys trapping"), so that a system call that the kernel does
-not know gives `ENOSYS`. `erl_child_setup` is a program of
-Cosmopolitan, so a port program gets SIGSYS ignored. With the usual
-OTP, it gets the default action. A reset in the child of
-`erl_child_setup` before its `execve()` is not safe:
-`beam_com_exec_helper()` and `beam_com_execve()` run between the reset
-and the `execve()`, and a system call there would stop the child. The
-usual OTP ignores SIGFPE (`sys_float.c`), and a port program gets it
+**SIGSYS.** On macOS and the BSD systems, the runtime of Cosmopolitan
+ignores SIGSYS at its start (`libc/runtime/cosmo2.c`, "disable enosys
+trapping"), so that a system call that the kernel does not know gives
+`ENOSYS`. An exec keeps an ignored signal, and `erl_child_setup` is a
+program of Cosmopolitan, so a port program got SIGSYS ignored. With the
+usual OTP, it gets the default action.
+
+A reset in the child of `erl_child_setup` before its exec is not safe:
+`beam_com_exec_helper()` and `beam_com_execve()` run after it, and an
+unknown system call there would stop the child. The safe point is the
+execve system call itself. The emulator is linked with
+`-Wl,--wrap=__sys_execve`, the system call that each `execve()` of
+Cosmopolitan and `ape_execve()` make, also for the tries of the APE
+loader and of `/bin/sh`. `__wrap___sys_execve()` gives SIGSYS its
+default action, makes the system call, and ignores SIGSYS again when
+the call fails. Only the execve system call runs between the two
+`sigaction()` calls, and each kernel knows it.
+
+Caution: a disposition is for the whole process. The wrap acts only in
+a child of `beam_com_helper_fork()`, the fork of each port program,
+which has one thread. Not a compare of `getpid()`: Cosmopolitan keeps
+the pid in `__pid`, and the `fork()` of libSystem on macOS arm64 does
+not change it. The restore sets `SIG_IGN` itself, because Cosmopolitan
+set it with `sys_sigaction()`, and `sigaction()` does not give it as the
+old action. On macOS 27 arm64, a probe with this code gave SIGSYS its
+default action in the program of a port child, kept it ignored after a
+`fork()` of Cosmopolitan, and ignored it again after a failed `execve()`.
+
+The usual OTP ignores SIGFPE (`sys_float.c`), and a port program gets it
 ignored. `beam.com` does not ignore it.
 
 **Test.** `tests/programs/signal_check.erl`:
 
 1. A port program reads its whole mask and its dispositions, signals 1
    to 31 (`/proc/self/status` on Linux, else `perl`): no signal is
-   blocked, and only SIGPIPE is ignored (and SIGSYS on macOS and the BSD
-   systems).
+   blocked, and only SIGPIPE is ignored.
 2. `/bin/sh` traps each catchable signal of POSIX that it sends to
    itself.
 3. TERM stops a shell with no trap.

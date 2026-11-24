@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -80,6 +81,51 @@ int IsQemuUser(void) {
 }
 #define BEAM_COM_TOOL "/zip/lib/beam_com/ebin/beam_com.app"
 #define BEAM_COM_ALLOW "/zip/.allow"
+
+/* SIGSYS of a port program (UPSTREAM.md C70). On macOS and the BSD
+ * systems, the runtime of Cosmopolitan ignores SIGSYS at its start
+ * (libc/runtime/cosmo2.c), so that a system call that the kernel does not
+ * know gives ENOSYS. An exec keeps an ignored signal, so a port program
+ * got SIGSYS ignored. With the usual OTP, it gets the default action.
+ *
+ * The emulator is linked with -Wl,--wrap=__sys_execve (EXEC_WRAPS of
+ * scripts/steps.sh). Each execve() of Cosmopolitan, and ape_execve(),
+ * comes to this system call, also the tries of the APE loader and of
+ * /bin/sh. In a child of erl_child_setup, SIGSYS gets its default action
+ * for the system call only. Between the two calls of sigaction() runs
+ * only the execve system call, which each kernel knows, so no system call
+ * can give SIGSYS there. When the call fails, SIGSYS is ignored again.
+ *
+ * Caution: a disposition is for the whole process. A child of
+ * erl_child_setup has one thread (erl_child_setup has one thread, C36),
+ * so no other thread makes a system call in that time. Thus the reset is
+ * only in such a child: beam_com_helper_fork() sets port_child in it. Not
+ * a compare of getpid(): Cosmopolitan keeps the pid in __pid, and the
+ * fork() of libSystem on macOS arm64 does not change it. The VM, which
+ * has threads, keeps SIGSYS ignored at its own execve(). */
+static int port_child;
+int __real___sys_execve(const char *path, char *const argv[], char *const envp[]);
+
+int __wrap___sys_execve(const char *path, char *const argv[], char *const envp[])
+{
+    struct sigaction sa;
+    int rc, err;
+
+    if (!IsBsd() || !port_child)
+        return __real___sys_execve(path, argv, envp);
+    memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGSYS, &sa, NULL);
+    rc = __real___sys_execve(path, argv, envp);
+    err = errno;
+    /* Not the old action of sigaction(): Cosmopolitan set SIG_IGN with
+     * sys_sigaction(), and its table of the handlers does not know it. */
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGSYS, &sa, NULL);
+    errno = err;
+    return rc;
+}
 
 /* close() with the lock of the file descriptor table (UPSTREAM.md C25
  * and C26). The emulator is linked with -Wl,--wrap=close (build.sh), so
@@ -2558,7 +2604,7 @@ int beam_com_spawn_helper(const char *path, char *const argv[], int fd3,
  * then stops it with a report. On the other systems, and when a function
  * of libSystem is not there, this is fork().
  */
-int beam_com_helper_fork(void)
+static int helper_fork(void)
 {
     static int (*xnu_fork)(void);
     static int *(*xnu_errno)(void);
@@ -2583,6 +2629,17 @@ int beam_com_helper_fork(void)
      * Cosmopolitan on XNU. */
     if (pid == -1)
         errno = *xnu_errno();
+    return pid;
+}
+
+/* The fork of each port program. The child has one thread: its execve
+ * gives SIGSYS the default action (__wrap___sys_execve(), C70). */
+int beam_com_helper_fork(void)
+{
+    int pid = helper_fork();
+
+    if (pid == 0)
+        port_child = 1;
     return pid;
 }
 

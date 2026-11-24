@@ -224,6 +224,10 @@ SOCK_WRAPS="-Wl,--wrap=send"
 # The timer resolution of Windows: the libc must not release the request
 # of the VM (c_src/cosmo/beam_com.c, C67 of docs/UPSTREAM.md).
 TIMER_WRAPS="-Wl,--wrap=NtSetTimerResolution"
+# The execve system call: a port program gets the default action of
+# SIGSYS on macOS and the BSD systems (c_src/cosmo/beam_com.c, C70 of
+# docs/UPSTREAM.md).
+EXEC_WRAPS="-Wl,--wrap=__sys_execve"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -1740,9 +1744,10 @@ step_multicall() {
     # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c,
     # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c,
     # and the wrap of SOCK_WRAPS (sockets on Windows) in beam_com_sock.c,
-    # and the wrap of TIMER_WRAPS (the timer of Windows) in beam_com.c.
+    # and the wrap of TIMER_WRAPS (the timer of Windows) in beam_com.c,
+    # and the wrap of EXEC_WRAPS (SIGSYS of a port program) in beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS $TIMER_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS $TIMER_WRAPS $EXEC_WRAPS" \
         "STATIC_NIFS=$nifs" "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 

@@ -7,17 +7,16 @@
 %%
 %% 1. A port program reads its whole signal mask and its dispositions,
 %%    signals 1 to 31: /proc/self/status on Linux, else perl. No signal is
-%%    blocked. Only SIGPIPE is ignored, as with the usual OTP, and also
-%%    SIGSYS on macOS and the BSD systems: the runtime of Cosmopolitan
-%%    ignores SIGSYS at its start there (libc/runtime/cosmo2.c), and
-%%    erl_child_setup is a program of Cosmopolitan. A system with neither
-%%    /proc nor perl (FreeBSD, NetBSD) skips this step, and step 2 checks
-%%    each signal.
+%%    blocked, and only SIGPIPE is ignored, as with the usual OTP. Also
+%%    not SIGSYS: on macOS and the BSD systems, the runtime of Cosmopolitan
+%%    ignores it, and the execve of a port program gives it its default
+%%    action again (__wrap___sys_execve() of c_src/cosmo/beam_com.c). A
+%%    system with neither /proc nor perl (FreeBSD, NetBSD) skips this
+%%    step, and step 2 checks each signal.
 %% 2. /bin/sh traps each catchable signal of POSIX that it sends to
-%%    itself. A signal that is blocked or ignored fails. Not SIGSYS on
-%%    macOS and the BSD systems (see step 1), and not SIGCHLD on macOS:
-%%    its bash 3.2 does not run a trap of SIGCHLD for a kill to itself,
-%%    also with no VM. Step 1 checks SIGCHLD there.
+%%    itself. A signal that is blocked or ignored fails. Not SIGCHLD on
+%%    macOS: its bash 3.2 does not run a trap of SIGCHLD for a kill to
+%%    itself, also with no VM. Step 1 checks SIGCHLD there.
 %% 3. kill -TERM stops a shell with no trap (exit status 143).
 %% 4. A fake release (a shell that traps TERM and waits) stops when
 %%    another port program sends it TERM.
@@ -41,13 +40,8 @@
 -define(VM_SIGNALS, [sighup, sigusr2, sigalrm, sigtstp]).
 -define(TIMEOUT, 10000).
 
-signals({unix, linux}) -> ?SIGNALS;
-signals({unix, darwin}) -> ?SIGNALS -- ["CHLD", "SYS"];
-signals(_) -> ?SIGNALS -- ["SYS"].
-
-%% The ignored signals of a port program, in the sequence of the numbers.
-ignored({unix, linux}) -> <<"PIPE">>;
-ignored(_) -> <<"SYS PIPE">>.
+signals({unix, darwin}) -> ?SIGNALS -- ["CHLD"];
+signals(_) -> ?SIGNALS.
 
 main(_) ->
     Results = [mask() | [trap(S) || S <- signals(os:type())]]
@@ -81,7 +75,7 @@ mask() ->
                 "print \"blocked: @b\\nignored: @i\\n\"",
             {_, Out} = run(Perl, ["-e", Script]),
             report("the mask of a port program with perl (" ++ text(Out) ++ ")",
-                   Out =:= <<"blocked: \nignored: ", (ignored(os:type()))/binary, "\n">>);
+                   Out =:= <<"blocked: \nignored: PIPE\n">>);
         {false, false} ->
             io:format("signal_check: the mask of a port program: skipped (no perl and no "
                       "/proc), the traps check each signal~n"),
