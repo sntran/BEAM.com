@@ -45,6 +45,8 @@
                   "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "SYS"]).
 -define(VM_SIGNALS, [sighup, sigusr2, sigalrm, sigtstp]).
 -define(TIMEOUT, 10000).
+%% The signals that the BSD systems ignore by default.
+-define(BSD_DEFAULT_IGNORED, ["URG", "CHLD", "IO", "WINCH", "INFO"]).
 
 main(["signals"]) ->
     io:format("~s~n", [lists:join(" ", ?SIGNALS)]);
@@ -82,7 +84,10 @@ bits(Number, Names) ->
 %% SIGFPE at its start (PERL_FPU_INIT), so that signal is not in its list:
 %% step 2 checks SIGFPE with a trap. Else ps of FreeBSD and NetBSD gives
 %% the two masks in hexadecimal. The ignored signals, less the signals of
-%% Skip, must be SIGPIPE only.
+%% Skip, must be SIGPIPE only. The kernels of FreeBSD and NetBSD also put
+%% in that mask each signal whose default action is to ignore it (URG,
+%% CHLD, IO, WINCH, INFO), so the ps branch accepts these: step 2 checks
+%% them with a trap.
 mask(Skip) ->
     %% NetBSD has a /proc/self/status too, with no SigBlk.
     case {os:type() =:= {unix, linux}, os:find_executable("perl"), os:find_executable("ps")} of
@@ -120,7 +125,8 @@ mask(Skip) ->
                 [Blocked, Ign] when is_integer(Blocked), is_integer(Ign) ->
                     report("the mask of a port program with ps (" ++ text(Out) ++ ")",
                            Blocked =:= 0 andalso
-                               Ign band bnot bits(fun bsd_number/1, Skip) =:= bits(fun bsd_number/1, ["PIPE"]));
+                               Ign band bnot bits(fun bsd_number/1, Skip ++ ?BSD_DEFAULT_IGNORED)
+                                   =:= bits(fun bsd_number/1, ["PIPE"]));
                 _ ->
                     io:format("signal_check: the mask of a port program: skipped (ps gave ~p), "
                               "the traps check each signal~n", [Out]),
