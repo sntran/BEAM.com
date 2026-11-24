@@ -125,7 +125,8 @@ mask(Skip) ->
                 [Blocked, Ign] when is_integer(Blocked), is_integer(Ign) ->
                     report("the mask of a port program with ps (" ++ text(Out) ++ ")",
                            Blocked =:= 0 andalso
-                               Ign band bnot bits(fun bsd_number/1, Skip ++ ?BSD_DEFAULT_IGNORED)
+                               %% Signals 1 to 31 only: NetBSD also shows SIGPWR (32).
+                               Ign band 16#7fffffff band bnot bits(fun bsd_number/1, Skip ++ ?BSD_DEFAULT_IGNORED)
                                    =:= bits(fun bsd_number/1, ["PIPE"]));
                 _ ->
                     io:format("signal_check: the mask of a port program: skipped (ps gave ~p), "
