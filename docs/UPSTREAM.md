@@ -2308,13 +2308,63 @@ mask. `beam_com_spawn_helper()` (C32) starts `erl_child_setup` with that
 `posix_spawn()` through the trampoline. `erl_child_setup` unblocks only
 SIGCHLD, and each port program gets its mask.
 
+A program that a port program starts gets the same mask, also another
+VM of `beam.com`, for example a release that a test starts.
+
 **Fix in BEAM.com.** `beam_com_spawn_helper()` sets
 `POSIX_SPAWN_SETSIGMASK` with an empty mask
-(`posix_spawnattr_setsigmask()`). The dispositions do not change: as on
-Linux, a port program gets SIGPIPE ignored and the other signals with
-their default action. `tests/programs/signal_check.erl` traps each
-signal in `/bin/sh`, stops a shell with TERM, and stops a fake release
-with TERM from another port program.
+(`posix_spawnattr_setsigmask()`). The dispositions do not change.
+
+**The other paths.** On macOS 27 arm64, from a process with an empty
+mask, a probe of each other way to start a thread or a process gave the
+mask of the caller:
+
+- `pthread_create()` of Cosmopolitan: the thread of ERTS, and the thread
+  of a NIF (`enif_thread_create()`). `_pthread_start()` sets the mask of
+  the creator before its block (`oldsigs`).
+- The `fork()` of libSystem through `cosmo_dltramp()`
+  (`beam_com_helper_fork()`, C36), also after the `execve()` of the
+  child: the child returns through the trampoline, which restores the
+  mask.
+- The `fork()` and the `posix_spawn()` of Cosmopolitan.
+
+The other calls of `cosmo_dltramp()` in BEAM.com start no thread and no
+process (`sandbox_init()`, `getattrlist()`, `_NSGetExecutablePath()`,
+`mach_vm_region_recurse()`). Cosmopolitan uses the trampoline only in
+`libc/dlopen/`. The two blocks of all signals in `beam_com_net.c` are
+on purpose: the threads of the resolver and of the supervisor of
+`--allow-net` take no signals, and the old mask comes back after their
+`pthread_create()`.
+
+**A difference that stays.** On macOS and the BSD systems, the runtime
+of Cosmopolitan ignores SIGSYS at its start (`libc/runtime/cosmo2.c`,
+"disable enosys trapping"), so that a system call that the kernel does
+not know gives `ENOSYS`. `erl_child_setup` is a program of
+Cosmopolitan, so a port program gets SIGSYS ignored. With the usual
+OTP, it gets the default action. A reset in the child of
+`erl_child_setup` before its `execve()` is not safe:
+`beam_com_exec_helper()` and `beam_com_execve()` run between the reset
+and the `execve()`, and a system call there would stop the child. The
+usual OTP ignores SIGFPE (`sys_float.c`), and a port program gets it
+ignored. `beam.com` does not ignore it.
+
+**Test.** `tests/programs/signal_check.erl`:
+
+1. A port program reads its whole mask and its dispositions, signals 1
+   to 31 (`/proc/self/status` on Linux, else `perl`): no signal is
+   blocked, and only SIGPIPE is ignored (and SIGSYS on macOS and the BSD
+   systems).
+2. `/bin/sh` traps each catchable signal of POSIX that it sends to
+   itself.
+3. TERM stops a shell with no trap.
+4. TERM from another port program stops a fake release.
+5. The VM gets HUP, USR2, ALRM and TSTP from a port program.
+
+On macOS 27 arm64, from a clean start, rc.8 fails 25 checks, and the
+Erlang/OTP of Homebrew passes the mask check. The traps of SIGFPE (it
+ignores SIGFPE) and of SIGCHLD fail there. The bash 3.2 of macOS also
+fails the trap of SIGCHLD with no VM, so the check does not trap SIGCHLD
+on macOS.
 
 **Possible upstream fix.** A caller of `cosmo_dltramp()` cannot know
 the mask that the foreign function sees. Cosmopolitan can document it
