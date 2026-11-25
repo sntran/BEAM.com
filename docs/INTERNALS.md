@@ -147,15 +147,19 @@ release does not need its `crypto.so`).
 The assembly code must keep the rules of Cosmopolitan Libc, and
 `check_openssl_asm` stops the build when it does not:
 
-- aarch64: no instruction writes x28 (the thread pointer) or x18 (C73,
-  SSL1). `patches/openssl/0002-aarch64-registers.patch` builds the C
-  code of the modules that do: SHA-1, SHA-512, SHA-3, ChaCha20, the
-  Montgomery code of RSA, P-256, and MD5. For P-256, P-384 and P-521,
-  the option `enable-ec_nistp_64_gcc_128` gives a constant-time C code
-  with `__int128`, about 8 times faster than the generic C code.
+- aarch64: no instruction writes x18, because macOS and Windows can
+  change it at any time (SSL1). `patches/openssl/0002-aarch64-registers.patch`
+  builds the C code of vpsm4, the one module that writes x18. Code that
+  writes x28, the thread pointer, is allowed: the libc gives a signal
+  handler the thread pointer from its copy (C73).
+  `aarch64-registers.txt` of the build lists each write to x18 or x28.
 - x86_64: no assembly object has the bytes of the TLS load that
   Cosmopolitan Libc changes at start on Windows and XNU
   (`libc/runtime/morph_tls.c`).
+
+The option `enable-ec_nistp_64_gcc_128` gives P-224, P-384 and P-521 a
+constant-time C code with `__int128`. P-256 uses its assembly code
+(`ecp_nistz256`) on both CPUs.
 
 OpenSSL finds the features of the CPU when crypto starts
 (`OPENSSL_init_crypto()`), not before `main()` (C74). On x86_64 it reads
