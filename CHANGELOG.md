@@ -5,6 +5,13 @@ notes of its release.
 
 ## Unreleased
 
+- Crypto is faster: OpenSSL has its assembly code for each CPU half.
+  Before, `libcrypto` was plain C code. On one Intel Xeon, AES-256-GCM
+  is 68 times faster, SHA-256 5.6 times, RSA-2048 signs 7 times, and
+  P-256 signs 34 times. On aarch64, AES, AES-GCM, GHASH, Poly1305 and
+  SHA-256 use the instructions of the CPU. The aarch64 code of OpenSSL
+  that writes x18 or x28 stays C code, because Cosmopolitan Libc keeps
+  its thread pointer in x28 (C73 of `docs/UPSTREAM.md`).
 - On macOS arm64, a port program gets each signal. Before, each program
   that a port started (`open_port/2`, `System.cmd/3`, `os:cmd/1`) had
   HUP, INT, QUIT, USR1, USR2, TERM and the other signals blocked. A trap

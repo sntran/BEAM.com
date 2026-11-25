@@ -8,7 +8,8 @@ Keep it up to date when a new problem or workaround comes.
 The groups, and the prefix of their ids: Cosmopolitan (C), WAMR (W),
 Erlang/OTP (O), Emscripten (EM), workerd and Cloudflare Workers (CF),
 V8 (V), websock_adapter (WS), Livebook (L), Elixir (EX), Elixir packages with
-NIFs (E), Blink (B), rustler (R), fine (F) and wasi-libc (WL).
+NIFs (E), Blink (B), rustler (R), fine (F), wasi-libc (WL) and OpenSSL
+(SSL).
 
 [`patches/README.md`](../patches/README.md) lists each patch file of
 BEAM.com, and the ids of the items that it is for.
@@ -2429,6 +2430,91 @@ its effect. The check C71 of `tool/cosmocc/check/fixes.c` sends SIGUSR1
 variable. The job `check-netbsd` of the fork runs it on NetBSD: it fails
 with the libc of 4.0.2 and passes with the fix.
 
+### C72. aarch64: siglongjmp() changes x19 of the caller
+
+**Status:** fixed on the branch `fix/aarch64-sigsetjmp` of
+sntran/cosmopolitan (not released). Open in 4.0.2 and HEAD
+(`libc/runtime/sigsetjmp.S`), aarch64 on each system. Seen with the
+SIGILL probes of OpenSSL (`crypto/armcap.c`), under qemu with the CPU
+`cortex-a53`.
+
+**Symptom.** A program that calls `sigsetjmp(jb, 1)` and comes back
+through `siglongjmp()` has a bad value in a variable of the caller. The
+check program of OpenSSL stopped with SIGSEGV. A loop counter became
+2147220183, the value of the signal mask.
+
+**Cause.** On aarch64, `jmp_buf` has 176 bytes, and `sigjmp_buf` adds
+three slots: x30 at 176, x19 at 184, and the signal mask at 192
+(`__sigsetjmp_tail()` uses `sizeof(jmp_buf) + 8 + 8`). The aarch64
+code of `sigsetjmp()` keeps x19 of the caller at `176+8+8`, the slot of
+the mask. `__sigsetjmp_tail()` then writes the mask over it. A return
+through `siglongjmp()` loads x19 from that slot, so the caller gets the
+mask in x19. A direct return of `sigsetjmp()` is correct. The x86_64
+code uses the correct slots.
+
+**Reproducer.** `tool/cosmocc/check/fixes.c` of the fork, check C72: six
+values stay in registers across `sigsetjmp(jb, 1)` and a
+`siglongjmp()`. With 4.0.2 it fails on aarch64 (qemu, `-cpu max` and
+`-cpu cortex-a53`). With the fix it passes, and it passes on x86_64.
+
+**Fix in sntran/cosmopolitan.** The commit "sigsetjmp: on aarch64, x19
+of the caller has its own slot (C72)" keeps x19 at offset 184.
+
+### C73. aarch64: assembly code that writes x28 or x18
+
+**Status:** 4.0.2 and HEAD, aarch64 on each system. No fault seen: the
+build of OpenSSL with its assembly code (`step_openssl`) found the code
+before it ran in `beam.com`.
+
+**Problem.** Cosmopolitan keeps the pointer to the TIB of a thread in
+x28, and its C code compiles with `-ffixed-x28 -ffixed-x18`. It does not
+set `tpidr_el0`. On Linux and XNU, the signal entry calls the handler
+with the registers of the interrupted code (`libc/calls/sigaction.c`).
+Assembly code of another project can use x28 as a register of its own,
+as the AAPCS64 permits: it keeps the value and puts it back before it
+returns. A signal that comes while such code runs gives the handler a
+bad thread pointer, and its first access to TLS (for example `errno`)
+reads or writes a bad address. XNU and Windows can also change x18 at
+any time, so code that keeps a value in x18 is not safe there.
+
+In OpenSSL 4.0.3, these assembly files write x28: SHA-1, the scalar
+code of SHA-256 and SHA-512, SHA-3, ChaCha20, the Montgomery code of
+`bn`, P-256 and SM2, MD5, and vpsm4 (which also writes x18, see SSL1).
+
+**Workaround in BEAM.com.** `patches/openssl/0002-aarch64-registers.patch`
+builds the C code of these modules for aarch64. SHA-256 keeps its
+assembly code: a CPU with no SHA-256 instructions uses the NEON code,
+which does not use x28. `check_openssl_asm` of `scripts/steps.sh`
+disassembles `libcrypto.a` of aarch64 and stops the build when an
+instruction writes x18 or x28 (the unreachable scalar code of
+`sha256_block_data_order` is the one exception).
+
+**Possible upstream fix.** Keep the TIB in `tpidr_el0` too, and set x28
+from it at the signal entry, before the handler runs.
+
+### C74. x86_64: the `.init` section of another project
+
+**Status:** 4.0.2 and HEAD, x86_64. No fault seen: `step_openssl` found
+it in the source of OpenSSL before a build.
+
+**Problem.** The start code of Cosmopolitan is the section `.init`
+(`ape/ape.lds`, `libc/runtime/init.S`): straight code that keeps
+pointers in `%rdi` and `%rsi` from one part to the next. Code of another
+project that puts a call into `.init`, for example
+`call OPENSSL_cpuid_setup` of `crypto/x86_64cpuid.pl` in OpenSSL, goes
+into that chain. The C function changes `%rdi` and `%rsi`, and it runs
+before the libc is ready (it calls `getenv()`).
+
+**Workaround in BEAM.com.** `patches/openssl/0001-cpuid-setup.patch`
+removes the call. `OPENSSL_init_crypto()` calls `OPENSSL_cpuid_setup()`
+in all cases. The patch also removes the constructor of the aarch64
+setup with Cosmopolitan, so a program that does not use crypto does not
+run the SIGILL probes at each start.
+
+**Possible upstream fix.** Keep the start chain in sections of its own
+names (`.init.*`) only, and refuse or document a plain `.init` from
+another object.
+
 ## WAMR (WebAssembly Micro Runtime)
 
 Seen with WAMR 2.4.5 and its `cosmopolitan` platform, in a fat (x86_64 +
@@ -4416,3 +4502,24 @@ work.
 **Possible upstream fix.** Keep `/` as a prefix that matches only
 absolute paths, or start the work directory of wasi-libc from the
 environment (for example `PWD`).
+
+## OpenSSL
+
+Seen with OpenSSL 4.0.3, built with its assembly code by `step_openssl`
+of `scripts/steps.sh` (`docs/INTERNALS.md`, "Crypto and TLS").
+
+### SSL1. aarch64: SM4-XTS writes x18
+
+**Problem.** `vpsm4_xts_encrypt` and `vpsm4_ex_xts_encrypt`
+(`crypto/sm4/asm/vpsm4-armv8.pl`, `vpsm4_ex-armv8.pl`) keep a value in
+x18. On macOS and on Windows on ARM64, x18 is the platform register,
+and the system can change it at any time. The other aarch64 assembly
+code of OpenSSL does not use x18. These functions also write x28 (C73).
+
+**Workaround in BEAM.com.** `patches/openssl/0002-aarch64-registers.patch`
+keeps only `sm4-armv8.S` (the SM4 instructions) and builds the C code of
+vpsm4.
+
+**Possible upstream fix.** Use another register in the XTS code of
+vpsm4 and vpsm4_ex, as the other modules do for Apple and Windows.
+

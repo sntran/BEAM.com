@@ -253,7 +253,8 @@ $patterns = @{
     "greeter" = 'said hello 3 times'
     "crypto_check" = ('sha256\(abc\) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' +
         '@@hmac-sha256 = 5031fe3d989c6d1537a013fa6e739da23463fdaec3b70137d828e36ace221bd0' +
-        '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello')
+        '@@16 random bytes = 16 bytes@@aes-256-gcm round trip = hello' +
+        '@@the known answers of the hashes = ok@@the known answers of the ciphers = ok@@the public keys = ok')
     # "verify peer, N OS certificates": the roots of Windows were exported.
     "tls_check" = 'ports: ok \(os:cmd\)@@tls: local handshake ok@@tls: remote [^ ]* ok \([^)]*verify peer, [0-9]+ OS certificates\)'
 }

@@ -133,9 +133,36 @@ Windows (`cmd.exe`, `git.exe`) starts as it is.
 
 ## Crypto and TLS
 
-The step `openssl` (`scripts/steps.sh`) builds a static `libcrypto` (OpenSSL 4.0.3, no assembly, so
-the same C code compiles for x86_64 and aarch64), and OTP is configured
-with `--enable-static-nifs`. ERTS selects a static NIF by the name of the
+The step `openssl` (`scripts/steps.sh`) builds a static `libcrypto` of
+OpenSSL 4.0.3 two times: for x86_64 and for aarch64, each with the
+assembly code of its CPU. The aarch64 archive goes to `lib/.aarch64/`,
+where the fat linker of cosmocc finds it. One compile of the crypto NIF
+makes the two halves, so a header that differs between the two builds
+(`openssl/configuration.h`) has the text of each CPU under
+`__aarch64__`. OTP is configured with `--enable-static-nifs`.
+
+The assembly code must keep the rules of Cosmopolitan Libc, and
+`check_openssl_asm` stops the build when it does not:
+
+- aarch64: no instruction writes x28 (the thread pointer) or x18 (C73,
+  SSL1). `patches/openssl/0002-aarch64-registers.patch` builds the C
+  code of the modules that do.
+- x86_64: no assembly object has the bytes of the TLS load that
+  Cosmopolitan Libc changes at start on Windows and XNU
+  (`libc/runtime/morph_tls.c`).
+
+OpenSSL finds the features of the CPU when crypto starts
+(`OPENSSL_init_crypto()`), not before `main()` (C74). On x86_64 it reads
+`cpuid`. On aarch64 it runs a probe instruction for each feature and
+catches SIGILL, because `getauxval()` of Cosmopolitan is not the path
+that OpenSSL takes. The variables `OPENSSL_ia32cap` and `OPENSSL_armcap`
+set the features by hand.
+
+With the assembly code, on one Intel Xeon with AVX-512 and SHA-NI
+(2.1 GHz, Linux):
+AES-256-GCM goes from 121 MB/s to 8213 MB/s, SHA-256 from 314 MB/s to
+1750 MB/s, RSA-2048 signs from 445 to 3166 each second, and P-256 signs
+from 1163 to 39550 each second. ERTS selects a static NIF by the name of the
 module that loads it, so the `crypto.beam` of a normal release uses the
 NIF inside `beam.com` (the release does not need its `crypto.so`).
 
