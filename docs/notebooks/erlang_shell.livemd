@@ -292,7 +292,9 @@ defmodule Repl.Terminal do
         } else if (e.key === "ArrowUp" && at > 0) {
           input.value = lines[--at];
           e.preventDefault();
-        } else if (e.key === "ArrowDown" && at < lines.length) {
+        // "lines.length > at": the search index of ExDoc reads a "<" and
+        // a name after it as an HTML tag, and that text stops the site build.
+        } else if (e.key === "ArrowDown" && lines.length > at) {
           input.value = lines[++at] ?? "";
           e.preventDefault();
         } else if (e.key === "c" && e.ctrlKey && input.selectionStart === input.selectionEnd) {
