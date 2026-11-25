@@ -11,7 +11,10 @@ notes of its release.
   P-256 signs 34 times. On aarch64, AES, AES-GCM, GHASH, Poly1305 and
   SHA-256 use the instructions of the CPU. The aarch64 code of OpenSSL
   that writes x18 or x28 stays C code, because Cosmopolitan Libc keeps
-  its thread pointer in x28 (C73 of `docs/UPSTREAM.md`).
+  its thread pointer in x28 (C73 of `docs/UPSTREAM.md`). The build uses
+  cosmocc 4.0.2-patched.4 of sntran/cosmopolitan: on aarch64, a
+  `siglongjmp()` after the probe of a CPU feature changed a register of
+  the caller (C72).
 - On macOS arm64, a port program gets each signal. Before, each program
   that a port started (`open_port/2`, `System.cmd/3`, `os:cmd/1`) had
   HUP, INT, QUIT, USR1, USR2, TERM and the other signals blocked. A trap

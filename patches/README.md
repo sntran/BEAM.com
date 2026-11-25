@@ -111,7 +111,7 @@ order, with `git apply`.
 ## Cosmopolitan
 
 The fixes of Cosmopolitan are in the toolchain, not in this directory:
-the build uses cosmocc 4.0.2-patched.3 of
+the build uses cosmocc 4.0.2-patched.4 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan). Its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md)
 lists one commit for each fix:
@@ -129,7 +129,7 @@ lists one commit for each fix:
 | The Windows layer of the aarch64 libc, and the loader `bin/ape-arm64.exe`. | C58 |
 | A wait of macOS with a deadline that passed ends at once. | C69 |
 | A semaphore wait of nsync on NetBSD waits again after EINTR. | C71 |
-| `siglongjmp()` on aarch64 keeps x19 of the caller (branch `fix/aarch64-sigsetjmp`, not released). | C72 |
+| `siglongjmp()` on aarch64 keeps x19 of the caller. | C72 |
 
 ## Changes that are not patch files
 

@@ -25,7 +25,7 @@ An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
 
-BEAM.com uses cosmocc 4.0.2-patched.3 of
+BEAM.com uses cosmocc 4.0.2-patched.4 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
 official cosmocc 4.0.2 with one commit for each fix of its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
@@ -2432,11 +2432,10 @@ with the libc of 4.0.2 and passes with the fix.
 
 ### C72. aarch64: siglongjmp() changes x19 of the caller
 
-**Status:** fixed on the branch `fix/aarch64-sigsetjmp` of
-sntran/cosmopolitan (not released). Open in 4.0.2 and HEAD
-(`libc/runtime/sigsetjmp.S`), aarch64 on each system. Seen with the
-SIGILL probes of OpenSSL (`crypto/armcap.c`), under qemu with the CPU
-`cortex-a53`.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.4. Open in 4.0.2
+and HEAD (`libc/runtime/sigsetjmp.S`), aarch64 on each system. Seen with
+the SIGILL probes of OpenSSL (`crypto/armcap.c`), under qemu with the
+CPU `cortex-a53`.
 
 **Symptom.** A program that calls `sigsetjmp(jb, 1)` and comes back
 through `siglongjmp()` has a bad value in a variable of the caller. The
