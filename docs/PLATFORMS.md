@@ -89,7 +89,7 @@ started 3 times faster (see "Windows on ARM64" in
 - In the aarch64 code of a native NIF object, `IsWindows()` of
   `libc/dce.h` is always false with the headers of the official cosmocc
   4.0.2. An object that asks for the system must use the cosmocc of the
-  build (4.0.2-patched.2 of sntran/cosmopolitan), or read `__hostos`.
+  build (4.0.2-patched.3 of sntran/cosmopolitan), or read `__hostos`.
 - Windows 10 on ARM64 has no x64 emulation, and it runs no APE file.
 
 ## In a sandbox that terminates TLS (OpenShell)

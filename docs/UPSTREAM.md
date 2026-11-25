@@ -24,7 +24,7 @@ An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
 
-BEAM.com uses cosmocc 4.0.2-patched.2 of
+BEAM.com uses cosmocc 4.0.2-patched.3 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
 official cosmocc 4.0.2 with one commit for each fix of its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
@@ -2398,10 +2398,16 @@ BSD systems failed the traps of TSTP, TTIN and TTOU, from the background
 shell (the baseline above came after that run). On NetBSD, step 5 also
 stopped the VM (C71).
 
+**Possible upstream fix.** A caller of `cosmo_dltramp()` cannot know
+the mask that the foreign function sees. Cosmopolitan can document it
+next to `cosmo_dltramp()`, or give the foreign function the mask of the
+caller.
+
 ### C71. NetBSD: a signal handler stops a thread that waits in nsync
 
-**Status:** open in 4.0.2 (`third_party/nsync/mu_semaphore_sem.c`),
-NetBSD x86_64. Seen in CI run 773, in `tests/programs/signal_check.erl`.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.3. Open in 4.0.2
+(`third_party/nsync/mu_semaphore_sem.c`), NetBSD x86_64. Seen in CI run
+773, in `tests/programs/signal_check.erl`.
 
 **Symptom.** A port program sent SIGHUP to the VM, with
 `os:set_signal(sighup, handle)`. Three threads stopped at once with
@@ -2414,14 +2420,14 @@ a thread that waits there, the system call gives EINTR. The two waits
 accept only ECANCELED (and ETIMEDOUT), so EINTR stops the process. A
 handled signal of the VM can come to any thread that does not block it.
 
-**Possible fix.** In `nsync_mu_semaphore_p_sem()` and
-`nsync_mu_semaphore_p_with_deadline_sem()`, wait again after EINTR, with
-the same deadline. This needs a release of the fork of Cosmopolitan.
-
-**Possible upstream fix.** A caller of `cosmo_dltramp()` cannot know
-the mask that the foreign function sees. Cosmopolitan can document it
-next to `cosmo_dltramp()`, or give the foreign function the mask of the
-caller.
+**Fix in sntran/cosmopolitan.** The commit "nsync: a semaphore wait of
+NetBSD waits again after EINTR (C71)": `nsync_mu_semaphore_p_sem()` and
+`nsync_mu_semaphore_p_with_deadline_sem()` wait again after EINTR, with
+the same deadline. First, `pthread_testcancel_np()` gives a cancelation
+its effect. The check C71 of `tool/cosmocc/check/fixes.c` sends SIGUSR1
+20 times into a handler of each of two threads that wait on a condition
+variable. The job `check-netbsd` of the fork runs it on NetBSD: it fails
+with the libc of 4.0.2 and passes with the fix.
 
 ## WAMR (WebAssembly Micro Runtime)
 

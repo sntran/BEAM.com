@@ -15,6 +15,11 @@ notes of its release.
 - On macOS and the BSD systems, a port program gets the default action
   of SIGSYS, as with the usual OTP. Before, it got SIGSYS ignored,
   because the runtime of `beam.com` ignores it.
+- On NetBSD, a signal that the VM handles, for example with
+  `os:set_signal(sighup, handle)`, does not stop the VM. Before, a
+  thread that waited in nsync stopped the VM with SIGILL. The build uses
+  cosmocc 4.0.2-patched.3 of sntran/cosmopolitan (C71 of
+  `docs/UPSTREAM.md`).
 - `beam.com mix` uses the git client of `beam.com` for the git deps of
   an `https` or SSH URL when `PATH` has no `git` program, or with
   `BEAM_COM_GIT=client`, as the Mix build does. Before, `beam.com mix
