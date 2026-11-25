@@ -20,7 +20,7 @@ build does not depend on the make of the host.
 
 The build downloads:
 
-- cosmocc 4.0.2-patched.4 (the compiler and Cosmopolitan Libc) of
+- cosmocc 4.0.2-patched.5 (the compiler and Cosmopolitan Libc) of
   [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
   official cosmocc 4.0.2 with the fixes of its
   [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md),

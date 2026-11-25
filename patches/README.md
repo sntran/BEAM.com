@@ -52,7 +52,7 @@ the assembly code of both builds.
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `0001-cpuid-setup.patch` | `crypto/x86_64cpuid.pl`, `crypto/armcap.c` | No CPU setup before `main()`: no call from the `.init` section on x86_64, and no constructor on aarch64. `OPENSSL_init_crypto()` does the setup. | C74 |
-| `0002-aarch64-registers.patch` | `crypto/*/build.info`, `crypto/sha/asm/sha512-armv8.pl`, `include/crypto/aes_platform.h` | The aarch64 build uses no assembly code that writes x18 or x28, and no ETM ciphers. SHA-256 uses its hardware code or its NEON code. | C73, SSL1 |
+| `0002-aarch64-registers.patch` | `crypto/sm4/build.info` | The aarch64 build uses no assembly code that writes x18: SM4 has only `sm4-armv8.S`, not vpsm4. | SSL1 |
 
 ## Elixir (`patches/elixir/`)
 
@@ -111,7 +111,7 @@ order, with `git apply`.
 ## Cosmopolitan
 
 The fixes of Cosmopolitan are in the toolchain, not in this directory:
-the build uses cosmocc 4.0.2-patched.4 of
+the build uses cosmocc 4.0.2-patched.5 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan). Its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md)
 lists one commit for each fix:
@@ -130,6 +130,7 @@ lists one commit for each fix:
 | A wait of macOS with a deadline that passed ends at once. | C69 |
 | A semaphore wait of nsync on NetBSD waits again after EINTR. | C71 |
 | `siglongjmp()` on aarch64 keeps x19 of the caller. | C72 |
+| A signal handler on aarch64 gets the thread pointer when the interrupted code holds another value in x28. | C73 |
 
 ## Changes that are not patch files
 

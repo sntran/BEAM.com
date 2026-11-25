@@ -25,7 +25,7 @@ An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
 
-BEAM.com uses cosmocc 4.0.2-patched.4 of
+BEAM.com uses cosmocc 4.0.2-patched.5 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
 official cosmocc 4.0.2 with one commit for each fix of its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
@@ -2459,40 +2459,49 @@ values stay in registers across `sigsetjmp(jb, 1)` and a
 **Fix in sntran/cosmopolitan.** The commit "sigsetjmp: on aarch64, x19
 of the caller has its own slot (C72)" keeps x19 at offset 184.
 
-### C73. aarch64: assembly code that writes x28 or x18
+### C73. aarch64: assembly code that writes x28
 
-**Status:** 4.0.2 and HEAD, aarch64 on each system. No fault seen: the
-build of OpenSSL with its assembly code (`step_openssl`) found the code
-before it ran in `beam.com`.
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.5. Open in 4.0.2
+and HEAD (`libc/calls/sigaction.c`), aarch64 on each system. Found in the
+build of OpenSSL with its assembly code (`step_openssl`), before the code
+ran in `beam.com`.
 
 **Problem.** Cosmopolitan keeps the pointer to the TIB of a thread in
-x28, and its C code compiles with `-ffixed-x28 -ffixed-x18`. It does not
-set `tpidr_el0`. On Linux and XNU, the signal entry calls the handler
-with the registers of the interrupted code (`libc/calls/sigaction.c`).
+x28, and its C code compiles with `-ffixed-x28 -ffixed-x18`. On Linux
+and XNU, the kernel starts a signal handler with the registers of the
+interrupted code, and the libc of 4.0.2 calls the handler at once.
 Assembly code of another project can use x28 as a register of its own,
 as the AAPCS64 permits: it keeps the value and puts it back before it
 returns. A signal that comes while such code runs gives the handler a
 bad thread pointer, and its first access to TLS (for example `errno`)
-reads or writes a bad address. XNU and Windows can also change x18 at
-any time, so code that keeps a value in x18 is not safe there.
+reads or writes a bad address. In OpenSSL 4.0.3, SHA-1, the scalar code
+of SHA-256 and SHA-512, SHA-3, ChaCha20, the Montgomery code of `bn`,
+P-256 and SM2, MD5, and vpsm4 write x28.
 
-In OpenSSL 4.0.3, these assembly files write x28: SHA-1, the scalar
-code of SHA-256 and SHA-512, SHA-3, ChaCha20, the Montgomery code of
-`bn`, P-256 and SM2, MD5, and vpsm4 (which also writes x18, see SSL1).
+**Reproducer.** `tool/cosmocc/check/fixes.c` of the fork, check C73: a
+thread keeps 16 in x28 while it gets 200 signals, and a fault comes
+while x28 holds 16. With the libc of 4.0.2-patched.4, the child stops
+with SIGSEGV. Under qemu, the scalar SHA-512 code of OpenSSL in one
+thread and 500 signals to that thread also stop the process.
 
-**Workaround in BEAM.com.** `patches/openssl/0002-aarch64-registers.patch`
-builds the C code of these modules for aarch64. SHA-256 keeps its
-assembly code: a CPU with no SHA-256 instructions uses the NEON code,
-which does not use x28. `check_openssl_asm` of `scripts/steps.sh`
-disassembles `libcrypto.a` of aarch64 and stops the build when an
-instruction writes x18 or x28 (the unreachable scalar code of
-`sha256_block_data_order` is the one exception). The option
-`enable-ec_nistp_64_gcc_128` of `step_openssl` gives P-256, P-384 and
-P-521 a constant-time C code with `__int128`, which is about 8 times
-faster than the generic C code of P-256.
+**Fix.** The commit "aarch64: a signal handler gets the thread pointer
+when x28 holds another value (C73)" and its three follow-ups keep a
+second copy of x28 for each thread:
 
-**Possible upstream fix.** Keep the TIB in `tpidr_el0` too, and set x28
-from it at the signal entry, before the handler runs.
+- Linux: `tpidr_el0`.
+- XNU: a key of `pthread_key_create()` of libSystem. XNU puts the
+  number of the CPU in `tpidr_el0` at a context switch.
+- Windows: the TLS slot of the libc in the TEB.
+
+The new signal entries `__sigenter_linux_arm64` and
+`__sigenter_xnu_arm64` load x28 from the copy before the handler runs,
+and the Windows signal paths do the same. `fixupobj` keeps an `mrs` of
+`tpidr_el0` that `hint #0x7f` follows.
+
+**Use in BEAM.com.** The aarch64 build of OpenSSL keeps the assembly
+code that writes x28. `check_openssl_asm` of `scripts/steps.sh` writes
+each write to x18 or x28 to `aarch64-registers.txt`, and stops the build
+for a write to x18 (SSL1).
 
 ### C74. x86_64: the `.init` section of another project
 
@@ -4516,11 +4525,12 @@ of `scripts/steps.sh` (`docs/INTERNALS.md`, "Crypto and TLS").
 (`crypto/sm4/asm/vpsm4-armv8.pl`, `vpsm4_ex-armv8.pl`) keep a value in
 x18. On macOS and on Windows on ARM64, x18 is the platform register,
 and the system can change it at any time. The other aarch64 assembly
-code of OpenSSL does not use x18. These functions also write x28 (C73).
+code of OpenSSL does not use x18.
 
 **Workaround in BEAM.com.** `patches/openssl/0002-aarch64-registers.patch`
 keeps only `sm4-armv8.S` (the SM4 instructions) and builds the C code of
-vpsm4.
+vpsm4. `check_openssl_asm` of `scripts/steps.sh` stops the build when an
+aarch64 instruction of `libcrypto.a` writes x18.
 
 **Possible upstream fix.** Use another register in the XTS code of
 vpsm4 and vpsm4_ex, as the other modules do for Apple and Windows.

@@ -1,189 +1,26 @@
-OpenSSL: no aarch64 assembly code that writes x18 or x28.
+OpenSSL: no aarch64 assembly code that writes x18.
 
-Cosmopolitan Libc keeps the thread pointer in x28, and a signal handler
-runs with the x28 of the interrupted code. XNU and Windows can change
-x18. Thus the aarch64 build uses the C code of SHA-1, SHA-512, SHA-3,
-ChaCha20, the Montgomery code of bn, P-256 and SM2, MD5, and vpsm4, and
-no ETM ciphers (they call the SHA-1 and SHA-512 assembly code). SHA-256
-keeps its assembly code: a CPU with no SHA-256 instructions uses the
-NEON code, never the scalar code that writes x28. check_openssl_asm of
-scripts/steps.sh checks the result. See C73 and SSL1 of
-docs/UPSTREAM.md.
+XNU and Windows can change x18 at any time. The vpsm4 code of SM4 writes
+x18, so the aarch64 build uses only sm4-armv8.S for SM4. Code that
+writes x28, the thread pointer of Cosmopolitan Libc, keeps its assembly:
+the libc gives a signal handler the thread pointer from its copy (C73,
+cosmocc 4.0.2-patched.5). check_openssl_asm of scripts/steps.sh checks
+the result. See C73 and SSL1 of docs/UPSTREAM.md.
 
-diff --git a/crypto/aes/build.info b/crypto/aes/build.info
-index cb3bb5f..79e3d03 100644
---- a/crypto/aes/build.info
-+++ b/crypto/aes/build.info
-@@ -31,9 +31,9 @@ IF[{- !$disabled{asm} -}]
- 
-   $AESASM_armv4=aes_cbc.c aes-armv4.S bsaes-armv7.S aesv8-armx.S
-   $AESDEF_armv4=AES_ASM BSAES_ASM
-+  # beam.com: no ETM code (see include/crypto/aes_platform.h).
-   $AESASM_aarch64=\
--        aes_core.c aes_cbc.c aesv8-armx.S bsaes-armv8.S vpaes-armv8.S \
--        aes-sha1-armv8.S aes-sha256-armv8.S aes-sha512-armv8.S
-+        aes_core.c aes_cbc.c aesv8-armx.S bsaes-armv8.S vpaes-armv8.S
-   $AESDEF_aarch64=BSAES_ASM VPAES_ASM
- 
-   $AESASM_parisc11=aes_core.c aes_cbc.c aes-parisc.s
-diff --git a/crypto/bn/build.info b/crypto/bn/build.info
-index 01e98e4..0f26156 100644
---- a/crypto/bn/build.info
-+++ b/crypto/bn/build.info
-@@ -70,8 +70,11 @@ IF[{- !$disabled{asm} -}]
-   $BNASM_armv4_ec2m=armv4-gf2m.S
-   $BNDEF_armv4_ec2m=OPENSSL_BN_ASM_GF2m
- 
--  $BNASM_aarch64=bn_asm.c armv8-mont.S
--  $BNDEF_aarch64=OPENSSL_BN_ASM_MONT
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. A signal handler that runs while this
-+  # code holds other data in x28 reads a bad thread pointer. Thus C code.
-+  $BNASM_aarch64=bn_asm.c
-+  $BNDEF_aarch64=
- 
-   $BNASM_riscv64=bn_asm.c riscv64-mont.S
-   $BNDEF_riscv64=OPENSSL_BN_ASM_MONT
-diff --git a/crypto/chacha/build.info b/crypto/chacha/build.info
-index c151e19..c68a6e3 100644
---- a/crypto/chacha/build.info
-+++ b/crypto/chacha/build.info
-@@ -10,7 +10,10 @@ IF[{- !$disabled{asm} -}]
-   $CHACHAASM_s390x=chacha-s390x.S
- 
-   $CHACHAASM_armv4=chacha-armv4.S
--  $CHACHAASM_aarch64=chacha-armv8.S chacha-armv8-sve.S
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. A signal handler that runs while this
-+  # code holds other data in x28 reads a bad thread pointer. Thus C code.
-+  $CHACHAASM_aarch64=
- 
-   $CHACHAASM_loongarch64=chacha-loongarch64.S
- 
-diff --git a/crypto/ec/build.info b/crypto/ec/build.info
-index 6fe0a31..29c819f 100644
---- a/crypto/ec/build.info
-+++ b/crypto/ec/build.info
-@@ -29,15 +29,11 @@ IF[{- !$disabled{asm} -}]
- 
-   $ECASM_armv4=ecp_nistz256.c ecp_nistz256-armv4.S
-   $ECDEF_armv4=ECP_NISTZ256_ASM
--  $ECASM_aarch64=ecp_nistz256.c ecp_nistz256-armv8.S
--  $ECDEF_aarch64=ECP_NISTZ256_ASM
--  IF[{- !$disabled{'sm2'} -}]
--    $ECASM_aarch64=$ECASM_aarch64 ecp_sm2p256.c ecp_sm2p256-armv8.S
--    IF[{- !$disabled{'sm2-precomp'} -}]
--      $ECASM_aarch64=$ECASM_aarch64 ecp_sm2p256_table.c
--    ENDIF
--    $ECDEF_aarch64=$ECDEF_aarch64 ECP_SM2P256_ASM
--  ENDIF
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. A signal handler that runs while this
-+  # code holds other data in x28 reads a bad thread pointer. Thus C code.
-+  $ECASM_aarch64=
-+  $ECDEF_aarch64=
- 
-   $ECASM_parisc11=
-   $ECASM_parisc20_64=
-diff --git a/crypto/md5/build.info b/crypto/md5/build.info
-index 9a73db3..e2a4e48 100644
---- a/crypto/md5/build.info
-+++ b/crypto/md5/build.info
-@@ -4,7 +4,10 @@ $MD5ASM=
- IF[{- !$disabled{asm} -}]
-   $MD5ASM_x86=md5-586.S
-   $MD5ASM_x86_64=md5-x86_64.s
--  $MD5ASM_aarch64=md5-aarch64.S
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. A signal handler that runs while this
-+  # code holds other data in x28 reads a bad thread pointer. Thus C code.
-+  $MD5ASM_aarch64=
-   $MD5ASM_loongarch64=md5-loongarch64.S
-   $MD5ASM_riscv64=md5_riscv.c md5-riscv64.S md5-riscv64-zbb.S
-   $MD5ASM_sparcv9=md5-sparcv9.S
-diff --git a/crypto/sha/asm/sha512-armv8.pl b/crypto/sha/asm/sha512-armv8.pl
-index 6fb26e9..be88f1e 100644
---- a/crypto/sha/asm/sha512-armv8.pl
-+++ b/crypto/sha/asm/sha512-armv8.pl
-@@ -207,11 +207,12 @@ $func:
- 	adrp	x16,OPENSSL_armcap_P
- 	ldr	w16,[x16,#:lo12:OPENSSL_armcap_P]
- ___
-+# beam.com: each AArch64 CPU has NEON. Thus a CPU with no SHA-256
-+# instructions uses the NEON code, never the code below that uses x28.
- $code.=<<___	if ($SZ==4);
- 	tst	w16,#ARMV8_SHA256
- 	b.ne	.Lv8_entry
--	tst	w16,#ARMV7_NEON
--	b.ne	.Lneon_entry
-+	b	.Lneon_entry
- ___
- $code.=<<___	if ($SZ==8);
- 	tst	w16,#ARMV8_SHA512
-diff --git a/crypto/sha/build.info b/crypto/sha/build.info
-index f495fa7..f47bbfc 100644
---- a/crypto/sha/build.info
-+++ b/crypto/sha/build.info
-@@ -31,8 +31,13 @@ IF[{- !$disabled{asm} -}]
- 
-   $SHA1ASM_armv4=sha1-armv4-large.S sha256-armv4.S sha512-armv4.S
-   $SHA1DEF_armv4=SHA1_ASM SHA256_ASM SHA512_ASM
--  $SHA1ASM_aarch64=sha1-armv8.S sha256-armv8.S sha512-armv8.S
--  $SHA1DEF_aarch64=SHA1_ASM SHA256_ASM SHA512_ASM
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. A signal handler that runs while
-+  # SHA-1 or SHA-512 holds other data in x28 reads a bad thread pointer.
-+  # Thus C code for them. SHA-256 does not use x28 on the paths that it
-+  # runs (see sha512-armv8.pl).
-+  $SHA1ASM_aarch64=sha256-armv8.S
-+  $SHA1DEF_aarch64=SHA256_ASM
- 
-   $SHA1ASM_parisc11=sha1-parisc.s sha256-parisc.s sha512-parisc.s
-   $SHA1DEF_parisc11=SHA1_ASM SHA256_ASM SHA512_ASM
-@@ -68,7 +73,10 @@ IF[{- !$disabled{asm} -}]
-   $KECCAK1600ASM_s390x=keccak1600-s390x.S
- 
-   $KECCAK1600ASM_armv4=keccak1600-armv4.S
--  $KECCAK1600ASM_aarch64=keccak1600-armv8.S
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. A signal handler that runs while this
-+  # code holds other data in x28 reads a bad thread pointer. Thus C code.
-+  $KECCAK1600ASM_aarch64=
- 
-   $KECCAK1600ASM_ppc64=keccak1600-ppc64.s
- 
 diff --git a/crypto/sm4/build.info b/crypto/sm4/build.info
 index 2f36b6b..a67376c 100644
 --- a/crypto/sm4/build.info
 +++ b/crypto/sm4/build.info
-@@ -1,8 +1,11 @@
+@@ -1,8 +1,10 @@
  LIBS=../../libcrypto
  
  IF[{- !$disabled{asm} -}]
 -  $SM4DEF_aarch64=SM4_ASM VPSM4_ASM
 -  $SM4ASM_aarch64=sm4-armv8.S vpsm4-armv8.S vpsm4_ex-armv8.S
-+  # beam.com: Cosmopolitan Libc keeps its thread pointer in x28, and
-+  # XNU and Windows can change x18. The vpsm4 code writes x18 and x28.
-+  # Thus only sm4-armv8.S, which does not use x18 or x28.
++  # beam.com: XNU and Windows can change x18 at any time, and the vpsm4
++  # code writes x18. Thus only sm4-armv8.S, which does not use x18.
 +  $SM4DEF_aarch64=SM4_ASM
 +  $SM4ASM_aarch64=sm4-armv8.S
  
    $SM4DEF_riscv64=SM4_ASM
    $SM4ASM_riscv64=sm4-riscv64-zvksed.s
-diff --git a/include/crypto/aes_platform.h b/include/crypto/aes_platform.h
-index bec9040..8bd15a6 100644
---- a/include/crypto/aes_platform.h
-+++ b/include/crypto/aes_platform.h
-@@ -116,7 +116,11 @@ void gcm_ghash_p8(u64 Xi[2], const u128 Htable[16], const u8 *inp, size_t len);
- #define HWAES_CBC_HMAC_SHA1_ETM_CAPABLE (HWAES_CAPABLE && (OPENSSL_armcap_P & ARMV8_SHA1))
- #define HWAES_CBC_HMAC_SHA256_ETM_CAPABLE (HWAES_CAPABLE && (OPENSSL_armcap_P & ARMV8_SHA256))
- #define HWAES_CBC_HMAC_SHA512_ETM_CAPABLE (HWAES_CAPABLE && (OPENSSL_armcap_P & ARMV8_SHA512))
--#ifndef __AARCH64EB__
-+/*
-+ * beam.com: no ETM ciphers with Cosmopolitan Libc. They call the SHA-1
-+ * and SHA-512 assembly code, which uses x28 (see crypto/sha/build.info).
-+ */
-+#if !defined(__AARCH64EB__) && !defined(__COSMOPOLITAN__)
- #define AES_CBC_HMAC_SHA_ETM_CAPABLE 1
- #endif
- #endif
