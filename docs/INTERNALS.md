@@ -139,14 +139,20 @@ assembly code of its CPU. The aarch64 archive goes to `lib/.aarch64/`,
 where the fat linker of cosmocc finds it. One compile of the crypto NIF
 makes the two halves, so a header that differs between the two builds
 (`openssl/configuration.h`) has the text of each CPU under
-`__aarch64__`. OTP is configured with `--enable-static-nifs`.
+`__aarch64__`. OTP is configured with `--enable-static-nifs`. ERTS
+selects a static NIF by the name of the module that loads it, so the
+`crypto.beam` of a normal release uses the NIF inside `beam.com` (the
+release does not need its `crypto.so`).
 
 The assembly code must keep the rules of Cosmopolitan Libc, and
 `check_openssl_asm` stops the build when it does not:
 
 - aarch64: no instruction writes x28 (the thread pointer) or x18 (C73,
   SSL1). `patches/openssl/0002-aarch64-registers.patch` builds the C
-  code of the modules that do.
+  code of the modules that do: SHA-1, SHA-512, SHA-3, ChaCha20, the
+  Montgomery code of RSA, P-256, and MD5. For P-256, P-384 and P-521,
+  the option `enable-ec_nistp_64_gcc_128` gives a constant-time C code
+  with `__int128`, about 8 times faster than the generic C code.
 - x86_64: no assembly object has the bytes of the TLS load that
   Cosmopolitan Libc changes at start on Windows and XNU
   (`libc/runtime/morph_tls.c`).
@@ -162,9 +168,15 @@ With the assembly code, on one Intel Xeon with AVX-512 and SHA-NI
 (2.1 GHz, Linux):
 AES-256-GCM goes from 121 MB/s to 8213 MB/s, SHA-256 from 314 MB/s to
 1750 MB/s, RSA-2048 signs from 445 to 3166 each second, and P-256 signs
-from 1163 to 39550 each second. ERTS selects a static NIF by the name of the
-module that loads it, so the `crypto.beam` of a normal release uses the
-NIF inside `beam.com` (the release does not need its `crypto.so`).
+from 1163 to 39550 each second.
+
+On the macOS arm64 runner of CI (Apple M1), compared with the plain C
+code: AES-256-GCM goes from 89 MB/s to 3424 MB/s, SHA-256 from 213 MB/s
+to 1490 MB/s, and PBKDF2-SHA256 from 1522 to 6674 each second. These
+are near or above the Homebrew OTP with OpenSSL 4.1.0. The modules of
+C73 stay near the C speed: for example SHA-512 is 419 MB/s with
+`beam.com` and 990 MB/s with Homebrew. `tests/bench/crypto_bench.erl`
+measures these items.
 
 `public_key:cacerts_get/0` reads the certificates of the OS on Linux,
 macOS and the BSDs. On Windows, `public_key` only reads the Windows store

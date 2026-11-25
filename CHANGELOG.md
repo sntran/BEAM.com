@@ -9,9 +9,11 @@ notes of its release.
   Before, `libcrypto` was plain C code. On one Intel Xeon, AES-256-GCM
   is 68 times faster, SHA-256 5.6 times, RSA-2048 signs 7 times, and
   P-256 signs 34 times. On aarch64, AES, AES-GCM, GHASH, Poly1305 and
-  SHA-256 use the instructions of the CPU. The aarch64 code of OpenSSL
-  that writes x18 or x28 stays C code, because Cosmopolitan Libc keeps
-  its thread pointer in x28 (C73 of `docs/UPSTREAM.md`). The build uses
+  SHA-256 use the instructions of the CPU, and P-256, P-384 and P-521
+  use the fast C code of OpenSSL (`enable-ec_nistp_64_gcc_128`). The
+  aarch64 code of OpenSSL that writes x18 or x28 stays C code, because
+  Cosmopolitan Libc keeps its thread pointer in x28 (C73 of
+  `docs/UPSTREAM.md`). The build uses
   cosmocc 4.0.2-patched.4 of sntran/cosmopolitan: on aarch64, a
   `siglongjmp()` after the probe of a CPU feature changed a register of
   the caller (C72).

@@ -4,9 +4,9 @@
 %% half (docs/INTERNALS.md, "Crypto and TLS"). Each input is above 1 MiB
 %% and not a multiple of a block, so the code of many blocks and the
 %% code of the last part both run. The expected values come from Python
-%% (hashlib and pow), from OpenSSL 3.0 of Linux (CTR and CBC), from the
-%% C code of OpenSSL 4.0.3 with no assembly (GCM and ChaCha20-Poly1305),
-%% and from FIPS-197 and RFC 8032.
+%% (hashlib and pow), from OpenSSL 3.0 of Linux (CTR, CBC and ECDH), from
+%% the C code of OpenSSL 4.0.3 with no assembly (GCM and
+%% ChaCha20-Poly1305), and from FIPS-197 and RFC 8032.
 -module(crypto_check).
 -export([main/0, values/0]).
 
@@ -61,6 +61,11 @@ ciphers() ->
 public_keys() ->
     [{ed25519, <<"e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
                "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b">>},
+     {ecdh_p256, <<"31b636aea0e231f4ffc94c81e9652b821c02202fde7f22cb74c27dd547ba79a3">>},
+     {ecdh_p384, <<"96455d236990a84e1626bccfd2c5049b22b7b207254b014d"
+                   "514cf36b88e5bb3bc71e5265b6374f1cc598281e66224b6c">>},
+     {ecdh_p521, <<"00d9af062d761d879d62d48f95e61d2d76dfe28caf5b156ee61608311b73688f"
+                   "1294c687295cbd10fa5f7561320ff63f4c6f329c574ff7bdd9c2e822a7bbf443d6ac">>},
      {rsa, true},
      {ecdsa, true},
      {ecdh, true},
@@ -113,6 +118,24 @@ values() ->
         ed25519 => hex(crypto:sign(eddsa, none, <<>>, [Ed, ed25519])),
         rsa => sign_verify(rsa, {rsa, 2048, 65537}, Msg),
         ecdsa => sign_verify(ecdsa, {ecdh, secp256r1}, Msg),
+        ecdh_p256 => ecdh(secp256r1,
+                          <<"21b42fd254445363f0dba47b5c4a7c7f0f5a93114aaf64325955c69ca760bd2d">>,
+                          <<"04afff2375d81e613267d26aa2d547240b714c0df2d4d3a6e050e94ec1046a6c"
+                            "d4661ab416b5c11c90dd5bbb825eaad6fbf9f01f4c0c794cbf0080d1c0fd1fe096">>),
+        ecdh_p384 => ecdh(secp384r1,
+                          <<"fc6aad13ad06f38f4245d566eb255821a75f3c0949845f09"
+                            "ca833a61776a421a747e6d34e5d7ee39827c964d1398ce9b">>,
+                          <<"04e0a08d7a7412b1b185634f50f80b8e27848bcfcbe42c84dc18cb895d44e5ee"
+                            "b907d6f0b6979ff6e94f442a4044c4b60e85a9ff9b236cee1ae80ce69a2905ad"
+                            "8e9bfa4738383997224ccd974eec4e86e049edcec63508675c57ef9c5c38490091">>),
+        ecdh_p521 => ecdh(secp521r1,
+                          <<"00b5586fc4db4f3dc6471734914b8361d154896c5bd7c8ac56f66d84ed226008"
+                            "0f14b685ef5428ba24704ccb19a164cf41dfd9366d1bc2190a07cc6360495d43632a">>,
+                          <<"04012be51fe9ffeeb1ad23ec7dd332c88926c05ae7547f15743ce575584dca4c"
+                            "3592d5b2877aa3cb8e1e9bd3706aeddd7ae870d4cb127b8a40a233e5694ee32b"
+                            "946f9b006753a0b9a334930f2cf72c0dae5890df77d3c12ca02d1d6d1718bb6a"
+                            "e3026ecdfc4d24451b4e6aabded89cc5490cd8dba7162c5e38511eae5abb3738"
+                            "c7eab399b6">>),
         ecdh => agree(ecdh, secp256r1),
         x25519 => agree(eddh, x25519)}).
 
@@ -128,6 +151,11 @@ sign_verify(Alg, KeyType, Msg) ->
 
 params({rsa, Bits, E}) -> {Bits, E};
 params({ecdh, Curve}) -> Curve.
+
+%% The shared secret of a fixed private key and a fixed public key, as hex
+%% text. The keys are hex text.
+ecdh(Curve, Priv, Pub) ->
+    hex(crypto:compute_key(ecdh, binary:decode_hex(Pub), binary:decode_hex(Priv), Curve)).
 
 %% Two new keys give the same shared secret from each side.
 agree(Type, Curve) ->

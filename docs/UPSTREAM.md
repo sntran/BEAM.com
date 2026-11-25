@@ -2486,7 +2486,10 @@ assembly code: a CPU with no SHA-256 instructions uses the NEON code,
 which does not use x28. `check_openssl_asm` of `scripts/steps.sh`
 disassembles `libcrypto.a` of aarch64 and stops the build when an
 instruction writes x18 or x28 (the unreachable scalar code of
-`sha256_block_data_order` is the one exception).
+`sha256_block_data_order` is the one exception). The option
+`enable-ec_nistp_64_gcc_128` of `step_openssl` gives P-256, P-384 and
+P-521 a constant-time C code with `__int128`, which is about 8 times
+faster than the generic C code of P-256.
 
 **Possible upstream fix.** Keep the TIB in `tpidr_el0` too, and set x28
 from it at the signal entry, before the handler runs.

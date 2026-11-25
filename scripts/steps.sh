@@ -446,7 +446,11 @@ step_openssl() {
         echo "$patched" > "$src/.beam_com_patched"
     fi
     # One build for each half, with the assembly code of its CPU. Only
-    # libcrypto is used (by the crypto NIF).
+    # libcrypto is used (by the crypto NIF). enable-ec_nistp_64_gcc_128:
+    # the constant-time C code of P-224, P-256, P-384 and P-521 with
+    # __int128. aarch64 has no P-256 assembly code (C73), and this C code
+    # is about 8 times faster than the generic C code. On x86_64, P-256
+    # keeps its assembly code.
     ob=$BUILD/openssl-build
     rm -rf "${OPENSSL:?}" "${ob:?}"
     for arch in x86_64 aarch64; do
@@ -458,7 +462,8 @@ step_openssl() {
                 AR="$arch-unknown-cosmo-ar" RANLIB=true \
                 --prefix="$OPENSSL" --libdir=lib \
                 no-shared no-dso no-engine no-async no-tests no-apps \
-                no-docs no-module no-afalgeng no-uplink no-secure-memory
+                no-docs no-module no-afalgeng no-uplink no-secure-memory \
+                enable-ec_nistp_64_gcc_128
             make -j"$JOBS" build_libs
         )
     done
