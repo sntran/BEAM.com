@@ -20,6 +20,10 @@ notes of its release.
   thread that waited in nsync stopped the VM with SIGILL. The build uses
   cosmocc 4.0.2-patched.3 of sntran/cosmopolitan (C71 of
   `docs/UPSTREAM.md`).
+- A build with vix gets each library of git by its pinned commit, not by
+  its tag. On 2026-11-24, the tag `v2.4.1` of libimagequant moved to a
+  newer commit, and each build with `vix-gif` stopped at the check of the
+  pin. The build still uses the commit of the pin.
 - `beam.com mix` uses the git client of `beam.com` for the git deps of
   an `https` or SSH URL when `PATH` has no `git` program, or with
   `BEAM_COM_GIT=client`, as the Mix build does. Before, `beam.com mix

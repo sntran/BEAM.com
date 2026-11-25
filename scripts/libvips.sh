@@ -65,7 +65,9 @@ libjpeg-turbo-3.2.1.tar.gz c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314
 libwebp-1.6.0.tar.gz e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564 https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz
 vips-8.18.7.tar.xz 5baaead3b0bb20ffdb9e9ff09aa9fda08620923df77b63b436654cb5e0b3bf94 https://github.com/libvips/libvips/releases/download/v8.18.7/vips-8.18.7.tar.xz
 "
-# The clones: NAME TAG COMMIT REPOSITORY.
+# The clones: NAME TAG COMMIT REPOSITORY. fetch() gets the commit, not
+# the tag, because the owner of a repository can move a tag. The tag is a
+# name for the log only.
 CLONES="
 zlib-ng 2.3.3 12731092979c6d07f42da27da673a9f6c7b13586 https://github.com/zlib-ng/zlib-ng
 proxy-libintl 0.5 33934de09af6a6627eb44e310a8079df009abdbb https://github.com/frida/proxy-libintl
@@ -90,7 +92,14 @@ fetch() {
     echo "$CLONES" | while read -r name tag commit url; do
         [ -n "$name" ] || continue
         d=$SRC/git/$name
-        [ -d "$d/.git" ] || { log "Cloning $name $tag"; git clone -q --depth 1 --branch "$tag" "$url" "$d"; }
+        if [ ! -d "$d/.git" ]; then
+            log "Cloning $name $tag ($commit)"
+            rm -rf "$d.part"
+            git init -q "$d.part"
+            git -C "$d.part" fetch -q --depth 1 "$url" "$commit"
+            git -C "$d.part" -c advice.detachedHead=false checkout -q FETCH_HEAD
+            mv "$d.part" "$d"
+        fi
         head=$(git -C "$d" rev-parse HEAD)
         if [ "$head" != "$commit" ]; then
             echo "The clone of $name is at $head, not at the pinned commit $commit" >&2
