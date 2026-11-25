@@ -5,6 +5,25 @@ notes of its release.
 
 ## Unreleased
 
+- On macOS arm64, a port program gets each signal. Before, each program
+  that a port started (`open_port/2`, `System.cmd/3`, `os:cmd/1`) had
+  HUP, INT, QUIT, USR1, USR2, TERM and the other signals blocked. A trap
+  of `/bin/sh` did not run, and TERM did not stop a program, for example
+  a fake release in a test of `mix.com test`. The cause was the signal
+  mask of `posix_spawn()` for `erl_child_setup` (C70 of
+  `docs/UPSTREAM.md`).
+- On macOS and the BSD systems, a port program gets the default action
+  of SIGSYS, as with the usual OTP. Before, it got SIGSYS ignored,
+  because the runtime of `beam.com` ignores it.
+- On NetBSD, a signal that the VM handles, for example with
+  `os:set_signal(sighup, handle)`, does not stop the VM. Before, a
+  thread that waited in nsync stopped the VM with SIGILL. The build uses
+  cosmocc 4.0.2-patched.3 of sntran/cosmopolitan (C71 of
+  `docs/UPSTREAM.md`).
+- A build with vix gets each library of git by its pinned commit, not by
+  its tag. On 2026-11-24, the tag `v2.4.1` of libimagequant moved to a
+  newer commit, and each build with `vix-gif` stopped at the check of the
+  pin. The build still uses the commit of the pin.
 - `beam.com mix` uses the git client of `beam.com` for the git deps of
   an `https` or SSH URL when `PATH` has no `git` program, or with
   `BEAM_COM_GIT=client`, as the Mix build does. Before, `beam.com mix

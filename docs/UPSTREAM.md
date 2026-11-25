@@ -24,7 +24,7 @@ An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
 
-BEAM.com uses cosmocc 4.0.2-patched.2 of
+BEAM.com uses cosmocc 4.0.2-patched.3 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
 official cosmocc 4.0.2 with one commit for each fix of its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
@@ -2285,6 +2285,149 @@ with the fix.
 **Possible upstream fix.** In `cosmo_futex_fix_timeout()` of master,
 `<= 0` in place of `< 0`, so that a deadline equal to the current time
 also gives `ETIMEDOUT`.
+
+### C70. macOS arm64: a program from posix_spawn() through cosmo_dltramp() has each signal blocked
+
+**Status:** 4.0.2 (`libc/dlopen/foreign_tramp.S`), macOS arm64. Fixed in
+BEAM.com.
+
+**Symptom.** Under `beam.com` on macOS arm64, each port program started
+with HUP, INT, QUIT, USR1, USR2, TERM and the other signals blocked. A
+trap of `/bin/sh` did not run, and `kill -TERM` did not stop a program.
+For example, a test of `mix.com test` started a fake release
+(`/bin/sh` with `trap 'exit 0' TERM`), and the release did not stop
+when the test sent it TERM. `ps` showed the mask as 0, but Perl
+(`sigprocmask`) in the port program showed each signal blocked. On
+Linux, the mask of a port program is empty.
+
+**Cause.** The trampoline of `cosmo_dltramp()` blocks all signals during
+the call of a function of a foreign library (`__sig_block` in
+`foreign_tramp.S`). The `posix_spawn()` of libSystem gives the new
+program the signal mask of the caller, unless its attributes set a
+mask. `beam_com_spawn_helper()` (C32) starts `erl_child_setup` with that
+`posix_spawn()` through the trampoline. `erl_child_setup` unblocks only
+SIGCHLD, and each port program gets its mask.
+
+A program that a port program starts gets the same mask, also another
+VM of `beam.com`, for example a release that a test starts.
+
+**Fix in BEAM.com.** `beam_com_spawn_helper()` sets
+`POSIX_SPAWN_SETSIGMASK` with an empty mask
+(`posix_spawnattr_setsigmask()`). The dispositions do not change.
+
+**The other paths.** On macOS 27 arm64, from a process with an empty
+mask, a probe of each other way to start a thread or a process gave the
+mask of the caller:
+
+- `pthread_create()` of Cosmopolitan: the thread of ERTS, and the thread
+  of a NIF (`enif_thread_create()`). `_pthread_start()` sets the mask of
+  the creator before its block (`oldsigs`).
+- The `fork()` of libSystem through `cosmo_dltramp()`
+  (`beam_com_helper_fork()`, C36), also after the `execve()` of the
+  child: the child returns through the trampoline, which restores the
+  mask.
+- The `fork()` and the `posix_spawn()` of Cosmopolitan.
+
+The other calls of `cosmo_dltramp()` in BEAM.com start no thread and no
+process (`sandbox_init()`, `getattrlist()`, `_NSGetExecutablePath()`,
+`mach_vm_region_recurse()`). Cosmopolitan uses the trampoline only in
+`libc/dlopen/`. The two blocks of all signals in `beam_com_net.c` are
+on purpose: the threads of the resolver and of the supervisor of
+`--allow-net` take no signals, and the old mask comes back after their
+`pthread_create()`.
+
+**SIGSYS.** On macOS and the BSD systems, the runtime of Cosmopolitan
+ignores SIGSYS at its start (`libc/runtime/cosmo2.c`, "disable enosys
+trapping"), so that a system call that the kernel does not know gives
+`ENOSYS`. An exec keeps an ignored signal, and `erl_child_setup` is a
+program of Cosmopolitan, so a port program got SIGSYS ignored. With the
+usual OTP, it gets the default action.
+
+A reset in the child of `erl_child_setup` before its exec is not safe:
+`beam_com_exec_helper()` and `beam_com_execve()` run after it, and an
+unknown system call there would stop the child. The safe point is the
+execve system call itself. The emulator is linked with
+`-Wl,--wrap=__sys_execve`, the system call that each `execve()` of
+Cosmopolitan and `ape_execve()` make, also for the tries of the APE
+loader and of `/bin/sh`. `__wrap___sys_execve()` gives SIGSYS its
+default action, makes the system call, and ignores SIGSYS again when
+the call fails. Only the execve system call runs between the two
+`sigaction()` calls, and each kernel knows it.
+
+Caution: a disposition is for the whole process. The wrap acts only in
+a child of `beam_com_helper_fork()`, the fork of each port program,
+which has one thread. Not a compare of `getpid()`: Cosmopolitan keeps
+the pid in `__pid`, and the `fork()` of libSystem on macOS arm64 does
+not change it. The restore sets `SIG_IGN` itself, because Cosmopolitan
+set it with `sys_sigaction()`, and `sigaction()` does not give it as the
+old action. On macOS 27 arm64, a probe with this code gave SIGSYS its
+default action in the program of a port child, kept it ignored after a
+`fork()` of Cosmopolitan, and ignored it again after a failed `execve()`.
+
+The usual OTP ignores SIGFPE (`sys_float.c`), and a port program gets it
+ignored. `beam.com` does not ignore it.
+
+**Test.** `tests/programs/signal_check.erl`:
+
+1. A port program reads its whole mask and its dispositions, signals 1
+   to 31 (`/proc/self/status` on Linux, else `perl`, else `ps` on FreeBSD
+   and NetBSD): no signal is blocked, and only SIGPIPE is ignored.
+2. `/bin/sh` traps each catchable signal of POSIX that it sends to
+   itself.
+
+`tests/run.sh` first finds the signals that a shell cannot trap there
+also with no VM, in the background as `check_once` starts a program, and
+gives them to the check as `skip`. Such a signal can be ignored in step
+1, and step 2 skips it. In CI, a shell with no job control gives a
+background program TSTP, TTIN and TTOU ignored on FreeBSD, NetBSD and
+OpenBSD (`perl` on OpenBSD showed them ignored). The VM passes that on,
+as the usual OTP does: ERTS does not set these three signals.
+3. TERM stops a shell with no trap.
+4. TERM from another port program stops a fake release.
+5. The VM gets HUP, USR2, ALRM and TSTP from a port program.
+
+On macOS 27 arm64, from a clean start, rc.8 fails 25 checks, and the
+Erlang/OTP of Homebrew passes the mask check. The traps of SIGFPE (it
+ignores SIGFPE) and of SIGCHLD fail there. The bash 3.2 of macOS also
+fails the trap of SIGCHLD with no VM, so the baseline of `tests/run.sh`
+skips it there.
+
+In CI run 773 (`fix/port-signal-mask`), the check passed on macOS
+arm64, macOS 27 arm64, macOS x86_64, Linux x86_64 and Linux aarch64. The
+BSD systems failed the traps of TSTP, TTIN and TTOU, from the background
+shell (the baseline above came after that run). On NetBSD, step 5 also
+stopped the VM (C71).
+
+**Possible upstream fix.** A caller of `cosmo_dltramp()` cannot know
+the mask that the foreign function sees. Cosmopolitan can document it
+next to `cosmo_dltramp()`, or give the foreign function the mask of the
+caller.
+
+### C71. NetBSD: a signal handler stops a thread that waits in nsync
+
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.3. Open in 4.0.2
+(`third_party/nsync/mu_semaphore_sem.c`), NetBSD x86_64. Seen in CI run
+773, in `tests/programs/signal_check.erl`.
+
+**Symptom.** A port program sent SIGHUP to the VM, with
+`os:set_signal(sighup, handle)`. Three threads stopped at once with
+`unassert(result == ETIMEDOUT || result == ECANCELED) failed` in
+`mu_semaphore_sem.c:127`, and then the VM stopped with SIGILL (exit 132).
+
+**Cause.** On NetBSD, nsync waits with the kernel semaphores
+(`sys_sem_wait()`, `sys_sem_timedwait()`). When a signal handler runs on
+a thread that waits there, the system call gives EINTR. The two waits
+accept only ECANCELED (and ETIMEDOUT), so EINTR stops the process. A
+handled signal of the VM can come to any thread that does not block it.
+
+**Fix in sntran/cosmopolitan.** The commit "nsync: a semaphore wait of
+NetBSD waits again after EINTR (C71)": `nsync_mu_semaphore_p_sem()` and
+`nsync_mu_semaphore_p_with_deadline_sem()` wait again after EINTR, with
+the same deadline. First, `pthread_testcancel_np()` gives a cancelation
+its effect. The check C71 of `tool/cosmocc/check/fixes.c` sends SIGUSR1
+20 times into a handler of each of two threads that wait on a condition
+variable. The job `check-netbsd` of the fork runs it on NetBSD: it fails
+with the libc of 4.0.2 and passes with the fix.
 
 ## WAMR (WebAssembly Micro Runtime)
 

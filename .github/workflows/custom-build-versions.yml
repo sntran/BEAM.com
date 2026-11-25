@@ -37,7 +37,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  COSMOCC_VERSION: "4.0.2-patched.2"
+  COSMOCC_VERSION: "4.0.2-patched.3"
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
 

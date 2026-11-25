@@ -27,7 +27,7 @@
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.2)
-#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.2:
+#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.3:
 #                    the cosmocc of github.com/sntran/cosmopolitan, with
 #                    the changes of its PATCHES.md). For another release,
 #                    give COSMOCC_URL and COSMOCC_SHA256 too
@@ -127,14 +127,14 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.2}
-COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.2}
+COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.3}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-d199a49a01a2079afb6f2c5c9ae047cd4555e68d}
-COSMOCC_SHA256=${COSMOCC_SHA256:-75d9f3cc9b9f67422e88463206fef80b96919fda42dd52b599d21c13f8803557}
+COSMOCC_SHA256=${COSMOCC_SHA256:-ada47f47911648274fac45e31d63a7d0b1496f3730651c0ca82df0fbbef9e73e}
 COSMOCC_URL=${COSMOCC_URL:-https://github.com/sntran/cosmopolitan/releases/download/$COSMOCC_VERSION/cosmocc-$COSMOCC_VERSION.zip}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
@@ -224,6 +224,10 @@ SOCK_WRAPS="-Wl,--wrap=send"
 # The timer resolution of Windows: the libc must not release the request
 # of the VM (c_src/cosmo/beam_com.c, C67 of docs/UPSTREAM.md).
 TIMER_WRAPS="-Wl,--wrap=NtSetTimerResolution"
+# The execve system call: a port program gets the default action of
+# SIGSYS on macOS and the BSD systems (c_src/cosmo/beam_com.c, C70 of
+# docs/UPSTREAM.md).
+EXEC_WRAPS="-Wl,--wrap=__sys_execve"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 
 # The OTP applications in the zip. "beam.com INPUT -o OUTPUT" copies the ones that
@@ -1740,9 +1744,10 @@ step_multicall() {
     # the wrap of MAC_WRAPS (getcwd() in Seatbelt) in beam_com_seatbelt.c,
     # and the wraps of PIPE_WRAPS (pipes on Windows) in beam_com_pipe.c,
     # and the wrap of SOCK_WRAPS (sockets on Windows) in beam_com_sock.c,
-    # and the wrap of TIMER_WRAPS (the timer of Windows) in beam_com.c.
+    # and the wrap of TIMER_WRAPS (the timer of Windows) in beam_com.c,
+    # and the wrap of EXEC_WRAPS (SIGSYS of a port program) in beam_com.c.
     make -f "$t/Makefile" TYPE=opt FLAVOR=$FLAVOR \
-        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS $TIMER_WRAPS" \
+        EMU_LDFLAGS="$objs -Wl,--wrap=close -Wl,--wrap=mkdir -Wl,--wrap=chown $LIBC_WRAPS $NET_WRAPS $FS_WRAPS $MAC_WRAPS $PIPE_WRAPS $SOCK_WRAPS $TIMER_WRAPS $EXEC_WRAPS" \
         "STATIC_NIFS=$nifs" "$ERL_TOP/bin/$t/beam.$FLAVOR"
 }
 

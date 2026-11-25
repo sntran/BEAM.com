@@ -668,6 +668,23 @@ if [ -d examples ]; then
     # The removal of a directory with a file fails at once (C68).
     check beam.com '^rmdir_check: del_dir of a directory with a file, 10 times, at most [0-9]* ms: ok$@@^rmdir_check: ok$' \
         tests/programs/rmdir_check.erl -- "$dir"
+    # A port program has no signal blocked, a trap of /bin/sh runs for
+    # each signal, TERM stops a fake release, and the VM gets signals
+    # (C70). First the signals that a shell here cannot trap also with no
+    # VM: check_once starts a program in the background, and a shell with
+    # no job control can give such a program TSTP, TTIN and TTOU ignored
+    # (FreeBSD, NetBSD, OpenBSD). The VM passes that on, as the usual OTP
+    # does. The bash 3.2 of macOS does not run a trap of CHLD for a kill to
+    # itself. signal_check skips these signals.
+    sig_all=$($runner "$dir/beam.com" tests/programs/signal_check.erl -- signals 2>/dev/null)
+    sig_skip=$( (for s in $sig_all; do
+                     sh -c "trap 'exit 0' $s; kill -$s \$\$; sleep 1; exit 1" >/dev/null 2>&1 ||
+                         printf '%s ' "$s"
+                 done) &
+               wait $!)
+    echo "signal_check: the signals that a shell here cannot trap with no VM: ${sig_skip:-none}"
+    check beam.com '^signal_check: the mask of a port program@@^signal_check: a trap of TERM: ok$@@^signal_check: a fake release stops with TERM from another port program: ok$@@^signal_check: the VM gets HUP from a port program: ok$@@^signal_check: ok$' \
+        tests/programs/signal_check.erl -- skip $sig_skip
     check_status 1 beam.com 'none.erl: no such file' none.erl
     check_status 1 beam.com 'unknown option -z' x.erl -z
     check_status 1 beam.com 'option -o needs a value' x.erl -o
