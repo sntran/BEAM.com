@@ -1,0 +1,45 @@
+OpenSSL: no CPU setup before main() with Cosmopolitan Libc.
+
+x86_64: no call of OPENSSL_cpuid_setup() from the .init section. The
+start code of Cosmopolitan Libc is the .init section, and it keeps
+pointers in %rdi and %rsi. aarch64: no constructor, so a program that
+does not use crypto does not run the SIGILL probes at each start.
+OPENSSL_init_crypto() calls OPENSSL_cpuid_setup() in both cases. See C74
+of docs/UPSTREAM.md.
+
+diff --git a/crypto/armcap.c b/crypto/armcap.c
+index 7224ecf..420c1f8 100644
+--- a/crypto/armcap.c
++++ b/crypto/armcap.c
+@@ -69,7 +69,12 @@ uint32_t OPENSSL_rdtsc(void)
+ 
+ /* First determine if getauxval() is available (OSSL_IMPLEMENT_GETAUXVAL) */
+ 
+-#if defined(__GNUC__) && __GNUC__ >= 2
++/*
++ * beam.com: no constructor with Cosmopolitan Libc. Thus a program that
++ * does not use crypto does not run the SIGILL probes at each start.
++ * OPENSSL_init_crypto() calls OPENSSL_cpuid_setup().
++ */
++#if defined(__GNUC__) && __GNUC__ >= 2 && !defined(__COSMOPOLITAN__)
+ void OPENSSL_cpuid_setup(void) __attribute__((constructor));
+ #endif
+ 
+diff --git a/crypto/x86_64cpuid.pl b/crypto/x86_64cpuid.pl
+index 22cf520..aac61f7 100644
+--- a/crypto/x86_64cpuid.pl
++++ b/crypto/x86_64cpuid.pl
+@@ -28,10 +28,9 @@ open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
+ 
+ print<<___;
+ #include crypto/cryptlib.h
+-.extern		OPENSSL_cpuid_setup
+-.hidden		OPENSSL_cpuid_setup
+-.section	.init
+-	call	OPENSSL_cpuid_setup
++# beam.com: no call from the .init section. Cosmopolitan Libc uses .init
++# for its own start code, and that code keeps pointers in %rdi and %rsi.
++# OPENSSL_init_crypto() calls OPENSSL_cpuid_setup().
+ 
+ .hidden	OPENSSL_ia32cap_P
+ .comm	OPENSSL_ia32cap_P,40,4	# <--Should match with internal/cryptlib.h OPENSSL_IA32CAP_P_MAX_INDEXES

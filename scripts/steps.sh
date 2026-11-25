@@ -27,7 +27,7 @@
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.2)
-#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.3:
+#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.4:
 #                    the cosmocc of github.com/sntran/cosmopolitan, with
 #                    the changes of its PATCHES.md). For another release,
 #                    give COSMOCC_URL and COSMOCC_SHA256 too
@@ -127,14 +127,14 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.2}
-COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.3}
+COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.4}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-d199a49a01a2079afb6f2c5c9ae047cd4555e68d}
-COSMOCC_SHA256=${COSMOCC_SHA256:-ada47f47911648274fac45e31d63a7d0b1496f3730651c0ca82df0fbbef9e73e}
+COSMOCC_SHA256=${COSMOCC_SHA256:-7be7b9c5a6b64533eb5eabf882fcb15049d454f54ca202149c2c37709091865d}
 COSMOCC_URL=${COSMOCC_URL:-https://github.com/sntran/cosmopolitan/releases/download/$COSMOCC_VERSION/cosmocc-$COSMOCC_VERSION.zip}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
@@ -410,8 +410,19 @@ step_toolchain() {
     echo "$COSMOCC_SHA256" > "$mark"
 }
 
+# The inputs of the OpenSSL build: the version, the compilers, the
+# patches, and the code of the step. step_openssl builds again a tree,
+# for example from a cache of CI, that has other inputs.
+openssl_inputs() {
+    echo "OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256"
+    key_files patches/openssl
+    steps_code text step_openssl
+}
+
 step_openssl() {
-    if [ -f "$OPENSSL/lib/libcrypto.a" ]; then
+    inputs=$(openssl_inputs | sha256sum | cut -d' ' -f1)
+    if [ -f "$OPENSSL/lib/libcrypto.a" ] && [ -f "$OPENSSL/lib/.aarch64/libcrypto.a" ] &&
+        [ "$(cat "$OPENSSL/.beam_com_inputs" 2> /dev/null)" = "$inputs" ]; then
         log "Using OpenSSL in $OPENSSL"
         return
     fi
@@ -422,23 +433,127 @@ step_openssl() {
             https://github.com/openssl/openssl.git "$src"
     fi
     check_commit "$src" "$OPENSSL_COMMIT" "OpenSSL $OPENSSL_VERSION"
-    log "Building a static libcrypto with $CC"
-    cd "$src"
-    # Only libcrypto is used (by the crypto NIF). No assembly code, so
-    # that the same C code compiles for x86_64 and aarch64.
-    ./Configure linux-generic64 CC="$CC" AR="$AR" RANLIB=true \
-        --prefix="$OPENSSL" --libdir=lib \
-        no-shared no-asm no-dso no-engine no-async no-tests no-apps \
-        no-docs no-module no-afalgeng no-uplink no-secure-memory
-    make -j"$JOBS" build_libs
-    make install_dev
-    # A fat archive has its aarch64 twin in .aarch64/, and "make install"
-    # does not copy it.
-    if [ -f .aarch64/libcrypto.a ]; then
-        mkdir -p "$OPENSSL/lib/.aarch64"
-        cp .aarch64/libcrypto.a "$OPENSSL/lib/.aarch64/"
+    # The patches of patches/openssl, on a clean tree (patches/README.md).
+    patched=$(key_files patches/openssl | sha256sum | cut -d' ' -f1)
+    if [ "$(cat "$src/.beam_com_patched" 2> /dev/null)" != "$patched" ]; then
+        log "Applying the OpenSSL patches"
+        git -C "$src" checkout -q -- .
+        git -C "$src" clean -fdxq
+        for p in "$ROOT"/patches/openssl/*.patch; do
+            echo "  $p"
+            git -C "$src" apply "$p"
+        done
+        echo "$patched" > "$src/.beam_com_patched"
     fi
+    # One build for each half, with the assembly code of its CPU. Only
+    # libcrypto is used (by the crypto NIF). enable-ec_nistp_64_gcc_128:
+    # the constant-time C code of P-224, P-256, P-384 and P-521 with
+    # __int128. aarch64 has no P-256 assembly code (C73), and this C code
+    # is about 8 times faster than the generic C code. On x86_64, P-256
+    # keeps its assembly code.
+    ob=$BUILD/openssl-build
+    rm -rf "${OPENSSL:?}" "${ob:?}"
+    for arch in x86_64 aarch64; do
+        log "Building a static libcrypto for $arch"
+        mkdir -p "$ob/$arch"
+        (
+            cd "$ob/$arch"
+            "$src/Configure" "linux-$arch" CC="$arch-unknown-cosmo-cc" \
+                AR="$arch-unknown-cosmo-ar" RANLIB=true \
+                --prefix="$OPENSSL" --libdir=lib \
+                no-shared no-dso no-engine no-async no-tests no-apps \
+                no-docs no-module no-afalgeng no-uplink no-secure-memory \
+                enable-ec_nistp_64_gcc_128
+            make -j"$JOBS" build_libs
+        )
+    done
+    (cd "$ob/x86_64" && make install_dev)
+    (cd "$ob/aarch64" && make DESTDIR="$ob/aarch64-root" install_dev)
+    # The fat linker of cosmocc takes the aarch64 twin of an archive
+    # from .aarch64/.
+    mkdir -p "$OPENSSL/lib/.aarch64"
+    cp "$ob/aarch64-root$OPENSSL/lib/libcrypto.a" "$OPENSSL/lib/.aarch64/"
+    openssl_join_headers "$ob/aarch64-root$OPENSSL/include" "$OPENSSL/include"
+    check_openssl_asm "$ob"
+    echo "$inputs" > "$OPENSSL/.beam_com_inputs"
 }
+
+# openssl_join_headers A64 DIR: the headers of DIR (the x86_64 build),
+# with each header that differs in A64 (the aarch64 build) joined: the
+# aarch64 text under __aarch64__, else the x86_64 text. One compile of
+# the crypto NIF makes the two halves, so it reads one header.
+openssl_join_headers() (
+    a64=$1 x86=$2
+    a=$(cd "$a64" && find . -type f | LC_ALL=C sort)
+    x=$(cd "$x86" && find . -type f | LC_ALL=C sort)
+    if [ "$a" != "$x" ]; then
+        echo "The OpenSSL builds of x86_64 and aarch64 have other headers" >&2
+        exit 1
+    fi
+    for h in $a; do
+        cmp -s "$a64/$h" "$x86/$h" && continue
+        echo "  joined header $h"
+        {
+            echo "/* beam.com: one header for the x86_64 and aarch64 halves. */"
+            echo "#if defined(__aarch64__)"
+            cat "$a64/$h"
+            echo "#else"
+            cat "$x86/$h"
+            echo "#endif"
+        } > "$x86/$h.joined"
+        mv "$x86/$h.joined" "$x86/$h"
+    done
+)
+
+# check_openssl_asm DIR: the assembly code of the OpenSSL builds in DIR
+# keeps the rules of Cosmopolitan Libc (patches/README.md, OpenSSL).
+#   - aarch64: no instruction writes x18 or x28. x28 holds the thread
+#     pointer, and XNU and Windows can change x18. Only the scalar code
+#     of sha256_block_data_order writes x28, and 0002-aarch64-registers
+#     makes that code unreachable.
+#   - x86_64: no object of an assembly file has the bytes of the TLS
+#     load that Cosmopolitan Libc changes at start (libc/runtime/
+#     morph_tls.c).
+check_openssl_asm() (
+    log "Checking the OpenSSL assembly code"
+    "$COSMOCC/bin/aarch64-linux-cosmo-objdump" -d --no-show-raw-insn \
+        "$1/aarch64/libcrypto.a" | awk '
+        /^[0-9a-f]+ <.*>:$/ { fn = substr($2, 2, length($2) - 3); next }
+        /^ +[0-9a-f]+:\t/ {
+            split($0, f, "\t"); ins = f[2]; args = f[3]
+            n = split(args, op, ","); d = op[1]; gsub(/[ \[\]!]/, "", d)
+            w = 0
+            # The first operand is the target, except for a store, a
+            # compare, a branch, and a prefetch. stxr and stlxr write
+            # their status to the first operand.
+            if (d ~ /^[xw](18|28)$/ && ins !~ /^(st(r|ur|p|np|lr|lur|llr|[1-4]|z?g)|cmp|cmn|tst|ccmp|ccmn|cbn?z|tbn?z|b|br|blr|ret|prfm)/) w = 1
+            if (ins ~ /^(ld[a-z]*p)$/) { e = op[2]; gsub(/ /, "", e); if (e ~ /^[xw](18|28)$/) w = 1 }
+            # A write back of the base register.
+            if (args ~ /\[x(18|28)(, [^]]*)?\]!|\[x(18|28)\], /) w = 1
+            if (w && !(fn in seen)) { seen[fn] = 1; print fn, ins, args }
+        }' > "$1/aarch64-registers.txt"
+    bad=$(grep -v '^sha256_block_data_order ' "$1/aarch64-registers.txt" || true)
+    if [ -n "$bad" ]; then
+        echo "OpenSSL assembly code for aarch64 writes x18 or x28:" >&2
+        echo "$bad" >&2
+        exit 1
+    fi
+    cd "$1/x86_64"
+    find . -name '*.s' | LC_ALL=C sort | while read -r s; do
+        for o in "$(dirname "$s")"/lib*-"$(basename "$s" .s)".o; do
+            [ -f "$o" ] || continue
+            "$COSMOCC/bin/x86_64-linux-cosmo-objcopy" -O binary --only-section=.text "$o" "$o.text"
+            perl -0777 -ne '
+                while (/(?=[\x64\x65][\x48\x4c][\x8b\x03](.)\x25\x30\x00\x00\x00)/sg) {
+                    if ((ord($1) & 0xc7) == 4) { print "$ARGV\n"; exit 1 }
+                }' "$o.text" || {
+                echo "OpenSSL assembly code for x86_64 has the TLS load of Cosmopolitan Libc: $o" >&2
+                exit 1
+            }
+            rm -f "$o.text"
+        done
+    done
+)
 
 step_otp() {
     # A built tree with the key of this build, from the store. All its
@@ -1350,7 +1465,8 @@ step_roots() {
 # Caution: a file that a step starts to read must be in its list.
 step_files() {
     case $1 in
-        toolchain|openssl|release) ;;
+        toolchain|release) ;;
+        openssl) echo "patches/openssl" ;;
         otp) echo "patches/otp c_src/cosmo/*.c c_src/cosmo/*.h c_src/cosmo/sha1dc" ;;
         configure) echo "c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared" ;;
         sqlite) echo "patches/esqlite" ;;
@@ -1563,8 +1679,9 @@ nif_part_key() (
 # Makefiles hold. The other files of c_src/cosmo go into the step
 # multicall, which compiles them again.
 otp_part_key() (
-    code=$(steps_code text step_otp step_configure step_make)
-    files=$(key_files patches/otp c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc)
+    # The crypto NIF in the tree links libcrypto.a of the step openssl.
+    code=$(steps_code text step_otp step_configure step_make step_openssl)
+    files=$(key_files patches/otp patches/openssl c_src/cosmo/erts_cosmo.h c_src/cosmo/noshared c_src/cosmo/depcc)
     {
         echo "OTP $OTP_VERSION $OTP_COMMIT OPENSSL $OPENSSL_VERSION $OPENSSL_COMMIT"
         echo "COSMOCC $COSMOCC_VERSION $COSMOCC_SHA256 CC $CC CXX $CXX AR $AR"
