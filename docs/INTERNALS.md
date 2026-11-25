@@ -175,8 +175,11 @@ code: AES-256-GCM goes from 89 MB/s to 3424 MB/s, SHA-256 from 213 MB/s
 to 1490 MB/s, and PBKDF2-SHA256 from 1522 to 6674 each second. These
 are near or above the Homebrew OTP with OpenSSL 4.1.0. The modules of
 C73 stay near the C speed: for example SHA-512 is 419 MB/s with
-`beam.com` and 990 MB/s with Homebrew. `tests/bench/crypto_bench.erl`
-measures these items.
+`beam.com` and 990 MB/s with Homebrew. With the C code of
+`enable-ec_nistp_64_gcc_128`, P-256 signs go from 581 to 7752 each
+second, and a TLS 1.3 handshake with a P-256 certificate goes from 97 to
+194 each second (Homebrew: 18621 signs and 169 handshakes).
+`tests/bench/crypto_bench.erl` measures these items.
 
 `public_key:cacerts_get/0` reads the certificates of the OS on Linux,
 macOS and the BSDs. On Windows, `public_key` only reads the Windows store
