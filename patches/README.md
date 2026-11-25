@@ -52,7 +52,7 @@ the assembly code of both builds.
 | Patch | File | What it does | Items |
 |---|---|---|---|
 | `0001-cpuid-setup.patch` | `crypto/x86_64cpuid.pl`, `crypto/armcap.c` | No CPU setup before `main()`: no call from the `.init` section on x86_64, and no constructor on aarch64. `OPENSSL_init_crypto()` does the setup. | C74 |
-| `0002-aarch64-registers.patch` | `crypto/sm4/build.info` | The aarch64 build uses no assembly code that writes x18: SM4 has only `sm4-armv8.S`, not vpsm4. | SSL1 |
+| `0002-aarch64-registers.patch` | `crypto/sm4/build.info`, `crypto/chacha/build.info`, `crypto/chacha/asm/chacha-armv8.pl` | The aarch64 build uses no assembly code that writes x18: SM4 has only `sm4-armv8.S`, not vpsm4, and ChaCha20 has no SVE code. | SSL1 |
 
 ## Elixir (`patches/elixir/`)
 

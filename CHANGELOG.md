@@ -9,8 +9,9 @@ notes of its release.
   Before, `libcrypto` was plain C code. On one Intel Xeon, AES-256-GCM
   is 68 times faster, SHA-256 5.6 times, RSA-2048 signs 7 times, and
   P-256 signs 34 times. P-384 and P-521 use the fast C code of OpenSSL
-  (`enable-ec_nistp_64_gcc_128`). On aarch64, only SM4-XTS stays C code,
-  because its assembly code writes x18 (SSL1 of `docs/UPSTREAM.md`).
+  (`enable-ec_nistp_64_gcc_128`). On aarch64, SM4-XTS stays C code and
+  ChaCha20 uses no SVE code, because that assembly code writes x18 (SSL1
+  of `docs/UPSTREAM.md`).
   The build uses cosmocc 4.0.2-patched.5 of sntran/cosmopolitan:
   - On aarch64, a `siglongjmp()` after the probe of a CPU feature
     changed a register of the caller (C72).

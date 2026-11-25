@@ -149,7 +149,8 @@ The assembly code must keep the rules of Cosmopolitan Libc, and
 
 - aarch64: no instruction writes x18, because macOS and Windows can
   change it at any time (SSL1). `patches/openssl/0002-aarch64-registers.patch`
-  builds the C code of vpsm4, the one module that writes x18. Code that
+  builds the C code of vpsm4 and no SVE code of ChaCha20, the code that
+  writes x18. Code that
   writes x28, the thread pointer, is allowed: the libc gives a signal
   handler the thread pointer from its copy (C73).
   `aarch64-registers.txt` of the build lists each write to x18 or x28.

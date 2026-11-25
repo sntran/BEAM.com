@@ -4519,19 +4519,26 @@ environment (for example `PWD`).
 Seen with OpenSSL 4.0.3, built with its assembly code by `step_openssl`
 of `scripts/steps.sh` (`docs/INTERNALS.md`, "Crypto and TLS").
 
-### SSL1. aarch64: SM4-XTS writes x18
+### SSL1. aarch64: SM4-XTS and the SVE code of ChaCha20 write x18
 
-**Problem.** `vpsm4_xts_encrypt` and `vpsm4_ex_xts_encrypt`
-(`crypto/sm4/asm/vpsm4-armv8.pl`, `vpsm4_ex-armv8.pl`) keep a value in
-x18. On macOS and on Windows on ARM64, x18 is the platform register,
-and the system can change it at any time. The other aarch64 assembly
-code of OpenSSL does not use x18.
+**Problem.** These functions of OpenSSL 4.0.3 keep a value in x18:
+
+- `vpsm4_xts_encrypt` and `vpsm4_ex_xts_encrypt`
+  (`crypto/sm4/asm/vpsm4-armv8.pl`, `vpsm4_ex-armv8.pl`).
+- `ChaCha20_ctr32_sve` (`crypto/chacha/asm/chacha-armv8-sve.pl`).
+  `ChaCha20_ctr32` of `chacha-armv8.pl` calls it on a CPU with SVE.
+
+On macOS and on Windows on ARM64, x18 is the platform register, and the
+system can change it at any time. The other aarch64 assembly code of
+OpenSSL does not write x18.
 
 **Workaround in BEAM.com.** `patches/openssl/0002-aarch64-registers.patch`
 keeps only `sm4-armv8.S` (the SM4 instructions) and builds the C code of
-vpsm4. `check_openssl_asm` of `scripts/steps.sh` stops the build when an
+vpsm4. It builds no SVE code of ChaCha20, and `ChaCha20_ctr32` goes to
+the NEON or scalar code. `check_openssl_asm` of `scripts/steps.sh` stops the build when an
 aarch64 instruction of `libcrypto.a` writes x18.
 
 **Possible upstream fix.** Use another register in the XTS code of
-vpsm4 and vpsm4_ex, as the other modules do for Apple and Windows.
+vpsm4 and vpsm4_ex and in the SVE code of ChaCha20, as the other modules
+do for Apple and Windows.
 

@@ -1,14 +1,76 @@
 OpenSSL: no aarch64 assembly code that writes x18.
 
-XNU and Windows can change x18 at any time. The vpsm4 code of SM4 writes
-x18, so the aarch64 build uses only sm4-armv8.S for SM4. Code that
-writes x28, the thread pointer of Cosmopolitan Libc, keeps its assembly:
-the libc gives a signal handler the thread pointer from its copy (C73,
-cosmocc 4.0.2-patched.5). check_openssl_asm of scripts/steps.sh checks
-the result. See C73 and SSL1 of docs/UPSTREAM.md.
+XNU and Windows can change x18 at any time. The vpsm4 code of SM4 and the
+SVE code of ChaCha20 write x18. Thus the aarch64 build uses only
+sm4-armv8.S for SM4, and no SVE code for ChaCha20: ChaCha20_ctr32 goes
+to the NEON or scalar code. Code that writes x28, the thread pointer of
+Cosmopolitan Libc, keeps its assembly: the libc gives a signal handler
+the thread pointer from its copy (C73, cosmocc 4.0.2-patched.5).
+check_openssl_asm of scripts/steps.sh checks the result. See C73 and
+SSL1 of docs/UPSTREAM.md.
 
+diff --git a/crypto/chacha/asm/chacha-armv8.pl b/crypto/chacha/asm/chacha-armv8.pl
+index f500bf1..d0e2219 100755
+--- a/crypto/chacha/asm/chacha-armv8.pl
++++ b/crypto/chacha/asm/chacha-armv8.pl
+@@ -137,7 +137,6 @@ $code.=<<___;
+ .extern	OPENSSL_armcap_P
+ .hidden	OPENSSL_armcap_P
+ 
+-.extern ChaCha20_ctr32_sve
+ #endif
+ 
+ .rodata
+@@ -359,28 +358,9 @@ ChaCha20_ctr32:
+ 	cmp	$len,#192
+ 	b.lo	.Lshort
+ #ifndef	__KERNEL__
+-	adrp	x17,OPENSSL_armcap_P
+-	ldr	w17,[x17,#:lo12:OPENSSL_armcap_P]
+-	tst	w17,#ARMV8_SVE
+-	b.eq	.Lcheck_neon
+-	stp	x29,x30,[sp,#-16]!
+-	sub	sp,sp,#16
+-	// SVE handling will inevitably increment the counter
+-	// Neon/Scalar code that follows to process tail data needs to
+-	// use new counter, unfortunately the input counter buffer
+-	// pointed to by ctr is meant to be read-only per API contract
+-	// we have to copy the buffer to stack to be writable by SVE
+-	ldp	x5,x6,[$ctr]
+-	stp	x5,x6,[sp]
+-	mov	$ctr,sp
+-	bl	ChaCha20_ctr32_sve
+-	cbz	$len,1f
+-	bl	ChaCha20_ctr32_dflt
+-1:
+-	add	sp,sp,#16
+-	ldp	x29,x30,[sp],#16
+-	AARCH64_VALIDATE_LINK_REGISTER
+-	ret
++	// beam.com: no SVE code, because ChaCha20_ctr32_sve writes x18
++	// (see crypto/chacha/build.info).
++	b	.Lcheck_neon
+ #endif
+ 	b	.Lshort
+ .size	ChaCha20_ctr32,.-ChaCha20_ctr32
+diff --git a/crypto/chacha/build.info b/crypto/chacha/build.info
+index c151e19..06103fe 100644
+--- a/crypto/chacha/build.info
++++ b/crypto/chacha/build.info
+@@ -10,7 +10,10 @@ IF[{- !$disabled{asm} -}]
+   $CHACHAASM_s390x=chacha-s390x.S
+ 
+   $CHACHAASM_armv4=chacha-armv4.S
+-  $CHACHAASM_aarch64=chacha-armv8.S chacha-armv8-sve.S
++  # beam.com: XNU and Windows can change x18 at any time, and the SVE
++  # code (ChaCha20_ctr32_sve) writes x18. Thus no SVE code, and
++  # chacha-armv8.pl does not call it.
++  $CHACHAASM_aarch64=chacha-armv8.S
+ 
+   $CHACHAASM_loongarch64=chacha-loongarch64.S
+ 
 diff --git a/crypto/sm4/build.info b/crypto/sm4/build.info
-index 2f36b6b..a67376c 100644
+index 2f36b6b..b9ed7b5 100644
 --- a/crypto/sm4/build.info
 +++ b/crypto/sm4/build.info
 @@ -1,8 +1,10 @@
