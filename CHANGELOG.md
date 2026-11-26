@@ -12,7 +12,7 @@ notes of its release.
   (`enable-ec_nistp_64_gcc_128`). On aarch64, SM4-XTS stays C code and
   ChaCha20 uses no SVE code, because that assembly code writes x18 (SSL1
   of `docs/UPSTREAM.md`).
-  The build uses cosmocc 4.0.2-patched.5 of sntran/cosmopolitan:
+  The build uses cosmocc 4.0.2-patched.6 of sntran/cosmopolitan:
   - On aarch64, a `siglongjmp()` after the probe of a CPU feature
     changed a register of the caller (C72).
   - On aarch64, a signal handler gets the thread pointer when the

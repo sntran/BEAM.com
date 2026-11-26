@@ -25,7 +25,7 @@ An item that is not a problem now says so in a line
 **Status: obsolete** (the part that needed it is not in BEAM.com now) or
 **Status: fixed upstream**. No item has been sent upstream yet.
 
-BEAM.com uses cosmocc 4.0.2-patched.5 of
+BEAM.com uses cosmocc 4.0.2-patched.6 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan): the
 official cosmocc 4.0.2 with one commit for each fix of its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md).
@@ -2461,7 +2461,7 @@ of the caller has its own slot (C72)" keeps x19 at offset 184.
 
 ### C73. aarch64: assembly code that writes x28
 
-**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.5. Open in 4.0.2
+**Status:** fixed in sntran/cosmopolitan 4.0.2-patched.6. Open in 4.0.2
 and HEAD (`libc/calls/sigaction.c`), aarch64 on each system. Found in the
 build of OpenSSL with its assembly code (`step_openssl`), before the code
 ran in `beam.com`.

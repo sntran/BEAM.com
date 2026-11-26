@@ -123,7 +123,7 @@ concurrency:
 # The step "Read the choices" sets OTP_VERSION and ELIXIR_VERSION, with
 # their commits.
 env:
-  COSMOCC_VERSION: "4.0.2-patched.5"
+  COSMOCC_VERSION: "4.0.2-patched.6"
   OPENSSL_VERSION: "4.0.3"
   EMSDK_VERSION: "6.0.10"
 

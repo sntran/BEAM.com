@@ -5,7 +5,7 @@ SVE code of ChaCha20 write x18. Thus the aarch64 build uses only
 sm4-armv8.S for SM4, and no SVE code for ChaCha20: ChaCha20_ctr32 goes
 to the NEON or scalar code. Code that writes x28, the thread pointer of
 Cosmopolitan Libc, keeps its assembly: the libc gives a signal handler
-the thread pointer from its copy (C73, cosmocc 4.0.2-patched.5).
+the thread pointer from its copy (C73, cosmocc 4.0.2-patched.6).
 check_openssl_asm of scripts/steps.sh checks the result. See C73 and
 SSL1 of docs/UPSTREAM.md.
 

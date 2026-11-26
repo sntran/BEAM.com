@@ -111,7 +111,7 @@ order, with `git apply`.
 ## Cosmopolitan
 
 The fixes of Cosmopolitan are in the toolchain, not in this directory:
-the build uses cosmocc 4.0.2-patched.5 of
+the build uses cosmocc 4.0.2-patched.6 of
 [sntran/cosmopolitan](https://github.com/sntran/cosmopolitan). Its
 [`PATCHES.md`](https://github.com/sntran/cosmopolitan/blob/main/PATCHES.md)
 lists one commit for each fix:
