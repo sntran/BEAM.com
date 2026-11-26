@@ -24,7 +24,7 @@ concurrency:
 
 env:
   OTP_VERSION: "29.1.2"
-  COSMOCC_VERSION: "4.0.2-patched.4"
+  COSMOCC_VERSION: "4.0.2-patched.6"
   OPENSSL_VERSION: "4.0.3"
   # All the parts of the libvips of vix (VIX_PARTS of scripts/steps.sh).
   VIX_PARTS: "avif gif icc svg"

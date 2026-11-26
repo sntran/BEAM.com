@@ -27,7 +27,7 @@
 #
 # Environment:
 #   OTP_VERSION      OTP git tag without "OTP-" (default 29.1.2)
-#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.4:
+#   COSMOCC_VERSION  cosmocc release to download (default 4.0.2-patched.6:
 #                    the cosmocc of github.com/sntran/cosmopolitan, with
 #                    the changes of its PATCHES.md). For another release,
 #                    give COSMOCC_URL and COSMOCC_SHA256 too
@@ -127,14 +127,14 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OTP_VERSION=${OTP_VERSION:-29.1.2}
-COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.4}
+COSMOCC_VERSION=${COSMOCC_VERSION:-4.0.2-patched.6}
 OPENSSL_VERSION=${OPENSSL_VERSION:-4.0.3}
 EMSDK_VERSION=${EMSDK_VERSION:-6.0.10}
 # The pins of the sources of the default versions: the commit of each
 # git tag (a tag can move), and the SHA-256 of each download (a release
 # asset can change). For another version, give its pin too.
 OTP_COMMIT=${OTP_COMMIT:-d199a49a01a2079afb6f2c5c9ae047cd4555e68d}
-COSMOCC_SHA256=${COSMOCC_SHA256:-7be7b9c5a6b64533eb5eabf882fcb15049d454f54ca202149c2c37709091865d}
+COSMOCC_SHA256=${COSMOCC_SHA256:-f1cd25177bcd56e2669b57bdb58fb166a54e13055e61908257e53e3928fb7e03}
 COSMOCC_URL=${COSMOCC_URL:-https://github.com/sntran/cosmopolitan/releases/download/$COSMOCC_VERSION/cosmocc-$COSMOCC_VERSION.zip}
 OPENSSL_COMMIT=${OPENSSL_COMMIT:-af1775b60dfa141a4ad762585052cabeb9f37e9e}
 EMSDK_COMMIT=${EMSDK_COMMIT:-a2b92777574c2feda07994cd4f1079a3dfc151f8}
@@ -507,10 +507,11 @@ openssl_join_headers() (
 
 # check_openssl_asm DIR: the assembly code of the OpenSSL builds in DIR
 # keeps the rules of Cosmopolitan Libc (patches/README.md, OpenSSL).
-#   - aarch64: no instruction writes x18 or x28. x28 holds the thread
-#     pointer, and XNU and Windows can change x18. Only the scalar code
-#     of sha256_block_data_order writes x28, and 0002-aarch64-registers
-#     makes that code unreachable.
+#   - aarch64: no instruction writes x18, because XNU and Windows can
+#     change it at any time. A write to x28, the thread pointer, is
+#     allowed: the libc gives a signal handler the thread pointer from
+#     its copy (C73). The list of each write to x18 or x28 goes to
+#     DIR/aarch64-registers.txt.
 #   - x86_64: no object of an assembly file has the bytes of the TLS
 #     load that Cosmopolitan Libc changes at start (libc/runtime/
 #     morph_tls.c).
@@ -522,19 +523,23 @@ check_openssl_asm() (
         /^ +[0-9a-f]+:\t/ {
             split($0, f, "\t"); ins = f[2]; args = f[3]
             n = split(args, op, ","); d = op[1]; gsub(/[ \[\]!]/, "", d)
-            w = 0
-            # The first operand is the target, except for a store, a
-            # compare, a branch, and a prefetch. stxr and stlxr write
-            # their status to the first operand.
-            if (d ~ /^[xw](18|28)$/ && ins !~ /^(st(r|ur|p|np|lr|lur|llr|[1-4]|z?g)|cmp|cmn|tst|ccmp|ccmn|cbn?z|tbn?z|b|br|blr|ret|prfm)/) w = 1
-            if (ins ~ /^(ld[a-z]*p)$/) { e = op[2]; gsub(/ /, "", e); if (e ~ /^[xw](18|28)$/) w = 1 }
-            # A write back of the base register.
-            if (args ~ /\[x(18|28)(, [^]]*)?\]!|\[x(18|28)\], /) w = 1
-            if (w && !(fn in seen)) { seen[fn] = 1; print fn, ins, args }
+            # One line for each function and each register that it
+            # writes: "x18" or "x28", the function, the instruction.
+            for (r = 18; r <= 28; r += 10) {
+                w = 0
+                # The first operand is the target, except for a store, a
+                # compare, a branch, and a prefetch. stxr and stlxr write
+                # their status to the first operand.
+                if (d ~ ("^[xw]" r "$") && ins !~ /^(st(r|ur|p|np|lr|lur|llr|[1-4]|z?g)|cmp|cmn|tst|ccmp|ccmn|cbn?z|tbn?z|b|br|blr|ret|prfm)/) w = 1
+                if (ins ~ /^(ld[a-z]*p)$/) { e = op[2]; gsub(/ /, "", e); if (e ~ ("^[xw]" r "$")) w = 1 }
+                # A write back of the base register.
+                if (args ~ ("\\[x" r "(, [^]]*)?\\]!|\\[x" r "\\], ")) w = 1
+                if (w && !((fn, r) in seen)) { seen[fn, r] = 1; print "x" r, fn, ins, args }
+            }
         }' > "$1/aarch64-registers.txt"
-    bad=$(grep -v '^sha256_block_data_order ' "$1/aarch64-registers.txt" || true)
+    bad=$(grep '^x18 ' "$1/aarch64-registers.txt" || true)
     if [ -n "$bad" ]; then
-        echo "OpenSSL assembly code for aarch64 writes x18 or x28:" >&2
+        echo "OpenSSL assembly code for aarch64 writes x18:" >&2
         echo "$bad" >&2
         exit 1
     fi

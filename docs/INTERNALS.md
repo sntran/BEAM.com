@@ -147,15 +147,20 @@ release does not need its `crypto.so`).
 The assembly code must keep the rules of Cosmopolitan Libc, and
 `check_openssl_asm` stops the build when it does not:
 
-- aarch64: no instruction writes x28 (the thread pointer) or x18 (C73,
-  SSL1). `patches/openssl/0002-aarch64-registers.patch` builds the C
-  code of the modules that do: SHA-1, SHA-512, SHA-3, ChaCha20, the
-  Montgomery code of RSA, P-256, and MD5. For P-256, P-384 and P-521,
-  the option `enable-ec_nistp_64_gcc_128` gives a constant-time C code
-  with `__int128`, about 8 times faster than the generic C code.
+- aarch64: no instruction writes x18, because macOS and Windows can
+  change it at any time (SSL1). `patches/openssl/0002-aarch64-registers.patch`
+  builds the C code of vpsm4 and no SVE code of ChaCha20, the code that
+  writes x18. Code that
+  writes x28, the thread pointer, is allowed: the libc gives a signal
+  handler the thread pointer from its copy (C73).
+  `aarch64-registers.txt` of the build lists each write to x18 or x28.
 - x86_64: no assembly object has the bytes of the TLS load that
   Cosmopolitan Libc changes at start on Windows and XNU
   (`libc/runtime/morph_tls.c`).
+
+The option `enable-ec_nistp_64_gcc_128` gives P-224, P-384 and P-521 a
+constant-time C code with `__int128`. P-256 uses its assembly code
+(`ecp_nistz256`) on both CPUs.
 
 OpenSSL finds the features of the CPU when crypto starts
 (`OPENSSL_init_crypto()`), not before `main()` (C74). On x86_64 it reads
@@ -171,14 +176,13 @@ AES-256-GCM goes from 121 MB/s to 8213 MB/s, SHA-256 from 314 MB/s to
 from 1163 to 39550 each second.
 
 On the macOS arm64 runner of CI (Apple M1), compared with the plain C
-code: AES-256-GCM goes from 89 MB/s to 3424 MB/s, SHA-256 from 213 MB/s
-to 1490 MB/s, and PBKDF2-SHA256 from 1522 to 6674 each second. These
-are near or above the Homebrew OTP with OpenSSL 4.1.0. The modules of
-C73 stay near the C speed: for example SHA-512 is 419 MB/s with
-`beam.com` and 990 MB/s with Homebrew. With the C code of
-`enable-ec_nistp_64_gcc_128`, P-256 signs go from 581 to 7752 each
-second, and a TLS 1.3 handshake with a P-256 certificate goes from 97 to
-194 each second (Homebrew: 18621 signs and 169 handshakes).
+code: AES-256-GCM goes from 75 MB/s to 3802 MB/s, SHA-256 from 246 MB/s
+to 1391 MB/s, SHA-512 from 389 MB/s to 889 MB/s, ChaCha20-Poly1305 from
+248 MB/s to 1329 MB/s, RSA-2048 signs from 279 to 840 each second, and
+P-256 signs from 655 to 21593 each second. A TLS 1.3 handshake with a
+P-256 certificate goes from 86 to 247 each second. These are near the
+Homebrew OTP with OpenSSL 4.1.0 (for example 27131 P-256 signs and 228
+handshakes each second).
 `tests/bench/crypto_bench.erl` measures these items.
 
 `public_key:cacerts_get/0` reads the certificates of the OS on Linux,
