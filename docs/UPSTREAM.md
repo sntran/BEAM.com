@@ -2498,6 +2498,12 @@ The new signal entries `__sigenter_linux_arm64` and
 and the Windows signal paths do the same. `fixupobj` keeps an `mrs` of
 `tpidr_el0` that `hint #0x7f` follows.
 
+4.0.2-patched.5 also wrote `tpidr_el0` on XNU at the first call of
+`__set_tls()`, before `__hostos` was set. `malloc()` of libSystem reads
+the number of the CPU there, and a program of the CI of BEAM.com hung in
+`sandbox_init()` on macOS arm64. 4.0.2-patched.6 writes `tpidr_el0` only
+on Linux, and the check C73 reads it at `main` on XNU.
+
 **Use in BEAM.com.** The aarch64 build of OpenSSL keeps the assembly
 code that writes x28. `check_openssl_asm` of `scripts/steps.sh` writes
 each write to x18 or x28 to `aarch64-registers.txt`, and stops the build
